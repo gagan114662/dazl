@@ -19,7 +19,7 @@ export function toPublished(batch: BatchResult, sup: Superiority | null, now: st
   if (sup) {
     if (sup.origin === 'synthetic') throw new Error('the analysis is synthetic')
     if (!sup.batches.includes(m.batch_id)) throw new Error(`the analysis does not include batch ${m.batch_id}`)
-    if (sup.overall.decision === 'win' && new Set(sup.batches).size < 2) throw new Error(`a win needs at least 2 distinct batches; the analysis has ${new Set(sup.batches).size}`)
+    if ((sup.overall.decision === 'win' || sup.overall.decision === 'loss') && new Set(sup.batches).size < 2) throw new Error(`a win or a loss needs at least 2 distinct batches; the analysis has ${new Set(sup.batches).size}`)
   }
   return {
     format: 'dazl-published-scorecard', version: 1, generated_at: now,

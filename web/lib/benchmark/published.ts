@@ -60,16 +60,18 @@ export function batchView(b: PublishedBatch): BatchView {
 const DECISION_WORD: Record<string, string> = { win: 'Win', loss: 'Loss', inconclusive: 'Inconclusive' }
 export function superiorityView(s: Superiority): SuperiorityView {
   const enough = new Set(s.batches).size >= 2   // one batch can never show a win
-  const overall = s.overall.decision === 'win' && !enough ? 'Inconclusive: a win needs at least 2 distinct batches' : s.overall.decision === 'win' ? `${s.systems.candidate} wins` : s.overall.decision === 'loss' ? `${s.systems.candidate} loses` : s.overall.decision === 'no_winner_floor_failed' ? 'No winner: a critical accuracy floor failed' : 'Inconclusive'
+  // One batch can show neither a win nor a loss: the headline, every metric row and every target say so together, with no interval and no "met".
+  const decided = s.overall.decision === 'win' || s.overall.decision === 'loss'
+  const overall = decided && !enough ? 'Inconclusive: a win or a loss needs at least 2 distinct batches' : s.overall.decision === 'win' ? `${s.systems.candidate} wins` : s.overall.decision === 'loss' ? `${s.systems.candidate} loses` : s.overall.decision === 'no_winner_floor_failed' ? 'No winner: a critical accuracy floor failed' : 'Inconclusive'
   const range = (i: [number, number] | null) => i ? `${i[0].toFixed(3)} to ${i[1].toFixed(3)}` : 'no interval'
   return {
     overall: s.origin === 'synthetic' ? `Example only: ${overall}` : overall, why: s.overall.why,
     plan: `Plan ${s.plan.id} (hash ${s.plan.hash.slice(0, 12)}), registered ${s.plan.registered_at} before any result was viewed. Look ${s.look}.`,
-    metrics: s.metrics.map(m => ({ metric: m.metric.replace(/_/g, ' '), decision: DECISION_WORD[m.decision] ?? m.decision, detail: `Difference ${m.difference === null ? 'n/a' : m.difference.toFixed(3)}, interval ${range(m.interval)}, ${m.pairs} pairs in ${m.clusters} clusters. ${m.why}` })),
+    metrics: s.metrics.map(m => ({ metric: m.metric.replace(/_/g, ' '), decision: enough ? DECISION_WORD[m.decision] ?? m.decision : 'Inconclusive', detail: !enough ? `Not shown: one batch cannot show a difference or an interval (${m.pairs} pairs in ${m.clusters} clusters).` : `Difference ${m.difference === null ? 'n/a' : m.difference.toFixed(3)}, interval ${range(m.interval)}, ${m.pairs} pairs in ${m.clusters} clusters. ${m.why}` })),
     floors: s.floors.map(f => ({ id: f.id.replace(/_/g, ' '), state: f.ok === null ? 'not evaluable' : f.ok ? 'holds' : 'FAILED', detail: f.detail })),
     targets: [
-      `Precision floor ${pct(s.targets.precision_floor.target)}: ${s.targets.precision_floor.met === null ? 'not shown' : s.targets.precision_floor.met ? 'met' : 'not met'}.`,
-      `Yield advantage x${s.targets.yield_advantage.target}: ${s.targets.yield_advantage.met === null ? 'not shown' : s.targets.yield_advantage.met ? 'met' : 'not met'}.`,
+      `Precision floor ${pct(s.targets.precision_floor.target)}: ${!enough || s.targets.precision_floor.met === null ? 'not shown (one batch)' : s.targets.precision_floor.met ? 'met' : 'not met'}.`,
+      `Yield advantage x${s.targets.yield_advantage.target}: ${!enough || s.targets.yield_advantage.met === null ? 'not shown (one batch)' : s.targets.yield_advantage.met ? 'met' : 'not met'}.`,
     ],
   }
 }

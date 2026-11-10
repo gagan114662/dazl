@@ -69,7 +69,7 @@ test('one batch cannot show a win: without a repeated-run analysis the page says
 test('a win is stated only for decision win; a failed critical floor reads no winner; inconclusive stays inconclusive', () => {
   const b = liveBatch({ batch_id: 'b1' })
   assert.match(scorecardView(pub(b, sup({ batches: ['b1', 'b2'] })), EX).superiority!.overall, /dazl wins/)
-  assert.match(scorecardView(pub(b, sup()), EX).superiority!.overall, /^Inconclusive: a win needs at least 2 distinct batches/)
+  assert.match(scorecardView(pub(b, sup()), EX).superiority!.overall, /^Inconclusive: a win or a loss needs at least 2 distinct batches/)
   const floor = scorecardView(pub(b, sup({ overall: { decision: 'no_winner_floor_failed', why: 'precision floor failed' }, floors: [{ id: 'precision_floor', ok: false, detail: 'p@10 0.6' }] })), EX).superiority!
   assert.match(floor.overall, /^No winner/); assert.doesNotMatch(floor.overall, /wins/); assert.equal(floor.floors[0].state, 'FAILED')
   const inc = scorecardView(pub(b, sup({ overall: { decision: 'inconclusive', why: 'interval reaches inside' } })), EX).superiority!
@@ -86,8 +86,35 @@ test('publishing refuses a synthetic batch, a non-independent evaluator, a synth
   assert.throws(() => toPublished(full('live', false), null, 'd'), /not independent/)
   assert.throws(() => toPublished(full('live'), sup({ origin: 'synthetic' }), 'd'), /synthetic/)
   assert.throws(() => toPublished(full('live'), sup({ batches: ['other'] }), 'd'), /does not include batch b1/)
-  assert.throws(() => toPublished(full('live'), sup(), 'd'), /a win needs at least 2 distinct batches/)
+  assert.throws(() => toPublished(full('live'), sup(), 'd'), /a win or a loss needs at least 2 distinct batches/)
   assert.throws(() => toPublished(full('live'), sup({ batches: ['b1', 'b1'] }), 'd'), /at least 2 distinct batches/)
   const ok = toPublished(full('recorded'), sup({ batches: ['b1', 'b2'] }), 'd')
   assert.equal(ok.batch!.manifest.origin, 'recorded'); assert.equal(ok.generated_at, 'd')
+})
+
+// ---- Hermes-PC re-check of #1026 (head ad87036d) ----
+
+test('2a: a one-batch LOSS is refused at publish and never shown as "loses"', () => {
+  const full = { manifest: { batch_id: 'b1', task_set_version: '1', as_of: '2026-11-10', origin: 'live', label: 'l', budget: { usd_per_task: 1, seconds_per_task: 1, batch_usd: 1 }, evaluator: { name: 'e', version: '1', independent: true }, systems: [] }, report: [], spent_usd: 0 } as never
+  const loss = { overall: { decision: 'loss', why: 'worse' } } as never
+  assert.throws(() => toPublished(full, sup({ batches: ['b1'], ...(loss as object) }), 'd'), /a win or a loss needs at least 2 distinct batches/)
+  assert.throws(() => toPublished(full, sup({ batches: ['b1', 'b1'], ...(loss as object) }), 'd'), /at least 2 distinct batches/)
+  assert.doesNotThrow(() => toPublished(full, sup({ batches: ['b1', 'b2'], ...(loss as object) }), 'd'))
+  // a hand-edited or older latest.json skips toPublished, so the view must hold the same rule
+  const one = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1'], ...(loss as object) })), EX).superiority!
+  assert.match(one.overall, /^Inconclusive/); assert.doesNotMatch(one.overall, /loses/)
+  assert.match(scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1', 'b2'], ...(loss as object) })), EX).superiority!.overall, /dazl loses/)
+})
+
+test('2b: with one batch no metric says Win or Loss, none shows an interval, and no target says met', () => {
+  for (const decision of ['win', 'loss']) {
+    const v = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1'], overall: { decision, why: 'x' } } as never)), EX).superiority!
+    assert.match(v.overall, /^Inconclusive/)
+    assert.ok(v.metrics.length > 0); for (const m of v.metrics) { assert.equal(m.decision, 'Inconclusive'); assert.doesNotMatch(m.detail, /interval \d|Difference/) }
+    for (const t of v.targets) { assert.match(t, /not shown \(one batch\)/); assert.doesNotMatch(t, /\bmet\b|not met/) }
+    const text = JSON.stringify(v); assert.doesNotMatch(text, /"Win"|"Loss"|wins|loses/)
+  }
+  // with two batches the detail is back
+  const two = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1', 'b2'] })), EX).superiority!
+  assert.ok(two.metrics.some(m => m.decision === 'Win')); assert.ok(two.metrics.some(m => /interval \d/.test(m.detail))); assert.ok(two.targets.some(t => /: met\./.test(t)))
 })
