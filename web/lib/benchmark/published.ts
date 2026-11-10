@@ -59,7 +59,8 @@ export function batchView(b: PublishedBatch): BatchView {
 
 const DECISION_WORD: Record<string, string> = { win: 'Win', loss: 'Loss', inconclusive: 'Inconclusive' }
 export function superiorityView(s: Superiority): SuperiorityView {
-  const overall = s.overall.decision === 'win' ? `${s.systems.candidate} wins` : s.overall.decision === 'loss' ? `${s.systems.candidate} loses` : s.overall.decision === 'no_winner_floor_failed' ? 'No winner: a critical accuracy floor failed' : 'Inconclusive'
+  const enough = new Set(s.batches).size >= 2   // one batch can never show a win
+  const overall = s.overall.decision === 'win' && !enough ? 'Inconclusive: a win needs at least 2 distinct batches' : s.overall.decision === 'win' ? `${s.systems.candidate} wins` : s.overall.decision === 'loss' ? `${s.systems.candidate} loses` : s.overall.decision === 'no_winner_floor_failed' ? 'No winner: a critical accuracy floor failed' : 'Inconclusive'
   const range = (i: [number, number] | null) => i ? `${i[0].toFixed(3)} to ${i[1].toFixed(3)}` : 'no interval'
   return {
     overall: s.origin === 'synthetic' ? `Example only: ${overall}` : overall, why: s.overall.why,

@@ -68,7 +68,8 @@ test('one batch cannot show a win: without a repeated-run analysis the page says
 
 test('a win is stated only for decision win; a failed critical floor reads no winner; inconclusive stays inconclusive', () => {
   const b = liveBatch({ batch_id: 'b1' })
-  assert.match(scorecardView(pub(b, sup()), EX).superiority!.overall, /dazl wins/)
+  assert.match(scorecardView(pub(b, sup({ batches: ['b1', 'b2'] })), EX).superiority!.overall, /dazl wins/)
+  assert.match(scorecardView(pub(b, sup()), EX).superiority!.overall, /^Inconclusive: a win needs at least 2 distinct batches/)
   const floor = scorecardView(pub(b, sup({ overall: { decision: 'no_winner_floor_failed', why: 'precision floor failed' }, floors: [{ id: 'precision_floor', ok: false, detail: 'p@10 0.6' }] })), EX).superiority!
   assert.match(floor.overall, /^No winner/); assert.doesNotMatch(floor.overall, /wins/); assert.equal(floor.floors[0].state, 'FAILED')
   const inc = scorecardView(pub(b, sup({ overall: { decision: 'inconclusive', why: 'interval reaches inside' } })), EX).superiority!
@@ -85,6 +86,8 @@ test('publishing refuses a synthetic batch, a non-independent evaluator, a synth
   assert.throws(() => toPublished(full('live', false), null, 'd'), /not independent/)
   assert.throws(() => toPublished(full('live'), sup({ origin: 'synthetic' }), 'd'), /synthetic/)
   assert.throws(() => toPublished(full('live'), sup({ batches: ['other'] }), 'd'), /does not include batch b1/)
-  const ok = toPublished(full('recorded'), sup(), 'd')
+  assert.throws(() => toPublished(full('live'), sup(), 'd'), /a win needs at least 2 distinct batches/)
+  assert.throws(() => toPublished(full('live'), sup({ batches: ['b1', 'b1'] }), 'd'), /at least 2 distinct batches/)
+  const ok = toPublished(full('recorded'), sup({ batches: ['b1', 'b2'] }), 'd')
   assert.equal(ok.batch!.manifest.origin, 'recorded'); assert.equal(ok.generated_at, 'd')
 })
