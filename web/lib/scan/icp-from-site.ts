@@ -2,12 +2,13 @@ import { reuseSellerDecisions, type DecisionPack } from './intelligence.ts'
 import type Database from 'better-sqlite3'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
-import { providers, type Provider } from '../llm/provider.ts'
+import { providers, ProviderError, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
 import { normalizeIcp, type Icp, type IcpResearch } from './icp.ts'
-import { buildResearch, fromStored, jsonOnly, offerId, researchLinks, toStored, type FetchedPage } from './seller-research.ts'
+import { buildResearch, fromStored, jsonOnly, researchLinks, toStored, type FetchedPage } from './seller-research.ts'
 import { pickVendor } from './runner.ts'
 import { guardProvider, researchCostUsd, SpendGuard } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { captureError } from '../ops/errors.ts'
 import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
@@ -20,7 +21,7 @@ import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
 // and bounded (lib/scan/trial-site-read.ts), its cost reserved and settled in the trial
 // scans' own wallet. Any refusal or failure still answers with the free read (#409).
 
-export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending'
+export type IcpFromSiteError = PublicFetchError | 'js_only' | 'no_api_key' | 'key_unreadable' | 'key_rejected' | 'draft_unreadable' | 'provider_failed' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending'
 
 const ENTITIES: [RegExp, string][] = [[/&amp;/g, '&'], [/&lt;/g, '<'], [/&gt;/g, '>'], [/&quot;/g, '"'], [/&#0?39;|&apos;/g, "'"], [/&nbsp;/g, ' ']]
 const unescape = (s: string) => ENTITIES.reduce((t, [re, v]) => t.replace(re, v), s)
@@ -92,16 +93,86 @@ From what this company sells, reply with ONLY one JSON object:
   "who": string[] (roles or kinds of buyer, up to 4), "industries": string[] (buyer industries, up to 4, [] if the site does not say),
   "sizes": string[] (buyer company sizes, up to 3, [] if unclear), "where": string[] (geographies, up to 3, [] if worldwide or unclear),
   "signals": string[] (public events that would show such a buyer needs them now, up to 5), "exclude": string[] (buyers to skip, up to 3, [] if none)},
- "offers": [{"id": "o1", "name": string}] (one per distinct product or service),
+ "offers": [{"id": "o1", "name": string, "url"?: one of the PAGE urls above, "quote"?: an EXACT sentence copied from that page, "inferred"?: true|false}] (one per distinct product or service; include url and quote only when that page states the offer in its own words - never a menu label, a comparison, a refusal, or a customer's words),
  "items": [{"offer": "o1", "kind": "persona|industry|size|location|disqualifier|pain", "text": string, "url": one of the PAGE urls above, "quote": an EXACT phrase copied from that page, "inferred": true|false}]}
 Rules: use every page, not just the first. Only what the pages support, no invented facts, no hype words. "quote" must be copied exactly from the page it cites; if the pages do not state a buyer, headcount or place, either set inferred=true (a hypothesis) or leave it out. Never invent a size or a location.`
+
+// ---- the model's answer to the profile read (own key) ----
+// The call is capped at PROFILE_MAX_OUTPUT_TOKENS. The JSON puts the editable draft FIRST and the optional source research after it, so an
+// answer cut off at the cap usually still holds a complete draft. What the answer was is told apart, never folded into "AI key rejected":
+//   ok + truncated  the output hit the cap; the complete leading draft was recovered (no research block)
+//   truncated       the output hit the cap before a complete, accepted draft
+//   not_json        the call completed but the text is not a JSON object
+//   no_profile      a JSON object came back, but no draft the profile rules accept (no summary, a malformed lookalike block ...)
+// A key problem is only ever a provider authentication refusal (the call itself throws); a completed answer is never one.
+export const PROFILE_MAX_OUTPUT_TOKENS = 1200
+export type DraftReason = 'truncated' | 'not_json' | 'no_profile'
+const CUT = new Set(['max_tokens', 'max_output_tokens', 'length'])
+// The complete JSON value of the TOP-LEVEL field `key` of a possibly cut-off object text (an optional ```json fence before the object is allowed).
+// Only keys of the root object count: the scan walks the root's members, skipping each non-matching value whole (string-aware, depth-aware), so a
+// same-named key nested inside another field (an "offers" entry with its own "draft") is never taken for the profile's. null if the key is not at the
+// top level, its value is not of the expected kind, or the text ends before the value is complete.
+function leadingValue(text: string, key: string, open: '{' | '"'): string | null {
+  const root = text.indexOf('{'); if (root < 0 || !/^\s*(?:```(?:json)?\s*)?$/.test(text.slice(0, root))) return null
+  const n = text.length
+  const ws = (i: number) => { while (i < n && /\s/.test(text[i])) i++; return i }
+  // end index (exclusive) of the string starting at i (text[i] is the opening quote), or -1 if it is cut off
+  const strEnd = (i: number) => { for (let j = i + 1; j < n; j++) { if (text[j] === '\\') j++; else if (text[j] === '"') return j + 1 } return -1 }
+  // end index (exclusive) of the value starting at i, or -1 if it is cut off
+  const valEnd = (i: number): number => {
+    if (text[i] === '"') return strEnd(i)
+    if (text[i] === '{' || text[i] === '[') {
+      let depth = 0
+      for (let j = i; j < n; j++) {
+        const c = text[j]
+        if (c === '"') { const e = strEnd(j); if (e < 0) return -1; j = e - 1 } else if (c === '{' || c === '[') depth++
+        else if (c === '}' || c === ']') { depth--; if (depth === 0) return j + 1 }
+      }
+      return -1
+    }
+    let j = i; while (j < n && !/[,}\s]/.test(text[j])) j++
+    return j < n ? j : -1   // a bare literal at the very end may be cut off
+  }
+  let i = ws(root + 1)
+  while (i < n && text[i] === '"') {
+    const ke = strEnd(i); if (ke < 0) return null
+    let name: unknown; try { name = JSON.parse(text.slice(i, ke)) } catch { return null }
+    i = ws(ke); if (text[i] !== ':') return null
+    i = ws(i + 1); if (i >= n) return null
+    const ve = valEnd(i); if (ve < 0) return null
+    if (name === key) return text[i] === open ? text.slice(i, ve) : null
+    i = ws(ve); if (text[i] !== ',') return null
+    i = ws(i + 1)
+  }
+  return null
+}
+export type ProfileAnswer = { ok: true; parsed: Record<string, unknown>; icp: Icp; truncated: boolean } | { ok: false; reason: DraftReason }
+// `recover`: false when saved decisions or a prior research block exist - a draft without a research block could not carry them forward, so it is not offered (a cut-off answer then stays an honest error).
+export function readProfileAnswer(text: string, stop: string | undefined, outputTokens: number | undefined, recover = true, maxOutput = PROFILE_MAX_OUTPUT_TOKENS): ProfileAnswer {
+  const cut = (stop !== undefined && CUT.has(stop)) || (stop === undefined && typeof outputTokens === 'number' && outputTokens >= maxOutput)
+  const whole = jsonOnly(text) as Record<string, unknown> | null
+  if (whole !== null && (typeof whole !== 'object' || Array.isArray(whole))) return { ok: false, reason: 'no_profile' }   // valid JSON, but not a profile object
+  if (whole) {
+    const icp = normalizeIcp(whole.draft ?? whole)
+    return icp ? { ok: true, parsed: whole, icp, truncated: false } : { ok: false, reason: 'no_profile' }
+  }
+  if (!cut) return { ok: false, reason: 'not_json' }
+  if (!recover) return { ok: false, reason: 'truncated' }
+  // cut off: recover the complete leading draft (and the one-line "sells" before it), never a partial one
+  const body = leadingValue(text, 'draft', '{'); let draft: unknown = null
+  if (body) { try { draft = JSON.parse(body) } catch { draft = null } }
+  const icp = draft ? normalizeIcp(draft) : null
+  if (!icp) return { ok: false, reason: 'truncated' }
+  let sells: unknown; const sv = leadingValue(text, 'sells', '"'); if (sv) { try { sells = JSON.parse(sv) } catch { sells = undefined } }
+  return { ok: true, parsed: { draft, ...(typeof sells === 'string' ? { sells } : {}) }, icp, truncated: true }
+}
 
 export interface IcpFromSiteDeps { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; providers?: Record<string, Provider>; prior?: IcpResearch | null; researchTimeMs?: number; decisions?: DecisionPack
   // Set by the route when the caller has no key of its own and its account is the trial principal: admits one
   // trial-funded read. Called at most once, only after a readable page exists; undefined = free read only.
   trial?: () => Promise<SiteReadAdmission> }
 
-export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string; funded?: 'own' | 'trial' } | FreeSiteRead | { error: IcpFromSiteError }> {
+export async function icpFromWebsite(db: Database.Database, tenantId: string, rawUrl: string, deps: IcpFromSiteDeps = {}): Promise<{ icp: Icp; source: string; sells: string; funded?: 'own' | 'trial'; truncated?: true } | FreeSiteRead | { error: IcpFromSiteError; reason?: DraftReason }> {
   // Fetch first (#409): reading the public page is free and needs no AI key. Only the model step below does. It
   // runs on the tenant's own key, or - admitted per read, after a readable page exists - on the trial key.
   const started = Date.now()
@@ -143,15 +214,23 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     try {
       // One guarded call, its usage kept: settles the reservation to what the vendor reported (never a second call).
       const det = await guarded.completeDetailed!(adm.key.key, fitPromptBytes(site, homePage, TRIAL_SITE_READ_PROMPT_MAX_BYTES), deps.fetchImpl, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
-      const parsed = jsonOnly(det.text) as Record<string, unknown> | null
-      const draft = parsed && typeof parsed === 'object' ? (parsed.draft ?? parsed) : null
-      const icp = normalizeIcp(draft)
+      // The same truth rules as the own-key read (#1002): an answer cut off at the trial cap can still hold a
+      // complete leading draft (recovered, flagged truncated); a malformed or profile-less answer is a failed
+      // read, never a silent free read and never "AI key rejected". The same refusal to recover applies too:
+      // with a prior research block or saved decisions on file, a cut-off draft could not carry them forward,
+      // so the read fails honestly instead of displacing saved research with an incomplete replacement.
+      const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, !deps.prior && !(deps.decisions && deps.decisions.decisions.length), TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
       const costUsd = researchCostUsd(det.usage, det.model ?? trialProvider.configuredModel?.())
       await adm.settle(costUsd).catch((e) => captureError(e, { source: 'route', where: '/api/scan/icp-from-url', tenantId }))
-      // A funded call that answered nothing usable cost what it cost (settled above); the free read still answers.
-      if (!icp) return free
+      if (!answer.ok) {
+        // The funded call completed and its usage settled: the read RAN and failed - the page is told (the reason
+        // renders from 'read_failed'), and the operator gets the reason, never the answer text.
+        captureError(new Error(`trial site read answer unusable: ${answer.reason} (stop ${det.stop ?? 'unreported'}, ${det.usage?.output_tokens ?? 'unreported'} output tokens, ${det.text.length} chars)`), { source: 'process', where: 'scan:icp-from-site:trial-answer', tenantId })
+        return { ...free, trial: 'read_failed' }
+      }
+      const { parsed, icp, truncated } = answer
       const sells = typeof parsed?.sells === 'string' ? parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150) : ''
-      return { icp, source: page.finalUrl, sells, funded: 'trial' }
+      return { icp, source: page.finalUrl, sells, funded: 'trial', ...(truncated ? { truncated: true } : {}) }
     } catch (e) {
       if (spendRefused(e)) {
         // Refused before any call (the read's own ceiling, or an unpriced operator model): nothing was spent, so the
@@ -168,7 +247,7 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   const raw = (deps.providers ?? providers)[vendor]
   // The owner's spend pool (lib/llm/owner-guard.ts) on the profile read too.
   const provider = raw && ownerGuarded(db, tenantId, raw)
-  if (!provider?.complete) return { error: 'key_rejected' }
+  if (!provider?.complete && !provider?.completeDetailed) return { error: 'key_rejected' }
 
   // Bounded multi-page read (#379): same-site pricing/customers/industries/product pages, every fetch through the
   // SSRF-guarded fetchPublicHtml (DNS pinning, private-range and redirect refusal, per-page size cap), inside one
@@ -185,18 +264,25 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
   }
 
   try {
-    const out = await provider.complete(read.key, fitPromptBytes(site, pages), deps.fetchImpl, 1200)
-    const parsed = jsonOnly(out) as Record<string, unknown> | null
-    const draft = parsed && typeof parsed === 'object' ? (parsed.draft ?? parsed) : null
-    const icp = normalizeIcp(draft)
-    if (!icp) return { error: 'key_rejected' }
+    // One call, no retry (a retried paid call could be billed twice). completeDetailed keeps why the model stopped; it is the same call and spend path as complete().
+    const prompt = fitPromptBytes(site, pages)
+    const det: { text: string; usage?: { output_tokens?: number }; stop?: string } = provider.completeDetailed
+      ? await provider.completeDetailed(read.key, prompt, deps.fetchImpl, PROFILE_MAX_OUTPUT_TOKENS)
+      : { text: await provider.complete!(read.key, prompt, deps.fetchImpl, PROFILE_MAX_OUTPUT_TOKENS) }
+    const answer = readProfileAnswer(det.text, det.stop, det.usage?.output_tokens, !deps.prior && !(deps.decisions && deps.decisions.decisions.length))
+    if (!answer.ok) {
+      // The call completed (and was billed): say what the answer was, and record the reason for the operator (never the answer text).
+      captureError(new Error(`profile answer unusable: ${answer.reason} (stop ${det.stop ?? 'unreported'}, ${det.usage?.output_tokens ?? 'unreported'} output tokens, ${det.text.length} chars)`), { source: 'process', where: 'scan:icp-from-site:answer', tenantId })
+      return { error: 'draft_unreadable', reason: answer.reason }
+    }
+    const { parsed, icp, truncated } = answer
     // Optional: what the seller offers, for the editable onboarding profile. Never required, never saved here.
     const sells = typeof parsed?.sells === 'string' ? parsed.sells.replace(/\s+/g, ' ').trim().slice(0, 150) : ''
     // The source-backed research block: a model failure here costs the draft nothing - it just has no provenance block.
     const prior = deps.prior ? fromStored(deps.prior) : null
-    const research = parsed ? buildResearch({ offers: parsed.offers, items: parsed.items }, pages, site, prior) : { error: 'model_failed' as const }
+    const research = !truncated ? buildResearch({ offers: parsed.offers, items: parsed.items }, pages, site, prior) : { error: 'model_failed' as const }
     const withResearch = 'error' in research ? icp : { ...icp, research: toStored(research) }
-    return { icp: deps.decisions ? reuseSellerDecisions(withResearch, deps.decisions, sells) : withResearch, source: page.finalUrl, sells, funded: 'own' }
+    return { icp: deps.decisions ? reuseSellerDecisions(withResearch, deps.decisions, sells) : withResearch, source: page.finalUrl, sells, funded: 'own', ...(truncated ? { truncated: true } : {}) }
   } catch (e) {
     // A call MAY have been made and billed, but its cost could not be recorded: the pool refuses every later call
     // until an operator settles the marker. Never surface this as a key problem - re-entering the key cannot help.
@@ -204,11 +290,12 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
     if (spendRefused(e)) {
       // Refused BEFORE any call: the configured model has no listed price (nothing chargeable, not a limit).
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
-      if (e.reason === 'over_limit') return { error: 'spend_limit' } // the owner's spend limit: no call was made
+      if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' } // the owner's spend limit: no call was made
       return { error: 'spend_unavailable' } // busy / unsettled / unsaved reservation / count failure: nothing charged
     }
-    // The owner's own key made the call and the provider failed: recorded, then surfaced as key_rejected as before.
+    // The owner's own key made the call. Only a provider authentication refusal is a key problem; any other failure (timeout, 5xx, rate limit,
+    // unreadable reply) is the provider not answering, and is said so. Recorded either way.
     captureError(e, { source: 'process', where: 'scan:icp-from-site:own', tenantId })
-    return { error: 'key_rejected' }
+    return { error: e instanceof ProviderError && e.kind === 'auth' ? 'key_rejected' : 'provider_failed' }
   }
 }

@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
 import { captureError } from '../ops/errors.ts'
 import { buildMime, EMAIL_RE, toBase64Url } from '../gmail/mime.ts'
-import { GmailError, GmailSendError, confirmedSendResult, getAccessToken, gmailSend, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { GmailError, GmailSendError, confirmedSendResult, getAccessTokenBound, gmailSend, gmailStatus, isConnectionReplaced, type OAuthDeps } from '../gmail/oauth.ts'
 import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
@@ -557,10 +557,11 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
 
   let token: string
+  let tokenGen: string
   try {
-    token = await getAccessToken(db, tenantId, d)
+    { const b = await getAccessTokenBound(db, tenantId, d); token = b.token; tokenGen = b.refreshCt }
   } catch (e) {
-    return release(e instanceof GmailError && e.kind === 'reconnect' ? 'gmail_reconnect_needed' : 'gmail_unavailable')
+    return release(e instanceof GmailError && e.kind === 'reconnect' ? 'gmail_reconnect_needed' : isConnectionReplaced(e, db, tenantId) ? 'connection_replaced' : 'gmail_unavailable')
   }
 
   // Token refresh is asynchronous. Recheck authorization and suppression after it,
@@ -587,7 +588,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))
   if (isSuppressed(db,tenantId,m.to_email)) release('suppressed')
-  { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d) }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
+  { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d), expectRefreshCt: tokenGen }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
   if (tableExists(db,'sequences')) {

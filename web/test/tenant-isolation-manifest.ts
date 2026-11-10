@@ -166,6 +166,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'sources/capabilities', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/calcom', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
 

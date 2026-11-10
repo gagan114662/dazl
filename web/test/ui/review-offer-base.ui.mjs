@@ -41,8 +41,8 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-reviewbase-')); const DB = pat
 migrateAllSqlite(db)
 const session = user => { const t = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(t).digest('hex'), user, Math.floor(Date.now() / 1000) + 3600); return t }
 // m1: onboarding saved no offer; the offer lives in Settings > Memory (positioning). p1: the profile offer (control).
-db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name) VALUES ('m1', 'memory@seller.test', 'x', 'y', 'Synthetic Memory Co')").run()
-db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells) VALUES ('p1', 'profile@seller.test', 'x', 'y', 'Synthetic Profile Co', ?)").run(SAVED)
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, email_verified_at) VALUES ('m1', 'memory@seller.test', 'x', 'y', 'Synthetic Memory Co', 1)").run()
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, email_verified_at) VALUES ('p1', 'profile@seller.test', 'x', 'y', 'Synthetic Profile Co', ?, 1)").run(SAVED)
 db.prepare("INSERT INTO tenant_memory (tenant_id, positioning) VALUES ('m1', ?)").run(SAVED)
 // a key row so the page offers its normal paths; nothing decrypts it (the profile answer is stubbed, no scan runs)
 for (const u of ['m1', 'p1']) db.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'synthetic', 'AAAA', 0)").run(u)

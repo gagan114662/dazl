@@ -60,7 +60,11 @@ test('the staging seed: refuses outside staging; creates the demo account once; 
     assert.equal(r.created, true)
     const counts = () => db.prepare("SELECT (SELECT count(*) FROM users) u, (SELECT count(*) FROM scan_jobs WHERE status = 'done') j, (SELECT count(*) FROM leads) l, (SELECT count(*) FROM gmail_accounts) g").get()
     assert.deepEqual(counts(), { u: 1, j: 2, l: 5, g: 1 })
+    const confirmed = () => (db.prepare('SELECT email_verified_at AS v FROM users').get() as { v: number | null }).v
+    assert.notEqual(confirmed(), null, '#357: the demo account can sign in (its email counts as confirmed)')
+    db.prepare('UPDATE users SET email_verified_at = NULL').run() // a demo account seeded before #357
     assert.equal((await seedStaging(db, 'long-enough-password')).created, false)
+    assert.notEqual(confirmed(), null, 'a re-run confirms an older demo account')
     assert.deepEqual(counts(), { u: 1, j: 2, l: 5, g: 1 }, 'idempotent')
     const u = db.prepare('SELECT email, buyer_profile FROM users').get() as { email: string; buyer_profile: string }
     assert.equal(u.email, DEMO_EMAIL)

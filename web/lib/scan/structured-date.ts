@@ -25,10 +25,7 @@ const TYPE_RES: [EventType, RegExp][] = [
   ['launch', /\b(?:launch(?:es|ed|ing)?|unveil(?:s|ed|ing)?|release[sd]?)\b/i],
 ]
 export const eventTypesOf = (text: string): Set<EventType> => new Set(TYPE_RES.filter(([, re]) => re.test(text)).map(([t]) => t))
-const words = (text: string): Set<string> => new Set(norm(text).replace(/[.@+]+/g, ' ').split(' ').filter(w => w.length >= 4))   // case, accents, punctuation and stray whitespace never change a place name
-const GENERIC_WORDS = new Set(['office', 'offices', 'location', 'locations', 'opening', 'opened', 'opens', 'second', 'third', 'with', 'from', 'that', 'this', 'team', 'company', 'hiring', 'role', 'roles', 'position', 'join', 'joins', 'new', 'event'])
 const stringValuesOf = (v: unknown, out: string[] = [], depth = 0): string[] => { if (depth > 3 || v == null) return out; if (typeof v === 'string') out.push(v); else if (Array.isArray(v)) for (const x of v.slice(0, 10)) stringValuesOf(x, out, depth + 1); else if (typeof v === 'object') for (const x of Object.values(v as object).slice(0, 20)) stringValuesOf(x, out, depth + 1); return out }
-const overlap = (a: Set<string>, b: Set<string>, ignore: Set<string> = GENERIC_WORDS) => [...a].some(w => b.has(w) && !ignore.has(w))
 
 export function kindsFor(claim: string): DateKind[] {
   const k: DateKind[] = []

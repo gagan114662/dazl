@@ -33,6 +33,7 @@ Updated by the builder on every branch. Newest first.
 - #189 b/design-email-finder: DESIGN note, needs owner answers (verification server, US rule details).
 - #190 b/email-pattern: email format inference, unverified candidates in own tables, off by default.
 - #191 b/dm-icp-rank (on #190): buyer roles first per site; buyer titles derived from the scan ICP (no fixed list).
+- #192 review fixes (greptile P1/P2): the LinkedIn stop cooldown is now checked before EVERY reservation in both the people reader and `collectAdvanced` (shared `coolingDown` in lib/advanced/request-budget.ts), so a run in flight when another run is throttled sends no further request and spends none of the shared hourly budget; `checkTransportContract` now also aborts a call mid-flight and fails a transport that keeps running or starts a request after the abort. Fixtures only.
 - #192 b/linkedin-people: LinkedIn engagers + people search via the tenant session (owner decision), not live-tested.
 - #193 b/people-search (on #191): right people from public profile search results; Right people UI shows them.
 - #194 b/extraction-yield: markdown-free evidence, one verbatim passage per company.
@@ -40,10 +41,13 @@ Updated by the builder on every branch. Newest first.
 - integration/all-open: all of the above merged, for one scoreboard run (not for merging).
 
 ## In review (code fixes only)
+- #943 b/914-timing-proof-revalidate review fixes: resolution, completion and the scoreboard now read the same `currentSiteContact` rule as actionability (a populated but unconfirmed domain, or a contact from another site, no longer counts as identity/contact/qualified), and contact selection is order-independent. Competitive: benchmark and completion numbers can no longer be inflated by leads the live gate rejects. Fixtures only; no live scan.
 - b/402-claims-capability (#402): product truth record built from code/flags (lib/product-truth.ts, versioned hash); a launch
   policy that binds it holds drafts promising unshipped channels/integrations, unpublished prices, unbenchmarked
   comparisons, no-fit prospects, or copy prepared under a changed record; polish refuses such rewrites; buyer answers
   from the record. Not done: per-tenant truth records for other products, UI to bind/accept it, public pricing/support page.
+  b/402-source-truth: sources whose adapter is not built (PLATFORM_SUPPORT: Facebook, XiaoHongShu) are unavailable, not
+  limited behind an operator worker; record version moves, so drafts/answers bound to the old one are held until re-accepted.
 
 - b/363-spend-reservations (#363, part): persistent workspace day/month credit pools for BYOK Apollo/PDL enrichment
   (scan waterfall and commenter import) - reserve before the call, settle to the proved charge, fail closed; still open:
@@ -198,7 +202,9 @@ Updated by the builder on every branch. Newest first.
   removal revokes the member's sessions acting in that workspace and their pending invitations) in review (b/358-offboarding);
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
-  (change email, explicit Google linking) in review; next: #371.
+  (change email, explicit Google linking) merged; finish (Pro checkout needs a verified email, acceptance tests
+  mapped in the design doc; email confirmation before app access, so signup no longer reveals existing accounts)
+  in review; next: #371.
 - Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
   credential, billing, Stripe plan, sending, CRM, pipeline, consent, export, deletion, team and device actions, Settings > Audit
   trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing

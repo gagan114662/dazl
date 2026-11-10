@@ -148,15 +148,18 @@ test('the POST claim route: CSRF, auth, atomic claim, idempotent resume, unverif
   const r0 = await issueFor('webb@example.test')
   const post = (body: string, type = 'application/json') => withJar(new Map([['dazl_session', session]]), () =>
     claimRoute.POST(new NextRequest('https://app.test/api/preview/claim', { method: 'POST', headers: { 'content-type': type, origin: 'https://app.test', host: 'app.test', 'x-forwarded-for': `10.9.1.${++ip}` }, body })))
+  // #357 (narrowed on #608): an account made before the confirmation requirement keeps its session, and the claim's own
+  // verified-email gate refuses it exactly as on main
+  const unverified = await post(JSON.stringify({ token: r0.token }))
+  assert.equal(unverified.status, 403)
+  assert.equal((await unverified.json()).code, 'unverified', 'password account must verify its email first')
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'an unconfirmed account never claims')
+  h.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'U1'").run()
   const csrf = await post(JSON.stringify({ token: r0.token }), 'text/plain')
   assert.equal(csrf.status, 403, 'non-JSON write refused')
   assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'a refused request never claims')
   const bad = await post(JSON.stringify({ token: 'junk' }))
   assert.equal(bad.status, 404)
-  const unverified = await post(JSON.stringify({ token: r0.token }))
-  assert.equal(unverified.status, 403)
-  assert.equal((await unverified.json()).code, 'unverified', 'password account must verify its email first')
-  h.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'U1'").run()
   const ok = await post(JSON.stringify({ token: r0.token }))
   assert.equal(ok.status, 200)
   assert.deepEqual(await ok.json(), { ok: true, id: r0.id })
@@ -176,6 +179,7 @@ test('the issue route: the selected proof of the workspace’s own run enters th
     .run(randomBytes(6).toString('hex'), jobId, 'Northside Physio', 'Opened a second clinic', 'https://news.test/a1', 'We opened our second clinic this month.', 80, 70, day, 'verified')
   h.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(NOW, jobId)
   await createPasswordUser({ id: 'seller1', email: 'seller@example.test', name: 'S', business_name: 'Seller Co', password_hash: 'h', salt: 's' })
+  h.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'seller1'").run() // #357: confirmed accounts only have sessions
   const sellerSession = await createSession('seller1')
   const post = (body: unknown, session = sellerSession) => withJar(new Map([['dazl_session', session]]), () =>
     issueRoute.POST(new NextRequest('https://app.test/api/preview/issue', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test', host: 'app.test', 'x-forwarded-for': `10.9.3.${++ip}` }, body: JSON.stringify(body) })))

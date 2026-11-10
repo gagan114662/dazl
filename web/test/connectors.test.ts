@@ -3,7 +3,6 @@ import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { migrateScan } from '../lib/scan/store.ts'
 import { addEnrichment, audit, connectorStatus, getEnabledCredential, migrateConnectors, recentAudit, saveCredential, setEnabled, setEnrichFallback } from '../lib/connectors/store.ts'
 
 const master = randomBytes(32)

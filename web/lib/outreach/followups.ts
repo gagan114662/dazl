@@ -6,7 +6,7 @@ import type { Db, Param } from '../db/client.ts'
 import { isMissingSchema } from '../scan/play-offer-text.ts'
 import { norm, replySafetyStale } from './store.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessToken, gmailSend, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, readGmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
@@ -71,7 +71,6 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (now - t.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) continue
     if (isSuppressed(db, tenantId, t.to_email)) { db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ?").run(tenantId, t.thread_id); skip('suppressed'); continue }
     if (!hasConsent(db, tenantId, t.to_email, 'email', 'followup', now)) { skip('no valid consent'); continue }
-    const sentToday = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action IN ('sent','followup_sent') AND created_at >= ?").get(tenantId, now - 86400) as { n: number }).n
     if (accountSendCount(db,tenantId,now) >= Math.min(ACCOUNT_SEND_CAP,cur.daily_cap)) return stop('daily_cap')
 
     // at most once: the claim row is unique per thread and step
@@ -97,7 +96,8 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     const master = d.master ?? getMasterKey()
     const unsubUrl = `${(d.baseUrl ?? process.env.PUBLIC_BASE_URL ?? 'https://dazl.ai').replace(/\/$/, '')}/api/unsubscribe?t=${unsubToken(orig.id, master)}`
     let token: string
-    try { token = await getAccessToken(db, tenantId, d as OAuthDeps) } catch { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
+    let tokenGen: string
+    try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); if (isConnectionReplaced(e, db, tenantId)) return stop('connection_replaced'); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
     try {
       const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody((await llmFollowupText(db, tenantId, t.followups_sent, { ...lead, lead_id: t.lead_id }, businessName, settings.booking_url, d)) ?? followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
       if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) {
@@ -131,7 +131,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       }
       // Shared authority recheck (send-authority.ts), after every await on this path (token, follow-up text) and immediately
       // before the handoff: tenant switches, suppression, ledger consent and the sending identity as they are NOW.
-      const why = recheckSendAuthority(db, tenantId, { to: t.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), autopilot: 'followups', consentScope: 'followup' })
+      const why = recheckSendAuthority(db, tenantId, { to: t.to_email, sender: acct.email, now: d.now ?? Math.floor(Date.now() / 1000), autopilot: 'followups', consentScope: 'followup', expectRefreshCt: tokenGen })
       if (why) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         if (why === 'suppressed') db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)

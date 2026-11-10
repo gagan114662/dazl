@@ -59,6 +59,10 @@ export function migrateAuth(d: Database.Database): void {
   d.exec(SESSION_INDEXES)
   // Email ownership and recovery (lib/email-ownership.ts); Google accounts are backfilled in migrateOauth.
   try { d.exec('ALTER TABLE users ADD COLUMN email_verified_at INTEGER') } catch { /* exists */ }
+  // #357 (narrowed per review on #608): 1 only for a password sign-up made while dazl could mail it a confirmation link
+  // (app/api/auth/signup/route.ts). Every row that existed before the column gets 0 and keeps its sessions and password
+  // sign-in as before; nothing is marked verified. PG: the numbered email_confirmation_required migration.
+  try { d.exec('ALTER TABLE users ADD COLUMN email_confirmation_required INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
   d.exec(EMAIL_TOKENS_DDL)
   d.exec(OUTBOX_DDL)
   // Durable audit trail (lib/audit.ts). PG: 0041_audit_events.sql.

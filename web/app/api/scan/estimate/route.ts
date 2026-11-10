@@ -21,6 +21,6 @@ export async function POST(req: NextRequest) {
   const db = await getDb()   // the Db layer, not the raw SQLite handle
   const vendors = (await connectorStatus(db, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector)
   const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey: await readHasKey(db, user.tenantId), model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
-  if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}) }, { status: r.status })
+  if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}), ...(r.message ? { message: r.message } : {}), ...(r.loss ? { loss: r.loss } : {}) }, { status: r.status })
   return NextResponse.json({ estimate: r.estimate })
 }

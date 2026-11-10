@@ -55,8 +55,8 @@ const DENTAL = 'd'.repeat(24), OLD = 'c'.repeat(24)
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-offerjourney-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
 const session = user => { const t = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(t).digest('hex'), user, Math.floor(Date.now() / 1000) + 3600); return t }
-db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website) VALUES ('u1', 'owner@seller.test', 'x', 'y', 'Synthetic Co', ?, 'https://seller.example')").run(DENTAL_SELLER)
-db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells) VALUES ('u2', 'other@other.test', 'x', 'y', 'Other Co', 'Other offer')").run()
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website, email_verified_at) VALUES ('u1', 'owner@seller.test', 'x', 'y', 'Synthetic Co', ?, 'https://seller.example', 1)").run(DENTAL_SELLER)
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, email_verified_at) VALUES ('u2', 'other@other.test', 'x', 'y', 'Other Co', 'Other offer', 1)").run()
 const tokenA = session('u1'), tokenB = session('u2')
 // a synthetic AI key, sealed with a master generated for this run only (test/helpers/ui-provider-stub.ts hands the same
 // master to the fenced server and answers every provider request in-process, recording it in PROVIDER_LOG)

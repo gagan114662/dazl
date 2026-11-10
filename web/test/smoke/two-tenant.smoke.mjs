@@ -40,7 +40,7 @@ const srv = await startServer({
     const raw = new Database(dbPath)
     try {
       migrateAllSqlite(raw)
-      raw.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, 'tenant-b@example.test', 'x', 'y')").run(tenants.B.id)
+      raw.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES (?, 'tenant-b@example.test', 'x', 'y', 1)").run(tenants.B.id)
       raw.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(tenants.B.token).digest('hex'), tenants.B.id, now + 3600)
       const db = sqliteDb(raw)
       for (const t of Object.values(tenants)) {

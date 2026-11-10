@@ -34,11 +34,11 @@ export default function AccountPanel() {
       <p className="text-sm text-[#555]">{s.email} · {s.verified ? 'confirmed' : 'not confirmed yet'}{s.google ? ' · signs in with Google' : ''}</p>
       <div className="flex flex-wrap gap-3 mt-3 text-sm">
         {!s.verified && <button className="btn-primary" onClick={() => void post('/api/auth/email/send-verification', {}, j => j.sent ? `We sent a link to ${s.email}. It works for 24 hours.` : 'Already confirmed.')}>Send confirmation link</button>}
-        {s.verified && !s.google && <a className="underline underline-offset-2" href="/api/auth/google?link=1">Add Google sign-in</a>}
+        {s.verified && !s.google && <a className="underline underline-offset-2 inline-flex items-center min-h-[44px]" href="/api/auth/google?link=1">Add Google sign-in</a>}
       </div>
       <div className="flex flex-wrap gap-2 mt-3 text-sm">
-        <input className="field flex-1 min-w-0" type="email" placeholder="New email address" value={next} onChange={e => setNext(e.target.value)} />
-        <button className="btn-primary" disabled={!next.trim()} onClick={() => void post('/api/auth/email', { email: next }, j => { setNext(''); return j.message ?? 'Check the new address for a link.' })}>Change email</button>
+        <input className="field max-sm:basis-full sm:flex-1 sm:min-w-[12rem]" type="email" placeholder="New email address" value={next} onChange={e => setNext(e.target.value)} />
+        <button className="btn-primary max-sm:w-full" disabled={!next.trim()} onClick={() => void post('/api/auth/email', { email: next }, j => { setNext(''); return j.message ?? 'Check the new address for a link.' })}>Change email</button>
       </div>
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
     </div>

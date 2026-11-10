@@ -3,7 +3,7 @@
 // company's own site. Anything else must not offer a draft it would reject.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { publishedEmail, publishedContact, classifyPurpose } from '../lib/outreach/published-email.ts'
+import { publishedEmail, publishedContact } from '../lib/outreach/published-email.ts'
 
 test('lead.contact wins when it is an email address', () => {
   assert.equal(publishedEmail({ contact: 'sales@acme.com' }), 'sales@acme.com')

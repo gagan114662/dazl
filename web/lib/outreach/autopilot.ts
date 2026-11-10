@@ -264,13 +264,15 @@ function accountCapDueAt(db: Database.Database, tenantId: string, now: number): 
 // transient subset of those proven-not-sent refusals; every other named refusal is a permanent policy verdict and the
 // draft is skipped instead of stranded. Non-OutreachError exceptions are not classified here at all: they propagate
 // to the scheduler as failures.
-const TRANSIENT_RELEASE_CODES: ReadonlySet<string> = new Set(['gmail_unavailable', 'gmail_rate_limited', 'daily_cap', 'already_sending']) // classified in holdSendFailure: caps/claim-conflicts wait without consuming retries; provider faults get bounded backoff
 function holdSendFailure(db: Database.Database, tenantId: string, msgId: string, leadId: string, code: string, now: number): 'held' | 'skipped' {
   // Claim conflict: another tick owns this send right now. The loser writes nothing (setHold's status filter excludes
   // a claimed row), consumes no attempt and never touches the winner's claim; it simply looks again later.
   if (code === 'already_sending') { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S); return 'held' }
   // Legitimate cap still in force: wait for the window to roll. Never counts toward retry exhaustion.
   if (code === 'daily_cap') { setHold(db, tenantId, msgId, leadId, 'daily_cap', accountCapDueAt(db, tenantId, now)); return 'held' }
+  // #739: a same-address reconnect replaced the connection between token mint and handoff. Proven not sent and the new
+  // connection is active: retry soon with a freshly bound token, never consuming provider-fault retry budget.
+  if (code === 'connection_replaced') { setHold(db, tenantId, msgId, leadId, 'send_failed', now + TRANSIENT_RETRY_S); return 'held' }
   // #413: safety ingest behind - hold without consuming retries; the draft re-runs once reply_sync succeeds again.
   if (code === 'reply_sync_stale') { setHold(db, tenantId, msgId, leadId, 'reply_sync_stale', now + TRANSIENT_RETRY_S); return 'held' }
   if (code === 'gmail_unavailable' || code === 'gmail_rate_limited') {
@@ -662,6 +664,9 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
         // pre-merge holdSendFailure kept it. The send path re-checks freshness at every later commitment, so a draft
         // the user sends by hand while stale is refused there too (fail closed).
         if (code === 'reply_sync_stale') { setHold(db, tenantId, id, leadId, 'reply_sync_stale', now + TRANSIENT_RETRY_S); out.held++; return }
+        // #739: a same-address reconnect replaced the connection between token mint and handoff: proven not sent, the new
+        // connection is active. Retry soon with a freshly bound token; the attempts budget is for provider faults only.
+        if (code === 'connection_replaced') { hold(id, leadId, code, now + TRANSIENT_RETRY_S, attempts, expected); out.held++; return }
         if (TRANSIENT.has(code) && attempts + 1 < RETRY_MAX) { hold(id, leadId, code, now + 3600 * 2 ** attempts, attempts + 1, expected); out.held++; return }
         // Any other refusal (a check now holds the lead or the address, the sending account changed, retries ran out):
         // the user decides.

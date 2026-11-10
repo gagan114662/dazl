@@ -30,7 +30,7 @@ test('fresh database: the migrations create every app table; a second run applie
   const first = await runPgMigrations(db.pool)
   assert.deepEqual(first.applied, loadMigrations().map(m => m.version))
   const tables = (await db.all<{ t: string }>("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> 'dazl_schema_migrations' ORDER BY 1")).map(r => r.t)
-  assert.equal(SQLITE_TABLES.length, 120) // includes scan_spend_calls (0048, #377), first_party_withdrawals + first_party_config_meta (0049, placeholder number - reassigned to main's highest + 1 at merge time, #618), monitor_events, monitor_alerts, monitor_cursors (0046, #387), worker_catalog, worker_deployments, worker_events, worker_grants, worker_runs (0045), lead_feedback (0044), onboarding_policies, onboarding_enrollments, onboarding_audit, onboarding_audit_purge_gate (0043) and bounce_records, mail_bounce_scan_consent (0042), play_research_sources (0024), autopilot_launch_policy (0038), tenant_tombstones, tenant_tombstone_keys (0039), scan_traces (0040) and audit_events, audit_purge_gate, audit_closing_gate (0041); 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016), tenant_spend_pools (0017) + scheduler_runs, scheduler_progress (0018) + lifecycle_events (0029) + preview_claims, preview_claim_events (0030) + autopilot_work (0032) + seller_decisions (0034) + connector_claims (0035)
+  assert.equal(SQLITE_TABLES.length, 124) // includes adv_budget_lock, adv_requests (0059, #192 shared request budget), crawl_pages (0055, #871), lead_need_evidence (0052, #401/#379), scan_spend_calls (0048, #377), first_party_withdrawals + first_party_config_meta (0049, placeholder number - reassigned to main's highest + 1 at merge time, #618), monitor_events, monitor_alerts, monitor_cursors (0046, #387), worker_catalog, worker_deployments, worker_events, worker_grants, worker_runs (0045), lead_feedback (0044), onboarding_policies, onboarding_enrollments, onboarding_audit, onboarding_audit_purge_gate (0043) and bounce_records, mail_bounce_scan_consent (0042), play_research_sources (0024), autopilot_launch_policy (0038), tenant_tombstones, tenant_tombstone_keys (0039), scan_traces (0040) and audit_events, audit_purge_gate, audit_closing_gate (0041); 76 + trial_reservations, trial_budget_lock (0012), crm_push_claims (0014) + organizations, memberships (0015), inbox_thread_reads (0016), tenant_spend_pools (0017) + scheduler_runs, scheduler_progress (0018) + lifecycle_events (0029) + preview_claims, preview_claim_events (0030) + autopilot_work (0032) + seller_decisions (0034) + connector_claims (0035)
   assert.deepEqual(tables, SQLITE_TABLES)
   const second = await runPgMigrations(db.pool)
   assert.deepEqual(second.applied, [])
@@ -117,3 +117,37 @@ test('enrichment migration is 0008, after main\'s 0007 stripe_event_order', () =
   assert.equal(ms.find(m => m.version === 7)?.name, 'stripe_event_order')
   assert.equal(ms.find(m => m.version === 8)?.name, 'scan_job_enrichment')
 })
+
+// Frozen SHA-256 ledger from the actual main commit that squashed #977. Do not regenerate it from the current files:
+// this catches edits to already-applied migrations, including the original #980 edit to 0050.
+const email977Ledger = JSON.parse(readFileSync(new URL('./fixtures/migrations/977-ledger.json', import.meta.url), 'utf8')) as {
+  sourceCommit: string; migrations: { version: number; name: string; checksum: string }[]
+}
+test('#980 preserves every migration byte from the actual #977 applied ledger', () => {
+  assert.equal(email977Ledger.sourceCommit, '0053e060860401ad118e7396e93070b478d19817')
+  assert.equal(email977Ledger.migrations.length, 50)
+  assert.deepEqual(loadMigrations().filter(m => m.version <= 50).map(({ version, name, checksum }) => ({ version, name, checksum })), email977Ledger.migrations)
+})
+
+test('#980 upgrades the actual #977 ledger through 0055 without changing checksums or existing email rows', { skip: pgSkip }, () => withDb(async db => {
+  const migrations = loadMigrations()
+  const before = migrations.filter(m => m.version <= 50)
+  assert.deepEqual(before.map(({ version, name, checksum }) => ({ version, name, checksum })), email977Ledger.migrations)
+  await runPgMigrations(db.pool, before)
+  const ledger = await db.all<{ version: string | number; name: string; checksum: string }>('SELECT version, name, checksum FROM dazl_schema_migrations ORDER BY version')
+  assert.deepEqual(ledger.map(r => ({ ...r, version: Number(r.version) })), email977Ledger.migrations)
+  await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES ('t', 'l', 'Pat Doe', 'pat@example.test', 'first')")
+  await db.run("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES ('t', 'l', 'example.test', 'first', 2)")
+  const upgrade = await runPgMigrations(db.pool)
+  // every migration after the #977 ledger, in order: #980 (51..55), #973/#916 (56), #608/#357 (57), #970/#904 (58); later numbers (0059 adv_request_budget, #192; others carried by other PRs) apply too
+  assert.deepEqual(upgrade.applied, migrations.filter(m => m.version > 50).map(m => m.version))
+  assert.deepEqual(upgrade.applied.slice(0, 8), [51, 52, 53, 54, 55, 56, 57, 58])
+  assert.deepEqual(upgrade.alreadyApplied, before.map(m => m.version))
+  assert.deepEqual(await db.get('SELECT person, address, tier, source_url, confidence FROM email_candidates WHERE lead_id = ?', ['l']),
+    { person: 'Pat Doe', address: 'pat@example.test', tier: 'guessed', source_url: null, confidence: null })
+  assert.deepEqual(await db.get('SELECT confidence, score, runner_up, evidence FROM email_patterns WHERE lead_id = ?', ['l']),
+    { confidence: null, score: null, runner_up: null, evidence: null })
+  const originalLedger = await db.all<{ version: string | number; name: string; checksum: string }>('SELECT version, name, checksum FROM dazl_schema_migrations WHERE version <= 50 ORDER BY version')
+  assert.deepEqual(originalLedger.map(r => ({ ...r, version: Number(r.version) })), email977Ledger.migrations)
+  assert.deepEqual((await runPgMigrations(db.pool)).applied, [])
+}))

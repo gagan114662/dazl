@@ -6,11 +6,11 @@ import { getDomain } from 'tldts'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
-import { audit, addEnrichment, type Enrichment } from './store.ts'
+import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { emailGuessEnabled, personalLocals, recordEmailGuesses } from '../people/email-pattern.ts'
-import { roleContradicted, titleMatches } from '../people/rank.ts'
+import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
+import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -28,10 +28,17 @@ const MAX_BYTES = 800_000
 const TIMEOUT_MS = 10_000
 export const MAX_SITES_PER_SCAN = Number(process.env.SITECRAWL_MAX_SITES || 8)
 const GAP_MS = Number(process.env.SITECRAWL_GAP_MS ?? 2000)
+// Intrinsic per-site crawl bound (#871): robots + home + up to MAX_PAGES pages under the polite gap must fit.
+const CRAWL_BUDGET_MS = (() => { const n = Number(process.env.SITECRAWL_CRAWL_BUDGET_MS ?? 45_000); return Number.isFinite(n) && n > 0 ? n : 45_000 })()
+// The crawl budget is ALWAYS a finite positive bound (#871): an invalid or non-positive value is the default, never a disable.
+export const crawlBudgetBound = (ms: number): number => Number.isFinite(ms) && ms > 0 ? ms : CRAWL_BUDGET_MS
 
 export const sitecrawlEnabled = (env: Record<string, string | undefined> = process.env) => env.SITECRAWL_ENABLED !== '0'
 
-export type Get = (url: string) => Promise<{ status: number; body: string; finalUrl: string } | null>
+// opts.signal: the caller's abort (and the crawl's own deadline, #871) handed to the fetch itself, so a timed-out or
+// aborted crawl CANCELS the native operation instead of abandoning a running socket. A Get that ignores it is still
+// bounded by the crawl's own race, but production Gets (rawGet, crawl4ai) honor it.
+export type Get = (url: string, opts?: { signal?: AbortSignal }) => Promise<{ status: number; body: string; finalUrl: string } | null>
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
@@ -84,12 +91,12 @@ async function publicHost(host: string): Promise<boolean> {
 }
 export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostOk: (h: string) => Promise<boolean> = publicHost): Get {
   const endpoint = base.replace(/\/$/, '') + '/crawl'
-  return async (url: string) => {
+  return async (url: string, opts?: { signal?: AbortSignal }) => {
     let u: URL; try { u = new URL(url) } catch { return null }
     if (u.protocol !== 'https:' || !(await hostOk(u.hostname))) return null
-    if (u.pathname === '/robots.txt') return rawGet(url) // plain text, no rendering needed
+    if (u.pathname === '/robots.txt') return rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal) // plain text, no rendering needed
     try {
-      const res = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: [url], crawler_config: { type: 'CrawlerRunConfig', params: { check_robots_txt: true, page_timeout: 20000 } } }), signal: AbortSignal.timeout(40_000) })
+      const res = await fetchImpl(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: [url], crawler_config: { type: 'CrawlerRunConfig', params: { check_robots_txt: true, page_timeout: 20000 } } }), signal: opts?.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(40_000)]) : AbortSignal.timeout(40_000) })
       if (!res.ok) return null
       const j = (await res.json()) as { results?: { url?: string; html?: string; status_code?: number; success?: boolean; redirected_url?: string }[] }
       const r = j.results?.[0]; if (!r) return null
@@ -99,7 +106,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
     } catch { return null }
   }
 }
-export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : rawGet)
+export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
 
 // ---- robots.txt: parsed by robots-parser (MIT, the parser Crawlee uses). We obey the group for our own token and for "dazl". ----
 export interface Robots { allows: (path: string, site?: string) => boolean; delayMs: number }
@@ -170,7 +177,6 @@ export const MAX_PROBES_PER_SCAN = 8
 
 // ---- extraction ----
 export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
-const EMAIL = /\b([a-z0-9][a-z0-9._%+-]{0,63})@([a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,24})\b/gi
 export const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
 export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }
@@ -306,6 +312,8 @@ export function buyerTitle(title: string, buyerRoles?: string): boolean {
   if (buyerRoles.split(';').map(titleNorm).some(r => r.length >= 3 && (` ${t} `).includes(` ${r} `))) return true
   return titleMatches(title, buyerRoles).length >= 2
 }
+const HEAD_MARK = '\u0001H'
+const FORMER_SECTION = /\b(?:alumni|alumnae|former\s+(?:team|staff|members?|employees?|leadership|colleagues)|past\s+(?:team|staff|members?|employees?|leadership)|previous\s+(?:team|staff|members?)|in\s+memoriam|emeriti)\b/i
 export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
@@ -313,15 +321,32 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   if (clean === null) return [] // a quoted/testimonial region that never closes cannot be separated from the page: fail closed
   const visible = clean.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
   const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
-  const text = visible.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
+  // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
+  const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
+  const text = marked.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&').replace(/&#8217;|&rsquo;/g, "'").replace(/&nbsp;/g, ' ')
-  const lines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  const rawLines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  // A heading names a section of former people (alumni, past team, in memoriam) for everything under it until the next
+  // heading of the same or a higher level that is not itself a person's name. Advisory boards and the like stay current.
+  const lines: string[] = [], inFormer: boolean[] = []
+  let formerLevel = 0
+  for (const l of rawLines) {
+    if (l.startsWith(HEAD_MARK)) {
+      const level = Number(l[HEAD_MARK.length]), head = l.slice(HEAD_MARK.length + 1).trim()
+      if (FORMER_SECTION.test(head)) { formerLevel = formerLevel === 0 ? level : Math.min(formerLevel, level) }
+      else if (formerLevel && level <= formerLevel && !NAME_LINE.test(head)) formerLevel = 0
+      if (!NAME_LINE.test(head) || FORMER_SECTION.test(head)) continue
+      lines.push(head); inFormer.push(formerLevel > 0); continue
+    }
+    lines.push(l); inFormer.push(formerLevel > 0)
+  }
   // Email addresses are not prose: their lower-case local parts (dana.lee@...) would otherwise reject the very person
   // listed beside them, so they are removed before the lower-case word test.
   const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
+    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
     if (!NAME_LINE.test(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return
@@ -334,8 +359,9 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
+    if (inFormer[i]) continue
     if (same) add(same[1], same[2])
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45) add(lines[i], lines[i + 1])
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1]) add(lines[i], lines[i + 1])
   }
   // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
   return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
@@ -366,7 +392,6 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
   return [...set].slice(0, 8)
 }
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
 // polite per-host gap does not outlive a post-processing deadline.
 const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((resolve) => {
@@ -379,56 +404,112 @@ const lastHit = new Map<string, number>()
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
-export async function crawlSite(site: string, get: Get = rawGet, gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string) => void, buyerRoles?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string }> {
+// budgetMs: an intrinsic wall-clock bound for the WHOLE crawl (#871) - robots, home, every polite wait, every own-site page and the
+// social branch. A fetch never starts once the budget is spent, a polite gap that would outlive it is not waited out, and every fetch
+// is handed a combined caller-abort + deadline signal so a bound or aborted crawl CANCELS the in-flight native fetch. The value is
+// always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
+// The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
+// abort reads reason 'aborted', and both are treated as unread.
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
-  const polite = async (url: string, delay: number) => { const h = new URL(url).hostname; const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now(); if (wait > 0 && !(await sleepAbort(wait, signal))) return null; lastHit.set(h, Date.now()); return get(url) }
-  const rob = await polite(`${origin}/robots.txt`, 0)
-  let robots: Robots
-  if (!rob) return { found: [], reason: 'robots_unreachable', pages: 0 }
-  if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
-  robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
-  if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
-  const home = await polite(`${origin}/`, robots.delayMs)
-  if (!home || home.status >= 400) return { found: [], reason: 'site_unreachable', pages: 0 }
-  // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
-  const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
-  const homeNorm = norm(homePlain)
-  // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
-  const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
-  if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
-  const found = new Map<string, Found>(); let pages = 1
-  onPage?.(home.body)
-  for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
-  for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
-    if (stopped()) break
-    if (pages >= MAX_PAGES) break
-    if (!robots.allows(p)) continue
-    const r = await polite(origin + p, robots.delayMs)
-    if (!r || r.status >= 400) continue
-    pages++
-    onPage?.(r.body)
-    for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
-  }
-  // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
-  // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
-  if (social) {
-    const links = new Set<string>()
-    for (const m of home.body.matchAll(/href\s*=\s*["'](https:\/\/(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|linkedin\.com\/company|instagram\.com)\/[^"'#?\s]{1,80})["']/gi)) links.add(m[1])
-    for (const link of [...links].slice(0, 3)) {
-      const u = new URL(link)
-      const rr = await polite(`https://${u.hostname}/robots.txt`, 0)
-      if (!rr || rr.status >= 500) continue
-      const rob2 = rr.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rr.body, u.hostname)
-      if (!rob2.allows(u.pathname, u.hostname)) continue // hard rule
-      const pg = await polite(link, rob2.delayMs)
-      if (!pg || pg.status >= 400) continue
-      for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
+  const deadline = Date.now() + crawlBudgetBound(budgetMs)
+  let stoppedBy: 'pages' | 'time' | 'aborted' | undefined
+  let timeStop = false
+  let abortStop = false
+  // One controller fires at the deadline; every fetch gets caller-abort + deadline combined, so a bound crawl
+  // CANCELS the in-flight native fetch (signal-honoring Gets) instead of abandoning it.
+  const ctrl = new AbortController()
+  const deadlineTimer = setTimeout(() => ctrl.abort(), Math.max(1, deadline - Date.now())); deadlineTimer.unref?.()
+  try {
+    const fetchSignal = (): AbortSignal | undefined => (signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, ctrl.signal]) : ctrl.signal)
+    const polite = async (url: string, delay: number) => {
+      const h = new URL(url).hostname
+      if (stopped()) { abortStop = true; return null } // a pre-aborted caller starts nothing
+      if (Date.now() >= deadline) { timeStop = true; return null } // never start a fetch after the budget
+      const wait = (lastHit.get(h) ?? 0) + Math.max(gapMs, delay) - Date.now()
+      if (wait > 0) {
+        if (Date.now() + wait >= deadline) { timeStop = true; return null } // the polite gap itself would outlive the budget
+        if (!(await sleepAbort(wait, signal))) { abortStop = true; return null }
+        if (stopped()) { abortStop = true; return null }
+        if (Date.now() >= deadline) { timeStop = true; return null }
+      }
+      lastHit.set(h, Date.now())
+      // The race bounds the WAIT for any Get; the combined signal CANCELS the operation for signal-honoring Gets.
+      // A caller abort interrupts immediately; it never waits out the deadline.
+      const left = Math.max(1, deadline - Date.now())
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let onAbort: (() => void) | undefined
+      const interrupted = new Promise<null>(res => {
+        // The deadline's OWN interruption: it marks the time stop and cancels the fetch BEFORE the race can resolve,
+        // so the label and the cancel never depend on timer-jitter against Date.now().
+        timer = setTimeout(() => { timeStop = true; ctrl.abort(); res(null) }, left)
+        if (signal) { onAbort = () => { abortStop = true; res(null) }; if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+      })
+      try {
+        const r = await Promise.race([get(url, { signal: fetchSignal() }), interrupted])
+        if (stopped()) abortStop = true
+        // ctrl is aborted ONLY by the deadline (its timer or the per-fetch race timer), so an interrupted fetch under an
+        // aborted ctrl is the deadline's own act - no Date.now() jitter decides the label. A self-failing get keeps neither flag.
+        else if (r === null && ctrl.signal.aborted) timeStop = true
+        else if (r === null && Date.now() >= deadline) timeStop = true // backstop: the fetch outlived the budget (and was handed the cancel signal)
+        return r
+      } finally {
+        clearTimeout(timer) // cleared on resolve, throw AND reject: a settled race never leaves its budget timer or listener behind
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort)
+      }
     }
+    const rob = await polite(`${origin}/robots.txt`, 0)
+    let robots: Robots
+    if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
+    if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
+    robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
+    const home = await polite(`${origin}/`, robots.delayMs)
+    if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
+    // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
+    const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    const homeNorm = norm(homePlain)
+    // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
+    const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
+    if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    const found = new Map<string, Found>(); let pages = 1
+    onPage?.(home.body, home.finalUrl, home.status)
+    for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
+    for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+      if (stopped()) { stoppedBy = 'aborted'; break }
+      if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
+      if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
+      if (!robots.allows(p)) continue
+      const r = await polite(origin + p, robots.delayMs)
+      if (!r || r.status >= 400) continue
+      pages++
+      onPage?.(r.body, r.finalUrl, r.status)
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+    }
+    // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
+    // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
+    if (social) {
+      const links = new Set<string>()
+      for (const m of home.body.matchAll(/href\s*=\s*["'](https:\/\/(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|linkedin\.com\/company|instagram\.com)\/[^"'#?\s]{1,80})["']/gi)) links.add(m[1])
+      for (const link of [...links].slice(0, 3)) {
+        const u = new URL(link)
+        const rr = await polite(`https://${u.hostname}/robots.txt`, 0)
+        if (!rr || rr.status >= 500) continue
+        const rob2 = rr.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rr.body, u.hostname)
+        if (!rob2.allows(u.pathname, u.hostname)) continue // hard rule
+        const pg = await polite(link, rob2.delayMs)
+        if (!pg || pg.status >= 400) continue
+        for (const f of extractContacts(pg.body, pg.finalUrl, site)) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, { ...f, label: 'published on the company social profile' })
+      }
+    }
+    // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
+    const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
+    const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+  } finally {
+    clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
-  // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
-  const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
-  return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText }
 }
 
 // #389: one dated tech_scan row per crawl of a confirmed company homepage, and a tech_change row on this lead for every adoption / removal
@@ -544,10 +625,12 @@ export const placeConsistent = (homeNorm: string | undefined, places: string[]) 
 export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
+    // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
+    const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
     const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
-      ? (url: string) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, deps.signal)
+      ? (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal ?? deps.signal)
       : defaultGet(deps.env))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
     // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
@@ -569,6 +652,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
     const localsBySite = new Map<string, Set<string>>()
+    const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
@@ -580,7 +664,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, guessing ? html => { for (const l of personalLocals(html, cand)) locals.add(l) } : undefined, buyerRoles)
+      const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
+      // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
+      // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
+      // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
+      const onPage = (html: string, url: string, status: number) => {
+        recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
+        if (guessing) for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) }
+      }
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
       siteRead.set(cand, r)
       return r
     }
@@ -610,12 +702,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
       }
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
+      // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
+      const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
       const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '), l.company)
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -626,14 +720,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // Place agreement against the scan's geography (city-scoped for New York City / London): a same-name practice in another state or
         // another UK city names its own address on its homepage and is refused; a guessed (name_probe) domain must also AGREE for a city ask.
         // A street address in the lead's own evidence: a homepage that lists street addresses and none of them is the lead's is another business with the same name.
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(r.homeText, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
+        if (!unread(r) && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(r.homeText, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
           const reason = `contact rejected: address mismatch ${(streetKeys(r.homeText)[0] ?? 'another address')} vs ${(streetKeys(`${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`)[0] ?? 'the lead\'s address')}`.slice(0, 180)
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
           if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable' && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
+        if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
           if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
@@ -643,16 +737,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             continue
           }
         }
-        if (r.reason !== 'name_mismatch' && r.reason !== 'site_unreachable') break
+        if (!unread(r)) break
         audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: r.reason, results: 0 })
       }
       // A deadline that fired during this crawl leaves a partial read: record nothing (no domain, tech, contacts or audit row) rather than a result that looks complete.
       if (deps.signal?.aborted) return
-      if (r.reason === 'name_mismatch' || r.reason === 'site_unreachable') continue
+      if (unread(r)) continue
+      // The crawl's own time budget stopping it mid-read is the same class of partial read (#871): the pages actually
+      // fetched stay recorded in crawl_pages (facts with their own times), but NO derived domain/tech/contact rows.
+      if (r.stoppedBy === 'time') continue
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
-      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value)) } catch { /* never affects the crawl */ } }
+      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the

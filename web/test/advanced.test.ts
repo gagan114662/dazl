@@ -61,6 +61,18 @@ test('rate limit: per user per hour, kill switch stops calls', async () => {
 test('worker output is validated: https only, quote length, bad shapes dropped', () => {
   assert.deepEqual(parseWorkerItems({ items: [{ ...item, login_walled: 'yes' }, { ...item, url: 'http://x.example' }, { ...item, quote: 'short' }, null, 'x'] }).map(i => i.login_walled), [false])
   assert.deepEqual(parseWorkerItems('nope'), [])
+  // The optional author is the source's own report: a well-formed one carries; non-strings and empty fields become
+  // null; an all-null or non-object author is dropped entirely (never invented, never fatal).
+  const withAuthor = parseWorkerItems({ items: [
+    { ...item, author: { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline', url: 'https://tallyline.example/about' } },
+    { ...item, url: 'https://b.example/2', author: { name: 42, headline: null, company: '' } },
+    { ...item, url: 'https://b.example/3', author: 'maya-c' },
+    { ...item, url: 'https://b.example/4' },
+  ] })
+  assert.deepEqual(withAuthor[0].author, { name: 'maya-c', headline: 'Co-founder, Tallyline', company: 'Tallyline', url: 'https://tallyline.example/about' })
+  assert.equal(withAuthor[1].author, undefined, 'an all-empty author is no author')
+  assert.equal(withAuthor[2].author, undefined, 'a non-object author is no author')
+  assert.equal(withAuthor[3].author, undefined)
 })
 
 test('xSearchQuery: intent words first, stopwords dropped, short and deduped', async () => {
@@ -95,7 +107,7 @@ test('x via operator index: consent alone, no session, no worker call - mirrors 
   migrateTinyfish(db); resetTinyfishState()
   let workerCalled = false
   const worker: WorkerFetch = async () => { workerCalled = true; return { items: [item], unsupported: null } }
-  const fetchImpl = (async (u: string) => new Response(JSON.stringify({ results: [
+  const fetchImpl = (async () => new Response(JSON.stringify({ results: [
     { url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' },
   ] }), { status: 200 })) as unknown as typeof fetch
   const env = { ...ON, TINYFISH_API_KEY: 'tf-key' }

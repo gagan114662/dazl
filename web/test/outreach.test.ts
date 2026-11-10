@@ -9,12 +9,12 @@ import { join } from 'node:path'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateSequences, setTestAddresses } from '../lib/outreach/sequences.ts'
-import { completeOAuth, disconnectGmail, getAccessToken, gmailStatus, startOAuth, GmailSendError, type OAuthDeps } from '../lib/gmail/oauth.ts'
+import { completeOAuth, disconnectGmail, getAccessToken, gmailStatus, startOAuth, GmailSendError } from '../lib/gmail/oauth.ts'
 import { buildMime } from '../lib/gmail/mime.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { domainReviewFor } from '../lib/outreach/domain-review.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
-import { approve, createDraft, editDraft, isSuppressed, listMessages, OutreachError, readUnsubToken, resolveUncertain, saveSettings, sendMessage, skip, suppress, unsubToken, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
+import { approve, createDraft, editDraft, isSuppressed, listMessages, readUnsubToken, resolveUncertain, saveSettings, sendMessage, skip, suppress, unsubToken, unsubscribeByToken, type Deps } from '../lib/outreach/service.ts'
 
 const master = randomBytes(32)
 const env = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }

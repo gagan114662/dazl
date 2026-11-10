@@ -47,7 +47,7 @@ async function seed(): Promise<Tenant[]> {
   const tx = db.transaction(() => {
     for (let t = 0; t < TENANTS; t++) {
       const id = randomBytes(16).toString('hex'), mark = marker(t), token = randomBytes(32).toString('hex'), job = randomBytes(12).toString('hex')
-      db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, created_at) VALUES (?, ?, 'x', 'x', ?, ?)").run(id, `t${t}@load.example`, `Biz ${mark}`, 1_700_000_000)
+      db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, created_at, email_verified_at) VALUES (?, ?, 'x', 'x', ?, ?, 1)").run(id, `t${t}@load.example`, `Biz ${mark}`, 1_700_000_000)
       db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), id, Math.floor(Date.now() / 1000) + 86400)
       db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, attempts) VALUES (?, ?, ?, 'dental', 'Toronto', ?, 'running', 1)").run(job, id, `Biz ${mark}`, `find ${mark} buyers`)
       for (let l = 0; l < 3; l++) {

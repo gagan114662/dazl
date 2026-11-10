@@ -9,18 +9,20 @@ import { salesGateOr, salesHiringRequired } from './sales-hiring-required.ts'
 export const HALVES_ENV = 'DAZL_COMPOUND_HALVES'   // =0 turns the split off (the single "show both" prompt)
 // #380 / #204 Test B: when the compiled plan joins the two facts with OR (salesGateOr), the block says either fact qualifies the company on its own (`or: true`).
 // Every other request (AND wording, the ambiguous and/or, an unreadable plan) gets the AND block, byte for byte.
-export function compoundHalves(query: string | null | undefined, icp: unknown, env: Record<string, string | undefined> = process.env): { event: string; or?: true } | null {
+export function compoundHalves(query: string | null | undefined, icp: unknown, env: Record<string, string | undefined> = process.env): { event: string; or?: true; done?: true } | null {
   if (env[HALVES_ENV] === '0') return null
   let icpJson = ''; try { icpJson = typeof icp === 'string' ? icp : JSON.stringify(icp ?? {}) } catch { return null }
   if (!salesHiringRequired(query, icpJson)) return null
   const stage = requestedStage(query, icpJson)
   const event = requestAsksFunding(query, icpJson) ? `a COMPLETED ${stage ? `${stage} ` : ''}funding round (not plans, talks or a raise by another company)` : 'the event the request names'
-  return salesGateOr(query, icpJson) ? { event, or: true } : { event }
+  const or = salesGateOr(query, icpJson)
+  // #876: a completed-hire branch is retrieved as a hire that HAPPENED; an open vacancy cannot prove it (sales-hiring-gate.ts).
+  return or ? { event, or: true, ...(or.hiring.kind === 'hire_made' ? { done: true as const } : {}) } : { event }
 }
-export function halvesBlock(h: { event: string; or?: true }): string {
+export function halvesBlock(h: { event: string; or?: true; done?: true }): string {
   if (h.or === true) return `
-This request accepts EITHER of two facts about a company: (1) ${h.event}, or (2) the company is hiring sales / go-to-market staff. One fact on its own qualifies the company; it does not need both.
-Return a company when an item shows EITHER fact for it. In "signal" say plainly which fact THIS item shows (for example "raised a seed round" or "is hiring a sales account executive") and never claim the other fact. The "excerpt" must show the fact you name.
+This request accepts EITHER of two facts about a company: (1) ${h.event}, or (2) ${h.done ? 'the company MADE a sales / go-to-market hire (a completed hire, not an open vacancy or job ad)' : 'the company is hiring sales / go-to-market staff'}. One fact on its own qualifies the company; it does not need both.
+Return a company when an item shows EITHER fact for it. In "signal" say plainly which fact THIS item shows (for example "raised a seed round" or "${h.done ? 'made its first sales hire' : 'is hiring a sales account executive'}") and never claim the other fact. The "excerpt" must show the fact you name.
 Do not guess the other fact and do not copy it from anywhere else.`
   return `
 This request needs TWO facts about the SAME company: (1) ${h.event}, and (2) the company is hiring sales / go-to-market staff. One item almost never shows both (a funding article does not list job openings; a job posting does not mention funding).

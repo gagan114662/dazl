@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server'
 // @ts-expect-error test shim export
 import { flushAfter } from 'next/server'
 import { setScanDb } from './sequence-route-db.ts'
-import { migrateScan, createJob, getJob } from '../../lib/scan/store.ts'
+import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { GET } from '../../app/api/scan/status/route.ts'
 
@@ -31,7 +31,7 @@ const get = (id: string, passive: boolean) =>
 const row = (db: Database.Database, id: string) =>
   db.prepare('SELECT status, error, attempts, claimed_at FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null; attempts: number; claimed_at: number | null }
 // Wait until the kicked runner's claim is visible. One kick = one claim: with research
-// retired (#379) the attempt ends budget_stopped - terminal, no re-pend, no silent
+// retired (#379) the attempt ends unbounded_fallback_hold - terminal, no re-pend, no silent
 // spend. The kick observable (attempts bump, honest error, released claim) is unchanged.
 async function settle(db: Database.Database, id: string, wantAttempts: number, timeoutMs = 8000) {
   const t0 = Date.now()
@@ -39,7 +39,7 @@ async function settle(db: Database.Database, id: string, wantAttempts: number, t
     const r = row(db, id)
     if (r.attempts >= wantAttempts && r.claimed_at === null && r.error !== null) {
       assert.equal(r.status, 'failed', 'research is retired: the attempt fails honestly instead of re-pending into unpriced spend (#379)')
-      assert.equal(r.error, 'budget_stopped')
+      assert.equal(r.error, 'unbounded_fallback_hold', 'the retired research refusal is named, never mislabelled a budget stop')
       assert.equal(r.claimed_at, null, 'runner released the job after the failed attempt')
       return r
     }
@@ -95,5 +95,31 @@ test('after the same stale reap, a non-passive poll does re-claim (recovery path
   assert.equal(res.status, 200)
   await flushAfter()
   await settle(db, id, 2)
+  db.close()
+})
+
+test('readonly=1 reaps nothing: a stale-running job is served pure and its row is untouched', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', { business_name: 'Acme', industry: 'i', location: 'l' })
+  db.prepare("UPDATE scan_jobs SET status='running', attempts=1, claimed_at=CAST(strftime('%s','now') AS INTEGER)-3600 WHERE id=?").run(id)
+  const before = row(db, id)
+  const res = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&readonly=1`))
+  assert.equal(res.status, 200)
+  await flushAfter()
+  assert.deepEqual(row(db, id), before, 'no reap, no claim release, no kick: the readonly request wrote nothing')
+  db.close()
+})
+
+test('readonly=1 keeps tenant isolation and never kicks a pending job', async () => {
+  const db = setup()
+  const id = createJob(db, 'A', { business_name: 'Acme', industry: 'i', location: 'l' })
+  const other = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${'f'.repeat(24)}&readonly=1`))
+  assert.equal(other.status, 404, 'a job outside the tenant is not found, same as the legacy path')
+  const res = await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&readonly=1`))
+  assert.equal(res.status, 200)
+  const j = await res.json() as { status: string; attempts: number }
+  assert.equal(j.status, 'pending'); assert.equal(j.attempts, 0)
+  await flushAfter()
+  assert.equal(row(db, id).attempts, 0, 'readonly never dispatches the runner')
   db.close()
 })

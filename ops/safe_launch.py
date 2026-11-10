@@ -49,6 +49,8 @@ STATUS_CODES = frozenset({
     'supervised_process_refused', 'runtime_missing', 'runtime_untrusted',
     'existing_database_required', 'verified_backup_required', 'backup_integrity_failed',
     'backup_verification_required', 'database_or_backup_unverifiable',
+    'backup_policy_required', 'backup_manifest_required', 'backup_manifest_mismatch',
+    'backup_stale', 'backup_drill_required', 'backup_drill_mismatch', 'backup_changed',
     'invalid_process_or_port', 'same_stage_refused', 'required_env_missing_DB_PATH',
     'required_env_missing_DAZL_MASTER_KEY', 'required_env_missing_PUBLIC_BASE_URL',
     'runtime_env_override_refused', 'env_port_mismatch', 'pid_stage_mismatch',
@@ -266,23 +268,128 @@ def launch(stage, env, port):
                             stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-def check_database_backup(env, args):
+MAX_BACKUP_AGE_CAP_S = 7 * 24 * 3600
+# The recovery window is a stated policy (#911): there is no default; --backup-max-age-s must be passed.
+CLOCK_SKEW_S = 120
+
+
+def _iso_epoch(value):
+    from datetime import datetime
+    if not isinstance(value, str) or not value.endswith('Z'):
+        raise ValueError('timestamp')
+    return datetime.fromisoformat(value[:-1] + '+00:00').timestamp()
+
+
+def _read_json(path):
+    # Manifest/report are small JSON documents; refuse symlinks and anything oversized.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, 'rb') as f:
+        if os.fstat(f.fileno()).st_size > 1 << 20:
+            raise ValueError('too_large')
+        return json.loads(f.read().decode('utf-8'))
+
+
+def _pin_backup(backup):
+    # Hash through ONE open descriptor and record its identity, so the bytes hashed are the bytes later re-checked.
+    import hashlib
+    fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(fd, 'rb') as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise LaunchError('verified_backup_required')
+        h = hashlib.sha256()
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+        after = os.fstat(f.fileno())
+    if (after.st_size, after.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        raise LaunchError('backup_changed')
+    return {'dev': st.st_dev, 'ino': st.st_ino, 'size': st.st_size, 'mtime_ns': st.st_mtime_ns, 'sha256': h.hexdigest()}
+
+
+def check_database_backup(env, args, now=None):
+    """#911: the backup must be bound to evidence from the supported online-backup + restore-drill path.
+
+    Policy: --backup-max-age-s seconds (1..7 days), required, no default; a missing or bad value are refused. Required evidence:
+      * the create-backup sidecar manifest (default <backup>.json, tool dazl-create-backup) naming this
+        backup file, the live DB_PATH as its source, and the exact bytes/sha256 of the file now;
+      * manifest createdAt no older than the policy window (and not in the future);
+      * a restore-drill report (tool dazl-restore-drill, ok true) for this backup name AND sha256,
+        started at or after the manifest and within the same window.
+    A caller-supplied boolean is not evidence. Returns a pin re-checked right before any signal.
+    """
     try:
+        now = time.time() if now is None else now
         dbpath = Path(env['DB_PATH'])
         backup = Path(args.backup)
         if not dbpath.is_absolute() or not dbpath.is_file() or dbpath.stat().st_size == 0:
             raise LaunchError('existing_database_required')
         if backup.resolve() == dbpath.resolve() or not backup.is_file() or backup.stat().st_size == 0:
             raise LaunchError('verified_backup_required')
+        if args.backup_db != str(dbpath.resolve()):
+            raise LaunchError('backup_verification_required')
+        max_age = getattr(args, 'backup_max_age_s', None)
+        if not isinstance(max_age, int) or isinstance(max_age, bool) or not 0 < max_age <= MAX_BACKUP_AGE_CAP_S:
+            raise LaunchError('backup_policy_required')
         with sqlite3.connect(f'file:{backup.resolve()}?mode=ro', uri=True) as connection:
             if connection.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise LaunchError('backup_integrity_failed')
-        if args.backup_db != str(dbpath.resolve()) or not args.backup_verified:
-            raise LaunchError('backup_verification_required')
+        pin = _pin_backup(backup)
+
+        manifest_path = getattr(args, 'backup_manifest', None) or str(backup) + '.json'
+        try:
+            manifest = _read_json(manifest_path)
+        except Exception:
+            raise LaunchError('backup_manifest_required') from None
+        if not isinstance(manifest, dict) or manifest.get('tool') != 'dazl-create-backup':
+            raise LaunchError('backup_manifest_required')
+        try:
+            same_source = Path(str(manifest.get('sourcePath'))).resolve() == dbpath.resolve()
+            same_file = Path(str(manifest.get('backupPath'))).name == backup.name
+            created = _iso_epoch(manifest.get('createdAt'))
+        except Exception:
+            raise LaunchError('backup_manifest_mismatch') from None
+        if not same_source or not same_file or manifest.get('sha256') != pin['sha256'] or manifest.get('bytes') != pin['size']:
+            raise LaunchError('backup_manifest_mismatch')
+        if created > now + CLOCK_SKEW_S or now - created > max_age:
+            raise LaunchError('backup_stale')
+
+        drill_path = getattr(args, 'drill_report', None)
+        if not drill_path:
+            raise LaunchError('backup_drill_required')
+        try:
+            drill = _read_json(drill_path)
+        except Exception:
+            raise LaunchError('backup_drill_required') from None
+        if not isinstance(drill, dict) or drill.get('tool') != 'dazl-restore-drill':
+            raise LaunchError('backup_drill_required')
+        try:
+            drilled = _iso_epoch(drill.get('started_at'))
+        except Exception:
+            raise LaunchError('backup_drill_mismatch') from None
+        if drill.get('ok') is not True or drill.get('backup') != backup.name or drill.get('backup_sha256') != pin['sha256']:
+            raise LaunchError('backup_drill_mismatch')
+        if drilled < created - CLOCK_SKEW_S or drilled > now + CLOCK_SKEW_S or now - drilled > max_age:
+            raise LaunchError('backup_stale')
+        pin['path'] = str(backup)
+        return pin
     except LaunchError:
         raise
     except Exception:
         raise LaunchError('database_or_backup_unverifiable') from None
+
+
+def recheck_backup(pin):
+    # Immediately before the signal: the verified file is still the same inode with the same bytes.
+    if not pin:
+        raise LaunchError('backup_changed')
+    try:
+        again = _pin_backup(Path(pin['path']))
+    except LaunchError:
+        raise LaunchError('backup_changed') from None
+    except Exception:
+        raise LaunchError('backup_changed') from None
+    if any(again[k] != pin[k] for k in ('dev', 'ino', 'size', 'mtime_ns', 'sha256')):
+        raise LaunchError('backup_changed')
 
 
 RUNTIME = []
@@ -302,7 +409,7 @@ def run(args):
             raise LaunchError('required_env_missing_' + name)
     if any(name in env for name in ['PATH','NODE_OPTIONS','NODE_PATH','LD_PRELOAD','LD_LIBRARY_PATH','npm_config_prefix','npm_config_script_shell']):
         raise LaunchError('runtime_env_override_refused')
-    check_database_backup(env, args)
+    backup_pin = check_database_backup(env, args)
     RUNTIME = pin_executables()
     check_process(args.pid)
     if env.get('PORT', str(args.port)) != str(args.port):
@@ -319,6 +426,7 @@ def run(args):
     if pid_cwd(args.pid) != rollback or not owns_listener(args.pid, args.port):
         raise LaunchError('pid_changed')
     check_process(args.pid)
+    recheck_backup(backup_pin)
     os.kill(args.pid, signal.SIGTERM)
     PHASE = 'old_signalled'
     if not await_state(lambda: port_free(args.port), 15):
@@ -357,7 +465,9 @@ def main():
     p.add_argument('--port', type=int, default=3100)
     p.add_argument('--backup', required=True)
     p.add_argument('--backup-db', required=True)
-    p.add_argument('--backup-verified', action='store_true')
+    p.add_argument('--backup-manifest')
+    p.add_argument('--drill-report')
+    p.add_argument('--backup-max-age-s', type=int, default=None)  # required by check_database_backup: no silent default
     p.add_argument('--execute', action='store_true')
     p.add_argument('--status-file')
     args = p.parse_args()

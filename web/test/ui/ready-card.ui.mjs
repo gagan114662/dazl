@@ -120,7 +120,7 @@ try {
     assert.deepEqual(await fixes(page), ['', '', '', `Review leads>/app/leads?job_id=${A}`, '', '', 'Add sender details>/app/settings#gmail'])
     assert.match(await page.getByTestId('rc-qualified').innerText(), /no lead has passed the source check yet/)
     assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example; your sender name and mailing address are missing/)
-    assert.match(await page.getByTestId('rc-search').innerText(), /Sources: Web research with your AI key, News articles, Company websites/)
+    assert.match(await page.getByTestId('rc-search').innerText(), /Sources: News articles/)
     assert.doesNotMatch(await card(page).innerText(), /Web search index|Reddit/, 'sources that cannot run are not shown as available')
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll (${tag})`)
     await shot(page, `reviewed-${tag}`)

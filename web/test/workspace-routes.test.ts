@@ -59,4 +59,5 @@ test('forgot password reveals nothing; reset works once and signs out everywhere
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /EMAIL ROUTES ok/)
+  assert.match(r.stdout, /EMAIL ROUTES expired\+change ok/)
 })
