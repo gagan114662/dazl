@@ -225,8 +225,11 @@ bothEngines('review: the session plan stamps each reservation with the CURRENT t
   // deps.now is a getter-like fixed number in older tests; the collector must read the clock again after each wait when none is injected.
   const realNow = Date.now; Date.now = () => clockS * 1000
   try { await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: { ...ADV_ENV, LINKEDIN_SESSION_PER_RUN: '3' }, sleep }) } finally { Date.now = realNow }
-  const rows = await db.all<{ created_at: number }>("SELECT created_at FROM adv_request_budget WHERE tenant_id = 'A' AND connector = 'adv:linkedin' ORDER BY created_at", []).catch(() => [])
-  if (rows.length > 1) assert.ok(new Set(rows.map(r => r.created_at)).size > 1, 'reservations carry distinct, current timestamps')
+  // Reservations live in adv_requests.at (the earlier query named a table/column that does not exist, and a .catch hid that, so the assertion never ran).
+  const rows = await db.all<{ at: number }>("SELECT at FROM adv_requests WHERE tenant_id = 'A' AND connector = 'adv:linkedin' ORDER BY at", [])
+  assert.ok(rows.length >= 2, `expected at least the posts + one engagers reservation, got ${rows.length}`)
+  assert.equal(new Set(rows.map(r => r.at)).size, rows.length, 'every reservation carries its own current timestamp, not the run-start instant')
+  assert.ok(rows[rows.length - 1].at - rows[0].at >= 1800, 'timestamps advance with the pace waits')
 })
 
 bothEngines('review: a transport error is reported as an incomplete read (onIncomplete), without being a stop', async ({ db }) => {
