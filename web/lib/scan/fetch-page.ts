@@ -2,6 +2,7 @@ import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
 import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
+import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
 
 export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[] } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
 
@@ -60,7 +61,7 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
     const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
     const req = https.request(
       url,
-      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
+      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: brregRecordRef(url.toString()) ? 'application/json' : 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
       res => {
         const status = res.statusCode ?? 0
         const type = String(res.headers['content-type'] ?? '')
@@ -68,7 +69,9 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
           res.resume()
           return resolve({ status, location: String(res.headers.location ?? ''), type, body: '' })
         }
-        if (!/^text\/(html|plain)|application\/xhtml/i.test(type)) {
+        // The ONE non-HTML document a page read accepts: the Norway register's own API record for an entity (#763), rendered below. No other JSON is read.
+        const registryRecord = !!brregRecordRef(url.toString()) && /^application\/json\b/i.test(type)
+        if (!registryRecord && !/^text\/(html|plain)|application\/xhtml/i.test(type)) {
           res.destroy()
           return resolve({ status, type, body: '' })
         }
@@ -215,7 +218,12 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
       else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
       else if (!html) return { fail: 'error' }
-      else {
+      else if (/^application\/json\b/i.test(r.type)) {
+        // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
+        const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
+        try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
+        return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
+      } else {
         const t = htmlToText(html)
         thin = classifyThin(html, t.text)
         if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }

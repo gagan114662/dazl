@@ -5,13 +5,13 @@ import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
 import { draftClaimContextFor } from './service.ts'
 import { publishedContact } from './published-email.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
-import { createDraft, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
+import { createDraftWithWords, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
 import { tableExists } from './send-budget.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
 import { captureError } from '../ops/errors.ts'
 import { ENRICH_STALE_S } from '../scan/enrichment.ts'
-import { polishDraft, type LlmDeps } from './draft-llm.ts'
+import { polishDraftWithWords, type LlmDeps } from './draft-llm.ts'
 import { calibratedStop, claimIssuesFor, launchGate, launchProviders, migrateLaunchPolicy, outsidePolicy, withdrawLaunchPolicy, type LaunchGate, type SpendStop } from './launch-policy.ts'
 import { providers as defaultProviders } from '../llm/provider.ts'
 import { displayAuditDetail } from './stop-reason.ts'
@@ -319,11 +319,21 @@ export function draftAuthority(db: Database.Database, tenantId: string, messageI
   const a = authorityInputs(db, tenantId, messageId)
   return a && sha([CONSENT_VERSION, a.to_email, a.subject, a.body, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
+// The authority for an explicit word set (#929): the live row supplies everything but the words, so autopilot's
+// expected authority is the words it wrote, never words re-read after another writer could have changed them.
+function draftAuthorityFor(db: Database.Database, tenantId: string, messageId: string, words: { subject: string; body: string }): string | null {
+  const a = authorityInputs(db, tenantId, messageId)
+  return a && sha([CONSENT_VERSION, a.to_email, words.subject, words.body, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
+}
 // The same, without the words: what a new draft's polish (which rewrites only the words) must leave unchanged.
 function draftContext(db: Database.Database, tenantId: string, messageId: string): string | null {
   const a = authorityInputs(db, tenantId, messageId)
   return a && sha([CONSENT_VERSION, a.to_email, a.offer, a.seller, a.sender_name, a.postal_address, a.gmail])
 }
+const draftWords = (db: Database.Database, tenantId: string, messageId: string) =>
+  db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(messageId, tenantId) as { subject: string; body: string; words_rev: number } | undefined
+// Content-version binding: the words AND the revision every writer bumps, so an A to B to A owner edit is still an edit.
+const sameWords = (a: { subject: string; body: string; words_rev: number }, b: { subject: string; body: string; words_rev: number }) => a.subject === b.subject && a.body === b.body && a.words_rev === b.words_rev
 // The address of the connected Gmail account (the one the send path sends from), or null when none is connected.
 function gmailSender(db: Database.Database, tenantId: string): string | null {
   return (db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined)?.email.toLowerCase() ?? null
@@ -750,13 +760,26 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     }
     let id: string
     let context: string | null
+    let editedDuringPolish = false
+    let accepted: { subject: string; body: string; words_rev: number } | null = null
     try {
-      id = createDraft(db, tenantId, l.id, businessName)
+      // The words as autopilot drafted them, returned by the creating transaction itself (#929): no separate re-read an
+      // owner edit in another process could reach first. Anything else in the row afterwards is the owner's (or another
+      // writer's) edit: never adopted as autopilot's own authority.
+      const created = createDraftWithWords(db, tenantId, l.id, businessName)
+      id = created.id
+      const w0 = created.words
       context = draftContext(db, tenantId, id)
       // under a calibrated launch every model call reserves its worst case against the launch's spend cap first
       let refused: SpendStop | null = null
       const pd = gate.calibrated ? { ...d, providers: launchProviders((d as LlmDeps).providers ?? defaultProviders, db, tenantId, gate.launchedAt, gate.policy.spendCapUsd, now, why => { refused = why }) } : d
-      try { await polishDraft(db, tenantId, id, businessName, pd) } catch { /* template stays */ }
+      let wrote: { subject: string; body: string; words_rev: number } | null = null
+      try { const pr = await polishDraftWithWords(db, tenantId, id, businessName, pd, w0.words_rev); if (pr.rewritten && pr.words) wrote = { ...pr.words, words_rev: w0.words_rev + 1 } } catch { /* template stays */ }
+      // The one accepted word set: the polish's own write, else the inserted template. The row is compared with it, and
+      // the expected authority below is computed from it, not from the row.
+      accepted = wrote ?? w0
+      const w1 = draftWords(db, tenantId, id)
+      if (!w1 || !sameWords(w1, accepted)) editedDuringPolish = true
       if (refused) { const why: SpendStop = refused; attempt(() => audit(db, tenantId, 'held_spend', why, l.id, id)); tryPause(why); out.held++; out.stopped = why; return out }
     } catch (e) {
       // Recorded once per reason: a lead refused again for the same reason moves its skipped row's time instead of
@@ -769,8 +792,11 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     }
     // The polish may change only the words: the offer, seller, sender settings or Gmail address changing across it hands
     // the draft to the user.
-    const expected = draftAuthority(db, tenantId, id)
-    if (!context || !expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
+    // An owner edit landed during the polish await: the draft goes back to the owner with their words untouched; autopilot
+    // neither approves nor sends words the owner last wrote, and never treats them as the authority it drafted under.
+    if (editedDuringPolish) { release(id, l.id, 'edited while autopilot was drafting: your words are kept, yours to approve'); continue }
+    const expected = accepted && draftAuthorityFor(db, tenantId, id, accepted)
+    if (!context || !expected || draftAuthority(db, tenantId, id) !== expected || draftContext(db, tenantId, id) !== context) { release(id, l.id); continue }
     if (await deliver(id, l.id, 0, expected) === 'stop') return out
   }
   return out

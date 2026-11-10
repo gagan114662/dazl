@@ -2,6 +2,12 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states
+  registreringsdatoEnhetsregisteret, so the unchanged verifier dates them (`page_bound`). The verifier's page fetcher reads that one JSON record URL shape and nothing else. A Norway task
+  (`norway-dental-registry`, brreg only) is on the scoreboard, outside frozen benchmark set v1. Not verified: a keyed scoreboard run (TINYFISH_API_KEY, SCOREBOARD_ANTHROPIC_KEY); registry
+  brreg now spends one record read per cited item from the shared 60/hour cap (up to 12 calls per scan, about 5 full scans an hour process-wide). Registry
+  records carry no email/phone, so a Norway lead still needs enrichment before it can be qualified.
+
 ## Score
 
 - Baseline (Instinct, 2026-10-25, live Ohio scan on main 94e3c645): 2 search hits, 1 candidate, 0 verified,
@@ -242,7 +248,7 @@ formal or informal, that dazl beats either competitor. Work in this order (#393'
 
 1. #379 multi-page seller research + source-backed buyer hypotheses (competitors' actual strength today).
 2. #380 explicit AND/OR/NOT targeting with per-condition proof.
-3. #381 adaptive discovery driven by actionable yield, not a fixed search count.
+3. #381 adaptive discovery driven by actionable yield, not a fixed search count (one bounded adaptive TinyFish round when round one verifies nothing: PR #655, in review; stubbed providers only, not run live; gated OFF by default behind DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 - the extra per-scan spend is not owner-approved).
 4. #382 real Apollo-to-PDL enrichment fallback waterfall (per-lead per-provider outcomes, timeout/skip notices in the scan view: PR on `b/382-enrich-waterfall`, in review; stubbed providers only, not run live).
 5. #383 buyer-role contact filtering before result truncation (in review: PR #566, b/383-buyer-role-acceptance — role filter before the page cap, former/assistant-to rejected, no person from a generic inbox, and verified-current vs search-result-only contacts on the owner definition, each pinned by the acceptance harness).
 6. #384 separate published provenance from deliverability/person-route status.

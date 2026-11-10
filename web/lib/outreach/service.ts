@@ -255,6 +255,15 @@ export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: 
 export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
 }
+// The same, also returning the exact words it inserted, read inside the creating transaction (#929): autopilot binds
+// these as its own authority, never a later re-read that another process's edit could have reached first.
+export function createDraftWithWords(db: Database.Database, tenantId: string, leadId: string, businessName: string): { id: string; words: { subject: string; body: string; words_rev: number } } {
+  return db.transaction(() => {
+    const id = createDraftInner(db, tenantId, leadId, businessName)
+    const words = db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { subject: string; body: string; words_rev: number }
+    return { id, words }
+  }).immediate()
+}
 
 // Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
 function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
@@ -378,7 +387,7 @@ export function editDraft(db: Database.Database, tenantId: string, id: string, e
   const body = edit.body.replace(/\u0000/g, '').trim()
   if (subject.length < 1 || subject.length > 150) throw new OutreachError('bad_subject')
   if (body.length < 20 || body.length > 3000) throw new OutreachError('bad_body')
-  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, status = 'draft', approved_hash = NULL, error = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, id, tenantId)
+  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, status = 'draft', approved_hash = NULL, error = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, id, tenantId)
   if (tableExists(db, 'sequences')) {
     const seq = db.prepare('SELECT id FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as { id: string } | undefined
     if (seq) {
