@@ -63,6 +63,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
+import { linkedinSessionTransport, sessionTransportProblem } from '../signals/linkedin-session-transport.ts'
 import { writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
@@ -1424,14 +1425,21 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // any other complaint-search failure only means no extra candidates
       }
     }
-    // LinkedIn people (#192): buyer-role matches and competitor engagers, ONLY through an injected, reviewed transport (deps.linkedinTransport). dazl itself holds no member
-    // session or cookie on this path; with no transport nothing is requested. Same gates as every LinkedIn call; candidates are login-walled, so they land in the review lane.
+    // LinkedIn people (#192): buyer-role matches and competitor engagers through an injected, reviewed transport (deps.linkedinTransport) or, only when its own flag and tenant
+    // allowlist allow it, the owner-authorised signed-in session transport (competitor posts -> commenters / reactors, read-only). With neither, nothing is requested. Same gates
+    // as every LinkedIn call; candidates are login-walled, so they land in the review lane. A stop (throttled / challenge / logged out / caps) is recorded on the scan, visibly.
     if (job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
-        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport: deps.linkedinTransport, beforeRequest: () => assertOwned(db, job) })
+        // The session transport: only with its own flag, ONE allowlisted tenant and a named throwaway account. A flag that is on but misconfigured is recorded, not silent.
+        const why = deps.linkedinTransport ? 'off' : sessionTransportProblem(job.user_id)
+        if (why === 'no_worker' || why === 'no_account' || why === 'multiple_tenants') await writeAudit(sqliteDb(db), { tenantId: job.user_id, connector: PEOPLE_CONNECTOR, jobId: job.id, lookup: 'linkedin session', status: `session_${why}`, results: 0 })
+        const transport = deps.linkedinTransport ?? (why === null ? linkedinSessionTransport(sqliteDb(db), { master: deps.master }) : undefined)
+        const stop: { status: string | null; incomplete: boolean } = { status: null, incomplete: false }
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport, onStop: s => { stop.status = s }, onIncomplete: () => { stop.incomplete = true }, beforeRequest: () => assertOwned(db, job) })
+        if ((stop.status || stop.incomplete) && li.length === 0) ledger.record(PEOPLE_CONNECTOR, 'unavailable', 0)   // the reason is the stopped_* / daily_cap audit row
         if (li.length > 0) {
-          ledger.record(PEOPLE_CONNECTOR, 'ok', li.length)
+          ledger.record(PEOPLE_CONNECTOR, stop.status || stop.incomplete ? 'partial' : 'ok', li.length)
           assertOwned(db, job)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, li), deps.fetchImpl, 3000)
           const extra = parseLeads(text, li.map(i => i.url)) ?? []

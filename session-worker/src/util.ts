@@ -17,7 +17,8 @@ export interface FetchOptions { cookie?: string; headers?: Record<string, string
 // Why a supported fetch produced no list. Each is its own outcome, never a zero-result search:
 // the platform rejected the session (auth), throttled it, or answered with something that is not
 // the JSON this fetcher reads (schema). Anything else (network, 5xx, timeout) is upstream.
-export type FailureKind = 'auth_failed' | 'throttled' | 'schema_error' | 'upstream_error'
+// 'challenge' (a checkpoint / captcha / bot block) is only produced by the LinkedIn engagers reader (src/linkedin-engagers.ts).
+export type FailureKind = 'auth_failed' | 'throttled' | 'challenge' | 'schema_error' | 'upstream_error'
 export class FetchFailure extends Error {
   readonly kind: FailureKind
   constructor(kind: FailureKind) { super(kind); this.kind = kind }
@@ -46,6 +47,29 @@ export async function getJson(url: string, opts: FetchOptions = {}): Promise<unk
   try { text = await res.text() } catch { throw new FetchFailure('upstream_error') }
   if (text.length > 1_000_000) throw new FetchFailure('schema_error')
   try { return JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
+}
+
+// Read at most `max` BYTES of a response body, streaming: the read stops and the stream is cancelled as soon as the
+// running total passes the cap, so a huge or hostile answer can never be buffered whole (#192 review). over = the cap was
+// passed; text is then only the bounded prefix (enough to classify a login wall / checkpoint page). A body that fails
+// mid-read is an upstream_error.
+export const MAX_UPSTREAM_BYTES = 1_000_000
+export async function readCapped(res: { body: ReadableStream<Uint8Array> | null }, max = MAX_UPSTREAM_BYTES): Promise<{ text: string; over: boolean }> {
+  if (!res.body) return { text: '', over: false }
+  const reader = res.body.getReader(), chunks: Uint8Array[] = []
+  let n = 0, over = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (n + value.byteLength > max) { chunks.push(value.subarray(0, max - n)); n = max; over = true; break }
+      chunks.push(value); n += value.byteLength
+    }
+  } catch { throw new FetchFailure('upstream_error') }
+  if (over) { try { await reader.cancel() } catch { /* already closed */ } }
+  const buf = new Uint8Array(n); let at = 0
+  for (const c of chunks) { buf.set(c, at); at += c.byteLength }
+  return { text: new TextDecoder('utf-8', { fatal: false }).decode(buf), over }
 }
 
 export const item = (url: string, title: string, quote: string, date: string | null, login_walled = true): WorkerItem | null => {

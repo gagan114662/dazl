@@ -25,6 +25,7 @@
 //    synthetic fixture can never sit beside, or be presented as, a competitor's live result. scorecard() then refuses
 //    to evaluate thresholds for synthetic data.
 import { createHash } from 'node:crypto'
+import { CONTRACT_FIELDS as SHARED_FIELDS, scorecardVerdicts } from '../evals/contract.ts'
 import { FIELDS, problemSummary, scorecard, validated, type BenchmarkRun, type Field, type Scorecard, type Task, type TaskRun, type TaskSet, type Verdict } from './scorecard.ts'
 
 export type AdapterOrigin = 'live' | 'recorded' | 'synthetic'
@@ -314,24 +315,14 @@ export function labelEvaluator(labels: Record<string, Record<string, Partial<Rec
 // The shape of lib/evals/contract.ts evaluateLead()'s LeadEvaluation (#394, PR #571) that the runner reads. It is
 // structural so the hook takes that function as it is once it lands, without this file depending on an unmerged module.
 export interface ContractLeadEvaluation {
-  contract: string; tier: string | null; status: 'pass' | 'fail' | 'unknown'; scorer: { id: string; version: number }
+  contract: string; contract_hash?: string; tier: string | null; status: 'pass' | 'fail' | 'unknown'; scorer: { id: string; version: number }
   verdicts: { field: string; status: string; rationale?: string; evidence?: string[] }[]
 }
-// Which contract fields decide each scorecard field. The scorecard field takes the worst of them
-// (contradicted, then fail, then unknown); a field the contract did not score, or a status it does not know, is unknown.
-export const CONTRACT_FIELDS: Record<Field, string[]> = {
-  identity: ['identity.entity', 'source.on_page'],
-  constraints: ['place.matches', 'industry.matches', 'event.predicate', 'consent.status'],
-  event_date: ['event.date_real', 'event.date_in_window'],
-  contact: ['contact.usable'],
-}
-export function contractVerdicts(e: ContractLeadEvaluation): Record<Field, Verdict> {
-  const by = new Map(e.verdicts.map(v => [v.field, VERDICTS.includes(v.status as Verdict) ? v.status as Verdict : 'unknown' as Verdict]))
-  return Object.fromEntries(FIELDS.map(f => {
-    const got = CONTRACT_FIELDS[f].filter(k => by.has(k)).map(k => by.get(k)!)
-    return [f, got.length ? (['contradicted', 'fail', 'unknown', 'pass'] as Verdict[]).find(w => got.includes(w))! : 'unknown']
-  })) as Record<Field, Verdict>
-}
+// Which contract fields decide each scorecard field, and what "unknown" means, are defined ONCE in lib/evals/contract.ts (#394) and used here and in
+// scorecard.ts, so the contract's summary and the scorecard cannot disagree.
+export const CONTRACT_FIELDS: Record<Field, readonly string[]> = SHARED_FIELDS
+export function contractVerdicts(e: ContractLeadEvaluation): Record<Field, Verdict> { return scorecardVerdicts(e.verdicts) as Record<Field, Verdict> }
+
 export interface ContractHook<C, E> {
   name: string; version: string
   contractFor(brief: Brief): C | null                       // the frozen contract for this task; null -> every item unknown (never inferred)
@@ -349,7 +340,9 @@ export function contractEvaluator<C, E>(h: ContractHook<C, E>): BlindEvaluator {
         if (contract === null) return [it.blind_id, { record: { error: `no evaluation contract for task ${brief.task_id}` } }]
         try {
           const e = h.evaluate(contract, h.evidenceFor(it, brief))
-          return [it.blind_id, { ...contractVerdicts(e), record: { contract: e.contract, tier: e.tier, status: e.status, scorer: e.scorer, verdicts: e.verdicts } }]
+          // Every judgement carries the frozen contract hash it was scored under, so a result is auditable and reproducible. A scorer that returns no hash is not trusted.
+          if (!e.contract_hash) return [it.blind_id, { record: { error: `no contract hash on the evaluation for task ${brief.task_id}: the result cannot be audited, so it is unknown`, contract: e.contract } }]
+          return [it.blind_id, { ...contractVerdicts(e), record: { contract: e.contract, contract_hash: e.contract_hash, tier: e.tier, status: e.status, scorer: e.scorer, verdicts: e.verdicts } }]
         } catch (err) { return [it.blind_id, { record: { error: `contract scorer failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}` } }] }
       }))
     },
