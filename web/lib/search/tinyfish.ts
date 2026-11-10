@@ -123,7 +123,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
     // A refusal by the SCAN'S OWN budget (reserveScanSpend) stops the scan - the runner records its exact provenance
     // (skipped_hold before any send, partial_hold after work ran). It is NOT the daily-allowance 'cap' above: swallowing
     // it here made a hold-stopped source read as a clean "no results" (unavailable) and let the scan keep spending.
-    if (e instanceof SpendRefused) d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null })
+    if (e instanceof SpendRefused) d.trace?.search({ query, attempted: false, outcome: 'spend_refused', hits: null }) // money, not a count cap (never search_cap)
     throw e
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
@@ -163,7 +163,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.fetch', () => unitCostUsd('tinyfish.fetch', batch.length, env)) } catch (e) {
     // Same rule as the search reserve above: the scan's own budget refusal propagates; the daily-allowance gate stays 'cap'.
-    if (e instanceof SpendRefused) d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null })
+    if (e instanceof SpendRefused) d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'spend_refused', pages: null }) // money, not a count cap
     throw e
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)

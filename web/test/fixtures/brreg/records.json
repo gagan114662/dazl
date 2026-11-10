@@ -1,0 +1,802 @@
+{
+ "enheter/938784884": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938784884"
+   }
+  },
+  "aktivitet": [
+   "Tannlegetjenester."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Luramyrveien 19"
+   ],
+   "kommune": "SANDNES",
+   "kommunenummer": "1108",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "4313",
+   "poststed": "SANDNES"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-18",
+  "fravalgRevisjonDato": "2026-10-30",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 1000,
+   "belop": 100000,
+   "innfortDato": "2026-10-30",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "TANNADI DRIFT AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938784884",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-30",
+  "registreringsdatoForetaksregisteret": "2026-10-30",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-18",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-18",
+  "vedtektsfestetFormaal": [
+   "Tjene mest mulig penger på tannlege- og tilhørende virksomhet."
+  ]
+ },
+ "enheter/938756112": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938756112"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Cecilie Tvedts gate 6"
+   ],
+   "kommune": "STAVANGER",
+   "kommunenummer": "1103",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "4016",
+   "poststed": "STAVANGER"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-07",
+  "fravalgRevisjonDato": "2026-10-27",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-10-27",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "NORWEGIAN SPEARO AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938756112",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-27",
+  "registreringsdatoForetaksregisteret": "2026-10-27",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-07",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-07",
+  "vedtektsfestetFormaal": [
+   "Tannlegevirksomhet og hva hermed står i forbindelse.",
+   "Konsulenttjenester og instruktørtjeneste i dykking, samt investere i",
+   "andre selskap, fast eiendom, kjøp og salg av båter og kjøretøy."
+  ]
+ },
+ "enheter/838756042": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838756042"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Guttorms gate 1"
+   ],
+   "kommune": "TRONDHEIM",
+   "kommunenummer": "5001",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "7030",
+   "poststed": "TRONDHEIM"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-02",
+  "fravalgRevisjonDato": "2026-10-27",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 1000,
+   "belop": 30000,
+   "innfortDato": "2026-10-27",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "TRONDHEIM TANNREGULERING KLINIKK AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "838756042",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-27",
+  "registreringsdatoForetaksregisteret": "2026-10-27",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-02",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-02",
+  "vedtektsfestetFormaal": [
+   "Drift av tannhelsetjenester, herunder kjeveortopedisk behandling,",
+   "investering i fast eiendom, kjøp og salg av aksjer og andre",
+   "verdipapirer, deltakelse i andre selskaper, samt annen virksomhet som",
+   "naturlig hører sammen med dette."
+  ]
+ },
+ "enheter/938739544": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938739544"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Issa Hansens vei 12"
+   ],
+   "kommune": "BALSFJORD",
+   "kommunenummer": "5532",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "9050",
+   "poststed": "STORSTEINNES"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-05",
+  "fravalgRevisjonDato": "2026-10-23",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-10-23",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "BALSFJORD TANNKLINIKK AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938739544",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-23",
+  "registreringsdatoForetaksregisteret": "2026-10-23",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-05",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-05",
+  "vedtektsfestetFormaal": [
+   "Drift av tannlegepraksis samt det som naturlig faller sammen med",
+   "dette."
+  ]
+ },
+ "enheter/938738734": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938738734"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Sandakerveien 105"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0483",
+   "poststed": "OSLO"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-21",
+  "fravalgRevisjonDato": "2026-10-23",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 1000,
+   "belop": 30000,
+   "innfortDato": "2026-10-23",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "TANNLEGE LEHNER AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938738734",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-23",
+  "registreringsdatoForetaksregisteret": "2026-10-23",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-21",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-21",
+  "vedtektsfestetFormaal": [
+   "Tannlegetjenester og virksomhet som naturlig står i forbindelse med",
+   "dette."
+  ]
+ },
+ "enheter/938719411": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938719411"
+   }
+  },
+  "aktivitet": [
+   "Tannlege."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Prost Bangs vei 24"
+   ],
+   "kommune": "SARPSBORG",
+   "kommunenummer": "3105",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "1710",
+   "poststed": "SARPSBORG"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 100,
+   "belop": 30000,
+   "innfortDato": "2026-10-21",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Tannlegetjenester",
+   "kode": "86.230"
+  },
+  "navn": "PØW TANNLEGESENTER AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938719411",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-21",
+  "registreringsdatoForetaksregisteret": "2026-10-21",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-09-03",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-09-03",
+  "vedtektsfestetFormaal": [
+   "Drive tannlege virksomhet."
+  ]
+ },
+ "underenheter/938737347": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938737347"
+   },
+   "overordnetEnhet": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/934576594"
+   }
+  },
+  "beliggenhetsadresse": {
+   "adresse": [
+    "Grønland 1"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0188",
+   "poststed": "OSLO"
+  },
+  "epostadresse": "maiyon@hotmail.com",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "naeringskode1": {
+   "beskrivelse": "Drift av restauranter",
+   "kode": "56.110"
+  },
+  "navn": "REVETAL GAMLE STASJONEN AS AVD OSLO",
+  "oppstartsdato": "2026-11-01",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+    }
+   },
+   "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+   "kode": "BEDR"
+  },
+  "organisasjonsnummer": "938737347",
+  "overordnetEnhet": "934576594",
+  "postadresse": {
+   "adresse": [
+    "Gamleveien 2"
+   ],
+   "kommune": "TØNSBERG",
+   "kommunenummer": "3905",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "3174",
+   "poststed": "REVETAL"
+  },
+  "registreringsdatoEnhetsregisteret": "2026-11-02",
+  "registrertIMvaregisteret": false,
+  "respons_klasse": "Underenhet"
+ },
+ "underenheter/938797455": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/underenheter/938797455"
+   },
+   "overordnetEnhet": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/929449339"
+   }
+  },
+  "beliggenhetsadresse": {
+   "adresse": [
+    "Kjølberggata 21"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0653",
+   "poststed": "OSLO"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "hjelpeenhetskode": {
+   "beskrivelse": "Hovedkontortjenester",
+   "kode": "70.100"
+  },
+  "naeringskode1": {
+   "beskrivelse": "Catering for arrangementer",
+   "kode": "56.210"
+  },
+  "navn": "HÅNDBAKT HOLDING AS",
+  "oppstartsdato": "2026-11-01",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/BEDR"
+    }
+   },
+   "beskrivelse": "Underenhet til næringsdrivende og offentlig forvaltning",
+   "kode": "BEDR"
+  },
+  "organisasjonsnummer": "938797455",
+  "overordnetEnhet": "929449339",
+  "registreringsdatoEnhetsregisteret": "2026-11-02",
+  "registrertIMvaregisteret": false,
+  "respons_klasse": "Underenhet"
+ },
+ "enheter/838791352": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/838791352"
+   }
+  },
+  "aktivitet": [
+   "Drift av restaurant/kafe."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Veksthusfløtten 55"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0594",
+   "poststed": "OSLO"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-06",
+  "fravalgRevisjonDato": "2026-10-31",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-10-31",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Drift av restauranter",
+   "kode": "56.110"
+  },
+  "navn": "PUNJABI MASALA AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "838791352",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-31",
+  "registreringsdatoForetaksregisteret": "2026-10-31",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-06",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-06",
+  "vedtektsfestetFormaal": [
+   "Restaurantdrift og virksomhet som naturlig står i forbindelse med",
+   "dette, herunder deltakelse i andre selskaper."
+  ]
+ },
+ "enheter/938762767": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938762767"
+   }
+  },
+  "aktivitet": [
+   "Drift av gatekjøkken."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Ragnhild Schibbyes vei 31"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0968",
+   "poststed": "OSLO"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-08",
+  "fravalgRevisjonDato": "2026-10-27",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 30000,
+   "belop": 30000,
+   "innfortDato": "2026-10-27",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Drift av restauranter",
+   "kode": "56.110"
+  },
+  "navn": "SMASH MAT AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938762767",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-27",
+  "registreringsdatoForetaksregisteret": "2026-10-27",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-08",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-08",
+  "vedtektsfestetFormaal": [
+   "Selge varer og tjenester innen gatekjøkkendrift og annet som",
+   "naturlig sammenfaller med dette, samt deltakelse i andre selskaper,",
+   "investeringer og nærliggende virksomhet."
+  ]
+ },
+ "enheter/938750386": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938750386"
+   }
+  },
+  "aktivitet": [
+   "Drift av restaurant/kafe."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Mandalls gate 10"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0190",
+   "poststed": "OSLO"
+  },
+  "fravalgRevisjonBeslutningsDato": "2026-10-20",
+  "fravalgRevisjonDato": "2026-10-26",
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Private aksjeselskaper mv.",
+   "kode": "2100"
+  },
+  "kapital": {
+   "antallAksjer": 300,
+   "belop": 30000,
+   "innfortDato": "2026-10-26",
+   "type": "Aksjekapital",
+   "valuta": "NOK"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Drift av restauranter",
+   "kode": "56.110"
+  },
+  "navn": "LOS CUATES AS",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/AS"
+    }
+   },
+   "beskrivelse": "Aksjeselskap",
+   "kode": "AS"
+  },
+  "organisasjonsnummer": "938750386",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-26",
+  "registreringsdatoForetaksregisteret": "2026-10-26",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "stiftelsesdato": "2026-10-20",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false,
+  "vedtektsdato": "2026-10-20",
+  "vedtektsfestetFormaal": [
+   "Selskapet skal drive en meksikansk taqueria i Grønland i Oslo under",
+   "navnet El Trompo. Selskapet skal tjene penger på salg av mat og drikke",
+   "til gjester i restauranten, takeaway og catering. Selskapet kan også",
+   "drive annen virksomhet som er naturlig knyttet til dette, og delta i",
+   "andre selskaper med tilsvarende formål."
+  ]
+ },
+ "enheter/938747784": {
+  "_links": {
+   "self": {
+    "href": "https://data.brreg.no/enhetsregisteret/api/enheter/938747784"
+   }
+  },
+  "aktivitet": [
+   "Catering."
+  ],
+  "erIKonsern": false,
+  "forretningsadresse": {
+   "adresse": [
+    "Anton Tschudis vei 29B"
+   ],
+   "kommune": "OSLO",
+   "kommunenummer": "0301",
+   "land": "Norge",
+   "landkode": "NO",
+   "postnummer": "0583",
+   "poststed": "OSLO"
+  },
+  "harRegistrertAntallAnsatte": false,
+  "historiskeNavn": [],
+  "institusjonellSektorkode": {
+   "beskrivelse": "Personlig næringsdrivende",
+   "kode": "8200"
+  },
+  "konkurs": false,
+  "maalform": "Bokmål",
+  "naeringskode1": {
+   "beskrivelse": "Catering for arrangementer",
+   "kode": "56.210"
+  },
+  "navn": "FREDRIK STRØM-LARSEN",
+  "organisasjonsform": {
+   "_links": {
+    "self": {
+     "href": "https://data.brreg.no/enhetsregisteret/api/organisasjonsformer/ENK"
+    }
+   },
+   "beskrivelse": "Enkeltpersonforetak",
+   "kode": "ENK"
+  },
+  "organisasjonsnummer": "938747784",
+  "paategninger": [],
+  "registreringsdatoEnhetsregisteret": "2026-10-26",
+  "registreringsdatoForetaksregisteret": "2026-10-26",
+  "registrertIForetaksregisteret": true,
+  "registrertIFrivillighetsregisteret": false,
+  "registrertIMvaregisteret": false,
+  "registrertIPartiregisteret": false,
+  "registrertIStiftelsesregisteret": false,
+  "respons_klasse": "Enhet",
+  "underAvvikling": false,
+  "underTvangsavviklingEllerTvangsopplosning": false
+ }
+}

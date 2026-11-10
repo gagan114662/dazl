@@ -191,8 +191,8 @@ test('#448 parity: positive control - settings saved unchanged during the token 
 
 test('#448 parity: the body, subject or recipient of the held draft changed during the token refresh: back with the user, nothing sent', async () => {
   const changes: ((db: Database.Database, to: string) => void)[] = [
-    (db, to) => db.prepare("UPDATE outreach_messages SET body = 'edited words, entirely different pitch here' WHERE to_email = ?").run(to),
-    (db, to) => db.prepare("UPDATE outreach_messages SET subject = 'edited subject' WHERE to_email = ?").run(to),
+    (db, to) => db.prepare("UPDATE outreach_messages SET body = 'edited words, entirely different pitch here', words_rev = words_rev + 1 WHERE to_email = ?").run(to),
+    (db, to) => db.prepare("UPDATE outreach_messages SET subject = 'edited subject', words_rev = words_rev + 1 WHERE to_email = ?").run(to),
     (db, to) => db.prepare("UPDATE outreach_messages SET to_email = 'changed@three.example' WHERE to_email = ?").run(to),
   ]
   for (const change of changes) {
