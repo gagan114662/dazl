@@ -14,14 +14,14 @@ const O = { as_of: '2026-11-10' }
 const page = (text: string, url = 'https://news.example.com/p'): PersonPage => ({ url, text })
 const CUR = page('Updated October 20, 2026. Jane Doe is the VP of Sales at Northwind Labs.')
 const contactStatus = (email: string | null, person: Parameters<typeof contactEvidence>[2]) => {
-  const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: contactEvidence(email, null, person) }
+  const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: contactEvidence(email, null, person, P.name) }
   const r = evaluateLead(freezeContract(contract), e); const v = r.verdicts.find(x => x.field === 'contact.usable')!
   return { status: v.status, why: v.rationale }
 }
 
 test('a fresh page saying the person is at the company confirms a current employee, and the title when stated', () => {
   const r = verifyPerson(P, [CUR], O); assert.equal(r.person, 'current'); assert.equal(r.title_matches, 'pass'); assert.deepEqual(r.evidence, ['https://news.example.com/p'])
-  assert.deepEqual(contactStatus('jane@northwind.io', r), { status: 'pass', why: 'the email is at the company\'s domain and the contact is independently confirmed as a current employee' })
+  assert.deepEqual(contactStatus('jane@northwind.io', r), { status: 'pass', why: 'the email is at the company\'s domain, carries the confirmed person\'s name, and that person is independently confirmed as a current employee' })
 })
 
 test('former employee: a fresh page saying they left makes them former, and the contact fails', () => {
@@ -103,7 +103,7 @@ test('P1: a sentence that merely mentions the person and the company is not an e
 test('P1: "replaced X, who left the company" says nothing about the person; a former role at ANOTHER company is not a departure from this one', () => {
   assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe replaced John Smith, who left Northwind Labs.')], O).person, 'unknown')
   const r = verifyPerson(P, [page('Posted 2026-10-20. Jane Doe, former VP at Contoso, is VP of Sales at Northwind Labs.')], O)
-  assert.equal(r.person, 'current', 'the former role is at Contoso; the present role is at Northwind Labs')
+  assert.equal(r.person, 'unknown', 'a departure cue in the same sentence blocks current: fail closed (review of #1030), it is never read as current')
   assert.equal(verifyPerson(P, [page('Posted 2026-10-20. Jane Doe, former VP at Contoso, now advises Fabrikam.')], O).person, 'unknown')
 })
 
@@ -133,12 +133,68 @@ test('xhawk: common and qualified generic role inboxes never pass, and a name th
   const cur = verifyPerson(P, [CUR], O)
   for (const m of ['reception@northwind.io', 'webmaster@northwind.io', 'sales-emea@northwind.io', 'support.us@northwind.io', 'customer.service.team@northwind.io', 'info2@northwind.io', 'postmaster@northwind.io', 'billing@northwind.io', 'legal@northwind.io', 'press+tips@northwind.io', 'donotreply@northwind.io', 'marketing.apac@northwind.io'])
     assert.equal(contactStatus(m, cur).status, 'fail', m)
-  for (const m of ['jane@northwind.io', 'jane.info@northwind.io', 'info.smith@northwind.io', 'sales.jane@northwind.io', 'marketing-jane@northwind.io'])
+  for (const m of ['jane@northwind.io', 'jane.info@northwind.io', 'info.doe@northwind.io', 'sales.jane@northwind.io', 'marketing-jane@northwind.io'])
     assert.equal(contactStatus(m, cur).status, 'pass', m)
 })
 
 test('xhawk: the changed contact verdicts carry a new scorer version, so persisted judgements can tell the algorithms apart', () => {
-  assert.deepEqual(SCORER, { id: 'dazl.lead-contract', version: 2 })
+  assert.deepEqual(SCORER, { id: 'dazl.lead-contract', version: 3 })
   const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { email: 'jane@northwind.io' } }
-  assert.deepEqual(evaluateLead(freezeContract(contract), e).scorer, { id: 'dazl.lead-contract', version: 2 })
+  assert.deepEqual(evaluateLead(freezeContract(contract), e).scorer, { id: 'dazl.lead-contract', version: 3 })
+})
+
+// ---- Hermes-PC review of #1030 (head 40129cfc): seven leads that must not pass ----
+const stat = (...texts: string[]) => verifyPerson(P, texts.map((x, i) => page(x, `https://s${i}.example.com/p`)), O).person
+
+test('review 1: "is no longer at X" is a departure, not current', () => {
+  for (const x of ['Posted 2026-11-01. Jane Doe is no longer at Northwind Labs.', 'Posted 2026-11-01. Jane Doe is no longer with Northwind Labs.', 'Posted 2026-11-01. Jane Doe no longer works for Northwind Labs.'])
+    assert.equal(stat(x), 'former', x)
+})
+
+test('review 2: common departure phrasings are former, and a fresh current page does not outvote them', () => {
+  for (const x of [
+    'Posted 2026-11-01. Jane Doe, former VP of Sales of Northwind Labs, has joined Rival Inc.',
+    'Posted 2026-11-01. Jane Doe, the ex-VP of Sales of Northwind Labs, now leads sales at Rival.',
+    'Posted 2026-11-01. Jane Doe, who left Northwind Labs last month, now runs sales at Rival.',
+    'Posted 2026-11-01. Jane Doe has departed from Northwind Labs.',
+  ]) { assert.equal(stat(x), 'former', x); assert.equal(stat(CUR.text, x), 'former', 'with a fresh current page: ' + x) }
+  assert.equal(stat('Posted 2026-11-01. Jane Doe replaced John Smith, who left Northwind Labs.'), 'unknown', 'a departure about somebody else says nothing about her')
+})
+
+test('review 3: present tense that is not employment is not current', () => {
+  for (const x of ['Posted 2026-11-01. Jane Doe is speaking at Northwind Labs Summit next week.', 'Posted 2026-11-01. Jane Doe is an investor with Northwind Labs.', 'Posted 2026-11-01. Jane Doe is an advisor to Northwind Labs.', 'Posted 2026-11-01. Jane Doe is a customer of Northwind Labs.', 'Posted 2026-11-01. Jane Doe is attending the Northwind Labs conference.', 'Posted 2026-11-01. Jane Doe is the host at Northwind Labs Summit.', 'Posted 2026-11-01. Jane Doe is the VP of Sales at Northwind Labs and previously left Contoso.'])
+    assert.equal(stat(x), 'unknown', x)
+  assert.equal(stat('Posted 2026-11-01. Jane Doe is the VP of Sales at Northwind Labs.'), 'current')
+})
+
+test('review 4: only the page\'s OWN label dates the claim, never "updated" in the middle of a sentence', () => {
+  assert.equal(stat('Jane Doe is the VP of Sales at Northwind Labs. We updated our cookie policy on 2026-11-01.'), 'unknown')
+  assert.equal(stat('Jane Doe is the VP of Sales at Northwind Labs. The page was last updated by our team. Posted by Jane on 2026-11-01.'), 'unknown')
+  assert.equal(stat('Jane Doe is the VP of Sales at Northwind Labs. We updated 2026-11-01 the pricing page.'), 'unknown', 'a verb "updated" followed by a date is not the page label')
+  assert.equal(stat('Last updated 2026-11-01. Jane Doe is the VP of Sales at Northwind Labs.'), 'current', 'a page label that begins a sentence still counts')
+  assert.equal(stat('Jane Doe is the VP of Sales at Northwind Labs. Updated: November 1, 2026.'), 'current')
+})
+
+test('review 5: an unrecognised person value is unknown at best, and a wrong-case FORMER is still former', () => {
+  const ev = (person: unknown): LeadEvidence => ({ company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { email: 'jane@northwind.io', person: person as 'current', person_name: P.name } })
+  const status = (person: unknown) => evaluateLead(freezeContract(contract), ev(person)).verdicts.find(v => v.field === 'contact.usable')!.status
+  for (const v of ['maybe', 'yes', 'Current', 'true', 1, {}, '']) assert.equal(status(v), 'unknown', JSON.stringify(v))
+  for (const v of ['FORMER', ' Former ']) assert.equal(status(v), 'fail', JSON.stringify(v))
+  assert.equal(status('current'), 'pass')
+})
+
+test('review 6: the confirmed person must be tied to the address', () => {
+  const cur = verifyPerson(P, [CUR], O); assert.equal(cur.person, 'current')
+  const at = (email: string, name: string | null) => { const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: contactEvidence(email, null, cur, name) }; return evaluateLead(freezeContract(contract), e).verdicts.find(v => v.field === 'contact.usable')! }
+  assert.equal(at('bob@northwind.io', P.name).status, 'unknown'); assert.match(at('bob@northwind.io', P.name).rationale, /does not carry that person/)
+  assert.equal(at('jane@northwind.io', P.name).status, 'pass'); assert.equal(at('jdoe@northwind.io', P.name).status, 'pass'); assert.equal(at('doe.j@northwind.io', P.name).status, 'pass')
+  assert.equal(at('jane@northwind.io', null).status, 'unknown', 'a confirmation that does not say who it is about confirms no route')
+})
+
+test('review 7: malformed pages and arguments fail closed and never throw', () => {
+  const run = (pages: unknown, p: unknown = P, o: unknown = O) => { let r: ReturnType<typeof verifyPerson> | undefined; assert.doesNotThrow(() => { r = verifyPerson(p as typeof P, pages as PersonPage[], o as typeof O) }); return r!.person }
+  for (const [name, pages] of [['pages null', null], ['pages a string', 'x'], ['text null', [{ url: 'u', text: null }]], ['text a number', [{ url: 'u', text: 5 }]], ['url missing', [{ text: CUR.text }]], ['null entries', [null, undefined, 3]]] as [string, unknown][])
+    assert.equal(run(pages), 'unknown', name)
+  assert.equal(run([null, CUR]), 'current', 'a null entry among good pages is dropped, not fatal')
+  assert.equal(run([CUR], null), 'unknown'); assert.equal(run([CUR], { name: 5, company: 'x' }), 'unknown'); assert.equal(run([CUR], P, { as_of: 'not-a-day' }), 'unknown'); assert.equal(run([CUR], P, null), 'unknown')
 })

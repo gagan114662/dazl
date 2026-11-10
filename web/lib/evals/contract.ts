@@ -15,7 +15,8 @@ import { getDomain } from 'tldts'
 
 export const CONTRACT_VERSION = 'dazl.evaluation-contract/1'
 // v2 (#781): a former employee and a generic role inbox now fail contact.usable, and an unconfirmed person stays unknown; v1 judged the route alone.
-export const SCORER = { id: 'dazl.lead-contract', version: 2 } as const
+// v3 (#781 review): an unrecognised person value is unknown (never pass), and a confirmed-current person must be tied to the address (it carries their name).
+export const SCORER = { id: 'dazl.lead-contract', version: 3 } as const
 export type Status = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const STATUSES: Status[] = ['pass', 'fail', 'unknown', 'contradicted']
 
@@ -102,7 +103,7 @@ export interface LeadEvidence {
   event?: { kind: string; date?: string | null; sources: { url: string }[]; contradicted_by?: { url: string }[] } | null
   consent?: 'allowed' | 'blocked' | null
   // person: what an independent person check (lib/evals/person-verify.ts, #781) found about the named contact at this company. Undefined = no person check was run.
-  contact?: { email?: string | null; phone?: string | null; person?: 'current' | 'former' | 'unknown' } | null
+  contact?: { email?: string | null; phone?: string | null; person?: 'current' | 'former' | 'unknown'; person_name?: string | null } | null
 }
 export interface FieldVerdict { field: string; status: Status; rationale: string; evidence?: string[] }
 export interface LeadEvaluation {
@@ -137,6 +138,21 @@ const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/
 const emailDomain = (em: string) => em.slice(em.indexOf('@') + 1)
 const dayNum = (s: string) => Date.parse(`${s}T00:00:00Z`) / 86_400_000
 
+// The person value on the evidence, normalised: only 'current', 'former' and 'unknown' are understood. A wrong-case 'FORMER' is still a former employee (fail); any other value
+// ('maybe', 'yes', a number) is unknown, never pass. undefined means no person check was run.
+const personState = (v: unknown): 'current' | 'former' | 'unknown' | undefined => {
+  if (v === undefined || v === null) return undefined
+  if (v === 'current' || v === 'former' || v === 'unknown') return v
+  return typeof v === 'string' && v.trim().toLowerCase() === 'former' ? 'former' : 'unknown'
+}
+// A confirmation is about a PERSON, so the address must be that person's: its local part carries their first or last name (3+ letters), as jane@, jane.doe@, jdoe@, doe-jane@.
+const tiedToPerson = (local: string, name: unknown): boolean => {
+  if (typeof name !== 'string') return false
+  const toks = name.toLowerCase().normalize('NFKD').replace(/[^a-z\s'-]/g, ' ').split(/[\s'-]+/).filter(Boolean), lc = local.toLowerCase().replace(/[^a-z]/g, '')
+  if (toks.length === 0 || lc === '') return false
+  const first = toks[0], last = toks[toks.length - 1]
+  return (first.length >= 3 && lc.includes(first)) || (last.length >= 3 && lc.includes(last))
+}
 export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvaluation {
   if (!ISSUED.has(frozen)) throw new Error('not a contract frozen by freezeContract: a caller-supplied contract or hash is never trusted')
   if (contractHash(frozen.contract as Contract) !== frozen.hash) throw new Error('the evaluation contract changed after it was frozen: its hash no longer matches')
@@ -194,15 +210,17 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
 
   // contact.usable: a reachable route at the company, not a hiring or generic inbox, to a person who is still there.
   const em = e.contact?.email?.trim().toLowerCase()
-  if (e.contact?.person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company, whatever route is on file')
+  const person = personState(e.contact?.person)
+  if (person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company, whatever route is on file')
   else if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
   else if (!EMAIL.test(em)) add('contact.usable', 'fail', 'the email is not a well-formed address')
   else if (isRecruitingMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
   else if (isGenericMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a generic role inbox, which reaches a team and not a named person')
   else if (!claimed) add('contact.usable', 'unknown', 'the company domain is not known, so the email domain cannot be matched')
   else if (registrable(emailDomain(em)) !== claimed) add('contact.usable', 'fail', 'the email is not at the company\'s domain')
-  else if (e.contact?.person === 'unknown') add('contact.usable', 'unknown', 'the email is at the company\'s domain, but the contact\'s current employment could not be confirmed')
-  else add('contact.usable', 'pass', e.contact?.person === 'current' ? 'the email is at the company\'s domain and the contact is independently confirmed as a current employee' : 'the email is at the company\'s domain')
+  else if (person === 'unknown') add('contact.usable', 'unknown', 'the email is at the company\'s domain, but the contact\'s current employment could not be confirmed')
+  else if (person === 'current' && !tiedToPerson(em.slice(0, em.indexOf('@')), e.contact?.person_name)) add('contact.usable', 'unknown', 'the contact is confirmed as a current employee, but this address does not carry that person\'s name, so the confirmation is not about this route')
+  else add('contact.usable', 'pass', person === 'current' ? 'the email is at the company\'s domain, carries the confirmed person\'s name, and that person is independently confirmed as a current employee' : 'the email is at the company\'s domain')
 
   const status = v.some(x => x.status === 'fail' || x.status === 'contradicted') ? 'fail' : v.some(x => x.status === 'unknown') ? 'unknown' : 'pass'
   return { contract: frozen.contract.id, contract_hash: frozen.hash, tier: status === 'pass' ? 'validated' : null, status, scorer: { ...SCORER }, verdicts: v }
