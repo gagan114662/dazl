@@ -54,7 +54,7 @@ export function createVerificationFixture(db: Database.Database, tenantId: strin
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, fit, intent, action, source_kind, created_at) VALUES (?, ?, '', ?, NULL, ?, ?, 90, 4, 3, 3, 'test', ?)")
       .run(leadId, jobId, VERIFICATION_FIXTURE_LEAD, SIGNAL, SRC, now - 10 * 86400) // old enough to be outside the reply window
     const enr = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'apollo', 'contact', ?, 'Test fixture', 70, ?, ?, ?)")
-    FIXTURE_CONTACTS.forEach((c, i) => enr.run(randomBytes(12).toString('hex'), leadId, tenantId, `${c.name} - ${c.title}`, c.linkedin ?? `${SRC}/team`, today, now))
+    FIXTURE_CONTACTS.forEach(c => enr.run(randomBytes(12).toString('hex'), leadId, tenantId, `${c.name} - ${c.title}`, c.linkedin ?? `${SRC}/team`, today, now))
     const run = db.prepare('INSERT INTO scan_source_runs (job_id, attempt, collector, status, evidence_count, candidate_count, verified_count, review_count, inserted_count) VALUES (?, 1, ?, ?, ?, ?, ?, 0, ?)')
     run.run(jobId, 'search:tinyfish', 'ok', 12, 12, 5, 1)
     run.run(jobId, 'adapter:reddit', 'ok', 4, 4, 2, 1)

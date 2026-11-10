@@ -139,7 +139,7 @@ test('#980 upgrades the actual #977 ledger through 0055 without changing checksu
   await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES ('t', 'l', 'Pat Doe', 'pat@example.test', 'first')")
   await db.run("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES ('t', 'l', 'example.test', 'first', 2)")
   const upgrade = await runPgMigrations(db.pool)
-  assert.deepEqual(upgrade.applied, [51, 52, 53, 54, 55])
+  assert.deepEqual(upgrade.applied, [51, 52, 53, 54, 55, 56]) // 0056: csv_batch_budget (#916)
   assert.deepEqual(upgrade.alreadyApplied, before.map(m => m.version))
   assert.deepEqual(await db.get('SELECT person, address, tier, source_url, confidence FROM email_candidates WHERE lead_id = ?', ['l']),
     { person: 'Pat Doe', address: 'pat@example.test', tier: 'guessed', source_url: null, confidence: null })

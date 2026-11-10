@@ -4,7 +4,6 @@
 // touches reopens. One re-open per thread, ever (primary key). Suppression is checked
 // at draft time and again at send time.
 import type Database from 'better-sqlite3'
-import { randomBytes } from 'node:crypto'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { confirmedSendResult, connectionGone, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'

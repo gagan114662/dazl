@@ -197,7 +197,7 @@ test('env flip mid-flight: legacy-claimed fresh row is NOT double-run by queue m
   // Legacy runner claimed it seconds ago (running, fresh claimed_at).
   db.prepare(`UPDATE scan_jobs SET status='running', attempts=1, claimed_at=CAST(strftime('%s','now') AS INTEGER) WHERE id='j1'`).run()
   let runs = 0
-  const counting = async (d: Database.Database, job: { id: string }): Promise<'done'> => { runs++; return 'done' }
+  const counting = async (): Promise<'done'> => { runs++; return 'done' }
   await kickQueueRunner(db, {}, counting)
   await flush()
   assert.equal(runs, 0, 'fresh legacy claim not re-run')

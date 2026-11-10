@@ -81,10 +81,10 @@ test('tick heartbeats: cron off, a stalled tenant, a crashed tick, recovery; no 
 
   // each tenant's own view: only its rows
   setUser({ id: B, business_name: '' })
-  const seqB = await (await sequences(new NextRequest('http://localhost/api/outreach/sequences'))).text()
+  const seqB = await (await sequences()).text()
   assert.ok(JSON.parse(seqB).freshness.state === 'healthy' && !seqB.includes(A) && !seqB.includes('reading_not_enabled'))
   setUser({ id: A, business_name: '' })
-  assert.equal(JSON.parse(await (await sequences(new NextRequest('http://localhost/api/outreach/sequences'))).text()).freshness.state, 'blocked')
+  assert.equal(JSON.parse(await (await sequences()).text()).freshness.state, 'blocked')
 
   // cron stops: with no new tick, the scheduler reads stale once STALE_AFTER_S passes
   assert.equal((await schedulerHealth(db, now() + STALE_AFTER_S + 60)).operational.state, 'stale')

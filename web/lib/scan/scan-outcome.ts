@@ -37,14 +37,14 @@ export interface ScanRecord {
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
 // extracted no candidates, and none was unavailable / not run (those are unknown, not zero).
-const ZERO_MATCH = (j: ScanRecord, open: string): ScanOutcome => ({ kind: 'zero_match', label: 'Zero match - the sources returned nothing', detail: 'The search and the other sources came back with no results for this request, and none of them failed.', next: { text: 'Widen the search', href: NEW_SCAN } })
+const ZERO_MATCH = (): ScanOutcome => ({ kind: 'zero_match', label: 'Zero match - the sources returned nothing', detail: 'The search and the other sources came back with no results for this request, and none of them failed.', next: { text: 'Widen the search', href: NEW_SCAN } })
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 // What the empty result honestly is, given every recorded source. Evidence that yielded no candidates and unavailable sources are named; neither is a zero result.
 function emptyResult(j: ScanRecord, open: string): ScanOutcome {
   const ev = j.evidence_sources ?? [], unknown = j.unknown_sources ?? []
   if (ev.length) return { kind: 'none_extracted', label: 'No candidates were extracted', detail: `${ev.map(e => `${e.source} returned ${plural(e.evidence, 'item')}`).join('; ')}, none matched as candidates.${unknown.length ? ` ${unknown.join(', ')} was unavailable or has no recorded counts.` : ''} This is not a zero-results scan and does not show that no matching companies exist.`, next: { text: 'See what the scan read', href: open } }
   if (unknown.length) return { kind: 'none_extracted', label: 'No candidates - a source was unavailable', detail: `${unknown.join(', ')} was unavailable, not run or has no recorded counts (unknown, not zero), so the other sources returning nothing does not show that no company matches.`, next: { text: 'See what the scan read', href: open } }
-  return j.search_hits === 0 ? ZERO_MATCH(j, open) : NONE_EXTRACTED(open, j.empty_reason)
+  return j.search_hits === 0 ? ZERO_MATCH() : NONE_EXTRACTED(open, j.empty_reason)
 }
 const sourcesFailed = (j: ScanRecord) => (j.failed_sources ?? []).length > 0
 
