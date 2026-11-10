@@ -17,7 +17,7 @@ export const CONTRACT_VERSION = 'dazl.evaluation-contract/1'
 // v2 (#781): a former employee and a generic role inbox now fail contact.usable, and an unconfirmed person stays unknown; v1 judged the route alone.
 // v3 (#781 review): an unrecognised person value is unknown (never pass), and a confirmed-current person must be tied to the address (it carries their name).
 // v4 (#1030 review): whole-token person tie, role-first and compound generic inboxes (incl. practice/booking inboxes), person:null is unknown, malformed email is no route.
-export const SCORER = { id: 'dazl.lead-contract', version: 4 } as const
+export const SCORER = { id: 'dazl.lead-contract', version: 5 } as const
 export type Status = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const STATUSES: Status[] = ['pass', 'fail', 'unknown', 'contradicted']
 
@@ -131,7 +131,9 @@ const ROLE = new Set(['info', 'information', 'contact', 'contacts', 'hello', 'hi
   // practice / front-desk / booking inboxes (Test A, NY dental), and other shared desks
   'appointments', 'appointment', 'appts', 'scheduling', 'schedule', 'scheduler', 'admissions', 'admission', 'intake', 'referrals', 'referral', 'patients', 'patient', 'newpatients',
   'registration', 'enrollment', 'enrolment', 'dental', 'clinic', 'practice', 'frontoffice', 'desk', 'mailroom', 'inbox', 'questions', 'requests', 'quotes', 'quote', 'estimates',
-  'staff', 'everyone', 'headquarters', 'hq', 'membership', 'members', 'shop', 'store', 'returns', 'shipping', 'invoices', 'invoice', 'payments', 'purchasing', 'procurement', 'manager', 'management'])
+  'staff', 'everyone', 'headquarters', 'hq', 'membership', 'members', 'shop', 'store', 'returns', 'shipping', 'invoices', 'invoice', 'payments', 'purchasing', 'procurement', 'manager', 'management',
+  // round 2 on #1030 (Ziggy's list): shared desks and all-hands aliases
+  'dispatch', 'welcome', 'ask', 'payroll', 'email', 'group', 'all'])
 // Tokens that never name a person: used so jane.sales@ or doe.team@ still ties to Jane Doe. (Generic-ness no longer needs this list: any non-name suffix is generic.)
 const QUALIFIER = new Set(['team', 'dept', 'department', 'desk', 'global', 'emea', 'apac', 'latam', 'amer', 'americas', 'europe', 'asia', 'africa', 'online', 'inbox', 'office', 'work', 'mail', 'email'])
 const MODIFIER = new Set(['front', 'new', 'main', 'head', 'central', 'back'])

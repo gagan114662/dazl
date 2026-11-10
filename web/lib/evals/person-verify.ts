@@ -13,6 +13,8 @@
 //  - A departure cue ANYWHERE in a sentence naming the person and the company (before the name, company first, "ex-", "outgoing", "used to", "was ... from 2019 to 2024", "joined
 //    Rival from <company>"), or "has left the company" on a page naming it, blocks current from EVERY page unless that sentence is clearly older than the window: unknown at best.
 //  - The sentence's own stated day wins over the page label; the label dates only a sentence that states no day.
+//  - Inverted (#1030 round 2): current is confirmed only if EVERY in-window or undated sentence naming the person and the company itself reads as current; any other one,
+//    cued or not, makes the result unknown unless a bound former is found. "Is <X> at" needs X to open a role (article, possessive, title word, or "now at").
 //  - Not employment: a present participle ("is presenting at"), "works with", a consultant/contractor/freelancer/agency, an event ("<company> Live").
 import { isDay } from './contract.ts'
 
@@ -81,7 +83,26 @@ const formerPatterns = (c: string) => [
 ]
 const currentPatterns = (c: string) => [
   new RegExp(`^\\s*(?:is|joined|has joined|joins|serves as|works as|works|currently|now|was named|was appointed|appointed|named|promoted to)\\b\\s*${NOT_ORG}{0,8}(?:at|with|for)\\s+${c}\\b`),
+  // "joined Northwind Labs as VP of Sales": the company as the direct object of a join, followed by the role it was joined as
+  new RegExp(`^\\s*(?:joined|has joined|joins|rejoined|has rejoined)\\s+${c}\\s+as\\b`),
 ]
+// "is <X> at Company" is employment only when X opens a role: an article or possessive, a title word, or "now at". Anything else ("is out at", "is done at",
+// "is through with") is not a statement of employment: unknown, and it then blocks current like any other non-current sentence about the pair (verifyPerson).
+const IS_HEAD = /^\s*(?:is|currently|now)\b(?:\s+(?:is|currently|now|also|still|presently))*\s+(\S+)/   // \S+, not \w+: a non-ASCII first word ("überchef") must be checked too, never skipped
+const ROLE_OPENER = new Set(['a', 'an', 'the', 'our', 'their', 'its', 'his', 'her', 'one', 'employed', 'head', 'chief', 'ceo', 'cto', 'cfo', 'coo', 'cmo', 'cro', 'cio', 'ciso', 'cpo',
+  'vp', 'svp', 'evp', 'avp', 'vice', 'president', 'director', 'manager', 'lead', 'leader', 'founder', 'cofounder', 'co', 'owner', 'principal', 'engineer', 'officer', 'executive',
+  'gm', 'general', 'senior', 'sr', 'junior', 'jr', 'staff', 'associate', 'assistant', 'dentist', 'doctor', 'dr', 'physician', 'hygienist', 'office', 'practice', 'account',
+  'sales', 'marketing', 'product', 'business', 'regional', 'global', 'national', 'group', 'managing', 'chair', 'chairman', 'chairwoman', 'chairperson', 'secretary',
+  'treasurer', 'controller', 'analyst', 'specialist', 'coordinator', 'administrator', 'recruiter', 'developer', 'designer', 'architect', 'scientist', 'researcher', 'counsel',
+  'attorney', 'lawyer', 'nurse', 'therapist', 'editor', 'producer', 'operations', 'finance', 'hr', 'people', 'talent', 'revenue', 'growth', 'engineering', 'technical', 'interim',
+  // "currently leads sales at", "now heads marketing at": a verb that itself states the role
+  'leads', 'heads', 'runs', 'manages', 'oversees', 'directs', 'works', 'serves', 'handles', 'owns'])
+const roleOpens = (span: string) => {
+  const m = IS_HEAD.exec(span)
+  if (!m) return true   // joined / serves as / works as / named / appointed / promoted to: the verb itself states the role
+  if (m[1] === 'at' || m[1] === 'with' || m[1] === 'for') return /\bnow\b/.test(m[0])   // "is now at X" is a move-in; a bare "is at X" (a visit, a demo) is not
+  return ROLE_OPENER.has(m[1])
+}
 type Kind = 'former' | 'current' | null
 function classify(sentence: string, p: PersonClaim): Kind {
   const text = ` ${norm(sentence)} `, who = ` ${norm(p.name)} `, at = text.indexOf(who)
@@ -94,6 +115,7 @@ function classify(sentence: string, p: PersonClaim): Kind {
   if (!cur) return null
   const pre = after.slice(0, cur.start), span = after.slice(cur.start, cur.end), rest = after.slice(cur.end)
   if (DEPART_CUE.test(text) || hasMovedFrom(text, c) || NON_EMPLOYMENT.test(span) || NON_EMPLOYMENT.test(pre) || EVENT_NOUN.test(rest) || PARTICIPLE.test(span) || WORKS_WITH.test(span)) return null
+  if (!roleOpens(span) || (/\bas\s*$/.test(span) && NON_EMPLOYMENT.test(rest.slice(0, 80)))) return null
   if (pre.trim().split(/\s+/).filter(Boolean).length > 8 || NOT_BETWEEN.test(pre) || NOT_BETWEEN.test(span)) return null
   return 'current'
 }
@@ -138,15 +160,19 @@ export function verifyPerson(p: PersonClaim, rawPages: PersonPage[], o: PersonOp
     const page = labelledDays(pg.text)
     for (const sentence of sentencesOf(pg.text, p)) {
       const days = boundDays(sentence, page), kind = classify(sentence, p)
+      // Inverted rule (#1030 round 2): a cue list can never be exhaustive, so ANY in-window or undated sentence naming the pair that does not itself read as current
+      // (departure wording nobody listed, "tenure ended", "says goodbye to", "is out at") blocks current. A bound former in the window still wins below.
+      if (blocked === null && kind !== 'current' && notStale(days)) blocked = pg.url
       if (blocked === null && departs(sentence, c) && notStale(days)) blocked = pg.url
       if (!kind || !inWindow(days)) continue
       if (kind === 'former') return { person: 'former', title_matches: 'unknown', reason: `a page dated within ${max} days says ${p.name} has left ${p.company}`, evidence: [pg.url] }
       if (!current) current = { url: pg.url, sentence }
     }
-    for (const sentence of sentencesAboutPerson(pg.text, p)) if (blocked === null && departs(sentence, c) && notStale(boundDays(sentence, page))) blocked = pg.url
+    // A sentence about the person that says "the company" (on a page naming it) never reads as current by itself, so under the same inverted rule any fresh or undated one blocks.
+    for (const sentence of sentencesAboutPerson(pg.text, p)) if (blocked === null && notStale(boundDays(sentence, page))) blocked = pg.url
   }
   if (!current) return unknownResult(`no dated page within ${max} days states that ${p.name} is at ${p.company}`)
-  if (blocked !== null) return { person: 'unknown', title_matches: 'unknown', reason: `a page says ${p.name} is at ${p.company}, but another sentence about them there reads as a departure, so current cannot be confirmed`, evidence: [current.url, blocked] }
+  if (blocked !== null) return { person: 'unknown', title_matches: 'unknown', reason: `a page says ${p.name} is at ${p.company}, but another fresh or undated sentence about them there does not read as current employment, so current cannot be confirmed`, evidence: [current.url, blocked] }
   return { person: 'current', title_matches: typeof p.title === 'string' && has(current.sentence, p.title) ? 'pass' : 'unknown', reason: `a page dated within ${max} days says ${p.name} is at ${p.company}`, evidence: [current.url] }
 }
 

@@ -138,9 +138,9 @@ test('xhawk: common and qualified generic role inboxes never pass, and a name th
 })
 
 test('xhawk: the changed contact verdicts carry a new scorer version, so persisted judgements can tell the algorithms apart', () => {
-  assert.deepEqual(SCORER, { id: 'dazl.lead-contract', version: 4 })
+  assert.deepEqual(SCORER, { id: 'dazl.lead-contract', version: 5 })
   const e: LeadEvidence = { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { email: 'jane@northwind.io' } }
-  assert.deepEqual(evaluateLead(freezeContract(contract), e).scorer, { id: 'dazl.lead-contract', version: 4 })
+  assert.deepEqual(evaluateLead(freezeContract(contract), e).scorer, { id: 'dazl.lead-contract', version: 5 })
 })
 
 // ---- Hermes-PC review of #1030 (head 40129cfc): seven leads that must not pass ----
@@ -298,8 +298,8 @@ test('fix 6: malformed input fails closed, one case each', () => {
   assert.equal(bad.email, null); assert.equal(bad.person_name, null)
 })
 
-test('scorer v4: the #1030 fixes change verdicts again', () => {
-  assert.equal(SCORER.version, 4)
+test('scorer v4 -> v5: each #1030 fix round changes verdicts again', () => {
+  assert.equal(SCORER.version, 5)
 })
 
 test('adversarial pass (Hermes-PC, #1030 fix round): pathological size, malformed options and odd addresses fail closed and never throw', () => {
@@ -320,4 +320,89 @@ test('adversarial pass (Hermes-PC, #1030 fix round): pathological size, malforme
   assert.equal(routeOnly('jane@northwind.io', { claimed_domain: 5 as unknown as string }), 'unknown', 'a non-string company domain is an unknown domain')
   // lone surrogates and NULs do not throw
   assert.doesNotThrow(() => verifyPerson({ ...P, name: 'Jane \uD800Doe' }, [page('\uD800\u0000 ' + CUR.text + ' \uDFFF')], O))
+})
+
+// ---- Ziggy re-check of #1030 at 1a4e70d7: departure wording outside the cue list let a fresh current page win. Fixed as a CLASS (inverted rule):
+// current is confirmed only if every in-window or undated sentence naming the person and the company itself reads as current.
+const ZIGGY_9 = [
+  'Jane Doe is transitioning out of Northwind Labs.',
+  'Jane Doe parted company with Northwind Labs.',
+  'Jane Doe is now at Rival, after Northwind Labs.',
+  'Northwind Labs announced Jane Doe will depart at the end of the quarter.',
+  'Jane Doe has been replaced at Northwind Labs.',
+  'Jane Doe\'s tenure at Northwind Labs ended in September.',
+  'Jane Doe is a Northwind Labs alum.',
+  'Jane Doe is out at Northwind Labs.',
+  'Northwind Labs says goodbye to Jane Doe.',
+]
+// Hermes-PC's own variants of the same class: wording no cue list has, so only the inverted rule can catch them.
+const UNLISTED = [
+  'Jane Doe\'s last day at Northwind Labs was Friday.',
+  'Northwind Labs thanked Jane Doe for her years of service.',
+  'Jane Doe bid adieu to Northwind Labs.',
+  'Jane Doe is done at Northwind Labs.',
+  'Jane Doe is gone from Northwind Labs.',
+  'Jane Doe is through with Northwind Labs.',
+  'Jane Doe handed over her role at Northwind Labs.',
+  'Jane Doe wrapped up her time at Northwind Labs.',
+  'Jane Doe is off to Rival from Northwind Labs.',
+  'Jane Doe\'s Northwind Labs chapter has closed.',
+  'Jane Doe is no more at Northwind Labs.',
+  'Jane Doe is between roles after Northwind Labs.',
+  'Jane Doe is on garden leave from Northwind Labs.',
+  'Jane Doe is on her way out at Northwind Labs.',
+  'Jane Doe is überfrei at Northwind Labs.',
+  'Jane Doe is пока at Northwind Labs.',
+  'NORTHWIND LABS CONFIRMS JANE DOE EXIT.',
+  'Jane   Doe\u00a0—\u00a0Northwind Labs: so long!',
+]
+test('ziggy round 2: each of the 9 lines, alone, dated with CUR and undated with CUR, is never current', () => {
+  for (const x of ZIGGY_9) {
+    assert.notEqual(stat(D + x), 'current', 'alone, dated: ' + x)
+    assert.notEqual(stat(x), 'current', 'alone, undated: ' + x)
+    assert.equal(stat(CUR.text, D + x), 'unknown', 'dated, with CUR: ' + x)
+    assert.equal(stat(CUR.text, x), 'unknown', 'undated, with CUR: ' + x)
+    assert.equal(stat(D + x, CUR.text), 'unknown', 'order does not matter: ' + x)
+    assert.equal(stat(CUR.text + ' ' + D + x), 'unknown', 'same page as CUR: ' + x)
+  }
+})
+test('ziggy round 2 (class): unlisted departure wording also blocks current, with CUR, dated and undated', () => {
+  for (const x of UNLISTED) {
+    assert.notEqual(stat(D + x), 'current', 'alone: ' + x)
+    assert.equal(stat(CUR.text, D + x), 'unknown', 'dated, with CUR: ' + x)
+    assert.equal(stat(CUR.text, x), 'unknown', 'undated, with CUR: ' + x)
+  }
+  // "the company" instead of its name, unlisted wording, on a page naming the company
+  assert.equal(stat(CUR.text, 'Northwind Labs news. Jane Doe\'s time at the company is over.'), 'unknown')
+  // the reason names what happened, and the evidence carries both pages
+  const r = verifyPerson(P, [CUR, page('Jane Doe is out at Northwind Labs.', 'https://b.example.com/x')], O)
+  assert.equal(r.person, 'unknown'); assert.deepEqual(r.evidence, ['https://news.example.com/p', 'https://b.example.com/x']); assert.match(r.reason, /does not read as current employment/)
+  assert.equal(contactStatus('jane@northwind.io', r).status, 'unknown', 'the contact is unknown, never pass')
+})
+test('ziggy round 2: what still reads current, and the documented recall cost', () => {
+  assert.equal(stat(CUR.text), 'current')
+  assert.equal(stat(D + 'Jane Doe joined Northwind Labs as VP of Sales.'), 'current', 'Ziggy\'s recall gap: "joined <company> as <title>" now reads current')
+  assert.equal(stat(D + 'Jane Doe joined Northwind Labs as an advisor.'), 'unknown', 'joined as a non-employee is not employment')
+  assert.equal(stat(D + 'Jane Doe currently leads sales at Northwind Labs.'), 'current')
+  assert.equal(stat(D + 'Jane Doe is now at Northwind Labs.'), 'current')
+  assert.equal(stat(D + 'Jane Doe is head of sales at Northwind Labs.'), 'current')
+  assert.equal(stat(D + 'Jane Doe is at Northwind Labs.'), 'unknown', 'a bare "is at" (a visit) is not employment')
+  assert.equal(stat(CUR.text, 'Posted 2019-01-01. Jane Doe is out at Northwind Labs.'), 'current', 'a STALE non-current sentence (a rehire is possible) does not block')
+  assert.equal(stat(CUR.text, 'Posted 2026-11-01. Jane Doe resigned from Northwind Labs.'), 'former', 'a bound former still wins over the block')
+  // recall cost, accepted on the fail-closed side: an unrelated fresh mention of both names blocks current too
+  assert.equal(stat(CUR.text, 'Contact Jane Doe at Northwind Labs.'), 'unknown')
+})
+test('ziggy round 2 (non-blocking list): dispatch, welcome, ask, payroll, email, group and all inboxes fail; names that start the same are still people', () => {
+  const routeOnly = (email: string) => evaluateLead(freezeContract(contract), { company: 'Northwind Labs', claimed_domain: 'northwind.io', contact: { email } }).verdicts.find(v => v.field === 'contact.usable')!.status
+  for (const l of ['dispatch', 'welcome', 'ask', 'payroll', 'email', 'group', 'all', 'askus', 'payroll.nyc', 'all-staff', 'welcometeam']) {
+    assert.equal(routeOnly(`${l}@northwind.io`), 'fail', l); assert.equal(contactStatus(`${l}@northwind.io`, verifyPerson(P, [CUR], O)).status, 'fail', l + ' with a current person')
+  }
+  for (const l of ['allison', 'allan', 'askew', 'emma', 'welch', 'grouper']) assert.equal(routeOnly(`${l}@northwind.io`), 'pass', l)
+})
+test('ziggy round 2 adversarial: many non-current sentences stay linear, malformed spans never throw', () => {
+  let t = Date.now(); assert.equal(stat(CUR.text, 'Jane Doe is out at Northwind Labs. '.repeat(20_000)), 'unknown'); assert.ok(Date.now() - t < 5000, `took ${Date.now() - t} ms`)
+  t = Date.now(); assert.equal(stat(CUR.text + ' ' + 'Jane Doe is the VP of Sales at Northwind Labs. '.repeat(20_000)), 'current'); assert.ok(Date.now() - t < 5000, `took ${Date.now() - t} ms`)
+  t = Date.now(); assert.equal(stat('Posted 2026-11-01. Jane Doe is ' + 'very '.repeat(50_000) + 'at Northwind Labs.'), 'unknown'); assert.ok(Date.now() - t < 5000, `took ${Date.now() - t} ms`)
+  for (const name of ['', '   ', '\u0000', 'is', 'Northwind Labs']) assert.doesNotThrow(() => verifyPerson({ ...P, name }, [CUR, page('Jane Doe is out at Northwind Labs.')], O), JSON.stringify(name))
+  assert.equal(verifyPerson({ ...P, name: '' }, [CUR], O).person, 'unknown', 'an empty name confirms nobody')
 })
