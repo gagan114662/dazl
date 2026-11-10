@@ -14,7 +14,7 @@ const stub = (system: string, run: (b: Brief) => Promise<unknown>, supports?: (b
   run: run as (b: Brief) => Promise<AdapterResult>, ...(supports ? { supports } : {}),
 })
 
-test('a malformed adapter result fails that task, recorded, with the full task limit reserved; the batch still scores', async () => {
+test('#397: a malformed adapter result fails that task, recorded, with the full task limit reserved; the batch still scores', async () => {
   const bad: Record<string, unknown> = {
     'toronto-agency-office': { items: [], cost_usd: '0.5', seconds: 1, interventions: 0 },       // a cost as a string
     'london-seed-saas': { items: 'none', cost_usd: 0.1, seconds: 1, interventions: 0 },           // items not a list
@@ -35,7 +35,7 @@ test('a malformed adapter result fails that task, recorded, with the full task l
   }
 })
 
-test('untrusted output rows: not an object, no company or a wrong-typed field are dropped or nulled and counted, never a crash; a huge output is capped', async () => {
+test('#397 #786: untrusted output rows: not an object, no company or a wrong-typed field are dropped or nulled and counted, never a crash; a huge output is capped', async () => {
   const rows: unknown[] = [null, 5, 'Acme', { company: 7 }, { company: '   ' }, { company: 'Acme', domain: 42, contact: ['x'], event_date: 20261001, evidence_urls: 'https://a.example', quotes: 'q', person: 'Pat' }]
   for (let i = 0; i < 60; i++) rows.push({ company: `Co ${i}`, domain: `co${i}.example` })
   const seen: BlindItem[] = []
@@ -47,7 +47,7 @@ test('untrusted output rows: not an object, no company or a wrong-typed field ar
   assert.deepEqual([acme.domain, acme.contact, acme.event_date, acme.evidence_urls, acme.quotes, acme.person], [null, null, null, [], [], null])
 })
 
-test('an available system that started no task is not_started with the reason, never a ran system with zero results', async () => {
+test('#397: an available system that started no task is not_started with the reason, never a ran system with zero results', async () => {
   const none = await runBatch({ ...base(), adapters: [stub('alpha', async () => ({ items: [], cost_usd: 0, seconds: 0, interventions: 0 }), () => 'the product has no Munich data')], evaluator: allPass })
   assert.deepEqual([none.report[0].status, none.report[0].attempted, none.report[0].precision_at_10], ['not_started', 0, null])
   assert.match(none.report[0].reason!, /^no task started: 4 unsupported \(the system cannot express this task: the product has no Munich data\)$/)
@@ -58,7 +58,7 @@ test('an available system that started no task is not_started with the reason, n
   assert.deepEqual([failed.report[0].status, failed.report[0].attempted, failed.report[0].reason], ['ran', 4, null])
 })
 
-test('the evaluator receives the provenance the verifier re-reads, and a quote, person or source url naming a system is withheld, never rewritten', async () => {
+test('#397: the evaluator receives the provenance the verifier re-reads, and a quote, person or source url naming a system is withheld, never rewritten', async () => {
   const seen: BlindItem[] = []
   const item = { company: 'Querix', domain: 'querix.example', event_date: '2026-10-08', event_source_url: 'https://news.example/q', evidence_urls: ['https://news.example/q'],
     quotes: [{ text: 'Querix opened a Toronto office', source_url: 'https://news.example/q' }, { text: 'Alpha found Querix first', source_url: 'https://news.example/q' }],

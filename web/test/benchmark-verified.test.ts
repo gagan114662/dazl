@@ -39,7 +39,7 @@ const fields = (j: Judgement) => [j.identity, j.constraints, j.event_date, j.con
 
 // ---------------------------------------------------------------------------------------------------- the evaluator
 
-test('validated means independently corroborated: two origins state the dated event; one source, a same-domain page or a syndicated copy is not enough', async () => {
+test('#397: validated means independently corroborated: two origins state the dated event; one source, a same-domain page or a syndicated copy is not enough', async () => {
   assert.deepEqual(fields(await judge(item(), brief(TORONTO))), ['pass', 'pass', 'pass', 'pass'])
   const one = await judge(item({ evidence_urls: ['https://news.example/maple'] }), brief(TORONTO))
   assert.deepEqual(fields(one), ['pass', 'pass', 'unknown', 'pass']); assert.equal(one.record.independent_origins, 1); assert.equal(one.record.signal_tier, 'source-checked')
@@ -58,7 +58,7 @@ test('validated means independently corroborated: two origins state the dated ev
   assert.equal(unrelated.record.independent_origins, 1)
 })
 
-test('a firmographic guess is never validated: no dated event, or an event only in the producer\'s own text, is unknown on every field it cannot show', async () => {
+test('#397: a firmographic guess is never validated: no dated event, or an event only in the producer\'s own text, is unknown on every field it cannot show', async () => {
   const guess = await judge(item({ company: 'Harbour Studio', domain: 'harbourstudio.example', event_date: null, evidence_urls: [], event_source_url: null, text: 'Opened a Toronto office on October 8, 2026 (verified).', contact: null, contact_source_url: null }), brief(TORONTO))
   assert.deepEqual(fields(guess), ['unknown', 'unknown', 'unknown', 'unknown'])
   // the producer cites pages the verifier never captured: its claim is not read from its own text
@@ -66,7 +66,7 @@ test('a firmographic guess is never validated: no dated event, or an event only 
   assert.deepEqual(fields(unread).slice(0, 3), ['unknown', 'unknown', 'unknown'])
 })
 
-test('the place comes from the brief: a wrong city fails, a same-name city in another country is unknown, a country-only brief uses its names', async () => {
+test('#397: the place comes from the brief: a wrong city fails, a same-name city in another country is unknown, a country-only brief uses its names', async () => {
   const wrong = [{ url: 'https://news.example/maple', text: 'Maple Leaf Marketing opened a new office in Montreal, Canada on October 8, 2026 (mapleleaf.example).' }, { url: 'https://mapleleaf.example/news', text: 'On October 8, 2026 Maple Leaf Marketing opened its new Montreal studio.' }, PAGES[2]]
   assert.equal((await judge(item(), brief(TORONTO), wrong)).constraints, 'fail')
   const LONDON = { all_of: [{ geo: 'London, GB' }, { event: 'office_opening' }] }
@@ -79,7 +79,7 @@ test('the place comes from the brief: a wrong city fails, a same-name city in an
   assert.equal(oslo.constraints, 'unknown')
 })
 
-test('constraints are shown, never assumed: the event kind and its roles/round are worded in the dated sentence; hedged wording, segment, headcount and exclusions are unknown', async () => {
+test('#397: constraints are shown, never assumed: the event kind and its roles/round are worded in the dated sentence; hedged wording, segment, headcount and exclusions are unknown', async () => {
   const FUND = { all_of: [{ geo: 'Toronto, CA' }, { event: 'funding', stage: 'seed' }] }
   assert.equal((await judge(item(), brief(FUND))).constraints, 'unknown')            // the pages say "opened", not a seed round
   const hedged = [{ url: 'https://news.example/maple', text: 'Maple Leaf Marketing reportedly opened a new office in Toronto, Canada on October 8, 2026 (mapleleaf.example).' }, { url: 'https://mapleleaf.example/news', text: 'Maple Leaf Marketing did not open a Toronto studio on October 8, 2026.' }, PAGES[2]]
@@ -99,7 +99,7 @@ test('constraints are shown, never assumed: the event kind and its roles/round a
   for (const c of [null, 'Toronto', 42, [], { all_of: 'x' }]) assert.notEqual((await judge(item(), brief(c))).constraints, 'pass', JSON.stringify(c))
 })
 
-test('dates and contacts fail closed: future, stale, publication-stamp-only, a hiring inbox, another domain and a former employee never pass', async () => {
+test('#397: dates and contacts fail closed: future, stale, publication-stamp-only, a hiring inbox, another domain and a former employee never pass', async () => {
   assert.equal((await judge(item({ event_date: '2026-11-15' }), brief(TORONTO), [{ url: 'https://news.example/maple', text: 'Maple Leaf Marketing will open a Toronto, Canada office on November 15, 2026 (mapleleaf.example).' }, PAGES[2]])).event_date, 'fail')
   assert.equal((await judge(item(), brief(TORONTO, 7))).event_date, 'fail')            // 12 days before as_of, a 7-day window
   assert.equal((await judge(item(), brief(TORONTO), [{ ...PAGES[0], meta_days: ['2026-10-08'] }, PAGES[1], PAGES[2]])).event_date, 'fail')
@@ -113,7 +113,7 @@ test('dates and contacts fail closed: future, stale, publication-stamp-only, a h
   assert.equal(fabricated.event_date, 'fail')
 })
 
-test('malformed snapshots fail closed and are recorded: wrong format, wrong-typed entries, conflicting captures, unreadable and huge pages', async () => {
+test('#397: malformed snapshots fail closed and are recorded: wrong format, wrong-typed entries, conflicting captures, unreadable and huge pages', async () => {
   const ev = (raw: unknown) => verifierEvaluator({ snapshots: parseSnapshots(raw) })
   for (const raw of [null, [], 'x', 7, { format: 'other', version: 1, snapshots: [] }, { format: 'dazl-verifier-snapshots', version: 2, snapshots: [] }]) {
     const e = ev(raw); const j = (await e.judge([item()], brief(TORONTO))).b1
@@ -138,7 +138,7 @@ test('malformed snapshots fail closed and are recorded: wrong format, wrong-type
   assert.equal(wide.constraints, 'unknown')          // the passing 61st alternative is past the branch cap
 })
 
-test('the evaluator is deterministic and blind: the same input gives the same verdicts, producer claims cannot move them, and a broken item is unknown with the error recorded', async () => {
+test('#397: the evaluator is deterministic and blind: the same input gives the same verdicts, producer claims cannot move them, and a broken item is unknown with the error recorded', async () => {
   const e = verifierEvaluator({ snapshots: snaps(PAGES) })
   const a = await e.judge([item()], brief(TORONTO)), b = await e.judge([item()], brief(TORONTO))
   assert.deepEqual(a, b)
@@ -155,7 +155,7 @@ test('the evaluator is deterministic and blind: the same input gives the same ve
 
 // ------------------------------------------------------------------------------------- the one-command synthetic batch
 
-test('one command reproduces a verifier-scored batch: per-tool P@5/P@10, unique actionable yield, coverage, time, spend and interventions', () => {
+test('#397 #788: one command reproduces a verifier-scored batch: per-tool P@5/P@10, unique actionable yield, coverage, time, spend and interventions', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'bench-verified-'))
   try {
     const run = () => execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/benchmark.mts', 'run', '--batch', FIXTURE, '--store', path.join(dir, 'store.json'), '--out', dir], { cwd: WEB, encoding: 'utf8' })
@@ -170,7 +170,7 @@ test('one command reproduces a verifier-scored batch: per-tool P@5/P@10, unique 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('the synthetic verified batch: why each lead is or is not validated is recorded, and labels and the verifier never judge one batch together', async () => {
+test('#397: the synthetic verified batch: why each lead is or is not validated is recorded, and labels and the verifier never judge one batch together', async () => {
   const f = JSON.parse(readFileSync(FIXTURE, 'utf8')) as BatchFile
   const r = await runBatch(batchFromFile(structuredClone(f)))
   const by = (s: string, e: string) => r.evaluations.find(x => x.system === s && x.entity_key === e)!
@@ -191,7 +191,7 @@ test('the synthetic verified batch: why each lead is or is not validated is reco
 
 // -------------------------------------------------------------------------------------------- the adapter registry
 
-test('the committed registry: dazl plus every competitor and the plain-chat baseline; none of the three is authorized today', () => {
+test('#397 #787: the committed registry: dazl plus every competitor and the plain-chat baseline; none of the three is authorized today', () => {
   const reg = checkRegistry(REGISTRY)
   assert.deepEqual(reg.map(e => e.system), ['dazl', 'pancake', 'gojiberry', 'chatgpt-web-baseline'])
   for (const e of reg.filter(x => x.system !== 'dazl')) { assert.equal(e.requires_authorization, true); assert.match(authorizationProblem(e.authorization, e.system)!, /no owner authorization/); assert.match(e.unavailable_reason!, /NEEDS GAGAN/) }
@@ -203,7 +203,7 @@ test('the committed registry: dazl plus every competitor and the plain-chat base
   for (const r of [null, [], 'x', { format: 'dazl-benchmark-adapters', version: 2, systems: [] }]) assert.throws(() => checkRegistry(r), /not a dazl-benchmark-adapters v1/)
 })
 
-test('an authorization is the owner\'s own words with a time, channel, scope naming the system and a cap; anything else leaves the system unavailable', () => {
+test('#397 #787: an authorization is the owner\'s own words with a time, channel, scope naming the system and a cap; anything else leaves the system unavailable', () => {
   const ok = { granted_by: 'gagan', granted_at: '2026-11-10T09:36:00-05:00', owner_words: 'I approve one Pancake benchmark run, cap $20', channel: 'whatsapp', scope: 'one pancake recorded batch on task set v1', max_usd: 20 }
   assert.equal(authorizationProblem(ok, 'pancake'), null)
   const cases: [unknown, RegExp][] = [
@@ -222,7 +222,7 @@ const rec = (over: Record<string, unknown> = {}, tasks: Record<string, unknown> 
   config: { product: 'dazl', product_version: 'abc123', model: 'm', sources: ['scan'], paid: true }, tasks, ...over,
 })
 
-test('a recording is checked whole against the frozen set: wrong format, system, version, foreign task, bad config or time refuse it; a bad task fails only that task', async () => {
+test('#397 #786: a recording is checked whole against the frozen set: wrong format, system, version, foreign task, bad config or time refuse it; a bad task fails only that task', async () => {
   assert.equal(checkRecording(rec(), V1, 'dazl').origin, 'recorded')
   const refused: [unknown, RegExp][] = [
     [null, /not a dazl-benchmark-recording/], [rec({ version: 2 }), /not a dazl-benchmark-recording/], [rec({ system: 'pancake' }), /recording is of system "pancake"/],
@@ -260,7 +260,7 @@ const SB = {
   ],
 }
 
-test('the Dazl adapter: a scoreboard result becomes a recording with raw evidence, unknown cost, stops kept, quarantined leads not presented', () => {
+test('#397 #786: the Dazl adapter: a scoreboard result becomes a recording with raw evidence, unknown cost, stops kept, quarantined leads not presented', () => {
   const r = dazlRecordingFromScoreboard(structuredClone(SB), V1)
   const t = r.tasks['toronto-dental'] as { items: Record<string, unknown>[]; cost_usd: unknown }
   assert.equal(t.cost_usd, null)                                   // one shared budget in the scoreboard: unknown per task, never 0
@@ -286,7 +286,7 @@ const files: Record<string, unknown> = {
 }
 const deps = (over: Partial<Parameters<typeof recordedBatch>[1]> = {}) => ({ registry: REGISTRY, committedSet: V1, read: (f: string) => { if (!(f in files)) throw new Error(`no file ${f}`); return structuredClone(files[f]) }, ...over })
 
-test('a recorded batch: every registry system is in it, an unauthorized competitor is unavailable and its supplied recording ignored, and the verifier judges', async () => {
+test('#397 #787: a recorded batch: every registry system is in it, an unauthorized competitor is unavailable and its supplied recording ignored, and the verifier judges', async () => {
   const { options, notes } = recordedBatch(recordedFile({ recordings: { dazl: 'dazl.json', pancake: 'pancake.json' } }), deps())
   assert.deepEqual(notes.map(n => [n.system, n.used]), [['dazl', true], ['pancake', false], ['gojiberry', false], ['chatgpt-web-baseline', false]])
   assert.match(notes[1].reason!, /no authorized Pancake account \(NEEDS GAGAN.*\) \(no owner authorization is recorded\); a recording was supplied and ignored: it is not authorized/)
@@ -306,7 +306,7 @@ test('a recorded batch: every registry system is in it, an unauthorized competit
   assert.equal(recordedBatch(recordedFile({ recordings: { dazl: 'dazl.json', pancake: 'pancake.json' } }), deps({ registry: reg })).notes[1].used, false)
 })
 
-test('a recorded batch refuses what it cannot run honestly: no committed set, another version, no snapshots, an unknown system, a foreign recording', () => {
+test('#397 #787: a recorded batch refuses what it cannot run honestly: no committed set, another version, no snapshots, an unknown system, a foreign recording', () => {
   const refused: [unknown, Partial<Parameters<typeof recordedBatch>[1]>, RegExp][] = [
     [recordedFile(), { committedSet: null }, /must run a committed frozen task set/], [recordedFile({ task_set_version: '2' }), {}, /names task set v"2"/],
     [recordedFile({ snapshots: '' }), {}, /snapshots \(the verifier's own captures\) is required/], [recordedFile({ recordings: { acme: 'dazl.json' } }), {}, /not in the adapter registry: acme/],
@@ -319,7 +319,7 @@ test('a recorded batch refuses what it cannot run honestly: no committed set, an
   assert.throws(() => batchFromFile({ ...(JSON.parse(readFileSync(FIXTURE, 'utf8')) as BatchFile), systems: [{ system: 'dazl', origin: 'recorded', config: { product: 'dazl', product_version: null, model: null, sources: [], paid: false }, tasks: {} }], evaluator: undefined, labels: {} }), /labels are ground truth only for synthetic batches/)
 })
 
-test('CLI: the recorded batch runs from files beside it with the committed registry, exits 2 on invalid input, and dazl-recording converts a scoreboard result', () => {
+test('#397 #788: CLI: the recorded batch runs from files beside it with the committed registry, exits 2 on invalid input, and dazl-recording converts a scoreboard result', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'bench-recorded-'))
   try {
     writeFileSync(path.join(dir, 'sb.json'), JSON.stringify(SB))
