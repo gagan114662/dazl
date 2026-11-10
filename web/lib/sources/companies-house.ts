@@ -48,12 +48,21 @@ const UK = w('uk|u\\.k\\.|united kingdom|britain|british|england|english|scotlan
 const ELSEWHERE_WORDS = /\b(?:usa|u\.s\.a?\.?|united states|canada|australia)\b|,\s*(?:alabama|alaska|arizona|california|colorado|connecticut|florida|georgia|illinois|kentucky|michigan|new hampshire|new york|ohio|ontario|oregon|pennsylvania|texas|virginia|washington)\b/i
 const ELSEWHERE_CODES = /,\s*(?:A[LKZR]|C[AOT]|D[EC]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|N[CDEHJMVY]|O[HKNR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY]|BC|QC|NS|NB|MB|SK)\b/ // two-letter codes only when written upper-case
 
+// "in / near / around <Capitalised Town>" once UK country words are removed; anything left is a town this source cannot filter on.
+const TOWN_AFTER = /\b(?:in|near|around|at)\s+((?:[A-Z][\p{L}'’-]+)(?:\s+[A-Z][\p{L}'’-]+){0,2})/gu
+const COUNTRY_WORD = /^(?:the|uk|u\.k\.|united|kingdom|britain|british|england|english|scotland|scottish|wales|welsh|northern|ireland)$/i
+export const unknownTown = (query: string): boolean =>
+  [...query.matchAll(TOWN_AFTER)].some(m => m[1].split(/\s+/).some(t => !COUNTRY_WORD.test(t)))
+
 export interface ChScope { sector: string; codes: string[]; place: string | null; where: string }
 // What this source can answer for a request, or null when it is outside coverage (no UK place / no mapped industry).
 export function chScope(query: string): ChScope | null {
   if (ELSEWHERE_WORDS.test(query) || ELSEWHERE_CODES.test(query)) return null
   const place = CH_PLACES.find(p => p.words.test(query))
   if (!place && !UK.test(query)) return null
+  // A named town the gazetteer does not hold ("in Oxford UK") must not silently widen to the whole UK: the request would be answered with companies from
+  // everywhere while that town goes unsearched. Report it as out of coverage instead (#1035 review).
+  if (!place && unknownTown(query)) return null
   const sector = CH_SECTORS.find(s => s.words.test(query))
   if (!sector) return null
   return { sector: sector.id, codes: sector.codes, place: place?.name ?? null, where: place?.name ?? 'the UK' }
@@ -158,10 +167,14 @@ export const companiesHouseAdapter: SourceAdapter = {
     const read = chList(body)
     if (!read) { note?.('schema_invalid'); return [] }
     for (let i = 0; i < read.invalid; i++) note?.('schema_invalid_row')
-    if (read.hits > read.rows.length + read.invalid) note?.('truncated') // the register holds more matches than the one page read
+    const truncatedByRegister = read.hits > read.rows.length + read.invalid // the register holds more matches than the one page read
+    if (truncatedByRegister) note?.('truncated')
     const out: Evidence[] = []
     let cut = false
-    for (const c of chCandidates(scope, read.rows, from, today).slice(0, chLimits.maxPages)) {
+    const candidates = chCandidates(scope, read.rows, from, today)
+    // The page cap keeps the newest `maxPages` companies; the rest are not checked, which the run must say rather than look complete (#1035 review).
+    if (candidates.length > chLimits.maxPages && !truncatedByRegister) note?.('truncated')
+    for (const c of candidates.slice(0, chLimits.maxPages)) {
       if (Date.now() - t0 > chLimits.budgetMs) { cut = true; break }
       const number = c.company_number!, name = c.company_name!.trim()
       const url = `${PAGE}/${number}`

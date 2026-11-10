@@ -201,3 +201,22 @@ test('source to lead through the unchanged verifier: identity and quote pass on 
   const other = await verifyLeads([{ ...lead, company: 'SOME OTHER LTD' } as LeadDraft], async u => ({ text: PAGES[u], title: 'x', retrievedAt: 1, published: null }), new Date(NOW))
   assert.equal(other.leads.length, 0)
 })
+
+test('#764 review: a named town outside the gazetteer is out of coverage, not a silent UK-wide search', async () => {
+  assert.equal(chScope('new software companies in Oxford UK'), null)
+  assert.equal(chScope('plumbers near Reading, England'), null)
+  assert.ok(chScope('new software companies in the UK'), 'country words alone stay UK-wide')
+  assert.ok(chScope('plumbers in London, England'), 'a known place plus a country word stays covered')
+  const asked: string[] = []
+  const r = await run('new software companies in Oxford UK', recorded(asked))
+  assert.deepEqual([r.items, r.notes, asked.length], [[], ['out_of_coverage'], 0], 'nothing requested')
+})
+
+test('#764 review: candidates beyond the page cap are reported as truncated, not a complete run', async () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ ...software, company_number: `1699000${i}`, date_of_creation: `2026-01-${String(10 + i).padStart(2, '0')}` }))
+  const body = JSON.stringify({ ...SOFTWARE, hits: '7', items: many })
+  const asked: string[] = []
+  const r = await run('new software companies in London', recorded(asked, u => (u === URL_SOFTWARE ? { status: 200, body } : undefined)), async () => null)
+  assert.equal(r.notes.filter(n => n === 'truncated').length, 1, 'hits === items, yet 7 > maxPages candidates: says so once')
+  assert.equal(r.notes.filter(n => n === 'unreadable').length, chLimits.maxPages, 'only maxPages pages were read')
+})
