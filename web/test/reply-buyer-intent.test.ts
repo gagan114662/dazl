@@ -5,7 +5,7 @@ import { migrateThreadReplies, setQueries, listThreads, refreshReplies } from '.
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
-import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { randomBytes } from 'node:crypto'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'

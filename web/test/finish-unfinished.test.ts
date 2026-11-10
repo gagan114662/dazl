@@ -310,7 +310,7 @@ test('INSTINCT REPRO 7: an event that contradicts itself (Canada + England, US +
   assert.deepEqual(resolveStructuredDate([ev('GB', 'England')], 'Embedd', 'Embedd opened a new office in London, UK', ['London, UK']), { date: '2026-10-19', kind: 'Event' })
   assert.deepEqual(resolveStructuredDate([ev('Canada', 'ON')], 'Embedd', 'Embedd opened a new office in London, Ontario', ['London, Ontario, Canada']), { date: '2026-10-19', kind: 'Event' })
   assert.deepEqual(resolveStructuredDate([ev('US', 'NY', 'New York')], 'Embedd', 'Embedd opened a new office in New York, NY', ['New York, NY, USA']), { date: '2026-10-19', kind: 'Event' })
-  for (const [country, region] of [['GB', 'England'], ['UK', 'england'], ['United Kingdom', 'ENGLAND'], ['CA', 'Ontario'], ['Canada', 'ON'], ['US', 'NY']] as const) assert.notEqual(country, null)
+  for (const [country] of [['GB', 'England'], ['UK', 'england'], ['United Kingdom', 'ENGLAND'], ['CA', 'Ontario'], ['Canada', 'ON'], ['US', 'NY']] as const) assert.notEqual(country, null)
 })
 test('an event whose address list implies disjoint countries (a region list across two countries) dates nothing', () => {
   const two = ld({ '@type': 'Event', name: 'Embedd office opening', startDate: '2026-10-19', organizer: { name: 'Embedd' }, location: [{ '@type': 'Place', name: 'Embedd London office', address: { addressLocality: 'London', addressRegion: 'England', addressCountry: 'GB' } }, { '@type': 'Place', name: 'Embedd London office', address: { addressLocality: 'London', addressRegion: 'Ontario', addressCountry: 'CA' } }] })

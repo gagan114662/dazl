@@ -2,7 +2,7 @@
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
@@ -49,6 +49,8 @@ import type { SourceProgress } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
+import PlanViewCard from './plan-view'
+import { compileTargeting, planView } from '@/lib/scan/targeting'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -149,6 +151,9 @@ export default function LeadsClient() {
   // query or profile of a scan the user is looking at (whichever response arrives first). Synced on every render.
   const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
+  // The plan shown above Run (#876) is compiled HERE from exactly what Run sends: the request text now in the box and the profile now being edited. Any edit to either,
+  // a website fill, or a restored saved run, recompiles it on the spot, so it can never describe an earlier request or profile.
+  const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
   const [draftNote, setDraftNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -213,6 +218,11 @@ export default function LeadsClient() {
     } catch { setMonLoadError('Could not load your monitors. Check your connection.') }
   }
   useEffect(() => { void Promise.resolve().then(loadMonitors) }, [])
+  const [monBusy, setMonBusy] = useState(false)
+  const [monCreated, setMonCreated] = useState('')
+  const addMonitor = async (): Promise<boolean> => { if (query.trim().length < 3) return false; setMonError(''); let r: Response; try { r = await fetch('/api/monitors', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: query.trim(), ...(icp ? { icp: icp.icp } : {}) }) }) } catch { setMonError('Connection lost. We could not tell whether the monitor was created. Check the monitor list below before trying again.'); return false } const j = await r.json().catch(() => ({})); if (!r.ok) { setMonError(j.error === 'monitor_limit' ? `Your plan allows ${j.limit} monitors.` : j.error === 'interval_too_short' ? `The shortest interval on your plan is ${j.min} hours.` : j.error || 'Could not create the monitor'); return false } if (j.id === undefined || j.id === null || j.id === '') { setMonError('The server answered but did not confirm the monitor. Check the monitor list below before trying again.'); void loadMonitors(); return false } void loadMonitors(); return true }
+  // "Monitor this search": saves the current search as a continuous monitor (POST /api/monitors), shown with the list below.
+  const createMonitorFromSearch = async () => { if (monBusy) return; setMonBusy(true); setMonCreated(''); try { const ok = await addMonitor(); if (ok) setMonCreated(query.trim()) } finally { setMonBusy(false) } }
   const mutateMonitor = async (id: string, init: RequestInit, what: string) => {
     setMonError('')
     try {
@@ -287,7 +297,7 @@ export default function LeadsClient() {
     const r = await fetch(`/api/scan/csv/${csvBatch.batch_id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     const j = await r.json().catch(() => ({}))
     setCsvBusy(false)
-    if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error || 'Could not resume'); return }
+    if (!r.ok) { setCsvNote(j.error === 'quota_exceeded' ? 'Monthly scans are used up.' : j.error === 'batch_budget_unknown' ? (j.message || 'This batch cannot be resumed. Re-import the file to run the remaining domains.') : j.error || 'Could not resume'); return }
     setCsvBatch(j)
   }
   // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
@@ -828,6 +838,7 @@ export default function LeadsClient() {
         <div className="card p-4 mb-6 text-sm">
           {/* Above BOTH Run buttons: the spend limit and what it does not cover are read before anything starts. */}
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
+          <PlanViewCard plan={draftPlan} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400">{draftNote}</p>
             <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
@@ -1329,10 +1340,15 @@ export default function LeadsClient() {
         </>
       )}
 
-      {monitors.length > 0 && (
-        <div className="mt-6">
+      {(monitors.length > 0 || query.trim().length >= 3) && (
+        <div className="mt-6" data-testid="monitors">
           <h2 className="text-sm font-semibold mb-2 text-gray-300">Continuous Monitors</h2>
           <p className="text-gray-500 text-xs mb-2">Re-runs your search on a schedule. New companies show up here automatically.</p>
+          {query.trim().length >= 3 && (
+            <button type="button" data-testid="create-monitor" onClick={() => void createMonitorFromSearch()} disabled={monBusy}
+              className="btn-ghost text-xs px-3 min-h-11 min-w-11 mb-2 disabled:opacity-50">{monBusy ? 'Creating monitor…' : 'Monitor this search'}</button>
+          )}
+          {monCreated && !monError && <p className="text-green-400 text-xs mb-2" role="status" data-testid="monitor-created">Monitoring &ldquo;{monCreated}&rdquo;. New companies will appear here.</p>}
           <div className="space-y-1">
             {monitors.map(m => (
               <div key={m.id} data-testid="monitor-row" className="flex items-center gap-3 text-xs text-gray-400 bg-white/5 rounded px-3 py-2">

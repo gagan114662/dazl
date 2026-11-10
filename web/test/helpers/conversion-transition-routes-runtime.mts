@@ -90,7 +90,7 @@ test('tick: a verified conversion whose drain was lost stops the cold sequences 
   assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM suppressions WHERE lower(email) = ?', [email]), 0)
   // The terminal conversion reason is what the seller's sequences view shows.
   setUser({ id: S1, business_name: 'S1 Co' })
-  const view = await (await sequencesGet(new NextRequest('http://localhost/api/outreach/sequences'))).json() as { sequences: { id: string; status: string; stop_reason: string | null }[] }
+  const view = await (await sequencesGet()).json() as { sequences: { id: string; status: string; stop_reason: string | null }[] }
   assert.deepEqual(view.sequences.filter(s => s.id === 'sq-t1').map(s => [s.status, s.stop_reason]), [['stopped', 'policy_stop']])
 
   // A second tick (retry/restart) resurrects nothing and enrolls nothing twice.

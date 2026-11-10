@@ -11,6 +11,36 @@ import tempfile
 import unittest
 from unittest.mock import patch, Mock
 import safe_launch as m
+import hashlib
+import shutil
+import sqlite3
+from datetime import datetime, timezone
+
+# #911 fixtures: a backup made the supported way (SQLite online backup API) with its create-backup sidecar
+# manifest and a passing restore-drill report naming the same bytes. Fixed clock; nothing touches a real host.
+NOW = 1_800_000_000.0
+def iso(t): return datetime.fromtimestamp(t, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def write_manifest(backup, source, created=NOW - 60, **over):
+    doc = {'tool':'dazl-create-backup','sourcePath':str(source),'backupPath':str(backup),'sidecarPath':str(backup)+'.json',
+           'bytes':Path(backup).stat().st_size,'sha256':sha(backup),'durationMs':1,'createdAt':iso(created), **over}
+    Path(str(backup)+'.json').write_text(json.dumps(doc))
+def write_drill(path, bk, started=NOW - 30, **over):
+    backup = bk
+    doc = {'tool':'dazl-restore-drill','started_at':iso(started),'ok':True,'steps':[],'reasons':[],'warnings':[],
+           'duration_ms':1,'backup':Path(backup).name,'backup_sha256':sha(backup), **over}
+    Path(path).write_text(json.dumps(doc))
+def online_backup(source, dest):
+    with sqlite3.connect(source) as s, sqlite3.connect(dest) as d: s.backup(d)
+    with sqlite3.connect(dest) as d: d.execute('PRAGMA journal_mode=DELETE')
+def backup_fixture(root, max_age=3600):
+    db = root/'live.db'
+    with sqlite3.connect(db) as c: c.execute('CREATE TABLE x(id INTEGER)'); c.execute('INSERT INTO x VALUES (1)')
+    backup = root/'dazl-backup-1.db'; online_backup(db, backup)
+    write_manifest(backup, db); write_drill(root/'drill.json', backup)
+    args = argparse.Namespace(backup=str(backup), backup_db=str(db.resolve()), backup_manifest=None,
+                              drill_report=str(root/'drill.json'), backup_max_age_s=max_age)
+    return db, backup, args
 
 
 class SafeLaunchTest(unittest.TestCase):
@@ -62,6 +92,7 @@ class SafeLaunchTest(unittest.TestCase):
         stack.enter_context(patch.object(m,'health',return_value='b'*40))
         stack.enter_context(patch.object(m,'await_state',side_effect=waits))
         stack.enter_context(patch.object(m,'check_database_backup'))
+        stack.enter_context(patch.object(m,'recheck_backup'))
         stack.enter_context(patch.object(m,'pin_executables',return_value=['/usr/bin/node','/usr/lib/npm-cli.js']))
         stack.enter_context(patch.object(m,'check_process'))
         kill=stack.enter_context(patch.object(m.os,'kill'))
@@ -94,17 +125,13 @@ class SafeLaunchTest(unittest.TestCase):
                 kill.assert_not_called()
 
     def test_wrong_database_or_missing_verified_backup_refused(self):
-        import sqlite3
         with tempfile.TemporaryDirectory() as d:
-            db=Path(d)/'db'; backup=Path(d)/'backup'
-            for p in [db,backup]:
-                with sqlite3.connect(p) as conn:conn.execute('CREATE TABLE x(id INTEGER)')
-            args=argparse.Namespace(backup=str(backup),backup_db=str(db),backup_verified=True)
-            m.check_database_backup({'DB_PATH':str(db)},args)
+            db, backup, args = backup_fixture(Path(d))
+            self.assertEqual(m.check_database_backup({'DB_PATH':str(db)},args,now=NOW)['sha256'], sha(backup))
             for bad in ['',str(Path(d)/'missing')]:
-                with self.assertRaises(m.LaunchError):m.check_database_backup({'DB_PATH':bad},args)
-            args.backup_verified=False
-            with self.assertRaisesRegex(m.LaunchError,'backup_verification_required'):m.check_database_backup({'DB_PATH':str(db)},args)
+                with self.assertRaises(m.LaunchError):m.check_database_backup({'DB_PATH':bad},args,now=NOW)
+            args.backup_db=str(Path(d)/'other')
+            with self.assertRaisesRegex(m.LaunchError,'backup_verification_required'):m.check_database_backup({'DB_PATH':str(db)},args,now=NOW)
 
     def test_observed_ancestry_only_and_identity_failures(self):
         def rows():
@@ -190,11 +217,11 @@ class StatusFileTest(unittest.TestCase):
     def argv(self, status, port='3100'):
         return ['safe_launch.py','--stage','/new','--commit','a'*40,'--rollback-stage','/old','--rollback-commit','b'*40,
                 '--env-file','/env','--pid',str(self.stub.pid),'--port',port,'--backup','/backup','--backup-db','/db',
-                '--backup-verified','--execute','--status-file',str(status)]
+                '--drill-report','/drill','--backup-max-age-s','3600','--execute','--status-file',str(status)]
 
     def main(self, argv, overrides=None, waits=None):
         overrides = overrides or {}
-        defaults = {'stage_path':[Path('/new'),Path('/old')],'read_env':ENV,'check_database_backup':None,
+        defaults = {'stage_path':[Path('/new'),Path('/old')],'read_env':ENV,'check_database_backup':None,'recheck_backup':None,
                     'pin_executables':['/usr/bin/node','/usr/lib/npm-cli.js'],'check_process':None,
                     'pid_cwd':Path('/old'),'owns_listener':True,'health':'b'*40}
         out = io.StringIO()
@@ -283,5 +310,108 @@ class StatusFileTest(unittest.TestCase):
         self.assertEqual(found - m.STATUS_CODES, set())
         self.assertTrue(all(re.fullmatch(r'[A-Za-z0-9_]+', code) for code in m.STATUS_CODES | m.PHASES))
 
+
+
+class BackupEvidenceTest(unittest.TestCase):
+    """#911: the launch gate binds the backup to fresh, source-matched create-backup + restore-drill evidence."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+        self.db, self.backup, self.args = backup_fixture(self.root)
+        self.env = {'DB_PATH': str(self.db)}
+
+    def tearDown(self): self.temp.cleanup()
+
+    def refused(self, code):
+        with self.assertRaisesRegex(m.LaunchError, '^' + code + '$'):
+            m.check_database_backup(self.env, self.args, now=NOW)
+
+    def test_fresh_online_backup_with_matching_drill_passes(self):
+        pin = m.check_database_backup(self.env, self.args, now=NOW)
+        self.assertEqual(pin['sha256'], sha(self.backup)); m.recheck_backup(pin)
+
+    def test_wal_blind_raw_copy_is_refused(self):
+        live = sqlite3.connect(self.db); live.execute('PRAGMA journal_mode=WAL'); live.execute('INSERT INTO x VALUES (2)'); live.commit()
+        try:
+            raw = self.root/'raw.db'; shutil.copyfile(self.db, raw)
+            self.args.backup = str(raw); self.refused('backup_manifest_required')
+            # even a forged-looking drill for it does not help without the creator's manifest
+            write_drill(self.root/'drill.json', raw); self.refused('backup_manifest_required')
+        finally: live.close()
+
+    def test_unrelated_source_is_refused(self):
+        other = self.root/'other.db'
+        with sqlite3.connect(other) as c: c.execute('CREATE TABLE y(id INTEGER)')
+        write_manifest(self.backup, other); self.refused('backup_manifest_mismatch')
+
+    def test_stale_or_future_manifest_is_refused(self):
+        write_manifest(self.backup, self.db, created=NOW - 3601); self.refused('backup_stale')
+        write_manifest(self.backup, self.db, created=NOW + 3600); self.refused('backup_stale')
+
+    def test_cli_has_no_default_policy_window(self):
+        self.assertFalse(hasattr(m, 'DEFAULT_BACKUP_MAX_AGE_S'))
+        argv = ['safe_launch.py','--stage','/new','--commit','a'*40,'--rollback-stage','/old','--rollback-commit','b'*40,
+                '--env-file','/env','--pid','1','--backup','/b','--backup-db','/db']
+        seen = {}
+        with patch('sys.argv', argv), patch.object(m, 'run', side_effect=lambda a: (seen.setdefault('a', a), (_ for _ in ()).throw(m.LaunchError('invalid_process_or_port')))[1]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            try: m.main()
+            except (SystemExit, m.LaunchError): pass
+        self.assertIsNone(seen['a'].backup_max_age_s, 'omitting --backup-max-age-s must not invent a window')
+        self.args.backup_max_age_s = seen['a'].backup_max_age_s
+        self.refused('backup_policy_required')
+
+    def test_an_explicit_24_hour_window_is_honoured(self):
+        self.args.backup_max_age_s = 86400
+        write_manifest(self.backup, self.db, created=NOW - 86401); self.refused('backup_stale')
+        write_manifest(self.backup, self.db, created=NOW - 86000); write_drill(self.root/'drill.json', self.backup, started=NOW - 85000)
+        m.check_database_backup(self.env, self.args, now=NOW)
+
+    def test_policy_window_must_be_explicit(self):
+        for bad in [None, 0, -1, True, 8 * 24 * 3600, '3600']:
+            self.args.backup_max_age_s = bad; self.refused('backup_policy_required')
+
+    def test_tampered_bytes_are_refused(self):
+        with sqlite3.connect(self.backup) as c: c.execute('INSERT INTO x VALUES (99)')
+        self.refused('backup_manifest_mismatch')
+
+    def test_wrong_or_failed_drill_is_refused(self):
+        write_drill(self.root/'drill.json', self.backup, **{'backup': 'dazl-backup-other.db'}); self.refused('backup_drill_mismatch')
+        write_drill(self.root/'drill.json', self.backup, backup_sha256='0'*64); self.refused('backup_drill_mismatch')
+        write_drill(self.root/'drill.json', self.backup, ok=False); self.refused('backup_drill_mismatch')
+        write_drill(self.root/'drill.json', self.backup, started=NOW - 600); self.refused('backup_stale')  # before the backup existed
+        write_drill(self.root/'drill.json', self.backup, tool='something-else'); self.refused('backup_drill_required')
+        self.args.drill_report = None; self.refused('backup_drill_required')
+        self.args.drill_report = str(self.root/'missing.json'); self.refused('backup_drill_required')
+
+    def test_bare_boolean_is_not_evidence(self):
+        Path(str(self.backup)+'.json').unlink(); self.args.backup_verified = True
+        self.refused('backup_manifest_required')
+
+    def test_post_verification_swap_is_refused_before_any_signal(self):
+        pin = m.check_database_backup(self.env, self.args, now=NOW)
+        swapped = self.root/'swap.db'; online_backup(self.db, swapped)
+        with sqlite3.connect(swapped) as c: c.execute('INSERT INTO x VALUES (7)')
+        os.replace(swapped, self.backup)
+        with self.assertRaisesRegex(m.LaunchError, 'backup_changed'): m.recheck_backup(pin)
+        with self.assertRaisesRegex(m.LaunchError, 'backup_changed'): m.recheck_backup(None)
+
+    def test_swap_after_preflight_stops_run_before_sigterm(self):
+        pin = m.check_database_backup(self.env, self.args, now=NOW)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(m,'stage_path',side_effect=[Path('/new'),Path('/old')]))
+            stack.enter_context(patch.object(m,'read_env',return_value={**ENV,'DB_PATH':str(self.db)}))
+            stack.enter_context(patch.object(m,'check_database_backup',return_value=pin))
+            stack.enter_context(patch.object(m,'pin_executables',return_value=['/usr/bin/node']))
+            stack.enter_context(patch.object(m,'check_process'))
+            stack.enter_context(patch.object(m,'pid_cwd',return_value=Path('/old')))
+            stack.enter_context(patch.object(m,'owns_listener',return_value=True))
+            stack.enter_context(patch.object(m,'health',return_value='b'*40))
+            kill = stack.enter_context(patch.object(m.os,'kill'))
+            self.backup.write_bytes(self.backup.read_bytes() + b'x')
+            args = argparse.Namespace(pid=4321, port=3100, stage='/new', commit='a'*40, rollback_stage='/old', rollback_commit='b'*40,
+                                      env_file='/env', execute=True)
+            with self.assertRaisesRegex(m.LaunchError, 'backup_changed'): m.run(args)
+            kill.assert_not_called()
 
 if __name__=='__main__': unittest.main()

@@ -50,8 +50,7 @@ test('due monitors create scan jobs and schedule the next run; quota exhaustion 
 
 test('collectMonitorResults counts only events the tenant has not been alerted to before', async () => {
   const db = setup()
-  const r = (await createMonitor(D(db), 'u1', { query: 'robotics companies hiring sales' }))
-  const id = (r as { id: string }).id
+  await createMonitor(D(db), 'u1', { query: 'robotics companies hiring sales' })
   await runDueMonitors(D(db))
   const jobId = (db.prepare("SELECT job_id FROM monitor_runs").get() as { job_id: string }).job_id
   db.prepare("DELETE FROM scan_jobs").run() // drop the queued row; insertLeads recreates it done
