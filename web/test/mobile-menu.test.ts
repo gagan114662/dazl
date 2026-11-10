@@ -42,3 +42,8 @@ test('an open phone menu never takes more than about half the screen, so the pag
   assert.ok(aside.split(' ').includes('max-md:max-h-[55svh]') && aside.split(' ').includes('max-md:overflow-auto'), aside)
   assert.ok(aside.includes('md:w-60') && aside.includes('md:overflow-auto'), 'the desktop sidebar is unchanged')
 })
+
+test('Inbox: the explanatory note under the reply-rate heading is readable size (text-sm) on a phone and keeps its small size from sm up', () => {
+  const panel = src('app/app/inbox/conversion-panel.tsx'), cls = panel.match(/<p className="([^"]*)">Sent emails only\./)?.[1] ?? ''
+  assert.ok(cls.split(' ').includes('text-sm') && cls.split(' ').includes('sm:text-xs'), cls)
+})
