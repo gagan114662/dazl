@@ -56,6 +56,17 @@ export class HeldText {
   }
   get size(): number { return this.pages.size }
 
+  // Union of two seals for the SAME attempt (the adaptive round, #381 D3: round two's lead may cite a page only round
+  // one fetched, or vice versa — both were read within this one scan attempt). Mismatched attempts refuse rather than
+  // silently pick one side. Round one and round two request disjoint URLs (skipUrls), so pages never collide; if they
+  // ever did, the later seal's (b's) page wins, consistent with it being read after a's.
+  static merge(a: HeldText | undefined, b: HeldText | undefined): HeldText | undefined {
+    if (!a) return b
+    if (!b) return a
+    if (a.attempt !== b.attempt) throw new Error(`HeldText.merge: attempt mismatch (${a.attempt} vs ${b.attempt})`)
+    return new HeldText(a.attempt, new Map([...a.pages, ...b.pages]))
+  }
+
   // The copy for exactly this cited URL, for this attempt, or the reason there is none.
   copyFor(attempt: string, citedUrl: string, ownFailure: string): { ok: true; page: HeldPage } | { ok: false; refusal: CopyRefusal } {
     if (!(COPY_FAILURES as readonly string[]).includes(ownFailure)) return { ok: false, refusal: 'failure_not_eligible' }
