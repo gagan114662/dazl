@@ -119,9 +119,12 @@ export interface PublicFetchDeps {
   method?: 'GET' | 'POST'       // default GET
   body?: string                 // POST body
   headers?: Record<string, string> // full request-header override (else UA/Accept defaults)
+  // false: a 3xx is returned as { error: 'blocked', status, redirect: true } and its Location is never requested, so a
+  // POST body and headers are never forwarded to another destination (#926). Default true (page reads follow redirects).
+  followRedirects?: boolean
 }
 
-export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}): Promise<{ html: string; finalUrl: string; status: number } | { error: PublicFetchError; status?: number }> {
+export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}): Promise<{ html: string; finalUrl: string; status: number } | { error: PublicFetchError; status?: number; redirect?: true }> {
   const deadline = AbortSignal.timeout(deps.timeoutMs ?? TIMEOUT_MS)
   const maxBytes = deps.maxBytes ?? MAX_BYTES
   const reqHeaders = deps.headers ?? {
@@ -159,6 +162,7 @@ export async function fetchPublicHtml(rawUrl: string, deps: PublicFetchDeps = {}
       return { error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'blocked' }
     }
     if (res.status >= 300 && res.status < 400) {
+      if (deps.followRedirects === false) { await res.body?.cancel().catch(() => {}); return { error: 'blocked', status: res.status, redirect: true } }
       const loc = res.headers.get('location')
       if (!loc) return { error: 'blocked' }
       try { url = new URL(loc, url) } catch { return { error: 'invalid' } }

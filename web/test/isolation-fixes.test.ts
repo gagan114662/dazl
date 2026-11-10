@@ -112,7 +112,7 @@ test('crm webhook: a redirecting webhook is reported, not followed to a private 
   }) as unknown as typeof fetch
   await assert.rejects(
     () => pushLead({ provider: 'webhook', url: 'https://hooks.example/dazl' }, { company: 'Acme', name: 'Ada', contact: null, signal: 's', source_url: 'https://x.com/1' }, f, { lookup: pubLookup }),
-    /Webhook address is not public/, // the redirect target is validated before any second request
+    /Webhook answered with a redirect \(302\); dazl does not follow webhook redirects/, // #926: a 3xx is reported, never followed
   )
   assert.deepEqual(seen, ['https://hooks.example/dazl'], 'the private redirect target was never requested')
 })
