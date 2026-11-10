@@ -64,3 +64,21 @@ test('a scan cancelled during the LinkedIn phase makes no further LinkedIn reque
   assert.equal(asked, 1, 'the second planned request (people search + one competitor) is never sent')
   assert.ok((db.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:linkedin-people'").all() as { status: string }[]).some(r => r.status === 'scan_stopped'))
 })
+
+test('session transport through the real scan: a flag that is on but misconfigured (two tenants, or no named throwaway account) requests nothing and is recorded, not silent', async () => {
+  const base = { LINKEDIN_SESSION_TRANSPORT: '1', ADVANCED_WORKER_URL: 'http://worker.invalid', ADVANCED_WORKER_TOKEN: 'tok' }
+  for (const [extra, want] of [
+    [{ LINKEDIN_SESSION_TENANTS: 'A,B', LINKEDIN_SESSION_ACCOUNT: 'throwaway-li@example.test' }, 'session_multiple_tenants'],
+    [{ LINKEDIN_SESSION_TENANTS: 'A' }, 'session_no_account'],
+  ] as const) {
+    const saved = { ...process.env }; Object.assign(process.env, base, extra)
+    if (!('LINKEDIN_SESSION_ACCOUNT' in extra)) delete process.env.LINKEDIN_SESSION_ACCOUNT
+    try {
+      const { db, leads } = await run(true, undefined)
+      assert.ok(!leads.some(l => l.source_url.includes('linkedin.com/in/')))
+      const rows = (db.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:linkedin-people'").all() as { status: string }[]).map(r => r.status)
+      assert.ok(rows.includes(want) && rows.includes('unavailable'), JSON.stringify(rows))
+      assert.equal((db.prepare("SELECT count(*) AS n FROM connector_audit WHERE connector = 'adv:linkedin'").get() as { n: number }).n, 0, 'no LinkedIn request')
+    } finally { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved) }
+  }
+})
