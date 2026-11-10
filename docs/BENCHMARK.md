@@ -86,7 +86,10 @@ a second scoreboard), and writes one batch report with, per system:
 - The order rotates per task, seeded, so every system goes first equally often.
 
 **Idempotent:** every (batch, system, task) has a stable run id. With `--store`, a re-run reuses what is recorded and
-calls nothing again. A change to the briefs, systems, budget or seed is a different batch.
+calls nothing again. A change to the briefs, systems, budget or seed is a different batch. The `scored_id` in the
+manifest also covers the evaluator (name, version, config: snapshots digest, corroboration threshold), so the same runs
+judged again with other pages or another threshold get another scored id and their own `batch-<batch_id>.<scored_id>`
+output files, never overwriting the first report.
 
 **Honest gaps:**
 

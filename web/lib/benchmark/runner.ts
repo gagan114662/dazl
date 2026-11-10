@@ -207,7 +207,10 @@ export interface SystemReport {
   seconds: number | null; spend_usd: number | null; interventions: number
 }
 export interface BatchResult {
-  manifest: { batch_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean; config: Record<string, unknown> | null }; blinding: { identity_tokens: number; redactions: number } }
+  // batch_id names the RUNS (what each system was asked and returned: reused from a store). scored_id names this SCORING of
+  // them: it also covers the evaluator's name, version and config (its snapshots digest and thresholds), so re-judging the
+  // same runs with other pages or another threshold is a different scored batch and never overwrites the first.
+  manifest: { batch_id: string; scored_id: string; task_set_version: string; as_of: string; briefs_hash: string; seed: number; budget: Budget; origin: AdapterOrigin; label: string; order: Record<string, string[]>; systems: { system: string; origin: AdapterOrigin; config: AdapterConfig; available: Adapter['available'] }[]; evaluator: { name: string; version: string; independent: boolean; config: Record<string, unknown> | null }; blinding: { identity_tokens: number; redactions: number } }
   runs: BenchmarkRun[]; scorecards: Scorecard[]; report: SystemReport[]; spent_usd: number
   evaluations: Evaluation[]     // every blind judgement mapped back to its system after judging, with its record
   interventions: Record<string, Record<string, number>>   // system -> task -> operator interventions
@@ -356,7 +359,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     }
   })
   return {
-    manifest: { batch_id, task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent, config: o.evaluator.config ? structuredClone(o.evaluator.config) : null }, blinding: { identity_tokens: tokens.length, redactions } },
+    manifest: { batch_id, scored_id: sha(JSON.stringify({ batch_id, evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent, config: o.evaluator.config ?? null } })).slice(0, 24), task_set_version: set.version, as_of: o.asOf, briefs_hash: hash, seed: o.seed, budget, origin, label: origin === 'synthetic' ? 'SYNTHETIC fixtures: not live results of any product' : origin === 'recorded' ? 'recorded outputs' : 'live runs', order, systems: systems.map(a => ({ system: a.system, origin: a.origin, config: a.config, available: avail.get(a.system)! })), evaluator: { name: o.evaluator.name, version: o.evaluator.version, independent: o.evaluator.independent, config: o.evaluator.config ? structuredClone(o.evaluator.config) : null }, blinding: { identity_tokens: tokens.length, redactions } },
     runs, scorecards: cards, report, spent_usd: Math.round(spent * 1e6) / 1e6, evaluations: evaluations.sort((a, b) => a.task_id.localeCompare(b.task_id) || a.system.localeCompare(b.system) || a.entity_key.localeCompare(b.entity_key)),
     interventions: Object.fromEntries(systems.map(a => [a.system, Object.fromEntries(briefs.map(b => [b.task_id, stored.get(`${a.system}|${b.task_id}`)!.interventions]))])),
   }
@@ -471,7 +474,7 @@ export function batchFromFile(f: BatchFile): Omit<BatchOptions, 'store' | 'commi
 export function batchMarkdown(r: BatchResult): string {
   const n = (x: number | null, d = 2) => x === null ? 'n/a' : x.toFixed(d)
   return [
-    `# Benchmark batch ${r.manifest.batch_id}`, '',
+    `# Benchmark batch ${r.manifest.batch_id} (scored ${r.manifest.scored_id})`, '',
     `**${r.manifest.label}.** Task set v${r.manifest.task_set_version}, as of ${r.manifest.as_of}, briefs ${r.manifest.briefs_hash.slice(0, 12)}, seed ${r.manifest.seed}.`,
     `Equal budget per task: $${r.manifest.budget.usd_per_task} and ${r.manifest.budget.seconds_per_task}s; batch total $${r.manifest.budget.batch_usd} (spent $${r.spent_usd}). Evaluator: ${r.manifest.evaluator.name} v${r.manifest.evaluator.version} (blind to system).`, '',
     '| system | status | complete / tasks | P@5 | P@10 | validated | unique actionable | seconds | spend | interventions |',

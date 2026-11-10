@@ -310,7 +310,7 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
     return {
       identity: identity.verdict as Verdict, constraints: constraints.verdict as Verdict, event_date: event_date.verdict as Verdict, contact: contact.verdict as Verdict,
       record: {
-        evaluator: `${EVALUATOR_NAME}@${EVALUATOR_VERSION}`, signal_tier: origins >= min && event_date.verdict === 'pass' ? 'corroborated' : origins >= 1 ? 'source-checked' : 'unverified',
+        evaluator: `${EVALUATOR_NAME}@${EVALUATOR_VERSION}`, signal_tier: origins >= 2 && event_date.verdict === 'pass' ? 'corroborated' : origins >= 1 ? 'source-checked' : 'unverified',   // corroborated always means two or more origins, whatever the batch's minimum
         independent_origins: origins, corroborating_sources: corro.map(c => c.url), verifier_found_sources: found.filter(u => corroborating.includes(u)),
         why: Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, f.why.slice(0, 8).map(w => w.slice(0, 300))])),
         checks, claim_problems: problems, claim_fields_dropped: dropped,

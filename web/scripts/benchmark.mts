@@ -145,8 +145,10 @@ if (cmd === 'scorecard') {
   const out = arg('--out')
   if (out) {
     mkdirSync(out, { recursive: true })
-    writeFileSync(path.join(out, `batch-${r.manifest.batch_id}.json`), JSON.stringify(r, null, 2) + '\n')
-    writeFileSync(path.join(out, `batch-${r.manifest.batch_id}.md`), batchMarkdown(r) + '\n')
+    // one file per scoring: the same runs judged with other snapshots or thresholds never overwrite an earlier report
+    const name = `batch-${r.manifest.batch_id}.${r.manifest.scored_id.slice(0, 12)}`
+    writeFileSync(path.join(out, `${name}.json`), JSON.stringify(r, null, 2) + '\n')
+    writeFileSync(path.join(out, `${name}.md`), batchMarkdown(r) + '\n')
   }
   process.stdout.write(batchMarkdown(r) + `${notes.length ? `\n\n${notes.map(n => `- ${n.system}: ${n.used ? 'recording replayed' : n.reason}`).join('\n')}` : ''}\n\nruns: ${store.runs.size - before} new, ${before} reused from the store\n`)
 } else die('usage: benchmark.mts scorecard|from-scoreboard|compare|run|dazl-recording|superiority|history (see the header)')

@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,8 +42,10 @@ const fields = (j: Judgement) => [j.identity, j.constraints, j.event_date, j.con
 test('#397: validated means independently corroborated: two origins state the dated event; one source, a same-domain page or a syndicated copy is not enough', async () => {
   assert.deepEqual(fields(await judge(item(), brief(TORONTO))), ['pass', 'pass', 'pass', 'pass'])
   const one = await judge(item({ evidence_urls: ['https://news.example/maple'] }), brief(TORONTO))
-  assert.deepEqual(fields(one), ['pass', 'unknown', 'unknown', 'pass']);   // the opening is stated on one origin too assert.equal(one.record.independent_origins, 1); assert.equal(one.record.signal_tier, 'source-checked')
-  assert.deepEqual(fields(await judge(item({ evidence_urls: ['https://news.example/maple'] }), brief(TORONTO), PAGES, 1)), ['pass', 'pass', 'pass', 'pass'])   // a batch that asks for one origin
+  assert.deepEqual(fields(one), ['pass', 'unknown', 'unknown', 'pass'])   // the opening is stated on one origin too
+  assert.equal(one.record.independent_origins, 1); assert.equal(one.record.signal_tier, 'source-checked')
+  const lone = await judge(item({ evidence_urls: ['https://news.example/maple'] }), brief(TORONTO), PAGES, 1)   // a batch that asks for one origin
+  assert.deepEqual(fields(lone), ['pass', 'pass', 'pass', 'pass']); assert.equal(lone.record.signal_tier, 'source-checked')   // passing at 1 is never called corroborated
   // a second page on the same registrable domain is the same origin
   const same = await judge(item({ evidence_urls: ['https://news.example/maple', 'https://www.news.example/maple-2'] }), brief(TORONTO), [...PAGES, { url: 'https://www.news.example/maple-2', text: 'On October 8, 2026 Maple Leaf Marketing opened its Toronto office, at mapleleaf.example.' }])
   assert.equal(same.record.independent_origins, 1); assert.equal(same.event_date, 'unknown')
@@ -208,6 +210,14 @@ test('#397 #788: one command reproduces a verifier-scored batch: per-tool P@5/P@
     assert.match(first, /\| pancake \| unavailable: no authorized Pancake account \(NEEDS GAGAN\) \| 0 \/ 3 \| n\/a \| n\/a \| 0 \| 0 \| n\/a \| n\/a \| 0 \|/)
     assert.match(first, /runs: 12 new, 0 reused/); assert.match(second, /runs: 0 new, 12 reused/)
     assert.equal(first.split('\n\nruns:')[0], second.split('\n\nruns:')[0])
+    // the same runs scored at another corroboration level: same batch_id (no run repeated), another scored_id, another file
+    const f1 = JSON.parse(readFileSync(FIXTURE, 'utf8')) as BatchFile
+    writeFileSync(path.join(dir, 'one-origin.json'), JSON.stringify({ ...f1, evaluator: { ...f1.evaluator!, min_independent_origins: 1 } }))
+    const third = execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/benchmark.mts', 'run', '--batch', path.join(dir, 'one-origin.json'), '--store', path.join(dir, 'store.json'), '--out', dir], { cwd: WEB, encoding: 'utf8' })
+    assert.match(third, /runs: 0 new, 12 reused/)
+    const id = (s: string) => /# Benchmark batch (\w+) \(scored (\w+)\)/.exec(s)!.slice(1)
+    assert.equal(id(third)[0], id(first)[0]); assert.notEqual(id(third)[1], id(first)[1])
+    assert.equal(readdirSync(dir).filter(x => x.startsWith('batch-') && x.endsWith('.json')).length, 2)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
