@@ -36,8 +36,9 @@ export async function POST(req: NextRequest) {
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
   const nb = normalizeRunBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: nb.error }, { status: 400 })
-  const batchId = createBatch(db, user.tenantId, parsed.valid)
-  const { queued, quotaStop } = queuePendingRows(db, user.tenantId, batchId, nb.value)
+  // #916: the budget is recorded with the batch, so every later resume runs under exactly this restriction
+  const batchId = createBatch(db, user.tenantId, parsed.valid, nb.value)
+  const { queued, quotaStop } = queuePendingRows(db, user.tenantId, batchId)
   after(() => kickRunner(db))
   return NextResponse.json({
     batch_id: batchId,
