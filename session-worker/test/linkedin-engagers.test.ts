@@ -89,7 +89,7 @@ test('session post search: one GET, manual redirects, posts parsed; login wall /
     [302, '', 'https://www.linkedin.com/checkpoint/challenge/AgF', 'challenge'], [303, '', 'https://www.linkedin.com/authwall?trk=x', 'auth_failed'],
     [302, '', 'https://www.linkedin.com/login?session_redirect=x', 'auth_failed'], [200, fx('linkedin-checkpoint.html'), null, 'challenge'],
     [200, fx('linkedin-authwall.html'), null, 'auth_failed'], [200, '<html><body>Your account has been restricted</body></html>', null, 'challenge'],
-    [999, '', null, 'challenge'], [429, '', null, 'throttled'], [401, '', null, 'auth_failed'], [500, '', null, 'upstream_error'], [200, '{"data":{}}', null, 'schema_error'],
+    [999, '', null, 'challenge'], [429, '', null, 'throttled'], [200, '{"status":999}', null, 'challenge'], [200, '{"status":429}', null, 'throttled'], [200, '{"status":401}', null, 'auth_failed'], [401, '', null, 'auth_failed'], [500, '', null, 'upstream_error'], [200, '{"data":{}}', null, 'schema_error'],
   ] as const) {
     stub(status, body, loc)
     await assert.rejects(fetchPosts('Rippling', SESSION), (e: unknown) => e instanceof FetchFailure && e.kind === kind, `${status} ${loc ?? body.slice(0, 30)} -> ${kind}`)

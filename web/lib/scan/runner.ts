@@ -1435,11 +1435,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const why = deps.linkedinTransport ? 'off' : sessionTransportProblem(job.user_id)
         if (why === 'no_worker' || why === 'no_account' || why === 'multiple_tenants') await writeAudit(sqliteDb(db), { tenantId: job.user_id, connector: PEOPLE_CONNECTOR, jobId: job.id, lookup: 'linkedin session', status: `session_${why}`, results: 0 })
         const transport = deps.linkedinTransport ?? (why === null ? linkedinSessionTransport(sqliteDb(db), { master: deps.master }) : undefined)
-        const stop: { status: string | null } = { status: null }
-        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport, onStop: s => { stop.status = s }, beforeRequest: () => assertOwned(db, job) })
-        if (stop.status && li.length === 0) ledger.record(PEOPLE_CONNECTOR, 'unavailable', 0)   // the reason is the stopped_* / daily_cap audit row
+        const stop: { status: string | null; incomplete: boolean } = { status: null, incomplete: false }
+        const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport, onStop: s => { stop.status = s }, onIncomplete: () => { stop.incomplete = true }, beforeRequest: () => assertOwned(db, job) })
+        if ((stop.status || stop.incomplete) && li.length === 0) ledger.record(PEOPLE_CONNECTOR, 'unavailable', 0)   // the reason is the stopped_* / daily_cap audit row
         if (li.length > 0) {
-          ledger.record(PEOPLE_CONNECTOR, stop.status ? 'partial' : 'ok', li.length)
+          ledger.record(PEOPLE_CONNECTOR, stop.status || stop.incomplete ? 'partial' : 'ok', li.length)
           assertOwned(db, job)
           const text = await complete.call(providers_[vendor], key, buildSourcePrompt(job.query!, icpForSources, li), deps.fetchImpl, 3000)
           const extra = parseLeads(text, li.map(i => i.url)) ?? []

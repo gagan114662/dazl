@@ -89,8 +89,8 @@ async function gateStatus(db: Db, tenantId: string, env: Record<string, string |
   return null
 }
 
-export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number; sleep?: (ms: number) => Promise<void>; onStop?: (status: string) => void; beforeRequest?: () => void | Promise<void> } = {}): Promise<LinkedInItem[]> {
-  const envNow = () => deps.env ?? process.env, now = deps.now ?? Math.floor(Date.now() / 1000), deadlineMs = deps.deadlineMs ?? DEADLINE_MS
+export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: string, icp: { who: string[]; where: string[]; industries: string[] }, deps: { transport?: LinkedInTransport; env?: Record<string, string | undefined>; now?: number; deadlineMs?: number; sleep?: (ms: number) => Promise<void>; onStop?: (status: string) => void; onIncomplete?: () => void; beforeRequest?: () => void | Promise<void> } = {}): Promise<LinkedInItem[]> {
+  const envNow = () => deps.env ?? process.env, clock = () => deps.now ?? Math.floor(Date.now() / 1000), now = clock(), deadlineMs = deps.deadlineMs ?? DEADLINE_MS
   const skip = async (status: string) => { await writeAudit(db, { tenantId, connector: PEOPLE_CONNECTOR, jobId, lookup: 'linkedin people', status, results: 0 }); return [] as LinkedInItem[] }
   const g0 = await gateStatus(db, tenantId, envNow()); if (g0) return skip(g0)
   if (!deps.transport) return skip('unavailable')                // no authorised transport: nothing is requested, and this is not "zero people"
@@ -110,9 +110,9 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
     const g = await gateStatus(db, tenantId, envNow()); if (g) { await skip(g); break }
     // The scan still owns this run (not cancelled, reaped or timed out): checked before the reservation, so a stopped scan neither spends budget nor calls LinkedIn.
     if (deps.beforeRequest) { try { await deps.beforeRequest() } catch (e) { try { await skip('scan_stopped') } catch { /* the audit write failed: the runner still sees the stop */ } throw e } }
-    if (!(await reserveRequest(db, tenantId, ID, MAX_REQUESTS_PER_HOUR, 'people', now))) { if (made === 0) await skip('rate_limited'); else await skip('rate_limited_mid_run'); break }
+    if (!(await reserveRequest(db, tenantId, ID, MAX_REQUESTS_PER_HOUR, 'people', clock()))) { if (made === 0) await skip('rate_limited'); else await skip('rate_limited_mid_run'); break }
     // The daily cap is reserved AFTER the hourly one: a refused day slot burns the hour slot (never undercounts), and the run stops visibly.
-    if (session && !(await reserveRequest(db, tenantId, DAY_CONNECTOR, lim.daily, 'people', now, 86_400))) { await skip('daily_cap'); deps.onStop?.('daily_cap'); break }
+    if (session && !(await reserveRequest(db, tenantId, DAY_CONNECTOR, lim.daily, 'people', clock(), 86_400))) { await skip('daily_cap'); deps.onStop?.('daily_cap'); break }
     made++
     const lookup = `${q.kind}:${q.query}`
     const ctl = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined
@@ -124,7 +124,7 @@ export async function collectLinkedInPeople(db: Db, tenantId: string, jobId: str
     // A transport that missed the deadline is out of contract and may still be making unbudgeted upstream requests in the background: STOP the run, never feed it another reservation.
     if (res === 'deadline') { await stop(lookup, 'stopped_deadline'); break }   // the late result, if any, is dropped
     if (res.status !== 'ok') {
-      if (res.status === 'error') { await writeAudit(db, { tenantId, connector: ID, jobId, lookup, status: 'error', results: 0 }); continue }
+      if (res.status === 'error') { await writeAudit(db, { tenantId, connector: ID, jobId, lookup, status: 'error', results: 0 }); deps.onIncomplete?.(); continue }
       await stop(lookup, `stopped_${res.status}`)     // throttled / challenge / unauthorised: visible, cooled down, never retried
       // On the throwaway session a challenge or a logged-out answer takes the account out of use until a human re-enables it (a throttle only cools down).
       if (session && (res.status === 'challenge' || res.status === 'unauthorized')) {

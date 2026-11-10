@@ -24,6 +24,11 @@ export function sessionTransportProblem(tenantId: string, env: Record<string, st
   if (tenants.length > 1) return 'multiple_tenants'
   return tenants[0] === tenantId ? null : 'not_allowlisted'
 }
+// The designated throwaway session is spent ONLY through the paced, capped, challenge-stopping transport: when the flag is on and this tenant is named in the allowlist (even a
+// misconfigured multi-tenant list, which fails closed), the older un-paced `adv:linkedin` /fetch reader must not use the same cookie (#949 review).
+export function sessionCookieReserved(tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
+  return env.LINKEDIN_SESSION_TRANSPORT === '1' && (env.LINKEDIN_SESSION_TENANTS ?? '').split(',').map(s => s.trim()).includes(tenantId)
+}
 export function sessionTransportEnabled(tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
   return sessionTransportProblem(tenantId, env) === null
 }

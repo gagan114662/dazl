@@ -4,6 +4,7 @@ import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
+import { sessionCookieReserved } from '../signals/linkedin-session-transport.ts'
 import { migrateAdvBudget, reserveRequest } from './request-budget.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
@@ -158,6 +159,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // search. It never reaches consent, the rate limiter or the worker, and it burns no call budget.
     if (!PLATFORM_SUPPORT[p].supported) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
+    // The designated throwaway LinkedIn session has one reader with a human pace, a daily cap and a challenge stop (linkedin-people.ts); this un-paced one must not also spend it.
+    if (p === 'linkedin' && sessionCookieReserved(tenantId, env)) { await skip('session_transport_owns_cookie'); continue }
     // Atomic: the reservation and the limit check are one step, shared with every other consumer of this connector (the LinkedIn people reader included), so concurrent scans cannot exceed the cap (#192).
     if (!(await reserveRequest(db, tenantId, connectorId(p), maxCallsPerHour(p, env), 'advanced', deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped

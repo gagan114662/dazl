@@ -121,7 +121,12 @@ async function sessionGet(url: string, session: string, referer: string): Promis
   const bad = classifyAnswer(res.status, res.headers.get('location'), text.slice(0, 20_000))
   if (bad) throw new FetchFailure(bad)
   if (over) throw new FetchFailure('schema_error')
-  try { return JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
+  let json: unknown
+  try { json = JSON.parse(text) } catch { throw new FetchFailure('schema_error') }
+  // A bot block can arrive as HTTP 200 with a JSON body {status:999|401|403|429}: classify the embedded status the same way, so it stops the run instead of reading as a retryable error.
+  const inner = Number((json as { status?: unknown } | null)?.status)
+  if (Number.isInteger(inner) && inner >= 300) { const k = classifyAnswer(inner, null, ''); if (k) throw new FetchFailure(k) }
+  return json
 }
 
 export async function fetchEngagers(kind: EngagerKind, post: string, session: string): Promise<WorkerItem[]> {

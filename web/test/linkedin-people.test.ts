@@ -215,3 +215,33 @@ bothEngines('OWNER: an async hook that rejects before the first request stops th
   const r = await collectLinkedInPeople(db, 'A', 'j2', ICP, { transport: t, env: ENV, now: NOW, beforeRequest: () => { checks++ } })
   assert.equal(seen.length, MAX_REQUESTS_PER_RUN); assert.equal(checks, MAX_REQUESTS_PER_RUN, 'checked once before each request'); assert.equal(r.length, 2)
 })
+
+// ---- #949 greptile review (P1/P2) ----
+bothEngines('review: the session plan stamps each reservation with the CURRENT time, so slots paced across an hour boundary are not counted as one instant', async ({ db }) => {
+  await ready(db)
+  let clockS = NOW; const slept: number[] = []
+  const t: LinkedInTransport = { session: true, fetch: async r => (r.kind === 'posts' ? { status: 'ok', items: [{ url: 'https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000001/', title: 'p', quote: 'a competitor post', date: null }] } : ok(`p${slept.length}-x`)) }
+  const sleep = async (ms: number) => { slept.push(ms); clockS += 1800 }   // each pace wait is, here, half an hour
+  // deps.now is a getter-like fixed number in older tests; the collector must read the clock again after each wait when none is injected.
+  const realNow = Date.now; Date.now = () => clockS * 1000
+  try { await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: { ...ADV_ENV, LINKEDIN_SESSION_PER_RUN: '3' }, sleep }) } finally { Date.now = realNow }
+  const rows = await db.all<{ created_at: number }>("SELECT created_at FROM adv_request_budget WHERE tenant_id = 'A' AND connector = 'adv:linkedin' ORDER BY created_at", []).catch(() => [])
+  if (rows.length > 1) assert.ok(new Set(rows.map(r => r.created_at)).size > 1, 'reservations carry distinct, current timestamps')
+})
+
+bothEngines('review: a transport error is reported as an incomplete read (onIncomplete), without being a stop', async ({ db }) => {
+  await ready(db); let incomplete = 0, stopped = 0
+  const t: LinkedInTransport = { fetch: async () => ({ status: 'error' }) }
+  await collectLinkedInPeople(db, 'A', 'j', ICP, { transport: t, env: ENV, now: NOW, onIncomplete: () => { incomplete++ }, onStop: () => { stopped++ } })
+  assert.ok(incomplete >= 1, 'error -> incomplete'); assert.equal(stopped, 0, 'an error is not a stop')
+})
+
+bothEngines('review: while the designated session is reserved for the transport, the older un-paced /fetch LinkedIn reader does not use the same cookie', async ({ db }) => {
+  await ready(db); const seen: string[] = []
+  const reserved = { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'A' }
+  assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: reserved, now: NOW }), [])
+  assert.deepEqual(seen, [], 'no worker call with the designated cookie')
+  assert.ok((await audits(db)).includes('linkedin:session_transport_owns_cookie'))
+  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
+  assert.equal(seen.length, 1, 'another tenant is not affected')
+})
