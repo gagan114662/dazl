@@ -41,8 +41,8 @@ test('a throwing judge is held as unknown after its retries, and the abort signa
 })
 
 test('the judge has its own budget: when it is spent the claim is unknown and nothing more is called', async () => {
-  const o = opts({ budget: { max_calls: 3, used: 0 } }); let calls = 0; const count: Judge = async () => { calls++; return 'pass' }
-  await run({ a: count, b: count }, o); const r = await run({ a: count, b: count }, o)
+  const o = opts({ budget: { max_calls: 3, used: 0 } }); let calls = 0; const count: Judge = async () => { calls++; return 'pass' }, count2: Judge = async () => { calls++; return 'pass' }
+  await run({ a: count, b: count2 }, o); const r = await run({ a: count, b: count2 }, o)
   assert.equal(calls, 3); assert.equal(o.budget.used, 3); assert.equal(r.verdict, 'unknown'); assert.ok(o.log.some(l => l.outcome === 'budget'))
 })
 
@@ -52,8 +52,8 @@ test('every call is logged on the judge\'s own log with its attempt, outcome and
 })
 
 test('the judge reads a blinded claim: identity tokens are scrubbed and it cannot change the claim for the next judge', async () => {
-  const seen: string[] = []; const spy: Judge = async c => { seen.push(c.text ?? ''); (c as { text: string }).text = 'tampered'; return 'pass' }
-  await run({ a: spy, b: spy })
+  const seen: string[] = []; const spy: Judge = async c => { seen.push(c.text ?? ''); (c as { text: string }).text = 'tampered'; return 'pass' }, spy2: Judge = async c => { seen.push(c.text ?? ''); (c as { text: string }).text = 'tampered'; return 'pass' }
+  await run({ a: spy, b: spy2 })
   assert.equal(seen.length, 2); for (const s of seen) { assert.doesNotMatch(s, /dazl|claude-sonnet/i); assert.match(s, /Northwind Labs is hiring/) }
 })
 
@@ -79,4 +79,49 @@ test('genuinely separate sources on separate domains are separate confirmations;
 
 test('short or empty text never groups sources by itself', () => {
   assert.equal(provenanceGroups([S('https://a.example.org/1', 'Hiring.'), S('https://b.example.net/2', 'Hiring.'), S('https://c.example.com/3')]).length, 3)
+})
+
+// ---- Hermes-PC review of #1031 (head db5300cc) ----
+
+test('review 1: the spend gate fails closed: a budget or bound that is not a real cap calls nothing', async () => {
+  let calls = 0; const a: Judge = async () => { calls++; throw new Error('x') }, b: Judge = async () => { calls++; throw new Error('x') }
+  const bad: [string, Partial<JudgeOptions>][] = [
+    ['max_calls NaN', { budget: { max_calls: NaN, used: 0 } }], ['max_calls missing', { budget: { used: 0 } as never }], ['max_calls a string', { budget: { max_calls: '5', used: 0 } as never }], ['max_calls Infinity', { budget: { max_calls: Infinity, used: 0 } }],
+    ['max_calls negative', { budget: { max_calls: -1, used: 0 } }], ['max_calls fractional', { budget: { max_calls: 2.5, used: 0 } }],
+    ['used NaN', { budget: { max_calls: 2, used: NaN } }], ['used missing', { budget: { max_calls: 2 } as never }], ['used negative', { budget: { max_calls: 2, used: -5 } }],
+    ['budget null', { budget: null as never }], ['budget missing', { budget: undefined as never }],
+    ['max_attempts NaN', { max_attempts: NaN }], ['max_attempts 0', { max_attempts: 0 }], ['max_attempts huge fraction', { max_attempts: 1.5 }], ['max_attempts a string', { max_attempts: '50' as never }],
+    ['timeout NaN', { timeout_ms: NaN }], ['timeout 0', { timeout_ms: 0 }], ['timeout negative', { timeout_ms: -1 }], ['log missing', { log: undefined as never }],
+  ]
+  for (const [name, over] of bad) { const r = await run({ a, b }, opts({ max_attempts: 50, ...over })); assert.equal(r.verdict, 'unknown', name); assert.match(r.reason, /no judge was called/, name) }
+  assert.equal(calls, 0, 'not one judge call was made for any malformed option')
+  assert.equal((await judgeClaim(ITEM, [], Q, { a, b }, null as never)).verdict, 'unknown')
+  // a valid cap still bounds the spend exactly
+  const o = opts({ max_attempts: 50, budget: { max_calls: 4, used: 0 } }); await run({ a, b }, o); assert.equal(calls, 4)
+})
+
+test('review 2: two names for the same judge are one judge', async () => {
+  const one: Judge = async () => 'pass'
+  const r = await run({ a: one, b: one }); assert.equal(r.verdict, 'unknown'); assert.match(r.reason, /distinct/)
+  assert.equal((await run({ a: one, b: async () => 'pass' })).verdict, 'pass', 'two distinct functions still agree')
+  assert.equal((await run({ a: one, b: 'not a function' as never })).verdict, 'unknown'); assert.equal((await run(null as never)).verdict, 'unknown')
+})
+
+test('review 3: a reprint with a dateline, byline or footer is still the same confirmation', () => {
+  const a = S('https://a.example.com/n', WIRE)
+  for (const [name, text] of [['dateline', `TORONTO (Reuters) - ${WIRE}`], ['footer', `${WIRE} Subscribe to our newsletter.`], ['byline and footer', `By Jane Roe. ${WIRE} Copyright 2026. All rights reserved.`]] as [string, string][]) {
+    const set = [a, S('https://b.example.org/n', text)]
+    assert.equal(provenanceGroups(set).length, 1, name); assert.equal(independentSources(set).count, 1, name)
+  }
+  const short = 'Northwind Labs is hiring a VP of Sales.'
+  assert.equal(independentSources([S('https://a.example.com/1', short), S('https://b.example.org/2', short)]).count, 1, 'identical short copies')
+  assert.equal(independentSources([S('https://a.example.com/1', short), S('https://b.example.org/2', `Breaking: ${short} More soon.`)]).count, 1)
+  // still separate when the reporting is really different, even on the same story
+  assert.equal(independentSources([a, S('https://c.example.net/n', 'An analyst at a rival firm told us the Canadian push has been planned since spring and that the search for a sales leader was delayed twice.')]).count, 2)
+})
+
+test('review 4: malformed sources are dropped, never thrown on', () => {
+  for (const bad of [null, undefined, 'x', 5, {}]) { assert.deepEqual(independentSources(bad as never), { count: 0, domains: [], groups: 0 }); assert.deepEqual(provenanceGroups(bad as never), []) }
+  const mixed = [null, 7, { url: 5 }, { text: 'no url' }, S('https://a.example.com/1', 5 as never, 7 as never), S('https://b.example.org/2', WIRE)] as never
+  assert.doesNotThrow(() => independentSources(mixed)); assert.equal(independentSources(mixed).count, 2)
 })
