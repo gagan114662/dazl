@@ -105,6 +105,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/settings/llm-key',
   '/api/settings/memory',
   '/api/settings/profile',
+  '/api/sources/capabilities',
   '/api/stripe',
   '/api/tenant/lifecycle',
   '/api/tenant/lifecycle/delete',
