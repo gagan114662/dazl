@@ -16,7 +16,8 @@ import { getDomain } from 'tldts'
 export const CONTRACT_VERSION = 'dazl.evaluation-contract/1'
 // v2 (#781): a former employee and a generic role inbox now fail contact.usable, and an unconfirmed person stays unknown; v1 judged the route alone.
 // v3 (#781 review): an unrecognised person value is unknown (never pass), and a confirmed-current person must be tied to the address (it carries their name).
-export const SCORER = { id: 'dazl.lead-contract', version: 3 } as const
+// v4 (#1030 review): whole-token person tie, role-first and compound generic inboxes (incl. practice/booking inboxes), person:null is unknown, malformed email is no route.
+export const SCORER = { id: 'dazl.lead-contract', version: 4 } as const
 export type Status = 'pass' | 'fail' | 'unknown' | 'contradicted'
 export const STATUSES: Status[] = ['pass', 'fail', 'unknown', 'contradicted']
 
@@ -121,17 +122,53 @@ export const registrable = (h: string) => { const host = h.toLowerCase().replace
 // are recruiting too, not only the bare names.
 const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|ers?)?|talent(\s?acquisition)?|hiring|people|apply|((job|career)s? )?applications?|work(\s?with\s?us)?|join(\s?us)?|employment|vacancies)(\s(team|dept|department))?$/
 const isRecruitingMailbox = (local: string) => RECRUITING.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
-// A generic role inbox reaches a team or a function, not a named buyer (#781): info@, sales@, support@, no-reply@, webmaster@, reception@, and the same role with a team,
-// department or region qualifier (sales-emea@, support.us@, customer.service.team@). The local part is split on . _ - and + tags; it is generic when its first token is a role
-// stem and every other token is a qualifier (team, dept, a region word, or a two-letter country code). A name that merely contains a role word (jane.info@) is a person.
-const ROLE = new Set(['info', 'information', 'contact', 'contacts', 'hello', 'hi', 'sales', 'support', 'help', 'helpdesk', 'admin', 'administrator', 'office', 'team', 'enquiry', 'enquiries', 'inquiry', 'inquiries', 'mail', 'general', 'press', 'media', 'pr', 'marketing', 'billing', 'accounts', 'account', 'accounting', 'finance', 'service', 'services', 'customer', 'customers', 'noreply', 'donotreply', 'reception', 'webmaster', 'postmaster', 'hostmaster', 'abuse', 'security', 'legal', 'privacy', 'compliance', 'orders', 'order', 'feedback', 'partnerships', 'partners', 'partner', 'newsletter', 'subscribe', 'unsubscribe', 'bounce', 'mailer', 'notifications', 'alerts', 'receptionist', 'frontdesk', 'operations', 'ops', 'it', 'care', 'concierge', 'bookings', 'booking', 'reservations', 'events', 'careers'])
-const QUALIFIER = new Set(['team', 'dept', 'department', 'desk', 'global', 'emea', 'apac', 'latam', 'amer', 'americas', 'europe', 'asia', 'africa', 'na', 'eu', 'us', 'uk', 'ca', 'au', 'nz', 'de', 'fr', 'es', 'it', 'nl', 'in', 'sg', 'jp', 'br', 'mx', 'online', 'general', 'service', 'services', 'support', 'care', 'inbox'])
-const isGenericMailbox = (local: string) => {
-  const parts = local.split('+')[0].toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map(x => x.replace(/\d+$/, '') || x)   // info2@, sales1@: a numbered role alias is still the role
-  if (parts.length === 0) return false
-  const joined = parts.join('')
-  if (['noreply', 'donotreply', 'dontreply'].includes(joined)) return true
-  return ROLE.has(parts[0]) && parts.slice(1).every(p => QUALIFIER.has(p) || ROLE.has(p) || /^\d+$/.test(p))
+// A generic role inbox reaches a team or a function, not a named buyer (#781): info@, sales@, support@, no-reply@, webmaster@, reception@, appointments@, and the same role with
+// ANY suffix that is not the contact's own name (sales-emea@, support.ch@, sales.za@, enquiries.london@, customer.service.team@). The local part (+tag stripped) is split on
+// . _ - and digits, and a one-word compound is split into stems (contactus, customerservice, salesteam, infodesk, officemanager, frontoffice, newpatients, mailroom). It is generic
+// when its first token is a role stem (or front/new/main/head + a role stem) and no later token is the contact's own name. A name that merely contains a role word
+// (jane.info@) is a person, and a name made of short role-like pieces (esme, ines, cain, newton) is never split.
+const ROLE = new Set(['info', 'information', 'contact', 'contacts', 'hello', 'hi', 'sales', 'support', 'help', 'helpdesk', 'admin', 'administrator', 'office', 'team', 'enquiry', 'enquiries', 'inquiry', 'inquiries', 'mail', 'general', 'press', 'media', 'pr', 'marketing', 'billing', 'accounts', 'account', 'accounting', 'finance', 'service', 'services', 'customer', 'customers', 'noreply', 'donotreply', 'reception', 'webmaster', 'postmaster', 'hostmaster', 'abuse', 'security', 'legal', 'privacy', 'compliance', 'orders', 'order', 'feedback', 'partnerships', 'partners', 'partner', 'newsletter', 'subscribe', 'unsubscribe', 'bounce', 'mailer', 'notifications', 'alerts', 'receptionist', 'frontdesk', 'operations', 'ops', 'it', 'care', 'concierge', 'bookings', 'booking', 'reservations', 'events', 'careers',
+  // practice / front-desk / booking inboxes (Test A, NY dental), and other shared desks
+  'appointments', 'appointment', 'appts', 'scheduling', 'schedule', 'scheduler', 'admissions', 'admission', 'intake', 'referrals', 'referral', 'patients', 'patient', 'newpatients',
+  'registration', 'enrollment', 'enrolment', 'dental', 'clinic', 'practice', 'frontoffice', 'desk', 'mailroom', 'inbox', 'questions', 'requests', 'quotes', 'quote', 'estimates',
+  'staff', 'everyone', 'headquarters', 'hq', 'membership', 'members', 'shop', 'store', 'returns', 'shipping', 'invoices', 'invoice', 'payments', 'purchasing', 'procurement', 'manager', 'management'])
+// Tokens that never name a person: used so jane.sales@ or doe.team@ still ties to Jane Doe. (Generic-ness no longer needs this list: any non-name suffix is generic.)
+const QUALIFIER = new Set(['team', 'dept', 'department', 'desk', 'global', 'emea', 'apac', 'latam', 'amer', 'americas', 'europe', 'asia', 'africa', 'online', 'inbox', 'office', 'work', 'mail', 'email'])
+const MODIFIER = new Set(['front', 'new', 'main', 'head', 'central', 'back'])
+// The pieces a compound may end in, after a role (or modifier) head of 3+ letters: never a 2-letter country code except "us"/"me" (contactus@, emailme@).
+const TAIL = new Set([...[...ROLE].filter(x => x.length >= 3), 'us', 'me', 'team', 'desk', 'room', 'manager', 'managers', 'line', 'box', 'center', 'centre', 'staff', 'group', 'hq', 'dept', 'department', 'inbox', 'online', 'global'])
+const HEAD = new Set([...[...ROLE].filter(x => x.length >= 3), ...MODIFIER])
+const splitCompound = (w: string): string[] | null => {
+  if (w.length > 64) return null   // longer than any legal local part
+  const memo = new Map<number, string[] | null>()
+  const rest = (i: number): string[] | null => {
+    if (i === w.length) return []
+    if (memo.has(i)) return memo.get(i)!
+    let got: string[] | null = null
+    for (let j = w.length; j >= i + 2 && !got; j--) if (TAIL.has(w.slice(i, j))) { const r = rest(j); if (r) got = [w.slice(i, j), ...r] }
+    memo.set(i, got); return got
+  }
+  for (let i = w.length - 2; i >= 3; i--) if (HEAD.has(w.slice(0, i))) { const r = rest(i); if (r && r.length) return [w.slice(0, i), ...r] }
+  return null
+}
+// The local part as lower-case ASCII-letter tokens: +tag dropped, split on . _ - and digits, accents folded (info2@ is info, josé@ is jose).
+const localTokens = (local: string) => local.split('+')[0].toLowerCase().normalize('NFKD').replace(/[^a-z]+/g, ' ').trim().split(' ').filter(Boolean)
+const nameTokens = (name: unknown) => typeof name === 'string' ? name.toLowerCase().normalize('NFKD').replace(/[^a-z\s'-]/g, ' ').split(/[\s'-]+/).filter(Boolean) : []
+// Is this one local-part token the person's name: a whole name token (2+ letters), first+last, initial+last (jdoe), last+initial (doej) or last+first. Never a substring
+// (janet@ is not Jane, jordan@ is not Dan).
+const isNameToken = (t: string, nm: string[]) => {
+  if (!nm.length) return false
+  const first = nm[0], last = nm[nm.length - 1]
+  if (nm.some(x => x.length >= 2 && x === t)) return true
+  return nm.length >= 2 && [first + last, first[0] + last, last + first[0], last + first].includes(t)
+}
+const isGenericMailbox = (local: string, name?: unknown) => {
+  const raw = localTokens(local)
+  if (raw.length === 0) return false
+  if (['noreply', 'donotreply', 'dontreply'].includes(raw.join(''))) return true
+  const nm = nameTokens(name), toks = raw.flatMap(t => isNameToken(t, nm) ? [t] : splitCompound(t) ?? [t])
+  const roleHead = ROLE.has(toks[0]) || (MODIFIER.has(toks[0]) && toks.length > 1 && ROLE.has(toks[1]))
+  return roleHead && !toks.slice(1).some(t => isNameToken(t, nm))
 }
 // One whole address: a single @, a non-empty local part, a dotted domain, no spaces. "@northwind.io" and "jane@northwind.io@other.org" are not usable routes.
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/
@@ -139,19 +176,18 @@ const emailDomain = (em: string) => em.slice(em.indexOf('@') + 1)
 const dayNum = (s: string) => Date.parse(`${s}T00:00:00Z`) / 86_400_000
 
 // The person value on the evidence, normalised: only 'current', 'former' and 'unknown' are understood. A wrong-case 'FORMER' is still a former employee (fail); any other value
-// ('maybe', 'yes', a number) is unknown, never pass. undefined means no person check was run.
+// ('maybe', 'yes', a number) is unknown, never pass. Only undefined means no person check was run: an explicit null is a check that confirmed nothing, so unknown.
 const personState = (v: unknown): 'current' | 'former' | 'unknown' | undefined => {
-  if (v === undefined || v === null) return undefined
+  if (v === undefined) return undefined
   if (v === 'current' || v === 'former' || v === 'unknown') return v
   return typeof v === 'string' && v.trim().toLowerCase() === 'former' ? 'former' : 'unknown'
 }
-// A confirmation is about a PERSON, so the address must be that person's: its local part carries their first or last name (3+ letters), as jane@, jane.doe@, jdoe@, doe-jane@.
+// A confirmation is about a PERSON, so the address must be that person's, by WHOLE tokens of the local part (+tag dropped, split on . _ - and digits): jane@, doe@, jdoe@,
+// janedoe@, doej@, jane.doe@, doe.j@, jane.q.doe@. Every other token must be an initial or a role/team word: janet@, mary.doe@ (another Doe), jane.smith@ and bob+jane@ are not tied.
 const tiedToPerson = (local: string, name: unknown): boolean => {
-  if (typeof name !== 'string') return false
-  const toks = name.toLowerCase().normalize('NFKD').replace(/[^a-z\s'-]/g, ' ').split(/[\s'-]+/).filter(Boolean), lc = local.toLowerCase().replace(/[^a-z]/g, '')
-  if (toks.length === 0 || lc === '') return false
-  const first = toks[0], last = toks[toks.length - 1]
-  return (first.length >= 3 && lc.includes(first)) || (last.length >= 3 && lc.includes(last))
+  const nm = nameTokens(name), toks = localTokens(local)
+  if (!nm.length || !toks.length) return false
+  return toks.some(t => isNameToken(t, nm)) && toks.every(t => isNameToken(t, nm) || t.length === 1 || ROLE.has(t) || QUALIFIER.has(t))
 }
 export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvaluation {
   if (!ISSUED.has(frozen)) throw new Error('not a contract frozen by freezeContract: a caller-supplied contract or hash is never trusted')
@@ -161,8 +197,10 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   const add = (field: string, status: Status, rationale: string, evidence?: string[]) => { v.push({ field, status, rationale, ...(evidence?.length ? { evidence } : {}) }) }
 
   // identity.entity: the cited page is about the company the lead names.
-  const names = (e.observed_names ?? []).filter(Boolean), doms = (e.observed_domains ?? []).map(d => registrable(d.toLowerCase().replace(/^www\./, '')))
-  const claimed = e.claimed_domain ? registrable(e.claimed_domain.toLowerCase().replace(/^www\./, '')) : null
+  // Malformed lists or values (a non-array, a number, null entries) are dropped, never a throw: a non-string claimed_domain is an unknown domain.
+  const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : []
+  const names = strs(e.observed_names), doms = strs(e.observed_domains).map(d => registrable(d.toLowerCase().replace(/^www\./, '')))
+  const claimed = typeof e.claimed_domain === 'string' && e.claimed_domain.trim() ? registrable(e.claimed_domain.trim().toLowerCase().replace(/^www\./, '')) : null
   if (!names.length && !doms.length) add('identity.entity', 'unknown', 'the cited page names no company and no company domain, so the identity cannot be checked')
   else if (names.some(n => norm(n) === norm(e.company)) || (claimed && doms.includes(claimed))) add('identity.entity', 'pass', 'the cited page carries the lead\'s company name or its domain', [e.source_url ?? ''].filter(Boolean))
   else add('identity.entity', 'contradicted', `the cited page is about ${names[0] ?? doms[0]}, not ${e.company}`, [e.source_url ?? ''].filter(Boolean))
@@ -209,13 +247,16 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   if (k.require_consent) add('consent.status', e.consent === 'allowed' ? 'pass' : e.consent === 'blocked' ? 'fail' : 'unknown', e.consent === 'allowed' ? 'contacting is allowed' : e.consent === 'blocked' ? 'contacting is blocked' : 'the consent status is not known')
 
   // contact.usable: a reachable route at the company, not a hiring or generic inbox, to a person who is still there.
-  const em = e.contact?.email?.trim().toLowerCase()
-  const person = personState(e.contact?.person)
+  // A non-string email (a number, a list, an object) is no route, never a throw.
+  const rawEm: unknown = e.contact && typeof e.contact === 'object' ? e.contact.email : undefined
+  const em = typeof rawEm === 'string' ? rawEm.trim().toLowerCase() : undefined
+  const person = personState(e.contact && typeof e.contact === 'object' ? e.contact.person : undefined)
   if (person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company, whatever route is on file')
   else if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
   else if (!EMAIL.test(em)) add('contact.usable', 'fail', 'the email is not a well-formed address')
+  else if (localTokens(em.slice(0, em.indexOf('@'))).length === 0) add('contact.usable', 'unknown', 'the address\'s local part carries no letters (+tag@, 123@, ...@), so who it reaches cannot be told')
   else if (isRecruitingMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
-  else if (isGenericMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a generic role inbox, which reaches a team and not a named person')
+  else if (isGenericMailbox(em.slice(0, em.indexOf('@')), e.contact?.person_name)) add('contact.usable', 'fail', 'the email is a generic role inbox, which reaches a team and not a named person')
   else if (!claimed) add('contact.usable', 'unknown', 'the company domain is not known, so the email domain cannot be matched')
   else if (registrable(emailDomain(em)) !== claimed) add('contact.usable', 'fail', 'the email is not at the company\'s domain')
   else if (person === 'unknown') add('contact.usable', 'unknown', 'the email is at the company\'s domain, but the contact\'s current employment could not be confirmed')
