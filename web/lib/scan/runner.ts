@@ -70,7 +70,9 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
-import { findPeople } from '../people/people-search.ts'
+import { findPeople, firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
+// #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
+export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
@@ -1625,10 +1627,28 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
-    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
-    else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
-    else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #1037: the first play (first5) and free-trial scans run it too, so the first leads a new user sees name who to
+    // contact: one search per ready lead that names nobody yet, at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
+    // lowers it, 0 = off). A trial scan pays each search from its own reserve (trialCharges) and stops searching while less
+    // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
+    const firstPlay = !!deps.first5 || !!trial
+    const peopleCap = firstPlay ? firstPlayPeopleCap() : null
+    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
+    else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
+    else try {
+      let stop: string | null = null
+      const charge = trialCharges.get(job)
+      const keep = trialGuard ? trialGuard.limitUsd * FIRST_PLAY_TRIAL_KEEP : 0
+      const searchUsd = trial ? trial.tinyfishSearchUsd : 0
+      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, onStop: why => { stopped.why ??= why },
+        ...(firstPlay ? { maxCompanies: peopleCap!, skipNamed: true } : {}),
+        ...(charge ? { charge } : {}),
+        // Checked before each search; a pure read of the guard, so a "no" never marks the trial scan as refused.
+        ...(trialGuard ? { canSearch: () => !trialGuard!.refused && trialGuard!.reservedUsd + searchUsd <= trialGuard!.limitUsd - keep } : {}) })
+      const detail = { people_stored: n, ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
+      trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : stopped.why === 'budget_kept' ? 'the trial scan kept its remaining budget for the checks after this step' : 'no profile results named a role-matching person at a verified company, or no search quota', detail)
+    } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
