@@ -5,6 +5,7 @@ import { connection } from 'next/server'
 import { redirect } from 'next/navigation'
 import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
+import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
 import { Icon } from './ui/icons'
 
@@ -23,12 +24,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="app-ui flex flex-col md:flex-row h-screen">
       {/* CSS-only collapsing nav: a checkbox toggles the menu below md; a slim sidebar from md up */}
       {/* #534: md:hidden keeps the invisible checkbox out of the desktop Tab order; its focus ring shows on the Menu label (globals.css) */}
-      <input id="navtoggle" type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
+      <input id={NAV_TOGGLE_ID} type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
       <header className="md:hidden flex items-center justify-between border-b border-[var(--line)] bg-[var(--canvas)] px-4 py-2 shrink-0">
         <Link href="/app" className="inline-flex items-center justify-center min-h-11 min-w-11 text-lg font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></Link>
-        <label htmlFor="navtoggle" className="cursor-pointer inline-flex items-center min-h-11 text-sm font-semibold border border-[var(--line-2)] rounded-full px-4">Menu</label>
+        <label htmlFor={NAV_TOGGLE_ID} className="cursor-pointer inline-flex items-center min-h-11 text-sm font-semibold border border-[var(--line-2)] rounded-full px-4">Menu</label>
       </header>
-      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
+      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 max-md:max-h-[55svh] max-md:overflow-auto border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
         <Link href="/app" className="hidden md:block text-xl font-bold tracking-tight mb-6 px-3">dazl<span className="text-[var(--pink)]">.</span></Link>
         <Suspense fallback={null}><Nav /></Suspense>
         <div className="hidden md:block flex-1" />
