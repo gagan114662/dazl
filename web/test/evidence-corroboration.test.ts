@@ -128,3 +128,30 @@ test('review 5: malformed pages and options fail closed and never throw', () => 
   const e = collectEvidence(claim(), [{ ...A, entity_domains: 'northwind.io' } as unknown as SourcePage, B], OPT); assert.ok(!e.observed_domains?.includes('northwind.io'))
   assert.doesNotThrow(() => bad([A, B], { places: null, industries: 'x', known_places: undefined }))
 })
+
+// ---- Hermes-PC re-review of #1028 (head 18fc3eb7): the lead's own claim is the least trusted input ----
+
+test('review 6: a malformed claim fails closed and never throws, one row per case', () => {
+  const run = (cl: unknown) => { let r: ReturnType<typeof judge> | undefined; assert.doesNotThrow(() => { r = evaluateLead(freezeContract(contract), collectEvidence(cl as ReturnType<typeof claim>, [A, B], OPT)) }); return r! }
+  const good = claim()
+  for (const [name, cl] of [
+    ['claim null', null], ['claim undefined', undefined], ['claim a string', 'x'], ['claim an array', []], ['claim {}', {}],
+    ['company null', { ...good, company: null }], ['company a number', { ...good, company: 42 }], ['company an array', { ...good, company: ['Northwind Labs'] }], ['company missing', { ...good, company: undefined }],
+    ['domain a number', { ...good, domain: 7 }], ['domain an object', { ...good, domain: { x: 1 } }],
+    ['quote a number', { ...good, quote: 5 }], ['quote an object', { ...good, quote: {} }],
+  ] as [string, unknown][]) assert.notEqual(run(cl).status, 'pass', name)
+  // fields of the wrong type are never copied into the evidence as they are
+  const e = collectEvidence({ ...good, event_kind: { x: 1 }, contact_email: 7, domain: 9, consent: 'yes' } as unknown as ReturnType<typeof claim>, [A, B], OPT)
+  assert.equal(typeof e.event?.kind, 'string'); assert.equal(e.contact, null); assert.equal(e.claimed_domain, null); assert.equal(e.consent, null)
+})
+
+test('review 6b: a letter, digit or underscore of any script glued to a date is not a stated date', () => {
+  assert.deepEqual(statedDays('November 1, 2026é and 2026-11-01ü and é1 November 2026 and 1 November 2026ß and ñ2026-11-01'), [])
+  assert.deepEqual(statedDays('posted November 1, 2026. Also 2026-11-02, and 3 November 2026').sort(), ['2026-11-01', '2026-11-02', '2026-11-03'])
+})
+
+test('review 6c: a blank or dot-only entity domain is junk, not "another entity"', () => {
+  for (const junk of ['', '.', ' ', '..']) {
+    const r = judge(claim(), [A, { ...B, entity_domains: [junk] }]); assert.equal(r.status, 'pass', JSON.stringify(junk) + ' ' + JSON.stringify(r.verdicts.filter(v => v.status !== 'pass')))
+  }
+})
