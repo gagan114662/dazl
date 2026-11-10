@@ -59,3 +59,17 @@ test('a supported fetch that fails is a 502 with its reason, never an empty 200'
   assert.equal(r.status, 502)
   assert.deepEqual(await r.json(), { error: 'fetch_failed', outcome: 'auth_failed' })
 })
+
+const postTo = (path: string, body: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(body) })
+test('/linkedin/posts and /linkedin/engagers: malformed requests are refused before any upstream request; auth still required', async () => {
+  for (const body of [{}, { query: 'Rippling' }, { session: 's' }, { query: 1, session: 's' }, { query: '  ', session: 's' }, { query: 'Rippling', session: ['s'] }, { query: 'Rippling', session: '' }]) {
+    const r = await postTo('/linkedin/posts', body); assert.equal(r.status, 400, JSON.stringify(body))
+  }
+  for (const body of [{ kind: 'likes', post: 'p', session: 's' }, { kind: 'commenters', post: 7, session: 's' }, { kind: 'reactors', post: 'p' }]) {
+    const r = await postTo('/linkedin/engagers', body); assert.equal(r.status, 400, JSON.stringify(body))
+  }
+  assert.equal((await postTo('/linkedin/posts', [1, 2])).status, 400)
+  const noAuth = await fetch(`${base}/linkedin/posts`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'Rippling', session: 's' }) })
+  assert.equal(noAuth.status, 401)
+  assert.equal((await fetch(`${base}/linkedin/posts`)).status, 404, 'GET is not a route')
+})

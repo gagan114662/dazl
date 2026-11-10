@@ -2,9 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { writeCredential, removeCredential, connectorStatus, setEnabled } from '@/lib/connectors/store'
-import { writeConsent, readConsent, removeConsent } from '@/lib/advanced'
+import { writeConsent, readConsent, removeConsent, xViaOperatorIndex } from '@/lib/advanced'
 import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform } from '@/lib/advanced/config'
-import { tinyfishEnabled } from '@/lib/search/tinyfish'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
@@ -24,7 +23,7 @@ export async function GET() {
       const c = st.find(x => x.connector === connectorId(p))
       // X needs no session when the operator key is set (TinyFish public-index path): expose that as
       // operator_index so the UI can offer the checkbox on consent alone, matching collectAdvanced.
-      const operatorIndex = p === 'x' && tinyfishEnabled() && platformAllowed(p, f)
+      const operatorIndex = p === 'x' && xViaOperatorIndex() && platformAllowed(p, f)
       return { platform: p, allowed: platformAllowed(p, f), supported: PLATFORM_SUPPORT[p].supported, unsupported_reason: PLATFORM_SUPPORT[p].reason, consent: await readConsent(db, user.tenantId, scopeFor(p)), connected: !!c, enabled: !!c?.enabled, operator_index: operatorIndex, last4: c?.last4 ?? null, high_risk: p === 'linkedin' }
     })),
   })
