@@ -9,13 +9,12 @@ import { migrateLedger } from '../../lib/outreach/ledger.ts'
 import { migrateReplies } from '../../lib/outreach/replies.ts'
 import { migrateSequences } from '../../lib/outreach/sequences.ts'
 import { migrateSchedulerRuns } from '../../lib/ops/scheduler-runs.ts'
-import { NextRequest } from 'next/server'
 import { GET } from '../../app/api/outreach/sequences/route.ts'
 
 // Real GET route; the stubbed requireUser is tenant 'A'. No network, no provider.
 globalThis.fetch = (async (u: unknown) => { throw new Error('Unexpected network attempt: ' + String(u)) }) as typeof fetch
 type Resp = { scheduler: string; gates: { id: string; ok: boolean; scope: string }[] }
-const get = async () => { const r = await GET(new NextRequest('http://localhost/api/outreach/sequences')); assert.equal(r.status, 200); return await r.json() as Resp }
+const get = async () => { const r = await GET(); assert.equal(r.status, 200); return await r.json() as Resp }
 const row = (db: Database.Database, tenant: string, id: string) =>
   db.prepare("INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body,status) VALUES (?,?,?,?,?,?,'uncertain')").run(id, tenant, 'l' + id, 'x@example.test', 's', 'This is a synthetic body for the route test.')
 

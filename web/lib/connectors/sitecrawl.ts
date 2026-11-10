@@ -177,7 +177,6 @@ export const MAX_PROBES_PER_SCAN = 8
 
 // ---- extraction ----
 export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
-const EMAIL = /\b([a-z0-9][a-z0-9._%+-]{0,63})@([a-z0-9][a-z0-9.-]{0,251}\.[a-z]{2,24})\b/gi
 export const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
 export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }
@@ -393,7 +392,6 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
   return [...set].slice(0, 8)
 }
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
 // polite per-host gap does not outlive a post-processing deadline.
 const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((resolve) => {

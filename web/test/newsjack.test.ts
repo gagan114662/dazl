@@ -33,7 +33,7 @@ test('createNewsjack: https only, no key -> no_key, fetch failure -> fetch, thin
 test('createNewsjack: draft stored as draft; approve marks approved once; nothing published', async () => {
   const db = setup()
   saveKey(db, 'u1', 'anthropic', 'sk-ant-test-1234', master)
-  const f = (async (u: string, init?: RequestInit) => {
+  const f = (async (u: string) => {
     if (String(u).includes('anthropic.com')) return new Response(JSON.stringify({ content: [{ type: 'text', text: LONG }] }), { status: 200 })
     return new Response(ARTICLE, { status: 200 })
   }) as unknown as typeof fetch

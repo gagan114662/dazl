@@ -201,7 +201,7 @@ CREATE TABLE csv_batches (
       total      INTEGER NOT NULL,
       note       TEXT,
       created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
-    );
+    , run_budget TEXT CHECK (run_budget IS NULL OR length(run_budget) <= 200), budget_recorded INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE csv_rows (
       id       TEXT PRIMARY KEY,

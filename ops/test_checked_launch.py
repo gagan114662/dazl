@@ -335,7 +335,7 @@ class LaunchLogTests(unittest.TestCase):
         launch = [sys.executable, SAFE, '--stage', str(self.root / 'new'), '--commit', COMMIT,
                   '--rollback-stage', str(self.root / 'old'), '--rollback-commit', 'b' * 40,
                   '--env-file', str(env), '--pid', str(self.stub.pid), '--backup', str(missing_backup),
-                  '--backup-db', str(db), '--backup-verified', '--execute']
+                  '--backup-db', str(db), '--drill-report', str(self.root / 'drill.json'), '--backup-max-age-s', '3600', '--execute']
         report, code = self.run_logged([[sys.executable, '-c', 'pass']], launch)
         self.assertEqual(code, 1)
         self.assertEqual(report, {'status': 'launch_failed', 'returncode': 1, 'launch_reached': True})

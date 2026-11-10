@@ -6,7 +6,6 @@ import { primarySignalKind } from '../lib/scan/score.ts'
 import { sourceKind } from '../lib/scan/runner.ts'
 import { migrateMonitors } from '../lib/monitors.ts'
 
-const setup = () => { const db = new Database(':memory:'); migrateScan(db); migrateMonitors(db); return db }
 
 test('primarySignalKind: first valid grader signal wins, anything else stays untagged', () => {
   assert.equal(primarySignalKind('["hiring","raised_funding"]'), 'hiring')

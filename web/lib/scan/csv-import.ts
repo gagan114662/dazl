@@ -31,6 +31,14 @@ export function migrateCsv(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS csv_rows_batch ON csv_rows (batch_id);
   `)
+  // #916: the batch's validated per-run budget, recorded at creation and reused for every row it ever queues (a resume
+  // after a quota stop or a month rollover included). budget_recorded = 1 means run_budget is the creation-time
+  // decision (NULL = explicitly unrestricted); 0 is a batch from before this column, whose original restriction is
+  // unrecoverable - resume refuses it (batch_budget_unknown, fail closed) and the owner re-imports the file; it never
+  // runs unrestricted.
+  const has = (c: string) => (db.prepare('PRAGMA table_info(csv_batches)').all() as { name: string }[]).some(r => r.name === c)
+  if (!has('run_budget')) db.exec('ALTER TABLE csv_batches ADD COLUMN run_budget TEXT CHECK (run_budget IS NULL OR length(run_budget) <= 200)')
+  if (!has('budget_recorded')) db.exec('ALTER TABLE csv_batches ADD COLUMN budget_recorded INTEGER NOT NULL DEFAULT 0')
 }
 
 const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
@@ -88,10 +96,14 @@ export function parseDomains(text: string, max = MAX_DOMAINS): ParsedCsv {
   return { valid: valid.slice(0, max), invalid, overflow }
 }
 
-export function createBatch(db: Database.Database, userId: string, domains: string[]): string {
+// runBudget: the normalizeRunBudget value validated by the import route (null = explicitly unrestricted). Recorded with
+// the batch in the same transaction as its rows (#916).
+export function createBatch(db: Database.Database, userId: string, domains: string[], runBudget: string | null = null): string {
   const id = randomBytes(12).toString('hex')
+  const checked = storedBudget(runBudget, 1)
+  if (!checked.ok || checked.budget !== runBudget) throw new Error('createBatch: run budget must be a normalizeRunBudget value')
   db.transaction(() => {
-    db.prepare('INSERT INTO csv_batches (id, user_id, total) VALUES (?, ?, ?)').run(id, userId, domains.length)
+    db.prepare('INSERT INTO csv_batches (id, user_id, total, run_budget, budget_recorded) VALUES (?, ?, ?, ?, 1)').run(id, userId, domains.length, runBudget)
     const ins = db.prepare('INSERT INTO csv_rows (id, batch_id, domain) VALUES (?, ?, ?)')
     for (const d of domains) ins.run(randomBytes(12).toString('hex'), id, d)
   })()
@@ -121,17 +133,48 @@ export function normalizeRunBudget(raw: unknown, supplied: boolean): { ok: true;
   return { ok: true, value: JSON.stringify(out) }
 }
 
-export function queuePendingRows(db: Database.Database, userId: string, batchId: string, runBudget: string | null = null): { queued: number; quotaStop: boolean } {
-  const batch = db.prepare('SELECT id FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId)
-  if (!batch) return { queued: 0, quotaStop: false }
+// A batch whose creation-time budget is unrecoverable (budget_recorded = 0, i.e. imported before #916) or whose stored
+// value no longer validates is refused on resume: the owner re-imports the file. Missing history is never read as
+// unrestricted authorization, and it is not silently replaced by a guessed restriction either (#916, owner decision).
+class LinkLost extends Error {}
+export const BATCH_BUDGET_UNKNOWN = 'batch_budget_unknown'
+export const BATCH_BUDGET_UNKNOWN_MESSAGE = 'This batch was imported before spending limits were saved with each batch, so it cannot be resumed. Re-import the file to run the remaining domains.'
+function storedBudget(raw: string | null, recorded: number): { ok: true; budget: string | null } | { ok: false } {
+  if (Number(recorded) !== 1) return { ok: false }
+  if (raw === null) return { ok: true, budget: null }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) } catch { return { ok: false } }
+  const n = normalizeRunBudget(parsed, true)
+  return n.ok && n.value === raw ? { ok: true, budget: raw } : { ok: false }
+}
+// The budget every job of this batch runs under (the import and every resume): the stored creation-time value.
+// known = false means the batch must not queue anything until it is re-imported.
+export function batchRunBudget(db: Database.Database, userId: string, batchId: string): { known: boolean; budget: string | null; recorded: boolean } | undefined {
+  const b = db.prepare('SELECT run_budget, budget_recorded FROM csv_batches WHERE id = ? AND user_id = ?').get(batchId, userId) as { run_budget: string | null; budget_recorded: number } | undefined
+  if (!b) return undefined
+  const s = storedBudget(b.run_budget, b.budget_recorded)
+  return { known: s.ok, budget: s.ok ? s.budget : null, recorded: Number(b.budget_recorded) === 1 }
+}
+
+// The run budget is the batch's own (batchRunBudget), never a caller argument: a resume cannot clear or widen it.
+// Each job insert and its row link commit together, so a failure leaves neither an orphan job nor a half-linked row.
+export function queuePendingRows(db: Database.Database, userId: string, batchId: string): { queued: number; quotaStop: boolean; budgetUnknown?: true } {
+  const rb = batchRunBudget(db, userId, batchId)
+  if (!rb) return { queued: 0, quotaStop: false }
+  if (!rb.known) return { queued: 0, quotaStop: false, budgetUnknown: true }   // refused: re-import the file
+  const runBudget = rb.budget
   const rows = db.prepare("SELECT id, domain FROM csv_rows WHERE batch_id = ? AND state = 'pending' AND job_id IS NULL ORDER BY rowid").all(batchId) as { id: string; domain: string }[]
   let queued = 0
   let quotaStop = false
   for (const row of rows) {
     if (!scanQuota(db, userId).allowed) { quotaStop = true; break }
     const jobId = randomBytes(12).toString('hex')
-    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id, run_budget) VALUES (?, ?, ?, '-', '-', ?, ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId, runBudget)
-    db.prepare('UPDATE csv_rows SET job_id = ? WHERE id = ?').run(jobId, row.id)
+    const linked = db.transaction(() => {
+      db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, csv_domain, batch_id, run_budget) VALUES (?, ?, ?, '-', '-', ?, ?, ?)").run(jobId, userId, row.domain.slice(0, 150), row.domain, batchId, runBudget)
+      // linked only if still unlinked: a concurrent resume that got here first wins, and this insert rolls back
+      if (db.prepare('UPDATE csv_rows SET job_id = ? WHERE id = ? AND job_id IS NULL').run(jobId, row.id).changes !== 1) throw new LinkLost()
+    })
+    try { linked() } catch (e) { if (e instanceof LinkLost) continue; throw e }
     queued++
   }
   if (quotaStop) {

@@ -61,7 +61,7 @@ export function scrub(s: string): string {
 }
 
 // This app's error classes whose names do not end in Error (grep 'extends Error').
-const OWN_ERROR_NAMES = new Set(['CreditRefused', 'LeaseLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendAccountingFailed', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
+const OWN_ERROR_NAMES = new Set(['CreditRefused', 'LeaseLost', 'LinkLost', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SpendAccountingFailed', 'SpendRefused', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout'])
 // A class-shaped name is not safe by its shape alone (Account1234567890Error): it must also come through the scrub
 // unchanged and carry no run of 4+ digits.
 export function errorName(n: unknown): string {
@@ -140,7 +140,7 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
 export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused', 'CopyRefused', 'CopyVerifyError', 'CreditRefused', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError',
-  'LeaseLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused',
+  'LeaseLost', 'LinkLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
   // lib/workers (runtime workers): a refused catalog or lifecycle change; a reviewed handler past its timeout.
