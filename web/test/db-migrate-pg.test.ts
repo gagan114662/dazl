@@ -139,9 +139,9 @@ test('#980 upgrades the actual #977 ledger through 0055 without changing checksu
   await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES ('t', 'l', 'Pat Doe', 'pat@example.test', 'first')")
   await db.run("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES ('t', 'l', 'example.test', 'first', 2)")
   const upgrade = await runPgMigrations(db.pool)
-  // every migration after the #977 ledger, in order: the first five are the #980 ones (51..55); later numbers (carried by other PRs) apply too
+  // every migration after the #977 ledger, in order: the first six are #980 (51..55) and #916 (56); later numbers (carried by other PRs) apply too
   assert.deepEqual(upgrade.applied, migrations.filter(m => m.version > 50).map(m => m.version))
-  assert.deepEqual(upgrade.applied.slice(0, 5), [51, 52, 53, 54, 55])
+  assert.deepEqual(upgrade.applied.slice(0, 6), [51, 52, 53, 54, 55, 56])
   assert.deepEqual(upgrade.alreadyApplied, before.map(m => m.version))
   assert.deepEqual(await db.get('SELECT person, address, tier, source_url, confidence FROM email_candidates WHERE lead_id = ?', ['l']),
     { person: 'Pat Doe', address: 'pat@example.test', tier: 'guessed', source_url: null, confidence: null })

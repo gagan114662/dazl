@@ -119,7 +119,7 @@ test('reap backoff: a crash-looping job cannot spin through its attempts', () =>
   assert.equal(q.reapExpired(T0 + 10), 1)
   assert.equal(q.claim({ now: T0 + 39 }), null)
   // attempt 2: reaped again -> notBefore +60s from reap time
-  const c2 = q.claim({ now: T0 + 40, leaseSeconds: 10 })
+  q.claim({ now: T0 + 40, leaseSeconds: 10 })
   q.reapExpired(T0 + 51)
   assert.equal(q.get(id)!.notBefore, T0 + 51 + 60)
   // attempt 3: reaped once more -> attempts spent, failed as timeout

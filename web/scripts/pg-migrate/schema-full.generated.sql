@@ -207,7 +207,7 @@ CREATE TABLE csv_batches (
       total      BIGINT NOT NULL,
       note       TEXT,
       created_at BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT))
-    );
+    , run_budget TEXT CHECK (run_budget IS NULL OR char_length(run_budget) <= 200), budget_recorded BIGINT NOT NULL DEFAULT 0);
 
 CREATE TABLE email_candidates (
       tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL, person TEXT NOT NULL CHECK (char_length(person) <= 120),

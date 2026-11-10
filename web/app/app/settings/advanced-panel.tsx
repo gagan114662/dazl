@@ -4,7 +4,6 @@ import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
-const NAMES: Record<string, string> = { linkedin: 'LinkedIn', x: 'X', reddit: 'Reddit', xiaohongshu: 'XiaoHongShu', bilibili: 'Bilibili' }
 const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
 
 export default function AdvancedPanel() {

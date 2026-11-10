@@ -292,8 +292,9 @@ def bind_launch(launch, commit):
     # The CI proof is for the commit the only supported mutation command will launch.
     if len(launch) < 3 or Path(launch[0]).resolve() != Path(sys.executable).resolve() or Path(launch[1]).resolve() != Path(__file__).with_name('safe_launch.py').resolve():
         raise ValueError('launch_entrypoint')
-    values = {'--stage', '--commit', '--rollback-stage', '--rollback-commit', '--env-file', '--pid', '--port', '--backup', '--backup-db'}
-    switches = {'--execute', '--backup-verified'}
+    values = {'--stage', '--commit', '--rollback-stage', '--rollback-commit', '--env-file', '--pid', '--port', '--backup', '--backup-db',
+              '--backup-manifest', '--drill-report', '--backup-max-age-s'}
+    switches = {'--execute'}
     parsed = {}
     i = 2
     while i < len(launch):

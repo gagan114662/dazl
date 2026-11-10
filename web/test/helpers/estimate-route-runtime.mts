@@ -274,3 +274,107 @@ test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse 
     assert.notEqual(ok.estimate.verdict.reason, 'model_unpriced')
   } finally { if (saved === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved }
 })
+
+// ---- #851: the estimate (and so the confirmation and the start gate) prices the model the run will really call ----
+import { estimateForBody } from '../../lib/scan/estimate-request.ts'
+import { sqliteDb } from '../../lib/db/client.ts'
+type Est = { estimate: { ack: string; payer: string; rows: { id: string; kind: string; unit_usd: string; usd: { min: number; max: number } | null }[]; total: { min: number; max: number }; unpriced: string[]; assumptions: string[]; verdict: { ok: boolean; reason: string | null; message: string; change: string[] } } }
+async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>) {
+  const old = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+  for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  try { await fn() } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
+}
+const modelRowsOf = (e: Est) => e.estimate.rows.filter(r => r.kind === 'model')
+
+test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price (not claude-sonnet-4-5), and the started job keeps that estimate', async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: undefined }, async () => {
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const r = await est({ query: Q }); const e = await r.json() as Est
+    assert.equal(r.status, 200)
+    assert.ok(modelRowsOf(e).every(x => x.unit_usd === '$3.50 in / $14.00 out per 1M tokens (gpt-4.1)'), JSON.stringify(modelRowsOf(e).map(x => x.unit_usd)))
+    assert.match(e.estimate.assumptions[0], /^Model: gpt-4\.1\./); assert.equal(e.estimate.verdict.ok, true)
+    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant...AAAA'); setUser({ id: a, business_name: 'Acme' })
+    const sonnet = await (await est({ query: Q })).json() as Est
+    assert.ok(modelRowsOf(sonnet).every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd)))
+    assert.notDeepEqual(e.estimate.total, sonnet.estimate.total); assert.notEqual(e.estimate.ack, sonnet.estimate.ack)
+    setUser({ id, business_name: 'Acme' })
+    const ok = await scan({ query: Q, estimate_ack: e.estimate.ack }); assert.equal(ok.status, 202)
+    const saved = JSON.parse(jobs(db)[0].estimate!) as { rows: { kind: string; unit_usd: string }[]; ack: string }
+    assert.equal(saved.ack, e.estimate.ack); assert.ok(saved.rows.filter(x => x.kind === 'model').every(x => /\(gpt-4\.1\)$/.test(x.unit_usd)))
+  })
+})
+
+test('#851 a changed key model after confirmation is a changed estimate: 409 estimate_changed naming the new model, no job; the fresh confirmation runs', async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: undefined }, async () => {
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const e = await (await est({ query: Q })).json() as Est
+    process.env.DAZL_OPENAI_MODEL = 'gpt-4.1-2025-04-14'
+    const r = await scan({ query: Q, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string } & Est
+    assert.deepEqual([r.status, j.error], [409, 'estimate_changed']); assert.notEqual(j.estimate.ack, e.estimate.ack)
+    assert.ok(modelRowsOf(j).every(x => /\(gpt-4\.1-2025-04-14\)$/.test(x.unit_usd)), 'the re-shown estimate names the model that will run')
+    assert.equal(jobs(db).length, 0)
+    assert.equal((await scan({ query: Q, estimate_ack: j.estimate.ack })).status, 202)
+  })
+})
+
+test('#851 an own OpenAI key on a model the per-scan cap cannot price (DAZL_OPENAI_MODEL=gpt-4o), NO limit: the estimate refuses (no "remove the limit" advice) and POST /api/scan gives 422 model_unpriced with no job', async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: 'gpt-4o' }, async () => {
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const r0 = await est({ query: Q }); const e = await r0.json() as Est
+    assert.equal(r0.status, 200)
+    assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
+    assert.match(e.estimate.verdict.message, /^Your key's model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
+    assert.ok(!e.estimate.verdict.change.some(c => /without a spending limit/i.test(c)), JSON.stringify(e.estimate.verdict.change))
+    assert.ok(modelRowsOf(e).every(x => x.usd === null))
+    const r = await scan({ query: Q }); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced'])
+    const r2 = await scan({ query: Q, estimate_ack: e.estimate.ack }); assert.equal(r2.status, 422, 'a confirmation of the refusal does not start it')
+    assert.equal(jobs(db).length, 0, 'no job')
+  })
+})
+
+test('#851 an Anthropic key on a model the limit guard cannot price (dated id): refused before launch under a limit (422, no job, no Anthropic-key advice); no limit runs', async () => {
+  await withEnv({ DAZL_ANTHROPIC_MODEL: 'claude-sonnet-4-5-20250929' }, async () => {
+    const db = setup(); as(db)
+    const limited = { query: Q, budget: { max_usd: 2, judge: false } }
+    const e = await (await est(limited)).json() as Est
+    assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
+    assert.match(e.estimate.verdict.message, /Your key's model \(claude-sonnet-4-5-20250929\) has no listed price/)
+    assert.ok(!e.estimate.verdict.change.some(c => /Anthropic key/.test(c)), 'the Anthropic key is this model: not offered as the fix')
+    assert.ok(modelRowsOf(e).every(x => x.usd !== null), 'the rows are still priced as the scan cap prices the alias')
+    const r = await scan(limited); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced']); assert.equal(jobs(db).length, 0)
+    assert.equal((await scan({ query: Q })).status, 202, 'without a limit nothing is reserved against the limit guard')
+  })
+})
+
+test('#851 keyless trial on an unpriceable operator model: refused before any reservation (422 model_unpriced, no job, no reservation, no trial count); the default model runs', async () => {
+  await keyless(async db => {
+    await withEnv({ DAZL_ANTHROPIC_MODEL: 'claude-opus-unlisted' }, async () => {
+      const e = await (await est({ query: Q })).json() as Est
+      assert.equal(e.estimate.payer, 'trial'); assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
+      assert.match(e.estimate.verdict.message, /^The free trial's model \(claude-opus-unlisted\)/)
+      assert.ok(modelRowsOf(e).every(x => x.usd === null && /claude-opus-unlisted: no listed price/.test(x.unit_usd)))
+      const r = await scan({ query: Q }); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced'])
+      assert.equal(jobs(db).length, 0); assert.equal(reservations(db).length, 0)
+      assert.equal((db.prepare('SELECT count(*) AS c FROM trial_scans').get() as { c: number }).c, 0)
+    })
+    await withEnv({ DAZL_ANTHROPIC_MODEL: undefined }, async () => {
+      const ok = await (await est({ query: Q })).json() as Est
+      assert.ok(modelRowsOf(ok).every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd))); assert.equal(ok.estimate.verdict.ok, true)
+      assert.equal((await scan({ query: Q, estimate_ack: ok.estimate.ack })).status, 202)
+    })
+  })
+})
+
+test('#851 an own key whose model cannot be read (null, blank, wrong type) is UNKNOWN, never the default: unpriced rows; refused under a limit', async () => {
+  const raw = setup(); const db = sqliteDb(raw)
+  for (const model of [null, undefined, '', '  ', 7 as unknown as string]) {
+    const free = await estimateForBody({ query: Q }, { db, tenantId: 'T851', hasOwnKey: true, model, enrichmentVendors: [] })
+    assert.ok(free.ok); assert.ok(free.estimate.rows.filter(x => x.kind === 'model').every(x => x.usd === null && /^unknown model/.test(x.unit_usd)), String(model))
+    assert.equal(free.estimate.verdict.reason, null)
+    const lim = await estimateForBody({ query: Q, budget: { max_usd: 2 } }, { db, tenantId: 'T851', hasOwnKey: true, model, enrichmentVendors: [] })
+    assert.ok(lim.ok); assert.deepEqual([lim.estimate.verdict.ok, lim.estimate.verdict.reason], [false, 'model_unpriced']); assert.match(lim.estimate.verdict.message, /could not be read/)
+  }
+  // Trial: the own-key model passed in is ignored (another account's / stale value cannot price a trial run).
+  const t = await estimateForBody({ query: Q }, { db, tenantId: 'T851', hasOwnKey: false, model: 'gpt-4.1', enrichmentVendors: [] })
+  assert.ok(t.ok); assert.ok(t.estimate.rows.filter(x => x.kind === 'model').every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd)))
+})
