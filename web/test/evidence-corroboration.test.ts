@@ -75,3 +75,9 @@ test('stated dates: three forms are read, whole tokens only, impossible days dro
 test('reproducible: the same pages give the same evidence', () => {
   assert.equal(JSON.stringify(collectEvidence(claim(), [A, B], OPT)), JSON.stringify(collectEvidence(claim(), [A, B], OPT)))
 })
+
+test('impossible days in a page never throw and never count as a stated date', () => {
+  assert.deepEqual(statedDays('2026-13-01, 2026-00-10, 2026-10-00, Feb 30, 2026, 31 April 2026'), [])
+  const bad = (p: SourcePage) => ({ ...p, text: p.text.replace(/November 1, 2026|2026-11-01/, '2026-13-01') })
+  const r = judge(claim(), [bad(A), bad(B)]); assert.notEqual(r.status, 'pass'); assert.equal(st(r, 'event.predicate'), 'unknown')
+})
