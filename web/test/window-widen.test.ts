@@ -28,9 +28,9 @@ test('undated, invalid and future dates are counted apart and widening is not of
   assert.equal(n.noDate, 3)
   assert.equal(n.editTo, null)
   assert.equal(n.editLabel, null)
-  assert.match(n.text, /^3 have no usable date \(missing, invalid or in the future\)\. They are kept as research only/)
+  assert.match(n.text, /^3 leads have no usable date \(missing, invalid or in the future\)\. They are kept as research only/)
   const both = windowNotice([{ event_date: null }, { event_date: '2026-01-01' }], 90, NOW)!
-  assert.equal(both.text.startsWith('1 result is older than your 90-day window and 1 has no usable date'), true)
+  assert.equal(both.text.startsWith('1 result is older than your 90-day window and 1 lead has no usable date'), true)
 })
 
 test('quarantined leads are left out; the widened window never exceeds 365 days', () => {

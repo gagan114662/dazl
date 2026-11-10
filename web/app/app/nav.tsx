@@ -1,6 +1,8 @@
 'use client'
 import Link from 'next/link'
+import { useEffect } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
+import { closeMobileMenu } from './nav-toggle'
 import { Icon, type IconName } from './ui/icons'
 
 // The app's sidebar: Home, then Find (Plays, Leads) and Engage (Campaigns, Outreach, Inbox), with the less-used pages
@@ -30,7 +32,7 @@ const SETTINGS: Item = { href: '/app/settings', label: 'Settings', icon: 'settin
 function NavLink({ item, p, q }: { item: Item; p: string; q: URLSearchParams }) {
   const on = item.match(p, q)
   return (
-    <Link href={item.href} aria-current={on ? 'page' : undefined}
+    <Link href={item.href} aria-current={on ? 'page' : undefined} onClick={() => closeMobileMenu(document)}
       className={`flex items-center gap-2.5 text-sm px-3 py-2 max-md:min-h-11 rounded-xl transition ${on ? 'bg-[var(--soft)] text-[var(--ink)] font-semibold' : 'text-[var(--ink-2)] hover:text-[var(--ink)] hover:bg-black/5'}`}>
       <Icon name={item.icon} className="w-[18px] h-[18px] shrink-0" />{item.label}
     </Link>
@@ -41,6 +43,9 @@ export default function Nav() {
   const p = usePathname() ?? ''
   const q = useSearchParams() ?? new URLSearchParams()
   const moreOn = MORE.some(i => i.match(p, q))
+  // the layout (and its menu checkbox) survives client navigation: close the phone menu whenever the page changes (#674)
+  const where = `${p}?${q.toString()}`
+  useEffect(() => { closeMobileMenu(document) }, [where])
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
       <NavLink item={HOME} p={p} q={q} />
