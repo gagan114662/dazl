@@ -81,3 +81,50 @@ test('impossible days in a page never throw and never count as a stated date', (
   const bad = (p: SourcePage) => ({ ...p, text: p.text.replace(/November 1, 2026|2026-11-01/, '2026-13-01') })
   const r = judge(claim(), [bad(A), bad(B)]); assert.notEqual(r.status, 'pass'); assert.equal(st(r, 'event.predicate'), 'unknown')
 })
+
+// ---- Hermes-PC review of #1028 (head b9a08dbd): five leads that must not pass ----
+
+test('review 1: same-name company at another domain on ANY page contradicts identity, and its page is never an event source', () => {
+  const other = { ...B, entity_domains: ['northwind-foods.com'] }
+  const r = judge(claim(), [A, other]); assert.notEqual(r.status, 'pass', JSON.stringify(r.verdicts.filter(v => v.status !== 'pass')))
+  assert.equal(st(r, 'identity.entity'), 'contradicted')
+  const e = collectEvidence(claim(), [A, other], OPT)
+  assert.ok(!e.event!.sources.some(s => s.url === other.url), 'the other company\'s page is not a source'); assert.ok(!e.observed_domains?.includes('northwind.io'), 'the claimed domain is not offered once identity is in conflict')
+})
+
+test('review 2: identity comes from the CITED page: a cited page that never names the company cannot pass, even if other pages do', () => {
+  const C: SourcePage = { url: 'https://c.example.net/c', text: 'Toronto. We are hiring a VP of Sales.', published_at: '2026-11-01' }
+  const r = judge(claim({ source_url: C.url, quote: 'We are hiring a VP of Sales' }), [C, A, B])
+  assert.notEqual(r.status, 'pass', JSON.stringify(r.verdicts.filter(v => v.status !== 'pass'))); assert.equal(st(r, 'identity.entity'), 'unknown')
+  const e = collectEvidence(claim({ source_url: C.url, quote: 'We are hiring a VP of Sales' }), [C, A, B], OPT); assert.deepEqual(e.observed_names, []); assert.deepEqual(e.observed_domains, [])
+})
+
+test('review 3: "New York" is not "York": a longer place consumes its words before a shorter one is tried', () => {
+  const o = { places: ['York'], industries: [] as string[], known_places: ['New York', 'York', 'Toronto'] }
+  const pg = (u: string, x: string): SourcePage => ({ url: u, text: x, entity_domains: [] })
+  const pages = [pg('https://news.example.com/a', 'New York. Northwind Labs is hiring a VP of Sales, posted November 1, 2026.'), pg('https://www.jobs-board.org/p/1', 'Northwind Labs, New York: VP of Sales. Posted 2026-11-01.')]
+  const e = collectEvidence(claim(), pages, o); assert.deepEqual(e.places, ['New York'])
+  const c2: Contract = { ...contract, id: 'york-hire-review3', constraints: { ...contract.constraints, places: ['York'] } }
+  const r = evaluateLead(freezeContract(c2), e); assert.notEqual(r.status, 'pass'); assert.equal(r.verdicts.find(v => v.field === 'place.matches')?.status, 'fail')
+  const both = collectEvidence(claim(), [pg('https://news.example.com/a', 'New York and York. Northwind Labs is hiring.')], o); assert.deepEqual(both.places, ['New York', 'York'])
+})
+
+test('review 4: written dates are whole tokens: a letter or underscore suffix is not a stated date', () => {
+  assert.deepEqual(statedDays('November 1, 2026_version and 1 November 2026abc and Nov 1, 2026x'), [])
+  assert.deepEqual(statedDays('posted November 1, 2026. Also 1 November 2026, and Nov 2, 2026'), ['2026-11-01', '2026-11-02'])
+  const r = judge(claim(), [{ ...A, text: 'Toronto. Northwind Labs is hiring a VP of Sales, ref November 1, 2026_v2.' }, { ...B, text: 'Northwind Labs, Toronto: VP of Sales. build 1 November 2026abc.' }])
+  assert.notEqual(r.status, 'pass'); assert.equal(st(r, 'event.predicate'), 'unknown')
+})
+
+test('review 5: malformed pages and options fail closed and never throw', () => {
+  const bad = (pages: unknown, opt: unknown = OPT) => { let r: ReturnType<typeof judge> | undefined; assert.doesNotThrow(() => { r = evaluateLead(freezeContract(contract), collectEvidence(claim(), pages as SourcePage[], opt as typeof OPT)) }); return r! }
+  for (const [name, pages] of [
+    ['pages null', null], ['pages not an array', 'nope'], ['text null', [{ ...A, text: null }, B]], ['text a number', [{ ...A, text: 42 }, B]], ['url missing', [{ text: A.text }, B]],
+    ['empty list', []], ['only malformed pages', [null, { url: 1 }, { text: 'x' }]],
+  ] as [string, unknown][]) assert.notEqual(bad(pages).status, 'pass', name)
+  // a null entry among good pages is dropped: it never throws and never counts as a source
+  assert.equal(bad([null, A, B]).status, 'pass'); assert.deepEqual(collectEvidence(claim(), [null as unknown as SourcePage, A, B], OPT).event!.sources.map(s => s.url), [A.url, B.url])
+  // a non-array entity_domains means "no declared domains" (the same as the field being absent): it must not throw, and it cannot confirm the company's own domain
+  const e = collectEvidence(claim(), [{ ...A, entity_domains: 'northwind.io' } as unknown as SourcePage, B], OPT); assert.ok(!e.observed_domains?.includes('northwind.io'))
+  assert.doesNotThrow(() => bad([A, B], { places: null, industries: 'x', known_places: undefined }))
+})

@@ -26,32 +26,64 @@ export function statedDays(text: string): string[] {
   for (const m of t.matchAll(/(?<![\w-])(\d{4})-(\d{2})-(\d{2})(?![\w-])/g)) out.add(`${m[1]}-${m[2]}-${m[3]}`)
   const mon = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?'
   const idx = (s: string) => MONTHS.findIndex(x => x.startsWith(s.slice(0, 3)))
-  for (const m of t.matchAll(new RegExp(`(?<![\\w])${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?![\\d])`, 'g'))) out.add(`${m[3]}-${pad(idx(m[1]) + 1)}-${pad(Number(m[2]))}`)
-  for (const m of t.matchAll(new RegExp(`(?<![\\w\\d])(\\d{1,2})(?:st|nd|rd|th)?\\s+${mon},?\\s+(\\d{4})(?![\\d])`, 'g'))) out.add(`${m[3]}-${pad(idx(m[2]) + 1)}-${pad(Number(m[1]))}`)
+  for (const m of t.matchAll(new RegExp(`(?<![\\w])${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})(?![\\w])`, 'g'))) out.add(`${m[3]}-${pad(idx(m[1]) + 1)}-${pad(Number(m[2]))}`)
+  for (const m of t.matchAll(new RegExp(`(?<![\\w\\d])(\\d{1,2})(?:st|nd|rd|th)?\\s+${mon},?\\s+(\\d{4})(?![\\w])`, 'g'))) out.add(`${m[3]}-${pad(idx(m[2]) + 1)}-${pad(Number(m[1]))}`)
   return [...out].filter(isDay)
 }
 
-export function collectEvidence(claim: Claim, pages: SourcePage[], o: CollectOptions): LeadEvidence {
-  const claimed = claim.domain ? registrable(claim.domain.toLowerCase().replace(/^www\./, '')) : null
-  const about = pages.filter(p => names(p.text, claim.company))
-  // identity: a page about this company at its own domain (or with no domain stated) confirms; one published for another entity's domain does not.
-  const observed_names: string[] = [], observed_domains: string[] = []
-  for (const p of about) {
-    const doms = (p.entity_domains ?? []).map(d => registrable(d.toLowerCase().replace(/^www\./, '')))
-    if (!doms.length || (claimed && doms.includes(claimed))) { observed_names.push(claim.company); if (claimed && doms.includes(claimed)) observed_domains.push(claimed) }
-    else observed_domains.push(...doms)
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null
+// Pages come from a fetcher: anything that is not a page with a string url and string text is dropped (it supports nothing), and a non-array entity_domains means none.
+// Wrong-type, null and missing values fail closed (unknown/fail), they never throw (BRIEF gate 7).
+function cleanPages(raw: unknown): SourcePage[] {
+  if (!Array.isArray(raw)) return []
+  const out: SourcePage[] = []
+  for (const p of raw) {
+    if (!isObj(p) || typeof p.url !== 'string' || typeof p.text !== 'string') continue
+    out.push({ url: p.url, text: p.text, published_at: typeof p.published_at === 'string' ? p.published_at : null, entity_domains: Array.isArray(p.entity_domains) ? p.entity_domains.filter((d): d is string => typeof d === 'string') : [] })
   }
-  // Conflicting evidence wins: if any page names the company at another entity's domain, no page may confirm the name.
-  const elsewhere = observed_domains.some(d => d !== claimed)
-  if (elsewhere) observed_names.length = 0
+  return out
+}
+const strs = (x: unknown): string[] => Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : []
+const bare = (d: string) => registrable(d.toLowerCase().replace(/^www\./, ''))
+
+// The places (or industries) a text names. A longer name consumes its words before a shorter one is tried, so "New York" is never also "York".
+function namedIn(text: string, candidates: string[]): string[] {
+  let hay = ` ${norm(text)} `
+  const found: string[] = []
+  for (const c of [...new Set(candidates.filter(x => typeof x === 'string' && x.trim() !== ''))].sort((a, b) => norm(b).length - norm(a).length)) {
+    const n = ` ${norm(c)} `
+    if (hay.includes(n)) { found.push(c); hay = hay.split(n).join(' | ') }
+  }
+  return found
+}
+
+export function collectEvidence(claim: Claim, rawPages: SourcePage[], rawOptions: CollectOptions): LeadEvidence {
+  const pages = cleanPages(rawPages)
+  const o = { places: strs(rawOptions?.places), industries: strs(rawOptions?.industries), known_places: strs(rawOptions?.known_places) }
+  const claimed = claim.domain ? bare(claim.domain) : null
+  // A page is "for another entity" when it declares domains and none is the company's own (or, with no claimed domain, any declared domain is read as another's).
+  const forOther = (p: SourcePage) => { const doms = (p.entity_domains ?? []).map(bare); return doms.length > 0 && !(claimed && doms.includes(claimed)) }
+  const about = pages.filter(p => names(p.text, claim.company))
+  // CONFLICT WINS, from any page: if some page about this company is published for another entity's domain, identity is contradicted, so no page may confirm the name
+  // and the company's own domain is not offered as observed (the contract confirms identity from either). Other-entity pages never count as event sources.
+  const otherDomains = [...new Set(about.filter(forOther).flatMap(p => (p.entity_domains ?? []).map(bare)))]
+  const conflict = otherDomains.length > 0
+  // IDENTITY is read from the CITED page only (the contract defines observed_names/observed_domains as what the cited page carries).
   const cited = pages.find(p => p.url === claim.source_url)
-  const lower = (cited?.text ?? '')
-  const seen = (list: string[]) => [...new Set(list.filter(x => names(lower, x)))]
-  const supporting = claim.event_date ? about.filter(p => statedDays(p.text).includes(claim.event_date!)) : []
+  const citedAbout = !!cited && names(cited.text, claim.company)
+  let observed_names: string[] = [], observed_domains: string[] = []
+  if (conflict) observed_domains = otherDomains
+  else if (citedAbout) {
+    observed_names = [claim.company]
+    if (claimed && (cited!.entity_domains ?? []).map(bare).includes(claimed)) observed_domains = [claimed]
+  }
+  const lower = cited?.text ?? ''
+  const seen = (list: string[]) => namedIn(lower, list)
+  const supporting = claim.event_date ? about.filter(p => !forOther(p) && statedDays(p.text).includes(claim.event_date!)) : []
   return {
     company: claim.company, claimed_domain: claim.domain, source_url: claim.source_url, quote: claim.quote,
     page_text: cited?.text ?? null,
-    observed_names: [...new Set(observed_names)], observed_domains: [...new Set(observed_domains)],
+    observed_names, observed_domains,
     places: cited ? seen([...o.known_places, ...o.places]) : [],
     industries: cited ? seen(o.industries) : [],
     event: claim.event_date ? { kind: claim.event_kind, date: supporting.length ? claim.event_date : null, sources: supporting.map(p => ({ url: p.url })) } : null,
