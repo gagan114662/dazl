@@ -603,7 +603,7 @@ CREATE TABLE outreach_messages (
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, insert_seq INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, words_rev INTEGER NOT NULL DEFAULT 0, insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -1393,6 +1393,11 @@ CREATE TRIGGER outreach_sent_is_final
     BEFORE UPDATE OF status ON outreach_messages
     WHEN OLD.status IN ('sent','skipped') AND NEW.status <> OLD.status
     BEGIN SELECT RAISE(ABORT, 'final outreach status'); END;
+
+CREATE TRIGGER outreach_words_need_rev
+    BEFORE UPDATE OF subject, body ON outreach_messages
+    WHEN (NEW.subject IS NOT OLD.subject OR NEW.body IS NOT OLD.body) AND NEW.words_rev = OLD.words_rev
+    BEGIN SELECT RAISE(ABORT, 'words_rev not bumped'); END;
 
 CREATE TRIGGER scan_jobs_insert_seq AFTER INSERT ON scan_jobs WHEN NEW.insert_seq IS NULL BEGIN UPDATE scan_jobs SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM scan_jobs) WHERE rowid = NEW.rowid; END;
 
