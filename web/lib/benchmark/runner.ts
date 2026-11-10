@@ -45,6 +45,7 @@ export interface RawItem {
   quotes?: { text: string; source_url: string }[]
   person?: { name: string; title: string; source_url: string } | null
   contact_source_url?: string | null                      // the page the contact address is printed on
+  original?: unknown                                      // the system's own record of this lead, kept for audit; never read by scoring
 }
 export type Stop = 'budget' | 'timeout' | 'rate_limited' | 'login_required' | 'paywall' | 'feature_unavailable'
 export interface AdapterResult { items: RawItem[]; cost_usd: number | null; seconds: number | null; interventions: number; stopped?: Stop; detail?: string }
@@ -70,7 +71,9 @@ export interface CanonicalItem {
 }
 // dropped_items: output rows the runner could not canonicalise (not an object, no company name, past MAX_ITEMS_PER_TASK);
 // they are counted here and in the task reason, never silently lost and never scored.
-export interface StoredRun { run_id: string; system: string; task_id: string; task: Omit<TaskRun, 'results'>; items: CanonicalItem[]; interventions: number; dropped_items?: number }
+// invoked: the adapter's run() was called for this task (a login wall or paywall it hit after starting still counts as an
+// attempt, so its time, cost and interventions stay visible); absent on runs recorded before this field existed.
+export interface StoredRun { run_id: string; system: string; task_id: string; task: Omit<TaskRun, 'results'>; items: CanonicalItem[]; interventions: number; dropped_items?: number; invoked?: boolean }
 export interface RunStore { get(runId: string): StoredRun | undefined; put(r: StoredRun): void }
 export const memoryStore = (): RunStore & { runs: Map<string, StoredRun> } => { const runs = new Map<string, StoredRun>(); return { runs, get: id => runs.get(id), put: r => { runs.set(r.run_id, r) } } }
 
@@ -262,7 +265,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     for (const a of systems) {
       const run_id = sha(`${batch_id}|${a.system}|${brief.task_id}`).slice(0, 24)
       const prev = store.get(run_id)
-      if (prev) { stored.set(`${a.system}|${brief.task_id}`, prev); spent += prev.task.cost_usd ?? (ATTEMPTED.includes(prev.task.status) ? budget.usd_per_task : 0); continue } // resumed: reserved exactly as the first time
+      if (prev) { stored.set(`${a.system}|${brief.task_id}`, prev); spent += prev.task.cost_usd ?? ((prev.invoked ?? ATTEMPTED.includes(prev.task.status)) ? budget.usd_per_task : 0); continue } // resumed: reserved exactly as the first time
       const av = avail.get(a.system)!
       if (!av.ok) { const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task: { task_id: brief.task_id, status: 'unsupported', reason: `adapter unavailable: ${av.reason}`, seconds: null, cost_usd: null }, items: [], interventions: 0 }; store.put(r); stored.set(`${a.system}|${brief.task_id}`, r) }
     }
@@ -270,14 +273,16 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       const key = `${a.system}|${brief.task_id}`
       if (stored.has(key)) continue
       const run_id = sha(`${batch_id}|${a.system}|${brief.task_id}`).slice(0, 24)
+      let invoked = false
       const put = (task: Omit<TaskRun, 'results'>, items: CanonicalItem[] = [], interventions = 0, dropped = 0) => {
         const t = dropped ? { ...task, reason: [task.reason, `${dropped} malformed or excess output row(s) dropped, not scored`].filter(Boolean).join('; ') } : task
-        const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task: t, items, interventions, ...(dropped ? { dropped_items: dropped } : {}) }; store.put(r); stored.set(key, r)
+        const r: StoredRun = { run_id, system: a.system, task_id: brief.task_id, task: t, items, interventions, ...(dropped ? { dropped_items: dropped } : {}), ...(invoked ? { invoked: true } : {}) }; store.put(r); stored.set(key, r)
       }
       const sup = a.supports ? a.supports(brief) : true
       if (sup !== true) { put({ task_id: brief.task_id, status: 'unsupported', reason: `the system cannot express this task: ${sup}`, seconds: null, cost_usd: null }); continue }
       if (spent + budget.usd_per_task > budget.batch_usd) { put({ task_id: brief.task_id, status: 'not_run', reason: `batch budget reached ($${spent.toFixed(2)} of $${budget.batch_usd} spent)`, seconds: null, cost_usd: null }); continue }
       let res: AdapterResult | 'timeout'
+      invoked = true
       try { res = await withTimeout(a.run(brief, { usd: budget.usd_per_task, seconds: budget.seconds_per_task }), budget.seconds_per_task * 1000) } catch (e) {
         spent += budget.usd_per_task // unknown cost: the whole task limit stays reserved
         put({ task_id: brief.task_id, status: 'failed', reason: `adapter error: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, seconds: null, cost_usd: null }); continue
@@ -289,7 +294,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       const { items, dropped } = canonicalizeCounted(res.items)
       if (res.stopped) { put({ task_id: brief.task_id, status: STOP_STATUS[res.stopped], reason: `${res.stopped}${STOP_STATUS[res.stopped] === 'unsupported' ? ' (never bypassed)' : ''}${res.detail ? `: ${res.detail.slice(0, 200)}` : ''}`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
       if (res.seconds !== null && res.seconds > budget.seconds_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task time limit (${res.seconds}s > ${budget.seconds_per_task}s)`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
-      if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget (${res.cost_usd} > ${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
+      if (res.cost_usd !== null && res.cost_usd > budget.usd_per_task) { put({ task_id: brief.task_id, status: 'incomplete', reason: `over the task budget ($${res.cost_usd} > $${budget.usd_per_task})`, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped); continue }
       put({ task_id: brief.task_id, status: 'complete', reason: null, seconds: res.seconds, cost_usd: res.cost_usd }, items, res.interventions, dropped)
     }
   }
@@ -339,7 +344,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
     const done = c.tasks.filter(t => t.status === 'complete' && t.precision_at_5 !== null)
     const p5 = done.length ? Math.round((done.reduce((s, t) => s + t.precision_at_5!, 0) / done.length) * 1000) / 1000 : null
     const secs = runs[i].tasks.map(t => t.seconds).filter((s): s is number => s !== null)
-    const attempted = runs[i].tasks.filter(t => ATTEMPTED.includes(t.status)).length
+    const attempted = briefs.filter(b => { const r = stored.get(`${a.system}|${b.task_id}`)!; return r.invoked ?? ATTEMPTED.includes(r.task.status) }).length
     const why = () => { const n = new Map<string, number>(); for (const t of runs[i].tasks) { const k = `${t.status}${t.reason ? ` (${t.reason})` : ''}`; n.set(k, (n.get(k) ?? 0) + 1) } return `no task started: ${[...n].map(([k, x]) => `${x} ${k}`).join('; ')}`.slice(0, 400) }
     return {
       system: a.system, origin, status: !av.ok ? 'unavailable' : attempted ? 'ran' : 'not_started', reason: !av.ok ? av.reason : attempted ? null : why(),

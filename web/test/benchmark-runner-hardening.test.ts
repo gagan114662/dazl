@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { batchFromFile, runBatch, type Adapter, type AdapterResult, type BatchFile, type BlindEvaluator, type BlindItem, type Brief } from '../lib/benchmark/runner.ts'
+import { batchFromFile, memoryStore, runBatch, type Adapter, type AdapterResult, type BatchFile, type BlindEvaluator, type BlindItem, type Brief } from '../lib/benchmark/runner.ts'
 
 const BATCH = JSON.parse(readFileSync(new URL('./fixtures/benchmark/synthetic-batch.json', import.meta.url), 'utf8')) as BatchFile
 const base = () => batchFromFile(structuredClone(BATCH))
@@ -29,6 +29,9 @@ test('#397: a malformed adapter result fails that task, recorded, with the full 
   assert.match(String(t['negative-reykjavik-ipo'][1]), /stopped "bored" is not one of budget/)
   assert.equal(r.spent_usd, 8)                       // 4 tasks x the $2 limit: an unreadable cost is never 0 and never a string
   assert.equal(typeof r.spent_usd, 'number')
+  // the over-limit reason keeps its dollar amounts
+  const over = await runBatch({ ...base(), adapters: [stub('alpha', async () => ({ items: [], cost_usd: 3, seconds: 1, interventions: 0 }))], evaluator: allPass })
+  assert.equal(over.scorecards[0].tasks[0].reason, 'over the task budget ($3 > $2)')
   for (const v of [null, 7, 'x', [], true]) {        // not an object at all
     const x = await runBatch({ ...base(), adapters: [stub('alpha', async () => v)], evaluator: allPass })
     assert.ok(x.scorecards[0].tasks.every(k => k.status === 'failed' && /malformed adapter result: the result is not an object|items is not a list/.test(k.reason!)), JSON.stringify(v))
@@ -53,6 +56,14 @@ test('#397: an available system that started no task is not_started with the rea
   assert.match(none.report[0].reason!, /^no task started: 4 unsupported \(the system cannot express this task: the product has no Munich data\)$/)
   const broke = await runBatch({ ...base(), budget: { usd_per_task: 2, seconds_per_task: 30, batch_usd: 0 }, adapters: [stub('alpha', async () => ({ items: [], cost_usd: 0, seconds: 0, interventions: 0 }))], evaluator: allPass })
   assert.equal(broke.report[0].status, 'not_started'); assert.match(broke.report[0].reason!, /4 not_run \(batch budget reached/)
+  // a login wall or paywall hit AFTER the adapter started is an attempt: its time and cost stay visible, and a resumed
+  // batch reserves exactly what the first run reserved
+  const walled = stub('alpha', async () => ({ items: [], cost_usd: null, seconds: 3, interventions: 1, stopped: 'login_required' }))
+  const store = memoryStore()
+  const w1 = await runBatch({ ...base(), adapters: [walled], evaluator: allPass, store })
+  assert.deepEqual([w1.report[0].status, w1.report[0].attempted, w1.report[0].interventions, w1.spent_usd], ['ran', 4, 4, 8])
+  const w2 = await runBatch({ ...base(), adapters: [walled], evaluator: allPass, store })
+  assert.equal(w2.spent_usd, 8)
   // a failed attempt still ran: its spend is shown, it is not hidden as not started
   const failed = await runBatch({ ...base(), adapters: [stub('alpha', async () => { throw new Error('500') })], evaluator: allPass })
   assert.deepEqual([failed.report[0].status, failed.report[0].attempted, failed.report[0].reason], ['ran', 4, null])

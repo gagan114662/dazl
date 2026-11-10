@@ -33,7 +33,9 @@ const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v) ?? 'nu
 
 // An owner authorization, quoted from the owner's own words (date, time and scope), never a GitHub comment on the shared
 // login. The code checks its shape; the review of the commit that adds it checks that the words are Gagan's.
-export interface Authorization { granted_by: 'gagan'; granted_at: string; owner_words: string; channel: string; scope: string; max_usd: number }
+// It is bound to one recording (its sha256) on one task set, and capped: it cannot be reused for another recording or
+// widened by a later batch.
+export interface Authorization { granted_by: 'gagan'; granted_at: string; owner_words: string; channel: string; scope: string; max_usd: number; task_set_version: string; recording_sha256: string }
 export interface RegistryEntry { system: string; product: string; requires_authorization: boolean; authorization: Authorization | null; unavailable_reason: string | null; note: string | null }
 
 export function authorizationProblem(a: unknown, system: string): string | null {
@@ -45,7 +47,9 @@ export function authorizationProblem(a: unknown, system: string): string | null 
   if (!str(a.channel, 60)) return 'channel (where the owner said it) is missing'
   if (!str(a.scope) || !(a.scope as string).toLowerCase().includes(system.toLowerCase())) return `the scope must name the system ${system}`
   if (!(typeof a.max_usd === 'number' && Number.isFinite(a.max_usd) && a.max_usd >= 0)) return `max_usd ${show(a.max_usd)} is not a preset non-negative cap`
-  const extra = Object.keys(a).filter(k => !['granted_by', 'granted_at', 'owner_words', 'channel', 'scope', 'max_usd'].includes(k))
+  if (typeof a.task_set_version !== 'string' || !a.task_set_version) return 'task_set_version (the one task set it covers) is missing'
+  if (typeof a.recording_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(a.recording_sha256)) return 'recording_sha256 (the one recording it covers) is missing or not a sha256'
+  const extra = Object.keys(a).filter(k => !['granted_by', 'granted_at', 'owner_words', 'channel', 'scope', 'max_usd', 'task_set_version', 'recording_sha256'].includes(k))
   if (extra.length) return `unknown authorization field(s) ${extra.join(', ')}`
   return null
 }
@@ -93,6 +97,7 @@ function taskOf(v: unknown): AdapterResult | { error: string } {
   return { items: v.items as RawItem[], cost_usd: v.cost_usd as number | null, seconds: v.seconds as number | null, interventions: v.interventions, ...(v.stopped ? { stopped: v.stopped as AdapterResult['stopped'] } : {}), ...(typeof v.detail === 'string' ? { detail: v.detail.slice(0, 200) } : {}) }
 }
 
+export const recordingSha = (raw: unknown) => sha(raw)
 export function checkRecording(raw: unknown, set: TaskSet, system: string): FixtureOutputs {
   if (!isRec(raw) || raw.format !== RECORDING_FORMAT || raw.version !== 1) throw new BenchmarkRunError(`${system}: the recording is not a ${RECORDING_FORMAT} v1 file`)
   if (raw.system !== system) throw new BenchmarkRunError(`${system}: the recording is of system ${show(raw.system)}`)
@@ -131,7 +136,8 @@ export function dazlRecordingFromScoreboard(sb: unknown, set: TaskSet): Recordin
       tasks[r.id] = stop ? { items: [], cost_usd: null, seconds, interventions: 0, stopped: stop, detail: error } : { error: `dazl run did not complete: ${error ?? 'no reason recorded'}` }
       return
     }
-    const leads = (Array.isArray(r.leads) ? r.leads : []) as SbLeadIn[]
+    if (!Array.isArray(r.leads)) { tasks[r.id] = { error: 'malformed scoreboard row: complete, but leads is not a list (a truncated result is not an empty market)' }; return }
+    const leads = r.leads as SbLeadIn[]
     const items = leads.filter(l => isRec(l) && (l.quarantined_at === null || l.quarantined_at === undefined)).map((l): RawItem => {
       const ev = (Array.isArray(l.site_evidence) ? l.site_evidence : []).filter(isRec)
       const srcOf = (kind: string, value: string) => { const e = ev.find(x => x.kind === kind && x.value === value && typeof x.source_url === 'string'); return e ? e.source_url as string : null }
@@ -147,6 +153,7 @@ export function dazlRecordingFromScoreboard(sb: unknown, set: TaskSet): Recordin
         event_date: typeof l.event_date === 'string' ? l.event_date : null, event_source_url: src, evidence_urls: src ? [src] : [],
         text: typeof l.signal === 'string' ? l.signal : null,
         person: pt && cut > 0 && personSrc ? { name: pt.slice(0, cut), title: pt.slice(cut + 2), source_url: personSrc } : null,
+        original: l,                                                     // Dazl's whole lead as recorded, for audit
       }
     })
     tasks[r.id] = { items, cost_usd: null, seconds, interventions: 0 }   // the scoreboard records one shared budget, not a per-task cost: unknown, never 0
@@ -160,7 +167,7 @@ export function dazlRecordingFromScoreboard(sb: unknown, set: TaskSet): Recordin
 
 // --- the recorded batch (#788) -------------------------------------------------------------------------------------
 
-export interface RecordedBatchFile { format: typeof RECORDED_BATCH_FORMAT; version: 1; as_of: string; seed: number; budget: Budget; task_set_version: string; recordings: Record<string, string>; snapshots: string; min_independent_origins?: number }
+export interface RecordedBatchFile { format: typeof RECORDED_BATCH_FORMAT; version: 1; as_of: string; seed: number; budget: Budget; task_set_version: string; recordings: Record<string, string>; snapshots: string; min_independent_origins: number }
 export interface RecordedDeps { registry: unknown; committedSet: TaskSet | null; read(file: string): unknown }
 export interface RecordedNote { system: string; used: boolean; reason: string | null }
 export const minOrigins = (v: unknown): number | undefined => {
@@ -178,10 +185,14 @@ export function recordedBatch(f: unknown, deps: RecordedDeps): { options: Omit<B
   if (!isRec(f.budget) || !['usd_per_task', 'seconds_per_task', 'batch_usd'].every(k => typeof (f.budget as Record<string, unknown>)[k] === 'number')) throw new BenchmarkRunError('budget must give usd_per_task, seconds_per_task and batch_usd as numbers')
   if (!isRec(f.recordings) || !Object.values(f.recordings).every(p => typeof p === 'string' && p.trim())) throw new BenchmarkRunError('recordings must map a system to a recording file')
   if (typeof f.snapshots !== 'string' || !f.snapshots.trim()) throw new BenchmarkRunError('snapshots (the verifier\'s own captures) is required: a recorded batch is never scored without them')
+  // The corroboration level is a stated choice of the batch (and of its preregistered plan, #398), never a silent default.
+  if (f.min_independent_origins === undefined) throw new BenchmarkRunError('min_independent_origins is required in a recorded batch (2 = independently corroborated, 1 = source-checked)')
+  const min = minOrigins(f.min_independent_origins)
   const registry = checkRegistry(deps.registry)
   const unknown = Object.keys(f.recordings).filter(s => !registry.some(e => e.system === s))
   if (unknown.length) throw new BenchmarkRunError(`recording(s) for system(s) not in the adapter registry: ${unknown.join(', ')}`)
   const notes: RecordedNote[] = []
+  const budget = f.budget as unknown as Budget
   const adapters: Adapter[] = registry.map(e => {
     const file = (f.recordings as Record<string, string>)[e.system]
     const authProblem = e.requires_authorization ? authorizationProblem(e.authorization, e.system) : null
@@ -190,9 +201,29 @@ export function recordedBatch(f: unknown, deps: RecordedDeps): { options: Omit<B
       notes.push({ system: e.system, used: false, reason }); return unavailableAdapter(e.system, reason, 'recorded', e.product)
     }
     if (!file) { const reason = `authorized, but no recording of ${e.product} was supplied for this batch`; notes.push({ system: e.system, used: false, reason }); return unavailableAdapter(e.system, reason, 'recorded', e.product) }
+    const raw = deps.read(file)
+    const fx = checkRecording(raw, set, e.system)
+    if (e.requires_authorization) {
+      // The authorization covers exactly this recording on this task set, within its cap: the worst-case exposure counts
+      // every replayed task at its recorded cost, or at the full per-task limit when the cost is unknown.
+      const a = e.authorization as Authorization
+      const exposure = Object.values(fx.tasks).reduce((s, t) => s + ('error' in t ? budget.usd_per_task : t.cost_usd ?? budget.usd_per_task), 0)
+      const why = a.task_set_version !== set.version ? `the authorization covers task set v${a.task_set_version}, not v${set.version}`
+        : a.recording_sha256 !== recordingSha(raw) ? 'the authorization covers a different recording (sha256 mismatch)'
+          : exposure > a.max_usd ? `worst-case exposure $${exposure} is over the authorized cap $${a.max_usd}` : null
+      if (why) { const reason = `${e.product}: ${why}; not run`; notes.push({ system: e.system, used: false, reason }); return unavailableAdapter(e.system, reason, 'recorded', e.product) }
+    }
     notes.push({ system: e.system, used: true, reason: null })
-    return fixtureAdapter(checkRecording(deps.read(file), set, e.system))
+    return fixtureAdapter(fx)
   })
-  const evaluator = verifierEvaluator({ snapshots: parseSnapshots(deps.read(f.snapshots)), min_independent_origins: minOrigins(f.min_independent_origins) })
-  return { options: { set, committedSet: set, asOf: f.as_of as string, seed: f.seed as number, budget: f.budget as unknown as Budget, adapters, evaluator }, notes }
+  const snapshots = parseSnapshots(deps.read(f.snapshots))
+  // A recorded batch is scored only on captures attributed to the verifier, and never on a file a system under test
+  // names itself as the author of. (Attribution is a recorded string, not a signature: see docs/BENCHMARK.md.)
+  if (!snapshots.attributed) throw new BenchmarkRunError(`the snapshots file is not attributed to the verifier: ${snapshots.problems.slice(0, 3).join('; ')}`)
+  const by = snapshots.captured_by!.toLowerCase()
+  const names = (e: RegistryEntry) => by.includes(e.system.toLowerCase()) || by.includes(e.product.toLowerCase())
+  const self = registry.find(e => names(e) && (e.system !== 'dazl' || !by.includes('verifier')))   // "dazl-verifier" is the verifier; "dazl" alone is the producer
+  if (self) throw new BenchmarkRunError(`the snapshots were captured by "${snapshots.captured_by}", a system under test, not by the verifier`)
+  const evaluator = verifierEvaluator({ snapshots, min_independent_origins: min })
+  return { options: { set, committedSet: set, asOf: f.as_of as string, seed: f.seed as number, budget, adapters, evaluator }, notes }
 }

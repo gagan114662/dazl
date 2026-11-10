@@ -33,8 +33,13 @@ export const EVALUATOR_NAME = 'dazl-verifier-deterministic'
 export const EVALUATOR_VERSION = '1'
 
 export interface SnapshotSet {
-  captured_by: string | null; captured_at: string | null; sha256: string
+  captured_by: string | null; captured_at: string | null
+  sha256: string                                                   // of the bounded, parsed content (never of the raw input)
+  attributed: boolean                                              // a v1 file with captured_by and captured_at: a recorded batch refuses anything else
   byUrl: Map<string, Snapshot>; canonical: Map<string, string>   // url -> its declared canonical page (normalizeUrl form)
+  // Pages the verifier found ITSELF for a company (by its registrable domain), never pages a producer cited: they can
+  // corroborate an event a producer cited a source for, the same way for every system that names that company.
+  found: Map<string, string[]>
   problems: string[]                                               // every entry that was not taken, and why
 }
 
@@ -46,14 +51,28 @@ const days = (v: unknown) => Array.isArray(v) ? v.filter((d): d is string => typ
 // "not fetched", so the checks that need it are unknown), and two different captures of one url are both dropped (a
 // conflict is unknown, never resolved by picking one). Nothing here throws.
 export function parseSnapshots(raw: unknown): SnapshotSet {
-  let digest = ''
-  try { digest = sha(JSON.stringify(raw) ?? 'null') } catch { digest = sha('unserializable') }
-  const out: SnapshotSet = { captured_by: null, captured_at: null, sha256: digest, byUrl: new Map(), canonical: new Map(), problems: [] }
+  const out = parseSnapshotsUnhashed(raw)
+  // Hashed after every bound is applied: an oversized ignored tail is never traversed or allocated.
+  out.sha256 = sha(JSON.stringify({ by: out.captured_by, at: out.captured_at, pages: [...out.byUrl.values()], canonical: [...out.canonical], found: [...out.found] }))
+  return out
+}
+function parseSnapshotsUnhashed(raw: unknown): SnapshotSet {
+  const out: SnapshotSet = { captured_by: null, captured_at: null, sha256: '', attributed: false, byUrl: new Map(), canonical: new Map(), found: new Map(), problems: [] }
   if (!isRec(raw) || raw.format !== SNAPSHOT_FORMAT || raw.version !== 1) { out.problems.push(`not a ${SNAPSHOT_FORMAT} v1 file: every page reads as not fetched`); return out }
   out.captured_by = typeof raw.captured_by === 'string' && raw.captured_by.trim() ? raw.captured_by.trim().slice(0, 100) : null
   out.captured_at = typeof raw.captured_at === 'string' && Number.isFinite(Date.parse(raw.captured_at)) ? raw.captured_at : null
   if (!out.captured_by) out.problems.push('captured_by is missing: the capture is not attributed to the verifier')
   if (!out.captured_at) out.problems.push('captured_at is missing or not a time')
+  out.attributed = !!out.captured_by && !!out.captured_at
+  if (raw.found_by_verifier !== undefined) {
+    if (!isRec(raw.found_by_verifier)) out.problems.push('found_by_verifier is not an object keyed by company domain')
+    else for (const [d, v] of Object.entries(raw.found_by_verifier).slice(0, SNAPSHOT_LIMITS.snapshots)) {
+      const key = registrable(d)
+      const urls = Array.isArray(v) ? [...new Set(v.map(u => typeof u === 'string' && u.length <= SNAPSHOT_LIMITS.url ? httpUrl(u) : null).filter((u): u is string => u !== null))].slice(0, 5) : null
+      if (!key || !urls) { out.problems.push(`found_by_verifier[${JSON.stringify(d).slice(0, 60)}] is not a domain with a list of urls`); continue }
+      out.found.set(key, urls)
+    }
+  }
   const list = Array.isArray(raw.snapshots) ? raw.snapshots : null
   if (!list) { out.problems.push('snapshots is not a list'); return out }
   if (list.length > SNAPSHOT_LIMITS.snapshots) out.problems.push(`${list.length} snapshots: only the first ${SNAPSHOT_LIMITS.snapshots} are read`)
@@ -108,7 +127,8 @@ export const EVENT_WORDING: Record<string, RegExp> = {
   hire: W('hired|hires|appointed|appoints|named|joins|joined|welcomes|has hired'),
   funding: W('raised|raises|raising|funding|financing|investment|round|seed|series [a-f]|investors?|backed|finanzierung\\w*|investimento|ronda'),
   new_location: W(OPENING), new_office: W(OPENING), office_opening: W(OPENING), new_facility: W(OPENING), facility_opening: W(OPENING),
-  regional_hq: W(`regional (?:headquarters|hq)|${OPENING}`), expansion: W(`expan\\w+|${OPENING}`),
+  regional_hq: W('regional (?:headquarters|hq|head office|hub)|(?:middle east|mena|gcc|emea|apac|asia-pacific|latin america|latam) (?:headquarters|hq|head office|hub)|headquarters for the (?:region|middle east|gcc|emea|apac)'),
+  expansion: W(`expan\\w+|${OPENING}`),
   product_launch: W('launch\\w*|released|releases|unveil\\w*|introduc\\w*|rolled out|rolls out'),
   headcount_growth: W('grew|grown|growing|doubled|tripled|headcount|employees|staff of|team (?:of|to)'),
   technology_change: W('migrat\\w*|switched|switches|adopt\\w*|implemented|implements|moved to|replac\\w*|rolled out|deployed'),
@@ -144,7 +164,8 @@ const geoOf = (c: unknown): string | null => {
 
 export interface VerifierOptions { snapshots: SnapshotSet; min_independent_origins?: number }
 
-interface Ctx { claimCompany: string; eventSentences: string[] }
+// origins: each independent origin (one per group of merged pages) with the dated sentences its pages give the event.
+interface Ctx { claimCompany: string; origins: { root: number; sentences: string[] }[]; min: number }
 // A frozen brief is committed and reviewed, but its constraints are still read defensively: deeper or wider than this is
 // not read (unknown), so a pathological brief can neither overflow the stack nor pass by an unread branch.
 export const MAX_CONSTRAINT_DEPTH = 8, MAX_CONSTRAINT_BRANCHES = 50
@@ -157,13 +178,16 @@ function constraintVerdict(c: unknown, place: Part | null, cx: Ctx): Part[] {
     if (typeof n.event === 'string') {
       const re = EVENT_WORDING[n.event]
       if (!re) return { verdict: 'unknown', why: `event kind ${n.event} has no deterministic wording check` }
-      const hit = cx.eventSentences.find(s => re.test(s) && !HEDGED.test(s))
-      if (!hit) return { verdict: 'unknown', why: cx.eventSentences.length ? `no sentence that dates the event words it as ${n.event} (or it is hedged/negated)` : `no source the verifier read dates the event, so ${n.event} is not shown` }
-      const roles = Array.isArray(n.roles) ? n.roles.filter((r): r is string => typeof r === 'string') : null
-      if (roles && !roles.some(r => cx.eventSentences.some(s => tokenPositions(s, r).length > 0))) return { verdict: 'unknown', why: `none of the roles ${roles.join(', ')} is named in the event sentence` }
-      const rounds = [...(Array.isArray(n.rounds) ? n.rounds : []), ...(typeof n.stage === 'string' ? [n.stage] : [])].filter((r): r is string => typeof r === 'string')
-      if (rounds.length && !rounds.some(r => cx.eventSentences.some(s => tokenPositions(s, ROUND_WORDS[r] ?? r.replace(/_/g, ' ')).length > 0))) return { verdict: 'unknown', why: `none of the rounds ${rounds.join(', ')} is named in the event sentence` }
-      return { verdict: 'pass', why: `"${hit.slice(0, 120)}" states ${n.event}` }
+      const roles = Array.isArray(n.roles) ? n.roles.filter((r): r is string => typeof r === 'string') : []
+      const rounds = [...(Array.isArray(n.rounds) ? n.rounds : []), ...(typeof n.stage === 'string' ? [n.stage] : [])].filter((r): r is string => typeof r === 'string').map(r => ROUND_WORDS[r] ?? r.replace(/_/g, ' '))
+      // One sentence must state it whole: the event wording, unhedged, AND a requested role / round, in the same sentence
+      // that dates the event next to the company. Each origin that has such a sentence counts once.
+      const states = (s: string) => re.test(s) && !HEDGED.test(s) && (!roles.length || roles.some(r => tokenPositions(s, r).length > 0)) && (!rounds.length || rounds.some(r => tokenPositions(s, r).length > 0))
+      const hits = cx.origins.filter(o => o.sentences.some(states))
+      const what = `${n.event}${roles.length ? ` (${roles.join(' / ')})` : ''}${rounds.length ? ` (${rounds.join(' / ')})` : ''}`
+      if (!hits.length) return { verdict: 'unknown', why: cx.origins.length ? `no sentence that dates the event states ${what} whole and unhedged` : `no source the verifier read dates the event, so ${what} is not shown` }
+      if (hits.length < cx.min) return { verdict: 'unknown', why: `${what} is stated on ${hits.length} independent origin(s); ${cx.min} are required` }
+      return { verdict: 'pass', why: `${what} is stated on ${hits.length} independent origin(s): "${hits[0].sentences.find(states)!.slice(0, 120)}"` }
     }
     const keys = Object.keys(n).filter(k => k !== 'within_days')
     return { verdict: 'unknown', why: `${keys.join(', ') || 'an empty constraint'} is not shown by a deterministic check (needs the semantic judge, #782)` }
@@ -203,7 +227,9 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
     const readable = (u: string | null) => u ? snaps.byUrl.get(u) ?? null : null
     const urls = [...new Set(item.evidence_urls.map(u => httpUrl(u)).filter((u): u is string => u !== null))]
     const primary = httpUrl(item.event_source_url) ?? urls[0] ?? null
-    const corroborating = urls.filter(u => u !== primary).slice(0, 5)
+    const reg = item.domain ? registrable(item.domain) : null
+    const found = (reg ? snaps.found.get(reg) ?? [] : []).filter(u => u !== primary && !urls.includes(u))
+    const corroborating = [...urls.filter(u => u !== primary), ...found].slice(0, 5)   // the producer's own citations first
     const eventUrls = primary ? [primary, ...corroborating] : []
     const folded = (u: string) => { const s = readable(u); return s && s.outcome === 'ok' ? fold(s.text) : null }
     const near = (f: string, term: string) => { const co = tokenPositions(f, item.company); return tokenPositions(f, term).some(x => co.some(y => Math.abs(x - y) <= 250)) }
@@ -233,23 +259,27 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
 
     // Independent corroboration: each cited event source that, read on its own, names the company and dates the event
     // next to it. Origins: one per registrable domain, merged when two pages share the event sentence or a canonical.
-    const corro: { url: string; domain: string | null; sentence: string | null }[] = []
+    const corro: { url: string; domain: string | null; sentences: string[] }[] = []
+    // The same sentence typeset with or without its final stop, quote or bracket compares equal.
+    const norm = (s: string) => s.replace(/[\s.!?;:,"'”’)\]]+$/u, '').replace(/^[\s"'“‘(\[]+/u, '').replace(/\s+/g, ' ').trim()
     for (const u of claim.event.source_url ? [claim.event.source_url, ...claim.event.corroborating_urls] : []) {
       const sub = decide({ claim: { ...claim, event: { date: claim.event.date, source_url: u, corroborating_urls: [] }, quotes: [], person: null, contact: null }, problems: [], sources, asOf, windowDays })
       const ok = sub.some(c => c.check === 'company_on_source' && c.status === 'pass') && sub.some(c => c.check === 'event_date_on_source' && c.status === 'pass')
       if (!ok) continue
       const s = readable(u)!, f = fold(s.text)
-      const m = datesIn(f).find(d => d.iso === claim.event.date && !isStamp(f, d) && tokenPositions(sentenceAt(f, d.index, d.end), claim.company).length > 0)
-      corro.push({ url: u, domain: registrable(s.final_url ?? s.url), sentence: m ? sentenceAt(f, m.index, m.end) : null })
+      const sentences = [...new Set(datesIn(f).filter(d => d.iso === claim.event.date && !isStamp(f, d)).map(d => sentenceAt(f, d.index, d.end)).filter(x => tokenPositions(x, claim.company).length > 0).map(norm))]
+      corro.push({ url: u, domain: registrable(s.final_url ?? s.url), sentences })
     }
     const parent = corro.map((_, i) => i)
     const find = (i: number): number => parent[i] === i ? i : (parent[i] = find(parent[i]))
     const canon = (u: string) => snaps.canonical.get(u) ?? normalizeUrl(u)
     for (let i = 0; i < corro.length; i++) for (let j = i + 1; j < corro.length; j++) {
       const a = corro[i], b = corro[j]
-      if ((a.domain && a.domain === b.domain) || (a.sentence && a.sentence === b.sentence) || canon(a.url) === canon(b.url) || canon(a.url) === normalizeUrl(b.url) || canon(b.url) === normalizeUrl(a.url)) parent[find(i)] = find(j)
+      if ((a.domain && a.domain === b.domain) || a.sentences.some(x => b.sentences.includes(x)) || canon(a.url) === canon(b.url) || canon(a.url) === normalizeUrl(b.url) || canon(b.url) === normalizeUrl(a.url)) parent[find(i)] = find(j)
     }
-    const origins = new Set(corro.map((_, i) => find(i))).size
+    const groups = new Map<number, string[]>()
+    corro.forEach((c, i) => { const r = find(i); groups.set(r, [...(groups.get(r) ?? []), ...c.sentences]) })
+    const origins = groups.size
 
     const by = (ids: string[]) => checks.filter(c => ids.includes(c.check))
     const fromProblems = (prefixes: string[]): Part[] => relevant.filter(p => prefixes.some(x => p.startsWith(x))).map(p => ({ verdict: 'unknown' as V, why: p }))
@@ -264,8 +294,7 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
 
     const placeCheck = by(['place_on_source'])[0]
     const placePart: Part | null = place ? (place.problem ? { verdict: 'unknown', why: place.problem } : placeCheck ? { verdict: placeCheck.status, why: `place_on_source: ${placeCheck.reason}` } : { verdict: 'unknown', why: `${place.geo} could not be checked (no readable event source)` }) : null
-    const eventSentences = corro.map(c => c.sentence).filter((s): s is string => !!s)
-    const constraints = field(constraintVerdict(brief.constraints, placePart, { claimCompany: claim.company || item.company, eventSentences }), 'no constraint')
+    const constraints = field(constraintVerdict(brief.constraints, placePart, { claimCompany: claim.company || item.company, origins: [...groups].map(([root, sentences]) => ({ root, sentences })), min }), 'no constraint')
 
     const datePart = [...asParts(by(['event_date_on_source', 'sources_agree', 'quote_on_source'])), ...fromProblems(['event', 'quotes'])]
     if (wf?.status === 'fail') datePart.push({ verdict: 'fail', why: `claim_well_formed: ${wf.reason}` })
@@ -282,7 +311,7 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
       identity: identity.verdict as Verdict, constraints: constraints.verdict as Verdict, event_date: event_date.verdict as Verdict, contact: contact.verdict as Verdict,
       record: {
         evaluator: `${EVALUATOR_NAME}@${EVALUATOR_VERSION}`, signal_tier: origins >= min && event_date.verdict === 'pass' ? 'corroborated' : origins >= 1 ? 'source-checked' : 'unverified',
-        independent_origins: origins, corroborating_sources: corro.map(c => c.url),
+        independent_origins: origins, corroborating_sources: corro.map(c => c.url), verifier_found_sources: found.filter(u => corroborating.includes(u)),
         why: Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, f.why.slice(0, 8).map(w => w.slice(0, 300))])),
         checks, claim_problems: problems, claim_fields_dropped: dropped,
       },

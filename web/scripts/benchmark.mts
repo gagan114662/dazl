@@ -27,7 +27,7 @@
 // JSON, a run that is not a dazl-benchmark-run, no frozen task set for its version, a duplicate or unknown task id,
 // ... see inputProblems in lib/benchmark/scorecard.ts) prints every problem, writes no card and exits 2: it is never
 // scored partially.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluateThresholds, fromScoreboardResult, inputProblems, problemSummary, regressions, scorecard, scorecardMarkdown, type BenchmarkRun, type InvalidScorecard, type Scorecard, type TaskSet, type ThresholdSet } from '../lib/benchmark/scorecard.ts'
 import { batchFromFile, batchMarkdown, BenchmarkRunError, memoryStore, runBatch, type BatchFile, type BatchResult, type StoredRun } from '../lib/benchmark/runner.ts'
@@ -54,6 +54,9 @@ const scoredCard = (f: string): Scorecard => {
   if (c.status !== 'scored') return die(`invalid_input: ${f} is not a scored card (status ${JSON.stringify(c.status)})`)
   return c
 }
+// A recording or snapshots file is read whole: one over this size is refused before it is parsed.
+const MAX_INPUT_BYTES = 64 * 1024 * 1024
+const bounded = (f: string): unknown => { let n = 0; try { n = statSync(f).size } catch (e) { return die(`invalid_input: cannot read ${f}: ${(e as Error).message}`) } return n > MAX_INPUT_BYTES ? die(`invalid_input: ${f} is ${n} bytes, over the ${MAX_INPUT_BYTES}-byte limit`) : json<unknown>(f) }
 const cmd = process.argv[2]
 
 if (cmd === 'scorecard') {
@@ -124,7 +127,7 @@ if (cmd === 'scorecard') {
     // a recorded batch: the committed task set, the committed adapter registry, and files named relative to the batch
     committedSet = committedOf(String(batch.task_set_version))
     const base = path.dirname(path.resolve(batchFile))
-    try { const rb = recordedBatch(batch, { registry: json<unknown>(path.join(dir, 'adapters.json')), committedSet, read: f => json<unknown>(path.resolve(base, f)) }); opts = rb.options; notes = rb.notes } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}; nothing run`); throw e }
+    try { const rb = recordedBatch(batch, { registry: json<unknown>(path.join(dir, 'adapters.json')), committedSet, read: f => bounded(path.resolve(base, f)) }); opts = rb.options; notes = rb.notes } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}; nothing run`); throw e }
   } else {
     if (!isObj(batch) || !isObj(batch.task_set)) die('invalid_input: the batch file has no task_set')
     try { opts = batchFromFile(batch) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}`); throw e }

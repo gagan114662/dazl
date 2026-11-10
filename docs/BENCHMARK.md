@@ -147,7 +147,8 @@ product.
 fails that task with the reason and reserves its full cost limit; an output row that is not an object or has no company is
 dropped and counted in the task's reason, and at most 50 rows per task are scored (`MAX_ITEMS_PER_TASK`). A system whose
 adapter was available but that started no task (every task unsupported, or not run on the batch budget) is reported
-`not_started` with the reason, never as a system that ran and found nothing; a failed attempt still counts as having run.
+`not_started` with the reason, never as a system that ran and found nothing. A task whose adapter was called counts as
+attempted even when it then hit a login wall or paywall, so its time, cost and interventions stay visible.
 
 ### The independent evaluator (`web/lib/benchmark/verified-evaluator.ts`)
 
@@ -158,7 +159,7 @@ rationale or score. It makes no network or model call. A lead is validated only 
 | field | passes only when |
 | --- | --- |
 | identity | the event source names the company and is on its domain or names the domain next to it |
-| constraints | the brief's place (from the brief, never the producer) is next to the company, and each requested event kind (with its roles or funding round) is worded in the sentence that dates the event; a required name is in the company name. Segment, headcount and exclusions have no deterministic check: `unknown` |
+| constraints | the brief's place (from the brief, never the producer) is next to the company, and each requested event kind is stated whole (its wording, unhedged, with a requested role or funding round) in one sentence that dates the event, on at least `min_independent_origins` origins; a required name is in the company name. Segment, headcount and exclusions have no deterministic check: `unknown` |
 | event_date | the day is stated next to the company, inside the window, not in the future, not announced-only, not only a publication stamp, no source dates it differently, every quote is verbatim, AND at least `min_independent_origins` (default 2) distinct origins state it. One registrable domain is one origin; a syndicated copy (the same event sentence, or a rel=canonical to the other page) is the same origin |
 | contact | a published email route on the company's domain, printed on the cited page, not a hiring inbox; a named person must be current at the company on the cited page |
 
@@ -166,8 +167,10 @@ So "high intent" is independently corroborated evidence: a list of companies tha
 never validated, and neither is an event only the producer's text asserts. Each judgement records every check, the
 number of independent origins, a `signal_tier` (`corroborated`, `source-checked`, `unverified`) and why each field is
 not a pass. A malformed or conflicting snapshot is dropped and listed in the evaluator config in the manifest; the
-checks that needed it are `unknown`. `test/fixtures/benchmark/synthetic-verified-batch.json` is a SYNTHETIC batch judged
-this way (invented companies and pages).
+checks that needed it are `unknown`. Besides the pages a producer cites, the snapshots file can list pages the verifier
+found itself for a company (`found_by_verifier`, keyed by the company's registrable domain): they can corroborate an event
+that the producer cited a source for, the same way for every system. Its hash covers only the bounded, parsed content.
+`test/fixtures/benchmark/synthetic-verified-batch.json` is a SYNTHETIC batch judged this way (invented companies and pages).
 
 ### Recorded batches (`web/lib/benchmark/recorded.ts`)
 
@@ -183,9 +186,18 @@ and the verifier's snapshots, all named relative to the batch file:
 - **Every system is in every batch.** The committed registry `scoreboard/benchmark/adapters.json` lists dazl, Pancake,
   Gojiberry and the plain-ChatGPT baseline. A system other than dazl needs an owner authorization in that file, quoted from
   Gagan's own words (`granted_by` gagan, `granted_at` with a time, `owner_words` verbatim, `channel`, a `scope` naming
-  the system, a `max_usd` cap); a GitHub comment on the shared login is not one. Without it the system is `unavailable`
-  with its reason, and a recording supplied for it is ignored (the run output says so). Today none of the three is
-  authorized.
+  the system, a `max_usd` cap, and the one `task_set_version` and `recording_sha256` it covers); a GitHub comment on the
+  shared login is not one. Without it the system is `unavailable` with its reason, and a recording supplied for it is
+  ignored (the run output says so). With it, a different recording, another task set or a worst-case exposure over the
+  cap (every replayed task at its recorded cost, or at the full task limit when unknown) is still `unavailable`. Today
+  none of the three is authorized.
+- **`min_independent_origins` is required** in a recorded batch (2 = independently corroborated, 1 = source-checked):
+  it is the batch's stated choice, never a default. Today a Dazl recording cites one event page per lead, so at 2 its
+  leads validate only when another origin is in the snapshots (`found_by_verifier`).
+- **Snapshots must be attributed:** a recorded batch refuses a snapshots file without `captured_by` and `captured_at`,
+  or one whose `captured_by` names a system under test. The attribution is a recorded string, not a signature: the
+  verifier's own fetching service (#395) is what will produce these files.
+- Each recording or snapshots file is read whole and refused over 64 MB.
 - **Recordings are checked whole** (`dazl-benchmark-recording` v1): the committed frozen task set only, its own system
   name and task set version, a valid config. A malformed task inside fails that task only. The recording's sha256 is in
   the system's config, so a different recording is a different batch.
