@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import { connection } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { getMasterKey } from '@/lib/secrets'
-import { isClaimToken, readPublicClaim, type ClaimSnapshot } from '@/lib/scan/preview-claim'
+import { isClaimToken, readPublicClaim } from '@/lib/scan/preview-claim'
 import PreviewCta from './cta'
 
 // The public proof page a prospect's link opens (#416). It serves only the stored stripped artifact of its own run:

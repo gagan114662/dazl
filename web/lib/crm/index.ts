@@ -165,7 +165,12 @@ export async function pushLead(cfg: CrmConfig, lead: CrmLead, fetchImpl?: typeof
     accept: null,
     maxBytes: 64_000,
     timeoutMs: TIMEOUT,
+    followRedirects: false,
   })
+  // A 3xx is never followed: the payload and headers go only to the URL the tenant approved (#926). The original
+  // endpoint did receive the full POST before answering 3xx, so whether it kept the lead is unknown, not failed.
+  // The webhook takes no claim, so this blocks nothing and nothing is retried automatically.
+  if ('error' in r && r.redirect) throw new CrmPushError(`Webhook answered with a redirect (${r.status}); dazl does not follow webhook redirects, so the lead was not sent anywhere else. Check whether your endpoint received it, and update the webhook URL to its final address.`, 'unknown')
   // The webhook protocol is the tenant's own: any 2xx (a 204 with no body included) is delivery, and no record id is
   // expected. Its errors stay plain failures, as before.
   if ('error' in r) throw new Error(r.error === 'not_public' ? 'Webhook address is not public' : r.status ? `Webhook ${r.status}` : `Webhook ${r.error}`)

@@ -105,7 +105,7 @@ export function normalizeResearch(raw: unknown): IcpResearch | undefined {
 // groups, the typed answer - with their EXACT offer bindings. Merging model research into it could only move,
 // collapse or truncate those bindings, so there is no merge: the prior block replaces any fresh research outright.
 // Presence is not a review: no status changes here; only the review editor's explicit submit does that.
-export function guardedPreviewResearch(fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
+export function guardedPreviewResearch(_fresh: IcpResearch | undefined, prior: IcpResearch): IcpResearch {
   return prior
 }
 
@@ -171,6 +171,52 @@ function clean(v: unknown, max: number): string {
 function list(v: unknown, n: number): string[] {
   if (!Array.isArray(v)) return []
   return v.map(x => clean(x, caps.item)).filter(Boolean).slice(0, n)
+}
+
+// #917: explicit, client-supplied criteria (a reviewed/edited profile posted to a scan) are a person's constraints, not
+// model output. normalizeIcp still bounds them (store/prompt safety), but silently slicing a 7th exclusion or the tail of
+// a long item would widen the scan behind the person's back. icpLoss names every place normalizeIcp WOULD drop or cut
+// explicit input, so admission can refuse it with field/item detail before anything is reserved, queued or counted.
+// Model output keeps the old bounded sanitation (parseIcp/normalizeIcp), unchanged.
+export type IcpLoss =
+  | { field: 'summary'; kind: 'too_long'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'too_many_items'; limit: number; actual: number }
+  | { field: IcpListField; kind: 'item_too_long'; index: number; limit: number; actual: number }
+  | { field: IcpListField; kind: 'wrong_type'; expected: 'array'; actual: string }
+  | { field: IcpListField; kind: 'item_not_text'; index: number; actual: string }
+  | { field: 'window_days' | 'country' | 'language'; kind: 'invalid_value'; actual: string }   // a stated window or market that normalizeIcp would silently drop
+export type IcpListField = 'who' | 'industries' | 'sizes' | 'where' | 'signals' | 'exclude'
+const squash = (v: unknown): string => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
+export function icpLoss(raw: unknown): IcpLoss[] {
+  if (!raw || typeof raw !== 'object') return []
+  const r = raw as Record<string, unknown>, out: IcpLoss[] = []
+  const summary = squash(r.summary)
+  if (summary.length > caps.summary) out.push({ field: 'summary', kind: 'too_long', limit: caps.summary, actual: summary.length })
+  const typeOf = (x: unknown) => x === null ? 'null' : Array.isArray(x) ? 'array' : typeof x
+  for (const field of ['who', 'industries', 'sizes', 'where', 'signals', 'exclude'] as const) {
+    const v = r[field]
+    if (v === undefined || v === null) continue   // absent: the criterion was never given
+    // A list field of the wrong shape (a string, an object...) is normalized to [] - an explicit criterion silently erased. Refuse it by name.
+    if (!Array.isArray(v)) { out.push({ field, kind: 'wrong_type', expected: 'array', actual: typeOf(v) }); continue }
+    let kept = 0
+    v.forEach((raw, index) => {   // index is the position in the array the caller sent
+      if (raw === undefined || raw === null) return   // an empty slot is not a criterion
+      if (typeof raw !== 'string') { out.push({ field, kind: 'item_not_text', index, actual: typeOf(raw) }); return }
+      const t = squash(raw)
+      if (!t) return   // blanks are not criteria: dropping them loses nothing
+      kept++
+      if (t.length > caps.item) out.push({ field, kind: 'item_too_long', index, limit: caps.item, actual: t.length })
+    })
+    if (kept > caps[field]) out.push({ field, kind: 'too_many_items', limit: caps[field], actual: kept })
+  }
+  // A stated recency window or market that normalizeIcp would drop (out of range, fractional, a string, not an ISO country, not a 2-letter
+  // language) widens the scan behind the person's back, so it is refused by name. Absent, null and "" still mean "not given".
+  const given = (x: unknown) => x !== undefined && x !== null && !(typeof x === 'string' && x.trim() === '')
+  const shown = (x: unknown) => typeof x === 'string' ? JSON.stringify(x.slice(0, 20)) : typeof x === 'number' ? String(x) : typeOf(x)
+  if (given(r.window_days) && !(typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365)) out.push({ field: 'window_days', kind: 'invalid_value', actual: shown(r.window_days) })
+  if (given(r.country) && isoCountry(r.country) === null) out.push({ field: 'country', kind: 'invalid_value', actual: shown(r.country) })
+  if (given(r.language) && !(typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()))) out.push({ field: 'language', kind: 'invalid_value', actual: shown(r.language) })
+  return out
 }
 
 // The country code goes to the search provider as its market. Models often write "UK" for the United Kingdom, which is
@@ -334,6 +380,15 @@ export function keepStatedFundingStage(query: string, icp: Icp): Icp {
 // Fallback when inference is not possible: the request itself is the profile.
 export function fallbackIcp(query: string): Icp {
   return { summary: clean(query, caps.summary), who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+}
+
+// #917: the fallback profile's summary holds at most caps.summary characters of a request MAX_QUERY allows, so a long
+// request's tail is NOT in the profile. Say so (the preview shows it) instead of implying every constraint survived.
+export type FallbackCoverage = { complete: true } | { complete: false; kept_chars: number; request_chars: number; dropped: string }
+export function fallbackCoverage(query: string): FallbackCoverage {
+  const full = squash(query)
+  if (full.length <= caps.summary) return { complete: true }
+  return { complete: false, kept_chars: caps.summary, request_chars: full.length, dropped: full.slice(caps.summary) }
 }
 
 // Uses the tenant's own provider and key. Returns the ICP and whether the model made it.

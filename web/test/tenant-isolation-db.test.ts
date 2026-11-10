@@ -11,6 +11,7 @@ import { applyStripeEvent, createCheckoutUrl, createPortalUrl } from '../lib/bil
 import { readPlan } from '../lib/plans.ts'
 import { rateLimit } from '../lib/rate-limit.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 
 import { NOT_DIRECT, TENANT_COLUMNS } from './helpers/tenant-tables.ts'
 
@@ -49,7 +50,9 @@ bothEngines("sessions and sign-in: each token resolves only to its own tenant; o
   await createPasswordUser(userRow('B', 'b@example.test'), db)
   // B cannot take A's email (and so A's account)
   assert.equal(await createPasswordUser({ ...userRow('B2', 'a@example.test') }, db), 'exists')
-  assert.deepEqual(await findPasswordUser('a@example.test', db), { id: 'A', password_hash: 'hash-A', salt: 'salt-A', email_verified_at: null })
+  const foundA = await findPasswordUser('a@example.test', db)
+  assert.deepEqual({ ...foundA, email_confirmation_required: Number(foundA?.email_confirmation_required) }, { id: 'A', password_hash: 'hash-A', salt: 'salt-A', email_verified_at: null, email_confirmation_required: 0 })
+  await confirmEmail(db, 'A', 'B')
   const ta = await createSession('A', db), tb = await createSession('B', db)
   assert.equal((await getSessionUser(ta, db))?.tenantId, 'A')
   assert.equal((await getSessionUser(tb, db))?.tenantId, 'B')

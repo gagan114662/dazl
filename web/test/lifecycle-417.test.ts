@@ -17,7 +17,7 @@ import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { acceptAutoSequencePolicy, AUTO_SEQUENCE_POLICY, enrollColdSequence, runSequences } from '../lib/outreach/sequences.ts'
 import { GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, drainVerifiedPendingLifecycle, conversionBlockedNow, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
+import { recordLifecycleEvent, queuePendingLifecycle, activateLifecycleFor, conversionBlockedNow, paymentAccountFor, conversionEventFor } from '../lib/outreach/lifecycle.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { saveSettings, createDraft, approve, sendMessage, type Deps } from '../lib/outreach/service.ts'
 

@@ -248,3 +248,24 @@ bothEngines('review: while the designated session is reserved for the transport,
   await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
   assert.equal(seen.length, 1, 'another tenant is not affected')
 })
+
+// ---- #192 review: the cooldown is checked before EVERY reservation, in both consumers ----
+bothEngines('COOLDOWN MID-RUN: a run in flight when another run is throttled sends no second request; the shared hourly budget is not spent', async ({ db }) => {
+  await ready(db); const seen: string[] = []
+  // Request 1 of run A succeeds, but while it is in flight run B (same tenant) is throttled: B's stop audit lands before A's next reservation.
+  const a: LinkedInTransport = { fetch: async r => { seen.push(r.query); await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES ('other-run-stop', 'A', 'adv:linkedin', 'x', 'stopped_throttled', 0, ?)", [Math.floor(Date.now() / 1000)]); return ok('first-person') } }
+  const r = await collectLinkedInPeople(db, 'A', 'jA', ICP, { transport: a, env: ENV, now: Math.floor(Date.now() / 1000) })
+  assert.equal(seen.length, 1, 'no second request inside the new cooldown'); assert.equal(r.length, 1, 'the first (already made) answer is kept')
+  assert.ok((await audits(db)).includes('linkedin-people:cooldown')); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin'), 1, 'only the one reservation made before the stop')
+})
+
+bothEngines('COOLDOWN: the advanced post search (collectAdvanced) also refuses LinkedIn inside a people-reader cooldown, with no reservation and no worker call', async ({ db }) => {
+  await ready(db); await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES ('stop-1', 'A', 'adv:linkedin', 'x', 'stopped_challenge', 0, ?)", [Math.floor(Date.now() / 1000)])
+  let worker = 0
+  const out = await collectAdvanced(db, 'A', 'j', ['linkedin'], 'q', { env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } })
+  assert.deepEqual(out, []); assert.equal(worker, 0, 'the worker is not called'); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin'), 0, 'no budget spent')
+  assert.ok((await audits(db)).includes('linkedin:cooldown'))
+  // Control: another tenant, or this tenant after the cooldown, is not blocked.
+  await ready(db, 'B'); await collectAdvanced(db, 'B', 'j', ['linkedin'], 'q', { env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 1, 'control: an unaffected tenant reaches the worker')
+  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'q', { env: ADV_ENV, now: Math.floor(Date.now() / 1000) + COOLDOWN_S + 60, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 2, 'control: after the cooldown it runs again')
+})

@@ -9,6 +9,7 @@ import { resolveUser } from '../lib/auth-google.ts'
 import { ACTIONS, BACKFILL_SQL, ROLES, can, createPersonalWorkspace } from '../lib/workspaces.ts'
 import type { Db } from '../lib/db/client.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 
 const userRow = (id: string, email: string) => ({ id, email, name: id, business_name: `Biz ${id}`, password_hash: `hash-${id}`, salt: `salt-${id}` })
 const memberships = (db: Db, id: string) => db.all<{ tenant_id: string; role: string }>('SELECT tenant_id, role FROM memberships WHERE member_id = ? ORDER BY tenant_id', [id])
@@ -17,6 +18,7 @@ const setActive = (db: Db, token: string, tenant: string | null) => db.run('UPDA
 
 bothEngines('signup makes the personal workspace: id = user id, the user its owner; the session acts there', async ({ db }) => {
   assert.equal(await createPasswordUser(userRow('A', 'a@example.test'), db), 'created')
+  await confirmEmail(db, 'A')
   assert.deepEqual(await db.get('SELECT id, name, kind, created_by FROM organizations WHERE id = ?', ['A']), { id: 'A', name: 'Biz A', kind: 'personal', created_by: 'A' })
   assert.deepEqual(await memberships(db, 'A'), [{ tenant_id: 'A', role: 'owner' }])
   const u = await getSessionUser(await createSession('A', db), db)
@@ -36,7 +38,7 @@ bothEngines('Google sign-up makes the personal workspace in the same transaction
 })
 
 bothEngines('existing accounts: the backfill gives each its own workspace, once, and never re-adds a founder who left', async ({ db }) => {
-  await legacyUser(db, 'L1'); await legacyUser(db, 'L2')
+  await legacyUser(db, 'L1'); await legacyUser(db, 'L2'); await confirmEmail(db, 'L1', 'L2')
   for (const s of BACKFILL_SQL) await db.run(s)
   assert.deepEqual(await memberships(db, 'L1'), [{ tenant_id: 'L1', role: 'owner' }])
   assert.deepEqual(await db.get('SELECT name, kind, created_by, created_at FROM organizations WHERE id = ?', ['L2']), { name: 'Old L2', kind: 'personal', created_by: 'L2', created_at: 1_700_000_000 })
@@ -52,8 +54,8 @@ bothEngines('existing accounts: the backfill gives each its own workspace, once,
 })
 
 bothEngines('an account from before workspaces that signs in before any backfill gets its own workspace, nothing else', async ({ db }) => {
-  await legacyUser(db, 'L')
-  await createPasswordUser(userRow('B', 'b@example.test'), db)
+  await legacyUser(db, 'L'); await confirmEmail(db, 'L')
+  await createPasswordUser(userRow('B', 'b@example.test'), db); await confirmEmail(db, 'B')
   const u = await getSessionUser(await createSession('L', db), db)
   assert.equal(u?.tenantId, 'L'); assert.equal(u?.role, 'owner')
   assert.deepEqual(await memberships(db, 'L'), [{ tenant_id: 'L', role: 'owner' }])
@@ -61,8 +63,8 @@ bothEngines('an account from before workspaces that signs in before any backfill
 })
 
 bothEngines("a chosen workspace counts only while the membership exists: removal ends access on the next request", async ({ db }) => {
-  await createPasswordUser(userRow('A', 'a@example.test'), db)
-  await createPasswordUser(userRow('B', 'b@example.test'), db)
+  await createPasswordUser(userRow('A', 'a@example.test'), db); await confirmEmail(db, 'A')
+  await createPasswordUser(userRow('B', 'b@example.test'), db); await confirmEmail(db, 'B')
   await db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at, added_by) VALUES ('A', 'B', 'viewer', 1, 'A')")
   const tb = await createSession('B', db)
   assert.equal((await getSessionUser(tb, db))?.tenantId, 'B', 'default: the personal workspace')
@@ -76,8 +78,8 @@ bothEngines("a chosen workspace counts only while the membership exists: removal
 })
 
 bothEngines('a session pointed at a workspace it has no membership in gets nothing', async ({ db }) => {
-  await createPasswordUser(userRow('A', 'a@example.test'), db)
-  await createPasswordUser(userRow('B', 'b@example.test'), db)
+  await createPasswordUser(userRow('A', 'a@example.test'), db); await confirmEmail(db, 'A')
+  await createPasswordUser(userRow('B', 'b@example.test'), db); await confirmEmail(db, 'B')
   const tb = await createSession('B', db)
   for (const forged of ['A', 'nope', '']) {
     await setActive(db, tb, forged)
@@ -87,9 +89,9 @@ bothEngines('a session pointed at a workspace it has no membership in gets nothi
 })
 
 bothEngines('a member with no personal workspace acts in their oldest membership', async ({ db }) => {
-  await createPasswordUser(userRow('A', 'a@example.test'), db)
-  await createPasswordUser(userRow('C', 'c@example.test'), db)
-  await createPasswordUser(userRow('B', 'b@example.test'), db)
+  await createPasswordUser(userRow('A', 'a@example.test'), db); await confirmEmail(db, 'A')
+  await createPasswordUser(userRow('C', 'c@example.test'), db); await confirmEmail(db, 'C')
+  await createPasswordUser(userRow('B', 'b@example.test'), db); await confirmEmail(db, 'B')
   await db.run("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ('C', 'B', 'admin', 20), ('A', 'B', 'operator', 10)")
   await db.run("DELETE FROM memberships WHERE tenant_id = 'B' AND member_id = 'B'")
   const u = await getSessionUser(await createSession('B', db), db)

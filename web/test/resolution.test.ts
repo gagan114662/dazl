@@ -53,7 +53,7 @@ test('site-crawl attempts are reported in tried: a held lead never reads "nothin
 test('wrong company / contact / stale each carry their own specific reason', () => {
   const { db, job, lead, enr } = seed()
   const a = lead({ company: 'Querio', reason: 'no_sales_hiring_evidence', date: daysAgo(10) }); enr(a, 'contact_rejected', 'contact rejected: location mismatch', 'contact_location_mismatch')
-  const b = lead({ company: 'Old Co', domain: 'old.example', date: daysAgo(200), reason: 'outside_window' })
+  lead({ company: 'Old Co', domain: 'old.example', date: daysAgo(200), reason: 'outside_window' })
   const c = lead({ company: 'Half Co', domain: 'half.example', date: daysAgo(5) }); enr(c, 'person', 'Sam, CEO')
   const d = lead({ company: 'Refused Co', domain: 'ref.example', date: daysAgo(5) }); enr(d, 'contact_rejected', 'x', 'contact_domain_mismatch')
   const m = new Map(resolveFacts(db, job).map(r => [r.company, r]))

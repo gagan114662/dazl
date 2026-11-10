@@ -27,7 +27,7 @@ for (const [name, p] of Object.entries(providers)) {
   }
 }
 const fetchCalls: string[] = []
-globalThis.fetch = (async (u: unknown, i?: RequestInit) => { fetchCalls.push(String(u)); throw new Error('Unexpected network attempt in sequence-create test') }) as typeof fetch
+globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw new Error('Unexpected network attempt in sequence-create test') }) as typeof fetch
 
 test('route create action bills no provider and stores draft templates', async () => {
   const db = new Database(':memory:')

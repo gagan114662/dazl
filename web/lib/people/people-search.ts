@@ -10,7 +10,7 @@
 import type Database from 'better-sqlite3'
 import { tfSearch, tinyfishEnabled, type SearchHit } from '../search/tinyfish.ts'
 import { addEnrichment } from '../connectors/store.ts'
-import { companyKey, norm } from '../scan/evidence.ts'
+import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'

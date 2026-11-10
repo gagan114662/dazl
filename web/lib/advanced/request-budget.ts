@@ -36,3 +36,12 @@ export async function reserveRequest(db: Db, tenantId: string, connector: string
 export async function requestsInWindow(db: Db, tenantId: string, connector: string, now = Math.floor(Date.now() / 1000)): Promise<number> {
   return Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at > ?', [tenantId, connector, now - WINDOW_S]))?.n ?? 0)
 }
+
+// A tenant-wide stop (throttled / challenge / unauthorised / deadline / contract break) starts a cooldown for the connector. It is a property of the CONNECTOR, not of one consumer, so
+// every consumer (the people reader AND the advanced post search) checks it before EVERY reservation: a run that was already in flight when another run was throttled must not send
+// its next request, and the shared hourly budget must not be spent during the cooldown (#192 review).
+export const COOLDOWN_S = 24 * 3600
+export async function coolingDown(db: Db, tenantId: string, connector: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const r = await db.get<{ at: number }>("SELECT MAX(created_at) AS at FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status LIKE 'stopped_%'", [tenantId, connector])
+  return r?.at != null && now - Number(r.at) < COOLDOWN_S
+}

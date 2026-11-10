@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
-import { createPasswordSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
+import { confirmationPending, createPasswordSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
@@ -11,6 +11,8 @@ import { getDb } from '@/lib/db/client'
 import { activateLifecycleForDb } from '@/lib/outreach/lifecycle'
 import { PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
+import { sendVerification } from '@/lib/email-ownership'
+import { systemMailAvailable } from '@/lib/system-mail'
 
 // Fixed dummy salt/hash so unknown emails cost the same time as known ones.
 const DUMMY_SALT = '00000000000000000000000000000000'
@@ -35,6 +37,15 @@ export async function POST(req: NextRequest) {
     const computed = scryptSync(password, user?.salt ?? DUMMY_SALT, 64)
     const stored = Buffer.from(user?.password_hash ?? '0'.repeat(128), 'hex')
     if (!user || !timingSafeEqual(computed, stored)) return fail()
+    // #357: an account made under the confirmation requirement opens the app only once its owner confirmed its email;
+    // every other account signs in as on main (confirmationPending, lib/auth-db.ts). Only the right password gets this
+    // answer, so it says nothing about the address to anyone else. Each try sends a fresh link (capped per account).
+    if (confirmationPending(user)) {
+      if (!systemMailAvailable()) return NextResponse.json({ error: 'Confirm your email first. We cannot email you a new link right now; try again later.', code: 'email_unverified' }, { status: 403 })
+      const again = await rateLimit(`verify-send:${user.id}`, 3, 60 * 60 * 1000)
+      if (again.ok) await sendVerification(await getDb(), user.id).catch(e => captureError(e, { source: 'route', where: '/api/auth/signin:verify', method: 'POST', requestId: requestIdOf(req) }))
+      return NextResponse.json({ error: 'Confirm your email first: open the newest confirmation link sent to this address, then sign in again. If none has arrived, try again in a little while.', code: 'email_unverified' }, { status: 403 })
+    }
 
     const token = await createPasswordSession(user, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
     if (!token) return fail()

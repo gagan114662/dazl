@@ -3,7 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { createPasswordUser, createSession, getSessionUser } from '../lib/auth-db.ts'
+import { createPasswordUser, createSession, getSessionUser, hashToken } from '../lib/auth-db.ts'
+import { confirmEmail } from './helpers/confirmed.ts'
 import { resolveUser } from '../lib/auth-google.ts'
 import { RESET_TTL_S, VERIFIED_BACKFILL_SQL, VERIFY_TTL_S, emailStatus, isEmailVerified, requestReset, resetPassword, sendVerification, verifyEmail } from '../lib/email-ownership.ts'
 import { reapOutbox, sendSystemMail, setTransportForTests } from '../lib/system-mail.ts'
@@ -67,8 +68,9 @@ bothEngines('forgot password: unknown email sends nothing, a Google account gets
 })
 
 bothEngines('reset: sets the password, proves the email, signs out everywhere, works once; older and expired links fail', async ({ db }) => {
-  await createPasswordUser(user('A'), db); await createPasswordUser(user('B'), db)
+  await createPasswordUser({ ...user('A'), requireConfirmation: true }, db); await createPasswordUser(user('B'), db); await confirmEmail(db, 'B')
   const s1 = await createSession('A', db), s2 = await createSession('A', db), sb = await createSession('B', db)
+  const live = async (t: string) => (await db.get<{ r: number | null }>('SELECT revoked_at AS r FROM sessions WHERE id = ?', [hashToken(t)]))!.r === null
   await requestReset(db, 'a@example.test', NOW - RESET_TTL_S - 1)
   await requestReset(db, 'a@example.test', NOW - 1)
   await requestReset(db, 'a@example.test', NOW)
@@ -77,11 +79,13 @@ bothEngines('reset: sets the password, proves the email, signs out everywhere, w
   assert.equal(await resetPassword(db, expired, next), false)
   assert.equal(await resetPassword(db, older, next), false, 'superseded')
   assert.equal((await db.get<{ h: string }>("SELECT password_hash AS h FROM users WHERE id = 'A'"))!.h, 'old-hash')
-  assert.ok(await getSessionUser(s1, db))
+  assert.ok(await live(s1), 'refused links revoke nothing')
+  assert.equal(await getSessionUser(s1, db), null, '#357: an unconfirmed account has no app access')
   assert.equal(await resetPassword(db, newest, next, NOW), true)
   assert.deepEqual(await db.get("SELECT password_hash, salt FROM users WHERE id = 'A'"), next)
   assert.equal(await isEmailVerified(db, 'A'), true)
-  assert.equal(await getSessionUser(s1, db), null); assert.equal(await getSessionUser(s2, db), null)
+  assert.equal(await live(s1), false); assert.equal(await live(s2), false)
+  assert.equal(await getSessionUser(s1, db), null, 'confirmed now, but the old sessions stay revoked'); assert.equal(await getSessionUser(s2, db), null)
   assert.deepEqual((await db.all<{ r: string }>("SELECT DISTINCT revoke_reason AS r FROM sessions WHERE user_id = 'A'")).map(x => x.r), ['recovery'])
   assert.ok(await getSessionUser(sb, db), "another account's session is untouched")
   assert.equal(await resetPassword(db, newest, { password_hash: 'x', salt: 'y' }), false, 'replay')

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 
-const { claimKeyedJob, runJob, kickRunner, requeueInFlightForShutdown, trackInFlight } = await import('../lib/scan/runner.ts')
+const { claimKeyedJob, kickRunner, requeueInFlightForShutdown, trackInFlight } = await import('../lib/scan/runner.ts')
 const { migrateKeys, saveKey } = await import('../lib/llm/key-store.ts')
 const { migrateScan, createJob, getJob, listLeads } = await import('../lib/scan/store.ts')
 

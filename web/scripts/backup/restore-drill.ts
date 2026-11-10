@@ -68,6 +68,8 @@ if (reportPath) {
         warnings: r.warnings,
         duration_ms: r.durationMs,
         backup: path.basename(r.backupPath),
+        // #911: the exact bytes this drill restored, so a launch gate can bind the report to the backup it names
+        backup_sha256: r.backupSha256Before,
       }
     : {
         tool: 'dazl-restore-drill',

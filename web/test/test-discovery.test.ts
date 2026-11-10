@@ -104,7 +104,7 @@ test('registration parser: adjacent shell operators, comments, quoting, substitu
   assert.deepEqual(explicitlyRegistered(`${BASE} test/one.test.mjs --test-reporter=tap test/two.test.mjs`), ['test/one.test.mjs'])
   // the real package.json script keeps working
   const real = JSON.parse(readFileSync(join(WEB, 'package.json'), 'utf8')).scripts.test
-  assert.deepEqual(explicitlyRegistered(real), [], 'the canonical script today names no extra file')
+  assert.deepEqual(explicitlyRegistered(real), ['test/crm-webhook-unknown-ui.test.mjs'], 'the canonical script names exactly one extra file (#926 webhook unknown UI suite)')
   assert.equal(discovery({ files: ['test/orphan.test.mjs'], script: `${BASE};node x.js test/orphan.test.mjs`, ...FIX }).stranded[0], 'test/orphan.test.mjs')
 })
 

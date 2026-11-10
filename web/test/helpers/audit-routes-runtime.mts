@@ -61,6 +61,7 @@ const read = (token: string, q = ''): Promise<Response> => as(token, () => audit
 
 test("privileged requests leave attributable, redacted events; 'GET /api/workspace/audit' is owners' and admins' only, and scoped to the caller's workspace", async () => {
   for (const id of ['A', 'D', 'O', 'V', 'B']) await createPasswordUser(user(id))
+  raw.prepare("UPDATE users SET email_verified_at = 1").run() // #357: only confirmed accounts have sessions (and checkout needs a proven email)
   // workspace A: owner A, admin D, operator O, viewer V; workspace B: owner B
   raw.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ('A', 'D', 'admin', 1), ('A', 'O', 'operator', 1), ('A', 'V', 'viewer', 1)").run()
   const t: Record<string, string> = {}

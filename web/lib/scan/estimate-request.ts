@@ -2,17 +2,17 @@
 // decision (own key vs shared trial), and the same caps, so the estimate shown and the run that follows cannot disagree.
 // Read-only: nothing is queued, counted or reserved.
 import { cleanText } from '../validate.ts'
-import { MAX_QUERY, normalizeIcp } from './icp.ts'
+import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { ownerMaxUsd } from './runner.ts'
+import { scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { priceOf } from '../llm/spend-guard.ts'
 import { ownerLimits, ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
-export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string }
+export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string; message?: string; loss?: IcpLoss[] }
 // What the owner's shared spend pools (tenant_spend_pools, the same store the guard reserves in) have reserved this UTC day and month, so the estimate agrees with the guard.
 // A read failure is NOT zero: it is reported as unknown and the estimate refuses to be confirmed.
 // A pending-settlement marker that is stale or marked failed means the pool refuses every reservation (unsettled); a
@@ -40,23 +40,26 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(supplied ? b.budget : undefined, supplied)
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
   const query = cleanText(b.query, MAX_QUERY)
+  // #917: the same refusal POST /api/scan applies, so a profile is never priced and confirmed only to be refused at run time.
+  const lost = b.icp && typeof b.icp === 'object' ? icpLoss(b.icp) : []
+  if (lost.length) return { ok: false, status: 400, error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }
   const icp = b.icp === undefined || b.icp === null ? null : normalizeIcp(b.icp)
   const pool = await pools(ctx.db, ctx.tenantId)
+  // The model the run will really call, so the rows, the total, the verdict and the confirmation price THAT model (#851): an
+  // own key's configured model (keyedModel), or for a trial run the operator's Anthropic key (lib/scan/trial.ts operatorKey is
+  // Anthropic-only). An own key whose model could not be read is unknown, never silently the default model.
+  const own = ctx.hasOwnKey ? (typeof ctx.model === 'string' && ctx.model.trim() ? ctx.model : null) : null
+  const anthropicModel = anthropicProvider.configuredModel!()
+  // Every model call of a run under a limit goes through a guard that prices it: the run's max_usd, the owner's day/month
+  // pool, and ALWAYS for a trial run (runner.ts: the trial's reserve is the job guard's limit).
+  const limited = !ctx.hasOwnKey || nb.budget?.max_usd != null || ownerLimits(ctx.tenantId) !== null
   const estimate = estimateRun({
     budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
+    model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     ownerCapUsd: ownerMaxUsd(ctx.tenantId), ownerMonthCapUsd: ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', ctx.tenantId, process.env),
   })
-  // A run under a spending limit (this run's max_usd, or the owner's day/month pool) only reserves for a model with a listed price; any other model
-  // is refused at its first call (model_unpriced). Say so BEFORE launch, instead of letting the run start and stop.
-  const limited = nb.budget?.max_usd != null || ownerLimits(ctx.tenantId) !== null
-  if (ctx.hasOwnKey && limited && ctx.model && !priceOf(ctx.model)) {
-    estimate.verdict = {
-      ok: false, reason: 'model_unpriced', warning: null,
-      message: `Your key's model (${ctx.model}) has no listed price in dazl yet, so a run under a spending limit cannot reserve for it and would stop at its first model call. Nothing was started or charged.`,
-      change: ['Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)', 'Or use an Anthropic key (claude-sonnet-4-5 is priced)'],
-    }
-  }
+  // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
   return { ok: true, estimate }
 }

@@ -12,11 +12,13 @@ export function mapUpstreamStatus(status: number): 'ok' | 'throttled' | 'unautho
   return 'error'
 }
 
+// How long an aborted in-flight call may take to settle, and how long we watch afterwards for a late request. Exported so tests can use short stubs.
+export const IN_FLIGHT_SETTLE_MS = 250, IN_FLIGHT_WATCH_MS = 60
 export interface ContractReport { ok: boolean; failures: string[] }
 // The checks a transport must pass (run against a stubbed upstream that counts the requests it actually receives):
 //   - one fetch() = exactly one upstream request (no pagination, retry or fan-out inside a call)
 //   - at most maxItems items; every url is a public profile URL; no field beyond url/title/quote/date
-//   - it honours the abort signal (stops and does not keep requesting after abort)
+//   - it honours the abort signal, both when already raised AND while a call is in flight (stops, settles promptly, makes no further upstream request after the abort)
 export async function checkTransportContract(make: (upstream: { requests: number }) => LinkedInTransport): Promise<ContractReport> {
   const failures: string[] = []
   const req = (signal: AbortSignal): TransportRequest => ({ kind: 'people', query: 'HR manager Ohio', tenantId: 'T', maxItems: MAX_ITEMS, signal })
@@ -38,5 +40,17 @@ export async function checkTransportContract(make: (upstream: { requests: number
   const up2 = { requests: 0 }
   await make(up2).fetch(req(aborted.signal)).catch(() => undefined)
   if (up2.requests > 0) failures.push('made an upstream request after the abort signal was raised')
+  // 3. honours an abort raised WHILE the call is running (the hard-deadline case): the check above only covers a signal aborted before fetch began, so a transport that tests
+  //    `signal.aborted` once on entry and then ignores later aborts would pass it. Start the call, let it get going, abort, then require that it settles promptly and that the
+  //    upstream request count does not grow after the abort (no later request begins). A call that already finished before the abort proves nothing either way and is not failed.
+  const up3 = { requests: 0 }, inflight = new AbortController()
+  let settled = false
+  const running = make(up3).fetch(req(inflight.signal)).then(() => undefined, () => undefined).then(() => { settled = true })
+  await new Promise(r => setTimeout(r, 5))
+  const atAbort = up3.requests; inflight.abort()
+  await Promise.race([running, new Promise(r => setTimeout(r, IN_FLIGHT_SETTLE_MS))])
+  if (!settled) failures.push(`still running ${IN_FLIGHT_SETTLE_MS} ms after the abort signal was raised mid-call`)
+  await new Promise(r => setTimeout(r, IN_FLIGHT_WATCH_MS))
+  if (up3.requests > atAbort) failures.push('made an upstream request after the abort signal was raised mid-call')
   return { ok: failures.length === 0, failures }
 }
