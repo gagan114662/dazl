@@ -1,0 +1,40 @@
+# One-off: builds the Next.js output for production on an arm64 runner (the staging box cannot build). Runs only on ci/prod-prebuilt-* branches.
+name: prod-prebuilt
+on:
+  push:
+    branches: ['ci/prod-prebuilt-*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0fb12cdc51af529128598b20083711fbeccf3d5b
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build (production settings, no secrets)
+        working-directory: web
+        env:
+          PUBLIC_BASE_URL: https://dazl.ai
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          npm ci --no-audit --no-fund --loglevel=error
+          echo "0fb12cdc51af529128598b20083711fbeccf3d5b" > .build-commit
+          NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          rm -rf .next/cache
+          tar -czf ../prod-next-0fb12cdc.tgz .next .build-commit
+          tar -czf ../prod-modules-0fb12cdc.tgz node_modules
+          ls -la ../staging-*.tgz
+          node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
+          sha256sum ../prod-next-0fb12cdc.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prod-next-0fb12cdc
+          path: |
+            prod-next-0fb12cdc.tgz
+            prod-modules-0fb12cdc.tgz
+          retention-days: 3
