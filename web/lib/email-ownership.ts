@@ -84,6 +84,19 @@ export async function sendVerification(db: Db, userId: string, now = nowS()): Pr
   return true
 }
 
+// Sign-up with an address that already has an account (#357): the caller gets the same answer as for a new address, and
+// the account's owner gets this note instead. Nothing about the account changes and no link that acts on it is sent;
+// the owner signs in, resets the password, or uses Google. Unknown address: nothing (the caller made it a new account).
+export async function sendSignupNotice(db: Db, email: string): Promise<boolean> {
+  const u = await db.get<{ id: string; email: string; g: number | null }>(
+    "SELECT u.id, u.email, (SELECT 1 FROM oauth_identities o WHERE o.user_id = u.id AND o.provider = 'google') AS g FROM users u WHERE u.email = ?", [email])
+  if (!u) return false
+  const how = u.g ? `sign in with "Continue with Google" at ${base()}/sign-in` : `sign in at ${base()}/sign-in, or reset your password at ${base()}/reset`
+  await sendSystemMail(db, { userId: u.id, to: u.email, subject: 'Someone tried to sign up to dazl with your email',
+    text: `Someone tried to create a dazl account with this email address, which already has one. Nothing about your account changed.\n\nIf it was you, ${how}.\n\nIf it was not you, ignore this email.` })
+  return true
+}
+
 // Read-only peek at a token's owner (no consumption): routes that act on a successful open need the account
 // and address the token bound. Unknown or malformed token: null.
 export async function tokenOwner(db: Db, token: unknown): Promise<{ user_id: string; email: string; purpose: Purpose } | null> {

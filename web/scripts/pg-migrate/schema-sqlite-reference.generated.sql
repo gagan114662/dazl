@@ -876,7 +876,8 @@ CREATE TABLE seo_index_results (
       keyword    TEXT NOT NULL,
       indexed    INTEGER NOT NULL,
       top_url    TEXT,
-      checked_at INTEGER NOT NULL
+      checked_at INTEGER NOT NULL,
+      domain     TEXT
     );
 
 CREATE TABLE seo_index_runs (
@@ -1070,7 +1071,7 @@ CREATE TABLE users (
       password_hash TEXT NOT NULL,
       salt TEXT NOT NULL,
       created_at INTEGER DEFAULT (unixepoch())
-    , buyer_profile TEXT, email_verified_at INTEGER);
+    , buyer_profile TEXT, email_verified_at INTEGER, email_confirmation_required INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE warm_user_paths (
       id           TEXT PRIMARY KEY,
@@ -1299,6 +1300,8 @@ CREATE INDEX scheduler_runs_started ON scheduler_runs (started_at);
 CREATE INDEX seller_decisions_recall ON seller_decisions(tenant_id,site,created_at,id);
 
 CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
+
+CREATE INDEX seo_index_results_domain ON seo_index_results (tenant_id, domain, keyword, checked_at);
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
 

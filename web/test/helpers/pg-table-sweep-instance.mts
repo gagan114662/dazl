@@ -77,9 +77,19 @@ const call1 = async (jar: Jar, r: { path: string; method: string }, id: string |
 // ---- seed ----
 await barrier('start')
 const jar: Jar = new Map()
+// #357: sign-up needs mail delivery; a test transport keeps every message in the outbox (nothing leaves the process)
+process.env.SYSTEM_MAIL_SMTP_URL = 'smtp://fixture.invalid'; process.env.SYSTEM_MAIL_FROM = 'fixture@example.test'
+const { setTransportForTests } = await import('../../lib/system-mail.ts')
+setTransportForTests(async m => { await db.run('INSERT INTO system_mail_outbox (id, user_id, to_email, subject, body, created_at) VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), 'fixture', m.to, m.subject, m.text, Math.floor(Date.now() / 1000)]) })
 const signup = await import('../../app/api/auth/signup/route.ts')
 const up = await withJar(jar, () => signup.POST(req('/api/auth/signup', 'POST', { email: `${tag}@example.test`, password: `pw-${tag}-${process.env.PT_PW}`, name: tag, business_name: `Biz ${tag}` })))
-if (up.status !== 200 || !jar.has('dazl_session')) throw new Error(`signup ${up.status} ${await up.text()}`)
+if (up.status !== 200 || jar.has('dazl_session')) throw new Error(`signup ${up.status} ${await up.text()}`)
+// #357: the account confirms its email (the link from the outbox), then signs in
+const link = /\/verify#t=([a-f0-9]{64})/.exec((await db.get<{ body: string }>('SELECT body FROM system_mail_outbox WHERE to_email = ?', [`${tag}@example.test`]))?.body ?? '')?.[1]
+const confirmed = await withJar(new Map(), async () => (await import('../../app/api/auth/verify/route.ts')).POST(req('/api/auth/verify', 'POST', { token: link })))
+if (confirmed.status !== 200) throw new Error(`verify ${confirmed.status} ${await confirmed.text()}`)
+const inn = await withJar(jar, async () => (await import('../../app/api/auth/signin/route.ts')).POST(req('/api/auth/signin', 'POST', { email: `${tag}@example.test`, password: `pw-${tag}-${process.env.PT_PW}` })))
+if (inn.status !== 200 || !jar.has('dazl_session')) throw new Error(`signin ${inn.status} ${await inn.text()}`)
 const me = (await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', [`${tag}@example.test`]))!.id
 const seeded = await seedTenant(db, me, tag)
 const other = await barrier('seeded', { tenant: me, ids: seeded.ids, texts: seeded.texts }) as { tenant: string; ids: Record<string, string[]>; texts: string[] }

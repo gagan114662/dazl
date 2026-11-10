@@ -145,7 +145,7 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let indexChecked = 0
   for (const t of await dueTenants(shared, Math.floor(Date.now() / 1000))) {
     await lease.keep()
-    try { const r = await runIndexChecks(shared, t); if (r && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
+    try { const r = await runIndexChecks(shared, t); if (Array.isArray(r) && r.length > 0) indexChecked++ } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:index-checks', tenantId: t, requestId }) }
   }
   // Expired and long-revoked sessions, at most 500 per tick (lib/sessions.ts); working sessions never match.
   await lease.keep()

@@ -52,7 +52,7 @@ try {
   const Database = require('better-sqlite3')
   const db = new Database(dbPath)
   const viewerToken = randomBytes(32).toString('hex')
-  db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('viewer-user', 'viewer@example.test', 'x', 'y')").run()
+  db.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES ('viewer-user', 'viewer@example.test', 'x', 'y', 1)").run()
   db.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ('smoke-user', 'viewer-user', 'viewer', 1)").run()
   db.prepare("INSERT INTO sessions (id, user_id, expires_at, active_tenant_id) VALUES (?, 'viewer-user', ?, 'smoke-user')").run(createHash('sha256').update(viewerToken).digest('hex'), Math.floor(Date.now() / 1000) + 3600)
   db.close()

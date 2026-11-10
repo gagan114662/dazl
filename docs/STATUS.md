@@ -201,7 +201,9 @@ Updated by the builder on every branch. Newest first.
   removal revokes the member's sessions acting in that workspace and their pending invitations) in review (b/358-offboarding);
   #357 increment 1 (email verification, password reset that signs out everywhere, verified email to join a
   workspace; docs/design/email-ownership.md) and increment 2
-  (change email, explicit Google linking) in review; next: #371.
+  (change email, explicit Google linking) merged; finish (Pro checkout needs a verified email, acceptance tests
+  mapped in the design doc; email confirmation before app access, so signup no longer reveals existing accounts)
+  in review; next: #371.
 - Audit trail (#371, part): design in docs/design/audit.md. Append-only `audit_events` (PG 0041), events for
   credential, billing, Stripe plan, sending, CRM, pipeline, consent, export, deletion, team and device actions, Settings > Audit
   trail and `GET /api/workspace/audit` (owners and admins; CSV). Automatic deletion is off: the tick purges nothing

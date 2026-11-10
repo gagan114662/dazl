@@ -1,7 +1,7 @@
 'use client'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
-import { KEY_UNREADABLE_COPY, knownErrorCopy } from '@/lib/error-copy'
+import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy } from '@/lib/error-copy'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
@@ -395,6 +395,7 @@ export default function LeadsClient() {
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
       const j = await r.json().catch(() => ({}))
+      if (r.status === 400 && j.error === 'profile_lossy') { setError(lossyProfileCopy(j)); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
       await startOffer(query)
       setDraft(j.icp)
@@ -485,6 +486,7 @@ export default function LeadsClient() {
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       // No estimate, no run: a paid scan is never started without showing what it will use.
+      if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
       if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
       setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer, reviewed })
     } catch {

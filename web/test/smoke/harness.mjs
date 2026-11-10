@@ -44,9 +44,9 @@ export async function startServer(opts = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-smoke-'))
   const DB_PATH = path.join(tmp, 'app.db')
   const db = new Database(DB_PATH)
-  db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()));
+  db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), email_verified_at INTEGER);
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()), expires_at INTEGER NOT NULL);`)
-  db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('smoke-user', 'smoke@example.test', 'x', 'y')").run()
+  db.prepare("INSERT INTO users (id, email, password_hash, salt, email_verified_at) VALUES ('smoke-user', 'smoke@example.test', 'x', 'y', 1)").run()
   const token = randomBytes(32).toString('hex')
   db.prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(createHash('sha256').update(token).digest('hex'), 'smoke-user', Math.floor(Date.now() / 1000) + 3600)
   db.close()
