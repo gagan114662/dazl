@@ -23,8 +23,9 @@
 import { blindClaim, httpUrl } from '../verifier/claim.ts'
 import { CHECK_VERSIONS, decide, type CheckResult, type Snapshot } from '../verifier/checks.ts'
 import { canonicalOf, datesIn, fold, htmlToText, isStamp, linkedDomains, metadataDays, normalizeUrl, registrable, sentenceAt, tokenPositions } from '../verifier/text.ts'
+import { CONTRACT_VERSION, scorecardVerdicts, type FieldVerdict } from '../evals/contract.ts'
 import type { BlindEvaluator, BlindItem, Brief, Judgement } from './runner.ts'
-import type { Field, Verdict } from './scorecard.ts'
+import type { Field } from './scorecard.ts'
 import { createHash } from 'node:crypto'
 
 export const SNAPSHOT_FORMAT = 'dazl-verifier-snapshots'
@@ -307,9 +308,24 @@ export function verifierEvaluator(o: VerifierOptions): BlindEvaluator {
     const contact = claim.contact ? field(contactParts, '') : { verdict: 'unknown' as V, why: ['no published email route with the page it is printed on was given', ...contactParts.filter(p => p.verdict !== 'pass').map(p => p.why)] }
 
     const fields: Record<Field, { verdict: V; why: string[] }> = { identity, constraints, event_date, contact }
+    // The verdicts are stated in the evaluation contract's field vocabulary (#394, lib/evals/contract.ts) and folded into the
+    // four scorecard fields by the contract's own scorecardVerdicts(), so the benchmark and the contract cannot disagree on
+    // what a field means or on what unknown is.
+    const fv = (fieldId: string, f: { verdict: V; why: string[] }, evidence: string[]): FieldVerdict => ({ field: fieldId, status: f.verdict, rationale: f.why.slice(0, 4).join('; ').slice(0, 500), evidence })
+    const evidence = corro.map(c => c.url)
+    const contract_verdicts: FieldVerdict[] = [
+      fv('identity.entity', identity, claim.event.source_url ? [claim.event.source_url] : []),
+      ...(placePart ? [fv('place.matches', { verdict: placePart.verdict, why: [placePart.why] }, evidence)] : []),
+      fv('event.predicate', constraints, evidence),
+      fv('event.date_real', dateBase, evidence),
+      fv('event.date_in_window', event_date, evidence),
+      fv('contact.usable', contact, [claim.contact?.source_url, claim.person?.source_url].filter((u): u is string => !!u)),
+    ]
+    const v = scorecardVerdicts(contract_verdicts)
     return {
-      identity: identity.verdict as Verdict, constraints: constraints.verdict as Verdict, event_date: event_date.verdict as Verdict, contact: contact.verdict as Verdict,
+      identity: v.identity, constraints: v.constraints, event_date: v.event_date, contact: v.contact,
       record: {
+        contract: CONTRACT_VERSION, contract_verdicts,
         evaluator: `${EVALUATOR_NAME}@${EVALUATOR_VERSION}`, signal_tier: origins >= 2 && event_date.verdict === 'pass' ? 'corroborated' : origins >= 1 ? 'source-checked' : 'unverified',   // corroborated always means two or more origins, whatever the batch's minimum
         independent_origins: origins, corroborating_sources: corro.map(c => c.url), verifier_found_sources: found.filter(u => corroborating.includes(u)),
         why: Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, f.why.slice(0, 8).map(w => w.slice(0, 300))])),

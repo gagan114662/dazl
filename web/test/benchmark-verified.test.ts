@@ -12,6 +12,7 @@ import { batchFromFile, runBatch, type BatchFile, type BlindItem, type Brief, ty
 import { parseSnapshots, placeOf, verifierEvaluator, SNAPSHOT_LIMITS } from '../lib/benchmark/verified-evaluator.ts'
 import { authorizationProblem, checkRecording, checkRegistry, dazlRecordingFromScoreboard, recordedBatch, recordingSha, RECORDING_FORMAT } from '../lib/benchmark/recorded.ts'
 import type { TaskSet } from '../lib/benchmark/scorecard.ts'
+import { CONTRACT_VERSION, scorecardVerdicts } from '../lib/evals/contract.ts'
 
 const WEB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ROOT = path.resolve(WEB, '..')
@@ -153,6 +154,14 @@ test('#397: the evaluator is deterministic and blind: the same input gives the s
   const j = (await e.judge([boom, item({ blind_id: 'b4' })], brief(TORONTO)))
   assert.deepEqual(fields(j.b3), [undefined, undefined, undefined, undefined]); assert.match(String((j.b3.record as { error: string }).error), /verifier failed on this item: unreadable item/)
   assert.deepEqual(fields(j.b4), ['pass', 'pass', 'pass', 'pass'])   // one broken item does not take the others down
+  // the verdicts are stated in the #394 contract's field vocabulary and folded by the contract's own mapping
+  const rec = a.b1.record as { contract: string; contract_verdicts: { field: string; status: string }[] }
+  assert.equal(rec.contract, CONTRACT_VERSION)
+  assert.deepEqual(rec.contract_verdicts.map(x => x.field), ['identity.entity', 'place.matches', 'event.predicate', 'event.date_real', 'event.date_in_window', 'contact.usable'])
+  for (const x of [a.b1, (await e.judge([item({ blind_id: 'b5', evidence_urls: ['https://news.example/maple'] })], brief(TORONTO))).b5]) {
+    const r2 = x.record as { contract_verdicts: { field: string; status: string }[] }
+    assert.deepEqual(scorecardVerdicts(r2.contract_verdicts), { identity: x.identity, constraints: x.constraints, event_date: x.event_date, contact: x.contact })
+  }
 })
 
 test('#397: review findings: every counted origin must itself state the requested event, role and round in one unhedged sentence; regional HQ needs its own words; copies with other endings are one origin', async () => {

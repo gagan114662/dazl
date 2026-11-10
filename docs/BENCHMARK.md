@@ -167,7 +167,10 @@ rationale or score. It makes no network or model call. A lead is validated only 
 | contact | a published email route on the company's domain, printed on the cited page, not a hiring inbox; a named person must be current at the company on the cited page |
 
 So "high intent" is independently corroborated evidence: a list of companies that merely fit a segment (no dated event) is
-never validated, and neither is an event only the producer's text asserts. Each judgement records every check, the
+never validated, and neither is an event only the producer's text asserts. Each judgement records its verdicts in the
+#394 evaluation contract's field vocabulary (`identity.entity`, `place.matches`, `event.predicate`, `event.date_real`,
+`event.date_in_window`, `contact.usable`; `lib/evals/contract.ts`), folded into the four scorecard fields by the
+contract's own `scorecardVerdicts()`, plus every check, the
 number of independent origins, a `signal_tier` (`corroborated`, `source-checked`, `unverified`) and why each field is
 not a pass. A malformed or conflicting snapshot is dropped and listed in the evaluator config in the manifest; the
 checks that needed it are `unknown`. Besides the pages a producer cites, the snapshots file can list pages the verifier
