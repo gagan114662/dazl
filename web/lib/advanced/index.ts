@@ -141,6 +141,11 @@ export function xSearchQuery(icp: { who: string[]; signals: string[] }): string 
   return pick.slice(0, 5).join(' ').slice(0, 100)
 }
 
+// The ONE rule for whether X is read through the operator's public-index search (TinyFish key set and X_VIA_SEARCH not '0') instead of a
+// session. collectAdvanced, the settings route and the capability report all call this, so "X available without a session" cannot drift
+// from what a scan actually does (#1032 review).
+export const xViaOperatorIndex = (env: Record<string, string | undefined> = process.env): boolean => env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)
+
 // Runs the platforms this tenant chose for one scan. Every gate is re-checked here, so a stale
 // request cannot get around a flag, a kill switch, a missing consent or the rate limit. On the Db layer; today's runner
 // passes its raw handle, which runs on that same connection (DbLike).
@@ -170,7 +175,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // tenant's account banned. A search snippet is not the verbatim post text, so every
     // hit is login_walled: the quote-verification gate keeps them in the review lane and
     // they are never auto-verified. Set X_VIA_SEARCH=0 to force the worker path.
-    if (p === 'x' && env.X_VIA_SEARCH !== '0' && tinyfishEnabled(env)) {
+    if (p === 'x' && xViaOperatorIndex(env)) {
       const r = await tfSearch(db, tenantId, `site:x.com ${q}`.slice(0, 300), {}, { searches: 0 }, { env, fetchImpl: deps.fetchImpl })
       if (!r.ok) { await skip(r.reason); continue }
       const items: (Evidence & { login_walled: boolean })[] = []
