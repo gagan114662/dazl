@@ -11,6 +11,7 @@
 //  - Denominators: summarize() counts unknown (and contradicted) results as not validated, and reports the unknown rate on its own.
 // The field ids match what the benchmark runner reads (lib/benchmark/runner.ts CONTRACT_FIELDS), so contractEvaluator() takes evaluateLead as it is.
 import { createHash } from 'node:crypto'
+import { getDomain } from 'tldts'
 
 export const CONTRACT_VERSION = 'dazl.evaluation-contract/1'
 export const SCORER = { id: 'dazl.lead-contract', version: 1 } as const
@@ -64,12 +65,20 @@ const canon = (v: unknown): unknown => Array.isArray(v) ? v.map(canon) : v && ty
 export const contractHash = (c: Contract) => createHash('sha256').update(JSON.stringify(canon(c))).digest('hex')
 const deepFreeze = <T,>(o: T): T => { if (o && typeof o === 'object') { Object.values(o as object).forEach(deepFreeze); Object.freeze(o) } return o }
 
-export interface FrozenContract { contract: Readonly<Contract>; hash: string }
+export interface FrozenContract { readonly contract: Readonly<Contract>; readonly hash: string }
+// The canonical frozen contracts of this process. Only an object freezeContract returned is accepted by evaluateLead: a caller-built
+// { contract, hash } pair is refused even when the hash matches its (altered) contract. A version is immutable: the same id and version
+// always means the same content, so a changed contract must bump its version.
+const ISSUED = new WeakSet<object>()
+const BY_VERSION = new Map<string, FrozenContract>()
 export function freezeContract(raw: unknown): FrozenContract {
   const problems = validateContract(raw)
   if (problems.length) throw new Error(`invalid evaluation contract: ${problems.map(x => `${x.path || 'contract'}: ${x.reason}`).join('; ')}`)
-  const contract = deepFreeze(structuredClone(raw as Contract))
-  return { contract, hash: contractHash(contract) }
+  const contract = deepFreeze(structuredClone(raw as Contract)), hash = contractHash(contract), key = `${contract.id}@${contract.version}`
+  const had = BY_VERSION.get(key)
+  if (had) { if (had.hash !== hash) throw new Error(`contract ${key} is already frozen with different content (hash ${had.hash.slice(0, 12)}); bump its version to change it`); return had }
+  const frozen: FrozenContract = Object.freeze({ contract, hash }); ISSUED.add(frozen); BY_VERSION.set(key, frozen)
+  return frozen
 }
 
 // What an independent evidence collector hands the evaluator for one lead. Every field is a fact about the world, never a score, and any of it may be absent.
@@ -96,12 +105,14 @@ export interface LeadEvaluation {
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 const has = (hay: string, needle: string) => ` ${norm(hay)} `.includes(` ${norm(needle)} `)
 const host = (u: string) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, '') } catch { return null } }
-// A registrable domain without a public-suffix list: the last two labels, or three when the second-last is a short country-code style label (co.uk, com.au).
-export const registrable = (h: string) => { const l = h.split('.'); return l.length <= 2 ? h : (l[l.length - 2].length <= 3 && l[l.length - 1].length === 2) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
+// The registrable domain by the Public Suffix List INCLUDING its private section (tldts, already a dependency), so shared hosts are not one company:
+// acme.github.io and other.github.io are different domains, as are foo.vercel.app and bar.vercel.app. A host with no listed suffix (an IP, localhost) is itself.
+export const registrable = (h: string) => { const host = h.toLowerCase().replace(/^www\./, ''); return getDomain(host, { allowPrivateDomains: true }) ?? host }
 const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|er)?|talent|hiring|people|apply|work)@/i
 const dayNum = (s: string) => Date.parse(`${s}T00:00:00Z`) / 86_400_000
 
 export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvaluation {
+  if (!ISSUED.has(frozen)) throw new Error('not a contract frozen by freezeContract: a caller-supplied contract or hash is never trusted')
   if (contractHash(frozen.contract as Contract) !== frozen.hash) throw new Error('the evaluation contract changed after it was frozen: its hash no longer matches')
   const k = frozen.contract.constraints
   const v: FieldVerdict[] = []
@@ -165,11 +176,33 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   return { contract: frozen.contract.id, contract_hash: frozen.hash, tier: status === 'pass' ? 'validated' : null, status, scorer: { ...SCORER }, verdicts: v }
 }
 
+// One definition, used by the benchmark scorecard (lib/benchmark/scorecard.ts, runner.ts) and by summarize() below: which contract fields decide each
+// scorecard field, the worst verdict wins (contradicted, fail, unknown, pass), a field nothing scored or an unrecognised status is unknown, and a result
+// is UNKNOWN when any scorecard field is unknown (whatever else it did).
+export const CONTRACT_FIELDS = {
+  identity: ['identity.entity', 'source.on_page'],
+  constraints: ['place.matches', 'industry.matches', 'event.predicate', 'consent.status'],
+  event_date: ['event.date_real', 'event.date_in_window'],
+  contact: ['contact.usable'],
+} as const
+export type ScoreField = keyof typeof CONTRACT_FIELDS
+const WORST: Status[] = ['contradicted', 'fail', 'unknown', 'pass']
+export function scorecardVerdicts(vs: { field: string; status: string }[]): Record<ScoreField, Status> {
+  const by = new Map(vs.map(v => [v.field, (STATUSES as string[]).includes(v.status) ? v.status as Status : 'unknown' as Status]))
+  return Object.fromEntries((Object.keys(CONTRACT_FIELDS) as ScoreField[]).map(f => {
+    const got = CONTRACT_FIELDS[f].filter(k => by.has(k)).map(k => by.get(k)!)
+    return [f, got.length ? WORST.find(w => got.includes(w))! : 'unknown']
+  })) as Record<ScoreField, Status>
+}
+export const anyUnknown = (statuses: readonly string[]) => statuses.some(s => s === 'unknown')
+export const isUnknownResult = (e: { verdicts: { field: string; status: string }[] }) => anyUnknown(Object.values(scorecardVerdicts(e.verdicts)))
+
 export interface ContractSummary { leads: number; validated: number; failed: number; unknown: number; contradicted: number; validated_rate: number | null; unknown_rate: number | null; contradicted_rate: number | null }
-// Denominator = every lead scored: unknown and contradicted leads are NOT validated, and the unknown rate is its own number.
+// Denominator = every lead scored: unknown and contradicted leads are NOT validated. The unknown rate is its own number and counts every lead that
+// isUnknownResult says is unknown, including one that also failed elsewhere (so `failed` and `unknown` can overlap).
 export function summarize(evals: LeadEvaluation[]): ContractSummary {
   const n = evals.length, r = (x: number) => n ? Math.round((x / n) * 1000) / 1000 : null
   const contradicted = evals.filter(x => x.verdicts.some(f => f.status === 'contradicted')).length
-  const validated = evals.filter(x => x.status === 'pass').length, unknown = evals.filter(x => x.status === 'unknown').length
+  const validated = evals.filter(x => x.status === 'pass').length, unknown = evals.filter(isUnknownResult).length
   return { leads: n, validated, failed: evals.filter(x => x.status === 'fail').length, unknown, contradicted, validated_rate: r(validated), unknown_rate: r(unknown), contradicted_rate: r(contradicted) }
 }

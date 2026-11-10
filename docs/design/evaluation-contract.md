@@ -15,16 +15,21 @@ Per lead, per field: `pass | fail | unknown | contradicted`, with a rationale an
 A lead validates only when every scored field passes. Unknown is never pass.
 
 ## "High-intent" means independently corroborated
-`event.predicate` passes only when the right kind of event is evidenced by at least `min_independent_sources` sources on **different registrable domains**. One source, two pages on one domain, or only the company's own site is `unknown`. A contradicting source makes it `contradicted`.
+`event.predicate` passes only when the right kind of event is evidenced by at least `min_independent_sources` sources on **different registrable domains** (Public Suffix List including its private section, via `tldts`: `acme.github.io` and `other.github.io` are two companies, as are two `*.vercel.app` sites). One source, two pages on one domain, or only the company's own site is `unknown`. A contradicting source makes it `contradicted`.
 
 ## The evaluator cannot change targeting
-The contract is deep-frozen and hashed. `evaluateLead` refuses a contract whose hash is not the one it was frozen with, and edits to a frozen contract throw.
+`freezeContract` deep-freezes the contract, hashes it and registers it. `evaluateLead` accepts ONLY an object `freezeContract` issued: a caller-built `{ contract, hash }` pair is refused even when the hash matches its (altered) contract, and edits to a frozen contract throw.
+A version is immutable: the same `id` and `version` always means the same content, so freezing different content under a version already frozen is refused; a change must bump the version. (A process-local registry: the persisted hash lets any later run re-freeze the same content and compare.)
 
-## Denominators
+## Denominators and one definition of unknown
 `summarize()` counts unknown and contradicted leads as not validated, and reports `unknown_rate` and `contradicted_rate` as their own numbers.
+"Unknown" has ONE definition, in `contract.ts` and used by both this summary and the benchmark scorecard: contract fields roll up to the four scorecard fields (the worst verdict wins), and a result is unknown when any scorecard field is unknown, whatever else it did. A lead that fails one field and is unknown on another counts as unknown (so `failed` and `unknown` can overlap).
+
+## Auditability
+The benchmark runner persists the frozen contract hash in every judgement's record. A scorer that returns no hash is not trusted: that result is unknown with the reason recorded.
 
 ## Dates
 Whole UTC calendar days: the `as_of` day passes, the next day is the future (fails), the window is inclusive, and a date that is not a real day fails.
 
 ## Not done here
-The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. The domain rule uses the last two labels (three for co.uk-style names) and no public-suffix list.
+The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.
