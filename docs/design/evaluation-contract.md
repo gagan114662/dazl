@@ -31,9 +31,6 @@ The benchmark runner persists the frozen contract hash in every judgement's reco
 ## Dates
 Whole UTC calendar days: the `as_of` day passes, the next day is the future (fails), the window is inclusive, and a date that is not a real day fails.
 
-## Not done here
-The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.
-
 ## The separate semantic judge (#782)
 `lib/evals/semantic-judge.ts` is orchestration around INJECTED judges (a real model judge is one `Judge` function plugged in later; this file calls no model or network).
 - **Blinded:** the judge reads the claim through the runner's `blindItem`: no system, product, model or config, identity tokens scrubbed; a judge cannot change the claim the next judge sees.
@@ -41,3 +38,6 @@ The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); 
 - **Separate budget and log:** the judge spends its own call budget (never the producer's); when it is spent the claim is unknown. Every call is logged on the judge's own log with attempt, outcome and elapsed time.
 - **Provenance dependency:** sources that copy one another are one source: a declared `syndicated_from`, or identical normalised text (80+ characters), joins the group of the original. `independentSources` counts groups on distinct registrable domains, so a wire story reprinted on ten sites is one confirmation. Not wired into the contract's `event.predicate` yet.
 Not done: a real model judge, the calibration gate against adversarial fixtures (#783-785), and feeding `independentSources` into `event.predicate`.
+
+## Not done here
+The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.
