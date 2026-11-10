@@ -1,8 +1,11 @@
 // Source-capability matrix (#388): what each signal source supports, honestly. An advertised signal / market must be backed by a source that is BUILT and has
 // source-to-qualified-lead evidence and negative fixtures; a worker-backed source whose worker is disconnected is UNAVAILABLE (never "0 opportunities"); a planned
 // source is NOT BUILT. Defaults are enabled only on measured incremental usable yield. Access policy is explicit: authorized APIs / public pages / consented workers -
-// nothing here scrapes around an access control. This file is the registry the UI and run report read; adding an adapter without an entry fails the test.
-import type { AdvPlatform } from '../advanced/config.ts'
+// nothing here scrapes around an access control. Consumers: GET /api/sources/capabilities (lib/sources/capability-report.ts, per-tenant availability) and the
+// run report's source lines; adding an adapter without an entry fails the test. Worker platforms are one entry each and take their built / not-built status from
+// PLATFORM_SUPPORT (lib/advanced/config.ts), so a platform nobody wrote an adapter for (Facebook, Xiaohongshu) is NOT BUILT, which is a different state from a built
+// platform whose worker is disconnected (UNAVAILABLE).
+import { ADV_PLATFORMS, PLATFORM_SUPPORT, type AdvPlatform } from '../advanced/config.ts'
 
 export type Access = 'open_api' | 'public_pages' | 'official_registry' | 'authorized_worker'
 export type Status = 'shipped' | 'planned'
@@ -18,7 +21,7 @@ export interface Capability {
   identityProof: Proof
   dateProof: 'published_date' | 'structured_posting_date' | 'registry_filing_date' | 'none'
   access: Access
-  worker?: AdvPlatform | 'advanced'       // needs a connected worker
+  worker?: AdvPlatform                    // needs this connected worker platform
   license: string                         // terms it is used under
   failureReporting: string                // how a failure shows in the run report
   evidence: { liveSourceToLead: boolean; negativeFixtures: boolean; incrementalYield: number | null }   // measured; null = not measured
@@ -36,6 +39,31 @@ const BLOCKERS: Record<string, string> = {
   'first-party-careers': 'lib/signals/careers-page.ts reads the careers page of a lead already found (hiring half only, undated); there is no discovery source.',
   'authorized-engagement': 'Needs a consented worker per platform; only the existing social workers exist.',
 }
+
+// One entry per worker platform. Built-ness comes from PLATFORM_SUPPORT, never from a label: unsupported = planned (not built) with the reason as its blocker.
+const PLATFORM_LABEL: Record<AdvPlatform, string> = { x: 'X (Twitter)', reddit: 'Reddit', instagram: 'Instagram', facebook: 'Facebook', xiaohongshu: 'Xiaohongshu', bilibili: 'Bilibili', linkedin: 'LinkedIn' }
+// Bilibili's worker keeps only Latin-script excerpts (session-worker latinUsable; the verifier strips CJK), so a Chinese-only result never enters
+// evidence: it covers Latin-script text on a CN platform, not Chinese. Xiaohongshu is not built.
+const PLATFORM_LANGS: Partial<Record<AdvPlatform, string[]>> = { xiaohongshu: ['zh'], bilibili: ['en'] }
+// What the evidence a worker row produces actually carries. collectAdvanced keeps url/title/quote/date and drops the worker's author object, so no
+// worker row proves identity by author handle. Instagram (profile results) and LinkedIn (feed posts) always return date null; X, Reddit and Bilibili
+// return the post's own date (the X operator-index path keeps the search hit's date).
+const PLATFORM_DATED: Partial<Record<AdvPlatform, boolean>> = { x: true, reddit: true, bilibili: true }
+const PLATFORM_MARKETS: Partial<Record<AdvPlatform, string[]>> = { xiaohongshu: ['CN'], bilibili: ['CN'] }
+export function workerEntries(support: Record<AdvPlatform, { supported: boolean; reason: string | null }> = PLATFORM_SUPPORT): Capability[] {
+  return ADV_PLATFORMS.map((p): Capability => {
+    const built = support[p]?.supported === true
+    return {
+      id: `adv:${p}`, label: `${PLATFORM_LABEL[p]} (authorized worker session)`, status: built ? 'shipped' : 'planned', signals: ['engagement', 'discussion'],
+      markets: PLATFORM_MARKETS[p] ?? ['*'], languages: PLATFORM_LANGS[p] ?? ['*'], refresh: built ? 'per scan' : 'not built', identityProof: 'none', dateProof: built && PLATFORM_DATED[p] ? 'published_date' : 'none',
+      access: 'authorized_worker', worker: p, license: built ? 'user consent + worker terms' : 'to be decided with the source owner',
+      // Honest about where a failure shows today: connector_audit, not the scan run report (the runner lists only adv: sources that returned evidence).
+      failureReporting: built ? 'worker disconnected = unavailable here, never a zero; per-scan outcome (ok|empty|disabled|no_consent|rate_limited|worker_error|unsupported) is recorded in connector_audit only - the scan run report does not list it yet' : 'not built',
+      evidence: { liveSourceToLead: false, negativeFixtures: false, incrementalYield: null },
+      ...(built ? {} : { blocker: support[p]?.reason?.trim() || 'adapter not built' }),
+    }
+  })
+}
 export const MATRIX: Capability[] = [
   { id: 'rss', label: 'RSS / Atom feeds', status: 'shipped', signals: ['news', 'funding', 'launch'], markets: ['*'], languages: ['en'], refresh: 'per scan', identityProof: 'page_host', dateProof: 'published_date', access: 'open_api', license: 'feeds the user supplies', failureReporting: reported, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   { id: 'github', label: 'GitHub', status: 'shipped', signals: ['product_launch', 'hiring_signal'], markets: ['*'], languages: ['en'], refresh: 'per scan', identityProof: 'author_handle', dateProof: 'published_date', access: 'open_api', license: 'GitHub REST API terms', failureReporting: reported, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
@@ -45,7 +73,7 @@ export const MATRIX: Capability[] = [
   { id: 'jobboards', label: 'Greenhouse / Lever / Ashby boards', status: 'shipped', signals: ['hiring_signal'], markets: ['*'], languages: ['en'], refresh: 'per scan', identityProof: 'domain_or_registry_id', dateProof: 'structured_posting_date', access: 'open_api', license: 'public ATS board APIs', failureReporting: reported, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   { id: 'sec-form-d', label: 'SEC Form D (US funding)', status: 'shipped', signals: ['funding'], markets: ['US'], languages: ['en'], refresh: 'daily filings', identityProof: 'domain_or_registry_id', dateProof: 'registry_filing_date', access: 'official_registry', license: 'SEC EDGAR fair-access policy', failureReporting: reported, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   { id: 'brreg', label: 'Norway business register (Enhetsregisteret): new businesses and new locations', status: 'shipped', signals: ['new_company', 'new_location'], markets: ['NO'], languages: ['nb', 'nn'], refresh: 'register updated daily; read per scan, last 60 days', identityProof: 'domain_or_registry_id', dateProof: 'registry_filing_date', access: 'official_registry', license: 'NLOD 2.0 open data (data.brreg.no, no key); entity pages on virksomhet.brreg.no (robots: Allow /)', failureReporting: `${reported}; a request outside its markets or industries is skipped_out_of_coverage, never empty`, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
-  { id: 'adv:social', label: 'Social workers (X, Reddit, Instagram, Facebook, Xiaohongshu, Bilibili)', status: 'shipped', signals: ['engagement', 'discussion'], markets: ['*'], languages: ['*'], refresh: 'per scan', identityProof: 'author_handle', dateProof: 'published_date', access: 'authorized_worker', worker: 'advanced', license: 'user consent + worker terms', failureReporting: 'worker disconnected = unavailable, never a zero', evidence: { liveSourceToLead: false, negativeFixtures: false, incrementalYield: null } },
+  ...workerEntries(),
   // Not built. Listed so the gap is visible, and so nothing can advertise them: each needs an authorized source, identity/date proof and a measured yield first.
   ...[
     ['registry-funding-regional', 'Regional company / funding registries', ['funding', 'new_company'], ['GB', 'DE', 'FR', 'SG', 'IN', 'BR'], 'official_registry', 'registry_filing_date'],
