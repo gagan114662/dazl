@@ -18,8 +18,9 @@ const sc = (s: TaskSet, r: BenchmarkRun): Scorecard => { const c = scorecard(s, 
 const run = (over: Partial<BenchmarkRun> = {}, tasks: BenchmarkRun['tasks'] = []): BenchmarkRun => ({ format: 'dazl-benchmark-run', version: 1, system: 'dazl', system_version: 'test', origin: 'live', task_set_version: '1', commit: 'abc', config: {}, evaluator: { name: 'independent-test', version: '1', independent: true }, started_at: '2026-10-29T00:00:00Z', tasks, ...over })
 
 test('the v1 task set: frozen, varied, and it reuses every scoreboard search unchanged', () => {
-  const sb = JSON.parse(readFileSync(path.join(root, 'scoreboard/searches.json'), 'utf8')) as { id: string; query: string }[]
-  for (const s of sb) assert.equal(set.tasks.find(t => t.id === s.id)?.query, s.query, `${s.id} reused unchanged`)
+  const sb = JSON.parse(readFileSync(path.join(root, 'scoreboard/searches.json'), 'utf8')) as { id: string; query: string; post_freeze?: string }[]
+  // v1 is frozen (never edited in place): a search added after the freeze says so and is not in v1; every other search is reused unchanged
+  for (const s of sb) if (s.post_freeze) assert.equal(set.tasks.find(t => t.id === s.id), undefined, `${s.id} is post-freeze, not in v1`); else assert.equal(set.tasks.find(t => t.id === s.id)?.query, s.query, `${s.id} reused unchanged`)
   assert.equal(new Set(set.tasks.map(t => t.id)).size, set.tasks.length)
   assert.ok(new Set(set.tasks.map(t => t.country)).size >= 8, 'several countries')
   for (const k of ['negative', 'ambiguous', 'cold_start']) assert.ok(set.tasks.some(t => t.kind === k), k)

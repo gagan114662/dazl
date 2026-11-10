@@ -41,7 +41,7 @@ if (!process.env.TINYFISH_API_KEY?.trim()) { console.error('TINYFISH_API_KEY is 
 const totalUsd = Number(process.env.SCOREBOARD_MAX_USD_TOTAL || 3)
 if (!Number.isFinite(totalUsd) || totalUsd <= 0) { console.error('SCOREBOARD_MAX_USD_TOTAL must be a positive number'); process.exit(2) }
 const root = path.resolve(import.meta.dirname, '..', '..')
-const searches = (JSON.parse(readFileSync(path.join(root, 'scoreboard', 'searches.json'), 'utf8')) as { id: string; query: string; seller?: string }[])
+const searches = (JSON.parse(readFileSync(path.join(root, 'scoreboard', 'searches.json'), 'utf8')) as { id: string; query: string; seller?: string; sources?: { adapters: string[]; feeds: string[] } }[])
   .filter(s => !process.env.SCOREBOARD_ONLY || process.env.SCOREBOARD_ONLY.split(',').includes(s.id))
 
 const master = randomBytes(32)
@@ -65,7 +65,7 @@ const qualifiedCompanies = new Set<string>()
 
 for (const s of searches) {
   const t0 = Date.now()
-  const id = createQueryJob(db, TENANT, { query: s.query, seller: s.seller })
+  const id = createQueryJob(db, TENANT, { query: s.query, seller: s.seller, sources: s.sources ? JSON.stringify(s.sources) : null })
   const job = claimKeyedJob(db, id)
   let error: string | null = null
   if (job) {
