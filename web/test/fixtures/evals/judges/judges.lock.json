@@ -1,12 +1,23 @@
 {
  "v": 1,
  "kind": "dazl.judge-lock",
+ "corpus": {
+  "id": "judge-claims-synthetic-3",
+  "hash": "acc6549ada226428413d491230ab6253dc690461efd572c60c0f02165d859f60",
+  "items": 44,
+  "origin": "synthetic"
+ },
  "judges": [],
  "registered": [
   {
    "id": "scan_verification_judge",
    "fingerprint": "77f64d5c231da0b06735c863c1df2f5aa213c6383123146715e0dcef6e5328c1",
-   "note": "lib/scan/runner.ts judgePrompt + parseJudgement as of #396. Scored here only under stub models; never calibrated against a real model (that needs a paid run, the owner's call), so judgeGate reports it unusable. The scan does not consult the gate yet."
+   "note": "lib/scan/runner.ts judgePrompt + parseJudgement as of #396, as the scan runs it (model: the tenant's own provider). The release gate (test/judge-release-gate.test.ts) runs the stub harness on this exact fingerprint on every CI run. Never calibrated against a real model (that needs a paid run, the owner's call), so judgeGate reports it unusable and its verdicts cannot count. The scan does not consult the gate yet."
+  },
+  {
+   "id": "claim_support",
+   "fingerprint": "5bd01fbe2d90ed5bb69edc4fa3af0fc5ff503ca536d40fe6271f929dfad81d54",
+   "note": "lib/evals/judge.ts claimJudge (judgePrompt + parseJudgeReply) v1, prompt v1, on claude-sonnet-4-5: the judge the one approved validation run (lib/evals/judge-validation-run.ts) would calibrate. Not used by the product. Never calibrated against a real model, so its verdicts cannot count."
   }
  ]
 }

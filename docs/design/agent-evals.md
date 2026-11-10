@@ -137,7 +137,13 @@ that keep agreement between models from passing for ground truth.
   - a timeout or a thrown error;
   - an unparseable reply;
   - a reply with any field beyond `{answer, quote, source}`;
-  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names.
+  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names;
+  - an adapter that throws, or answers anything but `supported`, `not_supported` or `unknown`.
+
+  Bad harness configuration is refused before any judge call: a NaN, infinite, out-of-range, missing or extra threshold
+  (a NaN would make every `rate > max` check false), a non-integer repeat count or budget, an unknown split. A lock entry
+  counts only when `ok` is exactly `true` with no problems and no critical false positives; a malformed lock, gate result
+  or drift report is unusable, never usable.
 - **Unanimity, not votes.** A panel is `supported` or `not_supported` only when every judge says so. One abstention or one
   dissent is unknown, so 2-of-3 is not a pass. A judge that answers the same item differently on a repeat is unknown on it.
 - **Sources are data.**
@@ -162,11 +168,49 @@ that keep agreement between models from passing for ground truth.
 - `panelJudge`: a unanimous panel of either. A panel is calibrated like a single judge, because a blind spot all its
   members share passes the panel too.
 
-The lock's `registered` list holds the scan judge's fingerprint. A test recomputes it from the code, so an edit to that
-prompt or parser fails CI until someone runs the harness and updates the entry.
+The lock's `registered` list holds the fingerprints of the judges the code runs: the scan judge (as the scan runs it,
+on the tenant's provider) and the claim judge (as the one approved validation run would calibrate it, on
+`claude-sonnet-4-5`). The release gate below recomputes them from the code on every CI run.
 
-**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, origin `synthetic`, 44 items) is labelled, and every
-company, page and address in it is invented. It has seven conditions:
+**The release gate** (`releaseGate`, #784; run in CI by `test/judge-release-gate.test.ts`, by hand with
+`scripts/judges.mts --gate`). For each judge the code runs it recomputes the fingerprint and runs the calibration harness
+on that exact fingerprint: the judge's real prompt and parser, its id, version and model name, with every reference stub
+model behind it (`harnessFor`, `test/helpers/judge-stubs.ts`). Release is blocked when:
+- the corpus is not the frozen one;
+- a judge changed (model, version or prompt): the gate prints the harness result on the new fingerprint, and release
+  stays blocked until a reviewed PR registers it in the lock;
+- a judge ships unregistered, or a registered judge was not checked;
+- the harness lost its teeth: the truthful stub failed, an adversarial stub passed, or a report is for another
+  fingerprint, corpus or split;
+- a calibration recorded in the lock for the current fingerprint has a critical false positive (reported by kind:
+  wrong identity, contact or date, or an obeyed injection), or failed on its rates;
+- the judge's stored verdicts drifted.
+
+A judge with no real-model calibration does not block release, but its verdicts do not count: they stay unknown, never
+pass, and the decision lists that under `limits`. Harness reports are marked `harness_stub` and `lockEntry` refuses them,
+so a stub run can never be recorded as a calibration. No human label queue is involved: the labels come from the
+corpus's records, below.
+
+**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, id `judge-claims-synthetic-3`, origin `synthetic`,
+44 items) is labelled, and every company, page and address in it is invented. It is frozen (#783): the lock's `corpus`
+record pins its id, sha256, item count and origin. `frozenProblem` refuses an in-place edit (same id, new content) and any
+other corpus, so a changed corpus needs a new id and a reviewed re-freeze, and every calibration made on the old one stops
+counting.
+
+Its labels are machine-verifiable. Each item carries `truth` records: the claim (company, kind, and any detail, date,
+person or contact it names) and the facts its sources state, each with its exact words (`evidence`), the source it cites,
+the company, the kind and a status (`asserted`, `denied`, `corrected`, `departed`, `planned` or `instruction`).
+`truthLabel` derives the label: supported only when a source asserts a fact about the claim's exact company and kind,
+matching every attribute the claim names (a claim date is a prefix: `2026-10` needs a fact dated in October 2026), and no
+source denies, corrects or reports the departure of it. Instructions, plans and publication or refresh dates never
+support anything. `checkCorpus` refuses an item whose label disagrees with its records, whose evidence, company or contact
+is not verbatim on the page it cites, whose dates are not real calendar dates, or whose records do not show what its
+condition or critical kind claims (an identity trap needs a fact about another company, a date trap a dated claim, an
+injection an instruction fact, a negation a denied fact). `test/judge-corpus.test.ts` also serves every source as an HTML
+page on a loopback server (with hidden script and comment instructions) and reads it back through the scan's
+`htmlToText`, so the judge is given exactly what the scan would read.
+
+It has seven conditions:
 - plain;
 - multilingual (French, German, Spanish, Portuguese);
 - negation;
@@ -208,9 +252,19 @@ A critical false positive or an action attempt blocks the judge whatever its rat
 `pairAgreement` compares two judges and lists the items they get wrong together. That is where a unanimous panel would
 still pass a false claim.
 
-**Drift** works over stored verdicts. `toStoredVerdicts` turns a report into JSON-lines records, one per item. Each
-record holds the run, time, judge, fingerprint, model, corpus hash, origin, split, item, label and answer.
-`parseStoredVerdicts` refuses a damaged line instead of skipping it.
+**Drift** works over stored verdicts. `toStoredVerdicts` turns a report into JSON-lines records (v2), one per item. Each
+record holds the run, time, judge, fingerprint, model, version, prompt version, corpus hash, origin, split, item,
+condition, critical kind, label, answer and reasons. `parseStoredVerdicts` refuses, instead of skipping: a damaged or
+cut-off line, a line with a missing, extra or mistyped field, a v1 line (no judge version), a replayed line (same run,
+judge, split and item twice), a run that mixes judge identities, and an item whose label differs between lines of one
+corpus version.
+
+**Per-version reporting** (#785). `verdictHistory` reports, per origin, corpus version and split (never pooled), every
+judge version with stored runs, oldest first: its model, version and prompt version, its false-positive, false-negative
+and abstention rates overall and per condition, its critical false positives, and the items its own runs answered
+differently. Between consecutive versions it reports the per-condition rate changes, the items whose answer changed and
+new critical false positives. `scripts/judges.mts --report <log.jsonl>` prints it; `renderCalibration` prints one report
+per condition.
 
 `detectDrift` compares a judge's latest run with its baseline run on the same corpus version and split, per origin. It
 flags each of:

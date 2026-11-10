@@ -3,7 +3,7 @@
 // gives up on other languages, one that is unstable, one that reads only the first source - so the harness can be shown to
 // catch each. They read the prompt the judge under test built, find the corpus item it is about, and answer in that
 // judge's own reply format. No model is called, no key is read and nothing leaves the process.
-import { claimJudge, scanJudge, SCAN_JUDGE_SPEC, type JudgeAdapter, type JudgeCall, type JudgeCorpus, type JudgeItem, type JudgeSource, type JudgeSpec } from '../../lib/evals/judge.ts'
+import { calibrate, claimJudge, scanJudge, SCAN_JUDGE_SPEC, type JudgeAdapter, type JudgeCall, type JudgeCorpus, type JudgeItem, type JudgeSource, type JudgeSpec, type ReleaseJudgeInput } from '../../lib/evals/judge.ts'
 import { judgePrompt as scanJudgePrompt, makeJudge, parseJudgement } from '../../lib/scan/runner.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
 
@@ -88,3 +88,28 @@ export function scanVerificationJudge(corpus: JudgeCorpus, model: StubModel, spe
 }
 export const claimSupportJudge = (corpus: JudgeCorpus, model: StubModel, spec: JudgeSpec = { id: 'claim_support', version: 1, model: 'stub-model', prompt_version: 1 }): JudgeAdapter =>
   claimJudge(spec, claimCall(corpus, model))
+
+// The release gate's calibration harness (#784): every reference stub model behind each judge the code runs, on that
+// judge's EXACT spec and template, so each report carries the fingerprint the lock registers. Only the truthful stub may
+// pass; every adversarial stub must fail. Each report is marked harness_stub, so it can never be locked as a calibration.
+export const CLAIM_SUPPORT_SPEC: JudgeSpec = { id: 'claim_support', version: 1, model: 'claude-sonnet-4-5', prompt_version: 1 }
+export const HARNESS_EXPECT: Readonly<Record<string, boolean>> = Object.freeze(Object.fromEntries(Object.keys(STUB_MODELS).map(s => [s, s === 'truthful'])))
+export type JudgeBuild = (corpus: JudgeCorpus, model: StubModel, spec: JudgeSpec) => JudgeAdapter
+export const RELEASE_JUDGES: Readonly<Record<string, { spec: JudgeSpec; build: JudgeBuild }>> = Object.freeze({
+  scan_verification_judge: { spec: SCAN_JUDGE_SPEC, build: scanVerificationJudge },
+  claim_support: { spec: CLAIM_SUPPORT_SPEC, build: claimSupportJudge },
+})
+export async function harnessFor(corpus: JudgeCorpus, spec: JudgeSpec, build: JudgeBuild, expect: Readonly<Record<string, boolean>> = HARNESS_EXPECT): Promise<ReleaseJudgeInput> {
+  const harness: ReleaseJudgeInput['harness'] = []
+  let template = ''
+  for (const stub of Object.keys(expect)) {
+    const adapter = build(corpus, STUB_MODELS[stub](), spec)
+    template = adapter.template
+    const report = await calibrate(adapter, corpus)
+    harness.push({ stub, expect_pass: expect[stub], report: { ...report, harness_stub: stub } })
+  }
+  return { spec, template, harness }
+}
+// Every judge the code runs, through the harness: the input the release gate takes.
+export const releaseInputs = async (corpus: JudgeCorpus): Promise<ReleaseJudgeInput[]> =>
+  Promise.all(Object.values(RELEASE_JUDGES).map(j => harnessFor(corpus, j.spec, j.build)))
