@@ -39,18 +39,29 @@ export async function createSession(userId: string, d?: Db, meta: { device?: str
   return token
 }
 
+// #357: who must confirm the email before signing in or keeping a session: an account made under the requirement
+// (email_confirmation_required, set only by a sign-up that could send the link) whose email is not confirmed yet. Any
+// value other than 0 counts as required (fail closed for a new account); legacy rows are 0 by the column default.
+// Every ownership gate on main (invitations, preview claim, lifecycle mail, email change) still keys on
+// email_verified_at alone, unchanged.
+export const CONFIRMED_OR_NOT_REQUIRED = '(u.email_confirmation_required = 0 OR u.email_verified_at IS NOT NULL)'
+export function confirmationPending(u: { email_verified_at: unknown; email_confirmation_required: unknown }): boolean {
+  return (u.email_verified_at === null || u.email_verified_at === undefined) && Number(u.email_confirmation_required) !== 0
+}
+
 // Password sign-in lookup. Unknown email -> undefined (the route still spends the same scrypt time).
-export async function findPasswordUser(email: string, d?: Db): Promise<{ id: string; password_hash: string; salt: string; email_verified_at: number | null } | undefined> {
-  return (d ?? await getDb()).get('SELECT id, password_hash, salt, email_verified_at FROM users WHERE email = ?', [email])
+export async function findPasswordUser(email: string, d?: Db): Promise<{ id: string; password_hash: string; salt: string; email_verified_at: number | null; email_confirmation_required: number } | undefined> {
+  return (d ?? await getDb()).get('SELECT id, password_hash, salt, email_verified_at, email_confirmation_required FROM users WHERE email = ?', [email])
 }
 
 // 'exists' when the email is taken; the route must not reveal which. The account and its personal workspace are made
-// together.
-export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string }, d?: Db): Promise<'created' | 'exists'> {
+// together. requireConfirmation (#357): only the sign-up route sets it, and only when a confirmation link can be mailed;
+// absent or false, the account signs in as on main.
+export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string; requireConfirmation?: boolean }, d?: Db): Promise<'created' | 'exists'> {
   return (d ?? await getDb()).tx(function* (t) {
     const r = yield* t.run(
-      'INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-      [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt])
+      'INSERT INTO users (id, email, name, business_name, password_hash, salt, email_confirmation_required) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+      [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt, u.requireConfirmation === true ? 1 : 0])
     if (r.changes !== 1) return 'exists' as const
     yield* createPersonalWorkspace(t, u.id, u.business_name)
     return 'created' as const
@@ -102,17 +113,19 @@ export async function writeSellerProfile(db: Db, userId: string, sells: string, 
 // deliberately no plain `id`: a caller names which one it means. email is the actor's. business_name is the
 // workspace's (its profile lives on the founder's users row, whose id is the workspace id). No membership in the
 // session's workspace: not signed in (null). authedAt: when this session last proved who it is (lib/sessions.ts
-// FRESH_AUTH_S; checked by stale() in lib/workspace-access.ts).
-export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role; authedAt: number }
+// FRESH_AUTH_S; checked by stale() in lib/workspace-access.ts). emailVerified: the signed-in account has proved it owns
+// `email` (#357; docs/design/email-ownership.md "What needs a verified email"). An account whose email is not confirmed
+// yet has no working session at all (here and in hasLiveSession): the app opens only after the confirmation link.
+export type SessionUser = { email: string; business_name: string; actorId: string; tenantId: string; role: Role; authedAt: number; emailVerified: boolean }
 
 export async function getSessionUser(token: string | undefined, d?: Db): Promise<SessionUser | null> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return null
   const db = d ?? await getDb()
   const id = hashToken(token)
   const now = nowS()
-  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null; last_seen_at: number | null; authed_at: number | null }>(
-    `SELECT u.id, u.email, u.business_name, s.active_tenant_id, s.last_seen_at, coalesce(s.authed_at, s.created_at, 0) AS authed_at FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL`,
+  const row = await db.get<{ id: string; email: string; business_name: string; active_tenant_id: string | null; last_seen_at: number | null; authed_at: number | null; email_verified_at: number | null }>(
+    `SELECT u.id, u.email, u.business_name, u.email_verified_at, s.active_tenant_id, s.last_seen_at, coalesce(s.authed_at, s.created_at, 0) AS authed_at FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND ${CONFIRMED_OR_NOT_REQUIRED}`,
     [id, now])
   if (!row) return null
   if (row.last_seen_at === null || now - Number(row.last_seen_at) >= SEEN_EVERY_S) await db.run('UPDATE sessions SET last_seen_at = ? WHERE id = ?', [now, id])
@@ -124,7 +137,7 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
     return null
   }
   const business_name = m.tenantId === row.id ? row.business_name : await readBusinessName(db, m.tenantId)
-  return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role, authedAt: Number(row.authed_at ?? 0) }
+  return { email: row.email, business_name, actorId: row.id, tenantId: m.tenantId, role: m.role, authedAt: Number(row.authed_at ?? 0), emailVerified: row.email_verified_at !== null && row.email_verified_at !== undefined }
 
 }
 
@@ -134,7 +147,7 @@ export async function getSessionUser(token: string | undefined, d?: Db): Promise
 // refused there, never sent to the sign-in page as if signed out.
 export async function hasLiveSession(token: string | undefined, d?: Db): Promise<boolean> {
   if (!token || !/^[a-f0-9]{64}$/.test(token)) return false
-  return !!(await (d ?? await getDb()).get('SELECT 1 AS x FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL', [hashToken(token), nowS()]))
+  return !!(await (d ?? await getDb()).get(`SELECT 1 AS x FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ? AND s.revoked_at IS NULL AND ${CONFIRMED_OR_NOT_REQUIRED}`, [hashToken(token), nowS()]))
 }
 
 // Sign-out: the session is revoked (kept with who and when until the reaper's retention ends), not deleted.

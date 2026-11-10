@@ -40,7 +40,7 @@ const LIVE_DENTAL_REQUEST = 'Find independent dental practices in New York City 
 const LIVE_LONDON_REQUEST = 'Find B2B SaaS startups in London, UK that raised seed funding or are hiring their first sales representative in the last 90 days. We sell CRM setup and outbound sales consulting. Exclude agencies, directories and companies outside the UK. Show dated source evidence and founder or head of sales contacts.'
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-offersame-')); const DB = path.join(tmp, 'app.db'); const db = new Database(DB)
 migrateAllSqlite(db)
-db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website) VALUES ('u1', 's@example.test', 'x', 'y', 'Synthetic Co', ?, '')").run(SAVED)
+db.prepare("INSERT INTO users (id, email, password_hash, salt, business_name, sells, website, email_verified_at) VALUES ('u1', 's@example.test', 'x', 'y', 'Synthetic Co', ?, '', 1)").run(SAVED)
 for (const [id, query, industry, location] of [[LIVE_DENTAL, LIVE_DENTAL_REQUEST, 'Dental', 'New York City'], [LIVE_LONDON, LIVE_LONDON_REQUEST, 'SaaS', 'London, UK']]) {
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller, icp, icp_inferred, offer, offer_set_at) VALUES (?, 'u1', 'Dental Seller', ?, ?, 'running', ?, ?, '{\"summary\":\"synthetic\"}', 1, NULL, NULL)").run(id, industry, location, query, SAVED)
   db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, 'Synthetic Buyer', 'Pat', 'pat@buyer.example', 'Hiring', 'https://news.example/a', 'Synthetic Buyer is hiring.', 80)").run(`lead-${id}`, id)
