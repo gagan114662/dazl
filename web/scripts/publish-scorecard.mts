@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { BatchResult } from '../lib/benchmark/runner.ts'
 import type { Superiority } from '../lib/benchmark/superiority.ts'
-import type { Published } from '../lib/benchmark/published.ts'
+import { distinctBatches, type Published } from '../lib/benchmark/published.ts'
 
 const arg = (f: string) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : undefined }
 const die = (m: string): never => { console.error(`publish-scorecard: ${m}`); process.exit(2) }
@@ -18,8 +18,9 @@ export function toPublished(batch: BatchResult, sup: Superiority | null, now: st
   if (!m.evaluator.independent) throw new Error('the evaluator is not independent of the systems under test')
   if (sup) {
     if (sup.origin === 'synthetic') throw new Error('the analysis is synthetic')
+    if (!Array.isArray(sup.batches) || !sup.batches.every((b: unknown) => typeof b === 'string')) throw new Error('the analysis batches must be a list of batch ids')
     if (!sup.batches.includes(m.batch_id)) throw new Error(`the analysis does not include batch ${m.batch_id}`)
-    if ((sup.overall.decision === 'win' || sup.overall.decision === 'loss') && new Set(sup.batches).size < 2) throw new Error(`a win or a loss needs at least 2 distinct batches; the analysis has ${new Set(sup.batches).size}`)
+    if ((sup.overall.decision === 'win' || sup.overall.decision === 'loss') && distinctBatches(sup.batches) < 2) throw new Error(`a win or a loss needs at least 2 distinct batches; the analysis has ${distinctBatches(sup.batches)}`)
   }
   return {
     format: 'dazl-published-scorecard', version: 1, generated_at: now,

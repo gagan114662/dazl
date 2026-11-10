@@ -57,15 +57,18 @@ export function batchView(b: PublishedBatch): BatchView {
   }
 }
 
+// The count of distinct batches an analysis rests on. A value that is not a list of strings (a string such as "b1b2", an object, null) is no batches at all.
+export const distinctBatches = (b: unknown): number => Array.isArray(b) && b.every(x => typeof x === 'string') ? new Set(b).size : 0
+const ONE_BATCH_WHY = 'Only one batch has been run. One batch cannot show a win, a loss or an interval, so no result is stated until the same task set has been repeated.'
 const DECISION_WORD: Record<string, string> = { win: 'Win', loss: 'Loss', inconclusive: 'Inconclusive' }
 export function superiorityView(s: Superiority): SuperiorityView {
-  const enough = new Set(s.batches).size >= 2   // one batch can never show a win
+  const enough = distinctBatches(s.batches) >= 2   // one batch can never show a win or a loss; anything that is not a list of strings counts as none
   // One batch can show neither a win nor a loss: the headline, every metric row and every target say so together, with no interval and no "met".
   const decided = s.overall.decision === 'win' || s.overall.decision === 'loss'
   const overall = decided && !enough ? 'Inconclusive: a win or a loss needs at least 2 distinct batches' : s.overall.decision === 'win' ? `${s.systems.candidate} wins` : s.overall.decision === 'loss' ? `${s.systems.candidate} loses` : s.overall.decision === 'no_winner_floor_failed' ? 'No winner: a critical accuracy floor failed' : 'Inconclusive'
   const range = (i: [number, number] | null) => i ? `${i[0].toFixed(3)} to ${i[1].toFixed(3)}` : 'no interval'
   return {
-    overall: s.origin === 'synthetic' ? `Example only: ${overall}` : overall, why: s.overall.why,
+    overall: s.origin === 'synthetic' ? `Example only: ${overall}` : overall, why: !enough && s.overall.decision !== 'no_winner_floor_failed' ? ONE_BATCH_WHY : s.overall.why,
     plan: `Plan ${s.plan.id} (hash ${s.plan.hash.slice(0, 12)}), registered ${s.plan.registered_at} before any result was viewed. Look ${s.look}.`,
     metrics: s.metrics.map(m => ({ metric: m.metric.replace(/_/g, ' '), decision: enough ? DECISION_WORD[m.decision] ?? m.decision : 'Inconclusive', detail: !enough ? `Not shown: one batch cannot show a difference or an interval (${m.pairs} pairs in ${m.clusters} clusters).` : `Difference ${m.difference === null ? 'n/a' : m.difference.toFixed(3)}, interval ${range(m.interval)}, ${m.pairs} pairs in ${m.clusters} clusters. ${m.why}` })),
     floors: s.floors.map(f => ({ id: f.id.replace(/_/g, ' '), state: f.ok === null ? 'not evaluable' : f.ok ? 'holds' : 'FAILED', detail: f.detail })),

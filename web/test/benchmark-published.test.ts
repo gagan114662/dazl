@@ -118,3 +118,26 @@ test('2b: with one batch no metric says Win or Loss, none shows an interval, and
   const two = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1', 'b2'] })), EX).superiority!
   assert.ok(two.metrics.some(m => m.decision === 'Win')); assert.ok(two.metrics.some(m => /interval \d/.test(m.detail))); assert.ok(two.targets.some(t => /: met\./.test(t)))
 })
+
+// ---- Hermes-PC re-check of #1026 (head c4b969e6), second round ----
+
+test('2c: with one batch the reason shown is the one-batch message, not the analysis\' own "every primary metric won"', () => {
+  for (const [decision, why] of [['win', 'every primary metric won'], ['loss', 'the whole interval is below the minimum effect'], ['inconclusive', 'interval reaches inside the minimum effect']] as const) {
+    const v = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1'], overall: { decision, why } } as never)), EX).superiority!
+    assert.match(v.overall, /^Inconclusive/); assert.match(v.why, /Only one batch has been run/); assert.doesNotMatch(v.why, new RegExp(why)); assert.doesNotMatch(JSON.stringify(v), /every primary metric won|below the minimum effect|reaches inside/)
+  }
+  // a failed critical floor keeps its own reason, and with two batches the analysis' reason is shown
+  assert.match(scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1'], overall: { decision: 'no_winner_floor_failed', why: 'precision floor failed' } } as never)), EX).superiority!.why, /precision floor failed/)
+  assert.equal(scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: ['b1', 'b2'] })), EX).superiority!.why, 'every primary metric won')
+})
+
+test('2d: a batches value that is not a list of strings is under 2 batches, in the view and at publish', () => {
+  const full = { manifest: { batch_id: 'b1', task_set_version: '1', as_of: '2026-11-10', origin: 'live', label: 'l', budget: { usd_per_task: 1, seconds_per_task: 1, batch_usd: 1 }, evaluator: { name: 'e', version: '1', independent: true }, systems: [] }, report: [], spent_usd: 0 } as never
+  for (const bad of ['b1', 'b1b2', 'b1,b2', { 0: 'b1', 1: 'b2', length: 2 }, null, undefined, 5, [1, 2], ['b1', 2], [['b1', 'b2']], ['b1', null]] as unknown[]) {
+    const name = JSON.stringify(bad)
+    const view = scorecardView(pub(liveBatch({ batch_id: 'b1' }), sup({ batches: bad } as never)), EX).superiority!
+    assert.match(view.overall, /^Inconclusive/, name); assert.doesNotMatch(view.overall, /wins|loses/, name); assert.ok(view.metrics.every(m => m.decision === 'Inconclusive'), name)
+    for (const decision of ['win', 'loss']) assert.throws(() => toPublished(full, sup({ batches: bad, overall: { decision, why: 'x' } } as never), 'd'), /batch/, name + ' ' + decision)
+  }
+  assert.doesNotThrow(() => toPublished(full, sup({ batches: ['b1', 'b2'] }), 'd'))
+})
