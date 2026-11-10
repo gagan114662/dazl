@@ -100,7 +100,8 @@ export interface LeadEvidence {
   industries?: string[]                      // industries the cited page names
   event?: { kind: string; date?: string | null; sources: { url: string }[]; contradicted_by?: { url: string }[] } | null
   consent?: 'allowed' | 'blocked' | null
-  contact?: { email?: string | null; phone?: string | null } | null
+  // person: what an independent person check (lib/evals/person-verify.ts, #781) found about the named contact at this company. Undefined = no person check was run.
+  contact?: { email?: string | null; phone?: string | null; person?: 'current' | 'former' | 'unknown' } | null
 }
 export interface FieldVerdict { field: string; status: Status; rationale: string; evidence?: string[] }
 export interface LeadEvaluation {
@@ -118,6 +119,9 @@ export const registrable = (h: string) => { const host = h.toLowerCase().replace
 // are recruiting too, not only the bare names.
 const RECRUITING = /^(careers?|jobs?|hr|recruit(ing|ment|ers?)?|talent(\s?acquisition)?|hiring|people|apply|((job|career)s? )?applications?|work(\s?with\s?us)?|join(\s?us)?|employment|vacancies)(\s(team|dept|department))?$/
 const isRecruitingMailbox = (local: string) => RECRUITING.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
+// A generic role inbox routes to a team, not to a named buyer: info@, sales@, support@, no-reply@ and the like are not a contact route for a person (#781).
+const GENERIC = /^(info|contact|hello|hi|sales|support|help|admin|office|team|enquir(y|ies)|inquir(y|ies)|mail|general|press|media|marketing|billing|accounts?|service|customer(\s(service|care|support))?|no\s?reply|do\s?not\s?reply)(\s(team|dept|department))?$/
+const isGenericMailbox = (local: string) => GENERIC.test(local.split('+')[0].replace(/[._-]+/g, ' ').trim())
 // One whole address: a single @, a non-empty local part, a dotted domain, no spaces. "@northwind.io" and "jane@northwind.io@other.org" are not usable routes.
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/
 const emailDomain = (em: string) => em.slice(em.indexOf('@') + 1)
@@ -183,8 +187,12 @@ export function evaluateLead(frozen: FrozenContract, e: LeadEvidence): LeadEvalu
   if (!em) add('contact.usable', 'unknown', e.contact?.phone ? 'only a phone number: not checked' : 'no contact route')
   else if (!EMAIL.test(em)) add('contact.usable', 'fail', 'the email is not a well-formed address')
   else if (isRecruitingMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a hiring inbox, which routes to recruiting and not to a buyer')
+  else if (isGenericMailbox(em.slice(0, em.indexOf('@')))) add('contact.usable', 'fail', 'the email is a generic role inbox, which reaches a team and not a named person')
+  else if (e.contact?.person === 'former') add('contact.usable', 'fail', 'the named contact is a former employee of the company')
   else if (!claimed) add('contact.usable', 'unknown', 'the company domain is not known, so the email domain cannot be matched')
-  else add('contact.usable', registrable(emailDomain(em)) === claimed ? 'pass' : 'fail', registrable(emailDomain(em)) === claimed ? 'the email is at the company\'s domain' : 'the email is not at the company\'s domain')
+  else if (registrable(emailDomain(em)) !== claimed) add('contact.usable', 'fail', 'the email is not at the company\'s domain')
+  else if (e.contact?.person === 'unknown') add('contact.usable', 'unknown', 'the email is at the company\'s domain, but the contact\'s current employment could not be confirmed')
+  else add('contact.usable', 'pass', e.contact?.person === 'current' ? 'the email is at the company\'s domain and the contact is independently confirmed as a current employee' : 'the email is at the company\'s domain')
 
   const status = v.some(x => x.status === 'fail' || x.status === 'contradicted') ? 'fail' : v.some(x => x.status === 'unknown') ? 'unknown' : 'pass'
   return { contract: frozen.contract.id, contract_hash: frozen.hash, tier: status === 'pass' ? 'validated' : null, status, scorer: { ...SCORER }, verdicts: v }

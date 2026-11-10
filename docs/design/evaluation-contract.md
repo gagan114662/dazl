@@ -33,3 +33,11 @@ Whole UTC calendar days: the `as_of` day passes, the next day is the future (fai
 
 ## Not done here
 The evidence collector and the semantic judge (#395, #780-782, #396, #783-785); a live run; a UI for the contract. Contracts are frozen per process; a durable contract store is not built.
+
+## Person and contact-route verification (#781)
+`lib/evals/person-verify.ts` decides from pages somebody else fetched whether the named contact is CURRENT at the company, and hands the contract `contact.person` (`current | former | unknown`).
+- A page speaks about the person only when one sentence names both the person and the company. A same-name person at another company supports nothing.
+- **Former beats current:** any fresh page saying they left (former, ex-, left, resigned, stepped down, alumni, until <year>...) makes them former.
+- **Current needs a fresh, dated page** (within `max_age_days` of `as_of`, not after it) with a present-tense sentence. No page, an undated or stale page is `unknown`, never current.
+- In `contact.usable`: a former employee fails; a generic role inbox (info@, sales@, support@, no-reply@...) fails as well as a hiring inbox; the right domain with an unconfirmed person is unknown; a contact with no person check at all is judged by the route alone, as before.
+Not done: fetching the pages, matching a person by anything but name and company, title verification beyond a stated-title match, and the semantic judge (#782).
