@@ -14,7 +14,8 @@ export function migrateAdvBudget(db: Database.Database): void {
 
 export const WINDOW_S = 3600
 let seq = 0
-export async function reserveRequest(db: Db, tenantId: string, connector: string, limit: number, consumer: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+// windowS: the counting window (default one hour). A separate connector key with a longer window gives a second, daily cap (#192 session engagers: 'adv:linkedin:day').
+export async function reserveRequest(db: Db, tenantId: string, connector: string, limit: number, consumer: string, now = Math.floor(Date.now() / 1000), windowS = WINDOW_S): Promise<boolean> {
   const id = `${now.toString(36)}${(++seq).toString(36)}${Math.random().toString(36).slice(2, 10)}`
   return db.tx(function* (t: Tx): TxBody<boolean> {
     // The first reservation for a tenant/connector (n = 1 after the upsert; the row lock makes exactly one transaction see it) SNAPSHOTS the legacy usage: every audit row in the window becomes a
@@ -25,10 +26,10 @@ export async function reserveRequest(db: Db, tenantId: string, connector: string
     yield* t.run('INSERT INTO adv_budget_lock (tenant_id, connector, n, since) VALUES (?, ?, 1, ?) ON CONFLICT (tenant_id, connector) DO UPDATE SET n = adv_budget_lock.n + 1', [tenantId, connector, now])
     const lock = yield* t.get<{ n: number }>('SELECT n FROM adv_budget_lock WHERE tenant_id = ? AND connector = ?', [tenantId, connector])
     if (Number(lock?.n ?? 0) === 1) yield* t.run("INSERT INTO adv_requests (id, tenant_id, connector, at, consumer) SELECT 'legacy:' || id, tenant_id, connector, created_at, 'legacy' FROM connector_audit WHERE tenant_id = ? AND connector = ? AND status IN ('ok','empty','worker_error','error','auth_failed','throttled','schema_error','upstream_error') AND created_at > ? ON CONFLICT (id) DO NOTHING", [tenantId, connector, now - WINDOW_S])
-    const r = yield* t.get<{ n: number }>('SELECT COUNT(*) AS n FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at > ?', [tenantId, connector, now - WINDOW_S])
+    const r = yield* t.get<{ n: number }>('SELECT COUNT(*) AS n FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at > ?', [tenantId, connector, now - windowS])
     if (Number(r?.n ?? 0) >= limit) return false
     yield* t.run('INSERT INTO adv_requests (id, tenant_id, connector, at, consumer) VALUES (?, ?, ?, ?, ?)', [id, tenantId, connector, now, consumer])
-    yield* t.run('DELETE FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at <= ?', [tenantId, connector, now - 2 * WINDOW_S])
+    yield* t.run('DELETE FROM adv_requests WHERE tenant_id = ? AND connector = ? AND at <= ?', [tenantId, connector, now - 2 * windowS])
     return true
   })
 }
