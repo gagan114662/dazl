@@ -204,11 +204,11 @@ test('F4: the runner persists the frozen contract hash with every judgement; a s
   const f = freezeContract(base())
   const items: BlindItem[] = [{ blind_id: 'b1', company: 'Northwind Labs', domain: 'northwind.io' } as unknown as BlindItem]
   const brief = { task_id: 't1' } as unknown as Brief
-  const hook = contractEvaluator<Contract, LeadEvidence>({ name: 'contract', version: '1', contractFor: () => f.contract as Contract, evidenceFor: () => good(), evaluate: (c, e) => evaluateLead(f, e) })
+  const hook = contractEvaluator<Contract, LeadEvidence>({ name: 'contract', version: '1', contractFor: () => f.contract as Contract, evidenceFor: () => good(), evaluate: (_c, e) => evaluateLead(f, e) })
   const out = await hook.judge(items, brief)
   const rec = out.b1.record as { contract_hash: string; contract: string }
   assert.equal(rec.contract_hash, f.hash); assert.equal(rec.contract, 'toronto-saas-hire')
-  const noHash = contractEvaluator<Contract, LeadEvidence>({ name: 'contract', version: '1', contractFor: () => f.contract as Contract, evidenceFor: () => good(), evaluate: (c, e) => { const { contract_hash, ...rest } = evaluateLead(f, e); void contract_hash; return rest as never } })
+  const noHash = contractEvaluator<Contract, LeadEvidence>({ name: 'contract', version: '1', contractFor: () => f.contract as Contract, evidenceFor: () => good(), evaluate: (_c, e) => { const { contract_hash, ...rest } = evaluateLead(f, e); void contract_hash; return rest as never } })
   const bad = await noHash.judge(items, brief)
   assert.match((bad.b1.record as { error: string }).error, /no contract hash/); assert.equal(bad.b1.identity, undefined)
 })
