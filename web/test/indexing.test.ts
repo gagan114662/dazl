@@ -3,7 +3,7 @@
 // local fake (fetchImpl); nothing leaves the process.
 import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
-import { saveDomain, getConfig, addKeyword, removeKeyword, listKeywords, runIndexChecks, latestResults, weeklySpend, dueTenants, WEEKLY_ALLOWANCE, MAX_KEYWORDS } from '../lib/seo/indexing.ts'
+import { saveDomain, getConfig, addKeyword, removeKeyword, listKeywords, runIndexChecks, type IndexCheck, latestResults, weeklySpend, dueTenants, WEEKLY_ALLOWANCE, MAX_KEYWORDS } from '../lib/seo/indexing.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { bothEngines } from './helpers/engines.ts'
 
@@ -31,7 +31,7 @@ bothEngines('indexing: runIndexChecks: site: query, host match counts subdomains
   const out = await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW })
   assert.equal(out!.length, 2)
   assert.ok(queries.every(q => decodeURIComponent(q).includes('site:acme.com')))
-  assert.ok(out!.every(c => c.indexed && c.top_url === 'https://blog.acme.com/post')) // subdomain counts
+  assert.ok((out as IndexCheck[]).every((c: IndexCheck) => c.indexed && c.top_url === 'https://blog.acme.com/post')) // subdomain counts
   assert.equal(await weeklySpend(db, 'u1', NOW), 2)
   assert.equal((await latestResults(db, 'u1')).length, 2)
   assert.ok(((await getConfig(db, 'u1'))?.next_run_at ?? 0) > NOW)
@@ -168,4 +168,103 @@ bothEngines('indexing: six instances claiming at once, repeatedly, never claim p
       assert.equal(await weeklySpend(db, t, NOW), 10)
     }
   } finally { await Promise.all(pools.map(p => p.close())) }
+})
+
+// #904: results are bound to the domain they were checked against.
+bothEngines('indexing #904: a domain change shows the new domain unchecked and due; spend is not reset', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm')
+  await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://alpha.example/p']), now: NOW })
+  const [r] = await latestResults(db, 'u1')
+  assert.deepEqual(r, { keyword: 'crm', indexed: true, top_url: 'https://alpha.example/p', domain: 'alpha.example', checked_at: NOW })
+  await saveDomain(db, 'u1', 'bravo.example')
+  assert.deepEqual(await latestResults(db, 'u1'), [], 'alpha\'s success is not shown under bravo')
+  assert.equal((await getConfig(db, 'u1'))?.next_run_at, null, 'the new domain is due now')
+  assert.equal(await weeklySpend(db, 'u1', NOW), 1, 'the weekly allowance is not reset by the edit')
+  assert.ok((await dueTenants(db, NOW + 60)).includes('u1'))
+  // switching back scopes the historical alpha result in again (explicitly bound to alpha)
+  await saveDomain(db, 'u1', 'alpha.example')
+  assert.equal((await latestResults(db, 'u1'))[0]?.domain, 'alpha.example')
+})
+
+bothEngines('indexing #904: saving the unchanged domain keeps results and schedule', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  await addKeyword(db, 'u1', 'crm')
+  await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://acme.com/p']), now: NOW })
+  const before = (await getConfig(db, 'u1'))?.next_run_at
+  await saveDomain(db, 'u1', 'https://www.acme.com/')
+  assert.equal((await getConfig(db, 'u1'))?.next_run_at, before)
+  assert.equal((await latestResults(db, 'u1')).length, 1)
+})
+
+bothEngines('indexing #904: a domain edit during the awaited search fences the commit; searches stay spent', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm'); await addKeyword(db, 'u1', 'sales')
+  let edited = false
+  const f = (async (u: string) => {
+    if (!edited) { edited = true; await saveDomain(db, 'u1', 'bravo.example') }
+    return hits(['https://alpha.example/p'])(u)
+  }) as unknown as typeof fetch
+  assert.equal(await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW }), 'stale_domain', 'distinct from [] (provider failure)')
+  assert.deepEqual(await latestResults(db, 'u1'), [])
+  const cfg = await getConfig(db, 'u1')
+  assert.equal(cfg?.domain, 'bravo.example')
+  assert.equal(cfg?.next_run_at, null, 'the stale run did not schedule the new domain a week out')
+  assert.equal(await weeklySpend(db, 'u1', NOW), 2, 'already-sent searches remain counted')
+})
+
+bothEngines('indexing #904: a partial failure records only the checked keywords, bound to the domain', async ({ db }) => {
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'acme.com')
+  await addKeyword(db, 'u1', 'crm'); await addKeyword(db, 'u1', 'sales')
+  let n = 0
+  const f = (async (u: string) => (n++ === 0 ? hits(['https://acme.com/p'])(u) : new Response('upstream', { status: 500 }))) as unknown as typeof fetch
+  const out = await runIndexChecks(db, 'u1', { env, fetchImpl: f, now: NOW })
+  assert.equal(out!.length, 1)
+  assert.deepEqual((await latestResults(db, 'u1')).map(r => [r.keyword, r.domain]), [['crm', 'acme.com']])
+  assert.equal(await weeklySpend(db, 'u1', NOW), 2)
+})
+
+bothEngines('indexing #904: tied checked_at returns one deterministic row per keyword; legacy domain-less rows are not current', async ({ db }) => {
+  await saveDomain(db, 'u1', 'acme.com')
+  const ins = (id: string, indexed: number, domain: string | null) => db.run('INSERT INTO seo_index_results (id, tenant_id, keyword, indexed, top_url, checked_at, domain) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, 'u1', 'crm', indexed, null, NOW, domain])
+  await ins('a1', 0, 'acme.com'); await ins('b2', 1, 'acme.com'); await ins('z9', 0, null)
+  const rows = await latestResults(db, 'u1')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].indexed, true, 'tie broken by id descending, ignoring the domain-less legacy row')
+})
+
+// #904 review (Instinct 11-07 item 1, Hermes-PC): the FOR UPDATE on the config row in the commit transaction is what orders a concurrent
+// saveDomain strictly before or after the commit. A single-writer harness cannot tell, so this holds the row from a second connection:
+// writer X locks the config row and, still holding it, changes the domain; the search run's commit then reads the row. WITH the lock it
+// waits for X and finds the new domain (stale_domain, nothing recorded for the old one). WITHOUT it a plain read sees the OLD domain
+// (X has not committed), records results against it, and returns them: the test fails on that.
+bothEngines('indexing #904: a second writer holding the config row makes the commit wait and then fence (Postgres FOR UPDATE)', async ({ db, kind, url, schema }) => {
+  if (kind !== 'pg') return   // SQLite has one write transaction at a time; the single-writer cases above cover it
+  await resetTinyfishState(db)
+  await saveDomain(db, 'u1', 'alpha.example')
+  await addKeyword(db, 'u1', 'crm')
+  const writer = pgDb({ connectionString: url!, searchPath: schema, max: 1 })
+  try {
+    const x = writer.tx(function* (t) {
+      yield* t.get('SELECT domain FROM seo_index_configs WHERE tenant_id = ? FOR UPDATE', ['u1'])   // X now holds the row
+      yield* t.get('SELECT pg_sleep(1.5)')                                                          // ...and keeps it while the run commits
+      yield* t.run('UPDATE seo_index_configs SET domain = ?, next_run_at = NULL WHERE tenant_id = ?', ['bravo.example', 'u1'])
+      return true
+    })
+    await new Promise(r => setTimeout(r, 400))                          // X is inside its transaction
+    const t0 = Date.now()
+    const out = await runIndexChecks(db, 'u1', { env, fetchImpl: hits(['https://alpha.example/p']), now: NOW })
+    const waited = Date.now() - t0
+    await x
+    assert.ok(waited >= 700, `the commit waited for the writer holding the row (${waited} ms)`)
+    assert.equal(out, 'stale_domain', 'after the wait it saw the new domain and fenced')
+    const rows = await db.all<{ n: number }>('SELECT COUNT(*) AS n FROM seo_index_results WHERE tenant_id = ?', ['u1'])
+    assert.equal(Number(rows[0].n), 0, 'nothing was recorded against the old domain')
+    assert.equal((await getConfig(db, 'u1'))?.domain, 'bravo.example')
+    assert.equal((await getConfig(db, 'u1'))?.next_run_at, null)
+  } finally { await writer.close() }
 })
