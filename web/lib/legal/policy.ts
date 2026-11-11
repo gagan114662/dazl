@@ -71,7 +71,6 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.ashbyhq.com': { name: 'Ashby job boards', role: 'public_source' },
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
   'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
-  'virksomhet.brreg.no': { name: 'Brønnøysundregistrene (Norway business register entity pages)', role: 'public_source' },
   'www.sov2ex.com': { name: 'sov2ex (V2EX topic search)', role: 'public_source' },
   'www.v2ex.com': { name: 'V2EX', role: 'public_source' },
   'hn.algolia.com': { name: 'Hacker News search', role: 'public_source' },
