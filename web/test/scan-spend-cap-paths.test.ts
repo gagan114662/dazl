@@ -56,6 +56,7 @@ const FREE: Record<string, string> = {
   'https://api.openai.com/v1/models': 'key check (model list): free',
   'https://api.gdeltproject.org/api/v2/doc/doc': 'GDELT news search: free public API',
   'https://api.github.com/search/repositories': 'GitHub search: free, rate-limited',
+  'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
