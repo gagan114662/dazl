@@ -280,6 +280,30 @@ bothEngines('#1042 one admission rule: a click and the scheduler never both queu
   void w2
 })
 
+bothEngines('#1042 the scheduler re-checks active scans INSIDE its write: a scan admitted after its first check (a click) blocks it', async ({ db }) => {
+  await account(db, A, 'a@a.example'); await giveKey(db, A)
+  const w = (await createWatch(db, A, 'Roofers in Ohio', '{"summary":"Roofers"}', null, NOW - 8 * DAY)).watch!
+  // between the tick's first check and its write, a "Find leads now" commits a scan for the account (simulated in the
+  // fence, which runs first inside the tick's transaction)
+  const clicked = id24()
+  const click: Fence = function* (t: Tx) { yield* t.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '-', '-', 'q', 'pending', ?)", [clicked, A, NOW]) }
+  assert.deepEqual(await runDueWatches(db, { now: NOW, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0 })
+  assert.deepEqual((await jobsOf(db, A)).map(j => j.id), [clicked], 'one scan for the account, never two')
+  assert.equal(Number((await watchesOf(db, A))[0].next_run_at), Number(w.next_run_at), 'still due: the next tick runs it')
+})
+
+bothEngines('#1042 (c) two ticks (or instances) mailing at the same time send ONE email per run', async ({ db }) => {
+  const w = await autoRepeat(db, A, 'a@a.example')
+  await watchRun(db, A, w, R, [{ company: 'Smile Leeds' }])
+  const sent: unknown[] = []
+  setTransportForTests(async m => { sent.push(m) })
+  try {
+    const env = { SYSTEM_MAIL_SMTP_URL: 'smtp://fixture.invalid', SYSTEM_MAIL_FROM: 'dazl <no-reply@dazl.example>' }
+    const counts = await Promise.all([sendPlayRunMails(db, { now: S, env }), sendPlayRunMails(db, { now: S, env }), sendPlayRunMails(db, { now: S, env })])
+    assert.equal(sent.length, 1, `one email (ticks reported ${JSON.stringify(counts)})`)
+  } finally { setTransportForTests(null) }
+})
+
 // ---------------------------------------------------------------------------------------------------------------------
 // (c) the email after each run that found new leads
 // ---------------------------------------------------------------------------------------------------------------------
