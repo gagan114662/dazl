@@ -77,7 +77,7 @@ const AREAS: [RegExp, string][] = [
   [/outreach|crm/, 'drafts & CRM'],
   [/memory/, 'profile & memory'],
   [/enrich|people|find-contact|contact|sitecrawl|email-pattern|page-signals|hiring-feed|job-feed|qualify/, 'enrichment'],
-  [/watch|monitor|competitor-reddit|tick/, 'monitors'],
+  [/watch|monitor|competitor-reddit|tick|app\/api\/plays\//, 'monitors'],
   [/scan|leads|search\/|signals\/|advanced|lookalike|campaigns|connectors|events/, 'scans'],
   [/queue|lease|ops\/|health/, 'platform'],
 ]
