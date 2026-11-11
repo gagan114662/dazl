@@ -1374,7 +1374,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
-    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (from the job-board source only)
+    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
@@ -1382,7 +1382,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
-        for (const it of items) if (it.source === 'jobboards' && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
+        for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {

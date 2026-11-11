@@ -181,3 +181,14 @@ test('#533 direct-career roleMatch: the requested role wins over an earlier gene
   assert.equal(later.reason, 'found'); assert.equal(later.matched, true); assert.equal(later.vacancy!.title, 'Sales Operations Manager')
   assert.equal(later.pages, 2, 'both careers paths were sampled before the match settled')
 })
+
+import { quoteFor } from '../lib/signals/careers-page.ts'
+test('review: the quote keeps a passage that names the company when the default window misses it', () => {
+  const text = 'Brightloop is hiring. ' + 'x '.repeat(100) + 'Account Executive ' + 'y '.repeat(30)
+  const at = text.indexOf('Account Executive')
+  const q = quoteFor(text, 'Account Executive', at, 'Brightloop')
+  assert.match(q, /Brightloop/); assert.ok(q.length <= 300); assert.ok(text.includes(q), 'verbatim')
+  const far = 'Brightloop. ' + 'z '.repeat(400) + 'Account Executive tail'
+  const q2 = quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'); assert.match(q2, /Brightloop/); assert.ok(far.includes(q2))
+  assert.equal(quoteFor('Join us as Account Executive now', 'Account Executive', 8), 'Join us as Account Executive now', 'no company: unchanged')
+})
