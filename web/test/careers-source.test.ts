@@ -126,3 +126,68 @@ test('a bare "revenue" is not a sales-role ask (Ziggy #1034 note 2); revenue ROL
   for (const q of ['startups hiring a Chief Revenue Officer', 'companies hiring a head of revenue', 'building a revenue team', 'VP of Revenue openings', 'revenue operations hires', 'hiring sales staff', 'SDR roles', 'go-to-market hires']) assert.equal(SALES_ASK.test(q), true, q)
   assert.equal(SALES_ASK.test('x'.repeat(200_000) + ' revenue'), false, 'huge input: linear, no match')
 })
+
+// ---- Greptile review round (#1034): each test fails on the previous behaviour ----
+const ROBOTS_PRIVATE = { 'brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private/' } as HttpResult }
+
+test('review: a redirect into a path robots.txt disallows is never fetched', async () => {
+  const asked: string[] = []
+  const http: SafeGet = async url => {
+    asked.push(url); const u = new URL(url)
+    if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nDisallow: /private/' }
+    if (u.pathname === '/careers') return { status: 301, body: '', location: '/private/jobs' }
+    return { status: 200, body: page(INDEX) }
+  }
+  const { items } = await run(http)
+  assert.equal(items.length, 0)
+  assert.ok(!asked.some(u => u.includes('/private/jobs')), 'the disallowed redirect target was not requested')
+})
+
+test('review: 403 / 429 / 500 pages and a blocked robots.txt are unreachable, not an empty market; 404 stays a definite absence', async () => {
+  for (const status of [403, 429, 500]) {
+    const r = await run(site({}, [], { 'brightloop.io/careers': { status, body: '' } }))
+    assert.equal(r.items.length, 0); assert.equal(r.notes.unreachable, 1, `status ${status} says nothing about hiring`)
+  }
+  for (const status of [401, 403, 429]) {
+    const asked: string[] = []
+    const r = await run(site(OPEN, asked, { 'brightloop.io/robots.txt': { status, body: '' } }))
+    assert.equal(r.items.length, 0); assert.equal(r.notes.unreachable, 1, `robots ${status}`)
+    assert.ok(!asked.some(u => u.endsWith('/careers')), `robots ${status}: no page is read around it`)
+  }
+  assert.deepEqual((await run(site({}))).notes, {}, '404 careers page: genuinely nothing, no partial note')
+})
+
+test('review: a page cut at the byte cap is a partial read; a cut robots.txt is not permission', async () => {
+  const r = await run(site({}, [], { 'brightloop.io/careers': { status: 200, body: page('<h2>Open roles</h2>'), truncated: true } }))
+  assert.equal(r.notes.unreachable, 1)
+  const asked: string[] = []
+  const r2 = await run(site(OPEN, asked, { 'brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nAllow: /', truncated: true } }))
+  assert.equal(r2.items.length, 0); assert.ok(!asked.some(u => u.endsWith('/careers')))
+})
+
+test('review: the budget is checked before every redirect hop', async () => {
+  let t = 0; const saved = careersLimits.now; careersLimits.now = () => t
+  try {
+    const http: SafeGet = async url => { t += 8_000; return new URL(url).pathname === '/robots.txt' ? { status: 404, body: '' } : { status: 301, body: '', location: `${url}/` } }
+    const { notes } = await run(http); assert.ok(notes.budget >= 1)
+  } finally { careersLimits.now = saved }
+})
+
+test('review: a supplied careers path is read first, even when nothing links to it', async () => {
+  const asked: string[] = []
+  const { items } = await run(site({ 'brightloop.io/opportunities': INDEX, 'brightloop.io/careers/ae': JOB }, asked), { pages: ['https://brightloop.io/opportunities'] })
+  assert.equal(items.length, 1)
+  const reads = asked.filter(u => !u.endsWith('/robots.txt')).map(u => new URL(u).pathname)
+  assert.equal(reads[1] ?? reads[0], reads.find(p => p !== '/') ); assert.ok(reads.indexOf('/opportunities') < reads.indexOf('/careers') || !reads.includes('/careers'))
+})
+
+test('review: every GTM role family the reader accepts is asked for; "revenue growth" still is not', () => {
+  for (const q of ['companies hiring customer success managers', 'firms hiring account managers', 'partnerships hires', 'hiring solutions engineers', 'growth marketers wanted', 'head of growth']) assert.match(q, SALES_ASK, q)
+  for (const q of ['companies with revenue growth', 'high growth startups', 'partnership with Google']) assert.doesNotMatch(q, SALES_ASK, q)
+})
+
+test('review: the careers read is sent under the token its robots.txt rules were read for', async () => {
+  const uas = new Set<string>()
+  const http: SafeGet = async (url, o) => { uas.add(o?.headers?.['user-agent'] ?? ''); return { status: 404, body: '' } }
+  await run(http); assert.ok([...uas].every(u => u.startsWith('dazl-contact-check')), [...uas].join())
+})
