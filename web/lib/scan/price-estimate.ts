@@ -60,6 +60,9 @@ export interface EstimateInput {
   // An earlier paid call of this owner was never accounted (its pending-settlement marker is stale or marked failed,
   // lib/llm/spend-pool.ts): the pool refuses every reservation until an operator clears it, so the run cannot start.
   poolUnsettled?: boolean
+  // A free-trial scan's own per-scan ceiling (DAZL_TRIAL_SCAN_RESERVE_USD: the job guard's limit, runner.ts). Only a trial payer with a positive
+  // finite number uses it; anything else is ignored, never an invented ceiling.
+  trialReserveUsd?: number | null
   env?: Record<string, string | undefined>
 }
 
@@ -125,6 +128,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
   const binding: 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : 'daily'
   const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
+  const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
   if (i.poolUnsettled) {
@@ -138,15 +142,27 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     message = 'Blocked: your shared spend limit could not be read right now, so what is left of it is unknown. Nothing was started or reserved. Try again in a moment.'
     change.push('Try again shortly; the estimate cannot be confirmed until your remaining limit can be read.')
   } else if (capped && remaining !== null) {
-    if (cappedTotal.min > remaining) {
+    // A trial scan's own per-scan reserve (runner.ts: guardMax = min(trial reserve, the run's max_usd)) can be tighter than the room left: then IT is the ceiling the person confirms against.
+    const eff = trialCeil !== null && trialCeil < remaining ? trialCeil : remaining, trialBinds = eff !== remaining
+    if (cappedTotal.min > eff) {
       ok = false; reason = 'over_budget'
-      message = `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
+      message = trialBinds
+        ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
+        : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
       change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
-    } else if (cappedTotal.max > remaining) warning = `The worst case (${money(cappedTotal.max)}) is above the ${money(remaining)} left, so the run may stop early as a budget stop. That is a stop, not zero results.`
-    else message = `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
+    } else if (cappedTotal.max > eff) {
+      if (trialBinds) message = `The free trial stops each scan at ${money(eff)}, whatever your own limit says.`
+      warning = trialBinds
+        ? `The worst case (${money(cappedTotal.max)}) is above the trial's ${money(eff)} limit per scan, so the scan may stop early as a budget stop. That is a stop, not zero results.`
+        : `The worst case (${money(cappedTotal.max)}) is above the ${money(remaining)} left, so the run may stop early as a budget stop. That is a stop, not zero results.`
+    } else message = trialBinds ? `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the free trial's ${money(eff)} limit per scan.` : `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
+  } else if (trialCeil !== null) {
+    // The trial's per-scan ceiling is real: every model call is reserved against it and refused past it.
+    message = `The free trial stops each scan at ${money(trialCeil)}, whatever the estimate shows. A scan that would pass that stops early as a budget stop, which is not "nothing found".`
+    if (total.max > trialCeil) warning = `The worst case (${money(total.max)}) is above the trial's ${money(trialCeil)} limit per scan, so the scan may stop early as a budget stop. That is a stop, not zero results.`
   } else message = 'No dollar limit is set, so nothing here is a ceiling. Set one to make the run stop at an amount.'
   // A run under a spending limit only reserves for a model the limit's guard can price (limitReservable); any other model is
   // refused at its first call (model_unpriced). Say so BEFORE launch, and put that verdict inside the confirmation (ack) below.
@@ -178,7 +194,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     `Model: ${model}. Tokens per call are ranges chosen by dazl (typical to worst case), priced exactly as the spend guard prices a reservation.`,
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
     'The web-search research fallback and any provider retries cannot be bounded and are not in the total.',
-    'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
+    trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
     ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
@@ -192,7 +208,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     payer: i.payer, model,
     rows: rows.map(r => [r.id, r.kind, r.capped, r.units, r.unit_usd, r.usd && { min: r4(r.usd.min), max: r4(r.usd.max) }, r.note]),
     total: { min: r4(total.min), max: r4(total.max) }, unpriced,
-    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) } },
+    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
     verdict,
   })).digest('hex').slice(0, 16)
   return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack }
