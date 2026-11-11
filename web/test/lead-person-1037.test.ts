@@ -287,11 +287,19 @@ test('review: a lost job (cancelled or re-claimed) stops the pass before the nex
     assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, alive: () => false, onStop: w => why.push(w) }), 0)
     assert.equal(s.queries.length, 0); assert.deepEqual(why, ['ownership_lost']) }
   { const { db, job } = setup(3); const s = stub(); const why: string[] = []; let calls = 0
-    // alive for the first search and its write; lost while the second search is in flight
-    const alive = () => { calls++; return calls <= 3 }
+    // alive for the first search and its write (3 checks); lost while the second search is in flight
+    const alive = () => { calls++; return calls <= 4 }
     const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, alive, onStop: w => why.push(w) })
     assert.equal(n, 1); assert.equal(s.queries.length, 2); assert.deepEqual(why, ['ownership_lost'])
     assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 1, 'the result of the search in flight when the job was lost is not written') }
+})
+
+test('review: ownership is re-checked immediately before each person write (a reclaim between the post-search check and the write stores nothing)', async () => {
+  const { db, job } = setup(2); const s = stub(); const why: string[] = []; let calls = 0
+  // 1 = before the search, 2 = after it, 3 = just before the write: lost exactly there
+  const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, alive: () => ++calls < 3, onStop: w => why.push(w) })
+  assert.equal(n, 0); assert.deepEqual(why, ['ownership_lost']); assert.equal(s.queries.length, 1)
+  assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 0)
 })
 
 test('review: on the pass deadline the in-flight search is awaited (no paid call outlives the pass) and its result is dropped', async () => {

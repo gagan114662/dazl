@@ -168,6 +168,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       for (const { h, p } of people) {
         if (seen.has(p.name.toLowerCase()) || seen.size >= MAX_PEOPLE) continue
         seen.add(p.name.toLowerCase())
+        if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); return stored } // re-checked before EVERY write: another process may reclaim the job mid-loop
         addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.title}`.slice(0, 120), label: LABEL, confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
         stored++
       }
