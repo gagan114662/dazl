@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dec6d7c5e13cd3093622f7bb9ff4d1d0d32ae5a3
+          ref: a78d5a70d31f6abb76869e41268c4dbf0d297f8f
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -24,18 +24,18 @@ jobs:
           NEXT_TELEMETRY_DISABLED: '1'
         run: |
           npm ci --no-audit --no-fund --loglevel=error
-          echo "dec6d7c5e13cd3093622f7bb9ff4d1d0d32ae5a3" > .build-commit
+          echo "a78d5a70d31f6abb76869e41268c4dbf0d297f8f" > .build-commit
           NODE_OPTIONS=--max-old-space-size=4096 npx next build
           rm -rf .next/cache
-          tar -czf ../staging-next-dec6d7c5.tgz .next .build-commit
-          tar -czf ../staging-modules-dec6d7c5.tgz node_modules
+          tar -czf ../staging-next-a78d5a70.tgz .next .build-commit
+          tar -czf ../staging-modules-a78d5a70.tgz node_modules
           ls -la ../staging-*.tgz
           node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
-          sha256sum ../staging-next-dec6d7c5.tgz
+          sha256sum ../staging-next-a78d5a70.tgz
       - uses: actions/upload-artifact@v4
         with:
-          name: staging-next-dec6d7c5
+          name: staging-next-a78d5a70
           path: |
-            staging-next-dec6d7c5.tgz
-            staging-modules-dec6d7c5.tgz
+            staging-next-a78d5a70.tgz
+            staging-modules-a78d5a70.tgz
           retention-days: 3
