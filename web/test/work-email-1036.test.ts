@@ -276,6 +276,20 @@ test('a published address for the person is used first: free, no provider call, 
   assert.equal(workEmailCopy(r.row).checked, true)
 })
 
+test('a guessed candidate is never the free tier, even marked verified; two published addresses for one person offer neither', async () => {
+  const s = seed({ keys: 'none' })
+  const env = { EMAIL_GUESS_ENABLED: '1' }
+  // Owen's address is printed, so the pattern first.last is learned from two people; Dana gets a GUESSED candidate.
+  recordEmailGuesses(s.db, 'A', s.lead, SITE, ['owen.park', 'zed.quinn'], ['Owen Park, Owner', 'Zed Quinn, Dentist', 'Dana Lee, Practice Manager'], { env, homeText: '1 Main St, New York, NY 10001', seen: [{ address: 'owen.park@harbordental.example', url: `https://${SITE}/team` }, { address: 'zed.quinn@harbordental.example', url: `https://${SITE}/team` }] })
+  s.db.prepare("UPDATE email_candidates SET verification = 'verified', verifier = 'synthetic', checked_at = 1 WHERE tier = 'guessed'").run()
+  assert.ok((s.db.prepare("SELECT count(*) n FROM email_candidates WHERE tier = 'guessed' AND person LIKE 'Dana%'").get() as { n: number }).n === 1)
+  assert.equal((await run(s, DANA, stub(never, never))).status, 'no_key', 'the guessed row is not offered')
+  assert.equal((await run(s, OWEN, stub(never, never))).status, 'published')
+  s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Dana Lee, Practice Manager', 'dana@harbordental.example', 'published', 'x', 'published', 'https://harbordental.example/a')").run(s.lead)
+  s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Dana Lee, Practice Manager', 'dlee@harbordental.example', 'published', 'x', 'published', 'https://harbordental.example/b')").run(s.lead)
+  assert.equal((await run(s, DANA, stub(never, never))).status, 'no_key', 'which printed address is hers is not settled')
+})
+
 test('boundary (#899): a verified work email grants no send authority - drafts still need a published contact', async () => {
   const s = seed()
   s.db.prepare('UPDATE leads SET human_confirmed_at = 1 WHERE id = ?').run(s.lead)

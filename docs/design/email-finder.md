@@ -40,12 +40,31 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
      the optional, capped (default 0) mailbox check. Medium and low stay "guessed". Same US-only gate for both tiers.
    No extra fetches: addresses come from pages the crawl already reads (`crawlSite` hands each page's HTML and URL).
 
+5. **Find work email on a lead (#1036, built).** `web/lib/people/work-email.ts`, route `POST /api/leads/[lead]/work-email`,
+   button in the lead's Details under "Right people". One click, one named buyer, the workspace's OWN keys:
+   - who: a stored person on the lead whose title matches the play's buyer roles (or, with none entered, a decision-maker
+     title), not former / retired / assistant-to / historical, with a first and last name; the lead must sit on a settled
+     website (`identityOf` fact or user-confirmed). The server re-derives the person from stored rows.
+   - order: (1) the person's **published** address from this table (`publishedCandidateFor`, read-only, tier 'published'
+     with its page only); (2) Apollo `people/match`; (3) People Data Labs person enrich when Apollo has no usable address
+     and the PDL paid fallback is allowed (#382 opt-in). A kept address stops the waterfall.
+   - checked = Apollo's own `email_status: verified` (stored with provider and date) or published (with the page). PDL
+     and Apollo's other statuses are stored as "found, not checked" and say so; Apollo's guessed / extrapolated addresses
+     are never kept. The address must be the same person, not a past role, at the lead's website domain, not a shared
+     inbox, and the provider must place the person in the US (else nothing is kept; unknown = not US).
+   - spend: 1 credit reserved per paid call in the workspace credit pool (Settings > Enrichment counters and limits)
+     before the call; a durable 'pending' claim makes double clicks and replays pay once; finished lookups replay free.
+   - storage: `work_email_lookups` (PG 0061); its CHECKs make 'verified' impossible without Apollo and a check time and
+     'published' impossible without its page. It is NOT a contact: drafting still uses published addresses only.
+
 ## Not done on purpose
 
 - **No provider is wired.** `verifierFromEnv` returns null. Picking a verification provider (and paying for it)
   is the owner's decision; a provider adapter plus a sandbox test is a follow-up after that go.
-- **No product contact consumer reads candidates.** No lead page or outreach path reads `email_candidates`
-  (enforced by `test/email-pattern.test.ts` and `test/legal-policy.test.ts`). Showing "guessed, verified"
+- **No outreach consumer reads candidates; the lead page reads only the published tier.** No outreach path reads
+  `email_candidates`, and only `publishedCandidateFor` (in `email-pattern.ts`, still the only module touching the table)
+  hands Find work email a published row with its page; guessed rows of any state are never shown (enforced by
+  `test/email-pattern.test.ts`, `test/legal-policy.test.ts` and `test/work-email-1036.test.ts`). Showing "guessed, verified"
   addresses to a seller is a separate, gated change. The generic tenant lifecycle export/deletion covers these
   directly tenant-scoped tables; that data-access path is not a contact consumer (see `docs/TENANT-LIFECYCLE.md`).
 - No live mailbox probes (SMTP RCPT) from dazl's own servers.
