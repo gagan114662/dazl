@@ -94,7 +94,16 @@ test('runJob: ZERO-MATCH — the search returned nothing and no source failed', 
   assert.match(e.outcome.label, /sources returned nothing/)
 })
 
-test('runJob: FAILED — the search source answers 500: the outcome names the source, says a paid step may have been billed, and is not "zero-match"', async () => {
+// A maybe-billed (5xx / timeout) TinyFish call keeps the fail-closed rule ONLY when the call is priced: a free ($0) failed call is one failed page
+// (#848, owner-approved 2026-11-11; tinyfish-free-failure.test.ts). These tests pin the priced path, so they set a TinyFish price like the cap tests below.
+function ptest(name: string, fn: () => Promise<void>) {
+  test(name, async () => {
+    process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = '0.001'; process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD = '0.001'
+    try { await fn() } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD; delete process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD }
+  })
+}
+
+ptest('runJob: FAILED — the search source answers 500: the outcome names the source, says a paid step may have been billed, and is not "zero-match"', async () => {
   const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], searchStatus: 500 }))
   assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows]))
   // Provenance: ONLY the source whose own request errored is named. The model search was refused BEFORE it ran (the spend
@@ -120,7 +129,7 @@ test('runJob: FAILED — the model search itself answers 500 after send: anthrop
   assert.deepEqual(outcomeInputs(rep, e.rows, String(e.job.status)).failed_sources, ['search:anthropic'])
 })
 
-test('runJob: FAILED — a search fails after partial hits: the source reads error and keeps its partial evidence, never "ok"', async () => {
+ptest('runJob: FAILED — a search fails after partial hits: the source reads error and keeps its partial evidence, never "ok"', async () => {
   const hit = { url: 'https://ex.com/x', title: 'X', snippet: 's', date: null }
   const e = await ending(base({
     hits: [], modelQueries: ['London SaaS seed round', 'London SaaS startup funding'],
@@ -304,7 +313,7 @@ const companyFailure = (over: Partial<Fixture>) => ending(base({
 }))
 const companyRow = (e: Awaited<ReturnType<typeof ending>>) => e.rows.find(r => r.collector === 'search:tinyfish') as { status?: string } | undefined
 
-test('runJob: CAUSAL - company path: a sent search answered 5xx (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
+ptest('runJob: CAUSAL - company path: a sent search answered 5xx (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
   const e = await companyFailure({ searchStatus: 500 })
   assert.equal(e.r.calls.searches.length, 1, 'the 5xx request WAS sent')
   assert.equal(e.r.calls.tfFetchBatches.length, 0, 'no fetch after the failure')
@@ -318,7 +327,7 @@ test('runJob: CAUSAL - company path: a sent search answered 5xx (maybe billed) e
   assert.match(e.outcome.detail ?? '', /did not run it again automatically/, 'the outcome says no automatic re-run (double-bill honesty)')
 })
 
-test('runJob: CAUSAL - company path: a sent search that times out (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
+ptest('runJob: CAUSAL - company path: a sent search that times out (maybe billed) ends accounting_uncertain, NO later paid reserve', async () => {
   const e = await companyFailure({ searchTimeout: true })
   assert.equal(e.r.calls.searches.length, 1, 'the timed-out request WAS sent')
   assert.equal(e.r.calls.prompts.length, 0, 'no model request after the timeout')
@@ -356,7 +365,7 @@ test('runJob: CAUSAL - company path: a documented 429 rejection ends provider_ra
   assert.equal(companyRow(e)?.status, 'error')
 })
 
-test('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 5xx (maybe billed): accounting_uncertain, NO later paid send', async () => {
+ptest('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 5xx (maybe billed): accounting_uncertain, NO later paid send', async () => {
   const e = await companyFailure({ hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], fetchStatus: 500 })
   assert.equal(e.r.calls.searches.length, 3, 'the three fixed searches ran clean')
   assert.equal(e.r.calls.tfFetchBatches.length, 1, 'the fetch batch WAS sent')
@@ -392,7 +401,7 @@ test('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 42
   assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
 })
 
-test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 5xx (maybe billed): NO fetch send, accounting_uncertain', async () => {
+ptest('runJob: CAUSAL - company path: query 1 hits, query 2 answered 5xx (maybe billed): NO fetch send, accounting_uncertain', async () => {
   const e = await companyFailure({ hitsFor: (n) => n === 0 ? [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] : [], searchStatusFor: (n) => n === 1 ? 500 : undefined })
   assert.equal(e.r.calls.searches.length, 2, 'query 1 ran clean, the query-2 request WAS sent')
   assert.equal(e.r.calls.tfFetchBatches.length, 0, 'the fetch batch was never SENT after the maybe-billed search')
