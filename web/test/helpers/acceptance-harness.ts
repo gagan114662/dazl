@@ -12,7 +12,7 @@ import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
-import { ProviderError, type Provider } from '../../lib/llm/provider.ts'
+import { ProviderError, anthropicProvider as realAnthropic, type Provider } from '../../lib/llm/provider.ts'
 import { reserveScanSpend } from '../../lib/scan/spend-cap.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
@@ -52,6 +52,7 @@ export interface Fixture {
   searchStatus?: number                    // the search API answers every query with this HTTP status (a source/infrastructure failure)
   searchTimeout?: boolean                  // the search request never answers (the fetch rejects like an abort/timeout: a maybe-billed send)
   fetchStatus?: number                     // the fetch API answers every batch with this HTTP status (a source/infrastructure failure)
+  researchRetired?: boolean                // research is the REAL provider method (retired since #510: refuses research_unbounded before any request), as in production
   researchRealReserve?: boolean            // the stub research reserves through the REAL spend ledger before failing (durable production-model uncertainty, not a no-reserve stub)
   fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
@@ -97,8 +98,9 @@ export async function runFixture(f: Fixture) {
   const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
-      research: async () => {
+      research: async (_rk: string, _rp: string, _rf?: typeof fetch) => {
         calls.research.push(true)
+        if (f.researchRetired) return realAnthropic.research(_rk, _rp, _rf)
         if (f.researchError) {
           // Mirror the production paid-call path: a REAL reserve through the spend ledger, then a maybe-billed failure -
           // the row stays 'reserved' (unsettled), the durable evidence a no-reserve stub cannot produce.
