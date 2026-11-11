@@ -382,6 +382,14 @@ test('mergeLookups: older or missing rows never erase a newer result; pending gi
   assert.equal(mergeLookups(pend, [row(DANA, 'uncertain', 100)])[DANA].status, 'uncertain', 'the stale window turns pending into retryable')
   assert.equal(mergeLookups(pend, [row(DANA, 'not_found', 140)])[DANA].status, 'not_found')
   assert.equal(mergeLookups({}, [row(OWEN, 'pending', 1)])[OWEN].status, 'pending')
+  // Greptile round 2: a retry that succeeds in the same second as the failure it replaces is shown, not hidden.
+  const failed = { [DANA]: row(DANA, 'error', 100) }
+  assert.equal(mergeLookups(failed, [row(DANA, 'verified', 100, 'x@harbordental.example')])[DANA].status, 'verified')
+  assert.equal(mergeLookups({ [DANA]: row(DANA, 'uncertain', 100) }, [row(DANA, 'not_found', 100)])[DANA].status, 'not_found')
+  assert.equal(mergeLookups(failed, [row(DANA, 'pending', 100)]), failed, 'a pending read never hides the failure it has not finished')
+  assert.equal(mergeLookups(done, [row(DANA, 'error', 100)]), done, 'equal time: an open row never replaces a finished one')
+  // The page's own click answer always replaces its person's row (even with an older or equal clock).
+  assert.equal(mergeLookups(failed, [row(DANA, 'verified', 90, 'x@harbordental.example')], true)[DANA].status, 'verified')
   for (const junk of [null, 'x', 42, {}, [null, 7, 'x', { target: 1, status: 'verified' }, { target: DANA }, { status: 'verified' }]]) assert.equal(mergeLookups(done, junk), done, JSON.stringify(junk))
   assert.ok(PENDING_POLL_MS * PENDING_POLL_MAX > PENDING_STALE_S * 1000, 'the page keeps following a pending row past the server stale window')
 })

@@ -104,10 +104,13 @@ export const PENDING_POLL_MS = 4000
 export const PENDING_POLL_MAX = 45
 
 // Merge rows read from the server into what the page shows: a row only replaces the shown one when it is newer
-// (updated_at), or equally new and no longer 'pending'. An older answer (a slow GET that started before a POST finished)
-// never erases a newer result, and a row missing from a read is kept as shown.
+// (updated_at), or equally new while the shown one is still open (pending / error / uncertain: a quick retry in the same
+// second as a failure) and the new one is not pending. An older answer (a slow GET that started before a POST finished)
+// never erases a newer result, and a row missing from a read is kept as shown. `own`: the answer to this page's own
+// click (POST), which is the server's state after that attempt and always replaces the row for its person.
 export type ShownLookup = WorkEmailView & { target: string; updated_at?: number | null }
-export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unknown): Record<string, ShownLookup> {
+const OPEN = new Set(['pending', 'error', 'uncertain'])
+export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unknown, own = false): Record<string, ShownLookup> {
   if (!Array.isArray(incoming)) return shown
   let next: Record<string, ShownLookup> | null = null
   for (const r of incoming) {
@@ -115,7 +118,7 @@ export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unkno
     const row = r as ShownLookup
     const cur = (next ?? shown)[row.target]
     const t = (x: ShownLookup | undefined) => typeof x?.updated_at === 'number' && Number.isFinite(x.updated_at) ? x.updated_at : -Infinity
-    const newer = !cur || t(row) > t(cur) || (t(row) === t(cur) && cur.status === 'pending' && row.status !== 'pending')
+    const newer = own || !cur || t(row) > t(cur) || (t(row) === t(cur) && OPEN.has(cur.status) && row.status !== 'pending')
     if (!newer) continue
     next = { ...(next ?? shown), [row.target]: row }
   }

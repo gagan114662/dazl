@@ -57,7 +57,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
       const r = await fetch(`/api/leads/${leadId}/work-email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: key }) })
       const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string }
       if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
-      if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l])); text = '' }
+      if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
       else if (r.ok && j.status === 'no_key') text = 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
