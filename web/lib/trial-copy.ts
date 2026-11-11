@@ -27,7 +27,7 @@ export function trialCopy(t: TrialBlock): TrialCopy {
       return { state: 'unavailable', text: "Free trial scans aren't available here right now.", next: SCAN }
     case 'account_cap':
     case 'attempts_cap':
-      return { state: 'exhausted', text: `You have used all ${t.cap} free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).`, next: KEEP }
+      return { state: 'exhausted', text: `You have used all ${t.cap} free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption, or at its spending limit before finding any company, does not).`, next: KEEP }
     case 'account_total_cap':
       // The money ceiling, not the attempt count: website reads on the trial (#409) draw on the same allowance, so this
       // can be reached with scan attempts left. The attempt count is stated as it is, never as "used up".
