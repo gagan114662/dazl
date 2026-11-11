@@ -415,6 +415,31 @@ test('#1042 (c) the email text: at most MAIL_LIST_MAX lines plus "and N more", j
 // review findings: what's new is one snapshot, and "Mark as seen" never hides leads that were not shown
 // ---------------------------------------------------------------------------------------------------------------------
 
+bothEngines('#1042 two tenants: the repeat and the email each stay inside their own tenant', async ({ db }) => {
+  await account(db, A, 'a@a.example'); await account(db, B, 'b@b.example')
+  const ja = await scan(db, A, NOW - 3600, { query: 'A secret play for dentists', leads: [{ company: 'A Only Co', domain: 'a-only.example' }] })
+  const jb = await scan(db, B, NOW - 3000, { query: 'B secret play for roofers', leads: [{ company: 'B Only Co', domain: 'b-only.example' }] })
+  const made = await repeatFirstPlays(db, { now: NOW })
+  assert.equal(made.length, 2)
+  const [wa] = await watchesOf(db, A), [wb] = await watchesOf(db, B)
+  assert.deepEqual([wa.query, wb.query], ['A secret play for dentists', 'B secret play for roofers'])
+  assert.deepEqual((await jobsOf(db, A)).map(j => [j.id, j.watch_id]), [[ja, wa.id]])
+  assert.deepEqual((await jobsOf(db, B)).map(j => [j.id, j.watch_id]), [[jb, wb.id]])
+  assert.deepEqual((await db.all<{ seen_key: string }>('SELECT seen_key FROM watch_seen WHERE watch_id = ?', [wa.id])).map(r => r.seen_key), ['a-only.example'], 'only A\'s companies in A\'s memory')
+  // another tenant's play id is never A's: not first-play, nothing listed
+  assert.equal(await isFirstPlayRepeat(db, A, wb.id), false)
+  assert.equal(await playNew(db, A, 'watch', wb.id, 0), null)
+  // each run's email goes to its own account and lists only its own leads
+  await watchRun(db, A, wa.id, R, [{ company: 'A New Co' }])
+  await watchRun(db, B, wb.id, R, [{ company: 'B New Co' }])
+  assert.equal(await sendPlayRunMails(db, { now: S }), 2)
+  const mails = await outbox(db)
+  const ma = mails.find(m => m.user_id === A)!, mb = mails.find(m => m.user_id === B)!
+  assert.deepEqual([ma.to_email, mb.to_email], ['a@a.example', 'b@b.example'])
+  assert.ok(ma.body.includes('A New Co') && !ma.body.includes('B New Co') && !ma.body.includes('B secret'))
+  assert.ok(mb.body.includes('B New Co') && !mb.body.includes('A New Co') && !mb.body.includes('A secret'))
+})
+
 bothEngines('#1042 what\'s new cut at NEW_LIMIT: "Mark as seen" covers only whole runs shown, so nothing unseen is hidden', async ({ db }) => {
   const w = (await createWatch(db, A, 'Gyms in Austin', '{"summary":"s"}', null, NOW - 30 * DAY)).watch!
   const lead = (i: number, tag: string) => ({ company: `${tag} ${i}`, score: i })

@@ -152,7 +152,7 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   // #1042: A reads its own play's "new since" list; A's Find leads now without its own key is refused and writes nothing
   const newA = await playNewGET(req(`/api/plays/monitor/${mon}/new?since=0`, 'GET'), ctx({ kind: 'monitor', id: mon }))
   assert.equal(newA.status, 200)
-  assert.deepEqual(await newA.json(), { since: 0, total: 0, latest_at: null, items: [] })
+  assert.deepEqual(await newA.json(), { since: 0, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
   const beforeRun = snapshot(db)
   const runA = await playRunPOST(req(`/api/plays/monitor/${mon}/run`, 'POST', {}), ctx({ kind: 'monitor', id: mon }))
   assert.deepEqual([runA.status, (await runA.json() as { error: string }).error], [400, 'no_api_key'])
