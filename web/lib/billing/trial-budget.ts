@@ -155,7 +155,12 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
 // failed after any paid step.
-export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed' && r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0
+// A scan that STOPPED AFTER AN INTERRUPTION (error accounting_uncertain: a paid step may already have been billed, so its results were
+// discarded) also gives its place back: the person got nothing, and the cost screen promises free scans, not interrupted ones (owner decision
+// 2026-11-11). It is only the attempt count that is released: reservationCost still counts its worst-case reserve against the account's
+// dollar total and the day's budget, so the $0.30 / $1 / $10 caps bind interruptions exactly as before.
+export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed'
+  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {

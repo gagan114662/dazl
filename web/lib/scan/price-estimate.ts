@@ -11,6 +11,7 @@ import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '
 import { DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
+import { trialCopy } from '../trial-copy.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
@@ -31,7 +32,11 @@ export interface EstimateRow {
   capped: boolean                    // counted against max_usd by the spend guard
   note: string
 }
-export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | null; message: string; change: string[]; warning: string | null }
+// The trial refusals that stop a run for this account now (trialRefusal in lib/billing/trial-budget.ts). FREE_TRIAL_SCANS mirrors TRIAL_SCANS_PER_ACCOUNT
+// (pinned by test/trial-interrupted-attempt.test.ts): this module is imported by the browser, so it cannot import the server-side trial module.
+const TRIAL_BLOCKS = new Set(['attempts_cap', 'account_total_cap', 'global_daily_cap', 'domain_used', 'google_required'])
+export const FREE_TRIAL_SCANS = 3
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
@@ -63,6 +68,9 @@ export interface EstimateInput {
   // A free-trial scan's own per-scan ceiling (DAZL_TRIAL_SCAN_RESERVE_USD: the job guard's limit, runner.ts). Only a trial payer with a positive
   // finite number uses it; anything else is ignored, never an invented ceiling.
   trialReserveUsd?: number | null
+  // Why POST /api/scan would refuse this trial account right now (lib/billing/trial-budget.ts trialRefusal), so the screen refuses up front
+  // instead of offering a Run button that does nothing. Only trial payers use it; not_configured and unknown reasons never block here.
+  trialRefusal?: string | null
   env?: Record<string, string | undefined>
 }
 
@@ -131,7 +139,13 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
-  if (i.poolUnsettled) {
+  const trialWhy = i.payer === 'trial' && typeof i.trialRefusal === 'string' && TRIAL_BLOCKS.has(i.trialRefusal) ? i.trialRefusal : null
+  if (trialWhy) {
+    const c = trialCopy({ funded: false, remaining: 0, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
+    ok = false; reason = 'trial_unavailable'
+    message = `Blocked: ${c.text} Nothing was started or reserved.`
+    change.push(c.next.label + '.')
+  } else if (i.poolUnsettled) {
     // The same rule the pool enforces: no reservation while an earlier call's cost is unaccounted.
     ok = false; reason = 'accounting_unsettled'
     message = 'Blocked: the cost of an earlier paid request could not be recorded, so paid requests are paused until it is reviewed. Nothing was started or reserved.'
