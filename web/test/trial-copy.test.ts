@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { trialCopy, type TrialBlock } from '../lib/trial-copy.ts'
+import { trialCopy, trialRefusedCopy, type TrialBlock } from '../lib/trial-copy.ts'
 
 // The trial blocks GET /api/usage returns (#410), synthetic. cap 3 is TRIAL_SCANS_PER_ACCOUNT.
 const t = (o: Partial<TrialBlock>): TrialBlock => ({ funded: false, remaining: 0, cap: 3, blocked: null, ...o })
@@ -25,8 +25,8 @@ test('fail-safe: not funded with no reason, or funded with nothing left, says it
 test('each reason has its own state and wording; only real account usage reads as used up', () => {
   const row = (o: Partial<TrialBlock>) => { const c = trialCopy(t(o)); return [c.state, c.text] }
   assert.deepEqual(row({ funded: true, remaining: 2 }), ['available', '2 of 3 free trial scans left.'])
-  assert.deepEqual(row({ blocked: 'account_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (failed attempts count too).'])
-  assert.deepEqual(row({ blocked: 'attempts_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (failed attempts count too).'], 'attempts, not finished scans')
+  assert.deepEqual(row({ blocked: 'account_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).'])
+  assert.deepEqual(row({ blocked: 'attempts_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).'], 'attempts, not finished scans')
   assert.deepEqual(row({ blocked: 'account_total_cap', remaining: 1 }), ['exhausted', "Your free trial's spending allowance is used up (website reads on the trial count toward it). You have used 2 of 3 free trial scan attempts."])
   assert.deepEqual(row({ blocked: 'ip_throttle', remaining: 3 }), ['throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.'])
   assert.deepEqual(row({ blocked: 'global_daily_cap', remaining: 2 }), ['throttled', "Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC). You have used 1 of 3 free trial scan attempts."])
@@ -42,4 +42,14 @@ test('each reason has its own state and wording; only real account usage reads a
     assert.equal(c.next.href, '#model-key'); assert.match(c.next.label, /add your AI key/i)
     assert.doesNotMatch(c.text, /\$|sk-|usd|budget/i)
   }
+})
+
+test('the Leads page refusal for a trial scan is plain words with the next step, never the raw id', () => {
+  assert.equal(trialRefusedCopy('account_total_cap'), 'Your free trial allowance is used up. Add your AI key in Settings to keep scanning.')
+  for (const r of ['attempts_cap', 'global_daily_cap', 'domain_used', 'google_required', 'not_configured', undefined, 42]) {
+    const c = trialRefusedCopy(r)
+    assert.doesNotMatch(c, /trial_unavailable|_cap|domain_used|google_required|undefined/)
+    assert.match(c, /Add your AI key in Settings/)
+  }
+  assert.match(trialRefusedCopy('attempts_cap'), /all 3 free trial scan attempts/)
 })
