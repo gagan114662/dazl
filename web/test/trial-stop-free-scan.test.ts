@@ -66,9 +66,9 @@ bothEngines('(c) admission: three empty trial stops leave all three free scans, 
 
 // ---- (a)
 const rec = { id: 'j', status: 'done', error: 'trial_budget_reached', funded_by: 'trial', needs_review: 0, candidates: 0 } as const
-test('(a) outcome: a trial stop with no recorded spend says nothing was charged; one with spend, or an unknown spend, does not', () => {
+test('(a) outcome: a trial stop with a recorded spend of 0 says nothing was charged; one with spend, or an unknown spend, does not', () => {
   assert.match(scanOutcome({ ...rec, spend_usd: 0 }).label, /before it found any companies\. Nothing was charged\.$/)
-  assert.match(scanOutcome({ ...rec, spend_usd: null }).label, /Nothing was charged\.$/, 'no paid step recorded')
+  assert.doesNotMatch(scanOutcome({ ...rec, spend_usd: null }).label, /charged/, 'null is not a claim here: the readers decide an empty column on a read row is 0')
   assert.match(scanOutcome({ ...rec, spend_usd: '0' }).label, /Nothing was charged\.$/, 'Postgres returns numerics as strings')
   assert.match(scanOutcome({ ...rec, spend_usd: 0, needs_review: 2 }).label, /kept 2 results found before it stopped\. Nothing was charged\.$/)
   assert.doesNotMatch(scanOutcome({ ...rec, spend_usd: 0.12 }).label, /charged/, 'spend recorded: no claim')
@@ -96,4 +96,56 @@ bothEngines('(c) the first check and admission agree on every trial-stop ending'
     const rows = await db.all<LedgerRow>('SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id WHERE r.tenant_id = ?', [u.id])
     assert.equal(first, ledger(rows, u.id, DAY).attempts, `${name}: first check ${first} vs admission`)
   }
+})
+
+// ---- Hermes-PC review of #1057: "Nothing was charged." must never rest on a spend that could not be read.
+const claims = (spend: unknown, extra: Record<string, unknown> = {}) => /Nothing was charged\./.test(scanOutcome({ ...rec, ...extra, ...(spend === undefined ? {} : { spend_usd: spend }) } as never).label)
+test('(a) strict: only a numeric zero claims "nothing was charged"; every other value says nothing, one case each', () => {
+  assert.equal(claims(0), true, 'number 0')
+  assert.equal(claims('0'), true, 'Postgres numeric string 0')
+  assert.equal(claims('0.00'), true, 'string 0.00')
+  assert.equal(claims(undefined), false, 'undefined: a reader that could not read it')
+  assert.equal(claims(null), false, 'null: not a claim')
+  assert.equal(claims(''), false, "'' (Number('') is 0)")
+  assert.equal(claims('  '), false, 'blank string')
+  assert.equal(claims(false), false, 'false (Number(false) is 0)')
+  assert.equal(claims(true), false, 'true')
+  assert.equal(claims(Number.NaN), false, 'NaN')
+  assert.equal(claims('abc'), false, 'text')
+  assert.equal(claims(-0.5), false, 'negative')
+  assert.equal(claims(0.01), false, 'any spend')
+  assert.equal(claims('0.01'), false, 'any spend as text')
+})
+
+import Database from 'better-sqlite3'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { readScanStatus } from '../lib/scan/status-read-service.ts'
+import { historyJobs } from '../lib/scan/history-jobs.ts'
+import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
+const stopJob = (raw: Database.Database, id: string, spend: number | null) => {
+  raw.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES ('U', 'u@x.com', 'n', 'b', 'x', 'y')").run()
+  raw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, error, created_at, finished_at, candidates, verified, needs_review, spend_reserved_usd, funded_by) VALUES (?, 'U', 'b', 'i', 'l', 'done', 'trial_budget_reached', 1800000000, 1800000000, 0, 0, 0, ?, 'trial')").run(id, spend)
+}
+const ID = 'a'.repeat(24)
+const failing = (real: ReturnType<typeof sqliteDb>, match: RegExp): ReturnType<typeof sqliteDb> => ({ ...real, get: (async (sql: string, p?: unknown[]) => { if (match.test(sql)) throw new Error('db down'); return real.get(sql, p as never) }) as never, all: (async (sql: string, p?: unknown[]) => { if (match.test(sql)) throw new Error('db down'); return real.all(sql, p as never) }) as never }) as never
+const setup = (spend: number | null) => { const raw = new Database(':memory:'); migrateAllSqlite(raw); stopJob(raw, ID, spend); return sqliteDb(raw) }
+
+test('(a) status read: a successful read of an empty or zero column claims it; a recorded spend or a failed read does not', async () => {
+  const label = async (db: ReturnType<typeof sqliteDb>) => ((await readScanStatus(db, 'U', ID)) as { outcome: { label: string } }).outcome.label
+  assert.match(await label(setup(null)), /Nothing was charged\./, 'column empty, read ok')
+  assert.match(await label(setup(0)), /Nothing was charged\./, 'zero, read ok')
+  assert.doesNotMatch(await label(setup(0.12)), /charged/, 'spend recorded')
+  assert.doesNotMatch(await label(failing(setup(null), /spend_reserved_usd, spend_cap_reserved_usd/)), /charged/, 'the spend read FAILED: no claim')
+})
+test('(a) history list: an empty or zero column claims it; a recorded spend or a failed read does not (and the list still loads)', async () => {
+  const label = async (db: ReturnType<typeof sqliteDb>) => { const j = (await historyJobs(db, 'U')).find(x => x.id === ID)!; return scanOutcome(j as never).label }
+  assert.match(await label(setup(null)), /Nothing was charged\./)
+  assert.match(await label(setup(0)), /Nothing was charged\./)
+  assert.doesNotMatch(await label(setup(0.12)), /charged/)
+  assert.doesNotMatch(await label(failing(setup(null), /spend_reserved_usd AS s FROM scan_jobs WHERE user_id/)), /charged/, 'the spend read FAILED: no claim, list intact')
+})
+test('(a) campaign page job: an empty or zero column reads as 0; a recorded spend stays', async () => {
+  assert.equal((await campaignDetail(setup(null), 'U', ID))!.job.spend_usd, 0)
+  assert.equal((await campaignDetail(setup(0.12), 'U', ID))!.job.spend_usd, 0.12)
 })

@@ -21,5 +21,6 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
   const messages = await db.all<CampaignDetail['messages'][number]>(`SELECT m.id, m.lead_id, m.to_email, m.subject, m.status, m.created_at, m.sent_at
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
     WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, m.insert_seq DESC`, [tenantId, job.id])
-  return { job, leads, messages }
+  // The row was read: an empty spend column means no paid call was recorded (0), the same as the status read and the history list.
+  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages }
 }
