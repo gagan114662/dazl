@@ -62,6 +62,7 @@ export default function PlaysClient() {
     load()
     const timers = polls.current
     return () => { alive.current = false; for (const t of timers.values()) clearTimeout(t); timers.clear() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once on mount, as before (load reads only setters)
   }, [])
   // Follows one started run with the read-only status read until it ends (bounded), then reloads the play and its new
   // leads, so "the new leads show here when this run finishes" holds while the page stays open.

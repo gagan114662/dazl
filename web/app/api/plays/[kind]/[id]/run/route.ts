@@ -5,7 +5,6 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
-import { kickRunner } from '@/lib/scan/runner'
 import { runPlayNow, type RunNowRefusal } from '@/lib/play-now'
 
 // #1042 "Find leads now": runs one of the tenant's saved plays now, by pulling its next scheduled run forward
@@ -36,6 +35,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ kind: stri
   // a run the user started is spend they asked for: recorded like a monitor's creation
   await audit(user, req, { action: 'play.run_now', resource: kind, id, summary: { job_id: r.job_id, funded_by: r.funded_by } })
   const raw = getScanDb()
-  after(() => kickRunner(raw))
+  // loaded on use: the runner module is large and is not needed to answer a refusal
+  after(async () => { const { kickRunner } = await import('@/lib/scan/runner'); await kickRunner(raw) })
   return NextResponse.json(r, { status: 202 })
 }
