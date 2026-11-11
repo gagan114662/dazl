@@ -1,0 +1,16 @@
+{
+  "kind": "search#advanced-search-companies",
+  "hits": 1,
+  "items": [
+    {
+      "company_name": "HOME ED COMPANION LTD",
+      "company_number": "16990000",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2026-01-27",
+      "kind": "searchresults#company",
+      "registered_office_address": { "address_line_1": "167-169 Great Portland Street", "address_line_2": "Fifth Floor", "locality": "London", "country": "United Kingdom", "postal_code": "W1W 5PF" },
+      "sic_codes": ["62012"]
+    }
+  ]
+}
