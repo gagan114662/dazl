@@ -112,7 +112,7 @@ export function queueTenants(env: Record<string, string | undefined> = process.e
 // Passing a different leaseSeconds to a kick (tests aside) would let a job be
 // re-claimed while the legacy reaper still considers it fresh (or vice versa)
 // and can double-run provider calls. Do not configure them apart.
-import { settleReapedTrialSync } from '../billing/trial-reap.ts'
+import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 const QUEUE_LEASE_S = staleRunningSeconds()
 // One queue-mode kick: claim via SqliteQueue, bind the domain row in the same
 // transaction, run the executor, map the domain outcome back by token.
@@ -169,7 +169,7 @@ export async function kickQueueRunner(
          WHERE id = ? AND status = 'running' AND claimed_at <= ?
            AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
       ).run(nowS, claim.item.id, nowS - lease).changes === 1
-      if (uncertain) { settleReapedTrialSync(db, nowS); q.complete(claim.token); continue }
+      if (uncertain) { try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(nowS) } catch { /* no trial table */ } q.complete(claim.token); continue }
       q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' })
       continue
     }
