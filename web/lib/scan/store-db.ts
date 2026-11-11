@@ -37,7 +37,8 @@ export async function createQueryJob(db: Db, userId: string, input: QueryInput, 
 // createQueryJob as a transaction step, for a caller that records the job with other writes in one transaction (a
 // watch or monitor run: the job and the schedule that queued it commit together, or neither does).
 export function* queryJobStep(t: Tx, userId: string, input: QueryInput, now = nowS()): TxBody<string> {
-  const id = randomBytes(12).toString('hex')
+  // a caller may fix the id first (a trial reservation is linked to it before the job exists, #1042)
+  const id = input.id ?? randomBytes(12).toString('hex')
   yield* t.run(QUERY_JOB_SQL, queryJobParams(id, userId, input, now))
   return id
 }

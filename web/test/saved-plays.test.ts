@@ -15,7 +15,7 @@ test('a weekly watch shows who, signal, schedule, last and next run, status and 
     id: 'a'.repeat(24), kind: 'watch', name: undefined, sentence: 'Dental practices in Leeds opening a second location',
     audience: 'Independent dental practices · Leeds, UK', signal: 'opening a second location, hiring a practice manager', schedule: 'Weekly',
     lastRun: '26 Oct 2026, 12:00, 3 new', lastHref: `/app/leads?job_id=${'b'.repeat(24)}`, nextRun: '2 Nov 2026, 12:00',
-    status: { tone: 'live', label: 'Live' }, active: true,
+    status: { tone: 'live', label: 'Live' }, active: true, note: null,
   })
   assert.ok(p.name.length > 0 && p.name.length <= 60)
 })
@@ -25,6 +25,10 @@ test('status: paused (with why), running now, last run failed; a paused play has
   assert.deepEqual([s({ active: false }).status, s({ active: false }).nextRun], [{ tone: 'paused', label: 'Paused' }, 'Paused: resume to schedule it'])
   assert.equal(s({ active: false, paused_reason: 'quota' }).status.label, "Paused: this month's scans are used up")
   assert.equal(s({ active: false, paused_reason: 'no_key' }).status.label, 'Paused: no AI key to run it')
+  // the reasons the scheduler actually writes (lib/watch.ts runDueWatches) are named, not a bare "Paused" (#1042)
+  assert.equal(s({ active: false, paused_reason: 'no_api_key' }).status.label, 'Paused: no AI key to run it')
+  assert.equal(s({ active: false, paused_reason: 'quota_exceeded' }).status.label, "Paused: this month's scans are used up")
+  assert.match(s({ active: false, paused_reason: 'trial_used' }).status.label, /free searches are used up/)
   assert.deepEqual(s({ last_status: 'running' }).status, { tone: 'running', label: 'Running now' })
   assert.deepEqual(s({ last_status: 'failed' }).status, { tone: 'failed', label: 'Live, last run failed' })
   assert.equal(s({ last_status: 'failed' }).lastRun, '26 Oct 2026, 12:00', 'a failed run claims no new leads')

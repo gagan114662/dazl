@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { sqliteDb } from '../../lib/db/client.ts'
+import { setDb, sqliteDb, type Db } from '../../lib/db/client.ts'
 import { createMonitor } from '../../lib/monitors.ts'
 import { createWatch } from '../../lib/watch.ts'
 import { POST as RUN } from '../../app/api/plays/[kind]/[id]/run/route.ts'
@@ -63,8 +63,17 @@ test('#1042 Find leads now and what\'s new through the real route handlers', asy
   assert.equal((await get('monitor', 'nothex', '')).status, 404)
   const ok = await get('watch', w.id, '?since=0')
   assert.equal(ok.status, 200)
-  assert.deepEqual(await ok.json(), { since: 0, total: 0, latest_at: null, items: [] })
-  assert.deepEqual(await (await get('watch', w.id, '')).json(), { since: 0, total: 0, latest_at: null, items: [] }, 'no since: ever')
+  assert.deepEqual(await ok.json(), { since: 0, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
+  assert.deepEqual(await (await get('watch', w.id, '')).json(), { since: 0, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] }, 'no since: ever')
   setUser({ id: 'B', business_name: 'Beta' })
   assert.equal((await get('watch', w.id, '?since=0')).status, 404)
+  // the scan runner reads only the app's SQLite store: on a Postgres store a run-now would never start, so the route
+  // refuses before writing anything (review finding on PR #1050)
+  setUser({ id: 'A', business_name: 'Acme' })
+  const before = jobs().length
+  setDb({ ...sqliteDb(raw), kind: 'pg' } as Db)
+  const pg = await post('watch', w.id)
+  assert.deepEqual([pg.status, (await pg.json() as { error: string }).error], [503, 'runner_unavailable'])
+  assert.equal(jobs().length, before)
+  setScanDb(raw)
 })

@@ -1,10 +1,10 @@
 'use client'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { dayOf, savedPlays, type MonitorRow, type SavedPlay, type WatchRow } from '@/lib/saved-plays'
 import type { PlayRun, PlayRuns } from '@/lib/play-runs'
 import type { PlayNew } from '@/lib/play-now'
-import { newLabel, readSeen, runNowMessage, writeSeen, type RunNowAnswer } from '@/lib/play-new-view'
+import { newLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS, writeSeen, type RunNowAnswer } from '@/lib/play-new-view'
 import { runNewLabel } from '@/lib/run-new-label'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
@@ -47,12 +47,37 @@ export default function PlaysClient() {
     const ok = !!j && typeof j.total === 'number' && Array.isArray(j.items)
     setFresh(f => ({ ...f, [keyOf(p)]: ok ? { ...(j as PlayNew), checked: since > 0 } : 'failed' }))
   }
-  const get = <T,>(url: string, key: string) => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null).then(j => Array.isArray(j?.[key]) ? j[key] as T[] : 'failed' as const)
+  const get = <T,>(url: string, key: string) => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null).then(j => ({ rows: Array.isArray(j?.[key]) ? j[key] as T[] : 'failed' as const, emails: j?.emails === true }))
+  // whether this host sends the new-leads email after a run (GET /api/watch), so a play never promises one it cannot send
+  const [emails, setEmails] = useState(false)
   const load = () => {
-    void get<WatchRow>('/api/watch', 'watches').then(w => { setWatches(w); if (Array.isArray(w)) for (const x of w) void loadNew({ kind: 'watch', id: x.id }) })
-    void get<MonitorRow>('/api/monitors', 'monitors').then(m => { setMonitors(m); if (Array.isArray(m)) for (const x of m) void loadNew({ kind: 'monitor', id: x.id }) })
+    void get<WatchRow>('/api/watch', 'watches').then(({ rows: w, emails: e }) => { setWatches(w); setEmails(e); if (Array.isArray(w)) for (const x of w) void loadNew({ kind: 'watch', id: x.id }) })
+    void get<MonitorRow>('/api/monitors', 'monitors').then(({ rows: m }) => { setMonitors(m); if (Array.isArray(m)) for (const x of m) void loadNew({ kind: 'monitor', id: x.id }) })
   }
-  useEffect(load, [])
+  // #1042: the started runs this page is following (one timer each), stopped when the page goes away
+  const polls = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    load()
+    const timers = polls.current
+    return () => { alive.current = false; for (const t of timers.values()) clearTimeout(t); timers.clear() }
+  }, [])
+  // Follows one started run with the read-only status read until it ends (bounded), then reloads the play and its new
+  // leads, so "the new leads show here when this run finishes" holds while the page stays open.
+  function follow(jobId: string, tries = 0) {
+    if (!alive.current) return
+    const prev = polls.current.get(jobId); if (prev) clearTimeout(prev)
+    polls.current.set(jobId, setTimeout(async () => {
+      polls.current.delete(jobId)
+      if (!alive.current) return
+      const r = await fetch(`/api/scan/status?job_id=${jobId}&readonly=1`).catch(() => null)
+      const j = r ? await r.json().catch(() => null) : null
+      if (!alive.current) return
+      if (r && runEnded(r.status, j)) { load(); return }
+      if (tries + 1 < RUN_POLL_MAX) follow(jobId, tries + 1); else load()
+    }, RUN_POLL_MS))
+  }
 
   async function act(p: SavedPlay, action: 'pause' | 'resume' | 'delete') {
     if (action === 'delete' && !window.confirm(`Delete "${p.name}"? Its past runs stay in Leads; it stops repeating.`)) return
@@ -76,22 +101,23 @@ export default function PlaysClient() {
     setRan(x => ({ ...x, [k]: runNowMessage(r?.status ?? 0, j) }))
     setBusy(null)
     if (r?.status === 202 && j && 'job_id' in j && /^[0-9a-f]{24}$/.test(j.job_id)) {
-      // the status read dispatches the queued scan, as the Leads page's own poll does for every scan
-      void fetch(`/api/scan/status?job_id=${j.job_id}`).catch(() => null)
+      // the route already dispatched the scan; follow it so the page shows its new leads when it ends
+      follow(j.job_id)
       load()
     }
   }
 
   function markSeen(p: SavedPlay) {
     const f = fresh[keyOf(p)]
-    if (!f || f === 'failed' || f.latest_at === null) return
-    writeSeen(store(), p.kind, p.id, f.latest_at)
+    // seen_through: the newest time EVERY listed item is covered up to (lib/play-now.ts); null when nothing can be marked
+    if (!f || f === 'failed' || f.seen_through === null) return
+    writeSeen(store(), p.kind, p.id, f.seen_through)
     setOpenNew(o => ({ ...o, [keyOf(p)]: false }))
     void loadNew(p)
   }
 
   const loading = watches === null || monitors === null
-  const plays = loading ? null : savedPlays(watches === 'failed' ? null : watches, monitors === 'failed' ? null : monitors)
+  const plays = loading ? null : savedPlays(watches === 'failed' ? null : watches, monitors === 'failed' ? null : monitors, undefined, undefined, emails)
   const partFailed = watches === 'failed' || monitors === 'failed'
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
@@ -109,7 +135,7 @@ export default function PlaysClient() {
         : plays.length === 0 && !partFailed ? (
           <div className="card p-6 text-sm" data-testid="plays-empty">
             <p className="font-semibold">No saved plays yet</p>
-            <p className="text-[var(--ink-2)] mt-1">Run a search, then choose <b>Watch this weekly</b> to repeat it. dazl re-runs it once a week and shows only companies you have not seen. Each run counts toward your monthly scans.</p>
+            <p className="text-[var(--ink-2)] mt-1">Run your first search in Leads. When it finishes, dazl sets it to repeat once a week by itself and shows only companies you have not seen. You can also choose <b>Watch this weekly</b> on any search.</p>
             <Link href="/app/leads" className="btn-ghost btn-sm mt-3 inline-flex">Start a play</Link>
           </div>
         ) : (
@@ -134,6 +160,7 @@ export default function PlaysClient() {
                       <div key={label} className="min-w-0" data-testid={`play-${id}`}><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">{label}</dt><dd className="break-words">{v}</dd></div>
                     ))}
                   </dl>
+                  {p.note && <p className="text-xs text-[var(--ink-2)] mt-3" data-testid="play-note">{p.note}</p>}
                   <div className="flex flex-wrap gap-2 mt-4">
                     {/* a paused play never runs: Resume first (the route refuses it too) */}
                     {p.active && <button type="button" className="btn-primary btn-sm" disabled={busy === p.id} onClick={() => void runNow(p)} data-testid="play-run-now">{busy === p.id ? 'Starting...' : 'Find leads now'}</button>}
@@ -153,7 +180,7 @@ export default function PlaysClient() {
             })}
           </div>
         )}
-      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan and counts toward your monthly scans. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
+      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s weekly repeat can use your free searches while you have some left. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
     </div>
   )
 }
@@ -171,8 +198,10 @@ function NewList({ data, kind, onSeen }: { data: Fresh; kind: 'watch' | 'monitor
           </li>
         ))}
       </ol>
-      {data.total > data.items.length && <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="play-new-more">Showing the newest {data.items.length} of {data.total}{kind === 'monitor' ? ' alerts' : ''}.</p>}
-      <button type="button" className="btn-ghost btn-sm mt-2" onClick={onSeen} data-testid="play-new-seen">Mark as seen</button>
+      {data.truncated && <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="play-new-more">{data.seen_through !== null
+        ? `Showing the first ${data.items.length} of ${data.total}${kind === 'monitor' ? ' alerts' : ''}. Mark these as seen to see the rest.`
+        : `There are ${data.total}${kind === 'monitor' ? ' alerts' : ' new leads'} from one run. Open it in Leads to see them all.`}</p>}
+      {data.seen_through !== null && <button type="button" className="btn-ghost btn-sm mt-2" onClick={onSeen} data-testid="play-new-seen">{data.truncated ? 'Mark these as seen' : 'Mark as seen'}</button>}
     </div>
   )
 }

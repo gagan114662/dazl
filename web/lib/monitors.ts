@@ -8,7 +8,8 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { readPlan, readScanQuota } from './plans.ts'
-import { countActiveJobs, queryJobStep } from './scan/store-db.ts'
+import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
+import { lockScanAdmission } from './play-funding.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
 import type { Fence } from './watch.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
@@ -129,6 +130,10 @@ export async function runDueMonitors(db: Db, o: { now?: number; fence?: Fence } 
     const play = await scheduledPlayOffer(db, m.user_id, m.query)
     const jobId = await db.tx(function* (t: Tx): TxBody<string | null> {
       yield* fence(t)
+      // #1042: re-checked under the shared admission lock (lib/play-funding.ts), so a "Find leads now" click and this tick
+      // are ordered: a monitor still runs beside one active scan, never beside two
+      yield* lockScanAdmission(t, m.user_id)
+      if ((yield* countActiveJobsStep(t, m.user_id)) >= 2) return null
       const r = yield* t.run('UPDATE monitors SET last_run_at = ?, next_run_at = ? + interval_hours * 3600 WHERE id = ? AND enabled = 1 AND next_run_at = ?', [now, now, m.id, m.next_run_at])
       if (r.changes !== 1) return null
       const job = yield* queryJobStep(t, m.user_id, { query: m.query, icp: m.icp, sources: m.sources, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now)

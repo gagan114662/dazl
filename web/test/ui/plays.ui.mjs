@@ -42,7 +42,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 // Synthetic plays: two weekly watches (one live, one paused for quota) and one daily monitor. Dates at noon UTC.
 const T = Date.UTC(2026, 9, 26, 12) / 1000, W = 'a'.repeat(24), W2 = 'e'.repeat(24), M = 'c'.repeat(24), RUN = 'b'.repeat(24)
 const WATCHES = [
-  { id: W, query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: RUN, last_status: 'done', new_leads: 3 },
+  { id: W, query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: RUN, last_status: 'done', new_leads: 3, auto: true },
   { id: W2, query: 'Physio clinics in Manchester hiring', icp: { summary: 'Physiotherapy clinics', where: ['Manchester, UK'], signals: ['hiring'] }, active: false, next_run_at: T, last_run_at: T - 7 * 86400, paused_reason: 'quota', last_job_id: null, last_status: null, new_leads: 0 },
 ]
 // Three runs of the first watch, newest first (#351).
@@ -57,6 +57,11 @@ const NEW_ITEMS = [
   { job_id: RUN, at: T, company: 'Synthetic Leeds Dental Care', what: 'Opening a second location in Chapel Allerton' },
 ]
 const seenSince = []
+// #1042: reads of the play list, and the started run's status answers (running, then done), so the test can check the
+// page follows the run it started and reloads once it has ended
+const watchReads = { n: 0, atDone: -1 }
+const STARTED = '7'.repeat(24)
+const statusReads = []
 
 const b = await chromium.launch()
 async function open({ width, height, watches = WATCHES, monitors = MONITORS, fail = null }) {
@@ -79,13 +84,14 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
     const nw = p.match(/^\/api\/plays\/(watch|monitor)\/([0-9a-f]{24})\/new$/)
     if (nw) {
       const since = Number(u.searchParams.get('since') ?? '0'); seenSince.push([nw[2], since])
-      if (nw[2] === W && since < T) return json({ since, total: 3, latest_at: T, items: NEW_ITEMS })
+      if (nw[2] === W && since < T) return json({ since, total: 3, latest_at: T, seen_through: T, truncated: false, items: NEW_ITEMS })
       if (nw[2] === M) return json({ error: 'x' }, 500)
-      return json({ since, total: 0, latest_at: null, items: [] })
+      return json({ since, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
     }
-    if (p === '/api/watch') return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches })
+    if (p === '/api/watch') { watchReads.n++; return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches, emails: true }) }
     if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    if (p === '/api/scan/status' && u.searchParams.get('job_id') === STARTED) { statusReads.push(u.searchParams.get('readonly')); if (statusReads.length === 2) watchReads.atDone = watchReads.n; return json({ status: statusReads.length < 2 ? 'running' : 'done' }) }
     // The held lead run the audit started from (#351): a finished run whose one lead is held for source review.
     if (p === '/api/scan/status' && u.searchParams.get('job_id') === RUN) return json({ status: 'done', lead_count: 1, icp: { industries: [], sizes: [], exclude: [], ...WATCHES[0].icp }, icp_source: 'user', attempts: 1, max_attempts: 3, query: WATCHES[0].query })
     if (p === '/api/leads' && u.searchParams.get('job_id') === RUN) return json({ job_id: RUN, status: 'done', hidden_count: 0, leads: [HELD] })
@@ -139,6 +145,10 @@ try {
     for (const c of await cards.all()) assert.ok((await c.getByTestId('play-name').boundingBox()).width >= Math.min(240, width - 100), `the play name keeps its width at ${width}px (a long status wraps below)`)
     await shot(page, `plays-${tag}`)
     // 8. #1042: new leads since this browser last checked, the list of them, Mark as seen; Find leads now on live plays only.
+    // The first play repeats by itself (and says so); every weekly play says the email follows each run with new leads.
+    assert.match(await cards.nth(0).getByTestId('play-note').innerText(), /^dazl set your first play to repeat every week\. Pause it any time\. After each run that finds new leads you get an email listing them\./)
+    assert.match(await cards.nth(1).getByTestId('play-note').innerText(), /^After each run that finds new leads you get an email/)
+    assert.equal(await cards.nth(2).getByTestId('play-note').count(), 0, 'a monitor sends no email: no promise')
     assert.equal(await cards.nth(0).getByTestId('play-new-count').innerText(), '3 new leads so far')
     await cards.nth(1).getByTestId('play-new-none').waitFor()
     assert.equal(await cards.nth(1).getByTestId('play-new-none').innerText(), 'No new leads yet')
@@ -151,6 +161,14 @@ try {
     await cards.nth(0).getByTestId('play-run-now').click()
     await cards.nth(0).getByTestId('play-run-now-result').waitFor()
     assert.equal(await cards.nth(0).getByTestId('play-run-now-result').innerText(), 'Started. The new leads show here when this run finishes. Its next scheduled run moved to 2 Nov 2026, 13:00.')
+    // the page follows the started run (read-only status reads) and reloads the plays once it has ended
+    watchReads.atDone = -1
+    for (let i = 0; i < 60 && !(statusReads.length >= 2 && watchReads.n > watchReads.atDone); i++) await page.waitForTimeout(500)
+    assert.ok(statusReads.length >= 2 && statusReads.every(r => r === '1'), `followed with read-only status reads: ${JSON.stringify(statusReads)}`)
+    assert.ok(watchReads.atDone >= 0 && watchReads.n > watchReads.atDone, 'reloaded after the run ended')
+    const settled = statusReads.length; await page.waitForTimeout(6000)
+    assert.equal(statusReads.length, settled, 'stops polling once the run has ended')
+    statusReads.length = 0
     await cards.nth(2).getByTestId('play-run-now').click()
     await cards.nth(2).getByTestId('play-run-now-result').waitFor()
     assert.equal((await cards.nth(2).getByTestId('play-run-now-result').innerText()).trim(), 'Running a play on demand uses your own AI key. Add one in Settings, or run a one-off search in Leads. Open Settings')

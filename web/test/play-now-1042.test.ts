@@ -135,7 +135,7 @@ bothEngines("#1042 what's new: a weekly play's first-seen leads and a monitor's 
   assert.deepEqual([all!.total, all!.latest_at, all!.items.map(i => [i.job_id, i.company])], [3, NOW - 7 * DAY, [[j2, 'Smile Leeds'], [j2, 'Bright Teeth'], [j1, 'Old Co']]], 'newest run first, then score, then insertion')
   const since = await playNew(db, A, 'watch', w.id, NOW - 14 * DAY)
   assert.deepEqual([since!.total, since!.items.map(i => i.company).sort()], [2, ['Bright Teeth', 'Smile Leeds']], 'only runs after the last check')
-  assert.deepEqual(await playNew(db, A, 'watch', w.id, NOW - 7 * DAY), { since: NOW - 7 * DAY, total: 0, latest_at: null, items: [] })
+  assert.deepEqual(await playNew(db, A, 'watch', w.id, NOW - 7 * DAY), { since: NOW - 7 * DAY, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
   // tenant scope, kind and input checks
   assert.equal(await playNew(db, B, 'watch', w.id, 0), null)
   assert.equal(await playNew(db, A, 'monitor', w.id, 0), null)
