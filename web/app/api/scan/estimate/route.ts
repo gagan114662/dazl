@@ -7,7 +7,7 @@ import { getDb } from '@/lib/db/client'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { denied } from '@/lib/workspace-access'
-import { trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
+import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
 import { readTrialStatus } from '@/lib/scan/trial'
 
 // Price estimate for a scan request, before anything paid runs. Read-only: it queues nothing, counts nothing against the
@@ -27,7 +27,9 @@ export async function POST(req: NextRequest) {
   // never offers a Run button that does nothing. A failed read never blocks here: the run's own admission still refuses.
   const refusal = hasOwnKey ? null : await trialPrincipal(db, user).then(p => (p ? trialRefusal(db, p) : null)).catch(() => null)
   const trialUsed = hasOwnKey || !refusal ? null : await readTrialStatus(db, user.tenantId, clientIp(req)).then(t => t.used).catch(() => null)
-  const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey, trialRefusal: refusal, trialUsed, model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
+  // What is left of the trial's dollar allowance, for one line on the panel. A read that fails or a trial that is not configured gives no line, never a block.
+  const trialAllowance = hasOwnKey ? null : await trialPrincipal(db, user).then(p => (p ? trialAllowanceLeft(db, p.id) : null)).catch(() => null)
+  const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey, trialRefusal: refusal, trialUsed, trialAllowance, model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}), ...(r.message ? { message: r.message } : {}), ...(r.loss ? { loss: r.loss } : {}) }, { status: r.status })
   return NextResponse.json({ estimate: r.estimate })
 }

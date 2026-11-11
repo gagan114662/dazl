@@ -41,6 +41,9 @@ export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
   verdict: Verdict; ack: string
+  // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
+  // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
+  trial_allowance?: { left_usd: number; total_usd: number } | null
 }
 export interface EstimateInput {
   budget: RunBudget | null
@@ -73,6 +76,8 @@ export interface EstimateInput {
   trialRefusal?: string | null
   // The account's free scans actually used (for the blocked screen's copy: a full day or a spent allowance says the real count, never "3 of 3").
   trialUsed?: number | null
+  // The account's remaining trial dollar allowance, display only (RunEstimate.trial_allowance). Only a trial payer shows it; garbage is ignored.
+  trialAllowance?: { left_usd: number; total_usd: number } | null
   env?: Record<string, string | undefined>
 }
 
@@ -229,7 +234,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
     verdict,
   })).digest('hex').slice(0, 16)
-  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack }
+  const a = i.payer === 'trial' ? i.trialAllowance : null
+  const trial_allowance = a && Number.isFinite(a.left_usd) && Number.isFinite(a.total_usd) && a.total_usd > 0 && a.left_usd >= 0 && a.left_usd <= a.total_usd ? { left_usd: a.left_usd, total_usd: a.total_usd } : null
+  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}) }
 }
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
