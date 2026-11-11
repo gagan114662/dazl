@@ -333,9 +333,12 @@ export function deleteCommenterBatch(db: Database.Database, userId: string, batc
   db.transaction(() => {
     if (batch.job_id) {
       db.prepare('DELETE FROM lead_enrichments WHERE lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)').run(batch.job_id)
-      // work_email_lookups exists wherever migrateAllSqlite ran (every app DB); a bare test DB without it has no rows to remove.
-      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_email_lookups'").get())
-        db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)').run(userId, batch.job_id)
+      // work_email_lookups exists wherever migrateAllSqlite ran (every app DB); only a bare test DB without that table
+      // (nothing to remove) is tolerated, any other failure still aborts the whole delete.
+      let dropLookups: Database.Statement | null = null
+      try { dropLookups = db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)') }
+      catch (e) { if (!(e instanceof Error && /no such table: work_email_lookups/.test(e.message))) throw e }
+      dropLookups?.run(userId, batch.job_id)
       db.prepare('DELETE FROM leads WHERE scan_job_id = ?').run(batch.job_id)
     }
     db.prepare('DELETE FROM commenter_rows WHERE batch_id = ?').run(batchId)
