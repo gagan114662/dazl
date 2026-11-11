@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
+import { migrateTrialBudget } from '../billing/trial-budget.ts'
 
 // Free trial: a few scans per new account run on the server's shared operator key, so a new
 // user can see real results before adding their own AI key. Abuse limits sit on top:
@@ -10,6 +11,8 @@ export const TRIAL_SCANS_PER_ACCOUNT = 3
 export const TRIAL_SCANS_PER_IP_PER_DAY = 9
 
 export function migrateTrial(db: Database.Database): void {
+  // the free-scans count reads the budget ledger too (TRIAL_USED_SQL joins trial_reservations), so a store set up with the trial tables has it
+  migrateTrialBudget(db)
   db.exec(`
     CREATE TABLE IF NOT EXISTS trial_scans (
       tenant_id TEXT NOT NULL,
