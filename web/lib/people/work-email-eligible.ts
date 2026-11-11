@@ -30,23 +30,96 @@ export function queryName(full: string): { first: string; last: string } | null 
 // Comparable form of a name (accents stripped, letters only, lower case) for "is the provider's person the one we asked for".
 export const nameKey = (s: string | null | undefined) => (s ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z]/g, '')
 
-// The stable key a target is addressed by: its stored name and title. Bounded so it fits the lookups table.
-export const targetKey = (p: { name: string; title: string | null }) => `${p.name}|${p.title ?? ''}`.slice(0, 200)
+// The stable key a target is addressed by: its full stored name and title, never truncated (a cut key could merge two
+// people). A person whose key would not fit the lookups table (TARGET_KEY_MAX) is not a target at all.
+export const TARGET_KEY_MAX = 200
+export const targetKey = (p: { name: string; title: string | null }) => `${p.name}|${p.title ?? ''}`
+
+// The profile handle of a LinkedIn URL ("https://www.linkedin.com/in/Dana-Lee/?x" -> "dana-lee"), or null.
+export function linkedinHandle(u: string | null | undefined): string | null {
+  if (typeof u !== 'string') return null
+  const m = /(?:^|[/.])linkedin\.com\/in\/([^/?#\s]+)/i.exec(u)
+  if (!m) return null
+  let h: string
+  try { h = decodeURIComponent(m[1]) } catch { h = m[1] }
+  h = h.toLowerCase().trim()
+  return h && h.length <= 100 ? h : null
+}
 
 export function isWorkEmailTarget(p: RankedPerson, icpText: string): boolean {
   if (p.historical || !p.title || roleContradicted(p.title, icpText)) return false
   if (!queryName(p.name)) return false
+  if (targetKey(p).length > TARGET_KEY_MAX) return false
   return icpText.trim() ? p.tier !== 'none' : DECISION_MAKER.test(p.title)
 }
 
+// One entry per name+title. When the same name+title is stored with two DIFFERENT LinkedIn profiles, they are two people
+// dazl cannot tell apart, so neither is a target (an address found for one could be shown for the other).
 export function workEmailTargets(rows: ContactEnrichment[], icpText: string, nowMs: number = Date.now(), site: SiteIdentity | null = null): RankedPerson[] {
-  const seen = new Set<string>()
-  return contactsFromEnrichments(rows, icpText, nowMs, site).filter(p => {
-    if (!isWorkEmailTarget(p, icpText)) return false
+  const byKey = new Map<string, RankedPerson>()
+  const handles = new Map<string, Set<string>>()
+  for (const p of contactsFromEnrichments(rows, icpText, nowMs, site)) {
+    if (!isWorkEmailTarget(p, icpText)) continue
     const k = targetKey(p)
-    if (seen.has(k)) return false
-    seen.add(k); return true
-  })
+    const h = linkedinHandle(p.linkedin)
+    if (h) { const s = handles.get(k) ?? new Set<string>(); s.add(h); handles.set(k, s) }
+    const had = byKey.get(k)
+    if (!had) byKey.set(k, p)
+    else if (!linkedinHandle(had.linkedin) && h) byKey.set(k, p) // keep the copy that carries a profile to check against
+  }
+  return [...byKey.entries()].filter(([k]) => (handles.get(k)?.size ?? 0) <= 1).map(([, p]) => p)
+}
+
+// Words of a job title that say what the role is (accents, punctuation and filler dropped; common short forms spelled
+// out). "Co-Founder & CEO" -> founder, chief, executive, officer.
+const TITLE_FILL = new Set(['of', 'and', 'the', 'to', 'for', 'at', 'in', 'a', 'an', 'sr', 'senior', 'jr', 'junior', 'co', 'interim', 'acting'])
+const TITLE_SHORT: Record<string, string[]> = {
+  ceo: ['chief', 'executive', 'officer'], cto: ['chief', 'technology', 'officer'], cfo: ['chief', 'financial', 'officer'],
+  coo: ['chief', 'operating', 'officer'], cmo: ['chief', 'marketing', 'officer'], cro: ['chief', 'revenue', 'officer'],
+  vp: ['vice', 'president'], svp: ['vice', 'president'], evp: ['vice', 'president'], gm: ['general', 'manager'], md: ['managing', 'director'],
+  mgr: ['manager'], dir: ['director'], ops: ['operations'], cofounder: ['founder'],
+}
+export function titleWords(t: string | null | undefined): Set<string> {
+  const out = new Set<string>()
+  if (typeof t !== 'string') return out
+  for (const w of t.slice(0, 200).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z]+/)) {
+    if (!w || TITLE_FILL.has(w)) continue
+    for (const x of TITLE_SHORT[w] ?? [w]) out.add(x)
+  }
+  return out
+}
+// Same role: every role word of the shorter title is in the longer one ("Owner" ~ "Owner & Dentist", "CEO" ~ "Chief
+// Executive Officer"); "Practice Manager" vs "Office Manager" or "Owner" vs "Director" is not the same role.
+export function sameRole(a: string | null | undefined, b: string | null | undefined): boolean {
+  const A = titleWords(a), B = titleWords(b)
+  if (!A.size || !B.size) return false
+  const [small, big] = A.size <= B.size ? [A, B] : [B, A]
+  for (const w of small) if (!big.has(w)) return false
+  return true
+}
+
+// How long the page keeps re-reading a lookup another tab or request has in flight, and how often (it stops as soon as
+// the row is finished or retryable; past PENDING_STALE_S the server itself reports 'uncertain').
+export const PENDING_POLL_MS = 4000
+export const PENDING_POLL_MAX = 45
+
+// Merge rows read from the server into what the page shows: a row only replaces the shown one when it is newer
+// (updated_at), or equally new and no longer 'pending'. An older answer (a slow GET that started before a POST finished)
+// never erases a newer result, and a row missing from a read is kept as shown.
+export type ShownLookup = WorkEmailView & { target: string; updated_at?: number | null }
+export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unknown): Record<string, ShownLookup> {
+  if (!Array.isArray(incoming)) return shown
+  let next: Record<string, ShownLookup> | null = null
+  for (const r of incoming) {
+    if (!r || typeof r !== 'object' || typeof (r as ShownLookup).target !== 'string' || typeof (r as ShownLookup).status !== 'string') continue
+    const row = r as ShownLookup
+    const cur = (next ?? shown)[row.target]
+    const t = (x: ShownLookup | undefined) => typeof x?.updated_at === 'number' && Number.isFinite(x.updated_at) ? x.updated_at : -Infinity
+    const newer = !cur || t(row) > t(cur) || (t(row) === t(cur) && cur.status === 'pending' && row.status !== 'pending')
+    if (!newer) continue
+    next = { ...(next ?? shown), [row.target]: row }
+  }
+  return next ?? shown
 }
 
 export const siteSettled = (id: { state: string; site: string | null } | null | undefined): id is { state: 'fact' | 'user_confirmed'; site: string } =>

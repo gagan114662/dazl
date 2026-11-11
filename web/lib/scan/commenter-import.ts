@@ -325,14 +325,17 @@ export function commenterBatchStatus(db: Database.Database, userId: string, batc
   return { batch_id: batch.id, context: batch.context, total: batch.total, note: batch.note, created_at: batch.created_at, job_id: batch.job_id, rows }
 }
 
-// Delete a batch and everything it made: enrichments on its leads first (explicit, per
-// the approved design), then the leads, rows, owning job and batch. Tenant-scoped.
+// Delete a batch and everything it made: enrichments and work-email lookups (#1036) on its
+// leads first (explicit, per the approved design), then the leads, rows, owning job and batch. Tenant-scoped.
 export function deleteCommenterBatch(db: Database.Database, userId: string, batchId: string): boolean {
   const batch = db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, userId) as { job_id: string | null } | undefined
   if (!batch) return false
   db.transaction(() => {
     if (batch.job_id) {
       db.prepare('DELETE FROM lead_enrichments WHERE lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)').run(batch.job_id)
+      // work_email_lookups exists wherever migrateAllSqlite ran (every app DB); a bare test DB without it has no rows to remove.
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_email_lookups'").get())
+        db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)').run(userId, batch.job_id)
       db.prepare('DELETE FROM leads WHERE scan_job_id = ?').run(batch.job_id)
     }
     db.prepare('DELETE FROM commenter_rows WHERE batch_id = ?').run(batchId)

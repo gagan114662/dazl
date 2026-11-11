@@ -1,31 +1,53 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { workEmailCopy, workEmailCostNote, type WorkEmailView } from '@/lib/people/work-email-eligible'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
 // with the workspace's own Apollo / People Data Labs keys). Only a checked address (verified by the provider, or printed
 // on the company website) is labelled checked; an unchecked one says so; nothing here drafts or sends.
-type Lookup = WorkEmailView & { target: string }
+// Rows from the server are MERGED by updated_at (mergeLookups): a slow first read never erases a newer result, and a
+// lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
+type Lookup = ShownLookup
 type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
-export default function WorkEmail({ leadId, targets }: { leadId: string; targets: WorkEmailTarget[] }) {
+// Keyed by lead: another lead's rows are never merged into this one's.
+export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[] }) {
+  return <WorkEmailFor key={p.leadId} {...p} />
+}
+
+function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailTarget[] }) {
   const [lookups, setLookups] = useState<Record<string, Lookup>>({})
   const [providers, setProviders] = useState<Providers | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
 
-  useEffect(() => {
-    let live = true
+  const [reads, setReads] = useState(0)
+  const mounted = useRef(false)
+  const load = useCallback(() => {
     fetch(`/api/leads/${leadId}/work-email`).then(async r => {
-      if (!r.ok || !live) return
-      const j = await r.json() as { providers: Providers; lookups: Lookup[] }
-      setProviders(j.providers)
-      setLookups(Object.fromEntries((j.lookups ?? []).map(l => [l.target, l])))
+      if (!r.ok || !mounted.current) return
+      const j = await r.json() as { providers?: Providers; lookups?: unknown }
+      if (!mounted.current) return
+      if (j.providers) setProviders(j.providers)
+      setLookups(ls => mergeLookups(ls, j.lookups))
     }).catch(() => { /* the button still works; the cost line just stays generic */ })
-    return () => { live = false }
   }, [leadId])
+
+  useEffect(() => {
+    mounted.current = true
+    load()
+    return () => { mounted.current = false }
+  }, [load])
+
+  // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
+  const waiting = Object.values(lookups).some(l => l.status === 'pending' && !busy[l.target])
+  useEffect(() => {
+    if (!waiting || reads >= PENDING_POLL_MAX) return
+    const t = setTimeout(() => { setReads(n => n + 1); load() }, PENDING_POLL_MS)
+    return () => clearTimeout(t)
+  }, [waiting, reads, load])
 
   async function find(key: string) {
     if (busy[key]) return
@@ -34,7 +56,8 @@ export default function WorkEmail({ leadId, targets }: { leadId: string; targets
     try {
       const r = await fetch(`/api/leads/${leadId}/work-email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: key }) })
       const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string }
-      if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => ({ ...ls, [key]: l })); text = '' }
+      if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
+      if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l])); text = '' }
       else if (r.ok && j.status === 'no_key') text = 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }

@@ -1,6 +1,7 @@
 -- #1036 Find work email (lib/people/work-email.ts): one row per (tenant, lead, person) lookup with its outcome. The row is
 -- claimed as 'pending' BEFORE any paid call, so a replay or double click never pays twice. 'verified' needs Apollo and
--- a check time, 'published' needs the site page, and an address is stored only for verified / published / unverified.
+-- a check time, 'published' needs the site page, 'unverified' needs apollo/pdl (a NULL provider never passes: COALESCE),
+-- and an address is stored only for verified / published / unverified.
 -- SQLite twin: migrateWorkEmail. 0061 = main's highest (0060) + 1 (~/work/migration_claims.txt).
 CREATE TABLE work_email_lookups (
       tenant_id  TEXT NOT NULL,
@@ -14,8 +15,9 @@ CREATE TABLE work_email_lookups (
       checked_at BIGINT,
       updated_at BIGINT NOT NULL,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
-      CHECK (status <> 'verified' OR (provider = 'apollo' AND checked_at IS NOT NULL)),
-      CHECK (status <> 'published' OR (provider = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
       PRIMARY KEY (tenant_id, lead_id, target)
     );
 

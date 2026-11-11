@@ -1119,8 +1119,9 @@ CREATE TABLE work_email_lookups (
       checked_at INTEGER,
       updated_at INTEGER NOT NULL,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
-      CHECK (status <> 'verified' OR (provider = 'apollo' AND checked_at IS NOT NULL)),
-      CHECK (status <> 'published' OR (provider = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
       PRIMARY KEY (tenant_id, lead_id, target)
     );
 

@@ -15,6 +15,9 @@
 //   - the person is one of the lead's stored buyer-role targets (work-email-eligible.ts), re-derived here from stored rows;
 //   - the provider's person must be the same name, not in a past role, at the same company domain, and the address must
 //     be on the lead's website domain and not a shared inbox;
+//   - and the SAME person, not a namesake at the same company: the provider's LinkedIn profile equals the stored one when
+//     both are known (a different profile is refused); otherwise the provider must name the company (its domain) AND list
+//     the same role as the stored title (sameRole), so the Director's address is never shown for the Owner of that name;
 //   - US recipients only (docs/DECISIONS.md 2026-10-26): the provider's own person country must be the United States, and
 //     a play whose area names another country makes no paid call. Unknown country = not US: the address is not kept.
 // Spend: every paid call reserves 1 credit in the workspace credit pool first (lib/enrich/credit-pool.ts, the Settings >
@@ -34,7 +37,7 @@ import { identityOf } from '../scan/opportunity.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
-import { nameKey, queryName, siteSettled, targetKey, workEmailTargets } from './work-email-eligible.ts'
+import { linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailTargets } from './work-email-eligible.ts'
 
 export const WORK_EMAIL_STATUSES = ['pending', 'verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected', 'error', 'uncertain'] as const
 export type WorkEmailStatus = typeof WORK_EMAIL_STATUSES[number]
@@ -58,8 +61,9 @@ export function migrateWorkEmail(db: Database.Database): void {
       checked_at INTEGER,
       updated_at INTEGER NOT NULL,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
-      CHECK (status <> 'verified' OR (provider = 'apollo' AND checked_at IS NOT NULL)),
-      CHECK (status <> 'published' OR (provider = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
       PRIMARY KEY (tenant_id, lead_id, target)
     );`)
 }
@@ -98,7 +102,9 @@ type Verdict =
   | { kind: 'none' | 'guess' | 'rejected' | 'not_us'; note: string }
 
 // Judge one provider answer against the person and the lead's website. Pure; every branch names its reason.
-export function judgeMatch(provider: CreditProvider, m: (ApolloMatch | PdlMatch) | null, want: { first: string; last: string }, site: string, icpText = ''): Verdict {
+// `want` is the stored target: its query name plus its stored title and LinkedIn profile (null when not known).
+export interface WantPerson { first: string; last: string; title: string | null; linkedin: string | null }
+export function judgeMatch(provider: CreditProvider, m: (ApolloMatch | PdlMatch) | null, want: WantPerson, site: string, icpText = ''): Verdict {
   const P = provider === 'apollo' ? 'Apollo' : 'People Data Labs'
   if (!m) return { kind: 'none', note: `${P} had no match` }
   const a = m as Partial<ApolloMatch>
@@ -106,7 +112,17 @@ export function judgeMatch(provider: CreditProvider, m: (ApolloMatch | PdlMatch)
   const first = nameKey(a.first ?? words[0] ?? ''), last = nameKey(a.last ?? words[words.length - 1] ?? '')
   if (!first || !last || first !== nameKey(want.first) || last !== nameKey(want.last)) return { kind: 'rejected', note: `${P} returned a different person` }
   if (m.title && roleContradicted(m.title, icpText)) return { kind: 'rejected', note: `${P} lists a past or assistant role (${m.title.slice(0, 60)})` }
-  if (m.orgDomain && !sameCompany(m.orgDomain.toLowerCase(), site)) return { kind: 'rejected', note: `${P} has them at another company (${m.orgDomain.slice(0, 60)})` }
+  const org = typeof m.orgDomain === 'string' ? m.orgDomain.trim().toLowerCase() : ''
+  if (org && !sameCompany(org, site)) return { kind: 'rejected', note: `${P} has them at another company (${org.slice(0, 60)})` }
+  // Same person, not a namesake at the same company (two people called Alex Smith).
+  const wantIn = linkedinHandle(want.linkedin), gotIn = linkedinHandle(m.linkedin)
+  if (wantIn && gotIn && wantIn !== gotIn) return { kind: 'rejected', note: `${P} returned a different LinkedIn profile than the one on this lead` }
+  if (!(wantIn && gotIn)) {
+    if (!org) return { kind: 'rejected', note: `${P} does not name their company, so it could not be confirmed this is the same person` }
+    const t = typeof m.title === 'string' ? m.title : ''
+    if (!t) return { kind: 'rejected', note: `${P} lists no role, so it could not be confirmed this is the same person` }
+    if (!sameRole(want.title, t)) return { kind: 'rejected', note: `${P} lists a different role (${t.slice(0, 60)}), so it may be someone else with this name` }
+  }
   const email = (m.email ?? '').trim().toLowerCase()
   if (!email) return { kind: 'none', note: `${P} has no work email for them` }
   if (!PUBLISHED_EMAIL_RE.test(email) || email.length > 254) return { kind: 'none', note: `${P} returned an unreadable address` }
@@ -136,7 +152,7 @@ export async function findWorkEmail(
 ): Promise<FindWorkEmailResult> {
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
-  if (typeof target !== 'string' || !target || target.length > 200) return { status: 'not_eligible', detail: 'no such person on this lead' }
+  if (typeof target !== 'string' || !target || target.length > TARGET_KEY_MAX) return { status: 'not_eligible', detail: 'no such person on this lead' }
   const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, j.icp
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
@@ -151,7 +167,7 @@ export async function findWorkEmail(
   const icpText = strs(icp.who).join('; ')
   const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
-  const want = queryName(person.name)!
+  const want: WantPerson = { ...queryName(person.name)!, title: person.title, linkedin: person.linkedin }
 
   const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
   const prior = read()
@@ -176,11 +192,19 @@ export async function findWorkEmail(
   }
 
   // 2-3. The tenant's own keys. A key that cannot be read is a recorded failure for that provider, never a silent skip.
+  // Which providers may run is decided from the SAVED keys (workEmailProviders), before any key is decrypted: with both
+  // saved and the #382 paid-fallback opt-in off, PDL never runs, even when the Apollo key turns out unreadable.
+  // `incomplete`: a provider that was allowed gave no answer (unreadable key, credit limit, failed call). Then the lookup
+  // is not finished: it ends retryable ('error'), never as a final 'not found' / 'rejected' / 'not_us'.
   const notes: string[] = []
-  const loadKey = (c: string, P: string): string | null => { try { return getEnabledCredential(db, tenantId, c, deps.master) } catch { notes.push(`${P} key could not be read`); return null } }
-  const keys: Record<CreditProvider, string | null> = { apollo: loadKey('enrich:apollo', 'Apollo'), pdl: loadKey('enrich:pdl', 'People Data Labs') }
-  let pdlOff = false
-  if (keys.apollo && keys.pdl && !enrichFallbackEnabled(db, tenantId)) { keys.pdl = null; pdlOff = true } // paid fallback needs the #382 opt-in
+  let incomplete = false
+  const allowed = workEmailProviders(db, tenantId)
+  const pdlOff = allowed.pdlNeedsOptIn
+  const loadKey = (c: string, P: string): string | null => {
+    try { const k = getEnabledCredential(db, tenantId, c, deps.master); if (typeof k === 'string' && k) return k } catch { /* recorded below */ }
+    notes.push(`${P} key could not be read`); incomplete = true; return null
+  }
+  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo ? loadKey('enrich:apollo', 'Apollo') : null, pdl: allowed.pdl ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
@@ -205,7 +229,7 @@ export async function findWorkEmail(
       const log = (status: string, results = 0) => { try { audit(db, { tenantId, connector: WORK_EMAIL_CONNECTOR[prov], jobId: null, lookup: `work email: lead ${lead.id}`, status: status.slice(0, 200), results }) } catch (e) { console.error('[work-email] audit not saved:', e instanceof Error ? e.message.slice(0, 120) : 'error') } }
       let hold: CreditHold
       try { hold = await reserveCredits(db, tenantId, prov, 1, { env: deps.env, now }) }
-      catch (e) { const t = e instanceof CreditRefused && e.reason === 'credit_cap' ? `${P} credit limit reached (Settings > Enrichment)` : `${P} credit reservation could not be saved`; notes.push(t); log(e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'); continue }
+      catch (e) { const t = e instanceof CreditRefused && e.reason === 'credit_cap' ? `${P} credit limit reached (Settings > Enrichment)` : `${P} credit reservation could not be saved`; notes.push(t); incomplete = true; log(e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'); continue }
       let v: Verdict
       try {
         if (prov === 'apollo') {
@@ -217,7 +241,7 @@ export async function findWorkEmail(
           await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
           v = judgeMatch('pdl', r.match, want, site.site, icpText)
         }
-      } catch (e) { notes.push(failText(e, P)); log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
+      } catch (e) { notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
       answered = true
       seen.add(v.kind); notes.push(v.note); log(v.kind, v.kind === 'verified' || v.kind === 'unverified' ? 1 : 0)
       if (v.kind === 'verified' || v.kind === 'unverified') { best = { ...v, provider: prov }; break } // a kept address: no further spend
@@ -229,9 +253,9 @@ export async function findWorkEmail(
   if (!best && pdlOff) notes.push('People Data Labs fallback is off (turn it on in Settings > Enrichment)')
   const detail = notes.join('; ')
   if (best) save(best.kind, { provider: best.provider, address: best.address, detail, checked_at: best.kind === 'verified' ? now : null, source_url: null }, now)
+  else if (!answered || incomplete) save('error', { detail }, now) // an allowed provider gave no answer: retryable
   else if (seen.has('not_us')) save('not_us', { detail }, now)
   else if (seen.has('rejected')) save('rejected', { detail }, now)
-  else if (!answered) save('error', { detail }, now)
   else save('not_found', { detail }, now)
   return done()
 }

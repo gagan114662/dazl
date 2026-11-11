@@ -6,7 +6,9 @@
 //      (practice manager, owner) and none for a former title or a non-buyer title, plus the cost line;
 //   2. clicking it shows a CHECKED address only for a verified answer (green, "verified", provider + date, Copy button),
 //      an unchecked one as "not checked" (amber, no Copy), and "No work email found" with its reason;
-//   3. a lead whose website is not settled shows no button; the rows fit at 390px.
+//   3. a lead whose website is not settled shows no button; the rows fit at 390px;
+//   4. a lookup another tab has running ('pending', no button) is followed: the row turns into the finished result with
+//      no reload; and a slow first read that answers AFTER a click never erases the click's result (PR #1049 review).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -53,17 +55,17 @@ const ANSWERS = {
 
 const b = await chromium.launch()
 const shotDir = process.env.SHOTS
-async function context(width, height, answers) {
+async function context(width, height, answers, gets = () => ({ lookups: [] })) {
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-  const st = { posts: [] }
+  const st = { posts: [], gets: 0 }
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     const we = /^\/api\/leads\/([a-f0-9]{24})\/work-email$/.exec(p)
-    if (we && m === 'GET') return json({ providers: { apollo: true, pdl: true, pdlNeedsOptIn: false }, lookups: [] })
+    if (we && m === 'GET') { const g = await gets(st.gets++, st); return json({ providers: { apollo: true, pdl: true, pdlNeedsOptIn: false }, lookups: g.lookups }) }
     if (we && m === 'POST') { const t = JSON.parse(req.postData()).target; st.posts.push(`${we[1]}:${t}`); return json(answers[t] ?? { status: 'not_found', lookup: { target: t, status: 'not_found', provider: null, address: null, detail: 'Apollo had no match; People Data Labs had no match', source_url: null, checked_at: null, updated_at: NOW }, replayed: false }) }
     if (p === '/api/scan/status') return json({ job_id: J, status: 'done', lead_count: 2, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'NYC dental practices hiring front desk' })
     if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: LEADS })
@@ -111,10 +113,41 @@ async function run(width, height, tag) {
   await ctx.close()
 }
 
+async function followsPending() {
+  // Dana's lookup is running in another tab: the first read says pending; later reads say verified.
+  const pending = { target: 'Dana Lee|Practice Manager', status: 'pending', provider: null, address: null, detail: null, source_url: null, checked_at: null, updated_at: NOW }
+  const verified = { ...ANSWERS['Dana Lee|Practice Manager'].lookup, updated_at: NOW + 3 }
+  // Owen: the first read is held until after his click finished, then answers with an OLDER pending row.
+  let clicked; const afterClick = new Promise(r => { clicked = r })
+  const gets = async (n) => {
+    if (n === 0) { await afterClick; return { lookups: [pending, { ...pending, target: 'Owen Park|Owner', updated_at: NOW - 30 }] } }
+    return { lookups: [verified] }
+  }
+  const { ctx, st } = await context(1280, 1000, ANSWERS, gets); const page = await ctx.newPage()
+  await page.goto(`${base}/app/leads?job_id=${J}&passive=1`, { waitUntil: 'domcontentloaded' })
+  const cards = page.getByTestId('lead-card'); await cards.first().waitFor({ timeout: 20000 })
+  const harbor = page.locator('div:has(> [data-testid=lead-card])').filter({ hasText: 'Harbor Dental' })
+  await harbor.getByText('Details', { exact: true }).click()
+  const box = harbor.getByTestId('work-email'); await box.waitFor({ timeout: 10000 })
+  const dana = box.getByTestId('work-email-row').nth(0), owen = box.getByTestId('work-email-row').nth(1)
+  await owen.getByTestId('work-email-find').click()
+  await owen.getByTestId('work-email-address').waitFor()
+  clicked()
+  await page.waitForFunction(() => document.querySelector('[data-testid=work-email-row][data-status=pending]') !== null, null, { timeout: 10000 })
+  assert.equal(await dana.getByTestId('work-email-find').count(), 0, 'a running lookup shows no button')
+  assert.equal(await owen.getAttribute('data-status'), 'unverified', "the late, older first read did not erase Owen's result")
+  await page.waitForFunction(() => document.querySelector('[data-testid=work-email-row]')?.getAttribute('data-status') === 'verified', null, { timeout: 15000 })
+  assert.match(await dana.innerText(), /dana\.lee@harbordental\.example\s*verified/i)
+  assert.equal(await owen.getAttribute('data-status'), 'unverified')
+  assert.ok(st.gets >= 2, 'the page re-read the pending row by itself')
+  await ctx.close()
+}
+
 try {
   await run(1280, 1000, 'desktop')
   await run(390, 844, 'mobile')
-  console.log('work email UI check passed: Find work email only for buyer-role people on a settled site; verified shows as checked with provider and date, unchecked is labelled not checked; rows fit at 390px')
+  await followsPending()
+  console.log('work email UI check passed: Find work email only for buyer-role people on a settled site; verified shows as checked with provider and date, unchecked is labelled not checked; rows fit at 390px; a running lookup is followed to its result; a late older read never erases a newer one')
 } finally {
   await b.close(); srv.kill()
   setTimeout(() => { try { rmSync(tmp, { recursive: true, force: true }) } catch { /* Windows may hold the db file a moment longer */ } }, 1500)

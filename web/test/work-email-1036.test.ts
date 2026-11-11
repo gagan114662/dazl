@@ -9,7 +9,10 @@ import { createJob } from '../lib/scan/store.ts'
 import { saveCredential, setEnrichFallback, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { setCreditLimit, creditUse } from '../lib/enrich/credit-pool.ts'
 import { findWorkEmail, judgeMatch, workEmailsFor, workEmailProviders, PENDING_STALE_S } from '../lib/people/work-email.ts'
-import { workEmailTargets, targetKey, workEmailCopy, workEmailCostNote, queryName, siteSettled } from '../lib/people/work-email-eligible.ts'
+import { workEmailTargets, targetKey, workEmailCopy, workEmailCostNote, queryName, siteSettled, sameRole, linkedinHandle, mergeLookups, TARGET_KEY_MAX, PENDING_POLL_MS, PENDING_POLL_MAX, type ShownLookup } from '../lib/people/work-email-eligible.ts'
+import { deleteCommenterBatch, importCommenters, parseImport } from '../lib/scan/commenter-import.ts'
+import { eraseFirstParty, ingest, recordConfig, signBody } from '../lib/signals/first-party.ts'
+import { bothEngines } from './helpers/engines.ts'
 import { identityOf } from '../lib/scan/opportunity.ts'
 import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
 import { apolloPeopleSearch } from '../lib/enrich/apollo.ts'
@@ -240,14 +243,174 @@ test('malformed provider bodies fail closed and are still recorded', async () =>
   }
 })
 
+const W = { first: 'Dana', last: 'Lee', title: 'Practice Manager', linkedin: null }
 test('judgeMatch: every Apollo status other than verified is never "checked"', () => {
   const m = { name: 'Dana Lee', first: 'Dana', last: 'Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', country: 'United States', orgDomain: SITE, linkedin: null }
-  for (const st of ['unverified', 'likely to engage', null, 'pending_manual_fulfillment']) assert.equal(judgeMatch('apollo', { ...m, emailStatus: st }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'unverified', String(st))
-  assert.equal(judgeMatch('apollo', { ...m, emailStatus: 'extrapolated' }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'guess')
-  assert.equal(judgeMatch('apollo', { ...m, emailStatus: 'unavailable' }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'none')
-  assert.equal(judgeMatch('pdl', { ...m }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'unverified', 'PDL never verifies')
-  assert.equal(judgeMatch('apollo', { ...m, email: 'dana.lee@mail.harbordental.example', emailStatus: 'verified' }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'verified', 'a subdomain of the site is the same company')
-  assert.equal(judgeMatch('apollo', { ...m, email: 'dana.lee@harbordental.example.evil', emailStatus: 'verified' }, { first: 'Dana', last: 'Lee' }, SITE).kind, 'rejected')
+  for (const st of ['unverified', 'likely to engage', null, 'pending_manual_fulfillment']) assert.equal(judgeMatch('apollo', { ...m, emailStatus: st }, W, SITE).kind, 'unverified', String(st))
+  assert.equal(judgeMatch('apollo', { ...m, emailStatus: 'extrapolated' }, W, SITE).kind, 'guess')
+  assert.equal(judgeMatch('apollo', { ...m, emailStatus: 'unavailable' }, W, SITE).kind, 'none')
+  assert.equal(judgeMatch('pdl', { ...m }, W, SITE).kind, 'unverified', 'PDL never verifies')
+  assert.equal(judgeMatch('apollo', { ...m, email: 'dana.lee@mail.harbordental.example', emailStatus: 'verified' }, W, SITE).kind, 'verified', 'a subdomain of the site is the same company')
+  assert.equal(judgeMatch('apollo', { ...m, email: 'dana.lee@harbordental.example.evil', emailStatus: 'verified' }, W, SITE).kind, 'rejected')
+})
+
+// ---- review round 1 (XHawk + Greptile on #1049) ----
+// XHawk #1 (High): two people with the same name at the same company must never get each other's address.
+test('namesakes: a same-named person in another role or with another LinkedIn profile is refused, nothing kept', async () => {
+  const m = { name: 'Dana Lee', first: 'Dana', last: 'Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', emailStatus: 'verified', country: 'United States', orgDomain: SITE, linkedin: null as string | null }
+  const withIn = { ...W, linkedin: 'https://www.linkedin.com/in/dana-lee-invented' }
+  // LinkedIn known on both sides: the profile decides (role wording does not matter then).
+  assert.equal(judgeMatch('apollo', { ...m, linkedin: 'https://linkedin.com/in/Dana-Lee-Invented/', title: 'Head of Practice' }, withIn, SITE).kind, 'verified')
+  const other = judgeMatch('apollo', { ...m, linkedin: 'https://www.linkedin.com/in/dana-lee-2' }, withIn, SITE)
+  assert.equal(other.kind, 'rejected'); assert.match((other as { note: string }).note, /different LinkedIn profile/)
+  // Otherwise: same role AND the provider names the company.
+  for (const [over, re] of [
+    [{ title: 'Director of Operations' }, /different role \(Director of Operations\)/],
+    [{ title: 'Office Manager' }, /different role/],
+    [{ title: null }, /lists no role/],
+    [{ orgDomain: null }, /does not name their company/],
+  ] as [Record<string, unknown>, RegExp][]) {
+    const v = judgeMatch('apollo', { ...m, ...over } as typeof m, W, SITE)
+    assert.equal(v.kind, 'rejected', JSON.stringify(over)); assert.match((v as { note: string }).note, re)
+  }
+  assert.equal(judgeMatch('apollo', { ...m, title: 'Sr. Practice Manager' }, W, SITE).kind, 'verified')
+  // End to end: the stored Owner (company site, no profile) is clicked; Apollo answers with the Director of the same name.
+  const s = seed({ keys: 'apollo' })
+  const r = await run(s, OWEN, stub(() => apolloPerson({ name: 'Owen Park', first_name: 'Owen', last_name: 'Park', title: 'Director', email: 'owen.park@harbordental.example', linkedin_url: null }), never))
+  assert.equal(r.status, 'rejected'); assert.ok('row' in r); assert.equal(r.row.address, null); assert.match(r.row.detail ?? '', /different role \(Director\)/)
+  // Dana's stored profile is dana-lee-invented: Apollo's other Dana Lee (another profile) is refused even with a matching title.
+  const s2 = seed({ keys: 'apollo' })
+  const r2 = await run(s2, DANA, stub(() => apolloPerson({ linkedin_url: 'https://www.linkedin.com/in/dana-lee-other' }), never))
+  assert.equal(r2.status, 'rejected'); assert.ok('row' in r2); assert.equal(r2.row.address, null)
+})
+
+test('sameRole / linkedinHandle: role words and short forms; malformed values never match', () => {
+  for (const [a, b] of [['Owner', 'Owner & Dentist'], ['CEO', 'Chief Executive Officer'], ['Co-Founder', 'Founder and CEO'], ['VP Sales', 'Vice President of Sales'], ['Practice Manager', 'practice manager']]) assert.equal(sameRole(a, b), true, `${a} ~ ${b}`)
+  for (const [a, b] of [['Owner', 'Director'], ['Practice Manager', 'Office Manager'], ['Head of Sales', 'VP Sales'], ['Owner', ''], ['', ''], ['of the', 'and']]) assert.equal(sameRole(a, b), false, `${a} !~ ${b}`)
+  for (const bad of [null, undefined, 42, {}, ['Owner']]) assert.equal(sameRole('Owner', bad as never), false)
+  assert.equal(linkedinHandle('linkedin.com/in/Dana-Lee/?trk=x'), 'dana-lee')
+  assert.equal(linkedinHandle('https://uk.linkedin.com/in/dana%2Dlee'), 'dana-lee')
+  for (const bad of [null, 42, {}, 'https://notlinkedin.com/in/x', 'https://www.linkedin.com/company/x', 'linkedin.com/in/']) assert.equal(linkedinHandle(bad as never), null, String(bad))
+  assert.equal(typeof linkedinHandle('https://www.linkedin.com/in/%E0%A4%A'), 'string', 'a broken escape is kept as typed, never thrown')
+})
+
+// XHawk #2: the target key is never cut, so two people whose name|title share the first 200 characters cannot merge.
+test('target keys are full, never truncated; an over-long key is not a target; same name+title with two profiles is no target', () => {
+  const s = seed()
+  const long = 'Director ' + 'x'.repeat(195) // name|title = 214 characters; the first 200 are the same for both
+  const add = (connector: string, value: string, url: string) => s.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', ?, 'contact', ?, NULL, 70, ?, '2026-11-01', ?)").run(randomBytes(12).toString('hex'), s.lead, connector, value, url, NOW - 100)
+  add('enrich:apollo', `Pat Long - ${long}a`, 'https://www.linkedin.com/in/pat-a')
+  add('enrich:apollo', `Pat Long - ${long}b`, 'https://www.linkedin.com/in/pat-b')
+  add('enrich:apollo', 'Alex Smith - Owner', 'https://www.linkedin.com/in/alex-smith-1')
+  add('enrich:pdl', 'Alex Smith - Owner', 'https://www.linkedin.com/in/alex-smith-2')
+  add('enrich:apollo', 'Kim Ray - Owner', 'https://www.linkedin.com/in/kim-ray')
+  add('enrich:pdl', 'Kim Ray - Owner', 'https://www.linkedin.com/in/Kim-Ray/')
+  const rows = enrichmentsForLeads(s.db, 'A', [s.lead])[s.lead]
+  const site = identityOf({ id: s.lead, contact: null }, rows)
+  const keys = workEmailTargets(rows, '', NOW * 1000, site).map(targetKey)
+  for (const k of keys) assert.ok(k.length <= TARGET_KEY_MAX, k)
+  assert.ok(!keys.some(k => k.startsWith('Pat Long')), 'over-long name|title pairs are not offered (no cut key)')
+  assert.ok(!keys.includes('Alex Smith|Owner'), 'two different profiles under one name+title are not offered')
+  assert.equal(keys.filter(k => k === 'Kim Ray|Owner').length, 1, 'the same profile found twice is one target')
+  assert.ok(keys.includes(OWEN))
+  assert.notEqual(targetKey({ name: 'Pat Long', title: `${long}a` }), targetKey({ name: 'Pat Long', title: `${long}b` }))
+})
+
+// Greptile P1 #1: with both keys saved and the paid fallback OFF, an unreadable Apollo key never lets PDL spend.
+test('fallback off + unreadable Apollo key: PDL is never called; the lookup is a retryable error', async () => {
+  const s = seed({ keys: 'pdl-no-optin' }); const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+  s.db.prepare("UPDATE tenant_connectors SET ciphertext = 'not-a-real-ciphertext' WHERE tenant_id = 'A' AND connector = 'enrich:apollo'").run()
+  const r = await run(s, DANA, stub(never, never, calls))
+  assert.equal(calls.urls.length, 0, 'no provider call, PDL included')
+  assert.equal(r.status, 'error'); assert.ok('row' in r); assert.match(r.row.detail ?? '', /Apollo key could not be read/)
+  assert.equal(((await creditUse(s.db, 'A', { now: NOW })).find(u => u.provider === 'pdl' && u.window === 'day')?.reserved ?? 0), 0)
+  // Same with a wrong master key (every key unreadable).
+  const s2 = seed({ keys: 'pdl-no-optin' }); const c2: Calls = { apollo: 0, pdl: 0, urls: [] }
+  const r2 = await findWorkEmail(s2.db, 'A', s2.lead, DANA, { fetchImpl: stub(never, never, c2), master: randomBytes(32), now: NOW, env: {} })
+  assert.equal(r2.status, 'error'); assert.equal(c2.urls.length, 0)
+})
+
+// Greptile P1 #2: a provider that should have answered and did not leaves the lookup retryable, never a final not_found.
+for (const [why, pdl, setup] of [
+  ['PDL times out', () => { throw new DOMException('t', 'TimeoutError') }, null],
+  ['PDL rejects its key', () => new Response('', { status: 401 }), null],
+  ['PDL hits the workspace credit limit', never, 'pdl-cap'],
+  ['PDL key unreadable', never, 'pdl-bad-key'],
+] as [string, () => Response, string | null][]) {
+  test(`Apollo no match, then ${why}: retryable error (not a final not_found); a later retry runs again`, async () => {
+    const s = seed()
+    if (setup === 'pdl-cap') { // the one PDL credit allowed today goes on Owen first
+      await setCreditLimit(s.db, 'A', 'pdl', 'day', 1)
+      assert.equal((await run(s, OWEN, stub(() => json({ person: null }), () => pdlPerson({ full_name: 'Owen Park', job_title: 'Owner', work_email: 'owen@harbordental.example' })))).status, 'unverified')
+    }
+    if (setup === 'pdl-bad-key') s.db.prepare("UPDATE tenant_connectors SET ciphertext = 'garbage' WHERE tenant_id = 'A' AND connector = 'enrich:pdl'").run()
+    const r = await run(s, DANA, stub(() => json({ person: null }), pdl))
+    assert.equal(r.status, 'error', why); assert.ok('row' in r); assert.equal(r.row.address, null)
+    assert.match(r.row.detail ?? '', /Apollo had no match/)
+    assert.equal(workEmailCopy(r.row).headline, 'Lookup failed')
+    const again = await run(s, DANA, stub(() => apolloPerson(), never), { now: NOW + 5 })
+    assert.equal(again.status, 'verified'); assert.ok('replayed' in again && !again.replayed)
+  })
+}
+test('Apollo refuses a namesake and PDL fails: still retryable (incomplete), not a final rejected', async () => {
+  const s = seed()
+  const r = await run(s, DANA, stub(() => apolloPerson({ title: 'Director', linkedin_url: null }), () => { throw new DOMException('t', 'TimeoutError') }))
+  assert.equal(r.status, 'error')
+})
+
+// Greptile P2 (CHECKs): a NULL provider never satisfies a checked status.
+test('the table refuses verified / published / unverified with a NULL provider', () => {
+  const s = seed()
+  const ins = (status: string, provider: string | null, checked: number | null, url: string | null) =>
+    s.db.prepare('INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, checked_at, source_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)').run('A', s.lead, randomBytes(4).toString('hex'), status, provider, 'a@harbordental.example', checked, url)
+  assert.throws(() => ins('verified', null, 1, null), /CHECK/)
+  assert.throws(() => ins('published', null, null, 'https://harbordental.example/team'), /CHECK/)
+  assert.throws(() => ins('unverified', null, null, null), /CHECK/)
+  assert.throws(() => ins('unverified', 'site', null, null), /CHECK/)
+  ins('published', 'site', null, 'https://harbordental.example/team'); ins('unverified', 'pdl', null, null)
+})
+
+// XHawk #3 / Greptile P2 x2 (page): merge rows by updated_at; a slow older read never erases a newer result; pending is followed.
+test('mergeLookups: older or missing rows never erase a newer result; pending gives way to finished or uncertain', () => {
+  const row = (target: string, status: string, updated_at: number, address: string | null = null): ShownLookup => ({ target, status, provider: null, address, detail: null, source_url: null, checked_at: null, updated_at })
+  const done = { [DANA]: row(DANA, 'verified', 100, 'dana.lee@harbordental.example') }
+  assert.equal(mergeLookups(done, []), done, 'an empty read (started before the click) keeps the shown result')
+  assert.equal(mergeLookups(done, [row(DANA, 'pending', 99)]), done, 'an older pending read never replaces it')
+  assert.equal(mergeLookups(done, [row(DANA, 'pending', 100)]), done, 'equal time: a finished row is never replaced by pending')
+  const pend = { [DANA]: row(DANA, 'pending', 100) }
+  assert.equal(mergeLookups(pend, [row(DANA, 'verified', 100, 'x@harbordental.example')])[DANA].status, 'verified')
+  assert.equal(mergeLookups(pend, [row(DANA, 'uncertain', 100)])[DANA].status, 'uncertain', 'the stale window turns pending into retryable')
+  assert.equal(mergeLookups(pend, [row(DANA, 'not_found', 140)])[DANA].status, 'not_found')
+  assert.equal(mergeLookups({}, [row(OWEN, 'pending', 1)])[OWEN].status, 'pending')
+  for (const junk of [null, 'x', 42, {}, [null, 7, 'x', { target: 1, status: 'verified' }, { target: DANA }, { status: 'verified' }]]) assert.equal(mergeLookups(done, junk), done, JSON.stringify(junk))
+  assert.ok(PENDING_POLL_MS * PENDING_POLL_MAX > PENDING_STALE_S * 1000, 'the page keeps following a pending row past the server stale window')
+})
+
+// XHawk #4 (outside the diff): deleting a lead deletes its work-email rows (commenter batch delete, first-party erase).
+test('deleting a commenter batch deletes the work-email lookups of its leads (tenant-scoped)', () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const r = importCommenters(db, 'A', parseImport('https://www.linkedin.com/in/jane-doe').valid, 'ctx')
+  const leadId = (db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').get(r.jobId) as { id: string }).id
+  const ins = db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES (?, ?, 'Jane Doe|CTO', 'unverified', 'pdl', 'jane@acme.example', 1)")
+  ins.run('A', leadId); ins.run('B', 'other-tenant-lead')
+  assert.equal(deleteCommenterBatch(db, 'B', r.batchId), false)
+  assert.equal(deleteCommenterBatch(db, 'A', r.batchId), true)
+  assert.deepEqual(db.prepare('SELECT tenant_id FROM work_email_lookups').all(), [{ tenant_id: 'B' }], "only the deleted lead's row went")
+})
+
+bothEngines('first-party erase deletes the work-email lookups of the erased leads', async ({ db }) => {
+  process.env.DAZL_MASTER_KEY ??= randomBytes(32).toString('base64')
+  const T = 1_793_000_000
+  await recordConfig(db, 'A', { site_domain: 'seller.test', basis: 'consent', privacy_url: 'https://seller.test/privacy', retention_days: 90 }, 'actor-a', T)
+  const raw = JSON.stringify({ events: [{ id: 'v1', type: 'site_visit', occurred_at: new Date((T - 600) * 1000).toISOString(), page_url: 'https://seller.test/pricing', consent: 'granted', network: 'business', account: { domain: 'acme.io', basis: 'logged_in_account' } }] })
+  await ingest(db, 'A', raw, signBody('s', T, raw), T)
+  const lead = (await db.all<{ id: string }>("SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = 'A' AND l.source_kind = 'first_party'"))[0]
+  assert.ok(lead, 'the visit made a first-party lead')
+  await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('A', ?, 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)", [lead.id])
+  await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('B', 'b-lead', 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)")
+  assert.equal(await eraseFirstParty(db, 'A'), 1)
+  assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'A'")).length, 0)
+  assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'B'")).length, 1)
 })
 
 // ---- storage invariants: the table itself refuses an unchecked "verified" ----
