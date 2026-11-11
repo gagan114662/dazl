@@ -51,11 +51,20 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    - checked = Apollo's own `email_status: verified` (stored with provider and date) or published (with the page). PDL
      and Apollo's other statuses are stored as "found, not checked" and say so; Apollo's guessed / extrapolated addresses
      are never kept. The address must be the same person, not a past role, at the lead's website domain, not a shared
-     inbox, and the provider must place the person in the US (else nothing is kept; unknown = not US).
+     inbox, and the provider must place the person in the US (else nothing is kept; unknown = not US). A namesake at
+     the same company is refused: the provider's LinkedIn profile must equal the stored one when both are known;
+     otherwise the provider must name the company and list the same role as the stored title. The same name+title
+     stored with two different profiles is not offered at all.
+   - unfinished = retryable: if a provider that was allowed gave no answer (unreadable key, credit limit, timeout or
+     error), the lookup ends as 'Lookup failed, try again', never as a final 'not found'. Whether PDL may run is
+     decided from the saved keys and the opt-in before any key is decrypted.
+   - the page merges what the server returns by time (an older read never erases a newer result) and re-reads a
+     lookup that is running in another tab until it finishes or becomes retryable. Deleting a lead (commenter batch
+     delete, first-party erase/retention) deletes its lookups too.
    - spend: 1 credit reserved per paid call in the workspace credit pool (Settings > Enrichment counters and limits)
      before the call; a durable 'pending' claim makes double clicks and replays pay once; finished lookups replay free.
    - storage: `work_email_lookups` (PG 0061); its CHECKs make 'verified' impossible without Apollo and a check time and
-     'published' impossible without its page. It is NOT a contact: drafting still uses published addresses only.
+     'published' impossible without its page (a NULL provider never passes). It is NOT a contact: drafting still uses published addresses only.
 
 ## Not done on purpose
 
