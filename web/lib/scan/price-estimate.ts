@@ -234,7 +234,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
     verdict,
   })).digest('hex').slice(0, 16)
-  const a = i.payer === 'trial' ? i.trialAllowance : null
+  // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
+  const a = i.payer === 'trial' && !trialWhy ? i.trialAllowance : null
   const trial_allowance = a && Number.isFinite(a.left_usd) && Number.isFinite(a.total_usd) && a.total_usd > 0 && a.left_usd >= 0 && a.left_usd <= a.total_usd ? { left_usd: a.left_usd, total_usd: a.total_usd } : null
   return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}) }
 }

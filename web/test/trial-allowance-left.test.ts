@@ -61,3 +61,17 @@ test('estimate: the allowance rides on a trial estimate, never on an own-key one
   for (const bad of [{ left_usd: NaN, total_usd: 1 }, { left_usd: -1, total_usd: 1 }, { left_usd: 2, total_usd: 1 }, { left_usd: 0.5, total_usd: 0 }]) assert.equal(estimateRun({ ...base, payer: 'trial', trialAllowance: bad }).trial_allowance, undefined)
   assert.deepEqual(withA.verdict, none.verdict, 'the verdict does not change')
 })
+
+test('estimate: the allowance line is dropped whenever a trial refusal blocks, one case per refusal reason; unknown and not_configured reasons do not block so it stays', () => {
+  const allowance = { left_usd: 0.4, total_usd: 1 }
+  for (const why of ['attempts_cap', 'account_total_cap', 'global_daily_cap', 'domain_used', 'google_required']) {
+    const e = estimateRun({ ...base, payer: 'trial', trialRefusal: why, trialAllowance: allowance })
+    assert.equal(e.verdict.ok, false, `${why} blocks`)
+    assert.equal(e.trial_allowance, undefined, `${why}: no allowance line beside a refusal`)
+  }
+  for (const why of ['not_configured', 'something_new', null]) {
+    const e = estimateRun({ ...base, payer: 'trial', trialRefusal: why, trialAllowance: allowance })
+    assert.equal(e.verdict.ok, true, `${why} does not block`)
+    assert.deepEqual(e.trial_allowance, allowance, `${why}: the line still shows`)
+  }
+})
