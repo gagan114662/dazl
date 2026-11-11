@@ -161,12 +161,24 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
   return { ok: true, text, title: heading.slice(0, 120) }
 }
 
-export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean } = {}): Promise<CareersResult> {
+// The quote is a verbatim passage of the posting. The default window (60 before the title, 160 after) can miss the company's name, and the source prompt needs a passage that
+// names it: when the name is outside the window, widen to one span holding the title and the name if that fits in 300 characters, else take the passage around the name.
+export function quoteFor(text: string, title: string, at: number, company?: string): string {
+  const win = at >= 0 ? text.slice(Math.max(0, at - 60), at + title.length + 160) : title
+  const name = company?.trim()
+  if (!name || name.length < 3 || norm(win).includes(norm(name))) return win.slice(0, 300)
+  const ci = text.toLowerCase().indexOf(name.toLowerCase())
+  if (ci < 0) return win.slice(0, 300)
+  if (at >= 0) { const a = Math.max(0, Math.min(at, ci) - 20), b = Math.min(text.length, Math.max(at + title.length, ci + name.length) + 20); if (b - a <= 300) return text.slice(a, b) }
+  return text.slice(Math.max(0, ci - 60), ci + name.length + 160).slice(0, 300)
+}
+export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[] } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(site)) return { vacancy: null, reason: 'no_careers_page', pages: 0 }
   const origin = `https://${site}`
   const rob = await get(`${origin}/robots.txt`)
-  if (!rob || rob.status >= 500) return { vacancy: null, reason: 'robots_unreachable', pages: 0 }
+  // Only a clean 404 / 410 means "no robots policy". A blocked (401 / 403 / 429) or failing robots.txt is unreachable: never read around.
+  if (!rob || rob.status >= 500 || (rob.status >= 400 && rob.status !== 404 && rob.status !== 410)) return { vacancy: null, reason: 'robots_unreachable', pages: 0 }
   const robots = rob.status >= 400 ? { allows: () => true } : parseRobots(rob.body, site)
   if (!robots.allows('/')) return { vacancy: null, reason: 'robots_disallow', pages: 0 }
   const paths = [...PATHS]
@@ -174,6 +186,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
   if (home && home.status < 400) for (const m of home.body.matchAll(/href\s*=\s*["']([^"'#?]*(?:careers?|jobs|join(?:-us)?|work-with-us)[^"'#?]*)["']/gi)) {
     try { const u = new URL(m[1], home.finalUrl); if (registrable(u.hostname) === registrable(site) && !paths.includes(u.pathname)) paths.unshift(u.pathname) } catch { /* ignore */ }
   }
+  for (const fp of [...(opts.firstPaths ?? [])].reverse()) if (/^\/[^\s]*$/.test(fp)) { const i = paths.indexOf(fp); if (i >= 0) paths.splice(i, 1); paths.unshift(fp) } // a path the user supplied is read first
   let pages = 0, readPages = 0, sawPage = false, closed = false, wrongDomain = false, verdict: CareersReason | null = null, generic: CareersVacancy | null = null
   for (const p of paths) {
     if (pages >= MAX_PAGES || opts.signal?.aborted) break
@@ -196,7 +209,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
       const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: (at >= 0 ? vt.slice(Math.max(0, at - 60), at + shown.length + 160) : shown).slice(0, 300), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: quoteFor(vt, shown, at, opts.company), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
       if (!opts.roleMatch) return { vacancy, reason: 'found', pages, readPages }
       if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, readPages, matched: true }
       if (!generic) generic = vacancy
