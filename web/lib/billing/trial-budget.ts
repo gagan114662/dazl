@@ -260,6 +260,21 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   return db.tx(t => refusal(t, user, caps, day, reserveUsd))
 }
 
+// What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total
+// minus what this account's trial work counts as now (the same ledger the admission check uses: settled scans and reads at what they recorded,
+// running or unsettled ones at their full reserve, website reads included). null when the trial is not configured or the ledger cannot be read:
+// the screen then shows no line, never a guessed one. Clamped to 0..total.
+export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<{ left_usd: number; total_usd: number } | null> {
+  const caps = trialWalletCaps(o.env)
+  if (!caps) return null
+  const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
+  try {
+    const l = ledger(await db.all<LedgerRow>(LEDGER_SQL, [tenantId, day, day, day * 86400, day * 86400]), tenantId, day)
+    if (!Number.isFinite(l.account)) return null
+    return { left_usd: Math.min(caps.accountTotalUsd, Math.max(0, caps.accountTotalUsd - l.account)), total_usd: caps.accountTotalUsd }
+  } catch { return null }
+}
+
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment
 // and every guarded paid call: the reservation may now count as what the scan recorded instead of its full reserve.
 // Best effort: if this write fails, the reservation keeps counting in full (never less than it could spend).

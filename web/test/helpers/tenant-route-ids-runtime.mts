@@ -25,6 +25,7 @@ const quarantine = await import('../../app/api/leads/[lead]/quarantine/route.ts'
 const leadFeedback = await import('../../app/api/leads/[lead]/feedback/route.ts')
 const warm = await import('../../app/api/leads/[lead]/warm-path/route.ts')
 const findContact = await import('../../app/api/leads/[lead]/find-contact/route.ts')
+const workEmail = await import('../../app/api/leads/[lead]/work-email/route.ts')
 const enrichRetry = await import('../../app/api/leads/[lead]/enrich-retry/route.ts')
 const evidence = await import('../../app/api/leads/evidence/route.ts')
 const pageSignals = await import('../../app/api/leads/page-signals/route.ts')
@@ -111,6 +112,8 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   await asB('DELETE /api/leads/[lead]/warm-path', () => warm.DELETE(req(`/api/leads/${L}/warm-path`, 'DELETE', { id: f.warmPath }), ctx({ lead: L })), s => s === 404 || s === 200)
   await asB('POST /api/leads/[lead]/enrich-retry', () => enrichRetry.POST(req(`/api/leads/${L}/enrich-retry`, 'POST', { provider: 'apollo', step: 'org' }), ctx({ lead: L })), is404)
   await asB('POST /api/leads/[lead]/find-contact', () => findContact.POST(req(`/api/leads/${f.confirmed}/find-contact`, 'POST', {}), ctx({ lead: f.confirmed })), is404)
+  await asB('GET /api/leads/[lead]/work-email', () => workEmail.GET(req(`/api/leads/${L}/work-email`, 'GET'), ctx({ lead: L })), is404)
+  await asB('POST /api/leads/[lead]/work-email', () => workEmail.POST(req(`/api/leads/${L}/work-email`, 'POST', { target: 'ASECRETMUTUAL4q7|VP' }), ctx({ lead: L })), is404)
   await asB('GET /api/leads/evidence', () => evidence.GET(req(`/api/leads/evidence?lead_id=${L}`, 'GET')), is404)
   await asB('GET /api/leads/page-signals', () => pageSignals.GET(req(`/api/leads/page-signals?lead_id=${L}`, 'GET')), is404)
   await asB('GET /api/leads/evidence-recheck', () => evidenceRecheck.GET(req(`/api/leads/evidence-recheck?lead_id=${L}`, 'GET')), is404)
@@ -156,6 +159,9 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   // 503 when contact search is switched off (SITECRAWL_ENABLED=0 under npm test): that check runs after the ownership
   // lookup, so it is still past the tenant check B was stopped at with a 404.
   assert.ok([200, 503].includes(await st(findContact.POST(req(`/api/leads/${f.confirmed}/find-contact`, 'POST', {}), ctx({ lead: f.confirmed })))))
+  // #1036: A reads its own lookups (200) and a lookup gets past the tenant check (422: that person is no buyer-role target on an unsettled site).
+  assert.equal(await st(workEmail.GET(req(`/api/leads/${L}/work-email`, 'GET'), ctx({ lead: L }))), 200)
+  assert.equal(await st(workEmail.POST(req(`/api/leads/${L}/work-email`, 'POST', { target: 'ASECRETMUTUAL4q7|VP' }), ctx({ lead: L }))), 422)
   assert.equal(await st(pageSignals.GET(req(`/api/leads/page-signals?lead_id=${L}`, 'GET'))), 200)
   assert.equal(await st(qualifyPreview.GET(req(`/api/leads/qualify-preview?lead_id=${L}`, 'GET'))), 200)
   console.log('COHORT', done.length, JSON.stringify(done))

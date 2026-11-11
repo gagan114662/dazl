@@ -234,7 +234,7 @@ No table is read or written in Postgres at runtime yet.
 | Billing / plans | tenant_plans, stripe_events, trial_scans | PG-schema |
 | Scan core | scan_jobs, leads, lead_sources, scan_source_runs, csv_batches, csv_rows, commenter_batches, commenter_rows | PG-schema |
 | Scan extras | lead_evidence_copies, evidence_purge_audit, evidence_purge_gate (`scan/evidence-copies.ts`); lead_qualifications (`scan/qualify-run.ts`); scan_model_calls (`scan/model-usage.ts`); scan_source_stats (`search/trace.ts`); source_reviews (`scan/source-review.ts`); hiring_feed_crawl (`scan/job-feed.ts`) | **SQLite-only** |
-| People | email_patterns, email_candidates (`people/email-pattern.ts`) | **SQLite-only** |
+| People | email_patterns, email_candidates (`people/email-pattern.ts`), work_email_lookups (`people/work-email.ts`, #1036) | **SQLite-only** |
 | Queue | work_queue, work_queue_meta (`queue/sqlite.ts`, behind a tenant flag) | **SQLite-only** |
 | Temp | leads_new (built and renamed inside `migrateScan` when it widens `leads`) | Not a real table; skip it |
 | Events / signals | company_events, tenant_competitors | PG-schema |
