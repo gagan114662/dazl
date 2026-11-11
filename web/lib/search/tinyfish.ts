@@ -89,6 +89,11 @@ export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; tra
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
+// A call priced $0 (inside TinyFish's free allowance, lib/scan/spend-cap.ts unitCostUsd) that FAILED (timeout, dropped connection, 5xx, unreadable
+// body) cannot have cost anything we could account for: it ends as one failed page or search (settled at $0), not as accounting_uncertain, which
+// discarded a whole scan's results (owner-approved 2026-11-11). Only free TinyFish search/fetch: a priced call, any other kind and a 402 (billing
+// error) keep the maybe-billed rule, and every spend cap stays on.
+function freeFailure(hold: { usd: number }, r: { ok: boolean; maybeBilled?: boolean; status?: number }): boolean { return !r.ok && r.maybeBilled === true && hold.usd === 0 && r.status !== 402 }
 async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean; status?: number }> {
   // maybeBilled (#363): the request may have been processed (timeout/dropped connection, 5xx, 402, unlisted status, unreadable body). The caller then
   // leaves its spend row 'reserved' so no automatic retry re-sends it. 401/403/429 are documented rejections (assumption, see lib/llm/provider.ts).
@@ -128,7 +133,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
   const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  if (hold) { if (!r.ok && r.maybeBilled && !freeFailure(hold, r)) hold.uncertain(); else { await hold.settle(r.ok || freeFailure(hold, r) ? hold.usd : null); if (!r.ok && !freeFailure(hold, r)) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
@@ -167,7 +172,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
     throw e
   }
   const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  if (hold) { if (!r.ok && r.maybeBilled && !freeFailure(hold, r)) hold.uncertain(); else { await hold.settle(r.ok || freeFailure(hold, r) ? hold.usd : null); if (!r.ok && !freeFailure(hold, r)) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []
