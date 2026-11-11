@@ -17,6 +17,7 @@ import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
+import { holdFitsClaim, MISFIT_LABEL } from '@/lib/scan/hold-fit'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
@@ -95,6 +96,8 @@ const REASON: Record<string, string> = {
 const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - check the date on the source before you use it', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - check the source for the event before you use it', no_sales_hiring_evidence: 'The request asks for sales hiring too, and no dated sales or GTM posting was found on a public job board tied to this company - the funding evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only', trial_budget_reached: 'Found before this free scan reached its spending limit - some checks did not run, so it is not verified', first_party_signal: 'From your own site or form (signed, consent recorded) - an account-level visit does not identify a person; buying need and outreach consent are not verified' }
 // Own keys only: a stored reason such as 'constructor' or 'toString' is an unknown reason, never an Object.prototype member rendered as text.
 const reviewLabel = (r: string | null | undefined): string | undefined => (r && Object.hasOwn(REVIEW, r) ? REVIEW[r] : undefined)
+// #684: a stored hold reason is shown only where it can apply to the lead's saved claim (lib/scan/hold-fit.ts); the hold itself never changes.
+const holdText = (r: string | null | undefined, l: { signal?: unknown; signal_kind?: unknown; source_kind?: unknown }): string | undefined => (holdFitsClaim(r, l) ? reviewLabel(r) : MISFIT_LABEL)
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -1268,7 +1271,7 @@ export default function LeadsClient() {
             {l.timing_note && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-note">Researched opportunity - {l.timing_note}</p>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
-              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
+              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${holdText(l.human_confirmed_from, l) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             <DiscoveredVia l={l} />
@@ -1334,7 +1337,7 @@ export default function LeadsClient() {
               <div key={l.id} className="p-4 text-sm">
                 <div className="font-medium">{l.company || l.name}</div>
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
-                <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
+                <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (holdText(l.review_reason, l) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />

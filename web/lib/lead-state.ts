@@ -6,6 +6,7 @@
 // required check that could not run - is "research": kept for reading, never counted as reviewable, and never offered a
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
 import { heldReason, type PreviewLead } from './journey.ts'
+import { holdFitsClaim } from './scan/hold-fit.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
 export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported'
@@ -43,7 +44,7 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   const date = l.event_date ?? ''
   // A date problem outranks any other reason: a blocked page with no usable date is still undated research.
   if (r === 'outside_window_undated' || (l.window_held && !date)) return 'undated'
-  if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
+  if (Object.hasOwn(CAUSE, r)) return holdFitsClaim(r, l) ? CAUSE[r] : 'unsupported'   // own keys only: a reason like 'constructor' is unknown, not Object's constructor. #684: a customer-mention hold on a job-posting claim is not shown as "customer"
   if (l.window_held) return 'older'
   if (l.currentness_held || !date || l.date_status !== 'verified') return 'undated'
   return 'unsupported'

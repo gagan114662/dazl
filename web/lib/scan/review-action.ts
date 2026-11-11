@@ -12,11 +12,12 @@
 // Pure and client-safe.
 import { windowStatus } from './window.ts'
 import { uncheckableCause, CAUSE_TEXT, REQUIRED_GATE_REASONS } from '../lead-state.ts'
+import { holdFitsClaim } from './hold-fit.ts'
 
 const DATE = new Set(['event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date'])
 
 export interface ReviewAction { label: string; hint: string }
-export interface ReviewLead { review_reason?: string | null; window_held?: boolean; event_date?: string | null }
+export interface ReviewLead { review_reason?: string | null; window_held?: boolean; event_date?: string | null; signal?: unknown; signal_kind?: unknown; source_kind?: unknown }
 
 type Held = 'no_date' | 'older' | 'unknown'
 function heldKind(l: ReviewLead, now: Date): Held | null {
@@ -37,7 +38,9 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   if (kind === 'no_date') return { label: 'Keep as research', hint: `${RESEARCH}: it has no valid event date (missing, invalid or in the future), so it stays out of drafting. A wider time window does not change that.` }
   if (kind === 'older') return { label: 'Keep as research', hint: `${RESEARCH}: its event date is older than the time window you asked for, so it stays out of drafting. Confirming does not change that for this lead; only a new scan with a wider window can find it as current (it uses your usual scan budget).` }
   if (kind === 'unknown') return { label: 'Keep as research', hint: `${RESEARCH}: it is outside the time window you asked for, so it stays out of drafting.` }
-  const cause = uncheckableCause(l.review_reason)
+  // #684: the hold stays (research only), but a customer-mention hold on a job-posting claim is not described as one.
+  const stored = uncheckableCause(l.review_reason)
+  const cause = stored && !holdFitsClaim(l.review_reason, l) ? 'unsupported' : stored
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
   if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
