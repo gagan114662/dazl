@@ -57,12 +57,12 @@ export default function PlaysClient() {
   // #1042: the started runs this page is following (one timer each), stopped when the page goes away
   const polls = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const alive = useRef(true)
+  const loadOnMount = useRef(load)
   useEffect(() => {
     alive.current = true
-    load()
+    loadOnMount.current()
     const timers = polls.current
     return () => { alive.current = false; for (const t of timers.values()) clearTimeout(t); timers.clear() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once on mount, as before (load reads only setters)
   }, [])
   // Follows one started run with the read-only status read until it ends (bounded), then reloads the play and its new
   // leads, so "the new leads show here when this run finishes" holds while the page stays open.
