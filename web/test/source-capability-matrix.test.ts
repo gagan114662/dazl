@@ -48,9 +48,9 @@ test('nothing is advertised or default-enabled without live source-to-lead evide
   assert.equal(defaultEligible({ ...base, evidence: { liveSourceToLead: true, negativeFixtures: false, incrementalYield: 0.5 } }), false)
 })
 
-test('markets: non-US / non-English coverage is only what is really built (V2EX zh/CN, brreg nb/NO, Bilibili zh/CN via a consented worker), the rest is a stated gap', () => {
+test('markets: non-US / non-English coverage is only what is really built (V2EX zh/CN, brreg nb/NO, Companies House en/GB, Bilibili zh/CN via a consented worker), the rest is a stated gap', () => {
   const shipped = MATRIX.filter(c => c.status === 'shipped')
-  assert.deepEqual(shipped.filter(c => !c.markets.includes('*') && !c.markets.includes('US')).map(c => c.id), ['v2ex', 'brreg', 'adv:bilibili'])
+  assert.deepEqual(shipped.filter(c => !c.markets.includes('*') && !c.markets.includes('US')).map(c => c.id), ['v2ex', 'brreg', 'companies-house', 'adv:bilibili'])
   for (const c of MATRIX.filter(c => c.status === 'planned')) assert.ok((c.blocker ?? '').length > 20, `${c.id} says what was evaluated and why it is not built`)
   assert.ok(MATRIX.filter(c => c.status === 'planned').some(c => c.markets.includes('GB') || c.markets.includes('DE')))
 })
