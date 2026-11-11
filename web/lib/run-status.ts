@@ -1,5 +1,6 @@
 import { scanOutcome, type ScanOutcome, type ScanOutcomeKind, type ScanRecord } from './scan/scan-outcome.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
+import { reviewIsActionable } from './lead-state.ts'
 
 // How a run ended, in one of a few states that each have their own next action, so the Campaigns list, a campaign's
 // page and the Leads history never disagree (one said "failed" while another said "no candidates extracted"). The
@@ -37,17 +38,18 @@ export const runStatusOf = (j: ScanRecord) => runStatus(scanOutcome(j), j.lead_c
 
 // A run's saved leads as they stand now: what the user's review left, not what the scan recorded when it finished.
 // The same split as the Campaigns funnel (lib/outreach/campaigns.ts): rejected = quarantined; of the rest, the evidence
-// state first, then a review reason, else unverified.
-export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; unverified: number; rejected: number }
-type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
-export function currentQual(rows: QualRow[]): CurrentQual {
-  const q: CurrentQual = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, unverified: 0, rejected: 0 }
+// state first, then a review reason - split into review a check can resolve and research it cannot (#683, the same verdict as
+// Home: lib/lead-state.ts reviewIsActionable) - else unverified.
+export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number }
+type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean }
+export function currentQual(rows: QualRow[]): CurrentQual & { research: number } {
+  const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
   for (const r of rows) {
     const st = evidenceStateOf(r)
     if (r.quarantined_at !== null) q.rejected++
     else if (st === 'machine') q.sourceChecked++
     else if (st === 'human') q.confirmedByYou++
-    else if (r.review_reason) q.needsReview++
+    else if (r.review_reason) { if (reviewIsActionable(r)) q.needsReview++; else q.research++ }
     else q.unverified++
   }
   return q
@@ -67,11 +69,21 @@ export function currentRun(run: RunStatus, q: CurrentQual, query?: string | null
   }
   const passed = q.sourceChecked + q.confirmedByYou
   const parts = [`${q.sourceChecked} source-checked`, `${q.confirmedByYou} confirmed by you`, `${q.needsReview} need${q.needsReview === 1 ? 's' : ''} your review`]
+  const research = q.research ?? 0
+  if (research > 0) parts.push(`${research} research only`)
   if (q.unverified > 0) parts.push(`${q.unverified} unverified`)
   parts.push(`${q.rejected} rejected`)
   // An older run that did not record its check counts keeps saying so; the label still counts its leads as they are now.
-  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : 'Not verified yet'
-  return { ...run, tag, label: `${leads} found: ${parts.join(', ')}` }
+  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : research > 0 ? 'Research only' : 'Not verified yet'
+  const label = `${leads} found: ${parts.join(', ')}`
+  // Nothing passed and nothing a check can release: the scan-time "Review them" would hand the user failed research (#352/#683). Offer a
+  // step that can change the result instead.
+  if (passed === 0 && q.needsReview === 0 && research > 0) return {
+    ...run, tag, label,
+    detail: `Checking ${research === 1 ? 'this lead' : 'these leads'} cannot make ${research === 1 ? 'it' : 'them'} ready (no usable date in your time window, someone else's customer, a different place or a closed opening). Search again with a different signal or source.`,
+    next: { text: 'Change the search', href: query ? `/app/leads?q=${encodeURIComponent(query)}` : '/app/leads' },
+  }
+  return { ...run, tag, label }
 }
 
 // A campaign row's status and next action. A run that produced no leads gets its own next step from the recorded

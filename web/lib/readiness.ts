@@ -27,7 +27,7 @@ export interface ReadinessInput {
   // last 10 searches, with complete per-scan rejected and email counts). null when they could not be loaded; omitted by
   // callers that only check other rows.
   messages?: { status: string; lead_id?: string; test?: number | boolean | null }[] | null
-  campaigns?: { id: string; status?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; held?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
+  campaigns?: { id: string; status?: string; query?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; research?: number; held?: number; heldResearch?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
 export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'scan' | 'review' | 'gmail' | 'sender' | 'approved' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null; next?: boolean }

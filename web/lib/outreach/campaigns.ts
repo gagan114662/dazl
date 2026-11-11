@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3'
 import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
-import { currentnessHeld } from './currentness.ts'
+import { currentnessHeld, leadWindowHeld } from './currentness.ts'
+import { requiredGateHeld } from '../scan/held-state.ts'
+import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
@@ -13,7 +15,10 @@ export interface Campaign {
   discovery: { candidates: number | null; leads: number }
   // The same evidence states as the draft/send gates (evidence-state.ts): machine = quote found on the cited page,
   // human = confirmed by you, unverified = neither (and not in the review list). held = timing not confirmed yet.
-  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; unverified: number; held: number; rejected: number }
+  // needsReview = review-list leads a person's check can still make usable; research = review-list leads it cannot (no usable date under
+  // your window, someone else's customer, a different place, a closed opening, a failed required check, an unknown reason - #683, the same
+  // verdict as Home's journey: lib/lead-state.ts reviewIsActionable). heldResearch = the held leads no check can release (a subset of held).
+  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; rejected: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
   contact: { withContact: number; readyWithContact: number; draftable: number }
@@ -34,23 +39,26 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
     const live = 'AND l.quarantined_at IS NULL'
-    type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null }
-    const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
+    type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null }
+    const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
     const leads = rows.length
     const liveRows = rows.filter(r => r.quarantined_at === null)
     const rejected = leads - liveRows.length
-    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, unverified = 0
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = 0, unverified = 0
     for (const r of liveRows) {
       const st = evidenceStateOf(r)
       if (st === 'machine') sourceChecked++
       else if (st === 'human') confirmedByYou++
-      else if (r.review_reason) needsReview++
+      else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id) })) needsReview++; else research++ }
       else unverified++
     }
     // The real gates, not a re-derivation: currentnessHeld is what holds drafting until timing is confirmed, and
     // draftBlockReason runs every createDraft check without writing. A stored contact alone never counts as ready.
     const heldIds = new Set(liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && currentnessHeld(db, tenantId, r.id)).map(r => r.id))
     const held = heldIds.size
+    // Of those, the ones only a hold no check can lift keeps: the time window, someone else's customer, a different place, a closed
+    // opening (also when the user confirmed out of one), a failed required check. Reviewing the source cannot release them (#683).
+    const heldResearch = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null)).length
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
     const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
@@ -79,7 +87,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
-      qualification: { sourceChecked, confirmedByYou, needsReview, unverified, held, rejected },
+      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, rejected },
       contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
@@ -110,10 +118,15 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
-  if (c.qualification.held > 0) return { label: `Review the source of ${plural(c.qualification.held, 'lead', 'leads')} to confirm timing`, href: leadsHref }
+  // Only held leads a timing review can release are offered for review; the rest are research (#683).
+  const heldReviewable = c.qualification.held - (c.qualification.heldResearch ?? 0)
+  if (heldReviewable > 0) return { label: `Review the source of ${plural(heldReviewable, 'lead', 'leads')} to confirm timing`, href: leadsHref }
   const heldEmails = c.outreach.draftsHeld + c.outreach.approvedHeld
   if (heldEmails > 0) return { label: `${plural(heldEmails, 'email is', 'emails are')} held: open Outreach to see why`, href: '/app/outreach' }
   if (c.qualification.unverified > 0) return { label: `Check ${plural(c.qualification.unverified, 'unverified lead', 'unverified leads')} against their sources`, href: leadsHref }
+  // Research only: checking cannot make these ready, so the step offered is one that can change the result - a new search (#352/#683).
+  const research = (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)
+  if (research > 0) return { label: `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready. Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
   if (c.discovery.leads === 0) return { label: 'No leads from this search. Try a broader one', href: '/app/leads' }
   return { label: 'Nothing waiting on you', href: null }
 }

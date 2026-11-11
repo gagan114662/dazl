@@ -18,7 +18,10 @@ test('without an email: rejected, then review, then evidence state; never "verif
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: null }), []).text, 'Rejected')
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected' }), []).text, 'Rejected', 'a reject with no reason')
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected: Wrong company' }), []).text, 'Rejected: Wrong company')
-  assert.deepEqual(leadStatus(lead('a', { review_reason: 'no_quote' }), []), { stage: 'review', text: 'Needs your review' })
+  assert.deepEqual(leadStatus(lead('a', { review_reason: 'quote_unconfirmed' }), []), { stage: 'review', text: 'Needs your review' })
+  // #683: research-only reasons, a window hold and unknown reasons are research, never "Needs your review".
+  for (const o of [{ review_reason: 'no_quote' }, { review_reason: 'outside_window_undated' }, { review_reason: 'counterparty_signal' }, { review_reason: 'quote_unconfirmed', window_held: true }])
+    assert.deepEqual(leadStatus(lead('a', o), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' }, JSON.stringify(o))
   assert.deepEqual(leadStatus(lead('a'), []), { stage: 'qualified', text: 'Source-checked, not drafted' })
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5 }), []), { stage: 'qualified', text: 'Confirmed by you, not drafted' })
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null }), []), { stage: 'unverified', text: 'Not verified - check the source' }, 'legacy row with a confidence but no excerpt')

@@ -49,6 +49,14 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   return 'unsupported'
 }
 
+// A lead in the review list (it carries a review_reason): can a person's check of the source still make it usable? The ONE verdict Home's
+// journey (heldState), the Campaigns funnel, a campaign's page and the Home checklist all count by (#683), so no page calls a research-only
+// lead a review item. A time-window hold survives confirmation; an unknown, empty or non-string reason fails closed to research.
+export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown }): boolean {
+  const r = l.review_reason
+  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held
+}
+
 export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
   const why = heldReason(l)
   if (!why) return null
@@ -56,7 +64,7 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   const r = l.review_reason ?? ''
   const cause = researchCause(l)
   // A hold a look at the source can resolve is reviewable unless a time window holds the lead: confirming lifts the first, never the second.
-  if (REVIEWABLE.has(r) && !l.window_held) return { state: 'review', cause: null }
+  if (reviewIsActionable(l)) return { state: 'review', cause: null }
   if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
   return { state: 'research', cause }
 }
