@@ -70,7 +70,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
-import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceStatus } from '../people/people-search.ts'
+import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
@@ -1753,7 +1753,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         ...(trial ? { canSearch: () => prepaid.left > 0, charge: async () => { if (prepaid.left <= 0) throw new SpendRefused(TRIAL_BUDGET_REASON); prepaid.left-- } } : {}) })
       const detail = { people_stored: n, ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
       const status = peopleTraceStatus(n, stopped.why)
-      trace.note('people_search', status, status === 'failed' ? (stopped.why === 'ownership_lost' ? 'the job was cancelled or re-claimed during the people search: it stopped' : 'the people search stopped on an error (logged)') + `; ${n} person(s) stored before it stopped` : n > 0 ? null : stopped.why === 'budget_kept' ? 'the trial scan kept its remaining budget for the checks after this step' : 'no profile results named a role-matching person at a verified company, or no search quota', detail)
+      trace.note('people_search', status, peopleTraceMessage(n, stopped.why), detail)
     } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }

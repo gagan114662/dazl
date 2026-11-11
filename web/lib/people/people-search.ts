@@ -84,11 +84,33 @@ type Lead = { id: string; company: string }
 export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; drainMs?: number; aliveEveryMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; alive?: () => boolean; onStop?: (why: string) => void }
 // The first play's own lead list (lib/scan/first5.ts first5LeadSql): not graded out (fit 0-1) and not held by a failed required gate.
 const FIRST_PLAY_ELIGIBLE = "AND (fit IS NULL OR fit > 1) AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = leads.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
-// The people step's trace status: an error stop wins over a partial count (people_stored stays in the detail), so a pass
-// cut short is never reported as a clean success.
+// The people step's trace status: a stop the pass did not choose (an error, a lost job, or the search provider refusing it:
+// auth = the key was rejected, quota = the provider's quota is used up) wins over a partial count, so a pass cut short is
+// never reported as a clean success (people_stored stays in the detail). Our own limits (deadline = the pass's time budget,
+// cap = the per-scan / daily search cap, budget_kept = a trial scan keeping its reserve) are planned stops: the status
+// follows the count, and peopleTraceMessage names the stop.
+const FAILED_STOPS: Record<string, string> = {
+  error: 'the people search stopped on an error (logged)',
+  ownership_lost: 'the job was cancelled or re-claimed during the people search: it stopped',
+  auth: 'the search provider refused the people search (its key was rejected): it stopped',
+  quota: 'the search provider refused the people search (its quota is used up): it stopped',
+}
+const failedStop = (stopped: unknown): stopped is string => typeof stopped === 'string' && Object.hasOwn(FAILED_STOPS, stopped)
 export function peopleTraceStatus(stored: number, stopped: string | null): 'ok' | 'failed' | 'attempted_no_result' {
-  if (stopped === 'error' || stopped === 'ownership_lost') return 'failed'
-  return stored > 0 ? 'ok' : 'attempted_no_result'
+  if (failedStop(stopped)) return 'failed'
+  return Number.isSafeInteger(stored) && stored > 0 ? 'ok' : 'attempted_no_result'
+}
+// The trace message for peopleTraceStatus: every stop, failed or planned, is named with the count stored before it, so a
+// cut-short pass never reads as complete. null only for a pass that ran to its end and stored at least one person.
+export function peopleTraceMessage(stored: number, stopped: string | null): string | null {
+  const n = Number.isSafeInteger(stored) && stored > 0 ? stored : 0
+  const count = `${n} person(s) stored before it stopped`
+  if (failedStop(stopped)) return `${FAILED_STOPS[stopped]}; ${count}`
+  if (stopped === 'deadline') return `the people search stopped at its time budget; ${count}`
+  if (stopped === 'cap') return `the people search stopped at the search limit (per-scan or daily cap); ${count}`
+  if (stopped === 'budget_kept') return `the trial scan kept its remaining budget for the checks after this step; ${count}`
+  if (stopped !== null && stopped !== undefined) return `the people search stopped early (${String(stopped).slice(0, 40)}); ${count}`
+  return n > 0 ? null : 'no profile results named a role-matching person at a verified company'
 }
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
 // search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).

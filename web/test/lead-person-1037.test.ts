@@ -5,7 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { leadPerson, leadPersonLine, NO_BUYER } from '../lib/people/lead-person.ts'
-import { findPeople, firstPlayPeopleCap, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
+import { findPeople, firstPlayPeopleCap, peopleTraceMessage, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
@@ -175,11 +175,12 @@ const QUOTE = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round
 const page = { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${QUOTE}. ${'More about the company and its people. '.repeat(15)}` }
 const FIRST5 = JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false })
 const gdelt = JSON.stringify({ articles: [{ url: NEWS, title: page.title, seendate: '20261016T100000Z' }] })
-function fx(over: Partial<Fixture>, people: string[], found = true): Fixture {
+function fx(over: Partial<Fixture>, people: string[], found = true, peopleStatus = 200): Fixture {
   const fetchImpl = (async (u: RequestInfo | URL, init?: RequestInit) => {
     const s = String(u)
     if (s.startsWith('https://api.search.tinyfish.ai') && (new URL(s).searchParams.get('query') ?? '').startsWith('site:linkedin.com/in ')) {
       people.push(new URL(s).searchParams.get('query')!)
+      if (peopleStatus !== 200) return new Response('{}', { status: peopleStatus })
       return new Response(JSON.stringify({ results: !found ? [] : [{ url: 'https://uk.linkedin.com/in/jane-doe-bl', title: 'Jane Doe - Founder - Brightloop | LinkedIn', snippet: 'London, England, United Kingdom - Founder - Brightloop' }] }), { status: 200 })
     }
     return globalThis.fetch(u, init)
@@ -322,6 +323,83 @@ test('review: the trace status never reports a pass cut short by an error or a l
   assert.equal(peopleTraceStatus(1, 'error'), 'failed', 'one stored, then an error: failed (people_stored stays in the detail)')
   assert.equal(peopleTraceStatus(0, 'error'), 'failed')
   assert.equal(peopleTraceStatus(1, 'ownership_lost'), 'failed')
+  // Ziggy review (#1046 @ ac3b7a1a): a provider refusal (auth / quota) is a failure even after people were stored
+  assert.equal(peopleTraceStatus(0, 'auth'), 'failed', 'auth stop, nobody stored')
+  assert.equal(peopleTraceStatus(1, 'auth'), 'failed', 'auth stop after one stored: not a clean success')
+  assert.equal(peopleTraceStatus(3, 'quota'), 'failed', 'quota stop after people stored: not a clean success')
+  assert.equal(peopleTraceStatus(0, 'quota'), 'failed')
+  // planned stops follow the count
+  assert.equal(peopleTraceStatus(2, 'cap'), 'ok'); assert.equal(peopleTraceStatus(0, 'cap'), 'attempted_no_result')
+})
+
+test('Ziggy review: the trace message names every stop and the count stored before it (auth 0, auth 1+, quota 1+, deadline)', () => {
+  assert.equal(peopleTraceMessage(0, 'auth'), 'the search provider refused the people search (its key was rejected): it stopped; 0 person(s) stored before it stopped')
+  assert.equal(peopleTraceMessage(1, 'auth'), 'the search provider refused the people search (its key was rejected): it stopped; 1 person(s) stored before it stopped')
+  assert.equal(peopleTraceMessage(4, 'quota'), 'the search provider refused the people search (its quota is used up): it stopped; 4 person(s) stored before it stopped')
+  // a deadline stop stays ok (status) but says it hit the time budget, with the count
+  assert.equal(peopleTraceStatus(2, 'deadline'), 'ok')
+  assert.equal(peopleTraceMessage(2, 'deadline'), 'the people search stopped at its time budget; 2 person(s) stored before it stopped')
+  assert.equal(peopleTraceMessage(0, 'deadline'), 'the people search stopped at its time budget; 0 person(s) stored before it stopped')
+  assert.match(String(peopleTraceMessage(1, 'error')), /stopped on an error.*; 1 person\(s\) stored/)
+  assert.match(String(peopleTraceMessage(1, 'ownership_lost')), /cancelled or re-claimed.*; 1 person\(s\) stored/)
+  assert.match(String(peopleTraceMessage(2, 'cap')), /search limit.*; 2 person\(s\) stored/)
+  assert.match(String(peopleTraceMessage(0, 'budget_kept')), /kept its remaining budget/)
+  // only a pass that ran to its end and stored someone has no message
+  assert.equal(peopleTraceMessage(3, null), null)
+  assert.match(String(peopleTraceMessage(0, null)), /no profile results named/)
+  // malformed inputs never throw, never read as success, never borrow a prototype key
+  for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY, '2' as unknown as number, null as unknown as number, undefined as unknown as number]) {
+    assert.equal(peopleTraceStatus(bad, null), 'attempted_no_result', String(bad))
+    assert.equal(peopleTraceStatus(bad, 'auth'), 'failed', String(bad))
+    assert.match(String(peopleTraceMessage(bad, 'quota')), /; 0 person\(s\) stored/, String(bad))
+  }
+  for (const odd of ['toString', '__proto__', 'constructor', 'hasOwnProperty']) {
+    assert.equal(peopleTraceStatus(1, odd), 'ok', odd); assert.match(String(peopleTraceMessage(1, odd)), /stopped early/, odd)
+  }
+  assert.equal(peopleTraceStatus(1, undefined as unknown as string), 'ok'); assert.equal(peopleTraceMessage(1, undefined as unknown as string), null)
+  assert.equal(peopleTraceStatus(1, 5 as unknown as string), 'ok'); assert.match(String(peopleTraceMessage(1, 5 as unknown as string)), /stopped early \(5\)/)
+  assert.ok(String(peopleTraceMessage(1, 'x'.repeat(5000))).length < 200, 'a huge stop reason is truncated')
+})
+
+// Answers the first `okFirst` profile searches with a person, then every later one with HTTP `status` (401 auth, 402 quota).
+function stubThen(okFirst: number, status: number) {
+  const s = stub(); let calls = 0
+  const f = (async (u: string, init?: RequestInit) => (++calls <= okFirst ? (s.f as unknown as (u: string, i?: RequestInit) => Promise<Response>)(u, init) : new Response('{}', { status }))) as unknown as typeof fetch
+  return { f, calls: () => calls }
+}
+for (const [label, okFirst, status, why] of [['auth stop with 0 stored', 0, 401, 'auth'], ['auth stop with 1 stored', 1, 401, 'auth'], ['quota stop with 1 stored', 1, 402, 'quota'], ['quota stop with 2 stored', 2, 402, 'quota']] as const) {
+  test(`Ziggy review, real pass: ${label} -> failed, the stop and the count are reported, no search after the refusal`, async () => {
+    const { db, job } = setup(5); const s = stubThen(okFirst, status); const stops: string[] = []
+    const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true, onStop: w => stops.push(w) })
+    assert.equal(n, okFirst, 'people stored before the refusal are kept and counted')
+    assert.deepEqual(stops, [why]); assert.equal(s.calls(), okFirst + 1, 'the pass stopped at the refusal')
+    const stopped = stops[0] ?? null
+    assert.equal(peopleTraceStatus(n, stopped), 'failed', 'never a clean success')
+    assert.match(String(peopleTraceMessage(n, stopped)), new RegExp(`refused the people search.*; ${okFirst} person\\(s\\) stored before it stopped`))
+    // BEFORE this fix the 1+ cases read 'ok' (status came from the count alone): shown by running this test on ac3b7a1a's people-search.ts (see the PR comment)
+  })
+}
+
+test('Ziggy review, real pass: a deadline stop with people stored stays ok but says it hit the time budget', async () => {
+  const { db, job } = setup(3); let calls = 0; const stops: string[] = []
+  const s = stub()
+  const f = (async (u: string, init?: RequestInit) => { calls++; if (calls > 1) await new Promise(r => setTimeout(r, 200)); return (s.f as unknown as (u: string, i?: RequestInit) => Promise<Response>)(u, init) }) as unknown as typeof fetch
+  const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, deadlineMs: 100, drainMs: 400, onStop: w => stops.push(w) })
+  assert.equal(n, 1); assert.deepEqual(stops, ['deadline'])
+  assert.equal(peopleTraceStatus(n, 'deadline'), 'ok')
+  assert.equal(peopleTraceMessage(n, 'deadline'), 'the people search stopped at its time budget; 1 person(s) stored before it stopped')
+})
+
+test('Ziggy review, THE FIRST PLAY through the real runner: the provider rejecting the key makes people_search failed, named, with the count', async () => {
+  for (const [status, why, re] of [[401, 'auth', /key was rejected/], [402, 'quota', /quota is used up/]] as const) {
+    const people: string[] = []
+    const r = await runFixture(fx({}, people, true, status))
+    assert.equal(people.length, 1, 'the profile search really ran')
+    const st = stage(r); assert.equal(st?.status, 'failed', JSON.stringify(st))
+    assert.match(String(st?.reason), re); assert.match(String(st?.reason), /; 0 person\(s\) stored before it stopped/)
+    assert.equal(st?.detail?.stopped, why); assert.equal(st?.detail?.people_stored, 0)
+    assert.equal(leadPersonLine(rowPerson(r)), NO_BUYER, 'the row still reads "No buyer named yet"')
+  }
 })
 
 test('review: a job lost WHILE a search is in flight aborts that request (ownership-linked signal), writes nothing, stops ownership_lost', async () => {
