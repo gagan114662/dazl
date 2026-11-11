@@ -4,6 +4,8 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { findWorkEmail, workEmailProviders, workEmailsFor } from '@/lib/people/work-email'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // #1036 Find work email for one buyer named on a lead (lib/people/work-email.ts). GET: the lead's stored lookups and which
 // of the workspace's own keys a lookup would use. POST { target }: run (or replay) one lookup. The person is re-derived on
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   let r: Awaited<ReturnType<typeof findWorkEmail>>
   try { r = await findWorkEmail(db, user.tenantId, lead, target) }
   catch (e) {
-    console.error('[work-email] lookup failed:', e instanceof Error ? e.message.slice(0, 160) : 'error')
+    captureError(e, { source: 'route', where: '/api/leads/[lead]/work-email', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
     return NextResponse.json({ error: 'The lookup could not run. Nothing was charged to dazl; try again.' }, { status: 500 })
   }
   if (r.status === 'lead_not_found') return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
