@@ -25,8 +25,8 @@ test('fail-safe: not funded with no reason, or funded with nothing left, says it
 test('each reason has its own state and wording; only real account usage reads as used up', () => {
   const row = (o: Partial<TrialBlock>) => { const c = trialCopy(t(o)); return [c.state, c.text] }
   assert.deepEqual(row({ funded: true, remaining: 2 }), ['available', '2 of 3 free trial scans left.'])
-  assert.deepEqual(row({ blocked: 'account_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).'])
-  assert.deepEqual(row({ blocked: 'attempts_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).'], 'attempts, not finished scans')
+  assert.deepEqual(row({ blocked: 'account_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption, or at its spending limit before finding any company, does not).'])
+  assert.deepEqual(row({ blocked: 'attempts_cap' }), ['exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption, or at its spending limit before finding any company, does not).'], 'attempts, not finished scans')
   assert.deepEqual(row({ blocked: 'account_total_cap', remaining: 1 }), ['exhausted', "Your free trial's spending allowance is used up (website reads on the trial count toward it). You have used 2 of 3 free trial scan attempts."])
   assert.deepEqual(row({ blocked: 'ip_throttle', remaining: 3 }), ['throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.'])
   assert.deepEqual(row({ blocked: 'global_daily_cap', remaining: 2 }), ['throttled', "Today's free trial scans are fully booked. Try again tomorrow (it resets at midnight UTC). You have used 1 of 3 free trial scan attempts."])

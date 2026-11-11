@@ -38,13 +38,13 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
   // Live per-source progress (pollable while the scan runs) and the one honest outcome: failed (which source) / rejected (counts per reason) / zero-match / yielded N leads.
   const progress = progressOf(source_runs, effectiveStatus(job))
-  const outcome = scanOutcome({ ...(job as object), id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  const saved = await readJobCost(db, tenantId, job.id)
+  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.reserved_usd, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
   const first5 = await readFirst5(db, tenantId, job.id, { status: effectiveStatus(job), progress, outcome })
   // Cost: what the user confirmed at the start, and only once the scan has ended, what was actually recorded beside it (reported tokens at the listed price; searches attempted). Absent for scans started before estimates existed.
-  const saved = await readJobCost(db, tenantId, job.id)
   let cost: unknown = null
   try {
     const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null

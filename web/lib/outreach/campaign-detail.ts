@@ -6,7 +6,7 @@ import { windowHeld } from './currentness.ts'
 // the Outreach list (newest 200 across the account), nothing here writes or truncates, so an old campaign's history is
 // complete. Returns null for a scan that does not exist or is not this tenant's (the route answers both as 404).
 export interface CampaignDetail {
-  job: { id: string; query: string | null; status: string; error: string | null; funded_by: 'trial' | null; created_at: number; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; enrich_started_at: number | null; enrich_finished_at: number | null }
+  job: { id: string; query: string | null; status: string; error: string | null; funded_by: 'trial' | null; spend_usd: number | string | null; created_at: number; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; enrich_started_at: number | null; enrich_finished_at: number | null }
   leads: { id: string; company: string | null; name: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; quarantine_reason: string | null
     // Held by the search's time window (no usable date, or older than it): the draft gate's own verdict (currentness.ts windowHeld), so the
     // page can tell a research-only lead from one a review can release (#683). Computed here; the job's saved profile is not returned.
@@ -17,7 +17,7 @@ export interface CampaignDetail {
 // On the Db layer (SQLite or Postgres). Leads list in insertion order and messages newest first with insertion order
 // breaking same-second ties, as the raw queries did with rowid (insert_seq: lib/db/insertion-order.ts).
 export async function campaignDetail(db: Db, tenantId: string, jobId: string): Promise<CampaignDetail | null> {
-  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
+  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, spend_reserved_usd AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
   const w = await db.get<{ icp: string | null }>('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
   const rows = await db.all<Omit<CampaignDetail['leads'][number], 'window_held'> & { event_date: string | null }>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, quarantined_at, quarantine_reason, event_date
