@@ -10,11 +10,17 @@
 //   4. no saved plays: an empty state that says how to make one; a list that did not load is never shown as "none";
 //   5. the bare Leads page is headed "Find leads" (not "Plays") and links back to Plays from its weekly watches;
 //   6. no horizontal scroll at 390px;
+//   8. (#1042) each play says how many new leads it found since this browser last checked, lists them (each opening
+//      its run in Leads), "Mark as seen" clears the count across a reload; "Find leads now" shows on live plays only and
+//      answers in a sentence (started, or what is missing); a failed read is never shown as "nothing new"; the first
+//      play's automatic weekly repeat says so, weekly plays say the email follows a run with new leads (a monitor
+//      promises none); after Find leads now the page follows the run with read-only status reads, reloads once it
+//      ended, and stops polling;
 //   7. "Show runs" lists a play's latest runs, newest first, each opening that run's own leads, and says when older
 //      runs exist; a read that fails says so; one hidden before it answers stays hidden; a paused play with none says so.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -33,13 +39,13 @@ db.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, na
 db.prepare("INSERT INTO users (id,email,password_hash,salt,email_verified_at) VALUES ('u1','s@example.test','x','y',1)").run()
 const token = randomBytes(32).toString('hex'); db.prepare('INSERT INTO sessions (id,user_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'u1', Math.floor(Date.now() / 1000) + 3600); db.close()
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
-const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
+const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${pathToFileURL(path.join(dir, 'test/helpers/net-fence.ts')).href}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 // Synthetic plays: two weekly watches (one live, one paused for quota) and one daily monitor. Dates at noon UTC.
 const T = Date.UTC(2026, 9, 26, 12) / 1000, W = 'a'.repeat(24), W2 = 'e'.repeat(24), M = 'c'.repeat(24), RUN = 'b'.repeat(24)
 const WATCHES = [
-  { id: W, query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: RUN, last_status: 'done', new_leads: 3 },
+  { id: W, query: 'Dental practices in Leeds opening a second location', icp: { summary: 'Independent dental practices', who: ['Practice owner'], where: ['Leeds, UK'], signals: ['opening a second location'] }, active: true, next_run_at: T + 7 * 86400, last_run_at: T, paused_reason: null, last_job_id: RUN, last_status: 'done', new_leads: 3, auto: true },
   { id: W2, query: 'Physio clinics in Manchester hiring', icp: { summary: 'Physiotherapy clinics', where: ['Manchester, UK'], signals: ['hiring'] }, active: false, next_run_at: T, last_run_at: T - 7 * 86400, paused_reason: 'quota', last_job_id: null, last_status: null, new_leads: 0 },
 ]
 // Three runs of the first watch, newest first (#351).
@@ -47,9 +53,25 @@ const RUNS = [{ job_id: RUN, at: T, status: 'done', leads: 5, new_leads: 3 }, { 
 const HELD = { id: '9'.repeat(24), name: '', company: 'Synthetic Dental Leeds', contact: null, signal: 'Synthetic Dental Leeds opening a second location', source_url: 'https://news.example/synthetic', score: 70, evidence_excerpt: 'Synthetic Dental Leeds is opening a second location', event_date: '2026-10-20', date_status: 'unverified', confidence: 60, review_reason: 'currentness_review', currentness_held: true, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 3, action: 3, why: 'A Leeds practice opening a second site.', signals: null, icp_match: null, enrichments: [], events: [] }
 const MONITORS = [{ id: M, query: 'Accounting firms in Bristol hiring payroll staff', icp: JSON.stringify({ summary: 'Accounting firms', where: ['Bristol, UK'], signals: ['hiring payroll staff'] }), interval_hours: 24, enabled: 1, paused_reason: null, last_run_at: null, next_run_at: T + 86400, last_new_count: null, run_count: 0, last_job_id: null }]
 
+// #1042: the live weekly play's new leads (synthetic), newest run first
+const NEW_ITEMS = [
+  { job_id: RUN, at: T, company: 'Synthetic Smile Leeds', what: 'Opening a second location in Headingley' },
+  { job_id: RUN, at: T, company: 'Synthetic Bright Teeth', what: 'Opening a second location in Roundhay' },
+  { job_id: RUN, at: T, company: 'Synthetic Leeds Dental Care', what: 'Opening a second location in Chapel Allerton' },
+]
+const seenSince = []
+// #1042: reads of the play list, and the started run's status answers (running, then done), so the test can check the
+// page follows the run it started and reloads once it has ended
+const watchReads = { n: 0, atDone: -1 }
+const STARTED = '7'.repeat(24)
+const statusReads = []
+
 const b = await chromium.launch()
 async function open({ width, height, watches = WATCHES, monitors = MONITORS, fail = null }) {
   const ctx = await b.newContext({ viewport: { width, height }, timezoneId: 'UTC' })
+  // the page's clock sits just after the fixtures' latest run, so "next run" times read as upcoming (#1042: an overdue
+  // live play says "Due now" instead of a past time)
+  await ctx.clock.setFixedTime(new Date((T + 3600) * 1000))
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
   await ctx.route('**/*', async route => {
@@ -57,10 +79,22 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    // #1042 Find leads now: the live weekly play starts; the monitor answers as an account without its own AI key
+    if (m === 'POST' && p === `/api/plays/watch/${W}/run`) { writes.push([m, p, null]); return json({ job_id: '7'.repeat(24), next_run_at: T + 7 * 86400 + 3600 }, 202) }
+    if (m === 'POST' && p === `/api/plays/monitor/${M}/run`) { writes.push([m, p, null]); return json({ error: 'no_api_key' }, 400) }
     if (m !== 'GET') { writes.push([m, p, req.postData() ? JSON.parse(req.postData()) : null]); return json({ ok: true }) }
-    if (p === '/api/watch') return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches })
+    // #1042 what's new: the live weekly play found 3 new leads in its last run; nothing after a check at or past it
+    const nw = p.match(/^\/api\/plays\/(watch|monitor)\/([0-9a-f]{24})\/new$/)
+    if (nw) {
+      const since = Number(u.searchParams.get('since') ?? '0'); seenSince.push([nw[2], since])
+      if (nw[2] === W && since < T) return json({ since, total: 3, latest_at: T, seen_through: T, truncated: false, items: NEW_ITEMS })
+      if (nw[2] === M) return json({ error: 'x' }, 500)
+      return json({ since, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
+    }
+    if (p === '/api/watch') { watchReads.n++; return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches, emails: true }) }
     if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    if (p === '/api/scan/status' && u.searchParams.get('job_id') === STARTED) { statusReads.push(u.searchParams.get('readonly')); if (statusReads.length === 2) watchReads.atDone = watchReads.n; return json({ status: statusReads.length < 2 ? 'running' : 'done' }) }
     // The held lead run the audit started from (#351): a finished run whose one lead is held for source review.
     if (p === '/api/scan/status' && u.searchParams.get('job_id') === RUN) return json({ status: 'done', lead_count: 1, icp: { industries: [], sizes: [], exclude: [], ...WATCHES[0].icp }, icp_source: 'user', attempts: 1, max_attempts: 3, query: WATCHES[0].query })
     if (p === '/api/leads' && u.searchParams.get('job_id') === RUN) return json({ job_id: RUN, status: 'done', hidden_count: 0, leads: [HELD] })
@@ -103,9 +137,9 @@ try {
     assert.equal(await cards.count(), 3)
     // 2. Audience, signal, schedule, last and next run, status.
     const row = async i => Object.fromEntries(await Promise.all(['audience', 'signal', 'schedule', 'last-run', 'next-run', 'status', 'sentence'].map(async k => [k, (await cards.nth(i).getByTestId(`play-${k}`).innerText()).replace(/\n+/g, ': ')])))
-    assert.deepEqual(await row(0), { audience: 'AUDIENCE: Independent dental practices · Leeds, UK', signal: 'SIGNAL: opening a second location', schedule: 'SCHEDULE: Weekly', 'last-run': 'LAST RUN: 26 Oct 2026, 3 new', 'next-run': 'NEXT RUN: 2 Nov 2026', status: 'Live', sentence: 'Dental practices in Leeds opening a second location' })
-    assert.deepEqual(await row(1), { audience: 'AUDIENCE: Physiotherapy clinics · Manchester, UK', signal: 'SIGNAL: hiring', schedule: 'SCHEDULE: Weekly', 'last-run': 'LAST RUN: 19 Oct 2026', 'next-run': 'NEXT RUN: Paused: resume to schedule it', status: "Paused: this month's scans are used up", sentence: 'Physio clinics in Manchester hiring' })
-    assert.deepEqual(await row(2), { audience: 'AUDIENCE: Accounting firms · Bristol, UK', signal: 'SIGNAL: hiring payroll staff', schedule: 'SCHEDULE: Daily', 'last-run': 'LAST RUN: Not run yet', 'next-run': 'NEXT RUN: 27 Oct 2026', status: 'Live', sentence: 'Accounting firms in Bristol hiring payroll staff' })
+    assert.deepEqual(await row(0), { audience: 'AUDIENCE: Independent dental practices · Leeds, UK', signal: 'SIGNAL: opening a second location', schedule: 'SCHEDULE: Weekly', 'last-run': 'LAST RUN: 26 Oct 2026, 12:00, 3 new', 'next-run': 'NEXT RUN: 2 Nov 2026, 12:00', status: 'Live', sentence: 'Dental practices in Leeds opening a second location' })
+    assert.deepEqual(await row(1), { audience: 'AUDIENCE: Physiotherapy clinics · Manchester, UK', signal: 'SIGNAL: hiring', schedule: 'SCHEDULE: Weekly', 'last-run': 'LAST RUN: 19 Oct 2026, 12:00', 'next-run': 'NEXT RUN: Paused: resume to schedule it', status: "Paused: this month's scans are used up", sentence: 'Physio clinics in Manchester hiring' })
+    assert.deepEqual(await row(2), { audience: 'AUDIENCE: Accounting firms · Bristol, UK', signal: 'SIGNAL: hiring payroll staff', schedule: 'SCHEDULE: Daily', 'last-run': 'LAST RUN: Not run yet', 'next-run': 'NEXT RUN: 27 Oct 2026, 12:00', status: 'Live', sentence: 'Accounting firms in Bristol hiring payroll staff' })
     assert.equal(await cards.nth(0).getByTestId('play-results').getAttribute('href'), `/app/leads?job_id=${RUN}`, "results are in Leads")
     assert.equal(await cards.nth(1).getByTestId('play-results').count(), 0, 'no run to link: no link')
     assert.deepEqual(await cards.evaluateAll(cs => cs.map(c => c.querySelector('[data-testid=play-toggle]').textContent)), ['Pause', 'Resume', 'Pause'])
@@ -113,6 +147,49 @@ try {
     await noScroll(page, width)
     for (const c of await cards.all()) assert.ok((await c.getByTestId('play-name').boundingBox()).width >= Math.min(240, width - 100), `the play name keeps its width at ${width}px (a long status wraps below)`)
     await shot(page, `plays-${tag}`)
+    // 8. #1042: new leads since this browser last checked, the list of them, Mark as seen; Find leads now on live plays only.
+    // The first play repeats by itself (and says so); every weekly play says the email follows each run with new leads.
+    assert.match(await cards.nth(0).getByTestId('play-note').innerText(), /^dazl set your first play to repeat every week\. Pause it any time\. After each run that finds new leads you get an email listing them\./)
+    assert.match(await cards.nth(1).getByTestId('play-note').innerText(), /^After each run that finds new leads you get an email/)
+    assert.equal(await cards.nth(2).getByTestId('play-note').count(), 0, 'a monitor sends no email: no promise')
+    assert.equal(await cards.nth(0).getByTestId('play-new-count').innerText(), '3 new leads so far')
+    await cards.nth(1).getByTestId('play-new-none').waitFor()
+    assert.equal(await cards.nth(1).getByTestId('play-new-none').innerText(), 'No new leads yet')
+    assert.equal(await cards.nth(2).getByTestId('play-new-failed').innerText(), 'Could not check this play for new leads. Refresh to retry.', 'a failed read is never "nothing new"')
+    assert.deepEqual(await cards.evaluateAll(cs => cs.map(c => !!c.querySelector('[data-testid=play-run-now]'))), [true, false, true], 'a paused play has no Find leads now')
+    await cards.nth(0).getByTestId('play-new-toggle').click()
+    const fresh = cards.nth(0).getByTestId('play-new-item'); await fresh.first().waitFor()
+    assert.deepEqual(await fresh.allInnerTexts().then(t => t.map(x => x.replace(/\s+/g, ' ').trim())), NEW_ITEMS.map(i => `new ${i.company} · ${i.what} · 26 Oct 2026 Open in Leads`))
+    assert.deepEqual(await cards.nth(0).getByTestId('play-new-link').evaluateAll(as => as.map(a => a.getAttribute('href'))), NEW_ITEMS.map(() => `/app/leads?job_id=${RUN}`))
+    await cards.nth(0).getByTestId('play-run-now').click()
+    await cards.nth(0).getByTestId('play-run-now-result').waitFor()
+    assert.equal(await cards.nth(0).getByTestId('play-run-now-result').innerText(), 'Started. The new leads show here when this run finishes. Its next scheduled run moved to 2 Nov 2026, 13:00.')
+    // the page follows the started run (read-only status reads) and reloads the plays once it has ended
+    watchReads.atDone = -1
+    for (let i = 0; i < 60 && !(statusReads.length >= 2 && watchReads.n > watchReads.atDone); i++) await page.waitForTimeout(500)
+    assert.ok(statusReads.length >= 2 && statusReads.every(r => r === '1'), `followed with read-only status reads: ${JSON.stringify(statusReads)}`)
+    assert.ok(watchReads.atDone >= 0 && watchReads.n > watchReads.atDone, 'reloaded after the run ended')
+    const settled = statusReads.length; await page.waitForTimeout(6000)
+    assert.equal(statusReads.length, settled, 'stops polling once the run has ended')
+    statusReads.length = 0
+    await cards.nth(2).getByTestId('play-run-now').click()
+    await cards.nth(2).getByTestId('play-run-now-result').waitFor()
+    assert.equal((await cards.nth(2).getByTestId('play-run-now-result').innerText()).trim(), 'Running a play on demand uses your own AI key. Add one in Settings, or run a one-off search in Leads. Open Settings')
+    assert.equal(await cards.nth(2).getByTestId('play-run-now-result').getByRole('link').getAttribute('href'), '/app/settings')
+    await noScroll(page, width)
+    await shot(page, `1042-plays-new-and-run-${tag}`)
+    if (process.env.SHOTS) await cards.nth(0).screenshot({ path: path.join(process.env.SHOTS, `1042-whats-new-${tag}.png`) })
+    // Mark as seen stores the newest run shown; the count is gone and stays gone after a reload (this browser)
+    await cards.nth(0).getByTestId('play-new-seen').click()
+    await cards.nth(0).getByTestId('play-new-none').waitFor()
+    assert.equal(await cards.nth(0).getByTestId('play-new-none').innerText(), 'Nothing new since you last checked')
+    assert.equal(await cards.nth(0).getByTestId('play-new-count').count(), 0)
+    assert.equal(await page.evaluate(k => localStorage.getItem(k), `dazl:play-seen:watch:${W}`), String(T))
+    await page.reload({ waitUntil: 'domcontentloaded' }); await cards.first().waitFor({ timeout: 10000 })
+    await cards.nth(0).getByTestId('play-new-none').waitFor()
+    assert.ok(seenSince.some(([id, s]) => id === W && s === T), 'the read after a reload asks only for what came after the marked run')
+    await page.evaluate(k => localStorage.removeItem(k), `dazl:play-seen:watch:${W}`)
+    await page.reload({ waitUntil: 'domcontentloaded' }); await cards.first().waitFor({ timeout: 10000 })
     // 7. A play's latest runs, each opening its own leads (#351).
     await cards.nth(0).getByTestId('play-runs-toggle').click()
     const runs = cards.nth(0).getByTestId('play-run'); await runs.first().waitFor()
@@ -142,6 +219,7 @@ try {
       page.once('dialog', d => d.accept()); await cards.nth(2).getByTestId('play-delete').click()
       await page.waitForTimeout(500)
       assert.deepEqual(writes, [
+        ['POST', `/api/plays/watch/${W}/run`, null], ['POST', `/api/plays/monitor/${M}/run`, null], // #1042 Find leads now (above)
         ['POST', '/api/watch', { action: 'pause', id: W }], ['POST', '/api/watch', { action: 'resume', id: W2 }],
         ['PATCH', `/api/monitors/${M}`, { enabled: false }], ['DELETE', `/api/monitors/${M}`, null],
       ], 'pause/resume/delete only, through the existing routes; a cancelled delete sends nothing')
@@ -172,5 +250,5 @@ try {
   await ctx.close()
   console.log('plays UI check passed: sidebar Plays -> saved plays (audience, signal, schedule, last/next run, status, results link), Leads -> results, pause/resume/delete via existing routes with a confirm, empty + unreadable states, every run of a play opening its own leads (#351), no overflow at 390px')
 } finally {
-  await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
+  await b.close(); srv.kill(); await new Promise(r => setTimeout(r, 500)); try { rmSync(tmp, { recursive: true, force: true }) } catch { /* Windows: the server may still hold the db file */ }
 }
