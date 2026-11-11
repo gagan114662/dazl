@@ -197,6 +197,19 @@ never pooled, and synthetic batches are labelled as saying nothing about any pro
 
 A span under 14 days is reported as `adequate: false`, never stretched.
 
+## The published scorecard page (`/app/scorecard`, #398)
+
+A signed-in read-only page. It is rendered on the server from committed artifacts (`web/lib/benchmark/published/`): no fetch, no model call.
+- **Nothing is claimed until a live or recorded batch is published.** Until then the headline says no comparison has been run, and the only batch shown is
+  `example-synthetic.json`, under its own SYNTHETIC / invented-data label. A synthetic batch in the published slot is ignored.
+- **A system that did not run** (for example no authorized Pancake or Gojiberry account) shows its reason, no numbers and no rank, and is "not counted as a loss".
+- **Unknown stays unknown:** a missing cost reads `unknown`, a missing precision `n/a`, never 0.
+- **A win is stated only when the repeated-run analysis says `win`.** One batch shows no win, loss or interval. A failed critical floor reads "No winner".
+- **Evaluator-validated performance only.** Customer outcomes (#399) are not measured here.
+
+`node --experimental-strip-types scripts/publish-scorecard.mts --batch batch-XXXX.json [--superiority sup.json]` writes `latest.json`. It refuses a synthetic batch,
+an evaluator that is not independent, a synthetic analysis, and an analysis that does not include the batch.
+
 ## Recorded evidence so far (`scoreboard/benchmark/history.json`)
 
 | date | source | request | counts |

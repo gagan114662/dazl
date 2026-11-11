@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { MATRIX, byId, workerEntries } from '../lib/sources/capability-matrix.ts'
-import { capabilityReport, tenantCapabilities, type WorkerState } from '../lib/sources/capability-report.ts'
+import { capabilityReport, configuredCredentials, tenantCapabilities, type WorkerState } from '../lib/sources/capability-report.ts'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { sqliteDb } from '../lib/db/client.ts'
@@ -149,4 +149,25 @@ test('collectAdvanced really drops the worker author (the reason worker rows say
     const out = await collectAdvanced(raw, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ADV_ON })
     assert.equal(out.length, 1); assert.equal('author' in out[0], false)
   } finally { raw.close() }
+})
+
+test('#1035 review: a key-dependent source (Companies House) is available in the served report only when its key is set; only the env NAME is used', async () => {
+  const { raw, db } = await xStore()
+  try {
+    assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON }), 'companies-house').availability, 'unavailable', 'no key')
+    for (const v of ['', '   ', '\t']) assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, COMPANIES_HOUSE_API_KEY: v }), 'companies-house').availability, 'unavailable', `blank key ${JSON.stringify(v)}`)
+    const rows = await tenantCapabilities(db, 'A', { ...ADV_ON, COMPANIES_HOUSE_API_KEY: 'ch-key-not-a-secret' })
+    assert.equal(row(rows, 'companies-house').availability, 'available', 'key set: the adapter can run, so the report says so')
+    assert.equal(JSON.stringify(rows).includes('ch-key-not-a-secret'), false, 'the key value never reaches the report')
+    // the key belongs to the deployment, so it counts for every tenant; another credential's name does not stand in for it
+    assert.equal(row(await tenantCapabilities(db, 'B', { ...ADV_ON, COMPANIES_HOUSE_API_KEY: 'k' }), 'companies-house').availability, 'available')
+    assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'k' }), 'companies-house').availability, 'unavailable')
+  } finally { raw.close() }
+  // the pure report: no credentials given = unavailable (fail closed); the right name = available
+  assert.equal(row(capabilityReport(none), 'companies-house').availability, 'unavailable')
+  assert.equal(row(capabilityReport({ ...none, credentials: new Set(['COMPANIES_HOUSE_API_KEY']) }), 'companies-house').availability, 'available')
+  assert.equal(row(capabilityReport({ ...none, credentials: new Set(['companies_house_api_key']) }), 'companies-house').availability, 'unavailable', 'names are exact')
+  assert.deepEqual([...configuredCredentials({ COMPANIES_HOUSE_API_KEY: 'k', OTHER: 'x' })], ['COMPANIES_HOUSE_API_KEY'])
+  assert.deepEqual([...configuredCredentials({ COMPANIES_HOUSE_API_KEY: 42 as unknown as string })], [], 'a non-string value is not a key')
+  assert.deepEqual([...configuredCredentials({})], [])
 })
