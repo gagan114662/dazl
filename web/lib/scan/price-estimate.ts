@@ -71,6 +71,8 @@ export interface EstimateInput {
   // Why POST /api/scan would refuse this trial account right now (lib/billing/trial-budget.ts trialRefusal), so the screen refuses up front
   // instead of offering a Run button that does nothing. Only trial payers use it; not_configured and unknown reasons never block here.
   trialRefusal?: string | null
+  // The account's free scans actually used (for the blocked screen's copy: a full day or a spent allowance says the real count, never "3 of 3").
+  trialUsed?: number | null
   env?: Record<string, string | undefined>
 }
 
@@ -141,7 +143,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
   const trialWhy = i.payer === 'trial' && typeof i.trialRefusal === 'string' && TRIAL_BLOCKS.has(i.trialRefusal) ? i.trialRefusal : null
   if (trialWhy) {
-    const c = trialCopy({ funded: false, remaining: 0, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
+    // attempts_cap means all of them are used; any other reason states the account's real count (0 when unknown/fresh), never "3 of 3".
+    const used = trialWhy === 'attempts_cap' ? FREE_TRIAL_SCANS : Math.min(FREE_TRIAL_SCANS, Math.max(0, Math.trunc(Number(i.trialUsed) || 0)))
+    const c = trialCopy({ funded: false, remaining: FREE_TRIAL_SCANS - used, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
     ok = false; reason = 'trial_unavailable'
     message = `Blocked: ${c.text} Nothing was started or reserved.`
     change.push(c.next.label + '.')
@@ -186,7 +190,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // without a limit: refuse that too, and never advise removing the limit (it cannot help). An unreadable model
   // (UNKNOWN_MODEL) is not refused without a limit: the model the run really calls may be priced.
   const scanUnpriced = i.priceModel !== undefined && p === null && model !== UNKNOWN_MODEL
-  if (scanUnpriced || ((i.limited ?? capped) && !limitReservable(model))) {
+  if (ok && (scanUnpriced || ((i.limited ?? capped) && !limitReservable(model)))) {
     ok = false; reason = 'model_unpriced'; warning = null; change.length = 0
     const whose = i.payer === 'trial' ? "The free trial's model" : "Your key's model"
     message = model === UNKNOWN_MODEL

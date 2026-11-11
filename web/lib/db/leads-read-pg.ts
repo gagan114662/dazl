@@ -5,6 +5,7 @@
 // Works against any PgQueryable (pg.Pool, pg.Client, or pg-mem's adapter).
 import type { LeadsReadDb } from './leads-read.ts'
 import { STALE_RUNNING_S, MAX_ATTEMPTS } from '../scan/store.ts'
+import { settleReapedTrialPg } from '../billing/trial-reap.ts'
 import { INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { GAPS_S, TEST_GAPS_S, MAX_STEPS } from '../outreach/sequences.ts'
 import { eventTimingFresh } from '../events/store.ts'
@@ -72,6 +73,7 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
            AND id NOT IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`, // never re-queue a job holding a reserved (possibly billed) call, even one reserved after statement 1
         [MAX_ATTEMPTS, cutoff],
       )
+      await settleReapedTrialPg(pg) // trial scans the reaper just failed are settled (an interrupted one gives its free scan back)
       const { rows } = await pg.query(
         'SELECT id, status, error, query, icp, icp_inferred, created_at, claimed_at, attempts, finished_at, candidates, verified, needs_review, dropped, drop_reasons, industry, location, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = $1 AND user_id = $2',
         [id, userId],

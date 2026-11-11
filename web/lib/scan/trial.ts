@@ -41,10 +41,14 @@ export interface TrialState { funded: boolean; reason?: TrialDeny; used: number;
 
 // A trial scan keeps its slot once it could have cost dazl money: a failed scan that reserved any paid step is one of
 // the three, like a cancelled one (provider work may already have run on the operator key). Only a scan that failed
-// before any cost (no spend reserved) gives the slot back. Admission enforces the same count under its lock
-// (lib/billing/trial-budget.ts releasedBeforeCost); this one drives the free-scans counter and the first check.
+// before any cost (no spend reserved) gives the slot back, and so does a scan that STOPPED AFTER AN INTERRUPTION
+// (failed accounting_uncertain) once its run has settled: the person got nothing (owner decision 2026-11-11). Admission
+// enforces the same count under its lock (lib/billing/trial-budget.ts releasedBeforeCost, pinned equal by
+// test/trial-interrupted-attempt.test.ts); this one drives the free-scans counter and the first check.
 const TRIAL_USED_SQL = `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
-     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0)`
+     LEFT JOIN trial_reservations r ON r.job_id = j.id AND r.tenant_id = t.tenant_id AND r.kind = 'scan'
+     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0)
+       AND NOT (j.status = 'failed' AND j.error = 'accounting_uncertain' AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)`
 const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?'
 const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)
 

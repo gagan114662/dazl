@@ -11,6 +11,13 @@ import { estimateRun, FREE_TRIAL_SCANS } from '../lib/scan/price-estimate.ts'
 import { TRIAL_SCANS_PER_ACCOUNT } from '../lib/scan/trial.ts'
 import { bothEngines } from './helpers/engines.ts'
 import test from 'node:test'
+import Database from 'better-sqlite3'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { trialStatus } from '../lib/scan/trial.ts'
+import { reapStaleRunningJobs } from '../lib/scan/store.ts'
+import { reapStaleRunningJobs as reapStaleRunningJobsDb } from '../lib/scan/store-db.ts'
+import { reapStaleScans } from '../lib/queue/scan-claimer.ts'
 
 const NOW = 1_800_000_000, DAY = utcDay(NOW)
 const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
@@ -84,3 +91,108 @@ test('(B) estimate: no refusal, own key, or not-configured keep today\'s screen'
   assert.equal(estimateRun({ ...base, trialRefusal: 'nonsense' } as never).verdict.ok, true, 'an unknown reason never blocks')
 })
 test('(B) the browser-safe copy of the free-scan count agrees with the server\'s', () => { assert.equal(FREE_TRIAL_SCANS, TRIAL_SCANS_PER_ACCOUNT); assert.notEqual(trialCaps(caps), null) })
+
+// ---- the first check / usage counter (lib/scan/trial.ts) and admission must count the same (Hermes-PC review of 2bc77f12)
+const withTrialEnv = async (fn: () => Promise<void>) => {
+  const old = process.env.DAZL_TRIAL_ANTHROPIC_KEY; process.env.DAZL_TRIAL_ANTHROPIC_KEY = 'sk-ant...ture'
+  try { await fn() } finally { if (old === undefined) delete process.env.DAZL_TRIAL_ANTHROPIC_KEY; else process.env.DAZL_TRIAL_ANTHROPIC_KEY = old }
+}
+const account = async (id = 'a'.repeat(32), email = 'a@gmail.com') => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
+  return { raw, db, u: await mkUser(db, id, email) }
+}
+// one trial scan the way POST /api/scan leaves it: admission, job, trial_scans row, then the given ending
+const trialScan = async (x: Awaited<ReturnType<typeof account>>, o: { status: string; error: string | null; spent: number; settle: boolean }) => {
+  const id = await ended(x.db, x.u, { status: o.status, error: o.error, spent: o.spent, settle: o.settle })
+  x.raw.prepare("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')").run(x.u.id, id)
+  return id
+}
+const both = async (x: Awaited<ReturnType<typeof account>>) => ({
+  first: trialStatus(x.raw, x.u.id, '1.1.1.1').used,
+  ledger: ledger(await x.db.all<LedgerRow>("SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id WHERE r.tenant_id = ?", [x.u.id]), x.u.id, DAY).attempts,
+})
+test('the first check (trial.ts) and admission (ledger) count the same used scans for every ending', async () => {
+  await withTrialEnv(async () => {
+    const endings: [string, { status: string; error: string | null; spent: number; settle: boolean }][] = [
+      ['settled interruption', { status: 'failed', error: 'accounting_uncertain', spent: 0.03, settle: true }],
+      ['unsettled interruption', { status: 'failed', error: 'accounting_uncertain', spent: 0.03, settle: false }],
+      ['paid failure', { status: 'failed', error: 'provider_error', spent: 0.03, settle: true }],
+      ['cancelled', { status: 'failed', error: 'cancelled', spent: 0, settle: true }],
+      ['failed before cost', { status: 'failed', error: 'trial_unavailable', spent: 0, settle: true }],
+      ['done', { status: 'done', error: null, spent: 0.05, settle: true }],
+    ]
+    for (const [name, e] of endings) {
+      const x = await account(); await trialScan(x, e)
+      const c = await both(x)
+      assert.equal(c.first, c.ledger, `${name}: the route's first check and admission must agree (${JSON.stringify(c)})`)
+    }
+    const s = await account(); for (let i = 0; i < 3; i++) await trialScan(s, endings[0]![1])
+    assert.deepEqual(await both(s), { first: 0, ledger: 0 }, 'three settled interruptions: nothing used, by both counts')
+    assert.equal(trialStatus(s.raw, s.u.id, '1.1.1.1').remaining, 3, 'the usage counter shows 3 free scans left')
+    const u = await account(); for (let i = 0; i < 3; i++) await trialScan(u, endings[1]![1])
+    assert.deepEqual(await both(u), { first: 3, ledger: 3 }, 'unsettled interruptions keep their places until settled')
+  })
+})
+test('a dead worker\'s interrupted trial scan is settled by the stale-job reaper and gives its free scan back (sync and Db reapers)', async () => {
+  await withTrialEnv(async () => {
+    for (const kind of ['sync', 'db'] as const) {
+      const x = await account()
+      const a = await admitTrialScan(x.db, x.u, { env: caps, now: NOW }); assert.ok(a.ok)
+      const id = `job${String(++n).padStart(21, '0')}`
+      x.raw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, claimed_at, attempts, spend_reserved_usd, funded_by) VALUES (?, ?, 'b', 'i', 'l', 'running', 1, 1, 0.03, 'trial')").run(id, x.u.id)
+      await linkTrialReservation(x.db, x.u.id, a.reservation, id)
+      x.raw.prepare("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')").run(x.u.id, id)
+      x.raw.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c' || ?, ?, ?, 1, 'llm.anthropic', 0.03, 'reserved', 1)").run(id, x.u.id, id)
+      assert.deepEqual(await both(x), { first: 1, ledger: 1 }, `${kind}: before the reaper the dead scan holds its place`)
+      if (kind === 'sync') reapStaleRunningJobs(x.raw); else await reapStaleRunningJobsDb(x.db)
+      const j = x.raw.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id)
+      assert.deepEqual(j, { status: 'failed', error: 'accounting_uncertain' }, `${kind}: fixture: the reaper ended it interrupted`)
+      assert.deepEqual(await both(x), { first: 0, ledger: 0 }, `${kind}: settled by the reaper, so the free scan is given back by both counts`)
+      const cost = x.raw.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs WHERE id = ?').get(id) as { s: number }
+      assert.equal(cost.s, 0.03, 'its recorded spend is kept (still counts as money)')
+    }
+  })
+})
+test('the reaper leaves a trial scan that is still running, a done scan and an already settled one alone', async () => {
+  await withTrialEnv(async () => {
+    const x = await account()
+    const run = await trialScan(x, { status: 'running', error: null, spent: 0, settle: false })
+    const done = await trialScan(x, { status: 'done', error: null, spent: 0.05, settle: false })
+    reapStaleRunningJobs(x.raw)
+    const r = x.raw.prepare('SELECT job_id, settled_at FROM trial_reservations WHERE tenant_id = ? ORDER BY created_at, rowid').all(x.u.id) as { job_id: string; settled_at: number | null }[]
+    assert.deepEqual(r.map(z => [z.job_id === run || z.job_id === done, z.settled_at]), [[true, null], [true, null]], 'running and done reservations stay unsettled')
+  })
+})
+
+// ---- copy on the blocked screen (review points 3 and 4)
+test('(B) copy: a full day or a spent allowance never says "used 3 of 3" for a fresh account; attempts_cap says all used', () => {
+  const day = estimateRun({ ...base, trialRefusal: 'global_daily_cap', trialUsed: 0 } as never)
+  assert.doesNotMatch(day.verdict.message, /3 of 3/)
+  assert.match(day.verdict.message, /fully booked/)
+  assert.match(day.verdict.message, /used 0 of 3/)
+  const money = estimateRun({ ...base, trialRefusal: 'account_total_cap', trialUsed: 1 } as never)
+  assert.doesNotMatch(money.verdict.message, /3 of 3/); assert.match(money.verdict.message, /used 1 of 3/)
+  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap', trialUsed: 0 } as never).verdict.message, /used all 3 free trial scan attempts/)
+  assert.doesNotMatch(day.verdict.message, /used 3 of 3/); assert.doesNotMatch(estimateRun({ ...base, trialRefusal: 'global_daily_cap' } as never).verdict.message, /3 of 3/, 'unknown count reads 0, never 3')
+})
+test('(B) an unpriced trial model does not overwrite the trial refusal', () => {
+  const e = estimateRun({ ...base, trialRefusal: 'attempts_cap', model: 'claude-unlisted-9', priceModel: () => null } as never)
+  assert.equal(e.verdict.reason, 'trial_unavailable'); assert.equal(e.verdict.ok, false)
+  assert.doesNotMatch(e.verdict.message, /configuration problem|no listed price/)
+})
+
+test('the queue claimer\'s reaper (reapStaleScans) settles a dead worker\'s interrupted trial scan too', async () => {
+  await withTrialEnv(async () => {
+    const x = await account()
+    const a = await admitTrialScan(x.db, x.u, { env: caps, now: NOW }); assert.ok(a.ok)
+    const id = `job${String(++n).padStart(21, '0')}`
+    x.raw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, claimed_at, attempts, spend_reserved_usd, funded_by) VALUES (?, ?, 'b', 'i', 'l', 'running', 1, 1, 0.03, 'trial')").run(id, x.u.id)
+    await linkTrialReservation(x.db, x.u.id, a.reservation, id)
+    x.raw.prepare("INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, 'h')").run(x.u.id, id)
+    x.raw.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c' || ?, ?, ?, 1, 'llm.anthropic', 0.03, 'reserved', 1)").run(id, x.u.id, id)
+    assert.deepEqual(await both(x), { first: 1, ledger: 1 })
+    assert.equal(await reapStaleScans(x.db, 60, NOW), 1)
+    assert.deepEqual(x.raw.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain' })
+    assert.deepEqual(await both(x), { first: 0, ledger: 0 }, 'settled by the claimer reaper: the free scan is given back')
+  })
+})

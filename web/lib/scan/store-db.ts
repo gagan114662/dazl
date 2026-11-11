@@ -57,14 +57,17 @@ export async function parkPendingReservedJobs(db: Db): Promise<void> {
 // Jobs stuck in 'running' past the timeout go back to 'pending', or to 'failed' ('timeout') after MAX_ATTEMPTS. ANY
 // attempt's reserved (sent, unsettled, possibly billed) call ends the job closed - an unsettled call of a dead EARLIER
 // attempt is exactly the maybe-billed case (attempt correlation would re-queue it to be billed twice).
+import { settleReapedTrial } from '../billing/trial-reap.ts'
 export async function reapStaleRunningJobs(db: Db, now = nowS()): Promise<number> {
-  return (await db.run(
+  const changes = (await db.run(
     `UPDATE scan_jobs SET status = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN 'failed' ELSE 'pending' END,
        error = CASE WHEN ${RESERVED_CALL} THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
        finished_at = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN ? ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - STALE_RUNNING_S])).changes
+  if (changes > 0) await settleReapedTrial(db, now) // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
+  return changes
 }
 export async function reapStaleJobs(db: Db, now = nowS()): Promise<number> {
   await parkPendingReservedJobs(db)
