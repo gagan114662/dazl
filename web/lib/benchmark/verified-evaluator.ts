@@ -89,7 +89,7 @@ function parseSnapshotsUnhashed(raw: unknown): SnapshotSet {
       if (typeof e.html === 'string') {
         const html = e.html.slice(0, SNAPSHOT_LIMITS.html)
         if (e.html.length > SNAPSHOT_LIMITS.html) truncated = true
-        text = htmlToText(html); meta = [...new Set([...meta, ...metadataDays(html)])].sort(); linked = [...linkedDomains(html)].slice(0, SNAPSHOT_LIMITS.linked_domains); canonical = canonicalOf(html)
+        text = htmlToText(html); meta = [...new Set([...meta, ...metadataDays(html)])].sort(); linked = [...linkedDomains(html)].slice(0, SNAPSHOT_LIMITS.linked_domains); canonical = canonicalOf(html, url)
       } else if (typeof e.text === 'string') text = e.text
       else { out.problems.push(`${at} (${url}) is ok but has neither text nor html`); return }
       if (text.length > SNAPSHOT_LIMITS.text) { text = text.slice(0, SNAPSHOT_LIMITS.text); truncated = true }

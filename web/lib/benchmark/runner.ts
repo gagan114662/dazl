@@ -304,7 +304,7 @@ export async function runBatch(o: BatchOptions): Promise<BatchResult> {
       invoked = true
       try { res = await withTimeout(a.run(brief, { usd: budget.usd_per_task, seconds: budget.seconds_per_task }), budget.seconds_per_task * 1000) } catch (e) {
         spent += budget.usd_per_task // unknown cost: the whole task limit stays reserved
-        put({ task_id: brief.task_id, status: 'failed', reason: `adapter error: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, seconds: null, cost_usd: null }); continue
+        put({ task_id: brief.task_id, status: 'failed', reason: `adapter error: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, seconds: measuredSeconds(e), cost_usd: null }); continue
       }
       if (res === 'timeout') { spent += budget.usd_per_task; put({ task_id: brief.task_id, status: 'incomplete', reason: `timeout after ${budget.seconds_per_task}s`, seconds: budget.seconds_per_task, cost_usd: null }); continue }
       const bad = adapterResultProblem(res)
@@ -395,15 +395,21 @@ export const unavailableAdapter = (system: string, reason: string, origin: Adapt
   run: async () => { throw new BenchmarkRunError(`${system} is unavailable: ${reason}`) },
 })
 
+// Time an adapter measured before it failed (a recorded failure keeps it): kept for the per-tool time report, status stays failed.
+function measuredSeconds(e: unknown): number | null {
+  const s = (e as { seconds?: unknown } | null)?.seconds
+  return typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null
+}
+
 // Outputs recorded (or written by hand, as synthetic) per task, replayed. Its origin is fixed by the caller and never
 // 'live': a fixture cannot be presented as a product's live result.
-export interface FixtureOutputs { system: string; origin: 'recorded' | 'synthetic'; config: AdapterConfig; tasks: Record<string, AdapterResult | { error: string }> }
+export interface FixtureOutputs { system: string; origin: 'recorded' | 'synthetic'; config: AdapterConfig; tasks: Record<string, AdapterResult | { error: string; seconds?: number | null }> }
 export function fixtureAdapter(f: FixtureOutputs): Adapter {
   if ((f.origin as string) === 'live') throw new BenchmarkRunError('a fixture adapter can never be live')
   return {
     system: f.system, origin: f.origin, config: f.config, available: { ok: true },
     supports: b => b.task_id in f.tasks ? true : 'no recorded output for this task',
-    run: async b => { const r = f.tasks[b.task_id]; if ('error' in r) throw new Error(r.error); return structuredClone(r) },
+    run: async b => { const r = f.tasks[b.task_id]; if ('error' in r) throw Object.assign(new Error(r.error), { seconds: r.seconds ?? null }); return structuredClone(r) },
   }
 }
 

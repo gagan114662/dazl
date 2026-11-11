@@ -133,7 +133,7 @@ export function dazlRecordingFromScoreboard(sb: unknown, set: TaskSet): Recordin
     const error = typeof r.error === 'string' ? r.error : null
     if (r.complete !== true) {
       const stop = error ? INCOMPLETE_STOP[error] : undefined
-      tasks[r.id] = stop ? { items: [], cost_usd: null, seconds, interventions: 0, stopped: stop, detail: error } : { error: `dazl run did not complete: ${error ?? 'no reason recorded'}` }
+      tasks[r.id] = stop ? { items: [], cost_usd: null, seconds, interventions: 0, stopped: stop, detail: error } : { error: `dazl run did not complete: ${error ?? 'no reason recorded'}`, seconds }
       return
     }
     if (!Array.isArray(r.leads)) { tasks[r.id] = { error: 'malformed scoreboard row: complete, but leads is not a list (a truncated result is not an empty market)' }; return }

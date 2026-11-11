@@ -351,6 +351,7 @@ test('#397 #786: the Dazl adapter: a scoreboard result becomes a recording with 
   assert.deepEqual([t.items[1].person, t.items[1].contact_source_url], [null, null])     // no page recorded for them: those checks will be unknown
   assert.deepEqual(r.tasks['lisbon-sales'], { items: [], cost_usd: null, seconds: 30, interventions: 0, stopped: 'budget', detail: 'budget_stopped' })
   assert.match((r.tasks['ohio-payroll'] as { error: string }).error, /did not complete: key_rejected/)
+  assert.equal((r.tasks['ohio-payroll'] as { seconds: number }).seconds, 1)   // measured time on failed work is kept (greptile P2), status stays failed
   assert.deepEqual([r.config.product_version, r.config.model, r.system, r.task_set_version], ['abc1234', 'claude-sonnet-4-5', 'dazl', '1'])
   assert.equal(checkRecording(r, V1, 'dazl').tasks['toronto-dental'] !== undefined, true)
   for (const [bad, re] of [[null, /not a scripts\/scoreboard.mts result/], [{ ...SB, date: 'Nov 1' }, /date/], [{ ...SB, rows: [{ id: 'mars-dental', complete: true, leads: [] }] }, /not a task of frozen task set v1/], [{ ...SB, rows: [SB.rows[1], SB.rows[1]] }, /recorded twice/], [{ ...SB, rows: [7] }, /has no id/]] as [unknown, RegExp][]) assert.throws(() => dazlRecordingFromScoreboard(bad, V1), re)
@@ -435,4 +436,14 @@ test('#397 #788: CLI: the recorded batch runs from files beside it with the comm
     const badConv = node(['dazl-recording', '--result', path.join(dir, 'batch.json'), '--out', path.join(dir, 'x.json')])
     assert.equal(badConv.status, 2); assert.match(badConv.stderr, /not a scripts\/scoreboard.mts result/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('#397: a copy declaring a protocol-relative or root-relative canonical resolves against its own URL (greptile P1: no second origin)', () => {
+  const html = (href: string) => `<html><head><link rel="canonical" href="${href}"></head><body>x</body></html>`
+  const snap = (url: string, href: string) => ({ url, outcome: 'ok', final_url: null, truncated: false, meta_days: [], linked_domains: [], html: html(href) })
+  const parsed = parseSnapshots({ format: 'dazl-verifier-snapshots', version: 1, captured_by: 'v', captured_at: '2026-10-20T12:00:00Z', snapshots: [snap('https://copy.example/a', '//wire.example/story'), snap('https://copy2.example/b', '/story'), snap('https://wire.example/story', 'https://wire.example/story')] })
+  const canon = (u: string) => parsed.canonical.get(u)
+  assert.equal(canon('https://copy.example/a'), canon('https://wire.example/story'))
+  assert.ok(canon('https://copy.example/a'))
+  assert.notEqual(canon('https://copy2.example/b'), canon('https://copy.example/a'))   // root-relative resolves on its own host
 })

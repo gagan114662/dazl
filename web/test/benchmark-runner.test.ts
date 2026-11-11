@@ -247,3 +247,13 @@ test('an evaluator that omits an item records why; the blind ids map back to the
   assert.ok(missing.length > 0 && missing.every(e => Object.values(e.verdicts).every(v => v === 'unknown')))
   for (const e of r.evaluations) assert.ok(r.runs.find(x => x.system === e.system)!.tasks.find(t => t.task_id === e.task_id)!.results.some(x => x.entity_key === e.entity_key))
 })
+
+test('a recorded failure keeps the time it measured: status failed, seconds kept for the per-tool time report (greptile P2)', async () => {
+  const fx = structuredClone(BATCH.systems[0]); const id = BATCH.task_set.tasks[0].id
+  fx.tasks[id] = { error: 'key_rejected', seconds: 7 }
+  const r = await runBatch({ ...base(), adapters: [fixtureAdapter(fx)], evaluator: allPass })
+  const t = r.scorecards[0].tasks.find(t => t.task_id === id)!
+  assert.equal(t.status, 'failed'); assert.equal(t.seconds, 7)
+  fx.tasks[id] = { error: 'key_rejected' }
+  assert.equal((await runBatch({ ...base(), adapters: [fixtureAdapter(fx)], evaluator: allPass })).scorecards[0].tasks.find(t => t.task_id === id)!.seconds, null)
+})
