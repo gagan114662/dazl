@@ -323,3 +323,17 @@ test('review: the trace status never reports a pass cut short by an error or a l
   assert.equal(peopleTraceStatus(0, 'error'), 'failed')
   assert.equal(peopleTraceStatus(1, 'ownership_lost'), 'failed')
 })
+
+test('review: a job lost WHILE a search is in flight aborts that request (ownership-linked signal), writes nothing, stops ownership_lost', async () => {
+  const { db, job } = setup(2); let aborted = false, started = 0
+  const f = ((_u: string, init?: RequestInit) => { started++
+    return new Promise<Response>((_res, rej) => { init?.signal?.addEventListener('abort', () => { aborted = true; rej(new Error('aborted')) }) }) }) as unknown as typeof fetch
+  let alive = true; setTimeout(() => { alive = false }, 40)
+  const why: string[] = []
+  const t0 = Date.now()
+  const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, alive: () => alive, aliveEveryMs: 10, onStop: w => why.push(w) })
+  assert.equal(aborted, true, 'the in-flight request received the abort')
+  assert.ok(Date.now() - t0 < 5_000, 'did not wait out the transport timeout')
+  assert.equal(started, 1); assert.equal(n, 0); assert.deepEqual(why, ['ownership_lost'])
+  assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 0)
+})

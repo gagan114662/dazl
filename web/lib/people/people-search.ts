@@ -81,7 +81,7 @@ type Lead = { id: string; company: string }
 // alive: the job attempt still owns the run (runner postFinishAlive); checked before every search and before writing its result.
 // drainMs: how long the pass waits, after its deadline, for the search still in flight (default: the TinyFish transport timeout
 // plus 1 s, by which the real transport has given up; a fetch stub that ignores its abort signal is abandoned after it).
-export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; drainMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; alive?: () => boolean; onStop?: (why: string) => void }
+export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; drainMs?: number; aliveEveryMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; alive?: () => boolean; onStop?: (why: string) => void }
 // The first play's own lead list (lib/scan/first5.ts first5LeadSql): not graded out (fit 0-1) and not held by a failed required gate.
 const FIRST_PLAY_ELIGIBLE = "AND (fit IS NULL OR fit > 1) AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = leads.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
 // The people step's trace status: an error stop wins over a partial count (people_stored stays in the detail), so a pass
@@ -138,12 +138,16 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       // On the deadline the in-flight search is still AWAITED (its transport gives up after TINYFISH_TIMEOUT_MS) and its
       // result dropped: the pass never returns, and the runner never settles a trial ledger, while a paid call is in flight.
       let timer: ReturnType<typeof setTimeout> | undefined
-      const pending = tfSearch(db, tenantId, q, geo, spent, { env: tfEnv, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.charge ? { charge: deps.charge } : {}) })
+      // The request itself is aborted when the pass deadline hits or the job is no longer ours (polled while it is in flight),
+      // so a reclaimed/cancelled job stops spending instead of waiting out the transport timeout.
+      const ctl = new AbortController()
+      const watch = deps.alive ? setInterval(() => { try { if (!deps.alive!()) ctl.abort() } catch { ctl.abort() } }, deps.aliveEveryMs ?? 500) : undefined
+      const pending = tfSearch(db, tenantId, q, geo, spent, { env: tfEnv, signal: ctl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.charge ? { charge: deps.charge } : {}) })
       const r = await Promise.race([
         pending,
         new Promise<null>(res => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())) }),
-      ]).finally(() => clearTimeout(timer))
-      if (!r) { // deadline hit: wait for the search in flight (bounded), drop its result
+      ]).finally(() => { clearTimeout(timer); if (watch) clearInterval(watch) })
+      if (!r) { ctl.abort() // deadline hit: wait for the search in flight (bounded), drop its result
         let drain: ReturnType<typeof setTimeout> | undefined
         await Promise.race([pending.catch(() => null), new Promise<null>(res => { drain = setTimeout(() => res(null), Math.max(0, deps.drainMs ?? TINYFISH_TIMEOUT_MS + 1_000)) })]).finally(() => clearTimeout(drain))
         deps.onStop?.('deadline'); break
