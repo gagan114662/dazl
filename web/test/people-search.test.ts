@@ -124,7 +124,9 @@ test('deadline: a hung search is abandoned and the pass returns', async () => {
   const { db, job } = setup(ICP)
   const hang = (() => new Promise(() => {})) as unknown as typeof fetch
   const t0 = Date.now()
-  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50 }), 0)
+  // #1037: after the deadline the pass waits for the search in flight, bounded by drainMs (default: the transport timeout + 1 s,
+  // when the real transport has given up); this stub ignores its abort signal, so it is abandoned after drainMs.
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: hang, deadlineMs: 50, drainMs: 50 }), 0)
   assert.ok(Date.now() - t0 < 2000)
 })
 
@@ -151,4 +153,18 @@ test('New York City request: a profile result in Rome, NY is not attached; the N
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 1)
   assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'person'").all() as { value: string }[]).map(r => r.value), ['Nick Nyc, Head of HR'])
   assert.deepEqual(db.prepare("SELECT label FROM lead_enrichments WHERE kind = 'contact_rejected'").all(), [{ label: 'contact_location_mismatch' }], 'Rome, NY is refused and marked')
+})
+
+test('review: ownership is re-checked immediately before a location-refusal note too (a reclaimed job gets no stale contact_rejected row)', async () => {
+  const { db, job } = setup(ICP); let calls = 0; const why: string[] = []
+  const f = (async () => new Response(JSON.stringify({ results: [
+    { url: 'https://www.linkedin.com/in/cal-same', title: 'Cal Same - Head of HR - Acme Logistics | LinkedIn', snippet: 'Pico Rivera, California, United States' },
+  ] }))) as unknown as typeof fetch
+  // 1 = before the search, 2 = after it, 3 = right before the refusal write: lost exactly there
+  const n = await findPeople(db, 'A', job, { env, fetchImpl: f, alive: () => ++calls < 3, onStop: w => why.push(w) })
+  assert.equal(n, 0)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0, 'no refusal note and no person written by a lost attempt')
+  // control: still alive -> the note is written
+  const c = setup(ICP); await findPeople(c.db, 'A', c.job, { env, fetchImpl: f, alive: () => true })
+  assert.equal((c.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind = 'contact_rejected'").get() as { n: number }).n, 1)
 })
