@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { trialCopy, type TrialBlock } from '../lib/trial-copy.ts'
+import { trialCopy, trialRefusedCopy, type TrialBlock } from '../lib/trial-copy.ts'
 
 // The trial blocks GET /api/usage returns (#410), synthetic. cap 3 is TRIAL_SCANS_PER_ACCOUNT.
 const t = (o: Partial<TrialBlock>): TrialBlock => ({ funded: false, remaining: 0, cap: 3, blocked: null, ...o })
@@ -42,4 +42,14 @@ test('each reason has its own state and wording; only real account usage reads a
     assert.equal(c.next.href, '#model-key'); assert.match(c.next.label, /add your AI key/i)
     assert.doesNotMatch(c.text, /\$|sk-|usd|budget/i)
   }
+})
+
+test('the Leads page refusal for a trial scan is plain words with the next step, never the raw id', () => {
+  assert.equal(trialRefusedCopy('account_total_cap'), 'Your free trial allowance is used up. Add your AI key in Settings to keep scanning.')
+  for (const r of ['attempts_cap', 'global_daily_cap', 'domain_used', 'google_required', 'not_configured', undefined, 42]) {
+    const c = trialRefusedCopy(r)
+    assert.doesNotMatch(c, /trial_unavailable|_cap|domain_used|google_required|undefined/)
+    assert.match(c, /Add your AI key in Settings/)
+  }
+  assert.match(trialRefusedCopy('attempts_cap'), /all 3 free trial scan attempts/)
 })

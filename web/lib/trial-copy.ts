@@ -45,3 +45,16 @@ export function trialCopy(t: TrialBlock): TrialCopy {
       return { state: 'unavailable', text: "Free trial scans can't run right now.", next: SCAN }
   }
 }
+
+// What POST /api/scan's 402 trial_unavailable (with its admission reason) says on the Leads page, in plain words: never the raw error id.
+// The money allowance (account_total_cap) is called the free trial allowance; every refusal ends with the one next step, the account's own key.
+export function trialRefusedCopy(reason: unknown): string {
+  const r = typeof reason === 'string' ? reason : ''
+  const head = r === 'account_total_cap' ? 'Your free trial allowance is used up.'
+    : r === 'attempts_cap' ? `You have used all ${3} free trial scan attempts.`
+    : r === 'global_daily_cap' ? "Today's free trial scans are fully booked. Try again tomorrow."
+    : r === 'domain_used' ? 'A free trial has already been used for your company.'
+    : r === 'google_required' ? 'The free trial needs a Google sign-in.'
+    : "Free trial scans can't run right now."
+  return `${head} Add your AI key in Settings to keep scanning.`
+}
