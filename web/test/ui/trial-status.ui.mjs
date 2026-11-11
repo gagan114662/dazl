@@ -32,7 +32,7 @@ const usage = trial => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key: 
 const SCENES = [
   ['fresh-unavailable', usage({ funded: false, remaining: 0, cap: 3, blocked: 'not_configured' }), 'unavailable', "Free trial scans aren't available here right now.", 'Add your AI key to scan'],
   ['available', usage({ funded: true, remaining: 2, cap: 3, blocked: null }), 'available', '2 of 3 free trial scans left.', 'Add your AI key for the full plan'],
-  ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free trial scan attempts (failed attempts count too).', 'Add your AI key to keep scanning'],
+  ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption does not).', 'Add your AI key to keep scanning'],
   ['throttled', usage({ funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.', 'Or add your AI key to scan now'],
   // The money ceiling reached by website reads on the trial, with every scan attempt still unused: the line says
   // which allowance, that reads count toward it, and the true attempt count.
