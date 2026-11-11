@@ -14,6 +14,8 @@ import { siteKeyReason } from '@/lib/scan/site-read-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import ResearchReview, { asResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
+import { identityOf } from '@/lib/scan/opportunity'
+import { leadPerson, NO_BUYER } from '@/lib/people/lead-person'
 import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
@@ -268,11 +270,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const readingNow = f5?.sources.filter(x => x.state === 'running').map(x => sourceName(x.source)) ?? []
     const day = calendarDay // the same calendar day in every time zone
     const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
+    // #1037: who to contact on each lead, from the stored people rows (never invented; null = "No buyer named yet").
+    const buyerRoles = profile.who.join('; ')
+    const buyerOf = (l: PreviewLead) => leadPerson(l.enrichments, buyerRoles, undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+    const fullRow = (id: string) => (first?.leads as PreviewLead[] | null)?.find(x => x.id === id) ?? null
     const person = (l: PreviewLead) => {
       const c = leadCardSummary(l)
-      // "Name, Title - email": the title may itself contain a hyphen ("Co-founder"); only " - " separates the address.
-      const m = /^([^,]+), (.+?)(?: - .*)?$/.exec(c.contact ?? '')
-      return { name: m ? m[1].trim() : c.company, line: [m ? m[2].trim() : null, m ? c.company : null].filter(Boolean).join(' · ') || c.sourceHost, company: c.company }
+      // #1037: the person comes ONLY from lib/people/lead-person.ts (the same rule as the Leads row): nobody it accepts
+      // means the row names nobody, never a person parsed back out of the contact line.
+      const lp = buyerOf(l)
+      return lp ? { name: lp.name, line: [lp.title, c.company].join(' · '), company: c.company } : { name: c.company, line: `${NO_BUYER} · ${c.sourceHost}`, company: c.company }
     }
     return (
       <div className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] app-ui" data-testid="onboarding-screen" data-step={step}>
@@ -394,6 +401,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                         {/* Ready only on the ready bar (approve gate, full row); everything else needs research. */}
                         {f5Live || l.provisional || !ready ? <Pill tone="peach">checking</Pill> : readyIds.has(l.id) ? <Pill tone="mint">ready to contact</Pill> : <Pill tone="grey">needs research</Pill>}</div>
                       <p className="text-sm text-[var(--ink-2)] mt-1 line-clamp-2 break-words">{l.signal}</p>
+                      {!f5Live && !l.provisional && first?.leads && (() => { const row = fullRow(l.id); const p = row ? buyerOf(row) : null
+                        return p ? <p className="text-sm mt-1.5" data-testid="first-lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a></> : null}<span className="text-xs text-[var(--ink-3)]"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></p>
+                          : <p className="text-sm mt-1.5 text-[var(--ink-2)]" data-testid="first-lead-person" data-empty="true">{NO_BUYER} · <a className="underline" href={`/app/leads?job_id=${first.id}`}>Find contact</a></p> })()}
                       {!f5Live && ready && !readyIds.has(l.id) && <p className="text-xs mt-1.5 text-[var(--ink-2)]" data-testid="lead-gap">To contact: {gapOf(l.id)}</p>}
                       {!f5Live && ready && readyIds.has(l.id) && l.fit_pct != null && <p className="text-xs mt-1.5 text-[var(--ink-2)]">fit {l.fit_pct}%</p>}
                       <p className="text-xs mt-1.5 flex flex-wrap gap-x-2"><a className="underline" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">{host(l.source_url)}</a>{l.event_date ? <span>{day(l.event_date)}</span> : l.published_at ? <span>published {day(l.published_at)}</span> : null}</p>

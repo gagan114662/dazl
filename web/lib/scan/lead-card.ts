@@ -15,6 +15,9 @@ export type ApproveState = { ok: true } | { ok: false; reason: string }
 export interface LeadCardSummary {
   company: string
   contact: string | null
+  // #1037: the contact line WITHOUT any person the opportunity card synthesized (published email / the lead's own contact only).
+  // Leads shows this when `leadPerson` rejected that person, so a rejected person never reappears as a contact line.
+  contactNoPerson: string | null
   // Shown beside the contact, never only in Details: how far it is established. `confirmed` is true only for the cited
   // page, the company's own page, or the user's own website check, with no restricted inbox or quarantine.
   contactStatus: { confirmed: boolean; text: string } | null
@@ -90,6 +93,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
   return {
     company: l.company || l.name || 'Unnamed company',
     contact,
+    contactNoPerson: email ?? (l.contact?.trim() || null),
     contactStatus,
     route,
     // The research rationale when there is one, else the saved signal claim itself. One line, never invented.
