@@ -280,6 +280,7 @@ export function parkPendingReservedJobs(db: Database.Database): void {
     `UPDATE scan_jobs SET status = 'running', claimed_at = 0 WHERE status = 'pending' AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
   ).run()
 }
+import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 export function reapStaleRunningJobs(db: Database.Database): void {
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
@@ -289,6 +290,7 @@ export function reapStaleRunningJobs(db: Database.Database): void {
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
+  try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(Math.floor(Date.now() / 1000)) } catch { /* no trial table in this store */ } // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
 }
 export function reapStaleJobs(db: Database.Database): void {
   parkPendingReservedJobs(db)

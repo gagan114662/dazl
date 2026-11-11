@@ -155,7 +155,14 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
 // failed after any paid step.
-export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed' && r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0
+// A scan that STOPPED AFTER AN INTERRUPTION (error accounting_uncertain: a paid step may already have been billed, so its results were
+// discarded) also gives its place back once its run has settled: the person got nothing, and the cost screen promises free scans, not
+// interrupted ones (owner decision 2026-11-11). Only the attempt COUNT is released: a settled scan still costs what it recorded
+// (scan_jobs.spend_reserved_usd, see reservationCost) against the account's dollar total and the day's budget, so the $0.30 / $1 / $10 caps
+// bind exactly as before. The same rule is applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
+// by test/trial-interrupted-attempt.test.ts, and a reaped (dead-worker) scan is settled by lib/billing/trial-reap.ts so it is released too.
+export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed'
+  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {
