@@ -30,6 +30,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel }: { es
           <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
         </table>
       </div>
+      {est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
       {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}
       <p className={`mt-2 ${v.ok ? '' : 'text-red-700 font-medium'}`} role={v.ok ? 'status' : 'alert'} data-testid="estimate-verdict">{v.message}</p>
       {v.warning && <p className="mt-1 text-xs" data-testid="estimate-warning">{v.warning}</p>}
