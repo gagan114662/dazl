@@ -55,3 +55,33 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
     })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
   } finally { clearTimeout(t) }
 }
+
+// #1036: ONE user-requested work-email lookup for ONE named person, the fallback after Apollo (lib/people/work-email.ts).
+// Person Enrichment bills one credit per match (HTTP 200); 404 is PDL's documented unbilled "no match". `required:
+// work_email` asks PDL to match only records that carry a work email. PDL does not verify mailboxes, so the caller never
+// shows its address as checked. On plans without contact access PDL returns `true` instead of the address: that is not
+// an address and reads as null here. Only these fields are read; personal emails and phones never are.
+export interface PdlMatch { name: string | null; title: string | null; email: string | null; country: string | null; orgDomain: string | null; linkedin: string | null }
+export async function pdlPersonEnrich(apiKey: string, q: { first: string; last: string; domain: string }, fetchImpl: typeof fetch = fetch): Promise<{ billed: boolean; match: PdlMatch | null }> {
+  const params = new URLSearchParams({ first_name: q.first, last_name: q.last, company: q.domain, required: 'work_email', min_likelihood: '6' })
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  try {
+    const r = await fetchImpl(`${BASE}/v5/person/enrich?${params}`, { method: 'GET', headers: { 'X-Api-Key': apiKey }, signal: ctrl.signal })
+    if (r.status === 404) return { billed: false, match: null }
+    if (r.status === 429) throw new EnrichError('rate_limited', 'PDL rate limit reached')
+    if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'PDL rejected the key')
+    if (!r.ok) throw new EnrichError('upstream', `PDL returned ${r.status}`)
+    const j = await r.json() as { data?: unknown }
+    const d = j && typeof j === 'object' && j.data && typeof j.data === 'object' && !Array.isArray(j.data) ? j.data as Record<string, unknown> : null
+    if (!d) return { billed: true, match: null }
+    const site = str(d.job_company_website)
+    return { billed: true, match: {
+      name: str(d.full_name), title: str(d.job_title),
+      email: typeof d.work_email === 'string' && d.work_email.trim().length <= 254 ? d.work_email.trim() : null,
+      country: str(d.location_country),
+      orgDomain: site ? site.toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '') || null : null,
+      linkedin: typeof d.linkedin_url === 'string' ? d.linkedin_url.slice(0, 200) : null,
+    } }
+  } finally { clearTimeout(t) }
+}

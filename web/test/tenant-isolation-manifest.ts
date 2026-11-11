@@ -72,6 +72,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/[lead]/domain-review', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/enrich-retry', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/find-contact', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
+  { path: 'leads/[lead]/work-email', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
+  { path: 'leads/[lead]/work-email', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/quarantine', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/quarantine', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/feedback', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
