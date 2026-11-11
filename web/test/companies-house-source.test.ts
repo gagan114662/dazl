@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { companiesHouseAdapter, chCandidates, chLimits, chList, chPageFacts, chPlaceMatch, chReject, chScope, isChCompany, normPlace, resetChState, type ChCompany } from '../lib/sources/companies-house.ts'
+import { companiesHouseAdapter, chCandidates, chLimits, chList, chNationMatch, chPageFacts, chPlaceMatch, chReject, chScope, isChCompany, normPlace, resetChState, type ChCompany } from '../lib/sources/companies-house.ts'
 import { collectEvidenceReport, normalizeSources } from '../lib/sources/index.ts'
 import { MATRIX, advertisable, availability, byId } from '../lib/sources/capability-matrix.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
@@ -42,8 +42,8 @@ async function run(query: string, http: SafeGet, page: ((u: string) => Promise<s
 }
 
 test('scope: a UK place or "the UK" plus a mapped industry; anything else is out of coverage', () => {
-  assert.deepEqual(chScope('new software companies in London'), { sector: 'software', codes: ['62012', '62020', '62090'], place: 'London', where: 'London' })
-  assert.deepEqual(chScope('newly started builders in the UK'), { sector: 'construction', codes: ['41202', '43999'], place: null, where: 'the UK' })
+  assert.deepEqual(chScope('new software companies in London'), { sector: 'software', codes: ['62012', '62020', '62090'], place: 'London', nations: [], where: 'London' })
+  assert.deepEqual(chScope('newly started builders in the UK'), { sector: 'construction', codes: ['41202', '43999'], place: null, nations: [], where: 'the UK' })
   assert.equal(chScope('hairdressers in Glasgow')?.sector, 'hair_beauty')
   assert.equal(chScope('dentists in Oslo'), null, 'not a UK market')
   assert.equal(chScope('new companies in the UK'), null, 'no mapped industry: not a whole-register dump')
@@ -94,7 +94,7 @@ test('envelope: only the documented shape counts as an answer; anything else is 
 test('page facts: name next to its number, status Active and the incorporation date must all be on the cited page', () => {
   const u = PAGE('16990000')
   const f = chPageFacts(PAGES[u], 'HOME ED COMPANION LTD', '16990000')!
-  assert.deepEqual(f, { quote: 'HOME ED COMPANION LTD Company number 16990000', date: '2026-01-27' })
+  assert.deepEqual(f, { quote: 'More for HOME ED COMPANION LTD (16990000) Registered office address 167-169 Great Portland Street, Fifth Floor, London, United Kingdom, W1W 5PF Company status Active Company type Private limited Company Incorporated on 27 January 2026', date: '2026-01-27' }, 'the verbatim passage tying this company to Active status and its incorporation day (xhawk review)')
   assert.ok(PAGES[u].includes(f.quote) && f.quote.length >= 20 && f.quote.length <= 300)
   assert.equal(chPageFacts(PAGES[u], 'HOME ED COMPANION LTD', '17000000'), null, 'wrong company number')
   assert.equal(chPageFacts(PAGES[u], 'OTHER LTD', '16990000'), null, 'wrong name')
@@ -269,4 +269,75 @@ test('#1035 adversarial: place helpers fail closed on null, empty, non-string, h
   chScope(`software ${'London-'.repeat(20_000)}x UK`); chScope(`software ${'Newcastle under '.repeat(10_000)} UK`); chScope(`software in ${'a-'.repeat(50_000)}London`)
   normPlace(`${'- '.repeat(60)}`); chPlaceMatch({ locality: '-'.repeat(100_000), region: 'é'.repeat(100_000) }, 'London')
   assert.ok(Date.now() - t0 < 2000, `pathological inputs took ${Date.now() - t0} ms`)
+})
+
+test('#1035 greptile: a space-separated longer town name is not the gazetteer town (London Colney, Newcastle Emlyn): out of coverage, nothing requested', async () => {
+  for (const q of ['software companies in London Colney', 'software companies in Newcastle Emlyn', 'restaurants in London Ontario', 'plumbers in Glasgow Prestwick UK', 'dentists in Leeds Bradford, England'])
+    assert.equal(chScope(q), null, q)
+  // words that are never part of a place name here keep the town
+  for (const [q, place] of [['software companies in London England', 'London'], ['dentists in London Monday', 'London'], ['hairdressers in Glasgow City', 'Glasgow'],
+    ['London B2B SaaS startups', 'London'], ['London SaaS startups in software', 'London'], ['new London Software companies', 'London'], ['plumbers in Leeds and Bradford', 'Leeds'],
+    ['dentists in London Dental practices', 'London'], ['software companies in London UK', 'London'], ['London Startups doing software', 'London']] as const)
+    assert.equal(chScope(q)?.place, place, q)
+  const asked: string[] = []
+  const r = await run('software companies in London Colney', recorded(asked))
+  assert.deepEqual([r.items, r.notes, asked.length], [[], ['out_of_coverage'], 0], 'never a London search for London Colney')
+})
+
+test('#1035 greptile: "Great Britain" is the UK, not an unknown town called "Great"', () => {
+  assert.deepEqual(chScope('new software companies in Great Britain'), { sector: 'software', codes: ['62012', '62020', '62090'], place: null, nations: [], where: 'the UK' })
+  assert.equal(chScope('new software companies in the United Kingdom')?.where, 'the UK')
+  assert.equal(chScope('British software companies')?.where, 'the UK')
+  assert.equal(chScope('new software companies in Great Yarmouth UK'), null, 'Great Yarmouth is a town outside the gazetteer: still out of coverage')
+})
+
+test('#1035 greptile: a nation (Scotland, Wales, Northern Ireland, England) is filtered to that nation, never widened to the whole UK', async () => {
+  assert.deepEqual(chScope('new software companies in Scotland'), { sector: 'software', codes: ['62012', '62020', '62090'], place: null, nations: ['scotland'], where: 'Scotland' })
+  assert.deepEqual(chScope('Welsh plumbers')?.nations, ['wales'])
+  assert.deepEqual(chScope('dentists in Northern Ireland')?.nations, ['northern ireland']); assert.equal(chScope('dentists in Northern Ireland')?.where, 'Northern Ireland')
+  assert.deepEqual(chScope('law firms in England and Wales')?.nations, ['england', 'wales'])
+  assert.deepEqual(chScope('plumbers in London, England')?.nations, [], 'a gazetteer town is the stricter filter')
+  const at = (q: string, patch: Partial<ChCompany>) => chReject({ ...software, ...patch }, chScope(q)!, FROM, TODAY)
+  const scot = (patch: Partial<ChCompany>) => at('software companies in Scotland', patch)
+  assert.equal(scot({ registered_office_address: { locality: 'Edinburgh', country: 'Scotland' } }), null)
+  assert.equal(scot({ registered_office_address: { locality: 'Edinburgh', country: 'SCOTLAND ' } }), null)
+  assert.equal(scot({ company_number: 'SC123456', registered_office_address: { locality: 'Edinburgh', country: 'United Kingdom' } }), null, 'a Scottish registration keeps its office in Scotland')
+  assert.equal(scot({ company_number: 'SO123456', registered_office_address: undefined }), null, 'Scottish LLP prefix')
+  for (const a of [{ locality: 'London', country: 'United Kingdom' }, { locality: 'London', country: 'England' }, { locality: 'Edinburgh' }, undefined, { country: 'Scotlandshire' }, { country: 'Not Scotland' }])
+    assert.equal(scot({ registered_office_address: a as ChCompany['registered_office_address'] }), 'place', JSON.stringify(a))
+  assert.equal(scot({ company_number: 'NI123456', registered_office_address: { country: 'United Kingdom' } }), 'place', 'a Northern Irish registration is not Scotland')
+  assert.equal(at('dentists in Northern Ireland', { sic_codes: ['86230'], company_number: 'NI123456', registered_office_address: { country: 'United Kingdom' } }), null)
+  assert.equal(at('plumbers in Wales', { sic_codes: ['43220'], registered_office_address: { country: 'Wales' } }), null)
+  assert.equal(at('plumbers in Wales', { sic_codes: ['43220'], registered_office_address: { country: 'England' } }), 'place')
+  assert.equal(at('plumbers in Wales', { sic_codes: ['43220'], registered_office_address: { country: 'United Kingdom' } }), 'place', 'England and Wales share one register: only the address can say Wales')
+  assert.equal(at('law firms in England and Wales', { sic_codes: ['69102'], registered_office_address: { country: 'Wales' } }), null)
+  assert.equal(at('software companies in the UK', { registered_office_address: { country: 'Scotland' } }), null, 'a UK request still takes every nation')
+  // adapter: the UK-wide fixture holds one English company; a Scotland request drops it, an England request keeps it
+  let r = await run('new construction companies in Scotland', recorded([]))
+  assert.deepEqual([r.items, r.notes], [[], []])
+  r = await run('new construction companies in England', recorded([]))
+  assert.deepEqual(r.items.map(i => i.url), [PAGE('17000000')])
+  // malformed input fails closed
+  for (const n of [null, undefined, 'scotland', [], {}] as unknown[]) assert.equal(chNationMatch({ ...software, registered_office_address: { country: 'Scotland' } }, n as string[]), false, JSON.stringify(n))
+  for (const c of [null, undefined, {}, { company_number: 42, registered_office_address: { country: 7 } }, { registered_office_address: 'Scotland' }] as unknown[])
+    assert.equal(chNationMatch(c as ChCompany, ['scotland']), false, JSON.stringify(c))
+})
+
+test('#1035 Ziggy note a: the legal "bar" is not a pub; one sector per request with customer verticals before software (documented choice)', () => {
+  assert.equal(chScope('bar association lawyers UK')?.sector, 'legal')
+  assert.equal(chScope('solicitors recently called to the bar in London')?.sector, 'legal')
+  assert.equal(chScope('Bar Council registered barristers and law firms in London')?.sector, 'legal')
+  assert.equal(chScope('new bars in London')?.sector, 'pub_bar', 'a real bar is still a pub/bar')
+  assert.equal(chScope('dental practices in London that need appointment software')?.sector, 'dental', "the vertical to find, not the seller's software")
+  assert.equal(chScope('bar association UK'), null, 'nothing left once the legal sense is removed and no other sector named')
+})
+
+test('#1035 xhawk: the quote falls back to the name-and-number passage when the registry passage is missing, too long or names another company', () => {
+  const raw = PAGES[PAGE('16990000')]
+  const f = chPageFacts(raw.replace('More for HOME ED COMPANION LTD (16990000)', ''), 'HOME ED COMPANION LTD', '16990000')!
+  assert.equal(f.quote, 'HOME ED COMPANION LTD Company number 16990000')
+  const long = chPageFacts(raw.replace('Registered office address', `Registered office address ${'x '.repeat(200)}`), 'HOME ED COMPANION LTD', '16990000')!
+  assert.equal(long.quote, 'HOME ED COMPANION LTD Company number 16990000', 'over 300 characters: not one quote')
+  const other = chPageFacts(raw.replace('More for HOME ED COMPANION LTD (16990000)', 'More for OTHER LTD (16990000)'), 'HOME ED COMPANION LTD', '16990000')!
+  assert.equal(other.quote, 'HOME ED COMPANION LTD Company number 16990000', 'another name in the passage is never quoted for this company')
 })

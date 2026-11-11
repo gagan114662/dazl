@@ -84,6 +84,14 @@ const DASH = '-‐‑‒–—'
 const JOINED_BEFORE = new RegExp(`[\\p{L}\\p{N}][${DASH}]$`, 'u')
 const COMPOUND_AFTER = new RegExp(`^(?:[${DASH}]\\p{L}+(?:[${DASH}]\\p{L}+){0,3}|\\s+(?:upon|under)\\s+\\p{L}+|\\s+on\\s+(?!(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December|LinkedIn)\\b)\\p{Lu}\\p{L}*)`, 'u')
 const UPON_UNDER = /^\s+(?:upon|under)\s/i
+const NEXT_CAP = /^\s+(\p{Lu}[\p{Ll}'’]+)(?![\p{L}\p{N}])/u
+const NOT_NAME = new Set([
+  'england', 'scotland', 'wales', 'britain', 'northern', 'ireland', 'united', 'kingdom', 'uk',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  'and', 'or', 'with', 'that', 'who', 'which', 'for', 'in', 'near', 'around', 'area', 'region', 'based', 'startups', 'startup', 'companies', 'company',
+  'businesses', 'business', 'firms', 'firm', 'founders', 'practices', 'practice', 'agencies', 'agency', 'ltd', 'limited', 'tech', 'software', 'saas',
+])
 const ADJECTIVE_AFTER = new RegExp(`^[${DASH}](?:based|area|wide|headquartered|registered|founded|born|centric|focused)(?![${DASH}\\p{L}\\p{N}])`, 'iu')
 function placeIn(query: string): (typeof CH_PLACES)[number] | 'other' | null {
   let other = false
@@ -95,9 +103,15 @@ function placeIn(query: string): (typeof CH_PLACES)[number] | 'other' | null {
       const after = query.slice(end, end + 40)
       if (ADJECTIVE_AFTER.test(after)) return p // "London-based", "Leeds-area": the town itself, used as an adjective
       const tail = COMPOUND_AFTER.exec(after) ?? (UPON_UNDER.test(after) ? [after] : null)
-      if (!tail) return p
-      if (p.names.includes(normPlace(m[0] + tail[0]))) return p
-      other = true
+      if (tail) {
+        if (p.names.includes(normPlace(m[0] + tail[0]))) return p
+        other = true; continue
+      }
+      // A space-separated capitalised word right after the name is part of a longer town name ("London Colney", "Newcastle Emlyn", "London Ontario")
+      // unless it is one of the town's own names ("Glasgow City") or a word that is never part of a place name here (country, calendar, business nouns).
+      const next = NEXT_CAP.exec(after)
+      if (next && !NOT_NAME.has(next[1].toLowerCase()) && !CH_SECTORS.some(s => s.words.test(next[1])) && !p.names.includes(normPlace(`${m[0]} ${next[1]}`))) { other = true; continue }
+      return p
     }
   }
   return other ? 'other' : null
@@ -111,9 +125,29 @@ const ELSEWHERE_CODES = /,\s*(?:A[LKZR]|C[AOT]|D[EC]|FL|GA|HI|I[ADLN]|K[SY]|LA|M
 const TOWN_AFTER = /\b(?:in|near|around|at)\s+((?:[A-Z][\p{L}'’-]+)(?:\s+[A-Z][\p{L}'’-]+){0,2})/gu
 const COUNTRY_WORD = /^(?:the|uk|u\.k\.|united|kingdom|britain|british|england|english|scotland|scottish|wales|welsh|northern|ireland)$/i
 export const unknownTown = (query: string): boolean =>
-  [...query.matchAll(TOWN_AFTER)].some(m => m[1].split(/\s+/).some(t => !COUNTRY_WORD.test(t)))
+  [...query.replace(/\bGreat\s+Britain\b/g, 'Britain').matchAll(TOWN_AFTER)].some(m => m[1].split(/\s+/).some(t => !COUNTRY_WORD.test(t)))
 
-export interface ChScope { sector: string; codes: string[]; place: string | null; where: string }
+// A request that names one of the UK's nations (and no gazetteer town) is about that nation, never the whole UK (#1035 review: "in Scotland" had become a
+// UK-wide search). The register is filtered on the registered office's own country, fail closed: an address with no country, "United Kingdom" or any other
+// value is not proof it sits in that nation. Scottish and Northern Irish companies are also told apart by their registration prefix (a company registered in
+// Scotland must keep its registered office there: SC/SO; Northern Ireland: NI/NC). England and Wales share one register, so only the address says which.
+// "UK", "United Kingdom", "Britain", "Great Britain" and "British" stay UK-wide.
+const NATIONS: { id: string; words: RegExp; prefix: RegExp | null }[] = [
+  { id: 'england', words: w('england|english'), prefix: null },
+  { id: 'scotland', words: w('scotland|scottish'), prefix: /^S[CO]\d{6}$/ },
+  { id: 'wales', words: w('wales|welsh'), prefix: null },
+  { id: 'northern ireland', words: w('northern ireland|northern irish'), prefix: /^N[IC]\d{6}$/ },
+]
+export function chNationMatch(c: { company_number?: unknown; registered_office_address?: unknown }, nations: string[]): boolean {
+  if (!Array.isArray(nations) || !nations.length) return false
+  const a = c?.registered_office_address, country = isObj(a) ? normPlace(a.country) : ''
+  return nations.some(n => country === n || (typeof c?.company_number === 'string' && !!NATIONS.find(x => x.id === n)?.prefix?.test(c.company_number)))
+}
+// "bar" in its legal sense ("bar association", "Bar Council", "called to the bar") is not a pub (#1035 review note a).
+const LEGAL_BAR = /(?<![\p{L}\p{N}])(?:bar\s+(?:associations?|councils?|standards|exams?|examinations?|schools?|courses?)|called\s+to\s+the\s+bar)(?![\p{L}\p{N}])/giu
+
+// nations: set only when the request names a nation and no gazetteer town; the register is then filtered to that nation (chNationMatch)
+export interface ChScope { sector: string; codes: string[]; place: string | null; nations: string[]; where: string }
 // What this source can answer for a request, or null when it is outside coverage (no UK place / no mapped industry).
 export function chScope(query: string): ChScope | null {
   if (typeof query !== 'string' || !query.trim()) return null
@@ -127,9 +161,14 @@ export function chScope(query: string): ChScope | null {
   // A named town the gazetteer does not hold ("in Oxford UK") must not silently widen to the whole UK: the request would be answered with companies from
   // everywhere while that town goes unsearched. Report it as out of coverage instead (#1035 review).
   if (!place && unknownTown(query)) return null
-  const sector = CH_SECTORS.find(s => s.words.test(query))
+  // One sector per request, in CH_SECTORS order: customer verticals come before "software", because a request often names the seller's own software
+  // ("dental practices that need appointment software") and the vertical is who to find. Documented choice (#1035 review note a); the legal "bar" is removed first.
+  const forSector = query.replace(LEGAL_BAR, ' ')
+  const sector = CH_SECTORS.find(s => s.words.test(forSector))
   if (!sector) return null
-  return { sector: sector.id, codes: sector.codes, place: place?.name ?? null, where: place?.name ?? 'the UK' }
+  const nations = place ? [] : NATIONS.filter(n => n.words.test(query)).map(n => n.id)
+  const where = place?.name ?? (nations.length ? nations.map(n => n.replace(/\b\p{L}/gu, ch => ch.toUpperCase())).join(' or ') : 'the UK')
+  return { sector: sector.id, codes: sector.codes, place: place?.name ?? null, nations, where }
 }
 
 interface ChAddress { locality?: string; region?: string; postal_code?: string; country?: string }
@@ -150,6 +189,7 @@ export function chReject(c: ChCompany, scope: ChScope, from: string, today: stri
   if (!OPERATING_TYPES.has(c.company_type ?? '')) return 'type'
   if (!(c.sic_codes ?? []).some(s => scope.codes.includes(s))) return 'sector'
   if (scope.place && !chPlaceMatch(c.registered_office_address, scope.place)) return 'place'
+  if (!scope.place && scope.nations?.length && !chNationMatch(c, scope.nations)) return 'place'
   const d = c.date_of_creation ?? ''
   if (!ISO.test(d) || d < from || d > today) return 'date'
   return null
@@ -196,6 +236,14 @@ export function chPageFacts(pageText: string, name: string, number: string): { q
   const mi = m ? MONTHS.indexOf(m[2].toLowerCase()) : -1
   if (!m || mi < 0) return null
   const date = `${m[3]}-${String(mi + 1).padStart(2, '0')}-${m[1].padStart(2, '0')}`
+  // Prefer the verbatim passage that ties THIS company to its status and incorporation day ("More for <NAME> (<number>) Registered office address ...
+  // Company status Active ... Incorporated on <day>") when it fits the 300-character excerpt cap (#1035 xhawk review), so a reader of the lead sees the
+  // registry facts it rests on. Otherwise the name-and-number passage.
+  const more = `More for ${nm} (${number})`, mAt = text.indexOf(more)
+  if (mAt >= 0 && m.index > mAt && m.index + m[0].length - mAt <= 300) {
+    const span = text.slice(mAt, m.index + m[0].length)
+    if (/ Company status Active\b/.test(span)) return { quote: span.trim(), date }
+  }
   let quote = text.slice(at, at + 300)
   const cut = quote.indexOf(' Follow this company'); if (cut > 0) quote = quote.slice(0, cut)
   if (quote.length === 300) quote = quote.slice(0, quote.lastIndexOf(' '))
