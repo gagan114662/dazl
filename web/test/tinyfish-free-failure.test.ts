@@ -25,16 +25,21 @@ for (const kind of ['fetch', 'search'] as const) for (const [name, ans] of FAILS
   test(`free TinyFish ${kind}, ${name}: a failed result, the scan may continue, nothing left reserved`, async () => {
     const s = await setup()
     const env = { TINYFISH_API_KEY: 'k' }, f = (async () => ans()) as unknown as typeof fetch
+    // The continuation check runs INSIDE the same runWithScanSpend callback (same context object, same stop flags): a fresh ctx() would pass
+    // even if the failed call had marked the original attempt rejected.
     const out = await runWithScanSpend(s.ctx(), async () => {
       const r = kind === 'fetch' ? await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env, fetchImpl: f, now: T0 }) : await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env, fetchImpl: f, now: T0 })
-      return { r, uncertain: spendAttemptUncertain() }
+      const uncertain = spendAttemptUncertain()
+      let next = false
+      try { next = Boolean(await reserveScanSpend('render', () => 0.01)) } catch { next = false }
+      return { r, uncertain, next }
     })
     assert.equal(out.r.ok, false)
     assert.equal(out.uncertain, false, 'the attempt is not marked maybe-billed')
+    assert.equal(out.next, true, 'the next paid call in the SAME attempt is still allowed')
     const calls = await scanSpendCalls(s.db, s.id, 'A')
-    assert.equal(calls.length, 1); assert.equal(calls[0].status, 'settled'); assert.equal(calls[0].actual_usd, 0)
-    // the next paid call in the same attempt is still allowed
-    assert.ok(await runWithScanSpend(s.ctx(), () => reserveScanSpend('render', () => 0.01)))
+    const tf = calls.filter(c => c.kind !== 'render')
+    assert.equal(tf.length, 1); assert.equal(tf[0].status, 'settled'); assert.equal(tf[0].actual_usd, 0)
   })
 }
 test('a PRICED TinyFish call that fails keeps the fail-closed rule (maybe billed, stays reserved, attempt stops paying)', async () => {

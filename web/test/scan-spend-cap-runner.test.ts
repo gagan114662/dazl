@@ -233,6 +233,20 @@ for (const [name, ans, code] of fetchFailures) {
   })
 }
 
+// Default (zero-dollar) TinyFish fetch price: the owner-approved free-failure rule (tinyfish-free-failure.test.ts) must hold through the RUNNER too.
+// Batch 1 answers with usable pages, batch 2 fails; the failed free page is one failed page, so extraction still runs and the leads are kept.
+for (const [name, ans] of [['503', () => new Response('{}', { status: 503 })], ['timeout', () => { throw new TypeError('socket hang up') }]] as [string, () => Response][]) {
+  test(`runner free-failure: a FREE 2nd TinyFish fetch batch ${name} is one failed page; later extraction still runs and the job is not accounting_uncertain`, async () => {
+    let batch = 0; searchN = 0
+    const x = await run(OWNER, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
+    const fetches = x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai'))
+    assert.equal(fetches.length, 2, 'positive control: batch 1 answered and batch 2 was attempted (and failed)')
+    assert.ok(modelCalls(x) >= 1, 'extraction (a model call) still ran after the free failed batch')
+    // The shared stub's lead cites jobs.example, not the fetched hosts, so the clean end here is no_discovery (empty, searched everything); what matters is it is NOT an accounting stop.
+    assert.ok(!['accounting_uncertain', 'accounting_failed', 'provider_rejected', 'provider_rate_limited'].includes(x.row.error ?? ''), `job ended ${x.row.status}/${x.row.error}`)
+  })
+}
+
 test('runner failure class: an unclassified (non-ProviderError) exception after a paid request was reserved ends accounting_uncertain, one request, never retried', async () => {
   let calls = 0
   const boom: Provider = {
