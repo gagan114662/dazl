@@ -128,8 +128,6 @@ test('a bare "revenue" is not a sales-role ask (Ziggy #1034 note 2); revenue ROL
 })
 
 // ---- Greptile review round (#1034): each test fails on the previous behaviour ----
-const ROBOTS_PRIVATE = { 'brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private/' } as HttpResult }
-
 test('review: a redirect into a path robots.txt disallows is never fetched', async () => {
   const asked: string[] = []
   const http: SafeGet = async url => {
@@ -188,6 +186,6 @@ test('review: every GTM role family the reader accepts is asked for; "revenue gr
 
 test('review: the careers read is sent under the token its robots.txt rules were read for', async () => {
   const uas = new Set<string>()
-  const http: SafeGet = async (url, o) => { uas.add(o?.headers?.['user-agent'] ?? ''); return { status: 404, body: '' } }
+  const http: SafeGet = async (_url, o) => { uas.add(o?.headers?.['user-agent'] ?? ''); return { status: 404, body: '' } }
   await run(http); assert.ok([...uas].every(u => u.startsWith('dazl-contact-check')), [...uas].join())
 })
