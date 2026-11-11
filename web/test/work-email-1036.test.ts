@@ -390,6 +390,14 @@ test('mergeLookups: older or missing rows never erase a newer result; pending gi
   assert.equal(mergeLookups(done, [row(DANA, 'error', 100)]), done, 'equal time: an open row never replaces a finished one')
   // The page's own click answer always replaces its person's row (even with an older or equal clock).
   assert.equal(mergeLookups(failed, [row(DANA, 'verified', 90, 'x@harbordental.example')], true)[DANA].status, 'verified')
+  // Greptile round 3: a delayed failed POST from this tab never hides a success another tab's retry already showed.
+  const shownOk = { [DANA]: row(DANA, 'verified', 120, 'x@harbordental.example') }
+  for (const st of ['error', 'uncertain', 'pending']) {
+    assert.equal(mergeLookups(shownOk, [row(DANA, st, 100)], true), shownOk, `own older ${st} keeps the shown success`)
+    assert.equal(mergeLookups(shownOk, [row(DANA, st, 120)], true), shownOk, `own equal-time ${st} keeps the shown success`)
+  }
+  assert.equal(mergeLookups(shownOk, [row(DANA, 'error', 130)], true)[DANA].status, 'error', 'a strictly newer own row still wins')
+  assert.equal(mergeLookups(shownOk, [row(DANA, 'not_found', 100)], true)[DANA].status, 'not_found', 'own finished answer still replaces')
   for (const junk of [null, 'x', 42, {}, [null, 7, 'x', { target: 1, status: 'verified' }, { target: DANA }, { status: 'verified' }]]) assert.equal(mergeLookups(done, junk), done, JSON.stringify(junk))
   assert.ok(PENDING_POLL_MS * PENDING_POLL_MAX > PENDING_STALE_S * 1000, 'the page keeps following a pending row past the server stale window')
 })

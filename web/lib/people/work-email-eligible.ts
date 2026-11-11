@@ -107,7 +107,9 @@ export const PENDING_POLL_MAX = 45
 // (updated_at), or equally new while the shown one is still open (pending / error / uncertain: a quick retry in the same
 // second as a failure) and the new one is not pending. An older answer (a slow GET that started before a POST finished)
 // never erases a newer result, and a row missing from a read is kept as shown. `own`: the answer to this page's own
-// click (POST), which is the server's state after that attempt and always replaces the row for its person.
+// click (POST), which is the server's state after that attempt and replaces the row for its person, except that an
+// unfinished answer (pending / error / uncertain) never hides a finished result already shown unless it is strictly
+// newer (another tab's retry succeeded and a GET showed it before this page's older failed POST came back).
 export type ShownLookup = WorkEmailView & { target: string; updated_at?: number | null }
 const OPEN = new Set(['pending', 'error', 'uncertain'])
 export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unknown, own = false): Record<string, ShownLookup> {
@@ -118,7 +120,8 @@ export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unkno
     const row = r as ShownLookup
     const cur = (next ?? shown)[row.target]
     const t = (x: ShownLookup | undefined) => typeof x?.updated_at === 'number' && Number.isFinite(x.updated_at) ? x.updated_at : -Infinity
-    const newer = own || !cur || t(row) > t(cur) || (t(row) === t(cur) && OPEN.has(cur.status) && row.status !== 'pending')
+    const newer = !cur || t(row) > t(cur) || (own && (OPEN.has(cur.status) || !OPEN.has(row.status))) ||
+      (t(row) === t(cur) && OPEN.has(cur.status) && row.status !== 'pending')
     if (!newer) continue
     next = { ...(next ?? shown), [row.target]: row }
   }
