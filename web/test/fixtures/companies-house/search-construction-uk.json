@@ -1,0 +1,16 @@
+{
+  "kind": "search#advanced-search-companies",
+  "hits": 1,
+  "items": [
+    {
+      "company_name": "POINTE AND BEAM LTD",
+      "company_number": "17000000",
+      "company_status": "active",
+      "company_type": "ltd",
+      "date_of_creation": "2026-01-29",
+      "kind": "searchresults#company",
+      "registered_office_address": { "address_line_1": "82a James Carter Road", "locality": "Mildenhall", "region": "Bury St. Edmunds", "country": "England", "postal_code": "IP28 7DE" },
+      "sic_codes": ["41202", "42220"]
+    }
+  ]
+}
