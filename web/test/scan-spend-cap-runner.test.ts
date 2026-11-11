@@ -223,7 +223,8 @@ const fetchFailures: [string, () => Response, string][] = [
 for (const [name, ans, code] of fetchFailures) {
   test(`runner in-attempt stop: the 2nd TinyFish fetch batch ${name} (swallowed by the fetch loop) stops every later paid request; job failed/${code}, never done`, async () => {
     let batch = 0; searchN = 0
-    const x = await run(OWNER, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
+    // A PRICED fetch keeps the fail-closed rule; a free one is covered by tinyfish-free-failure.test.ts (owner-approved 2026-11-11).
+    const x = await run({ ...OWNER, ...(code === 'accounting_uncertain' ? { DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.001' } : {}) }, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
     const fetches = x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai'))
     assert.equal(fetches.length, 2, 'positive control: batch 1 answered and batch 2 was attempted')
     const last = x.paid.map(p => p.url).lastIndexOf(fetches[1]!.url)
