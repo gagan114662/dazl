@@ -1,0 +1,241 @@
+// #1036 Find work email: ONE user-clicked lookup of a checked work email for ONE buyer named on a lead.
+//
+// Order (free first, then the tenant's OWN keys; dazl pays for nothing):
+//   1. published - the person's own address printed on the company's confirmed site (email-pattern.ts published tier).
+//   2. Apollo people/match (lib/enrich/apollo.ts apolloPersonMatch) on the tenant's Apollo key.
+//   3. People Data Labs person enrich (lib/enrich/pdl.ts pdlPersonEnrich) when Apollo found no usable address and PDL is
+//      allowed: the only saved key, or saved with the paid-fallback opt-in (#382, Settings > Enrichment).
+// What is shown as CHECKED: only 'verified' (Apollo's own email_status 'verified', with the provider and date) and
+// 'published' (with the page). PDL does not verify mailboxes and Apollo's non-verified statuses are not checks, so
+// those are 'unverified' and say so. Apollo's own guesses (guessed / extrapolated) are never kept. The table's CHECKs
+// make 'verified' impossible without Apollo and a check time, and 'published' impossible without its page.
+//
+// Gates (all fail closed, each recorded as the lookup's status with a reason):
+//   - the lead belongs to the tenant, is not rejected, is a company row, and sits on a SETTLED website (identityOf);
+//   - the person is one of the lead's stored buyer-role targets (work-email-eligible.ts), re-derived here from stored rows;
+//   - the provider's person must be the same name, not in a past role, at the same company domain, and the address must
+//     be on the lead's website domain and not a shared inbox;
+//   - US recipients only (docs/DECISIONS.md 2026-10-26): the provider's own person country must be the United States, and
+//     a play whose area names another country makes no paid call. Unknown country = not US: the address is not kept.
+// Spend: every paid call reserves 1 credit in the workspace credit pool first (lib/enrich/credit-pool.ts, the Settings >
+// Enrichment counter and limits); a refusal makes no call. A call whose charge is unknown keeps its reservation.
+// Replays: a finished lookup is returned as stored and never paid again; a lookup in flight is claimed durably
+// ('pending' row) BEFORE any paid call, so a double click, a second tab or a retry while it runs pays once.
+// Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
+import type Database from 'better-sqlite3'
+import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
+import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
+import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
+import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
+import { publishedCandidateFor } from './email-pattern.ts'
+import { roleContradicted } from './rank.ts'
+import { identityOf } from '../scan/opportunity.ts'
+import { companySearchEligible } from '../scan/find-contact-eligible.ts'
+import { countriesIn } from '../scan/countries.ts'
+import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
+import { nameKey, queryName, siteSettled, targetKey, workEmailTargets } from './work-email-eligible.ts'
+
+export const WORK_EMAIL_STATUSES = ['pending', 'verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected', 'error', 'uncertain'] as const
+export type WorkEmailStatus = typeof WORK_EMAIL_STATUSES[number]
+const FINAL_STATUSES: readonly string[] = ['verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected']
+const isFinal = (s: string) => FINAL_STATUSES.includes(s)
+// A 'pending' claim older than this belongs to a lookup that died (both provider calls time out at 15 s): it reads as
+// 'uncertain' and a new click may run again (it may have been billed: the user is told so before trying again).
+export const PENDING_STALE_S = 120
+export const WORK_EMAIL_CONNECTOR: Record<CreditProvider, string> = { apollo: 'workemail:apollo', pdl: 'workemail:pdl' }
+
+export function migrateWorkEmail(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS work_email_lookups (
+      tenant_id  TEXT NOT NULL,
+      lead_id    TEXT NOT NULL,
+      target     TEXT NOT NULL CHECK (length(target) <= 200),
+      status     TEXT NOT NULL CHECK (status IN (${WORK_EMAIL_STATUSES.map(s => `'${s}'`).join(',')})),
+      provider   TEXT CHECK (provider IS NULL OR provider IN ('site','apollo','pdl')),
+      address    TEXT CHECK (address IS NULL OR length(address) <= 254),
+      detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
+      source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
+      checked_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
+      CHECK (status <> 'verified' OR (provider = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (provider = 'site' AND source_url IS NOT NULL)),
+      PRIMARY KEY (tenant_id, lead_id, target)
+    );`)
+}
+
+export interface WorkEmailRow { target: string; status: WorkEmailStatus; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; updated_at: number }
+const ROW_COLS = 'target, status, provider, address, detail, source_url, checked_at, updated_at'
+
+// Stored lookups for one lead of this tenant, as shown on the lead. A 'pending' row past PENDING_STALE_S reads as 'uncertain'.
+export function workEmailsFor(db: Database.Database, tenantId: string, leadId: string, nowS: number = Math.floor(Date.now() / 1000)): WorkEmailRow[] {
+  migrateWorkEmail(db)
+  const rows = db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? ORDER BY target`).all(tenantId, leadId) as WorkEmailRow[]
+  return rows.map(r => r.status === 'pending' && r.updated_at < nowS - PENDING_STALE_S ? { ...r, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : r)
+}
+
+// Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
+export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }
+export function workEmailProviders(db: Database.Database, tenantId: string): WorkEmailProviders {
+  const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
+  const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
+  const optIn = apollo && pdlSaved ? enrichFallbackEnabled(db, tenantId) : true
+  return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn }
+}
+
+export type FindWorkEmailResult =
+  | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
+  | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
+
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; icp: string | null }
+
+const isUS = (c: string | null) => !!c && /^(?:united states(?: of america)?|usa?|u\.s\.a?\.?)$/i.test(c.trim())
+const domainOf = (address: string) => (address.split('@')[1] ?? '').toLowerCase()
+const sameCompany = (a: string, site: string) => sameSite(a, site) || sameSite(site, a)
+
+type Verdict =
+  | { kind: 'verified' | 'unverified'; address: string; note: string }
+  | { kind: 'none' | 'guess' | 'rejected' | 'not_us'; note: string }
+
+// Judge one provider answer against the person and the lead's website. Pure; every branch names its reason.
+export function judgeMatch(provider: CreditProvider, m: (ApolloMatch | PdlMatch) | null, want: { first: string; last: string }, site: string, icpText = ''): Verdict {
+  const P = provider === 'apollo' ? 'Apollo' : 'People Data Labs'
+  if (!m) return { kind: 'none', note: `${P} had no match` }
+  const a = m as Partial<ApolloMatch>
+  const words = (m.name ?? '').split(/\s+/).filter(Boolean)
+  const first = nameKey(a.first ?? words[0] ?? ''), last = nameKey(a.last ?? words[words.length - 1] ?? '')
+  if (!first || !last || first !== nameKey(want.first) || last !== nameKey(want.last)) return { kind: 'rejected', note: `${P} returned a different person` }
+  if (m.title && roleContradicted(m.title, icpText)) return { kind: 'rejected', note: `${P} lists a past or assistant role (${m.title.slice(0, 60)})` }
+  if (m.orgDomain && !sameCompany(m.orgDomain.toLowerCase(), site)) return { kind: 'rejected', note: `${P} has them at another company (${m.orgDomain.slice(0, 60)})` }
+  const email = (m.email ?? '').trim().toLowerCase()
+  if (!email) return { kind: 'none', note: `${P} has no work email for them` }
+  if (!PUBLISHED_EMAIL_RE.test(email) || email.length > 254) return { kind: 'none', note: `${P} returned an unreadable address` }
+  if (!sameSite(domainOf(email), site)) return { kind: 'rejected', note: `${P}'s address is not on ${site}` }
+  if (ROLE.test(email.split('@')[0].replace(/[._-]/g, ''))) return { kind: 'rejected', note: `${P} returned a shared inbox, not the person's address` }
+  if (!isUS(m.country)) return { kind: 'not_us', note: `${P} does not place them in the US${m.country ? ` (${m.country.slice(0, 40)})` : ' (no country)'}` }
+  if (provider === 'apollo') {
+    const st = (a.emailStatus ?? '').toLowerCase()
+    if (st === 'verified') return { kind: 'verified', address: email, note: 'Apollo verified' }
+    if (st === 'guessed' || st === 'extrapolated') return { kind: 'guess', note: 'Apollo only had a guessed address (not kept)' }
+    if (st === 'bounced') return { kind: 'rejected', note: 'Apollo reports this address bounced' }
+    if (st === 'unavailable') return { kind: 'none', note: 'Apollo has no work email for them' }
+    return { kind: 'unverified', address: email, note: `Apollo has it, not verified${st ? ` (${st.slice(0, 30)})` : ''}` }
+  }
+  return { kind: 'unverified', address: email, note: 'People Data Labs has it; PDL does not check mailboxes' }
+}
+
+const failText = (e: unknown, P: string) => {
+  if (e instanceof EnrichError) return e.code === 'auth' ? `${P} rejected your key` : e.code === 'rate_limited' ? `${P} rate limit reached` : `${P} error`
+  const name = typeof e === 'object' && e !== null ? (e as { name?: unknown }).name : null
+  return name === 'AbortError' || name === 'TimeoutError' ? `${P} timed out (may have used a credit)` : `${P} answer could not be read (may have used a credit)`
+}
+
+export async function findWorkEmail(
+  db: Database.Database, tenantId: string, leadId: string, target: unknown,
+  deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {},
+): Promise<FindWorkEmailResult> {
+  migrateWorkEmail(db)
+  const now = deps.now ?? Math.floor(Date.now() / 1000)
+  if (typeof target !== 'string' || !target || target.length > 200) return { status: 'not_eligible', detail: 'no such person on this lead' }
+  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, j.icp
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
+  if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
+  if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
+  if (!companySearchEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
+  const site = identityOf({ id: lead.id, contact: lead.contact }, rows)
+  if (!siteSettled(site)) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
+  let icp: { who?: unknown; where?: unknown } = {}
+  try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
+  const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  const icpText = strs(icp.who).join('; ')
+  const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
+  if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
+  const want = queryName(person.name)!
+
+  const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
+  const prior = read()
+  if (prior && isFinal(prior.status)) return { status: prior.status, row: prior, replayed: true }
+  if (prior?.status === 'pending' && prior.updated_at >= now - PENDING_STALE_S) return { status: 'busy', detail: 'a lookup for this person is already running' }
+
+  const save = (status: WorkEmailStatus, f: { provider?: string | null; address?: string | null; detail?: string | null; source_url?: string | null; checked_at?: number | null }, claimedAt?: number): boolean => {
+    const args = [status, f.provider ?? null, f.address ?? null, (f.detail ?? null)?.slice(0, 300) ?? null, f.source_url ?? null, f.checked_at ?? null, now]
+    if (claimedAt === undefined) return db.prepare(`INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, detail, source_url, checked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (tenant_id, lead_id, target) DO UPDATE SET status = excluded.status, provider = excluded.provider, address = excluded.address, detail = excluded.detail, source_url = excluded.source_url, checked_at = excluded.checked_at, updated_at = excluded.updated_at
+      WHERE work_email_lookups.status NOT IN ('verified','published','unverified','not_found','not_us','rejected','pending')`).run(tenantId, lead.id, target, ...args).changes === 1
+    return db.prepare(`UPDATE work_email_lookups SET status = ?, provider = ?, address = ?, detail = ?, source_url = ?, checked_at = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND status = 'pending' AND updated_at = ?`)
+      .run(...args, tenantId, lead.id, target, claimedAt).changes === 1
+  }
+  const done = (replayed = false): FindWorkEmailResult => { const r = read()!; return { status: r.status, row: r, replayed } }
+
+  // 1. Free: the person's own address printed on the confirmed site.
+  const pub = publishedCandidateFor(db, tenantId, lead.id, person.name)
+  if (pub && sameSite(domainOf(pub.address), site.site)) {
+    save('published', { provider: 'site', address: pub.address.toLowerCase(), source_url: pub.url.slice(0, 500), detail: 'printed on the company website' })
+    return done()
+  }
+
+  // 2-3. The tenant's own keys. A key that cannot be read is a recorded failure for that provider, never a silent skip.
+  const notes: string[] = []
+  const loadKey = (c: string, P: string): string | null => { try { return getEnabledCredential(db, tenantId, c, deps.master) } catch { notes.push(`${P} key could not be read`); return null } }
+  const keys: Record<CreditProvider, string | null> = { apollo: loadKey('enrich:apollo', 'Apollo'), pdl: loadKey('enrich:pdl', 'People Data Labs') }
+  let pdlOff = false
+  if (keys.apollo && keys.pdl && !enrichFallbackEnabled(db, tenantId)) { keys.pdl = null; pdlOff = true } // paid fallback needs the #382 opt-in
+  if (!keys.apollo && !keys.pdl) {
+    if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
+    return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
+  }
+  const foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
+  if (foreign.length) { save('not_us', { detail: `this play's area names ${foreign.join(', ')}; outside the US only published addresses are used, so no paid lookup ran` }); return done() }
+
+  // Durable claim BEFORE any paid call: a fresh row, or a retry of a failed/uncertain/stale one. Losing the race = busy.
+  const claimed = db.prepare(`INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, updated_at) VALUES (?, ?, ?, 'pending', ?)
+    ON CONFLICT (tenant_id, lead_id, target) DO UPDATE SET status = 'pending', provider = NULL, address = NULL, detail = NULL, source_url = NULL, checked_at = NULL, updated_at = excluded.updated_at
+    WHERE work_email_lookups.status IN ('error','uncertain') OR (work_email_lookups.status = 'pending' AND work_email_lookups.updated_at < ?)`).run(tenantId, lead.id, target, now, now - PENDING_STALE_S).changes === 1
+  if (!claimed) { const r = read(); return r && isFinal(r.status) ? { status: r.status, row: r, replayed: true } : { status: 'busy', detail: 'a lookup for this person is already running' } }
+
+  const fetchImpl = deps.fetchImpl ?? fetch
+  let best: Extract<Verdict, { kind: 'verified' | 'unverified' }> & { provider: CreditProvider } | null = null
+  const seen = new Set<Verdict['kind']>()
+  let answered = false
+  try {
+    for (const prov of ['apollo', 'pdl'] as CreditProvider[]) {
+      const key = keys[prov]; if (!key) continue
+      const P = prov === 'apollo' ? 'Apollo' : 'People Data Labs'
+      const log = (status: string, results = 0) => { try { audit(db, { tenantId, connector: WORK_EMAIL_CONNECTOR[prov], jobId: null, lookup: `work email: lead ${lead.id}`, status: status.slice(0, 200), results }) } catch (e) { console.error('[work-email] audit not saved:', e instanceof Error ? e.message.slice(0, 120) : 'error') } }
+      let hold: CreditHold
+      try { hold = await reserveCredits(db, tenantId, prov, 1, { env: deps.env, now }) }
+      catch (e) { const t = e instanceof CreditRefused && e.reason === 'credit_cap' ? `${P} credit limit reached (Settings > Enrichment)` : `${P} credit reservation could not be saved`; notes.push(t); log(e instanceof CreditRefused && e.reason === 'credit_cap' ? 'credit_cap' : 'credit_unsaved'); continue }
+      let v: Verdict
+      try {
+        if (prov === 'apollo') {
+          const m = await apolloPersonMatch(key, { first: want.first, last: want.last, domain: site.site, organization: lead.company }, fetchImpl)
+          await settle(db, hold, 1) // Apollo answered: counted as charged (an over-count, never an under-count)
+          v = judgeMatch('apollo', m, want, site.site, icpText)
+        } else {
+          const r = await pdlPersonEnrich(key, { first: want.first, last: want.last, domain: site.site }, fetchImpl)
+          await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
+          v = judgeMatch('pdl', r.match, want, site.site, icpText)
+        }
+      } catch (e) { notes.push(failText(e, P)); log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
+      answered = true
+      seen.add(v.kind); notes.push(v.note); log(v.kind, v.kind === 'verified' || v.kind === 'unverified' ? 1 : 0)
+      if (v.kind === 'verified' || v.kind === 'unverified') { best = { ...v, provider: prov }; break } // a kept address: no further spend
+    }
+  } catch (e) {
+    save('uncertain', { detail: `lookup stopped: ${e instanceof Error ? e.message.slice(0, 120) : 'error'}` }, now)
+    return done()
+  }
+  if (!best && pdlOff) notes.push('People Data Labs fallback is off (turn it on in Settings > Enrichment)')
+  const detail = notes.join('; ')
+  if (best) save(best.kind, { provider: best.provider, address: best.address, detail, checked_at: best.kind === 'verified' ? now : null, source_url: null }, now)
+  else if (seen.has('not_us')) save('not_us', { detail }, now)
+  else if (seen.has('rejected')) save('rejected', { detail }, now)
+  else if (!answered) save('error', { detail }, now)
+  else save('not_found', { detail }, now)
+  return done()
+}
+
+async function settle(db: Database.Database, h: CreditHold, charged: number): Promise<void> {
+  try { await settleCredits(db, h, charged) } catch (e) { console.error('[work-email] credit settle not saved (reservation kept):', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+}
