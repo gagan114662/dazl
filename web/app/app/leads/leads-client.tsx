@@ -505,6 +505,8 @@ export default function LeadsClient() {
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer, reviewed }); return }
       if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === priorIcp }); return }
+      // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
+      if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -906,7 +908,7 @@ export default function LeadsClient() {
           {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}
         </details>
       </>)}
-      {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+      {error && <p role="alert" className="text-red-300 text-sm mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2">{error}</p>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />
