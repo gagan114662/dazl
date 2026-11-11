@@ -1,0 +1,19 @@
+# Deploys main's prebuilt build to staging when main changes (ops/staging/pull-prebuilt.sh; the build itself runs on a
+# GitHub runner, .github/workflows/staging-prebuilt.yml). Started by dazl-staging-prebuilt.timer. Replaces
+# dazl-staging-deploy.timer, which built on the box: keep that timer disabled.
+# Set PROD_ENV_FILE (or PROD_DB_PATH) as for dazl-staging-deploy.service: deploy.sh refuses to run without it.
+[Unit]
+Description=dazl staging: deploy main's prebuilt build
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PROD_ENV_FILE=/CHANGE-ME/path/to/production/env
+Environment=MIN_FREE_BYTES=2147483648
+# The installed deploy script. A box still on the layout from before #908 sets /srv/dazl-staging/deploy.sh here.
+Environment=STAGING_DEPLOY_SH=/usr/local/lib/dazl-staging/deploy.sh
+# Installed root-owned beside deploy.sh (docs/STAGING.md), never in the service account's home.
+ExecStart=/usr/local/lib/dazl-staging/pull-prebuilt.sh
+Nice=10
+TimeoutStartSec=40min
