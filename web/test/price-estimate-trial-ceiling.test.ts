@@ -33,3 +33,31 @@ test('the ceiling changes what the person confirms: the confirmation id differs 
   assert.notEqual(trial({ trialReserveUsd: 0.3 }).ack, trial().ack)
   assert.notEqual(trial({ trialReserveUsd: 0.3 }).ack, trial({ trialReserveUsd: 0.4 }).ack)
 })
+
+// Hermes-PC review of 5fd138c1: the trial ceiling must hold when another dollar limit exists, and the assumptions must not contradict the screen.
+test('trial reserve tighter than the run\'s own max_usd: the screen names the TRIAL limit, with the warning', () => {
+  const e = trial({ trialReserveUsd: 0.3, budget: { max_usd: 5 } })
+  assert.doesNotMatch(e.verdict.message, /fits the \$5\.00 left/)
+  assert.match(e.verdict.message, /free trial stops each scan at \$0\.30/)
+  assert.match(e.verdict.warning ?? '', /above the trial's \$0\.30 limit per scan/)
+  assert.equal(e.verdict.ok, true)
+})
+test('owner cap tighter than the trial reserve: the owner cap stays the ceiling named', () => {
+  const e = trial({ trialReserveUsd: 5, ownerCapUsd: 0.4 })
+  assert.doesNotMatch(e.verdict.message, /free trial stops/)
+  assert.match(e.verdict.message + (e.verdict.warning ?? ''), /\$0\.40/)
+})
+test('trial reserve with ownerCapUsd 2: trial limit is the tighter and is named', () => {
+  const e = trial({ trialReserveUsd: 0.3, ownerCapUsd: 2 })
+  assert.match(e.verdict.message, /free trial stops each scan at \$0\.30/)
+})
+test('the confirmation id changes with the reserve in every branch, including when max_usd is set', () => {
+  assert.notEqual(trial({ trialReserveUsd: 0.3, budget: { max_usd: 5 } }).ack, trial({ trialReserveUsd: 0.4, budget: { max_usd: 5 } }).ack)
+  assert.notEqual(trial({ trialReserveUsd: 0.3, budget: { max_usd: 5 } }).ack, trial({ budget: { max_usd: 5 } }).ack)
+})
+test('the assumptions agree with the screen: they name the trial\'s per-scan limit, and keep the old line otherwise', () => {
+  const a = trial({ trialReserveUsd: 0.3 }).assumptions.join(' ')
+  assert.match(a, /free trial's \$0\.30 limit per scan stop a run/)
+  assert.doesNotMatch(a, /Only the dollar limit \(when set\) stops a run/)
+  assert.match(trial().assumptions.join(' '), /Only the dollar limit \(when set\) stops a run/)
+})
