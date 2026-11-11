@@ -25,6 +25,9 @@ export const JOBS: JobEntry[] = [
   { id: 'tick:watches', worker: 'runDueWatches', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:monitors_enqueue', worker: 'runDueMonitors', isolation: { covered: 'job-isolation.test.ts' } },
   { id: 'tick:monitors_collect', worker: 'collectMonitorResults', isolation: { covered: 'job-isolation.test.ts' } },
+  // #1042: a new account's first play gets its weekly repeat; each finished run of a live weekly play mails its own account
+  { id: 'tick:first_play_repeat', worker: 'repeatFirstPlays', isolation: { covered: 'play-repeat-1042.test.ts' } },
+  { id: 'tick:play_run_mail', worker: 'sendPlayRunMails', isolation: { covered: 'play-repeat-1042.test.ts' } },
   // Queue-enqueued kinds (any enqueue( outside lib/queue internals): one entry per kind literal.
   { id: 'queue:scan', worker: 'runJob', isolation: { covered: 'runner.test.ts' } },
   // Global maintenance: no tenant id is taken; the deletion scope is the risk, so the reason and test are required.

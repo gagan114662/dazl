@@ -31,6 +31,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/outreach/route.ts': 0,
   'app/api/outreach/sequences/route.ts': 1,
   'app/api/outreach/settings/route.ts': 0,
+  'app/api/plays/[kind]/[id]/run/route.ts': 0,
   'app/api/replies/[id]/route.ts': 0,
   'app/api/replies/route.ts': 0,
   'app/api/scan/commenters/[batch]/route.ts': 0,

@@ -104,6 +104,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'monitors/[id]', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'monitors', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'plays/[kind]/[id]/runs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
+  { path: 'plays/[kind]/[id]/new', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
+  { path: 'plays/[kind]/[id]/run', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'preview/[token]/google', method: 'GET', auth: 'public', note: 'continue-with-Google for a preview claim: a validated, live one-time claim token gates the handoff; foreign, expired or unknown tokens redirect, never reach Google, and no input URL is redirected to' },
   { path: 'preview/claim', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'preview/claim', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/preview-claim-route-runtime.mts' }, role: 'read' },
