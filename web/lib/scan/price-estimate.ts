@@ -60,6 +60,9 @@ export interface EstimateInput {
   // An earlier paid call of this owner was never accounted (its pending-settlement marker is stale or marked failed,
   // lib/llm/spend-pool.ts): the pool refuses every reservation until an operator clears it, so the run cannot start.
   poolUnsettled?: boolean
+  // A free-trial scan's own per-scan ceiling (DAZL_TRIAL_SCAN_RESERVE_USD: the job guard's limit, runner.ts). Only a trial payer with a positive
+  // finite number uses it; anything else is ignored, never an invented ceiling.
+  trialReserveUsd?: number | null
   env?: Record<string, string | undefined>
 }
 
@@ -147,6 +150,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       change.push('Narrow the request so fewer candidates need extracting and grading.')
     } else if (cappedTotal.max > remaining) warning = `The worst case (${money(cappedTotal.max)}) is above the ${money(remaining)} left, so the run may stop early as a budget stop. That is a stop, not zero results.`
     else message = `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
+  } else if (i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0) {
+    // The trial's per-scan ceiling is real: every model call is reserved against it and refused past it.
+    message = `The free trial stops each scan at ${money(i.trialReserveUsd)}, whatever the estimate shows. A scan that would pass that stops early as a budget stop, which is not "nothing found".`
+    if (total.max > i.trialReserveUsd) warning = `The worst case (${money(total.max)}) is above the trial's ${money(i.trialReserveUsd)} limit per scan, so the scan may stop early as a budget stop. That is a stop, not zero results.`
   } else message = 'No dollar limit is set, so nothing here is a ceiling. Set one to make the run stop at an amount.'
   // A run under a spending limit only reserves for a model the limit's guard can price (limitReservable); any other model is
   // refused at its first call (model_unpriced). Say so BEFORE launch, and put that verdict inside the confirmation (ack) below.
