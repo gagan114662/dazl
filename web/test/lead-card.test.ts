@@ -106,3 +106,10 @@ test('a legacy lead with a confidence but no stored excerpt is not approvable (s
   assert.equal(a.ok, false)
   assert.match(a.ok ? '' : a.reason, /Not verified/)
 })
+
+test('#1037: contactNoPerson never carries a person the card synthesized (Leads shows it when leadPerson rejects that person)', () => {
+  const l = { ...base, contact: null, enrichments: [{ kind: 'contact', value: 'Sam Roe', label: 'x', source_url: 'https://www.news.example/bright', confidence: null, connector: 'x' }] } as unknown as CardLead
+  const s = leadCardSummary(l)
+  assert.doesNotMatch(s.contactNoPerson ?? '', /Sam Roe/)
+  assert.equal(leadCardSummary(base).contactNoPerson, 'hello@brightdental.example')
+})
