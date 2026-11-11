@@ -7,11 +7,14 @@ import { normalizeIcp } from '@/lib/scan/icp'
 import { createWatch, listWatches, watchAction } from '@/lib/watch'
 import { normalizeScanBudget } from '@/lib/scan/run-budget'
 import { denied } from '@/lib/workspace-access'
+import { systemMailAvailable } from '@/lib/system-mail'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  return NextResponse.json({ watches: await listWatches(await getDb(), user.tenantId) })
+  // emails: whether this host can send the new-leads email after a run (#1042, lib/play-mail.ts), so the Plays page
+  // never promises an email the host cannot send
+  return NextResponse.json({ watches: await listWatches(await getDb(), user.tenantId), emails: systemMailAvailable() })
 }
 
 export async function POST(req: NextRequest) {
