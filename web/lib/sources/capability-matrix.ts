@@ -22,6 +22,7 @@ export interface Capability {
   dateProof: 'published_date' | 'structured_posting_date' | 'registry_filing_date' | 'none'
   access: Access
   worker?: AdvPlatform                    // needs this connected worker platform
+  credentialEnv?: string                  // needs this per-deployment credential (env var name); absent = unavailable, never a zero
   license: string                         // terms it is used under
   failureReporting: string                // how a failure shows in the run report
   evidence: { liveSourceToLead: boolean; negativeFixtures: boolean; incrementalYield: number | null }   // measured; null = not measured
@@ -32,8 +33,8 @@ const reported = 'AdapterRun status ok|empty|error|timeout|partial in the run re
 // Evaluated for #388 (Nov 2026). Free / public sources only, robots and access controls respected: a source whose cited page cannot be re-read by the verifier
 // would only produce held leads, and reading around a block is not allowed.
 const BLOCKERS: Record<string, string> = {
-  'registry-funding-regional': 'Norway is built (brreg). France annuaire-entreprises pages sit behind a bot wall (Incapsula); Finland YTJ pages render only with JavaScript; UK Companies House needs a per-deployment API key (a credential connector, not built). No paid provider.',
-  'local-openings-permits': 'Norway new establishments are built (brreg new_location). City licence / permit open data (e.g. Chicago business licences on Socrata) has no public per-record page to cite and re-read.',
+  'registry-funding-regional': 'Norway is built (brreg). France annuaire-entreprises pages sit behind a bot wall (Incapsula); Finland YTJ pages render only with JavaScript; UK Companies House is built as companies-house (new_company only: it is the UK opening signal, needs a per-deployment API key). No paid provider.',
+  'local-openings-permits': 'GB is covered by companies-house (new incorporation as the opening signal, owner decision on #764) and NO by brreg new_location. For US / CA / AU, city licence / permit open data (e.g. Chicago business licences on Socrata) has no public per-record page to cite and re-read.',
   'procurement-rfp': 'UK Find a Tender and Contracts Finder OCDS APIs are open, but their notice pages answer 403 to automated readers; CanadaBuys robots.txt disallows its notice pages; TED search is POST-only and its notice pages need JavaScript.',
   'leadership-changes': 'Register officer data gives current roles, not dated changes; a dated change needs history diffing that is not built.',
   'authorized-engagement': 'Needs a consented worker per platform; only the existing social workers exist.',
@@ -73,11 +74,12 @@ export const MATRIX: Capability[] = [
   { id: 'sec-form-d', label: 'SEC Form D (US funding)', status: 'shipped', signals: ['funding'], markets: ['US'], languages: ['en'], refresh: 'daily filings', identityProof: 'domain_or_registry_id', dateProof: 'registry_filing_date', access: 'official_registry', license: 'SEC EDGAR fair-access policy', failureReporting: reported, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   { id: 'brreg', label: 'Norway business register (Enhetsregisteret): new businesses and new locations', status: 'shipped', signals: ['new_company', 'new_location'], markets: ['NO'], languages: ['nb', 'nn'], refresh: 'register updated daily; read per scan, last 60 days', identityProof: 'domain_or_registry_id', dateProof: 'registry_filing_date', access: 'official_registry', license: 'NLOD 2.0 open data (data.brreg.no, no key); each lead cites the entity own API record, which states the registration date', failureReporting: `${reported}; a request outside its markets or industries is skipped_out_of_coverage, never empty`, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   { id: 'careers', label: 'First-party careers pages: open sales / GTM roles on a company\'s own site', status: 'shipped', signals: ['hiring_signal'], markets: ['*'], languages: ['en'], refresh: 'per scan (live read of the company\'s own careers page and job page)', identityProof: 'page_host', dateProof: 'none', access: 'public_pages', license: 'the company\'s own public pages, https only, robots.txt obeyed (a disallow or unreachable robots.txt is never read around); sites are only those the scan was given (listed company sites / companies with a domain), never guessed', failureReporting: `${reported}; a request with no sales role or no company site is skipped_out_of_coverage, never empty; an unreachable robots.txt / page / posting is partial, never "no vacancy"`, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
+  { id: 'companies-house', label: 'UK Companies House: newly incorporated companies (local opening signal)', status: 'shipped', signals: ['new_company'], markets: ['GB'], languages: ['en'], refresh: 'register updated daily; read per scan, last 30 days (newest first, one page of up to 100 matches)', identityProof: 'domain_or_registry_id', dateProof: 'registry_filing_date', access: 'official_registry', credentialEnv: 'COMPANIES_HOUSE_API_KEY', license: 'Companies House API terms with the deployment\'s own free API key; Open Government Licence data; company pages on find-and-update.company-information.service.gov.uk (no robots.txt)', failureReporting: `${reported}; no key = credential_missing (unavailable, never empty); a request outside its markets or industries is skipped_out_of_coverage, never empty; a page that does not show the company, Active status and the same incorporation date is page_mismatch`, evidence: { liveSourceToLead: false, negativeFixtures: true, incrementalYield: null } },
   ...workerEntries(),
   // Not built. Listed so the gap is visible, and so nothing can advertise them: each needs an authorized source, identity/date proof and a measured yield first.
   ...[
     ['registry-funding-regional', 'Regional company / funding registries', ['funding', 'new_company'], ['GB', 'DE', 'FR', 'SG', 'IN', 'BR'], 'official_registry', 'registry_filing_date'],
-    ['local-openings-permits', 'Local openings and permits', ['expansion', 'new_location'], ['US', 'GB', 'CA', 'AU'], 'official_registry', 'registry_filing_date'],
+    ['local-openings-permits', 'Local openings and permits', ['expansion', 'new_location'], ['US', 'CA', 'AU'], 'official_registry', 'registry_filing_date'],
     ['procurement-rfp', 'Procurement / RFP portals', ['rfp', 'procurement'], ['US', 'GB', 'EU'], 'official_registry', 'published_date'],
     ['leadership-changes', 'Leadership changes', ['leadership_change'], ['*'], 'public_pages', 'published_date'],
     ['authorized-engagement', 'Authorized topic / competitor engagement', ['engagement'], ['*'], 'authorized_worker', 'published_date'],
@@ -87,8 +89,9 @@ export const byId = (id: string) => MATRIX.find(c => c.id === id)
 
 export type Availability = 'available' | 'unavailable' | 'not_built'
 // unavailable = built but its worker/credential is not connected: reported as unavailable, never as "no opportunities".
-export function availability(c: Capability, connected: { workers: ReadonlySet<string> }): Availability {
+export function availability(c: Capability, connected: { workers: ReadonlySet<string>; credentials?: ReadonlySet<string> }): Availability {
   if (c.status === 'planned') return 'not_built'
+  if (c.credentialEnv && !connected.credentials?.has(c.credentialEnv)) return 'unavailable'
   return c.worker && !connected.workers.has(c.worker) ? 'unavailable' : 'available'
 }
 // Verified = the advertisement is backed: built, live source-to-lead evidence AND negative fixtures. Anything less must not be advertised as a working signal/market.
@@ -103,7 +106,7 @@ export function coverage(): { signals: Map<string, string[]>; markets: Map<strin
 // What the run report says about one source for a scan: never "0" for something that did not run.
 export function sourceStatusLine(c: Capability, a: Availability, run?: { status: string; evidence: number | null }): string {
   if (a === 'not_built') return `${c.label}: not built yet - no coverage claimed`
-  if (a === 'unavailable') return `${c.label}: unavailable (worker not connected) - this is not "no opportunities"`
+  if (a === 'unavailable') return `${c.label}: unavailable (worker or credential not connected) - this is not "no opportunities"`
   if (!run) return `${c.label}: not selected for this scan`
   return run.status === 'ok' || run.status === 'empty' ? `${c.label}: ${run.status}, ${run.evidence ?? 0} items` : `${c.label}: ${run.status} - treat as a failure to read, not as an empty market`
 }

@@ -7,12 +7,13 @@ import { v2exAdapter } from './v2ex.ts'
 import { youtubeAdapter } from './youtube.ts'
 import { brregAdapter } from './brreg.ts'
 import { careersAdapter } from './careers.ts'
+import { companiesHouseAdapter } from './companies-house.ts'
 import { safeGet } from './http.ts'
 import { isAdvPlatform } from '../advanced/config.ts'
 import { compoundHalves, halvesBlock } from '../scan/halves.ts'
 import { flatProfile } from '../scan/icp.ts'
 
-export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter, brreg: brregAdapter, careers: careersAdapter }
+export const ADAPTERS: Record<string, SourceAdapter> = { rss: rssAdapter, github: githubAdapter, web: jinaAdapter, v2ex: v2exAdapter, youtube: youtubeAdapter, jobboards: jobBoardsAdapter, brreg: brregAdapter, careers: careersAdapter, 'companies-house': companiesHouseAdapter }
 export const isAdapterId = (v: unknown): v is string => typeof v === 'string' && Object.hasOwn(ADAPTERS, v)
 
 export interface SourceSelection { adapters: string[]; feeds: string[]; pages?: string[]; advanced?: string[] }
