@@ -29,11 +29,14 @@ import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
 import { migrateEvents } from '../../lib/events/store.ts'
 import { migrateSeo } from '../../lib/seo/audit.ts'
 import { migrateWarm } from '../../lib/warm/connections.ts'
+import { migratePlatform } from '../../lib/db/platform-tables.ts'
 import { PATCH as outreachPATCH, POST as outreachPOST } from '../../app/api/outreach/[id]/route.ts'
 import { POST as reopenPOST } from '../../app/api/outreach/reopen/route.ts'
 import { DELETE as confirmDELETE } from '../../app/api/leads/[lead]/confirm/route.ts'
 import { GET as monitorGET, PATCH as monitorPATCH, DELETE as monitorDELETE } from '../../app/api/monitors/[id]/route.ts'
 import { GET as playRunsGET } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
+import { GET as playNewGET } from '../../app/api/plays/[kind]/[id]/new/route.ts'
+import { POST as playRunPOST } from '../../app/api/plays/[kind]/[id]/run/route.ts'
 import { POST as cancelPOST } from '../../app/api/scan/cancel/route.ts'
 
 // Local synthetic fixture: two tenants, the real route handlers, session identity switched per call.
@@ -55,7 +58,7 @@ function snapshot(db: Database.Database): string {
 async function build() {
   const db = new Database(':memory:')
   // Same migration set and order as the production getScanDb.
-  for (const m of [migrateScan, migrateSourceReview, migrateWatch, migrateKeys, migratePlans, migrateConnectors, migrateAdvanced, migrateBilling, migrateOutreach, migrateAutopilot, migrateLedger, migrateReplies, migrateThreadReplies, migrateSequences, migrateTrial, migrateCompetitors, migrateEvents, migrateWarm, migrateSeo, migrateMonitors, migrateCsv, migrateCommenterImport, migrateMemory, migrateReopen]) m(db)
+  for (const m of [migrateScan, migrateSourceReview, migrateWatch, migrateKeys, migratePlans, migrateConnectors, migrateAdvanced, migrateBilling, migrateOutreach, migrateAutopilot, migrateLedger, migrateReplies, migrateThreadReplies, migrateSequences, migrateTrial, migrateCompetitors, migrateEvents, migrateWarm, migrateSeo, migrateMonitors, migrateCsv, migrateCommenterImport, migrateMemory, migrateReopen, migratePlatform]) m(db) // migratePlatform: the shared rate_limits table (#1042's run route fails closed without it)
   setScanDb(db)
   const now = Math.floor(Date.now() / 1000)
   const job = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'test', location: 'test' })
@@ -115,6 +118,10 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('DELETE /api/monitors/[id]', () => monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon })), 404, undefined)
   await hit('GET /api/plays/[kind]/[id]/runs', () => playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #351
   await hit('GET /api/plays/[kind]/[id]/runs (watch)', () => playRunsGET(req(`/api/plays/watch/${watch}/runs`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #351
+  await hit('GET /api/plays/[kind]/[id]/new', () => playNewGET(req(`/api/plays/monitor/${mon}/new?since=0`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #1042
+  await hit('GET /api/plays/[kind]/[id]/new (watch)', () => playNewGET(req(`/api/plays/watch/${watch}/new?since=0`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #1042
+  await hit('POST /api/plays/[kind]/[id]/run', () => playRunPOST(req(`/api/plays/monitor/${mon}/run`, 'POST', {}), ctx({ kind: 'monitor', id: mon })), 404, 'not_found') // #1042
+  await hit('POST /api/plays/[kind]/[id]/run (watch)', () => playRunPOST(req(`/api/plays/watch/${watch}/run`, 'POST', {}), ctx({ kind: 'watch', id: watch })), 404, 'not_found') // #1042
   await hit('POST /api/scan/cancel', () => cancelPOST(req('/api/scan/cancel', 'POST', { job_id: pending })), 404, undefined)
   assert.equal(snapshot(db), before)
   // Positive controls for the two negative-only actions run on their own valid fixtures before the final checks below.
@@ -142,6 +149,14 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal(runsA.status, 200) // #351: A reads its own play's runs, its recorded run included
   const bodyA = await runsA.json() as { runs: { job_id: string }[]; more: boolean }
   assert.deepEqual([bodyA.runs.map(r => r.job_id), bodyA.more], [[job], false])
+  // #1042: A reads its own play's "new since" list; A's Find leads now without its own key is refused and writes nothing
+  const newA = await playNewGET(req(`/api/plays/monitor/${mon}/new?since=0`, 'GET'), ctx({ kind: 'monitor', id: mon }))
+  assert.equal(newA.status, 200)
+  assert.deepEqual(await newA.json(), { since: 0, total: 0, latest_at: null, items: [] })
+  const beforeRun = snapshot(db)
+  const runA = await playRunPOST(req(`/api/plays/monitor/${mon}/run`, 'POST', {}), ctx({ kind: 'monitor', id: mon }))
+  assert.deepEqual([runA.status, (await runA.json() as { error: string }).error], [400, 'no_api_key'])
+  assert.equal(snapshot(db), beforeRun, 'a refused Find leads now writes nothing')
   // #351: a viewer member of workspace A (a different person from the owner) reads the workspace's play runs too
   setUser({ ...A, actorId: 'M', role: 'viewer' })
   const runsM = await playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon }))

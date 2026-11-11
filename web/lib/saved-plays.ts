@@ -43,9 +43,16 @@ export function scheduleOf(hours: number): string {
 export function dayOf(t: number, timeZone?: string): string {
   return new Date(t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone })
 }
+// #1042: when a play last ran and runs next, to the minute ("2 Nov 2026, 15:00"), so "runs every day" is checkable.
+export function whenOf(t: number, timeZone?: string): string {
+  return new Date(t * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone })
+}
 
-export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | null, timeZone?: string): SavedPlay[] {
-  const day = (t: number) => dayOf(t, timeZone)
+// `now` (unix seconds) only decides whether a live play's next run is already due: the scheduler runs it on its next
+// check, so the page says so rather than showing a time in the past.
+export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | null, timeZone?: string, now = Math.floor(Date.now() / 1000)): SavedPlay[] {
+  const when = (t: number) => whenOf(t, timeZone)
+  const next = (t: number) => t <= now ? 'Due now: runs on the next scheduled check' : whenOf(t, timeZone)
   const out: SavedPlay[] = []
   for (const w of watches ?? []) {
     const icp = asIcp(w.icp)
@@ -57,9 +64,9 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
     out.push({
       id: w.id, kind: 'watch', name: playName(w.query, icp), sentence: w.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: 'Weekly',
-      lastRun: w.last_run_at ? `${day(w.last_run_at)}${w.last_status === 'done' ? `, ${w.new_leads} new` : ''}` : 'Not run yet',
+      lastRun: w.last_run_at ? `${when(w.last_run_at)}${w.last_status === 'done' ? `, ${w.new_leads} new` : ''}` : 'Not run yet',
       lastHref: w.last_job_id ? `/app/leads?job_id=${w.last_job_id}` : null,
-      nextRun: w.active && w.next_run_at ? day(w.next_run_at) : 'Paused: resume to schedule it',
+      nextRun: w.active && w.next_run_at ? next(w.next_run_at) : 'Paused: resume to schedule it',
       status, active: w.active,
     })
   }
@@ -68,9 +75,9 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
     out.push({
       id: m.id, kind: 'monitor', name: playName(m.query, icp), sentence: m.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf(m.interval_hours),
-      lastRun: m.last_run_at ? `${day(m.last_run_at)}${m.last_new_count != null ? `, ${m.last_new_count} new` : ''}` : 'Not run yet',
+      lastRun: m.last_run_at ? `${when(m.last_run_at)}${m.last_new_count != null ? `, ${m.last_new_count} new` : ''}` : 'Not run yet',
       lastHref: m.last_job_id ? `/app/leads?job_id=${m.last_job_id}` : null,
-      nextRun: on && m.next_run_at ? day(m.next_run_at) : 'Paused: resume to schedule it',
+      nextRun: on && m.next_run_at ? next(m.next_run_at) : 'Paused: resume to schedule it',
       status: on ? { tone: 'live', label: 'Live' } : { tone: 'paused', label: (m.paused_reason && PAUSED[m.paused_reason]) || 'Paused' },
       active: on,
     })
