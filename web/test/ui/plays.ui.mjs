@@ -12,7 +12,10 @@
 //   6. no horizontal scroll at 390px;
 //   8. (#1042) each play says how many new leads it found since this browser last checked, lists them (each opening
 //      its run in Leads), "Mark as seen" clears the count across a reload; "Find leads now" shows on live plays only and
-//      answers in a sentence (started, or what is missing); a failed read is never shown as "nothing new";
+//      answers in a sentence (started, or what is missing); a failed read is never shown as "nothing new"; the first
+//      play's automatic weekly repeat says so, weekly plays say the email follows a run with new leads (a monitor
+//      promises none); after Find leads now the page follows the run with read-only status reads, reloads once it
+//      ended, and stops polling;
 //   7. "Show runs" lists a play's latest runs, newest first, each opening that run's own leads, and says when older
 //      runs exist; a read that fails says so; one hidden before it answers stays hidden; a paused play with none says so.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
