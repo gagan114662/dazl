@@ -129,11 +129,11 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
   WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND COALESCE(r.settled_at, r.created_at + ${READ_GRACE_S}) >= ?)
     OR (r.kind <> 'site_read' AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))))`
-export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; attempts: number | null; spend_reserved_usd: number | null }
+export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null }
 const isRead = (r: LedgerRow) => r.kind === 'site_read'
 // A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported (or its
 // full reserve, for a failed or unreported call). For the day ceiling only, a read that never settled counts as ended
@@ -161,8 +161,13 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // (scan_jobs.spend_reserved_usd, see reservationCost) against the account's dollar total and the day's budget, so the $0.30 / $1 / $10 caps
 // bind exactly as before. The same rule is applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
 // by test/trial-interrupted-attempt.test.ts, and a reaped (dead-worker) scan is settled by lib/billing/trial-reap.ts so it is released too.
-export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed'
-  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')
+// A free scan that STOPPED AT ITS SPENDING LIMIT before it found any company (status done, error trial_budget_reached, candidates recorded as 0)
+// also gives its place back once its run has settled: the person got nothing, and a free scan that cannot find anything is not a used one.
+// Only the attempt COUNT: its recorded spend still counts as money (reservationCost), so the $0.30 / $1 / $10 caps are unchanged. A stop that
+// kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
+const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
+export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
+  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {

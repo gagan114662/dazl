@@ -109,7 +109,7 @@ const trialScan = async (x: Awaited<ReturnType<typeof account>>, o: { status: st
 }
 const both = async (x: Awaited<ReturnType<typeof account>>) => ({
   first: trialStatus(x.raw, x.u.id, '1.1.1.1').used,
-  ledger: ledger(await x.db.all<LedgerRow>("SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id WHERE r.tenant_id = ?", [x.u.id]), x.u.id, DAY).attempts,
+  ledger: ledger(await x.db.all<LedgerRow>("SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id WHERE r.tenant_id = ?", [x.u.id]), x.u.id, DAY).attempts,
 })
 test('the first check (trial.ts) and admission (ledger) count the same used scans for every ending', async () => {
   await withTrialEnv(async () => {
