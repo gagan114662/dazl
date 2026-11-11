@@ -223,12 +223,28 @@ const fetchFailures: [string, () => Response, string][] = [
 for (const [name, ans, code] of fetchFailures) {
   test(`runner in-attempt stop: the 2nd TinyFish fetch batch ${name} (swallowed by the fetch loop) stops every later paid request; job failed/${code}, never done`, async () => {
     let batch = 0; searchN = 0
-    const x = await run(OWNER, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
+    // A PRICED fetch keeps the fail-closed rule; a free one is covered by tinyfish-free-failure.test.ts (owner-approved 2026-11-11).
+    const x = await run({ ...OWNER, ...(code === 'accounting_uncertain' ? { DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.001' } : {}) }, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
     const fetches = x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai'))
     assert.equal(fetches.length, 2, 'positive control: batch 1 answered and batch 2 was attempted')
     const last = x.paid.map(p => p.url).lastIndexOf(fetches[1]!.url)
     assert.equal(x.paid.slice(last + 1).length, 0, 'zero paid requests of any vendor (model included) after the failed batch')
     assert.deepEqual([x.row.status, x.row.error], ['failed', code])
+  })
+}
+
+// The incident (staging trial-cap test, scan 3): a FREE ($0) TinyFish fetch failed in the 2nd batch and the whole scan died accounting_uncertain.
+// Now one failed page: no maybe-billed or rejected mark, nothing left reserved, and the scan carries on (a model request still follows).
+for (const [name, ans] of [['timeout', () => { throw new TypeError('socket hang up') }], ['503', () => new Response('{}', { status: 503 })]] as [string, () => Response][]) {
+  test(`runner, FREE TinyFish: the 2nd fetch batch ${name} is one failed page, the scan is not killed`, async () => {
+    let batch = 0; searchN = 0
+    const x = await run(OWNER, true, { tfAnswer: answerSearch, tfFetchAnswer: () => (++batch === 1 ? new Response(JSON.stringify({ results: Array.from({ length: 10 }, (_, i) => ({ url: `https://host${i}.example/hf`, title: 'Payroll specialist', text: `Posted ${recent}. ${QUOTE}. Apply now.` })) }), { status: 200 }) : ans()) })
+    const fetches = x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai'))
+    assert.equal(fetches.length, 2, 'positive control: batch 1 answered and batch 2 was attempted')
+    assert.ok(!['accounting_uncertain', 'provider_rejected'].includes(x.row.error ?? ''), `error ${x.row.error}`)
+    assert.equal(x.inOrder.filter(r => r.status === 'reserved').length, 0, 'no row left reserved')
+    const last = x.paid.map(p => p.url).lastIndexOf(fetches[1]!.url)
+    assert.ok(x.paid.slice(last + 1).some(p => p.url === 'https://api.anthropic.com/v1/messages'), 'a model request still ran after the failed free batch')
   })
 }
 
