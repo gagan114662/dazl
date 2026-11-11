@@ -7,7 +7,11 @@ import { readConsent, xViaOperatorIndex } from '../advanced/index.ts'
 import { connectorStatus } from '../connectors/store.ts'
 import type { Db } from '../db/client.ts'
 
-export interface WorkerState { connectors: { connector: string; enabled: boolean }[]; consented: ReadonlySet<AdvPlatform>; flags: AdvFlags; xViaOperatorIndex: boolean }
+export interface WorkerState {
+  connectors: { connector: string; enabled: boolean }[]; consented: ReadonlySet<AdvPlatform>; flags: AdvFlags; xViaOperatorIndex: boolean
+  // env var NAMES (never values) of the per-deployment credentials that are set; absent = none configured, so a key-dependent source reads unavailable (#1035 review)
+  credentials?: ReadonlySet<string>
+}
 export interface CapabilityRow {
   id: string; label: string; status: Capability['status']; availability: Availability; statusLine: string
   signals: string[]; markets: string[]; languages: string[]; refresh: string; identityProof: Capability['identityProof']; dateProof: Capability['dateProof']
@@ -26,8 +30,18 @@ export function connectedWorkers(w: WorkerState, matrix: Capability[] = MATRIX):
   return out
 }
 
+// Which per-deployment credentials (by env var name) are configured: a name counts only when its value is a non-blank string. Only names leave here.
+export function configuredCredentials(env: Record<string, string | undefined>, matrix: Capability[] = MATRIX): Set<string> {
+  const out = new Set<string>()
+  for (const c of matrix) {
+    const n = c.credentialEnv, v = n ? env[n] : undefined
+    if (n && typeof v === 'string' && v.trim()) out.add(n)
+  }
+  return out
+}
+
 export function capabilityReport(w: WorkerState, matrix: Capability[] = MATRIX): CapabilityRow[] {
-  const connected = { workers: connectedWorkers(w, matrix) }
+  const connected = { workers: connectedWorkers(w, matrix), credentials: w.credentials ?? new Set<string>() }
   return matrix.map(c => {
     const a = availability(c, connected)
     return {
@@ -45,5 +59,5 @@ export async function tenantCapabilities(db: Db, tenantId: string, env: Record<s
   const flags = advFlags(env)
   const consented = new Set<AdvPlatform>()
   for (const p of ADV_PLATFORMS) if (await readConsent(db, tenantId, scopeFor(p))) consented.add(p)
-  return capabilityReport({ connectors: await connectorStatus(db, tenantId), consented, flags, xViaOperatorIndex: xViaOperatorIndex(env) && platformAllowed('x', flags) })
+  return capabilityReport({ connectors: await connectorStatus(db, tenantId), consented, flags, xViaOperatorIndex: xViaOperatorIndex(env) && platformAllowed('x', flags), credentials: configuredCredentials(env) })
 }
