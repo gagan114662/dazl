@@ -3,7 +3,7 @@
 // actionable leads: ONE more bounded round asks a genuinely different query (an unused profile signal, the profile's
 // geography kept), reads only pages round one never saw, and its candidate passes the same verifier. Skips are
 // recorded with their reason, and a query round one already asked is never sent (or billed) again.
-import { test } from 'node:test'
+import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -232,6 +232,11 @@ test('#381 D2 feedback before fetch: a company in feedback memory returned by ro
 })
 
 test('#381 D3 round equivalence: a lead of the same shape persists the same gate-derived fields whether it came through round one or round two', async () => {
+  // #655: retrieved_at is a whole-second read time (Math.floor(Date.now() / 1000)) and is compared exactly below, so two
+  // real-clock scans that straddle a second boundary differed by 1 and failed. Freeze Date only (real timers keep
+  // running) so both rounds read the same second; the clock is restored even if an assertion throws.
+  mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  try {
   const r1 = await scan({ aVerifies: true }) // A verified in round one
   const r2 = await scan() // A refused in round one, B verified in round two
   const cols = (r1.db.prepare("SELECT name FROM pragma_table_info('leads')").all() as { name: string }[]).map(c => c.name)
@@ -258,6 +263,7 @@ test('#381 D3 round equivalence: a lead of the same shape persists the same gate
   const src1 = r1.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:tinyfish'").get() as { status: string; candidate_count: number; verified_count: number }
   const src2 = r2.db.prepare("SELECT status, candidate_count, verified_count FROM scan_source_runs WHERE collector = 'search:adaptive'").get() as { status: string; candidate_count: number; verified_count: number }
   assert.deepEqual(src2, src1, 'the round-two source row records the same shape of stats as round one')
+  } finally { mock.timers.reset() }
 })
 
 test('#381 D3 provenance: round-two TinyFish text URLs reach the end-of-run verify_provenance summary', async () => {
