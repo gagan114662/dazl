@@ -48,9 +48,18 @@ export function partialNote(raw: string): string | null {
   const m = /^partial:(\d+)_of_(\d+)/i.exec(raw)
   return m ? `${m[1]} of ${m[2]} requests failed` : /^partial/i.test(raw) ? 'some of its answer could not be read' : null
 }
+// Key-based web research (search:anthropic / search:openai) is retired (#510): provider.research refuses
+// research_unbounded before any request. The runner still records the step (started, then skipped_hold), but that is
+// not a source this scan could use, so it is never listed as one (#919). Rows that carry a real answer (ok / empty /
+// error / partial, from scans before the retirement) stay, as does a finished scan's unanswered 'started' row (shown
+// as failed, never hidden).
+const RETIRED_RESEARCH = /^search:(?:anthropic|openai)$/
+const neverCalled = (raw: string, running: boolean) => /^skipped/i.test(raw) || (running && /^(?:started|queued|pending)$/i.test(raw))
+export const isRetiredResearchRow = (r: SourceRunRow, running: boolean): boolean =>
+  RETIRED_RESEARCH.test(String(r.collector ?? '')) && neverCalled(String(r.status ?? ''), running)
 export function progressOf(rows: SourceRunRow[], jobStatus: string): SourceProgress[] {
   const running = jobStatus === 'running' || jobStatus === 'pending'
-  return rows.map(r => {
+  return (Array.isArray(rows) ? rows : []).filter(r => r && typeof r === 'object' && !isRetiredResearchRow(r, running)).map(r => {
     const candidates = num(r.candidate_count), accepted = num(r.verified_count), review = num(r.review_count)
     const rejected = candidates !== null && accepted !== null && review !== null ? Math.max(0, candidates - accepted - review) : null
     const raw = String(r.status ?? ''), status = sourceStatusOf(raw, running)
