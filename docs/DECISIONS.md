@@ -3,6 +3,21 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-12: Linking Google confirms the email in the same step (Refs #1095)
+
+Decided by Hermes with authority delegated by the owner (gagan), posted on #1095
+(https://github.com/gagan114662/dazl/issues/1095#issuecomment-6835411531), answering PR #1097's question. A password
+account whose email is not yet confirmed may link a Google identity with exactly the same email, and the link
+confirms the address: Google's ID token is checked with `email_verified` (`verifyIdToken`), which proves control of
+that mailbox just as the confirmation link does and as dazl already trusts to create verified Google accounts
+(`resolveUser`). Why: production sends no system mail yet (#1089), so a new password account could never confirm
+and every first free search dead-ended. Limits, as built (`lib/auth-google.ts linkGoogle`, PR #1097): a fresh session
+of that account, the same email, an identity no other account holds, all in one transaction with the identity
+insert; `mismatch`, `taken` and a stale session never touch `email_verified_at`; the account's other sessions are
+signed out; a link can only start from a dazl page and sign-in/sign-up accept only same-origin JSON (no cross-site
+login). Residual risk: relies on Google's `email_verified` for non-Gmail addresses, as sign-up already does; not
+reviewed by counsel.
+
 ## 2026-11-09: LinkedIn is top priority; the session engagers ship under three rules
 
 Owner decision 2026-11-09 4:59pm via Quest: separate throwaway account, human pace, off by default (Refs #192,
