@@ -1305,11 +1305,17 @@ CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
 
+CREATE INDEX scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL;
+
 CREATE INDEX scan_jobs_insert_seq_idx ON scan_jobs (insert_seq);
 
 CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
+
+CREATE INDEX scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
+
+CREATE INDEX scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
