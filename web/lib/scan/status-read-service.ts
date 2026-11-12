@@ -39,7 +39,8 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // Live per-source progress (pollable while the scan runs) and the one honest outcome: failed (which source) / rejected (counts per reason) / zero-match / yielded N leads.
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)
-  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.read ? saved.reserved_usd ?? 0 : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  // Spend for the "Nothing was charged" claim is BOTH ledgers (max_usd reservation + per-job cap ledger): either can hold the only record of a paid call (xhawk review of #1060).
+  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.read ? (saved.reserved_usd ?? 0) + (saved.cap_reserved_usd ?? 0) : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.

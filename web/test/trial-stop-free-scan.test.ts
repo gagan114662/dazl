@@ -129,13 +129,16 @@ const stopJob = (raw: Database.Database, id: string, spend: number | null) => {
 }
 const ID = 'a'.repeat(24)
 const failing = (real: ReturnType<typeof sqliteDb>, match: RegExp): ReturnType<typeof sqliteDb> => ({ ...real, get: (async (sql: string, p?: unknown[]) => { if (match.test(sql)) throw new Error('db down'); return real.get(sql, p as never) }) as never, all: (async (sql: string, p?: unknown[]) => { if (match.test(sql)) throw new Error('db down'); return real.all(sql, p as never) }) as never }) as never
-const setup = (spend: number | null) => { const raw = new Database(':memory:'); migrateAllSqlite(raw); stopJob(raw, ID, spend); return sqliteDb(raw) }
+const setup = (spend: number | null, cap: number | null = null) => { const raw = new Database(':memory:'); migrateAllSqlite(raw); stopJob(raw, ID, spend); if (cap !== null) raw.prepare('UPDATE scan_jobs SET spend_cap_reserved_usd = ? WHERE id = ?').run(cap, ID); return sqliteDb(raw) }
 
 test('(a) status read: a successful read of an empty or zero column claims it; a recorded spend or a failed read does not', async () => {
   const label = async (db: ReturnType<typeof sqliteDb>) => ((await readScanStatus(db, 'U', ID)) as { outcome: { label: string } }).outcome.label
   assert.match(await label(setup(null)), /Nothing was charged\./, 'column empty, read ok')
   assert.match(await label(setup(0)), /Nothing was charged\./, 'zero, read ok')
   assert.doesNotMatch(await label(setup(0.12)), /charged/, 'spend recorded')
+  assert.doesNotMatch(await label(setup(0, 0.05)), /charged/, 'only the cap ledger recorded a paid call: no claim')
+  assert.doesNotMatch(await label(setup(null, 0.05)), /charged/, 'cap ledger only, reservation column empty: no claim')
+  assert.match(await label(setup(0, 0)), /Nothing was charged\./, 'both ledgers zero')
   assert.doesNotMatch(await label(failing(setup(null), /spend_reserved_usd, spend_cap_reserved_usd/)), /charged/, 'the spend read FAILED: no claim')
 })
 test('(a) history list: an empty or zero column claims it; a recorded spend or a failed read does not (and the list still loads)', async () => {
@@ -143,9 +146,11 @@ test('(a) history list: an empty or zero column claims it; a recorded spend or a
   assert.match(await label(setup(null)), /Nothing was charged\./)
   assert.match(await label(setup(0)), /Nothing was charged\./)
   assert.doesNotMatch(await label(setup(0.12)), /charged/)
-  assert.doesNotMatch(await label(failing(setup(null), /spend_reserved_usd AS s FROM scan_jobs WHERE user_id/)), /charged/, 'the spend read FAILED: no claim, list intact')
+  assert.doesNotMatch(await label(setup(0, 0.05)), /charged/, 'cap ledger positive: no claim')
+  assert.doesNotMatch(await label(failing(setup(null), /spend_cap_reserved_usd, 0\) AS s FROM scan_jobs WHERE user_id/)), /charged/, 'the spend read FAILED: no claim, list intact')
 })
 test('(a) campaign page job: an empty or zero column reads as 0; a recorded spend stays', async () => {
   assert.equal((await campaignDetail(setup(null), 'U', ID))!.job.spend_usd, 0)
   assert.equal((await campaignDetail(setup(0.12), 'U', ID))!.job.spend_usd, 0.12)
+  assert.equal((await campaignDetail(setup(0, 0.05), 'U', ID))!.job.spend_usd, 0.05, 'a spend recorded only in the cap ledger is not shown as 0')
 })

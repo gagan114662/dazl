@@ -13,7 +13,7 @@ export interface CampaignDetail {
 // On the Db layer (SQLite or Postgres). Leads list in insertion order and messages newest first with insertion order
 // breaking same-second ties, as the raw queries did with rowid (insert_seq: lib/db/insertion-order.ts).
 export async function campaignDetail(db: Db, tenantId: string, jobId: string): Promise<CampaignDetail | null> {
-  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, spend_reserved_usd AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
+  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
   const leads = await db.all<CampaignDetail['leads'][number]>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, quarantined_at, quarantine_reason
     FROM leads WHERE scan_job_id = ? ORDER BY insert_seq`, [job.id])
