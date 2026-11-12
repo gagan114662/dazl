@@ -77,5 +77,39 @@ for (const [label, size] of [['1280', { width: 1280, height: 900 }], ['390', { w
   assert.equal(b.calls.filter(c => c === 'POST /api/scan').length, 0, `${label}: still nothing started before the estimate is confirmed`)
   await b.page.close()
 }
+// #917 acceptance 3 (Hermes live check): a fallback profile for a request over 300 characters discloses the cut, with
+// the left-out text, and never says it will use the request's words as they are. The coverage is what
+// POST /api/scan/icp sends (lib/scan/icp.ts fallbackCoverage) for this 388-character request.
+const LONG = 'Find independent bookkeeping firms in Ohio and Indiana with 5 to 500 staff that are hiring a controller or a senior accountant this quarter, '
+  + 'run by the founder, not part of a franchise or a national chain, that use QuickBooks Online, '
+  + 'and that have posted on LinkedIn about closing the monthly books faster; exclude firms that only do payroll or tax preparation for individuals or estates.'
+assert.equal(LONG.length, 388)
+for (const [label, size] of [['1280', { width: 1280, height: 900 }], ['390', { width: 390, height: 844 }]]) {
+  const page = await browser.newPage({ viewport: size })
+  await page.route('**/*', async route => {
+    const u = new URL(route.request().url())
+    if (route.request().resourceType() === 'document') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><div id="root"></div><script src="/bundle.js"></script></body></html>` })
+    if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
+    if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
+    if (u.pathname === '/api/scan/icp') return json(route, { icp: { summary: LONG.slice(0, 300), who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }, inferred: false,
+      coverage: { complete: false, kept_chars: 300, request_chars: 388, dropped: LONG.slice(300) } })
+    if (u.pathname === '/api/scan/jobs') return json(route, { jobs: [] })
+    return json(route, {}, 404)
+  })
+  await page.goto('http://dazl.test/app/leads')
+  await page.locator('#play').fill(LONG)
+  await page.getByRole('button', { name: 'Review profile first' }).click()
+  // found by its words, not a test id: the old page fails on what it says ("…use your words as they are")
+  const note = page.getByText(/dazl could not infer more/); await note.waitFor({ timeout: 10000 })
+  assert.match(await note.innerText(), /Only the first 300 of your 388 characters are in this profile; the last 88 are not\./, `${label}: the cut is disclosed`)
+  assert.doesNotMatch(await note.innerText(), /as they are/, `${label}: never claims every word was kept`)
+  const dropped = page.getByTestId('draft-dropped')
+  assert.ok(await dropped.isVisible(), `${label}: the left-out text is shown`)
+  assert.match(await dropped.innerText(), /exclude firms that only do payroll or tax preparation for individuals or estates/, `${label}: the dropped exclusion is visible`)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${label}: no horizontal scroll`)
+  await dropped.scrollIntoViewIfNeeded()
+  if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `fallback-coverage-${label}.png`), fullPage: false })
+  await page.close()
+}
 await browser.close()
-console.log('OK: a 7-exclusion draft is refused in plain words with the draft kept open and nothing started; 6 exclusions reach the estimate (390 and 1280 px, all calls stubbed)')
+console.log('OK: a 7-exclusion draft is refused in plain words with the draft kept open and nothing started; 6 exclusions reach the estimate; a 388-character fallback discloses what it left out (390 and 1280 px, all calls stubbed)')

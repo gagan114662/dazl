@@ -60,3 +60,21 @@ export function lossyProfileCopy(j: { message?: unknown; loss?: unknown }): stri
   const head = typeof j.message === 'string' && j.message ? j.message : 'Part of this profile would be cut or ignored.'
   return lines.length ? `${head} ${lines.join(' ')}` : head
 }
+
+// #917: the note above a profile preview. A fallback profile (dazl could not infer one) holds only the first part of a
+// long request (fallbackCoverage in lib/scan/icp.ts, sent as `coverage` by POST /api/scan/icp): then it must say so,
+// show what was left out, and never claim the request's words are all used. Client-safe; the coverage is untrusted JSON.
+export type PreviewNote = { text: string; dropped: string | null }
+export function profilePreviewNote(inferred: unknown, coverage: unknown): PreviewNote {
+  if (inferred === true) return { text: 'dazl worked this out from your request. Edit anything that is off, then run the scan.', dropped: null }
+  const c = coverage && typeof coverage === 'object' ? coverage as { complete?: unknown; kept_chars?: unknown; request_chars?: unknown; dropped?: unknown } : null
+  if (c && c.complete === false && typeof c.dropped === 'string' && c.dropped.trim()) {
+    const kept = Number(c.kept_chars), total = Number(c.request_chars)
+    const counts = Number.isFinite(kept) && Number.isFinite(total) && total > kept ? `Only the first ${kept} of your ${total} characters are in this profile; the last ${total - kept} are not. ` : 'Only the first part of your request is in this profile. '
+    return {
+      text: `dazl could not infer more from your request, so this profile uses its first part only. ${counts}Add what was left out below (or shorten the request) before you run the scan.`,
+      dropped: c.dropped.trim(),
+    }
+  }
+  return { text: 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.', dropped: null }
+}

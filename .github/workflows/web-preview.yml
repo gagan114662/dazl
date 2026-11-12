@@ -126,6 +126,13 @@ jobs:
           set -o pipefail
           SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out
           ! grep -q '^NOT RUN' /tmp/fsr.out
+      # #917: a profile the scan would cut is refused in plain words (7th exclusion), and a fallback profile for a request over 300 characters discloses what it left out. Bundled LeadsClient, every call stubbed. It must run, not skip.
+      - name: Lossy profile refusal and fallback coverage (#917)
+        run: |
+          set -o pipefail
+          mkdir -p preview/lossy-profile
+          SHOTS=preview/lossy-profile node test/ui/lossy-profile.ui.mjs | tee /tmp/lp.out
+          ! grep -q '^SKIP' /tmp/lp.out
       # The #409 KeyInline nested-form regression: inside the first-run brain form, 'Save key' (click AND Enter) must run the real llm-key PUT with zero native document POSTs. It must run, not skip.
       - name: KeyInline save inside the brain form (no nested-form capture, click + Enter)
         run: |
