@@ -92,7 +92,7 @@ function modelUses(rel: string, text: string): Use[] {
 // guarded; `a && b` when b is; `c ? x : y`, `a ?? b` and `a || b` only when every value they can produce is guarded or
 // falsy (null/undefined/false/0/''); a variable of this file when every value it ever holds (its initializer and every
 // later `x = ...` / `x ||= ...` etc.) is guarded or falsy, and at least one is guarded; `x.provider` where x comes from
-// a function of this file whose EVERY return that sets `provider` sets it to a guarded value (draft-llm's
+// a function of this file whose EVERY object literal that sets `provider` sets it to a guarded value (draft-llm's
 // pickProvider). Anything else is unguarded.
 function all(root: ts.Node, pick: (n: ts.Node) => boolean): ts.Node[] {
   const out: ts.Node[] = []
@@ -143,8 +143,11 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
       || all(within, n => (ts.isParameter(n) || ts.isBindingElement(n)) && all(n.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
       || all(within, n => ts.isVariableDeclaration(n) && !ts.isIdentifier(n.name) && all(n.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
       || all(within, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === r.text && !n.initializer && (ts.isForOfStatement(n.parent.parent) || ts.isForInStatement(n.parent.parent))).length > 0
-      // `for (prov of xs)` / `for (prov in m)` assigning an existing variable (no declaration)
-      || all(within, n => (ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer) && ts.isIdentifier(strip(n.initializer)) && (strip(n.initializer) as ts.Identifier).text === r.text).length > 0
+      // `for (prov of xs)` / `for ([prov] of xs)` / `for ({ provider } of xs)` assigning an existing variable (no
+      // declaration): any target that names it, directly or inside a destructuring pattern
+      || all(within, n => (ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer) && all(n.initializer, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
+      // `function provider() {}` / `class provider {}` (declaration or named expression): another binding of the name
+      || all(within, n => (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) && n.name?.text === r.text).length > 0
       // `catch (provider)` and `catch ({ provider })`
       || all(within, n => ts.isCatchClause(n) && !!n.variableDeclaration && all(n.variableDeclaration.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
     return decls.length > 0 && !otherWrites && values.every(v => safeExpr(v, sf, within, depth + 1)) && values.some(v => guardedExpr(v, sf, within, depth + 1))
@@ -167,14 +170,19 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     if (all(scope, n => (ts.isParameter(n) || ts.isBindingElement(n) || ts.isCatchClause(n) && !!n.variableDeclaration) && named(ts.isCatchClause(n) ? n.variableDeclaration!.name : (n as ts.ParameterDeclaration | ts.BindingElement).name)).length > 0) return false
     if (all(scope, n => (ts.isForOfStatement(n) || ts.isForInStatement(n)) && named(n.initializer)).length > 0) return false
     if (all(scope, n => (ts.isImportSpecifier(n) || ts.isImportClause(n) || ts.isNamespaceImport(n) || ts.isImportEqualsDeclaration(n)) && n.name?.text === name).length > 0) return false
+    if (all(scope, n => (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) && n.name?.text === name).length > 0) return false
+    // `Object.assign(p, ...)`, `Object.defineProperty(p, ...)`, `Reflect.set(p, ...)` etc. write into the holder
+    const WRITERS = new Set(['assign', 'defineProperty', 'defineProperties', 'setPrototypeOf', 'set'])
+    if (all(scope, n => ts.isCallExpression(n) && n.arguments.length > 0 && rootIs(n.arguments[0]) && (() => { const c = strip(n.expression)
+      return ts.isPropertyAccessExpression(c) && ts.isIdentifier(c.expression) && ['Object', 'Reflect'].includes(c.expression.text) && WRITERS.has(c.name.text) })()).length > 0) return false
     const init = strip(holder[0].initializer!)
     if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return false
     const fnName = init.expression.text
     const fn = all(sf, n => ts.isFunctionDeclaration(n) && n.name?.text === fnName)[0] as ts.FunctionDeclaration | undefined
     if (!fn?.body) return false
-    // every object literal any return builds (also inside `cond ? { provider } : null`) that sets this property
-    const sets = all(fn.body, n => ts.isReturnStatement(n) && !!n.expression)
-      .flatMap(ret => all(ret, n => ts.isObjectLiteralExpression(n)) as ts.ObjectLiteralExpression[])
+    // every object literal anywhere in the function (in a return, `cond ? { provider } : null`, or built first as
+    // `const o = { provider: raw }; return o`) that sets this property
+    const sets = (all(fn.body, n => ts.isObjectLiteralExpression(n)) as ts.ObjectLiteralExpression[])
       .flatMap(o => o.properties)
       .filter(p => p.name && ts.isIdentifier(p.name) && p.name.text === r.name.text)
     return sets.length > 0 && sets.every(p =>
@@ -263,6 +271,16 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     "import { provider } from './raw'\nfunction g() { const provider = ownerGuarded(db, t, raw) }\nawait provider.complete(k, p)",
     'function pickProvider() { const provider = raw && ownerGuarded(db, t, raw); return provider ? { provider, key } : null }\nlet p = pickProvider(); if (!p) p = { provider: raw, key }; await p.provider.complete!(p.key, x)',
     'function pickProvider() { const provider = ownerGuarded(db, t, raw); return { provider, key } }\nconst p = pickProvider(); p.provider = raw; await p.provider.complete!(k, x)',
+    // council round 3: a for-of/for-in destructuring target holding the name (R2), a provider set outside a return (R5),
+    // Object.assign/defineProperty on the holder (R6), a function or class declaration of the same name (R7)
+    'const provider = ownerGuarded(db,t,raw)\nfor ({ provider } of list) await provider.complete(k, p)',
+    'let prov = ownerGuarded(db,t,raw)\nfor ([prov] of [[raw]]) await prov.complete(k, p)',
+    'function pickProvider(){ const provider = ownerGuarded(db,t,raw); return { provider, key } }\nconst p = pickProvider(); for ([p] of [[{ provider: raw }]]) {} await p.provider.complete!(k, x)',
+    'function pickProvider() { const provider = ownerGuarded(db, t, raw); if (x) { const o = { provider: raw, key }; return o } return { provider, key } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
+    'function pickProvider(){ const provider = ownerGuarded(db,t,raw); return { provider, key } }\nconst p = pickProvider(); Object.assign(p, { provider: raw }); await p.provider.complete!(k, x)',
+    "function pickProvider(){ const provider = ownerGuarded(db,t,raw); return { provider, key } }\nconst p = pickProvider(); Object.defineProperty(p, 'provider', { value: raw }); await p.provider.complete!(k, x)",
+    'const provider = ownerGuarded(db,t,raw)\nfunction g(){ function provider() {} return provider.complete(k,p) }',
+    'const provider = ownerGuarded(db,t,raw)\nclass provider {}\nawait provider.complete(k,p)',
   ]
   assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
   // every value these can produce is guarded or falsy
