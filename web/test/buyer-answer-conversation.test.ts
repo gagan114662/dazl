@@ -12,7 +12,7 @@ import { saveSettings, isSuppressed } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, migrateReplies, referencedSendIds, syncReplies } from '../lib/outreach/replies.ts'
-import { accountSendCount, anyUncertainSend } from '../lib/outreach/send-budget.ts'
+import { accountSendCount } from '../lib/outreach/send-budget.ts'
 import { answerInbound, getAnswerPolicy, inboundAuthenticated, migrateBuyerAnswers, setAnswerPolicy, threadDecisions } from '../lib/replies/conversation.ts'
 import type { ProductFacts } from '../lib/replies/buyer-answers.ts'
 
@@ -222,7 +222,7 @@ test('send outcomes: a definite refusal is held, an unknown outcome is uncertain
     const unknown = (async () => { calls++; throw new Error('socket hang up') }) as never
     await sync(db, { [l.thread]: [question('in1')] }, unknown)
     assert.deepEqual(threadDecisions(db, 'A', l.thread).map(x => x.status), ['uncertain'])
-    assert.equal(anyUncertainSend(db, 'A'), true)
+    assert.equal(getState(db, 'A').pause_reason, 'uncertain_send')
     assert.equal(getState(db, 'A').paused, true)
     await sync(db, { [l.thread]: [question('in1')] }, unknown)
     assert.equal(calls, 1) }

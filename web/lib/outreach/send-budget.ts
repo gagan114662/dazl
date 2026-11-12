@@ -18,7 +18,7 @@ export function accountSendCount(db: Database.Database, tenant: string, now: num
   return count
 }
 export function anyUncertainSend(db: Database.Database, tenant: string): boolean {
-  for (const table of ['outreach_messages','followup_messages','sequence_steps','buyer_answer_decisions']) {
+  for (const table of ['outreach_messages','followup_messages','sequence_steps']) {
     if (tableExists(db, table) && db.prepare(`SELECT 1 FROM ${table} WHERE tenant_id = ? AND status = 'uncertain'`).get(tenant)) return true
   }
   // A re-open has no 'uncertain' state: 'approved' is its in-flight claim, and a claim whose outcome was never

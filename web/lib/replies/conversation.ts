@@ -235,8 +235,10 @@ export async function answerInbound(db: Database.Database, tenantId: string, i: 
   } catch (e) {
     // A definite refusal (an HTTP error status, a configuration refusal) sent nothing: held for the owner, never retried.
     if (e instanceof GmailSendError || e instanceof GmailError) return hold(e instanceof GmailSendError ? `gmail_${e.status}` : 'gmail_refused')
-    // Unknown outcome: the mail may have gone. Kept as uncertain (it counts in the thread and the daily cap), never
-    // retried, and the tenant's sending pauses for review, like every other send path.
+    // Unknown outcome: the mail may have gone. Kept as uncertain (it counts in the thread's answers and the daily cap) and
+    // never retried: the decision row stops any second answer to this message. The tenant's automation pauses
+    // (uncertain_send) until they resume it from the Autopilot page. It is deliberately not an account-wide
+    // anyUncertainSend block: that state has no resolve path for an answer, and nothing here can send this answer twice.
     db.prepare("UPDATE buyer_answer_decisions SET status = 'uncertain', updated_at = ? WHERE tenant_id = ? AND gmail_id = ?").run(now, tenantId, messageId)
     auditAt(db, tenantId, 'uncertain', 'buyer answer outcome unknown', i.leadId, i.outreachMessageId, now)
     pause(db, tenantId, 'uncertain_send')
