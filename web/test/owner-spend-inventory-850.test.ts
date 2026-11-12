@@ -92,8 +92,11 @@ function modelUses(rel: string, text: string): Use[] {
 // guarded; `a && b` when b is; `c ? x : y`, `a ?? b` and `a || b` only when every value they can produce is guarded or
 // falsy (null/undefined/false/0/''); a variable of this file when every value it ever holds (its initializer and every
 // later `x = ...` / `x ||= ...` etc.) is guarded or falsy, and at least one is guarded; `x.provider` where x comes from
-// a function of this file whose EVERY object literal that sets `provider` sets it to a guarded value (draft-llm's
-// pickProvider). Anything else is unguarded.
+// a function of this file whose EVERY `return` (nested functions skipped) yields nothing, a falsy literal, an object literal with
+// no spread whose `provider` (when set) is guarded, or a `?:` / `&&` / `||` / `??` of those, with at least one guarded
+// `provider` (draft-llm's pickProvider). Anything else is unguarded.
+// Known limits (not caught): a write through an alias of the holder (`const q = p; q.provider = raw`), and a local
+// function shadowing the guard's name (`function ownerGuarded(_d, _t, p) { return p }`).
 function all(root: ts.Node, pick: (n: ts.Node) => boolean): ts.Node[] {
   const out: ts.Node[] = []
   const walk = (n: ts.Node): void => { if (pick(n)) out.push(n); ts.forEachChild(n, walk) }
@@ -180,14 +183,34 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     const fnName = init.expression.text
     const fn = all(sf, n => ts.isFunctionDeclaration(n) && n.name?.text === fnName)[0] as ts.FunctionDeclaration | undefined
     if (!fn?.body) return false
-    // every object literal anywhere in the function (in a return, `cond ? { provider } : null`, or built first as
-    // `const o = { provider: raw }; return o`) that sets this property
-    const sets = (all(fn.body, n => ts.isObjectLiteralExpression(n)) as ts.ObjectLiteralExpression[])
-      .flatMap(o => o.properties)
-      .filter(p => p.name && ts.isIdentifier(p.name) && p.name.text === r.name.text)
-    return sets.length > 0 && sets.every(p =>
-      ts.isShorthandPropertyAssignment(p) ? guardedExpr(p.name, sf, fn, depth + 1)
-        : ts.isPropertyAssignment(p) ? guardedExpr(p.initializer, sf, fn, depth + 1) : false)
+    // EVERY `return` of the function (nested functions skipped) must yield nothing, a falsy literal, an object literal, or a
+    // `c ? x : y` / `a && b` / `a || b` / `a ?? b` of those; anything else (a variable, a call, ...) is unguarded.
+    // A returned literal must have no spread, and each property of that name in it must be a guarded value.
+    const prop = r.name.text
+    const returns: ts.ReturnStatement[] = []
+    const collect = (n: ts.Node): void => { if (ts.isReturnStatement(n)) returns.push(n); if (!ts.isFunctionLike(n)) ts.forEachChild(n, collect) }
+    ts.forEachChild(fn.body, collect)
+    let guardedSet = false
+    const literalOk = (o: ts.ObjectLiteralExpression): boolean => o.properties.every(q => {
+      if (ts.isSpreadAssignment(q)) return false
+      const key = q.name && (ts.isIdentifier(q.name) || ts.isStringLiteralLike(q.name)) ? q.name.text : null
+      if (q.name && ts.isComputedPropertyName(q.name)) return false
+      if (key !== prop) return true
+      const ok = ts.isShorthandPropertyAssignment(q) ? guardedExpr(q.name, sf, fn, depth + 1)
+        : ts.isPropertyAssignment(q) ? guardedExpr(q.initializer, sf, fn, depth + 1) : false
+      if (ok) guardedSet = true
+      return ok
+    })
+    const returnOk = (e: ts.Expression): boolean => { const x = strip(e)
+      if (falsy(x)) return true
+      if (ts.isObjectLiteralExpression(x)) return literalOk(x)
+      if (ts.isConditionalExpression(x)) return returnOk(x.whenTrue) && returnOk(x.whenFalse)
+      if (ts.isBinaryExpression(x) && [ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(x.operatorToken.kind)) {
+        // `a && b` yields a falsy a or b; its left side is a condition, not a value it returns when truthy
+        return x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ? returnOk(x.right) : returnOk(x.left) && returnOk(x.right)
+      }
+      return false }
+    return returns.length > 0 && returns.every(ret => !ret.expression || returnOk(ret.expression)) && guardedSet
   }
   return false
 }
@@ -281,6 +304,10 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     "function pickProvider(){ const provider = ownerGuarded(db,t,raw); return { provider, key } }\nconst p = pickProvider(); Object.defineProperty(p, 'provider', { value: raw }); await p.provider.complete!(k, x)",
     'const provider = ownerGuarded(db,t,raw)\nfunction g(){ function provider() {} return provider.complete(k,p) }',
     'const provider = ownerGuarded(db,t,raw)\nclass provider {}\nawait provider.complete(k,p)',
+    // council round 3 (R6 should): every return of the holder function is judged - a variable, a call or a spread fails
+    'function pickProvider() { const provider = ownerGuarded(db,t,raw); const fb = { provider: raw }; if (x) return fb; return { provider } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
+    'function pickProvider() { if (x) return other(); return { provider: ownerGuarded(db,t,raw) } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
+    'function pickProvider() { if (x) return { provider: ownerGuarded(db,t,raw) }; return { ...rawObj } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
   ]
   assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
   // every value these can produce is guarded or falsy
