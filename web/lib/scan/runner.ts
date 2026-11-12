@@ -1288,6 +1288,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const fb = feedbackGate(db, job.user_id), fbCounts: Record<string, number> = {}
     const forget = <T extends LeadDraft>(list: T[]) => fb.apply(list, fbCounts, auditDrop(audit))   // before the verifier: a rejected company costs no fetch
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
+      // #1082: the platform's fair share of the operator's search budget limited this scan (results are thinner)
+      const capSearch = st.searches_not_attempted?.capacity ?? 0, capFetch = st.fetch_capacity_trimmed ?? 0
+      if (capSearch > 0 || capFetch > 0) ledger.report({ capacity: { searches: capSearch, fetches: capFetch } })
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
