@@ -180,8 +180,9 @@ export type LinkResult = 'linked' | 'already' | 'taken' | 'mismatch' | 'unverifi
 
 // Adds a Google identity to the signed-in account, never by email alone. The caller has already checked that the
 // request comes from that account's own session, signed in within the last hour (lib/workspace-access.ts stale). Here:
-// the account's email must be verified and be the Google identity's (verified by Google) email, and that Google
-// identity must not belong to another account. Then Google sign-in reaches this account.
+// the account's email must be the Google identity's (verified by Google) email, and that Google identity must not
+// belong to another account. An account whose email was not yet confirmed is confirmed by this link in the same
+// transaction (#1095), and its other sessions are signed out. Then Google sign-in reaches this account.
 export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, sessionToken?: string): Promise<LinkResult> {
   return db.tx(function* (t): TxBody<LinkResult> {
     // Match recovery's account lock; route admission alone can precede revocation.
@@ -200,7 +201,12 @@ export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, ses
     // email_verified (verifyIdToken), so Google vouches that the signer controls exactly this address: the same proof the
     // confirmation link gives, and the proof dazl already trusts to create verified Google accounts (resolveUser). Same
     // transaction as the identity insert: both happen or neither. mismatch / taken / stale session never get here.
-    if (u.v === null) yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, id.email])
+    if (u.v === null) {
+      yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, id.email])
+      // Defense in depth: until now nobody had proved this address, so any OTHER session of the account (e.g. whoever
+      // registered it with a password) is signed out; only the session that just proved it is kept.
+      if (sessionToken !== undefined) yield* t.run("UPDATE sessions SET revoked_at = ?, revoked_by = user_id, revoke_reason = 'google_link_verified' WHERE user_id = ? AND id <> ? AND revoked_at IS NULL", [Math.floor(Date.now() / 1000), userId, createHash('sha256').update(sessionToken).digest('hex')])
+    }
     yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])
     return 'linked'
   })

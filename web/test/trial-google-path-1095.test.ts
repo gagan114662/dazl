@@ -64,3 +64,11 @@ test('#1095: every link result the callback can return has copy; linked and alre
   assert.equal(googleLinkResultCopy('already').ok, true)
   for (const r of ['taken', 'mismatch', 'unverified', 'signed_out', 'reauth_required'] as const) assert.equal(googleLinkResultCopy(r).ok, false, r)
 })
+
+test('#1095: Settings offers "Add Google sign-in" to an unconfirmed account too (the link confirms the address); no confirm-first gate', async () => {
+  const { readFileSync } = await import('node:fs')
+  const panel = readFileSync(new URL('../app/app/settings/account-panel.tsx', import.meta.url), 'utf8')
+  const link = /\{([^{}]*)&&\s*<a[^>]*href="\/api\/auth\/google\?link=1"/.exec(panel)
+  assert.ok(link, 'the Add Google sign-in link is rendered under a condition')
+  assert.equal(link![1].trim(), '!s.google', 'shown whenever Google is not linked yet, confirmed or not')
+})

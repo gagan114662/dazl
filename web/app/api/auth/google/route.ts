@@ -11,6 +11,13 @@ export async function GET(req: NextRequest) {
   if (!cfg) return redirectNoStore(new URL('/sign-in?error=google_unavailable', process.env.PUBLIC_BASE_URL || req.url))
   const rl = (await rateLimit(`google:${clientIp(req)}`, 20, 10 * 60 * 1000))
   if (!rl.ok) return redirectNoStore(new URL(`/sign-in?error=${rl.unavailable ? 'unavailable' : 'too_many'}`, cfg.base))
+  // #1095: a Google LINK starts only from a dazl page. A cross-site navigation here (Sec-Fetch-Site: cross-site /
+  // same-site) could otherwise drive a browser signed in to someone else's account into linking its own Google
+  // identity to that account. Browsers that send no Sec-Fetch-Site are allowed (the callback still needs the session).
+  const site = req.headers.get('sec-fetch-site')
+  if (req.nextUrl.searchParams.get('link') === '1' && site && site !== 'same-origin' && site !== 'none') {
+    return redirectNoStore(new URL('/app/settings?google=failed#account', cfg.base))
+  }
   const { url, cookie } = startAuth(cfg.clientId, cfg.redirectUri)
   const res = redirectNoStore(url)
   setOauthCookie(res, cfg.base, cookie)

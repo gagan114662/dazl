@@ -197,3 +197,37 @@ test('#1095 a failed or cancelled Google LINK clears link mode and its return pa
   const failedPreview = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=preview'))
   assert.equal(set(failedPreview, 'dazl_return'), '', 'a preview claim intent survives a failed round trip')
 })
+
+test('#1095 verify-and-link is safe: a cross-site link start is refused; a link that confirms the address signs out the other sessions and completes the queued sign-up conversion', async () => {
+  setEnv(STAGING)
+  // a cross-site page cannot start a link (it could drive a browser signed in to someone else's account)
+  for (const site of ['cross-site', 'same-site']) {
+    const r = await start.GET(new NextRequest('https://staging.dazl.ai/api/auth/google?link=1&next=%2Fapp%2Fleads', { headers: { 'x-forwarded-for': `10.1.0.${++ip}`, 'sec-fetch-site': site } }))
+    assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=failed#account', site)
+    assert.ok(!r.headers.getSetCookie().some(c => /^dazl_(return|oauth|link_next)=[^;]/.test(c)), `${site}: no link state is set`)
+  }
+  const sameOrigin = await start.GET(new NextRequest('https://staging.dazl.ai/api/auth/google?link=1', { headers: { 'x-forwarded-for': `10.1.0.${++ip}`, 'sec-fetch-site': 'same-origin' } }))
+  assert.ok(sameOrigin.headers.getSetCookie().some(c => /^dazl_return=link;/.test(c)), 'a dazl page can start it')
+  // an unconfirmed password account with an older session elsewhere and a queued sign-up conversion
+  const { createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
+  const { queuePendingLifecycleDb } = await import('../../lib/outreach/lifecycle.ts')
+  const { getDb } = await import('../../lib/db/client.ts')
+  await createPasswordUser({ id: 'VL', email: 'verify-link@example.test', name: 'V', business_name: 'V', password_hash: 'h', salt: 's' })
+  await queuePendingLifecycleDb(await getDb(), 'signup', 'verify-link@example.test', 'VL')
+  const elsewhere = await createSession('VL'); const here = await createSession('VL')
+  idEmail = 'verify-link@example.test'; idSub = 'g-verify-link'
+  const s = await start.GET(req('https://staging.dazl.ai/api/auth/google?link=1&next=%2Fapp%2Fleads'))
+  const c = /dazl_oauth=([^;]+)/.exec(s.headers.getSetCookie().join('\n'))![1]
+  const [state, n] = c.split('.'); nonce = n
+  const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=v&state=${state}`, `dazl_oauth=${c}; dazl_return=link; dazl_link_next=%2Fapp%2Fleads; dazl_session=${here}`))
+  assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/leads?google=linked')
+  const db = getAuthDb()
+  assert.ok(Number((db.prepare("SELECT email_verified_at AS v FROM users WHERE id = 'VL'").get() as { v: number | null }).v) > 0, 'confirmed by the link')
+  const { createHash } = await import('node:crypto')
+  const h = (t: string) => createHash('sha256').update(t).digest('hex')
+  const revoked = (t: string) => (db.prepare('SELECT revoked_at, revoke_reason FROM sessions WHERE id = ?').get(h(t)) as { revoked_at: number | null; revoke_reason: string | null })
+  assert.equal(revoked(here).revoked_at, null, 'the session that proved the address is kept')
+  assert.ok(revoked(elsewhere).revoked_at, 'every other session is signed out'); assert.equal(revoked(elsewhere).revoke_reason, 'google_link_verified')
+  const ev = db.prepare("SELECT activated_at FROM lifecycle_events WHERE event_key = 'signup|verify-link@example.test'").get() as { activated_at: number | null }
+  assert.ok(ev.activated_at, 'the queued sign-up conversion is completed (queued cold outreach to this address stops)')
+})

@@ -146,6 +146,8 @@ export default function LeadsClient() {
   // #1095: a free-trial refusal shown as words with the way forward, and the result of a Google link started here.
   const [trialRefused, setTrialRefused] = useState<{ reason: unknown; query: string } | null>(null)
   const [linkNote, setLinkNote] = useState<{ ok: boolean; text: string } | null>(null)
+  // Back from Google (#1095): the note (and, after a failure, the way forward under it) sits below the search card;
+  // bring it on screen so a phone user sees how the link went without scrolling.
   // A search restored after linking Google: the "restore the last profile" response below must not replace it.
   const restoredSearch = useRef(false)
   useEffect(() => {
@@ -153,9 +155,10 @@ export default function LeadsClient() {
     if (!linked) return
     // #1095: the search comes back after EVERY result. After a failed link it also stays saved for the next attempt.
     const pending = takePendingSearch()
-    if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined)
+    if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined, pending.at)
     if (pending) restoredSearch.current = true
-    queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query) })
+    // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
+    queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query); if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' }) })
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -558,7 +561,8 @@ export default function LeadsClient() {
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
-      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; setQuery(s.query) }
+      // #1095: a search restored after linking Google stays in the box even when the open job has its own query
+      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (!restoredSearch.current) setQuery(s.query) }
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)
@@ -717,6 +721,10 @@ export default function LeadsClient() {
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>
       </div>
+      {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
+          at any width (below the card it sat off screen at 390). */}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
       {pendingEst && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
@@ -930,8 +938,7 @@ export default function LeadsClient() {
         </details>
       </>)}
       {error && <p role="alert" className="text-red-300 text-sm mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2">{error}</p>}
-      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
-      {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
+      {trialRefused && !linkNote && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />

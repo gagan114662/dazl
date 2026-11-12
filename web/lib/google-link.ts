@@ -30,7 +30,7 @@ const COPY: Record<GoogleLinkResult, { ok: boolean; text: string }> = {
   unverified: { ok: false, text: 'Confirm your email first, then add Google sign-in.' },
   reauth_required: { ok: false, text: 'Confirm it is you first: enter your password, then link Google again.' },
   signed_out: { ok: false, text: 'Sign in first, then add Google sign-in.' },
-  failed: { ok: false, text: 'Google sign-in was not added (cancelled or failed). Your search is still here: try Link Google again.' },
+  failed: { ok: false, text: 'Google sign-in was not added (cancelled or failed). Try Link Google again.' },
   google_unverified: { ok: false, text: 'Google has not verified that email address yet, so it could not be linked. Verify it with Google, then try again.' },
 }
 export function googleLinkResultCopy(r: unknown): { ok: boolean; text: string } {

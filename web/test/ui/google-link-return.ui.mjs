@@ -29,6 +29,7 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', DAZL_MASTER_KEY: randomBytes(32).toString('base64'), PUBLIC_BASE_URL: base }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
+const JOB = 'c'.repeat(24)
 const QUERY = 'Find founders of SaaS companies hiring a controller'
 const PROFILE = { business_name: 'Ledgerline', sells: 'Bookkeeping for founders', website: 'ledgerline.example', buyer: { summary: 'Founders of small SaaS companies', who: ['Founder'], industries: ['Software'], sizes: [], where: ['United States'], signals: ['hiring a controller'], exclude: [] }, new_play_offer: null }
 // what each result must say (lib/google-link.ts googleLinkResultCopy)
@@ -40,9 +41,12 @@ const RESULTS = [
   ['mismatch', false, /uses a different email/],
   ['taken', false, /already signs in to another dazl account/],
   ['reauth_required', false, /Confirm it is you first: enter your password/],
+  ['signed_out', false, /Sign in first, then add Google sign-in/],
+  ['unverified', false, /Confirm your email first/], // no longer returned; an old ?google= in a bookmark still reads
 ]
 const b = await chromium.launch()
-async function open(width, url, pending) {
+async function open(width, url, pending, profile = PROFILE) {
+  const fresh = !/google=reauth_required/.test(url) // the server said the session is stale: so does /api/auth/reauth
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx.route('**/*', async route => {
@@ -51,12 +55,15 @@ async function open(width, url, pending) {
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
-    if (p === '/api/settings/profile') return json(PROFILE)
+    if (p === '/api/settings/profile') return json(profile)
     if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/scan/latest') return json({ query: 'an OLDER search from the last job', icp: null }) // must never replace the restored one
+    // an older job open on Leads (?job_id=): its own query must not replace the restored search
+    if (p === '/api/scan/status') return json({ status: 'done', query: 'an OLDER search from the open job', lead_count: 0, attempts: 1, max_attempts: 3 })
+    if (p === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
     if (p === '/api/auth/email') return json({ email: 'pat@example.test', verified: false, google: false })
-    if (p === '/api/auth/reauth') return json({ fresh: true, method: 'password' })
+    if (p === '/api/auth/reauth') return json({ fresh, method: 'password' })
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -64,6 +71,18 @@ async function open(width, url, pending) {
   if (pending) await page.evaluate(([q, step]) => sessionStorage.setItem('dazl_pending_search', JSON.stringify({ query: q, step, at: Date.now() })), [QUERY, pending])
   await page.goto(base + url, { waitUntil: 'networkidle' })
   return { ctx, page }
+}
+// After a failure the page offers the way forward at once (never "try again" with nothing to press): Link Google back to
+// this page, or the password first when the session is stale. After a success there is no refusal.
+async function wayForward(page, ok, result, label) {
+  const notice = page.getByTestId('trial-refusal-notice')
+  if (ok) { assert.equal(await notice.count(), 0, `${label}: no refusal after a success`); return }
+  await notice.waitFor({ timeout: 8000 })
+  if (result === 'reauth_required') assert.equal(await notice.getByLabel('Your password').count(), 1, `${label}: the password field`)
+  else {
+    const href = await notice.getByRole('link', { name: 'Link Google' }).getAttribute('href')
+    assert.match(href ?? '', /^\/api\/auth\/google\?link=1&next=%2Fapp/, `${label}: Link Google back to this page`)
+  }
 }
 const saved = page => page.evaluate(() => sessionStorage.getItem('dazl_pending_search'))
 const noOverflow = async (page, label) => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${label}: no horizontal scroll`)
@@ -80,7 +99,8 @@ try {
         await page.getByTestId('ready-step').waitFor({ timeout: 8000 })
         assert.match(await page.getByTestId('google-link-note').innerText(), copy, `${label}: the note`)
         assert.equal(await page.getByTestId('first-ask').inputValue(), QUERY, `${label}: the same search is back`)
-        assert.equal(await page.getByTestId('ready-cta').isEnabled(), true, `${label}: Run is enabled`)
+        await wayForward(page, ok, result, label)
+        assert.equal(await page.getByTestId('ready-cta').isEnabled(), ok, `${label}: Run is ${ok ? 'enabled' : 'disabled while the refusal and its way forward show'}`)
         assert.equal(new URL(page.url()).searchParams.get('google'), null, `${label}: ?google= read once and removed`)
         assert.equal(await saved(page) !== null, !ok, `${label}: ${ok ? 'consumed after success' : 'kept for the next attempt after a failure'}`)
         await noOverflow(page, label)
@@ -95,7 +115,8 @@ try {
         await page.locator('#ask').waitFor({ timeout: 8000 })
         assert.match(await page.getByTestId('google-link-note').innerText(), copy, `${label}: the note`)
         assert.equal(await page.locator('#ask').inputValue(), QUERY, `${label}: the same search is back`)
-        assert.equal(await page.locator('form:has(#ask) button.send').isEnabled(), true, `${label}: Run is enabled`)
+        await wayForward(page, ok, result, label)
+        assert.equal(await page.locator('form:has(#ask) button.send').isEnabled(), ok, `${label}: Run is ${ok ? 'enabled' : 'disabled while the refusal shows'}`)
         await noOverflow(page, label)
         if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ask-${result}-${width}.png`), fullPage: true })
         } finally { await ctx.close() }
@@ -107,15 +128,38 @@ try {
         try {
         await o.page.getByTestId('google-link-note').waitFor({ timeout: 8000 })
         assert.match(await o.page.getByTestId('google-link-note').innerText(), copy, `${label}: the note`)
+        // on screen without scrolling (at 390 it sits below the search card)
+        const inView = await o.page.getByTestId('google-link-note').evaluate(e => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight })
+        assert.equal(inView, true, `${label}: the note is on screen`)
         await o.page.waitForTimeout(300) // let /api/scan/latest land: it must not replace the restored search
         assert.equal(await o.page.locator('#play').inputValue(), QUERY, `${label}: the same search is back`)
-        assert.equal(await o.page.locator('form:has(#play) button.send').isEnabled(), true, `${label}: Find leads is enabled`)
+        await wayForward(o.page, ok, result, label)
+        assert.equal(await o.page.locator('form:has(#play) button.send').isEnabled(), ok, `${label}: Find leads is ${ok ? 'enabled' : 'disabled while the refusal shows'}`)
         assert.equal(await saved(o.page) !== null, !ok, `${label}: ${ok ? 'consumed' : 'kept'}`)
         await noOverflow(o.page, label)
         if (process.env.SHOTS) await o.page.screenshot({ path: path.join(process.env.SHOTS, `leads-${result}-${width}.png`), fullPage: true })
         } finally { await o.ctx.close() }
       })
     }
+    // Leads with an older job open (?job_id=): the job's status tick must not replace the restored search
+    await check(`/app/leads?job_id linked @${width}`, async () => {
+      const o = await open(width, `/app/leads?job_id=${JOB}&google=linked`, 'leads')
+      try {
+        await o.page.getByTestId('google-link-note').waitFor({ timeout: 8000 })
+        await o.page.waitForTimeout(1500) // the first status tick lands
+        assert.equal(await o.page.locator('#play').inputValue(), QUERY, `job_id @${width}: the restored search stays`)
+      } finally { await o.ctx.close() }
+    })
+    // a new account with nothing known about the business and no saved search: the website step with the note,
+    // never a 'Your brain is ready' card with nothing in it
+    await check(`/app empty profile, no saved search @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app?google=failed', null, { business_name: '', sells: '', website: '', buyer: null })
+      try {
+        await page.getByTestId('site-step').waitFor({ timeout: 8000 })
+        assert.match(await page.getByTestId('google-link-note').innerText(), /not added \(cancelled or failed\)/, `empty profile @${width}: the note`)
+        assert.equal(await page.getByTestId('ready-step').count(), 0, `empty profile @${width}: no empty ready card`)
+      } finally { await ctx.close() }
+    })
     // the reviewer's repro: a failed result with NO saved search still says how it went (never silent Home)
     await check(`/app no saved search mismatch @${width}`, async () => {
       const { ctx, page } = await open(width, '/app?google=mismatch', null)

@@ -64,8 +64,8 @@ export interface TrialNotice { text: string; actions: NoticeAction[] }
 const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href: '/app/settings#model-key' }
 
 // here: the page to come back to after linking Google. account: GET /api/auth/email ({ verified, google }), or null
-// while unknown. Linking needs a confirmed email (lib/auth-google.ts linkGoogle), so an unconfirmed account is asked to
-// confirm it first instead of being sent into a link that would fail.
+// while unknown. An unconfirmed account links directly: the link confirms the address (lib/auth-google.ts linkGoogle,
+// #1095), so no confirmation mail is needed.
 // account.fresh: signed in within the last hour (GET /api/auth/reauth); linking needs it, so a stale session confirms the
 // password first instead of coming back from Google with reauth_required. null while unknown: no actions are offered yet.
 export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean; fresh?: boolean } | null): TrialNotice {

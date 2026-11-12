@@ -9,17 +9,18 @@ export const PENDING_SEARCH_KEY = 'dazl_pending_search'
 type Account = { verified: boolean; google: boolean; fresh: boolean }
 
 // step: where on the page the search was started (the first-run steps), so the page can reopen there.
-export function savePendingSearch(query: string, step?: string): void {
-  try { sessionStorage.setItem(PENDING_SEARCH_KEY, JSON.stringify({ query, step: step ?? null, at: Date.now() })) } catch { /* private mode: the search is retyped */ }
+// at: when it was first saved; a re-save after a failed link keeps it, so retries never extend the 30 minutes.
+export function savePendingSearch(query: string, step?: string, at = Date.now()): void {
+  try { sessionStorage.setItem(PENDING_SEARCH_KEY, JSON.stringify({ query, step: step ?? null, at })) } catch { /* private mode: the search is retyped */ }
 }
 // The search saved before leaving for Google, if it is recent (30 min); read once. Read it only after a link that
 // worked: after a failed one it stays for the next attempt.
-export function takePendingSearch(): { query: string; step: string | null } | null {
+export function takePendingSearch(): { query: string; step: string | null; at: number } | null {
   try {
     const raw = sessionStorage.getItem(PENDING_SEARCH_KEY)
     sessionStorage.removeItem(PENDING_SEARCH_KEY)
     const v = raw ? JSON.parse(raw) as { query?: unknown; step?: unknown; at?: unknown } : null
-    return v && typeof v.query === 'string' && typeof v.at === 'number' && Date.now() - v.at < 30 * 60_000 ? { query: v.query, step: typeof v.step === 'string' ? v.step : null } : null
+    return v && typeof v.query === 'string' && typeof v.at === 'number' && Date.now() - v.at < 30 * 60_000 ? { query: v.query, step: typeof v.step === 'string' ? v.step : null, at: v.at } : null
   } catch { return null }
 }
 // The result of a Google link this page asked for (?google=...), removed from the address bar once read.

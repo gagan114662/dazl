@@ -119,10 +119,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (linked) {
         setLinkNote(linked)
         const pending = takePendingSearch()
-        if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined) // kept for the next attempt
+        if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined, pending.at) // kept for the next attempt, same expiry
         if (pending) { setAsk(pending.query); setAskIsSuggestion(false) }
+        // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
+        if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' })
         const at = pending?.step
-        setStep(at === 'ask' || at === 'site' ? at : 'ready'); setReady('wizard'); return
+        // ready shows what dazl knows about the business: only when it knows something, otherwise start at the website
+        const knowsBusiness = !!(profile && (profile.website || profile.sells || profile.buyer))
+        setStep(at === 'ask' || at === 'site' ? at : knowsBusiness ? 'ready' : 'site'); setReady('wizard'); return
       }
       const setup = new URLSearchParams(window.location.search).get('setup')
       if (setup === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
@@ -315,6 +319,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
               <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
+              {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}</p>}
               {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
                 <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
