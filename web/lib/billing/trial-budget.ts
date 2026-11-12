@@ -121,6 +121,9 @@ export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
 
 export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'attempts_cap' | 'account_total_cap' | 'global_daily_cap'
+// #402: the account setup every free-trial run (scan or website read) needs before admission, as the product truth record's
+// `requires` tokens (lib/product-truth.ts). refusal() below enforces exactly this list, so the record and the gate cannot drift.
+export const TRIAL_REQUIRES = ['google_account'] as const
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
@@ -184,8 +187,10 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
 function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number): TxBody<TrialRefusal | null> {
-  const google = yield* t.get("SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?", [user.id])
-  if (!google) return 'google_required'
+  if (TRIAL_REQUIRES.includes('google_account')) {
+    const google = yield* t.get("SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?", [user.id])
+    if (!google) return 'google_required'
+  }
   const domain = emailDomain(user.email)
   if (domain && !CONSUMER_DOMAINS.has(domain)) {
     // Another account on this company domain already drew on the trial: a scan, or a website read (#409). A read is paid
