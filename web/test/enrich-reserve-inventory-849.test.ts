@@ -5,6 +5,7 @@
 // a reservation comes before it. The inventory checks that a reservation exists before the call, not its units or tenant.
 // Behavioral refusals per entry point already exist (enrich-credit-pool: scan waterfall
 // and commenter import; work-email-1036: the work-email lookup).
+// Not caught: `Reflect.get(A, name)` and computed or concatenated keys (`A['apollo' + 'OrgEnrich']`, `A[key]`).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -57,7 +58,7 @@ function all(root: ts.Node, pick: (n: ts.Node) => boolean): ts.Node[] {
   return out
 }
 const calleeName = (c: ts.CallExpression): string | null => {
-  const e = c.expression
+  const e = bare(c.expression)
   return ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression) ? e.argumentExpression.text : null
 }
 const enclosingFn = (n: ts.Node): ts.FunctionLikeDeclaration | null => { let p = n.parent; while (p && !ts.isFunctionLike(p)) p = p.parent; return (p as ts.FunctionLikeDeclaration) ?? null }
@@ -82,10 +83,11 @@ function providerUses(rel: string, text: string): { name: string; node: ts.Node 
   const ids = (all(sf, n => ts.isIdentifier(n) && known(n.text) && !ts.isImportSpecifier(n.parent) && !(ts.isFunctionDeclaration(n.parent) && n.parent.name === n)) as ts.Identifier[])
     .filter(n => !(ts.isTypeQueryNode(n.parent)))
     .map(node => ({ name: alias.get(node.text) ?? node.text, node: node as ts.Node }))
-  // Bracket access with the provider's name as a string literal (`A['apolloOrgEnrich']`) is a use too.
-  const brackets = (all(sf, n => ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && (PAID.has(n.argumentExpression.text) || FREE.has(n.argumentExpression.text))) as ts.ElementAccessExpression[])
-    .map(n => ({ name: (n.argumentExpression as ts.StringLiteralLike).text, node: n.argumentExpression as ts.Node }))
-  return [...ids, ...brackets]
+  // The provider's name as any string literal is a use too: a bracket access (`A['apolloOrgEnrich']`), a computed
+  // destructuring key (`const { ['apolloOrgEnrich']: f } = A`).
+  const strings = (all(sf, n => ts.isStringLiteralLike(n) && (PAID.has(n.text) || FREE.has(n.text))) as ts.StringLiteralLike[])
+    .map(n => ({ name: n.text, node: n as ts.Node }))
+  return [...ids, ...strings]
 }
 function unexpectedCallers(srcs: Src[]): string[] {
   return srcs.filter(s => !VENDOR_MODULES.includes(s.rel) && !CALLERS.includes(s.rel) && providerUses(s.rel, s.text).length > 0).map(s => s.rel)
@@ -225,7 +227,8 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
   // import, a bracket access that is not called) hands it somewhere the check above cannot follow: rejected. Allowed:
   // the direct callee of a call (checked above), an import specifier, and type positions (`typeof x`, type references).
   const isDirectCallee = (n: ts.Node): boolean => {
-    const e = ts.isPropertyAccessExpression(n.parent) && n.parent.name === n ? n.parent : ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n ? n.parent : n
+    let e = ts.isPropertyAccessExpression(n.parent) && n.parent.name === n ? n.parent : ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n ? n.parent : n
+    while (ts.isParenthesizedExpression(e.parent)) e = e.parent
     return ts.isCallExpression(e.parent) && e.parent.expression === e
   }
   const inType = (n: ts.Node): boolean => {
@@ -234,7 +237,7 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
     return ts.isTypeQueryNode(p) || ts.isTypeReferenceNode(p)
   }
   const refs = all(sf, n => (ts.isIdentifier(n) && PAID.has(alias.get(n.text) ?? n.text)) ||
-    (ts.isStringLiteralLike(n) && ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n && PAID.has(n.text)))
+    (ts.isStringLiteralLike(n) && PAID.has(n.text)))
   for (const n of refs) {
     if (ts.isImportSpecifier(n.parent) || inType(n) || isDirectCallee(n)) continue
     out.push(`${rel}:${lineOf(sf, n)} ${alias.get((n as ts.Identifier | ts.StringLiteralLike).text) ?? (n as ts.Identifier | ts.StringLiteralLike).text} (not a direct call)`)
@@ -360,6 +363,14 @@ test('#849 inventory: a paid call with no reservation before it is caught, also 
   assert.deepEqual(Object.entries(indirect).filter(([, text]) => caughtIn('lib/enrich/index.ts', text) === 0).map(([k]) => k), [], 'indirect uses in a CALLERS file')
   assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: "await A['apolloOrgEnrich'](k, o, f)" }]), ['lib/x.ts'], 'bracket access outside CALLERS')
   assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: "await A['apolloPeopleSearch'](k, o, f, 5)" }]), ['lib/x.ts'], 'bracket access to the free function outside CALLERS')
+  // council round 2: a provider name as any string literal (a computed destructuring key) is a use; a parenthesized
+  // callee is still a direct call, checked like any other
+  const computedKey = "async function q() { const { ['apolloOrgEnrich']: f } = A; await f(k, o, f) }"
+  assert.equal(caughtIn('lib/enrich/index.ts', computedKey), 1, 'computed destructuring key in a CALLERS file')
+  assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: computedKey }]), ['lib/x.ts'], 'computed destructuring key outside CALLERS')
+  assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: "const { ['apolloPeopleSearch']: s } = A" }]), ['lib/x.ts'], 'computed key for the free function outside CALLERS')
+  assert.deepEqual(unreservedPaidCalls('lib/x.ts', IMP + `async function q() { const h = await ${R}; await (apolloOrgEnrich)(k, o, f) }`), [], 'parenthesized callee after a reservation')
+  assert.equal(caughtIn('lib/x.ts', 'async function q() { await (apolloOrgEnrich)(k, o, f) }'), 1, 'parenthesized callee without a reservation')
   // type positions and a reserved direct call are not indirect uses
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', IMP + `let o: Awaited<ReturnType<typeof apolloOrgEnrich>> = null\nasync function q() { const h = await ${R}; ${C} }`), [], 'typeof in a type')
   // the 0-credit people search needs no reservation
