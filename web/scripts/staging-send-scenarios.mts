@@ -40,13 +40,15 @@ import { acceptReadConsent, syncReplies } from '../lib/outreach/replies.ts'
 import { approveSequence, createSequence, runSequences } from '../lib/outreach/sequences.ts'
 
 // A same-thread bounce is only believed when it is a structured delivery-status for the recipient AND carries Google's receiving-MX
-// authentication aligned to the recipient domain (#415/#928); a plain "5.1.1" daemon-looking message is review-only.
-const structuredDsn = (id: string, to: string, at: number) => ({ id, threadId: 't', internalDate: String(at * 1000), payload: {
+// authentication aligned to the recipient domain (#415/#928), AND references the exact send by its returned Message-ID (#415);
+// a plain "5.1.1" daemon-looking message is review-only.
+const structuredDsn = (id: string, to: string, at: number, sendId: string) => ({ id, threadId: 't', internalDate: String(at * 1000), payload: {
   mimeType: 'multipart/report',
   headers: [{ name: 'Authentication-Results', value: `mx.google.com; spf=pass smtp.mailfrom=${to.split('@')[1]}` }, { name: 'From', value: 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' }],
   parts: [
     { mimeType: 'text/plain', body: { data: Buffer.from('Delivery Status Notification (Failure). (synthetic)').toString('base64url') } },
     { mimeType: 'message/delivery-status', body: { data: Buffer.from(`Final-Recipient: rfc822; ${to}\nAction: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 5.1.1 does not exist (synthetic)\n`).toString('base64url') } },
+    { mimeType: 'text/rfc822-headers', body: { data: Buffer.from(`Message-ID: <dazl.${sendId}@staging.dazl.test>\nTo: ${to}\n\n`).toString('base64url') } },
   ],
 } })
 
@@ -215,7 +217,7 @@ async function scenarios(out: string, master: Buffer): Promise<Scenario[]> {
     const to = 'bounce-lead@staging.dazl.test'
     const first = draft(db, T, to); approve(db, T, first.mid); await sendMessage(db, T, first.mid, deps(T))
     const thread = (db.prepare('SELECT thread_id FROM outreach_messages WHERE id = ?').get(first.mid) as { thread_id: string }).thread_id
-    const r = await syncReplies(db, T, { env: GENV, master, now: NOW + DAY, fetchImpl: gmailStub({ [thread]: [structuredDsn('dsn-1', to, NOW + 600)] }) })
+    const r = await syncReplies(db, T, { env: GENV, master, now: NOW + DAY, fetchImpl: gmailStub({ [thread]: [structuredDsn('dsn-1', to, NOW + 600, first.mid)] }) })
     check('sync records the bounce', r.bounces === 1, JSON.stringify(r))
     check('the address is suppressed', isSuppressed(db, T, to))
     const next = draft(db, T, to)

@@ -423,6 +423,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
             log('bounce_review')
           }
           if (!permanent) { review('same-thread 5.x.x without a structured delivery-status for the recipient, provenance unverified'); continue }
+          // Thread membership is not correlation (#415 review): like the separate-thread branch, the notice's own structured
+          // references (returned Message-ID, Original-Message-ID / In-Reply-To / References) must name exactly THIS send on
+          // the sender's domain. No reference, another send, a foreign domain or two sends: review, never a suppression.
+          const refIds = referencedSendIds(nf.refs, acct.email.split('@')[1] ?? '')
+          if (refIds.length !== 1 || refIds[0] !== m.id) { review(`same-thread dsn ${block!.status} without an exact reference to this send`); continue }
           const domain = key.split('@')[1] ?? ''
           const trust = (expected: string[]) => dsnProvenance(g.payload, { trustedAuthservIds: TRUSTED_AUTHSERV_IDS, expectedBounceDomains: expected })
           let prov = trust([domain])
