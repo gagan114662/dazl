@@ -326,6 +326,27 @@ export async function releaseHeldClaimAsync(db: Db, a: { tenantId: string; conne
     return gone
   })
 }
+// #382: a lookup whose paid request was REFUSED BEFORE IT WAS SENT (the scan's own spend gate, lib/scan/spend-cap.ts SpendRefused)
+// provably cost nothing, so its claim is not a possible charge: the audit row records the refusal (`status`, never a provider
+// failure code) and the claim is released in the same transaction, never left held for an owner retry whose cost "has not been
+// verified". Only a still-'reserved' claim WITHOUT a memo is touched (the same guard as the owner release): a settled or memo'd
+// claim is never removed.
+const CLAIM_DELETE_UNSENT_SQL = "DELETE FROM connector_claims WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved' AND memo IS NULL"
+export function auditReleaseUnsent(db: Database.Database, a: AuditEntry, id: string, status: string): void {
+  const key = claimKey(a)
+  db.transaction(() => {
+    db.prepare("UPDATE connector_audit SET status = ?, results = 0 WHERE id = ? AND status = 'reserved'").run(status.slice(0, 200), id)
+    db.prepare(CLAIM_DELETE_UNSENT_SQL).run(key[0], key[1], key[2], key[3])
+  }).immediate()
+}
+// PG twin (same statements, one transaction).
+export async function writeReleaseUnsent(db: Db, a: AuditEntry, id: string, status: string): Promise<void> {
+  const key = claimKey(a)
+  await db.tx(function* (t) {
+    yield* t.run("UPDATE connector_audit SET status = ?, results = 0 WHERE id = ? AND status = 'reserved'", [status.slice(0, 200), id])
+    yield* t.run(CLAIM_DELETE_UNSENT_SQL, [key[0], key[1], key[2], key[3]])
+  })
+}
 // The lookup's latest audit status (read-only): replay repair reads the recorded verdict behind a terminal claim.
 export function latestAuditStatus(db: Database.Database, a: { tenantId: string; connector: string; jobId: string; lookup: string }): string | null {
   const r = db.prepare(RESERVE_STATUS_SQL).get(a.tenantId, a.connector, a.jobId, a.lookup.slice(0, 200)) as { status: string } | undefined
