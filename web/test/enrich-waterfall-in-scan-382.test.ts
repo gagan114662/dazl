@@ -210,6 +210,8 @@ test('#382 owner retry refused by the scan cap: nothing sent, the lookup stays h
     assert.equal(heldEnrichments(s.db, 'u1').length, 1, 'and is still LISTED for the owner right away (not hidden for 15 minutes)')
     const o = paidEnrichmentOutcomes(s.db, 'u1', s.jobId)
     assert.equal(o.failed, 0, `a refused, unsent retry is not a failed lookup: ${JSON.stringify(o)}`)
+    assert.equal(o.unconfirmed, 0, 'proven unsent: never "whether it was sent or charged is not confirmed"')
+    assert.ok(o.held >= 1, 'reported as a hold')
   } finally { if (prev === undefined) delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; else process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = prev }
 })
 
