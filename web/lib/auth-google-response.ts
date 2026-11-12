@@ -24,7 +24,7 @@ export const setReturnCookie = (res: NextResponse, base: string, value: 'setting
 export const clearReturnCookie = (res: NextResponse, base: string) => res.cookies.set(RETURN_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
 // The preview claim being continued through sign-in (#416): the claim token itself, host-only, short-lived. Path '/'
 // because both the Google callback and the claim route must read it; it carries no PII and is already a public-page URL.
-// Set only from a validated preview row (app/api/preview/[token]/google); every reader re-verifies it before any use.
+// Set only from a validated preview row (app/api/preview/[token]/google and /continue); every reader re-verifies it before any use.
 export const PREVIEW_CLAIM_COOKIE = 'dazl_claim'
 const hostOnly = (maxAge: number, path: string) => ({ httpOnly: true, secure: true, sameSite: 'lax' as const, maxAge, path })
 export const setClaimCookie = (res: NextResponse, value: string) => res.cookies.set(PREVIEW_CLAIM_COOKIE, value, hostOnly(3600, '/'))

@@ -1,6 +1,7 @@
 import { connection, NextRequest } from 'next/server'
 import { signInConfig, startAuth } from '@/lib/auth-google'
-import { redirectNoStore, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
+import { redirectNoStore, setOauthCookie, setReturnCookie, PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
+import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 export async function GET(req: NextRequest) {
@@ -17,5 +18,10 @@ export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get('reauth') === '1') setReturnCookie(res, cfg.base)
   // ?link=1: add Google sign-in to the signed-in account (Settings > Account); the callback decides, never this route
   if (req.nextUrl.searchParams.get('link') === '1') setReturnCookie(res, cfg.base, 'link')
+  // #416: a plain "Continue with Google" from a browser carrying a preview claim intent (e.g. the sign-in page opened
+  // from an email confirmation link in a new tab, where the tab-only copy is gone) returns to the claim, not /app.
+  // Only a well-formed token counts; the callback and the claim route re-verify it before any use.
+  const plain = req.nextUrl.searchParams.get('reauth') !== '1' && req.nextUrl.searchParams.get('link') !== '1'
+  if (plain && isClaimToken(req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value)) setReturnCookie(res, cfg.base, 'preview')
   return res
 }

@@ -28,7 +28,7 @@ export const DEGRADED: Record<string, Degraded> = {
   // email ownership and recovery (#357): link guessing, and mail dazl sends
   verify: 'closed', 'verify-send': 'closed', reset: 'closed', 'reset-ip': 'closed', 'reset-email': 'closed', 'email-change': 'closed',
   'signin-ip': 'closed', 'signin-acct': 'closed', signup: 'closed', 'signup-email': 'closed', google: 'closed', 'google-cb': 'closed',
-  'preview-claim': 'closed', 'preview-issue': 'closed', 'preview-google': 'closed', // public claim handoff surfaces (#416)
+  'preview-claim': 'closed', 'preview-issue': 'closed', 'preview-google': 'closed', 'preview-continue': 'closed', // public claim handoff surfaces (#416)
   'preview-report': 'closed', // the seller's proof report (#403): a session read of up to a few hundred queries
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'evidence-recheck': 'closed', 'hiring-feed': 'closed',

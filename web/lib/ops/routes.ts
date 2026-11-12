@@ -73,6 +73,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/plays/[kind]/[id]/new',
   '/api/plays/[kind]/[id]/run',
   '/api/plays/[kind]/[id]/runs',
+  '/api/preview/[token]/continue',
   '/api/preview/[token]/google',
   '/api/preview/claim',
   '/api/preview/issue',
