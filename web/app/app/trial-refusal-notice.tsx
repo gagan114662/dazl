@@ -76,7 +76,7 @@ export default function TrialRefusalNotice({ reason, query, step, text }: { reas
         {n.actions.map(a => a.kind === 'resend_verification'
           ? <button key={a.kind} type="button" onClick={() => void resend()} className="btn-primary btn-sm">{a.label}</button>
           : a.kind === 'reauth'
-            ? <form key={a.kind} onSubmit={e => void reauth(e)} className="flex flex-wrap items-center gap-2">
+            ? <form key={a.kind} method="post" onSubmit={e => void reauth(e)} className="flex flex-wrap items-center gap-2">
               <label className="sr-only" htmlFor="trial-reauth-password">Your password</label>
               <input id="trial-reauth-password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" className="field !py-1.5 text-sm" />
               <button type="submit" className="btn-primary btn-sm">{a.label}</button>

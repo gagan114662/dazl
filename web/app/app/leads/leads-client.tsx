@@ -151,10 +151,9 @@ export default function LeadsClient() {
   useEffect(() => {
     const linked = takeGoogleLinkResult()
     if (!linked) return
-    setLinkNote(linked)
-    if (!linked.ok) return // the saved search stays for the next attempt
-    const pending = takePendingSearch()
-    if (pending) { restoredSearch.current = true; setQuery(pending.query) }
+    const pending = linked.ok ? takePendingSearch() : null // after a failed link the saved search stays for the next attempt
+    if (pending) restoredSearch.current = true
+    queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query) })
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -668,7 +667,7 @@ export default function LeadsClient() {
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (restoredSearch.current) return // #1095: the search the user was running before linking Google wins
-      if (!prefill && j.query) setQuery(q => q || j.query)
+      if (!prefill && j.query && !query) setQuery(q => q || j.query)
       if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
