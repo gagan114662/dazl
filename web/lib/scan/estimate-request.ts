@@ -12,6 +12,7 @@ import { ownerLimits, ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
+import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
 
 export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string; message?: string; loss?: IcpLoss[] }
 // What the owner's shared spend pools (tenant_spend_pools, the same store the guard reserves in) have reserved this UTC day and month, so the estimate agrees with the guard.
@@ -58,6 +59,8 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
+    // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).
+    firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,

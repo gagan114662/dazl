@@ -15,6 +15,7 @@
 import type { RunBudget } from './runner.ts'
 import { icpPrompt, MAX_QUERY } from './icp.ts'
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-guard.ts'
+import { FIRST_PLAY_MAX } from '../people/first-play-cap.ts'
 
 export const MAX_BUDGET_USD = 1000 // sanity bound on the number, not a claim about any invoice
 const NARROWING = ['paid_fallback', 'credit_enrichment', 'judge'] as const
@@ -100,7 +101,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', { status: 'refused', note: 'Web-search research is never run: its search-result tokens are bounded by nothing dazl sends, so no run - capped or not - spends on it. When search finds nothing the run ends as budget_stopped' }),
       row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
-      row('search_and_fetch', b?.first5 ? { status: 'off', note: 'first5: no TinyFish search, fetch or post-scan people search; free sources only. Model calls (extraction, scoring) still run and are not free' } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
+      row('search_and_fetch', b?.first5 ? { status: 'not_covered', note: `first5: no TinyFish lead search or page fetch; the leads come from free sources. After the scan, up to ${FIRST_PLAY_MAX} TinyFish people searches (one per ready lead that names nobody yet) look up who to contact, bounded by count, not by max_usd. Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [
