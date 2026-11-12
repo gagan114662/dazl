@@ -155,6 +155,20 @@ test('review: 403 / 429 / 500 pages and a blocked robots.txt are unreachable, no
   assert.deepEqual((await run(site({}))).notes, {}, '404 careers page: genuinely nothing, no partial note')
 })
 
+test('review: a redirect target\'s own robots.txt that itself redirects is unreachable, never parsed as "no rules"', async () => {
+  // robotsOf's own fetch (checking the TARGET of a redirect before following into it) does not follow redirects
+  // itself. A 3xx there must not fall through to parseRobots on its (empty/unrelated) body, which would silently
+  // read as "no restrictions" and let a page a real robots.txt might disallow through unexamined.
+  const asked: string[] = []
+  const r = await run(site(OPEN, asked, {
+    'brightloop.io/careers': { status: 301, body: '', location: 'https://www.brightloop.io/careers' },
+    'www.brightloop.io/robots.txt': { status: 301, body: '', location: 'https://www.brightloop.io/other-robots.txt' },
+  }))
+  assert.equal(r.items.length, 0)
+  assert.equal(r.notes.unreachable, 1, 'an unresolved robots.txt redirect says nothing about hiring, never a healthy empty')
+  assert.ok(!asked.some(u => u.endsWith('www.brightloop.io/careers')), 'the redirect target was never fetched without resolved robots rules')
+})
+
 test('review: a page cut at the byte cap is a partial read; a cut robots.txt is not permission', async () => {
   const r = await run(site({}, [], { 'brightloop.io/careers': { status: 200, body: page('<h2>Open roles</h2>'), truncated: true } }))
   assert.equal(r.notes.unreachable, 1)

@@ -56,7 +56,12 @@ export const careersAdapter: SourceAdapter = {
     const robotsCache = new Map<string, Promise<{ allows: (p: string) => boolean } | null>>()
     const robotsOf = (raw: SafeGet, host: string) => {
       let r = robotsCache.get(host)
-      if (!r) { r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => !x || x.status === 0 || x.truncated || x.status >= 500 || x.status === 401 || x.status === 403 || x.status === 429 ? null : x.status >= 400 ? { allows: () => true } : parseRobots(x.body, host)).catch(() => null); robotsCache.set(host, r) }
+      // This fetch is raw: it does not follow redirects (unlike get()'s own robots.txt check, which does via the
+      // isRobots hop loop). A 3xx here is therefore an UNRESOLVED robots.txt, not an absent one - its body is empty
+      // or unrelated, and parsing it as rules would accidentally read as "no restrictions found" (allow all). Only a
+      // definite 4xx (minus the already-excluded blocked codes) means no robots policy exists; a redirect we never
+      // followed is unreachable, the same as a blocked or failing fetch.
+      if (!r) { r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => !x || x.status === 0 || x.truncated || x.status >= 500 || x.status === 401 || x.status === 403 || x.status === 429 || (x.status >= 300 && x.status < 400) ? null : x.status >= 400 ? { allows: () => true } : parseRobots(x.body, host)).catch(() => null); robotsCache.set(host, r) }
       return r
     }
     const get = (raw: SafeGet): Get => async (url, o) => {
