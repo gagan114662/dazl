@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -37,6 +37,9 @@ const GUARDED_BY_CALLER: [string, string, string, RegExp][] = [
 const SCAN = ['lib/scan/runner.ts', 'lib/scan/buyer-fit.ts', 'lib/scan/score.ts']
 // Provider wrappers (decorate a provider, add no call of their own) and the guard itself.
 const WRAPPERS = ['lib/evals/trace.ts', 'lib/outreach/launch-policy.ts', 'lib/scan/model-usage.ts']
+// lib/llm itself: the providers (each delegates complete to its own completeDetailed) and the spend guard that wraps
+// them. Any other lib/llm module that calls a model is unclassified and fails like anywhere else.
+const LLM = ['lib/llm/provider.ts', 'lib/llm/spend-guard.ts']
 // `.complete(token)` on a job queue, not a model.
 const NOT_MODEL = ['lib/queue/scan-claimer.ts', 'lib/scan/queue-runner.ts']
 
@@ -85,24 +88,53 @@ function modelUses(rel: string, text: string): Use[] {
   visit(sf)
   return out
 }
-// A receiver is guarded when it IS an ownerGuarded(...)/guardProvider(...) call; or a variable of this file whose
-// initializer contains one (`const provider = raw && ownerGuarded(db, tenantId, raw)`); or `x.provider` where x comes
-// from a function of this file whose EVERY return that sets `provider` sets it to a guarded value (draft-llm's
+// A receiver is guarded by the structure of its value, never by text: an ownerGuarded(...)/guardProvider(...) call is
+// guarded; `a && b` when b is; `c ? x : y`, `a ?? b` and `a || b` only when every value they can produce is guarded or
+// falsy (null/undefined/false/0/''); a variable of this file when every value it ever holds (its initializer and every
+// later `x = ...` / `x ||= ...` etc.) is guarded or falsy, and at least one is guarded; `x.provider` where x comes from
+// a function of this file whose EVERY return that sets `provider` sets it to a guarded value (draft-llm's
 // pickProvider). Anything else is unguarded.
-const GUARD = /\b(ownerGuarded|guardProvider)\(/
 function all(root: ts.Node, pick: (n: ts.Node) => boolean): ts.Node[] {
   const out: ts.Node[] = []
   const walk = (n: ts.Node): void => { if (pick(n)) out.push(n); ts.forEachChild(n, walk) }
   walk(root)
   return out
 }
+const ASSIGN = new Set([ts.SyntaxKind.EqualsToken, ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken])
+function falsy(e: ts.Expression): boolean {
+  const r = strip(e)
+  return r.kind === ts.SyntaxKind.NullKeyword || r.kind === ts.SyntaxKind.FalseKeyword || (ts.isIdentifier(r) && r.text === 'undefined')
+    || (ts.isNumericLiteral(r) && Number(r.text) === 0) || (ts.isStringLiteralLike(r) && r.text === '') || ts.isVoidExpression(r)
+}
+// Every value the expression can evaluate to is guarded or falsy.
+function safeExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node, depth: number): boolean {
+  return falsy(e) || guardedExpr(e, sf, within, depth)
+}
 function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, depth = 0): boolean {
-  if (depth > 3) return false
+  if (depth > 5) return false
   const r = strip(e)
   if (ts.isCallExpression(r)) { const c = strip(r.expression); return ts.isIdentifier(c) && (c.text === 'ownerGuarded' || c.text === 'guardProvider') }
+  if (ts.isConditionalExpression(r)) return safeExpr(r.whenTrue, sf, within, depth + 1) && safeExpr(r.whenFalse, sf, within, depth + 1)
+    && (guardedExpr(r.whenTrue, sf, within, depth + 1) || guardedExpr(r.whenFalse, sf, within, depth + 1))
+  if (ts.isBinaryExpression(r)) {
+    const op = r.operatorToken.kind
+    // `a && b` yields a falsy a or b
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) return guardedExpr(r.right, sf, within, depth + 1)
+    // `a ?? b` / `a || b` yield a (when set) or b: both must be guarded or falsy
+    if (op === ts.SyntaxKind.QuestionQuestionToken || op === ts.SyntaxKind.BarBarToken) return safeExpr(r.left, sf, within, depth + 1) && safeExpr(r.right, sf, within, depth + 1)
+      && (guardedExpr(r.left, sf, within, depth + 1) || guardedExpr(r.right, sf, within, depth + 1))
+    return false
+  }
   if (ts.isIdentifier(r)) {
-    const decls = all(within, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === r.text && !!n.initializer) as ts.VariableDeclaration[]
-    return decls.length > 0 && decls.every(d => GUARD.test(d.initializer!.getText(sf)))
+    // every value the variable holds: its declarations' initializers and every later assignment to it
+    const decls = all(within, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === r.text) as ts.VariableDeclaration[]
+    const assigned = all(within, n => ts.isBinaryExpression(n) && ASSIGN.has(n.operatorToken.kind) && ts.isIdentifier(strip(n.left)) && (strip(n.left) as ts.Identifier).text === r.text) as ts.BinaryExpression[]
+    const values = [...decls.flatMap(d => d.initializer ? [d.initializer] : []), ...assigned.map(a => a.right)]
+    // any other write (destructuring, ++, a for-of binding) is not judged: unguarded
+    const otherWrites = all(within, n => (ts.isArrayLiteralExpression(n) || ts.isObjectLiteralExpression(n)) && ts.isBinaryExpression(n.parent) && n.parent.left === n
+      && all(n, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
+      || all(within, n => (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && ts.isIdentifier(strip(n.operand)) && (strip(n.operand) as ts.Identifier).text === r.text).length > 0
+    return decls.length > 0 && !otherWrites && values.every(v => safeExpr(v, sf, within, depth + 1)) && values.some(v => guardedExpr(v, sf, within, depth + 1))
   }
   if (ts.isPropertyAccessExpression(r) && ts.isIdentifier(r.expression)) {
     // the holder's declaration in the function that encloses this use (each function has its own `const p = ...`)
@@ -135,18 +167,18 @@ function sources(dir: string): { rel: string; text: string }[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
     if (statSync(p).isDirectory()) { if (name !== 'node_modules') out.push(...sources(p)); continue }
-    if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push({ rel: relative(ROOT, p), text: readFileSync(p, 'utf8') })
+    if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push({ rel: relative(ROOT, p).split(sep).join('/'), text: readFileSync(p, 'utf8') })
   }
   return out
 }
 const SOURCES = [...sources(join(ROOT, 'lib')), ...sources(join(ROOT, 'app'))]
-const KNOWN = new Set([...OWNER_ENTRY, ...GUARDED_BY_CALLER.map(g => g[0]), ...SCAN, ...WRAPPERS, ...NOT_MODEL])
+const KNOWN = new Set([...OWNER_ENTRY, ...GUARDED_BY_CALLER.map(g => g[0]), ...SCAN, ...WRAPPERS, ...LLM, ...NOT_MODEL])
 
 function unclassified(srcs: { rel: string; text: string }[]): string[] {
-  return srcs.filter(s => !s.rel.startsWith('lib/llm/') && !KNOWN.has(s.rel) && modelUses(s.rel, s.text).length > 0).map(s => s.rel)
+  return srcs.filter(s => !KNOWN.has(s.rel) && modelUses(s.rel, s.text).length > 0).map(s => s.rel)
 }
 
-test('#850 inventory: every module calling a model provider outside lib/llm is classified', () => {
+test('#850 inventory: every module calling a model provider in lib/ and app/ (lib/llm included) is classified', () => {
   assert.deepEqual(unclassified(SOURCES), [], 'a new paid model call site: an entry point must wrap its provider with ownerGuarded before calling')
 })
 
@@ -165,6 +197,8 @@ const SHAPES = [
 
 test('#850 inventory: an unexpected new call site is caught in every call shape (the check is not vacuous)', () => {
   for (const text of SHAPES) assert.deepEqual(unclassified([{ rel: 'lib/outreach/new-ai-feature.ts', text }]), ['lib/outreach/new-ai-feature.ts'], text)
+  // lib/llm is inventoried too: a new helper there is not exempt
+  assert.deepEqual(unclassified([{ rel: 'lib/llm/new-helper.ts', text: SHAPES[0] }]), ['lib/llm/new-helper.ts'])
   // data fields named like the methods are not model calls
   assert.deepEqual(unclassified([{ rel: 'lib/x.ts', text: 'const r = icp.research; const done = packing.complete; if (job.complete) {}' }]), [])
 })
@@ -183,6 +217,24 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
   assert.deepEqual(unguardedUses('lib/seo/x.ts', guardedFirst), [])
   for (const shape of SHAPES) assert.ok(unguardedUses('lib/seo/x.ts', guardedFirst + shape.replace(/\bprovider\b|\bp\b(?=\.research)/g, 'providers[vendor]')).length > 0, shape)
   assert.deepEqual(unguardedUses('lib/seo/x.ts', 'await ownerGuarded(db, t, providers[v]).complete!(k, p)'), [])
+  // Hermes's mutations on #1078: a branch that falls back to the raw provider (M2, sequences.ts), and a guarded
+  // variable later reassigned to the raw provider (M3, brief.ts). The guard text is present; the call is unguarded.
+  const UNGUARDED_VALUES = [
+    'const provider = providers[vendor] && (process.env.X ? providers[vendor] : ownerGuarded(db, tenantId, providers[vendor]))\nawait provider.complete(k, p)',
+    'let prov = ownerGuarded(db, tenantId, providers[vendor]); prov = providers[vendor]\nawait prov.complete!(k, p)',
+    'const provider = ownerGuarded(db, t, raw) ?? providers[vendor]\nawait provider.complete(k, p)',
+    'const provider = raw || ownerGuarded(db, t, raw)\nawait provider.complete(k, p)',
+    'let prov = ownerGuarded(db, t, raw)\nprov ||= providers[vendor]\nawait prov.complete(k, p)',
+    'let prov\nawait prov.complete(k, p)',
+  ]
+  assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
+  // every value these can produce is guarded or falsy
+  const GUARDED_VALUES = [
+    'const provider = ok ? ownerGuarded(db, t, raw) : null\nawait provider.complete(k, p)',
+    'const provider = raw ? (x ? guardProvider(raw) : ownerGuarded(db, t, raw)) : undefined\nawait provider.complete(k, p)',
+    'let prov = null\nprov = ownerGuarded(db, t, raw)\nawait prov.complete(k, p)',
+  ]
+  assert.deepEqual(GUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length > 0), [], 'each must pass')
 })
 
 test('#850 inventory: each guarded-by-caller module has exactly that one guarded caller', () => {
