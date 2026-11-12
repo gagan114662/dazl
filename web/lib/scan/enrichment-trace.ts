@@ -184,7 +184,7 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
     const a = statusOf.get(key(c.connector, c.lookup))
     const reserved = c.status === 'reserved'
     // 'not sent:' = an owner retry the spend gate refused before sending, kept held (#382): proven unsent, so a hold, not unconfirmed
-    const unsettled = () => { if (a?.startsWith('not sent: ')) { out.held++; return } out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible // may have been sent / charged; a recorded failure code stays visible
+    const unsettled = () => { if (a?.startsWith('not sent: ')) { out.held++; return } out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible
     if (c.lookup.startsWith('step:org ')) {
       if (reserved) { unsettled(); continue }
       out.total++; out.byProvider[providerOf(c.connector)]++
