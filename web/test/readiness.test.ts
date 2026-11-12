@@ -66,6 +66,20 @@ test('plays: own searches newest first with their outcome; imports and fixtures 
   assert.deepEqual(p, [{ id: '2', query: 'q2', outcome: 'failed' }, { id: '3', query: 'q3', outcome: '1 source-checked, 0 need your review' }, { id: '1', query: 'q1', outcome: '3 source-checked, 0 need your review' }])
 })
 
+// #683: a lead's review can be resolved or held after the scan finished, so a matching campaign row (already loaded
+// for this same Home read) is preferred over the job's own stale recorded counts, the same as Campaigns and the campaign page.
+test('plays: a matching campaign row overrides the job\'s stale counts and names research-only leads', () => {
+  const j = (o: object = {}) => ({ id: 'x', status: 'done', error: null, query: 'q', csv_domain: null, created_at: 1, lead_count: 2, verified: 0, needs_review: 2, ...o })
+  const camp = (q: object) => [{ id: 'x', qualification: { rejected: 0, ...q } }]
+  // The scan recorded 2 needing review; since then both were confirmed out of a hold no check can resolve (#683).
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, '0 source-checked, 0 need your review, 2 research-only')
+  assert.doesNotMatch(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, /2 need your review/)
+  // heldResearch (held by the time window, no check involved) counts the same as research.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 1, confirmedByYou: 0, needsReview: 0, heldResearch: 1 }))[0].outcome, '1 source-checked, 0 need your review, 1 research-only')
+  // No matching campaign row (not loaded, or beyond its own cap): falls back to the job's own recorded counts, unchanged.
+  assert.equal(recentPlays([j()], 5, [])[0].outcome, '0 source-checked, 2 need your review')
+})
+
 // Instinct #234: a finished search whose leads are all research-only must not read as "5 leads" of yield.
 test('plays never present research-only leads as yield; old records and cancelled runs say what they are', () => {
   const j = (o: object) => recentPlays([{ id: 'x', status: 'done', error: null, query: 'q', csv_domain: null, created_at: 1, lead_count: 5, ...o }])[0].outcome

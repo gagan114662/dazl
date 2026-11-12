@@ -1,6 +1,6 @@
 import { scanOutcome, type ScanOutcome, type ScanOutcomeKind, type ScanRecord } from './scan/scan-outcome.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
-import { reviewIsActionable } from './lead-state.ts'
+import { reviewIsActionable, uncheckableCause } from './lead-state.ts'
 
 // How a run ended, in one of a few states that each have their own next action, so the Campaigns list, a campaign's
 // page and the Leads history never disagree (one said "failed" while another said "no candidates extracted"). The
@@ -41,12 +41,16 @@ export const runStatusOf = (j: ScanRecord) => runStatus(scanOutcome(j), j.lead_c
 // state first, then a review reason - split into review a check can resolve and research it cannot (#683, the same verdict as
 // Home: lib/lead-state.ts reviewIsActionable) - else unverified.
 export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number }
-type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean }
+type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; human_confirmed_from?: string | null }
 export function currentQual(rows: QualRow[]): CurrentQual & { research: number } {
   const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
   for (const r of rows) {
     const st = evidenceStateOf(r)
+    // A source-checked or confirmed lead is still research, never passed, if the time window holds it or it was
+    // confirmed OUT of a hold a check cannot resolve (#683: the same verdict as leadStatus, lib/outreach/campaign-view.ts).
+    const held = r.window_held || !!uncheckableCause(r.human_confirmed_from)
     if (r.quarantined_at !== null) q.rejected++
+    else if ((st === 'machine' || st === 'human') && held) q.research++
     else if (st === 'machine') q.sourceChecked++
     else if (st === 'human') q.confirmedByYou++
     else if (r.review_reason) { if (reviewIsActionable(r)) q.needsReview++; else q.research++ }

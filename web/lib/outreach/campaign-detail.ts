@@ -10,7 +10,10 @@ export interface CampaignDetail {
   leads: { id: string; company: string | null; name: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; quarantine_reason: string | null
     // Held by the search's time window (no usable date, or older than it): the draft gate's own verdict (currentness.ts windowHeld), so the
     // page can tell a research-only lead from one a review can release (#683). Computed here; the job's saved profile is not returned.
-    window_held: boolean }[]
+    window_held: boolean
+    // The reason a lead was confirmed OUT of, when it was held for something a check cannot resolve (someone else's customer, a
+    // different place, a closed opening): confirming it does not change that (#683, the same rule as campaigns.ts heldResearch).
+    human_confirmed_from: string | null }[]
   messages: { id: string; lead_id: string; to_email: string; subject: string; status: string; created_at: number; sent_at: number | null }[]
 }
 
@@ -20,7 +23,7 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
   const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
   const w = await db.get<{ icp: string | null }>('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
-  const rows = await db.all<Omit<CampaignDetail['leads'][number], 'window_held'> & { event_date: string | null }>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, quarantined_at, quarantine_reason, event_date
+  const rows = await db.all<Omit<CampaignDetail['leads'][number], 'window_held'> & { event_date: string | null }>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, human_confirmed_from, quarantined_at, quarantine_reason, event_date
     FROM leads WHERE scan_job_id = ? ORDER BY insert_seq`, [job.id])
   const now = new Date()
   const leads = rows.map(({ event_date, ...l }) => ({ ...l, window_held: windowHeld({ event_date, icp: w?.icp ?? null, query: job.query }, now) }))

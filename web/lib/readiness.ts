@@ -119,7 +119,7 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const runningNow = ownJobs.some(j => ['pending', 'running', 'enriching'].includes(j.status))
   const finishedCount = i.totals ? i.totals.finished : finished.length
   const scan: Row = !i.jobs && !i.totals ? { id: 'scan', label: 'First scan', state: 'unknown', detail: 'could not check - your searches did not load', fix: null }
-    : finishedCount > 0 || finished.length > 0 ? { id: 'scan', label: 'First scan', state: 'done', detail: `${Math.max(finishedCount, finished.length)} finished${finished.length ? `; latest: ${recentPlays(finished, 1)[0]?.outcome ?? 'finished'}` : ''}`, fix: null }
+    : finishedCount > 0 || finished.length > 0 ? { id: 'scan', label: 'First scan', state: 'done', detail: `${Math.max(finishedCount, finished.length)} finished${finished.length ? `; latest: ${recentPlays(finished, 1, i.campaigns)[0]?.outcome ?? 'finished'}` : ''}`, fix: null }
     : !i.totals && listFull && !runningNow ? { id: 'scan', label: 'First scan', state: 'unknown', detail: `could not check - only your latest ${JOBS_CAP} scans could be checked`, fix: null }
     : runningNow ? { id: 'scan', label: 'First scan', state: 'todo', detail: 'running now', fix: { kind: 'link', href: '/app/leads', label: 'See progress' } }
     : { id: 'scan', label: 'First scan', state: 'todo', detail: 'no scan has finished yet', fix: { kind: 'link', href: '/app/leads', label: 'Find leads' } }
@@ -170,17 +170,22 @@ export function capNotice(o: ReadinessInput['outreach']): string | null {
 export interface JobRow { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; lead_count: number; funded_by?: string | null; candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; test_only?: boolean }
 export interface Play { id: string; query: string; outcome: string }
 
+type CampaignSummary = NonNullable<ReadinessInput['campaigns']>[number]
+
 // The account's own searches, newest first, with what each produced. Imports and test fixtures are not plays.
 // A finished search reports source-checked and needs-review counts separately (the same words as the Leads history):
 // research-only leads are never shown as yield. Older records without those counts say "counts unavailable", never a lead total.
-export function recentPlays(jobs: JobRow[], limit = 5): Play[] {
+// campaigns (GET /api/campaigns, already loaded for this same Home read) carries the current split - a lead's review_reason
+// or hold can change after the scan finished - so a matching row there is preferred over the job's own recorded counts (#683).
+export function recentPlays(jobs: JobRow[], limit = 5, campaigns?: ReadinessInput['campaigns']): Play[] {
+  const byId = new Map((campaigns ?? []).map(c => [c.id, c]))
   return jobs.filter(j => j.query && !j.csv_domain && !j.test_only)
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, limit)
-    .map(j => ({ id: j.id, query: j.query!, outcome: outcomeOf(j) }))
+    .map(j => ({ id: j.id, query: j.query!, outcome: outcomeOf(j, byId.get(j.id)) }))
 }
 
-function outcomeOf(j: JobRow): string {
+function outcomeOf(j: JobRow, c?: CampaignSummary): string {
   // The same recorded outcome as the Leads history and the campaign page (lib/scan/scan-outcome.ts), in short words.
   const o = scanOutcome(j)
   if (o.kind === 'running') return 'running'
@@ -196,6 +201,11 @@ function outcomeOf(j: JobRow): string {
   // Older records never stored the check counts: say so, and never call what they found "leads".
   if (o.kind === 'unrecorded') return 'counts unavailable'
   if (o.kind === 'all_dropped') return `${j.candidates} found, all dropped by the checks`
-  const review = j.needs_review ?? 0
-  return `${j.verified ?? 0} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
+  const q = c?.qualification
+  const verified = q?.sourceChecked ?? j.verified ?? 0
+  const review = q?.needsReview ?? j.needs_review ?? 0
+  // The campaign row's own counts also split off research-only (#683): without a matching row, nothing is claimed about it.
+  const research = q ? (q.research ?? 0) + (q.heldResearch ?? 0) : 0
+  const base = `${verified} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
+  return research > 0 ? `${base}, ${research} research-only` : base
 }
