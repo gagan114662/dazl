@@ -108,7 +108,10 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
 // #533: several postings of one company cite the same Ashby board record (the whole board): one successful read serves
 // them all for a short while, so a scan never downloads the same board once per posting. Only a 2xx answer is kept (a
 // refusal, an error or a thrown read is dropped, so the next posting asks again). Public data, keyed by the exact API
-// URL; bounded to BOARD_MEMO_BYTES of bodies in total and BOARD_MEMO_MS each.
+// URL; bounded to BOARD_MEMO_BYTES of bodies in total and BOARD_MEMO_MS each. A read in flight is counted once it ends,
+// so concurrent reads of different boards can pass the bound briefly (each read is itself capped at ATS_RECORD_MAX_BYTES).
+// The shared read is not tied to any one caller's abort signal: a cancelled caller stops waiting at once, and the read
+// itself ends within the request timeout.
 const BOARD_MEMO_MS = 120_000, BOARD_MEMO_BYTES = 24_000_000
 const boardMemo = new Map<string, { at: number; read: ReturnType<typeof once>; bytes: number }>()
 const memoBytes = () => [...boardMemo.values()].reduce((a, m) => a + m.bytes, 0)

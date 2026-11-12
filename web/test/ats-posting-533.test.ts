@@ -140,6 +140,17 @@ test('#533 a refused board read is not remembered: the next posting asks again',
   } finally { restore() }
 })
 
+test('#533 the shared board reads are bounded by total size: older boards are dropped and read again', async () => {
+  const board = (org: string) => JSON.stringify({ jobs: [{ ...ASHBY_BOARD.jobs[1], jobUrl: `https://jobs.ashbyhq.com/${org}/${ID}`, descriptionPlain: `${DESC} ${'y'.repeat(10_000_000)}` }] })
+  const bodies: Record<string, string> = { org1: board('org1'), org2: board('org2'), org3: board('org3') }
+  const asked: { url: string; accept: string }[] = []
+  const restore = fakeHttps(u => { const org = u.split('/').pop()!; return bodies[org] ? { status: 200, type: 'application/json', body: bodies[org] } : live()(u) }, asked)
+  try {
+    for (const org of ['org1', 'org2', 'org3', 'org1']) assert.ok(!isFail(await fetchPageDetailed(`https://jobs.ashbyhq.com/${org}/${ID}`, async () => null)), org)
+    assert.deepEqual(asked.map(a => a.url.split('/').pop()), ['org1', 'org2', 'org3', 'org1'], 'org1 was dropped to keep the bound, so it is read again')
+  } finally { restore() }
+})
+
 test('#533 a large Ashby board (over the 1.5 MB page bound) is still read; the board day only dates a fresh posting', async () => {
   const filler = Array.from({ length: 600 }, (_, i) => ({ id: `22222222-0000-4000-8000-${String(i).padStart(12, '0')}`, title: `Role ${i}`, isListed: true, publishedAt: '2026-10-01T00:00:00Z', jobUrl: 'https://jobs.ashbyhq.com/acmeco/x', descriptionPlain: 'x'.repeat(5000) }))
   const big = JSON.stringify({ jobs: [...filler, ASHBY_BOARD.jobs[1]] })
