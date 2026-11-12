@@ -96,3 +96,40 @@ test('#972: the legacy $ROOT/current-sha path is gated behind an explicit opt-in
   assert.match(src, /CURRENT_FILES=\$\{STAGING_CURRENT_SHA_FILES:-\/var\/lib\/dazl-staging-deploy\/current-sha\}/, 'default CURRENT_FILES is the trusted, root-owned path only')
   assert.match(src, /STAGING_TRUST_LEGACY_CURRENT_SHA/, 'the legacy path is added only behind an explicit env opt-in')
 })
+
+// End-to-end version of the test above (round-2 council nit): a real $ROOT/current-sha matching main's head, with
+// STAGING_CURRENT_SHA_FILES left UNSET so the script's own default applies (the rig() helper above always sets it,
+// which short-circuits the opt-in's `-z` check and so can't exercise this). Without the opt-in the file is never
+// read; with it, the script does treat main as already live.
+function rigLegacyCurrentSha(trustLegacy: boolean) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pull-prebuilt-legacy-'))
+  const bin = path.join(dir, 'bin'); mkdirSync(bin)
+  const deploy = path.join(dir, 'deploy.sh'); writeFileSync(deploy, '#!/usr/bin/env bash\n'); chmodSync(deploy, 0o755)
+  const envFile = path.join(dir, 'env'); writeFileSync(envFile, '')
+  writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env bash\necho "${SHA}\trefs/heads/main"\n`); chmodSync(path.join(bin, 'git'), 0o755)
+  // curl is never reached in the "already live" case; stub it to fail loudly if it is, so a regression that skips
+  // the early-exit shows up as a curl-not-found-ish failure rather than silently passing.
+  writeFileSync(path.join(bin, 'curl'), '#!/usr/bin/env bash\nexit 77\n'); chmodSync(path.join(bin, 'curl'), 0o755)
+  const root = path.join(dir, 'root'); mkdirSync(root)
+  writeFileSync(path.join(root, 'current-sha'), SHA)
+  const env = {
+    PATH: `${bin}:${process.env.PATH}`,
+    STAGING_DEPLOY_SH: deploy, STAGING_ENV_FILE: envFile,
+    STAGING_PREBUILT_STATE: path.join(dir, 'pstate'), STAGING_ROOT: root,
+    STAGING_BACKUP_DIR: path.join(dir, 'backups'), STAGING_PREBUILT_DIR: path.join(dir, 'dl'),
+    ...(trustLegacy ? { STAGING_TRUST_LEGACY_CURRENT_SHA: '1' } : {}),
+  } as unknown as NodeJS.ProcessEnv
+  const r = spawnSync('bash', [script, '--dry-run'], { encoding: 'utf8', env })
+  return { status: r.status, out: r.stdout + r.stderr }
+}
+
+test('#972 end-to-end: without the opt-in, a live legacy current-sha is never read - the script proceeds past it', () => {
+  const r = rigLegacyCurrentSha(false)
+  assert.doesNotMatch(r.out, /already live/, 'the legacy file matches main but must not be trusted by default')
+})
+
+test('#972 end-to-end: with STAGING_TRUST_LEGACY_CURRENT_SHA=1, the same legacy file is read and main is seen as live', () => {
+  const r = rigLegacyCurrentSha(true)
+  assert.equal(r.status, 0)
+  assert.match(r.out, /already live/)
+})
