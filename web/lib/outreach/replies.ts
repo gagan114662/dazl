@@ -70,7 +70,7 @@ export type ReplyClass = 'opt_out' | 'negative' | 'positive' | 'auto' | 'uncerta
 const words = (alts: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts.join('|')})(?![\\p{L}\\p{N}])`, 'iu')
 const OPT_OUT = words([
   // English
-  'unsubscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt[- ]?out', 'cease',
+  'un[\\s-]*subscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt\\s*-?\\s*out', 'cease',
   'never (?:contact|email|message) (?:me|us)', 'leave me alone', "(?:do not|don'?t) send (?:me |us )?(?:any )?(?:more )?(?:e-?mails?|messages?)",
   'no more (?:e-?mails?|messages?)', 'take (?:me|us) out of', 'remove (?:my|our) (?:address|e-?mail)',
   // Spanish, French, German, Portuguese, Italian, Dutch
@@ -80,7 +80,23 @@ const OPT_OUT = words([
   'descadastr(?:ar|e|e-me)', 'cancelar (?:a )?inscri[cç][aã]o', 'remov(?:a|er)(?:-me)? da (?:sua )?lista', 'n[aã]o me (?:envie|contate|contacte|mande)',
   'cancellami', 'disiscriv(?:i|ere|etemi)', 'rimuovetemi', 'non (?:mi )?(?:contattate|scrivete) pi[uù]',
   'afmelden', 'uitschrijven', 'schrijf me uit', 'geen (?:e-?mails|berichten) meer',
+  // #804: French (more forms), Polish, Swedish, Danish/Norwegian, Turkish, Indonesian, Russian
+  'ne (?:pas|plus) me (?:contacter|[ée]crire|envoyer)', 'ne me contactez (?:plus|pas)',
+  'wypisa[ćc] mnie', 'mnie wypisa[ćc]', 'wypisz(?:cie)? mnie', 'nie (?:piszcie|kontaktujcie si[ęe]) (?:do mnie|ze mn[ąa])',
+  'avregistrera mig', 'avsluta (?:min )?prenumeration', 'kontakta mig inte', 'ta bort mig',
+  'afmeld mig', 'meld mig af', 'meld meg av', 'avmeld meg', 'kontakt (?:mig|meg) ikke', 'ikke kontakt (?:mig|meg)',
+  'abonelikten [çc][ıi]k\\p{L}*', 'beni (?:listeden|listenizden) [çc][ıi]kar\\p{L}*', 'aboneli[ğg]i(?:mi)? iptal',
+  'berhenti berlangganan', 'hapus saya dari (?:daftar|milis)', 'jangan (?:hubungi|kirim (?:e-?mail|pesan) ke) saya',
+  'отпиш(?:ите|и|усь)', 'отписаться', 'не пишите мне', 'удалите меня', 'больше не пишите',
+  // Greek
+  'σταματ\\p{L}* να μου στ[έε]λν\\p{L}*', 'μη(?:ν)? μου στ[έε]λν\\p{L}*', 'διαγρ[άα]ψτε με', 'απεγγραφ\\p{L}*',
 ])
+// Chinese, Japanese and Korean are written without spaces, so these match inside a sentence (no word boundary).
+const OPT_OUT_CJK = /退订|退訂|取消订阅|取消訂閱|不要再(?:发|發|给我发|給我發|联系|聯繫)|别再(?:发|發|联系)|配信停止|配信を停止|購読解除|登録解除|수신\s*거부|구독\s*(?:취소|해지)/u
+// The text the stop rules read: compatibility forms folded (fullwidth "ｕｎｓｕｂｓｃｒｉｂｅ" is "unsubscribe") and invisible
+// format characters removed (zero-width spaces, soft hyphens, joiners), so an opt-out cannot hide from them. Only the stop
+// rules read this form; positive wording is still read from the raw text, so folding can never create consent.
+const stopForm = (t: string) => t.normalize('NFKC').replace(/\p{Cf}/gu, '')
 const NEGATIVE = words([
   'not interested', 'no thanks', 'no thank you', 'not for us', 'not a fit', 'no longer interested', 'wrong person',
   // explicit rejections: a later positive word never turns them into interest
@@ -110,15 +126,16 @@ export interface ReplyHeaders { autoSubmitted?: string; precedence?: string; sub
 // rules cannot read, positive next to a negation or hedge) applies with or without the markers, in one pass.
 export function classifyReply(text: string, h: ReplyHeaders = {}, status: 'ok' | 'empty' | 'malformed' = 'ok'): ReplyClass {
   const auto = (h.autoSubmitted && h.autoSubmitted.toLowerCase() !== 'no') || /^(bulk|junk|auto_reply|list)$/i.test(h.precedence ?? '') || !!h.xAutoreply || !!h.xAutorespond || AUTO_SUBJECT.test(h.subject ?? '')
-  if (auto && status !== 'malformed' && !text.trim()) return 'auto'
+  if (auto && status !== 'malformed' && typeof text === 'string' && !text.trim()) return 'auto'
   const body = bodyClass(text, status)
   return auto && (body === 'positive' || body === 'other') ? 'auto' : body
 }
 function bodyClass(text: string, status: 'ok' | 'empty' | 'malformed'): ReplyClass {
-  if (status !== 'ok' || !text.trim()) return 'uncertain'
-  if (OPT_OUT.test(text)) return 'opt_out'
-  if (NEGATIVE.test(text)) return 'negative'
-  if (AMBIGUOUS.test(text)) return 'uncertain'
+  if (status !== 'ok' || typeof text !== 'string' || !text.trim()) return 'uncertain'
+  const stop = stopForm(text)
+  if (OPT_OUT.test(stop) || OPT_OUT_CJK.test(stop)) return 'opt_out'
+  if (NEGATIVE.test(stop)) return 'negative'
+  if (AMBIGUOUS.test(stop)) return 'uncertain'
   if (nonLatinShare(text) > 0.2) return 'uncertain'
   if (POSITIVE.test(text)) return NEGATION.test(text) ? 'uncertain' : 'positive'
   return 'other'
