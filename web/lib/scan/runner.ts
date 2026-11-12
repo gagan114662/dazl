@@ -499,6 +499,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // second), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then the
 // oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
 // An enrichment row whose end mark never landed (a crash) stops counting as busy when the UI calls it interrupted.
+// Claim cost (#1081 review): every arm is an index seek bounded by the queue, never by history.
+//  - the enrichment arm must use the partial index scan_jobs_enriching: `+status` keeps the planner off
+//    scan_jobs_status, which would visit every 'done' job ever written (392 ms at 2M rows vs ~0.5 ms);
+//  - `served` is MATERIALIZED so its per-tenant subqueries run once per tenant, not once per pending job.
+// test/fair-legacy-claimer-1081.test.ts pins both with EXPLAIN QUERY PLAN.
 const ENRICHING_HOLDS_SLOT_S = ENRICH_STALE_S
 const RECENT_SERVED_S = 3600
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
@@ -518,9 +523,9 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
          running AS (SELECT user_id, COUNT(*) AS n FROM (
                        SELECT user_id FROM scan_jobs WHERE status = 'running'
                        UNION ALL
-                       SELECT user_id FROM scan_jobs WHERE enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICHING_HOLDS_SLOT_S} AND status = 'done')
+                       SELECT user_id FROM scan_jobs WHERE enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICHING_HOLDS_SLOT_S} AND +status = 'done')
                      GROUP BY user_id),
-         served AS (SELECT t.user_id, MAX(COALESCE((SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id), 0),
+         served AS MATERIALIZED (SELECT t.user_id, MAX(COALESCE((SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id), 0),
                                           COALESCE((SELECT MAX(f.finished_at) FROM scan_jobs f WHERE f.user_id = t.user_id), 0)) AS at,
                            (SELECT COUNT(*) FROM scan_jobs h WHERE h.user_id = t.user_id AND h.finished_at >= CAST(strftime('%s','now') AS INTEGER) - ${RECENT_SERVED_S}) AS recent
                     FROM (SELECT DISTINCT user_id FROM eligible) t)

@@ -92,3 +92,42 @@ test('#1081: a job still in post-finish enrichment holds its tenant\'s slot, so 
   assert.equal(claimKeyedJob(db2)!.user_id, 'B', 'B never served: still first')
   assert.equal(claimKeyedJob(db2)!.user_id, 'A', 'A is not blocked forever by a stale enrichment mark')
 })
+
+// Claim cost (#1081 review): the claim runs on every kick (scan, CSV, plays, status poll, tick) inside an IMMEDIATE
+// transaction on the synchronous driver, so its cost must be bounded by the queue, never by history.
+function claimPlan(db: Database.Database): { id: number; parent: number; detail: string }[] {
+  let sql = ''
+  const orig = db.prepare.bind(db)
+  const spy = (s: string) => { if (s.includes('WITH eligible')) sql = s; return orig(s) }
+  ;(db as unknown as { prepare: typeof spy }).prepare = spy
+  try { claimKeyedJob(db) } finally { (db as unknown as { prepare: typeof orig }).prepare = orig }
+  assert.ok(sql, 'the claim query was captured')
+  return orig('EXPLAIN QUERY PLAN ' + sql).all() as { id: number; parent: number; detail: string }[]
+}
+function assertBoundedPlan(plan: { id: number; parent: number; detail: string }[], label: string) {
+  const text = plan.map(p => p.detail).join('\n')
+  assert.match(text, /SEARCH scan_jobs USING INDEX scan_jobs_enriching \(enrich_started_at>\?\)/, `${label}: the enrichment arm seeks the partial index`)
+  // scan_jobs_status serves exactly the 'pending' (eligible) and 'running' arms; a third use is the 'done' history walk
+  assert.equal(plan.filter(p => /scan_jobs_status/.test(p.detail)).length, 2, `${label}: no arm walks status='done':\n${text}`)
+  assert.doesNotMatch(text, /SCAN scan_jobs(?! USING)/, `${label}: no full table scan of scan_jobs`)
+  // the per-tenant figures are computed once per tenant (inside the materialized `served`), not once per pending job
+  const byId = new Map(plan.map(p => [p.id, p]))
+  const inServed = (p: { parent: number }): boolean => { for (let q = byId.get(p.parent); q; q = byId.get(q.parent)) if (/MATERIALIZE served/.test(q.detail)) return true; return false }
+  const correlated = plan.filter(p => /CORRELATED SCALAR SUBQUERY/.test(p.detail))
+  assert.equal(correlated.length, 3, `${label}: the three per-tenant subqueries`)
+  for (const c of correlated) assert.ok(inServed(c), `${label}: ${c.detail} runs inside MATERIALIZE served, not per pending row:\n${text}`)
+}
+
+test('#1081: the claim query plan stays bounded by the queue, never by the done history (enrichment arm on scan_jobs_enriching; per-tenant figures materialized)', () => {
+  const db = setup('A', 'B')
+  queue(db, 'A', 3); queue(db, 'B', 1)
+  assertBoundedPlan(claimPlan(db), 'empty history')
+  // a long done history and fresh statistics must not flip the planner back onto scan_jobs_status for the done arm
+  const now = Math.floor(Date.now() / 1000)
+  const hist = db.transaction(() => [...queue(db, 'A', 2500), ...queue(db, 'B', 2500)])()
+  const run = db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?")
+  const done = db.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ?, enrich_started_at = ?, enrich_finished_at = ? WHERE id = ?")
+  db.transaction(() => hist.forEach((id, i) => { run.run(id); done.run(now - 86400 + i, now - 86400 + i, now - 86400 + i, id) }))()
+  db.exec('ANALYZE')
+  assertBoundedPlan(claimPlan(db), '5000 done rows + ANALYZE')
+})

@@ -176,7 +176,8 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
   // #1081 fair claiming (runner.ts claimKeyedJob): each tenant's last claim and last finish, and the jobs still in
-  // post-finish enrichment (they hold a run slot), are index seeks, not table scans.
+  // post-finish enrichment (they hold a run slot), are index seeks, not table scans (the claim query's plan is pinned by
+  // test/fair-legacy-claimer-1081.test.ts: no arm may walk the 'done' history).
   db.exec(`CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL`)
