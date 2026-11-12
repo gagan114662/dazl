@@ -201,11 +201,11 @@ export function verifyDailyCap(env: Record<string, string | undefined> = process
 }
 const OUTCOME: Record<VerifyAnswer['outcome'], Verification> = { deliverable: 'verified', catch_all: 'catch_all', undeliverable: 'undeliverable', unknown: 'uncertain', refused: 'refused' }
 
-export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null; stopped?: string }
+export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null; stopped?: string; aborted?: boolean }
 // Checks a lead's unchecked US candidates, one reserved slot at a time. The slot (verification='pending', checked_at)
 // is written and counted inside a transaction BEFORE the provider call, so the cap holds even if the call or the
 // process dies; a pending row is never verified.
-export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal } = {}): Promise<VerifyRun> {
+export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal; alive?: () => boolean } = {}): Promise<VerifyRun> {
   const env = opts.env ?? process.env
   const run: VerifyRun = { checked: 0, verified: 0, capped: 0, skipped: null }
   if (!emailGuessEnabled(env)) return { ...run, skipped: 'EMAIL_GUESS_ENABLED is off' }
@@ -218,24 +218,33 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
   const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
-  const reserve = db.transaction((address: string): boolean => {
+  // 'cap': a cap refused the slot (later addresses would be refused too); 'lost': another run already took this address.
+  const reserve = db.transaction((address: string): 'ok' | 'cap' | 'lost' => {
     const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
-    if (used >= cap) return false
+    if (used >= cap) return 'cap'
     // The verifier's monthly allowance across every tenant of THIS database: an operator ledger (email_verify_usage, no tenant
     // data), so deleting a tenant's candidate rows never frees allowance already spent. Counted and written in this transaction.
     // Per database: two deployments sharing one key each count their own; the provider's refusal (a 'stop') is the backstop.
     const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
-    if (month >= monthCap) return false
+    if (month >= monthCap) return 'cap'
     const won = db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, vname, tenantId, leadId, address).changes === 1
     if (won) db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = n + 1').run(vname, monthKey)
-    return won
+    return won ? 'ok' : 'lost'
   })
   for (const { address } of rows) {
-    if (opts.signal?.aborted) break
-    if (!reserve(address)) { run.capped = rows.length - run.checked; break }
+    if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
+    const slot = reserve(address)
+    if (slot === 'lost') continue
+    if (slot === 'cap') { run.capped = rows.length - run.checked; break }
     let v: Verification = 'uncertain'
     let stop: string | null = null
     try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
+    // Cut off by our own deadline mid-call: no answer, so the address goes back to unchecked (a later run may check it). Its slot
+    // stays counted in both caps (the request may have reached the provider): an over-count, never an under-count.
+    if (v === 'uncertain' && !stop && opts.signal?.aborted) {
+      db.prepare("UPDATE email_candidates SET verification = 'none' WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(tenantId, leadId, address)
+      run.aborted = true; break
+    }
     db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
     run.checked++
     if (v === 'verified') run.verified++
@@ -248,7 +257,7 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
 // #899: the mailbox check for one scan's leads, run by the scan runner as its LAST post-finish step (lib/scan/runner.ts
 // runPostFinishBounded), never inside the crawl: a slow check can then only use time nothing else needs, and can never make a
 // finished site read look cut off. Lead by lead under both caps; a stop (bad key, no credits, rate limit) or the cap ends it.
-export async function verifyJobCandidates(db: Database.Database, tenantId: string, jobId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal } = {}): Promise<VerifyRun & { leads: number }> {
+export async function verifyJobCandidates(db: Database.Database, tenantId: string, jobId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal; alive?: () => boolean } = {}): Promise<VerifyRun & { leads: number }> {
   const out: VerifyRun & { leads: number } = { checked: 0, verified: 0, capped: 0, skipped: null, leads: 0 }
   if (!emailGuessEnabled(opts.env ?? process.env)) return { ...out, skipped: 'EMAIL_GUESS_ENABLED is off' }
   if (!verifier) return { ...out, skipped: 'no verifier configured' }
@@ -258,12 +267,14 @@ export async function verifyJobCandidates(db: Database.Database, tenantId: strin
       WHERE c.tenant_id = ? AND j.user_id = ? AND l.scan_job_id = ? AND c.verification = 'none' AND c.tier = 'guessed' AND c.confidence = 'high' AND c.country_basis IS NOT NULL
       ORDER BY c.lead_id`).all(tenantId, tenantId, jobId) as { lead_id: string }[]).map(r => r.lead_id)
   } catch (e) { if (/no such table/i.test(String((e as Error)?.message))) return out; throw e }
+  // alive: the scan is still this attempt's (not cancelled, not taken over): a cancelled scan sends nothing more to the provider.
   for (const leadId of leadIds) {
-    if (opts.signal?.aborted) break
+    if (opts.signal?.aborted || (opts.alive && !opts.alive())) return { ...out, aborted: true }
     const r = await verifyCandidates(db, tenantId, leadId, verifier, opts)
     if (r.skipped) return { ...out, skipped: r.skipped }
     out.leads++; out.checked += r.checked; out.verified += r.verified; out.capped += r.capped
     if (r.stopped) return { ...out, stopped: r.stopped }
+    if (r.aborted) return { ...out, aborted: true }
     if (r.capped) break // a cap is reached: later leads would be refused the same way
   }
   return out

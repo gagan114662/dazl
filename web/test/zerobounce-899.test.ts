@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL } from '../lib/people/zerobounce.ts'
 import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
-import { runPostFinishBounded } from '../lib/scan/runner.ts'
+import { runPostFinishBounded, emailVerifyBudgetMs } from '../lib/scan/runner.ts'
 import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -119,7 +119,7 @@ async function crawl(env: Record<string, string>, opts: { leads?: number } = {})
     '/': html('Acme Logistics 120 Main St, Austin, TX 78701 <a href="/team">Team</a>'),
     '/team': html(`${PROSE}<h3>Dana Lee</h3><p>CEO</p><h3>Ben Ortiz</h3><p>CFO</p><h3>Cara Diaz</h3><p>COO</p><p>Press: dana.lee@acmelogistics.com, ben.ortiz@acmelogistics.com</p>`),
   }
-  const beta: Record<string, string> = { '/': html('Beta Freight 9 Elm St, Dallas, TX 75201 <a href="/team">Team</a>'), '/team': html(`${PROSE}<h3>Gil Park</h3><p>CEO</p><h3>Hal Wu</h3><p>CFO</p><h3>Ivy Sol</h3><p>COO</p><p>Press: gil.park@betafreight.com, hal.wu@betafreight.com</p>`) }
+  const beta: Record<string, string> = { '/': html('Beta Freight 9 Elm St, Dallas, TX 75201 <a href="/team">Team</a>'), '/team': html(`${PROSE}<h3>Gil Park</h3><p>CEO</p><h3>Hal Rowe</h3><p>CFO</p><h3>Ivy Sol</h3><p>COO</p><p>Press: gil.park@betafreight.com, hal.rowe@betafreight.com</p>`) }
   const get: Get = async url => { const u = new URL(url); const p = u.hostname.includes('betafreight') && u.pathname !== '/robots.txt' ? beta[u.pathname] : pages[u.pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW })
   return { db, job }
@@ -144,7 +144,7 @@ test('#899 job check: the guessed (not the published) address is checked; only t
 
 test('#899 job check: a stop (no credits) ends the whole job after one request; the key never reaches a stored row', async () => {
   const { db, job } = await crawl(ON, { leads: 2 })
-  assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'").get() as { n: number }).n, 2, 'both leads had a guess to check')
+  assert.deepEqual(db.prepare("SELECT lead_id FROM email_candidates WHERE tier = 'guessed' AND confidence = 'high' ORDER BY lead_id").all(), [{ lead_id: 'L1' }, { lead_id: 'L2' }], 'both leads had a high-confidence guess to check')
   let calls = 0
   const v = await verifyJobCandidates(db, 'A', job, zeroBounceVerifier('zb-secret-key', (async () => { calls++; return new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' })) }) as unknown as typeof fetch), { env: ON, now: NOW })
   assert.equal(calls, 1); assert.match(v.stopped ?? '', /ran out of credits/)
@@ -179,7 +179,55 @@ test('#899 runner: the check is the LAST post-finish step, traced as email_verif
     assert.equal(calls, 1)
     const s1 = JSON.stringify(t1)
     assert.match(s1, /email_verify/); assert.match(s1, /"verified":1/)
-    const order = s1.indexOf('paid_enrichment') < s1.indexOf('email_verify')
-    assert.ok(order, 'after paid enrichment')
+    for (const before of ['crawl', 'signals', 'paid_enrichment']) assert.ok(s1.indexOf(before) >= 0 && s1.indexOf(before) < s1.indexOf('email_verify'), `after ${before}`)
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
+})
+
+test('#899 job check stops when the scan is cancelled or taken over (alive false): no further request', async () => {
+  const { db, job } = await crawl(ON, { leads: 2 })
+  let calls = 0, alive = true
+  const v = await verifyJobCandidates(db, 'A', job, zeroBounceVerifier('k', (async () => { calls++; alive = false; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch), { env: ON, now: NOW, alive: () => alive })
+  assert.deepEqual(db.prepare("SELECT lead_id FROM email_candidates WHERE tier = 'guessed' AND confidence = 'high' ORDER BY lead_id").all(), [{ lead_id: 'L1' }, { lead_id: 'L2' }])
+  assert.equal(calls, 1); assert.equal(v.aborted, true)
+})
+
+test('#899 cut off by its own budget mid-call: the address goes back to unchecked, its slot stays counted (over-count, never under)', async () => {
+  const { db, job } = await crawl(ON)
+  const ctrl = new AbortController()
+  const v = await verifyJobCandidates(db, 'A', job, zeroBounceVerifier('k', (async () => { ctrl.abort(); throw new DOMException('aborted', 'AbortError') }) as unknown as typeof fetch), { env: ON, now: NOW, signal: ctrl.signal })
+  assert.equal(v.aborted, true)
+  assert.deepEqual(db.prepare("SELECT verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'none' }])
+  assert.deepEqual(db.prepare('SELECT n FROM email_verify_usage').all(), [{ n: 1 }])
+})
+
+test('#899 an address another run already took is skipped, not reported as a cap', async () => {
+  const { db, on } = seeded('A', 'L1')
+  let calls = 0
+  const v = { name: 'zerobounce', async verify() {
+    if (calls++ === 0) db.prepare("UPDATE email_candidates SET verification = 'verified' WHERE lead_id = 'L1' AND verification = 'none' AND address = (SELECT max(address) FROM email_candidates WHERE lead_id = 'L1' AND verification = 'none')").run()
+    return { outcome: 'deliverable' as const } } }
+  const run = await verifyCandidates(db, 'A', 'L1', v, { env: on, now: NOW })
+  assert.equal(run.capped, 0, 'a lost race is not a cap')
+  assert.ok(run.checked >= 2, `the remaining addresses were still checked (${run.checked})`)
+})
+
+test('#899 runner: a stop shows a generic line in the tenant trace, never the provider\'s account message', async () => {
+  const { db, job } = await crawl(ON)
+  const keep = { ...process.env }
+  Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
+  const err = console.error; console.error = () => {}
+  try {
+    const t = new EnrichmentTrace()
+    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' }))) as unknown as typeof fetch } as never, t)
+    const s = JSON.stringify(t)
+    assert.match(s, /the mailbox check is unavailable right now/)
+    assert.ok(!/ran out of credits|Invalid API key/.test(s), s)
+  } finally { console.error = err; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
+})
+
+test('#899 the check\'s own budget: default 20 s, clamped to 1-60 s', () => {
+  assert.equal(emailVerifyBudgetMs({}), 20_000)
+  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '500' }), 1_000)
+  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '900000' }), 60_000)
+  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: 'x' }), 20_000)
 })

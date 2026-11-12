@@ -17,7 +17,8 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    scan runner calls it (`verifyJobCandidates`) as the LAST post-finish step, on whatever time is left, traced as `email_verify`. Production verifier: ZeroBounce (`lib/people/zerobounce.ts`), used only when
    **all three** are set: `EMAIL_GUESS_ENABLED=1`, `ZEROBOUNCE_API_KEY` (a free account; never upgraded) and
    `EMAIL_VERIFY_DAILY_CAP` > 0. `EMAIL_VERIFY_MONTHLY_CAP` (optional) can only lower the monthly allowance below the free 100.
-   A bad key, no credits or a rate limit stops every further check of that crawl.
+   A bad key, no credits or a rate limit stops every further check of that scan. The check has its own time budget
+   (`EMAIL_VERIFY_BUDGET_MS`, default 20 s, 1-60 s) and stops when the scan is cancelled or taken over.
    - fails closed: only an explicit `deliverable` answer sets `verification = 'verified'`; `catch_all`,
      `undeliverable`, `unknown`, `refused`, a thrown error, or a malformed answer are stored as their own
      non-verified state and surfaced, never zero-filled;

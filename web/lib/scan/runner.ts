@@ -1862,6 +1862,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
 export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
   try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
 }
+// #899: the mailbox check's own time budget (EMAIL_VERIFY_BUDGET_MS, default 20 s, between 1 s and 60 s): it runs after the
+// post-finish budget's steps, so this is the most it can add to a scan's wall time.
+export function emailVerifyBudgetMs(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.EMAIL_VERIFY_BUDGET_MS)
+  return Number.isFinite(n) && n > 0 ? Math.min(60_000, Math.max(1_000, Math.floor(n))) : 20_000
+}
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
   if (raw === undefined) return 90_000
@@ -1903,17 +1909,20 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
-    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, on whatever post-finish time is left (it
-    // never delays the crawl or the enrichment above). Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
+    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
+    // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
+    // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
     if (emailGuessEnabled()) {
       const verifier = verifierFromEnv(process.env, deps.fetchImpl)
       if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
-      else if (postCtrl.signal.aborted) trace.note('email_verify', 'skipped', `the post-finish budget (${postFinishBudgetMs()} ms) was used up before the mailbox check`)
+      else if (!postFinishAlive(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over: nothing was sent')
       else try {
-        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: postCtrl.signal })
+        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAlive(db, job) })
         const detail = { leads: v.leads, checked: v.checked, verified: v.verified, over_cap: v.capped }
         if (v.skipped) trace.note('email_verify', 'skipped', v.skipped)
-        else if (v.stopped) trace.note('email_verify', 'failed', `stopped: ${v.stopped}`, detail)
+        // The provider's own words describe the operator's shared account: they go to the server log, not into a tenant's trace.
+        else if (v.stopped) { console.error('[email-verify] stopped:', v.stopped); trace.note('email_verify', 'failed', 'the mailbox check is unavailable right now, so no further address was sent', detail) }
+        else if (v.aborted) trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', `stopped early (time budget ${emailVerifyBudgetMs()} ms, or the scan was cancelled); unchecked addresses stay unchecked`, detail)
         else trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', v.checked ? null : v.capped ? 'the monthly or daily check cap was reached' : 'no high-confidence US guess to check', detail)
       } catch (e) { trace.note('email_verify', 'failed', e instanceof Error ? e.message.slice(0, 160) : 'error') }
     }
