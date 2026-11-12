@@ -1,4 +1,5 @@
-// Watch scans: a saved query + ICP re-run weekly. Design approved by the repo owner on 2026-10-21:
+// Watch scans: a saved query + ICP re-run weekly (#1042: the repeat dazl creates for a new account's first play re-runs
+// daily, with the free plan's daily cap, lib/play-cadence.ts). Design approved by the repo owner on 2026-10-21:
 // - every run counts against the monthly scan quota
 // - never trial-funded: a watch with no user key pauses, it never touches the operator key
 // - max 3 active watches per user
@@ -12,10 +13,10 @@ import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store
 import { readHasKey } from './llm/key-store.ts'
 import { readScanQuota } from './plans.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
-import { admitTrialRun, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
+import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
+import { cappedRunBudget, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
-const WEEK_S = 7 * 86400
 
 export function migrateWatch(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS watches (
@@ -73,7 +74,7 @@ export async function createWatch(db: Db, userId: string, query: string, icp: st
   return { watch: await db.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]) }
 }
 
-export async function listWatches(db: Db, userId: string) {
+export async function listWatches(db: Db, userId: string, now = nowS()) {
   // created_at is whole seconds: id breaks ties so watches made in the same second always list in the same order
   const rows = await db.all<Watch>('SELECT * FROM watches WHERE user_id = ? ORDER BY created_at DESC, id DESC', [userId])
   return Promise.all(rows.map(async w => {
@@ -82,7 +83,9 @@ export async function listWatches(db: Db, userId: string) {
     const newCount = last ? Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND watch_new = 1', [last.id]))!.n) : 0
     // #1042: the automatic repeat of the account's first play (lib/play-repeat.ts: its only job older than the watch)
     const auto = !!(await db.get('SELECT 1 AS x FROM scan_jobs WHERE watch_id = ? AND user_id = ? AND created_at < ? LIMIT 1', [w.id, userId, w.created_at]))
-    return { id: w.id, query: w.query, icp: JSON.parse(w.icp) as unknown, active: w.active === 1, next_run_at: w.next_run_at, last_run_at: w.last_run_at, paused_reason: w.paused_reason, last_job_id: last?.id ?? null, last_status: last?.status ?? null, new_leads: newCount, auto }
+    // #1042: a run the free plan's daily cap skipped, until the play runs again (lib/play-cadence.ts)
+    const skipped = auto && w.active === 1 ? await skipNotice(db, userId, { id: w.id, last_run_at: w.last_run_at == null ? null : Number(w.last_run_at) }, now) : null
+    return { id: w.id, query: w.query, icp: JSON.parse(w.icp) as unknown, active: w.active === 1, next_run_at: w.next_run_at, last_run_at: w.last_run_at, paused_reason: w.paused_reason, last_job_id: last?.id ?? null, last_status: last?.status ?? null, new_leads: newCount, auto, interval_s: watchIntervalS(auto), skipped }
   }))
 }
 
@@ -100,7 +103,9 @@ export async function watchAction(db: Db, userId: string, id: string, action: 'p
     if (w.active === 1) return true
     const no = yield* activationCheck(t, userId, w.query, id)
     if (no) return no
-    return (yield* t.run('UPDATE watches SET active = 1, paused_reason = NULL, next_run_at = ? WHERE id = ? AND user_id = ? AND active = 0', [now + WEEK_S, id, userId])).changes === 1
+    // the next run is one of the play's own intervals away: a day for the first play's repeat, a week otherwise
+    const every = watchIntervalS(yield* isFirstPlayRepeatStep(t, userId, id))
+    return (yield* t.run('UPDATE watches SET active = 1, paused_reason = NULL, next_run_at = ? WHERE id = ? AND user_id = ? AND active = 0', [now + every, id, userId])).changes === 1
   })
 }
 
@@ -162,10 +167,15 @@ const noFence: Fence = function* () { /* not fenced */ }
 // deleted or already run in between): the job and the watch's next run commit together, or neither does. The account's
 // active scans are re-checked inside that transaction under the shared admission lock (lib/play-funding.ts), so a
 // "Find leads now" click and this tick never both queue a scan for the account.
-export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined> } = {}): Promise<{ ran: number; paused: number }> {
+//
+// #1042 (lib/play-cadence.ts): the first play's repeat runs again a day later (any other watch a week later). On the free
+// plan it starts only while the account has started no scan this UTC day; otherwise that day's run is skipped (moved to
+// the same time tomorrow, with an audit event Home and Plays read), and each run it does start carries max_usd $0.30.
+// The cap is checked before any trial reservation and again inside the job's transaction, under the admission lock.
+export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined> } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence
   const due = await db.all<Watch>('SELECT * FROM watches WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at, id', [now])
-  let ran = 0, paused = 0
+  let ran = 0, paused = 0, skipped = 0
   for (const w of due) {
     const pause = async (reason: string) => {
       const r = await db.tx(function* (t) { yield* fence(t); return yield* t.run('UPDATE watches SET active = 0, paused_reason = ? WHERE id = ? AND active = 1 AND next_run_at = ?', [reason, w.id, w.next_run_at]) })
@@ -175,6 +185,20 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
     const funder = keyed ? null : await trialFunder(db, w.user_id, w.id, o.env)
     if (!keyed && !funder) { await pause('no_api_key'); continue }
     if (!(await readScanQuota(db, w.user_id)).allowed) { await pause('quota_exceeded'); continue }
+    const auto = await isFirstPlayRepeat(db, w.user_id, w.id)
+    const capped = await freeCapApplies(db, w.user_id, auto)
+    // the free plan's daily cap, before anything is reserved: today's run is skipped, not retried every tick
+    const capHit = function* (t: Tx): TxBody<boolean> { return capped && (yield* scansTodayStep(t, w.user_id, now)) >= FREE_DAILY_RUNS }
+    if (capped) {
+      const out = await db.tx(function* (t) {
+        yield* fence(t)
+        yield* lockScanAdmission(t, w.user_id)
+        if (!(yield* capHit(t))) return 'run' as const
+        return (yield* skipWatchRunStep(t, w, now)) ? 'skipped' as const : 'gone' as const
+      })
+      if (out === 'skipped') skipped++
+      if (out !== 'run') continue
+    }
     if (await countActiveJobs(db, w.user_id) > 0) continue // a scan is already going; the next tick picks this watch up
     // the free trial's existing admission, only for the first play's repeat with no key (nothing reserved otherwise)
     let trial: TrialRun | null = null
@@ -187,18 +211,22 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
     const play = await scheduledPlayOffer(db, w.user_id, w.query)
     let job: string | null = null
     try {
-      job = await db.tx(function* (t) {
+      const out = await db.tx(function* (t): TxBody<string | 'skipped' | null> {
         yield* fence(t)
         yield* lockScanAdmission(t, w.user_id)
         if ((yield* countActiveJobsStep(t, w.user_id)) > 0) return null
-        const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND active = 1 AND next_run_at = ?', [now, now + WEEK_S, w.id, w.next_run_at])
+        if (yield* capHit(t)) return (yield* skipWatchRunStep(t, w, now)) ? 'skipped' : null // a scan started since the check above
+        const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND active = 1 AND next_run_at = ?', [now, now + watchIntervalS(auto), w.id, w.next_run_at])
         if (r.changes !== 1) return null
-        const id = yield* queryJobStep(t, w.user_id, { id: trial?.jobId, query: w.query, icp: w.icp, watchId: w.id, runBudget: w.run_budget ?? null, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now)
+        const runBudget = capped ? cappedRunBudget(w.run_budget) : w.run_budget ?? null
+        const id = yield* queryJobStep(t, w.user_id, { id: trial?.jobId, query: w.query, icp: w.icp, watchId: w.id, runBudget, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now)
         if (trial) yield* markTrialJobStep(t, w.user_id, id)
         return id
       })
+      if (out === 'skipped') skipped++
+      else job = out
     } finally { if (trial && !job) await releaseTrialRun(db, w.user_id, trial) } // refused or threw: the attempt goes back
     if (job) ran++
   }
-  return { ran, paused }
+  return { ran, paused, skipped }
 }

@@ -1,4 +1,4 @@
-// #1042: after each run of a saved weekly play, one short email to the account listing the new leads that run found.
+// #1042: after each run of a saved play (weekly, or the first play's daily repeat), one short email to the account listing the new leads that run found.
 // Owner scope (Gagan via Quest, 2026-11-11 11:48): "after each scheduled run, send an email listing the new leads found".
 //
 // Which runs: a finished ('done') run of a LIVE weekly play (lib/watch.ts), started after the play was saved (so the
@@ -24,6 +24,7 @@ import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { playName, type PlayIcp } from './play-card.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
+import { isFirstPlayRepeatStep } from './play-funding.ts'
 
 export const MAIL_WINDOW_S = 86400
 export const MAIL_LIST_MAX = 10
@@ -55,7 +56,8 @@ export function oneLine(v: unknown, max: number): string {
 }
 const asIcp = (raw: string | null): PlayIcp | null => { try { const v = raw ? JSON.parse(raw) : null; return v && typeof v === 'object' && !Array.isArray(v) ? v as PlayIcp : null } catch { return null } }
 
-export function composePlayRunMail(o: { userId: string; to: string; jobId: string; query: string; icp: string | null; total: number; leads: { company: unknown; signal: unknown }[]; base: string }): PlayRunMail {
+// daily: the play is the first play's automatic repeat, which runs every day (lib/play-cadence.ts); otherwise weekly
+export function composePlayRunMail(o: { userId: string; to: string; jobId: string; query: string; icp: string | null; total: number; leads: { company: unknown; signal: unknown }[]; base: string; daily?: boolean }): PlayRunMail {
   const name = oneLine(playName(o.query, asIcp(o.icp)), 80) || 'your play'
   const n = o.total, s = n === 1 ? '' : 's'
   const lines = o.leads.slice(0, MAIL_LIST_MAX).map(l => {
@@ -69,7 +71,7 @@ export function composePlayRunMail(o: { userId: string; to: string; jobId: strin
     ...lines, ...(more > 0 ? [`...and ${more} more.`] : []), '',
     `See them in Leads: ${base}/app/leads?job_id=${o.jobId}`,
     `Your plays: ${base}/app/plays`, '',
-    'This play runs again every week. To stop its runs and these emails, pause it on the Plays page.',
+    `This play runs again every ${o.daily ? 'day' : 'week'}. To stop its runs and these emails, pause it on the Plays page.`,
     'Nothing was sent to anyone on your behalf.',
   ].join('\n')
   return { userId: o.userId, to: o.to, subject: `${n} new lead${s} from your play "${name}"`, text }
@@ -87,7 +89,8 @@ function* claimRun(t: Tx, d: Due, fence: Fence, base: string): TxBody<PlayRunMai
   const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
   if (typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) return null
   const leads = yield* t.all<{ company: unknown; signal: unknown }>(NEW_LEADS_SQL, [d.job_id, MAIL_LIST_MAX])
-  return composePlayRunMail({ userId: d.user_id, to, jobId: d.job_id, query: w.query, icp: w.icp, total, leads, base })
+  const daily = yield* isFirstPlayRepeatStep(t, d.user_id, d.watch_id)
+  return composePlayRunMail({ userId: d.user_id, to, jobId: d.job_id, query: w.query, icp: w.icp, total, leads, base, daily })
 }
 
 // Returns how many emails went out (or into the outbox). One run's failure is recorded and skipped; a lost lease stops

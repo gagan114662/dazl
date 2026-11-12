@@ -1,20 +1,21 @@
 // #1042: a new account's first play repeats by itself. Owner scope (Gagan via Quest, 2026-11-11 11:48): the first play
-// repeats automatically, weekly on the free plan, every run under the existing caps, and an email lists the new leads
-// after each scheduled run (lib/play-mail.ts).
+// repeats automatically, every run under the existing caps, and an email lists the new leads after each scheduled run
+// (lib/play-mail.ts). Cadence: DAILY on every plan (decision by Hermes, delegated by Gagan, 2026-11-12), with the free
+// plan's daily cap (1 scan a day, $0.30 a run) in lib/play-cadence.ts.
 //
 // What counts as the first play: the account's earliest query scan that finished 'done' (a failed or cancelled first
 // try does not count; a CSV import never does). Within FIRST_PLAY_WINDOW_S of it finishing, if the account has no saved
-// play at all (no watch, no monitor), the scheduler tick (app/api/internal/tick) creates ONE weekly watch for it:
+// play at all (no watch, no monitor), the scheduler tick (app/api/internal/tick) creates ONE daily watch for it:
 //   - the play's own sentence and the profile the run actually used (scan_jobs.icp after the run), its per-run budget;
-//   - its first scheduled run one week after the first play finished (REPEAT_INTERVAL_S);
+//   - its first scheduled run one day after the first play finished (REPEAT_INTERVAL_S), so "next search tomorrow";
 //   - the first play's leads are remembered by the watch (lib/watch.ts watchLeadsStep), so the next run marks only
 //     companies the account has not been shown as new;
 //   - the first play's job is linked to the watch (scan_jobs.watch_id). That link is the once-only marker: a repeat the
 //     person deletes or pauses is never created again, and it is how lib/play-funding.ts tells this repeat apart from a
 //     watch someone made by hand (its only job older than the watch).
-// Weekly on every plan: weekly is what the free plan allows (lib/monitors.ts MONITOR_LIMITS free: 168 h) and what
-// a watch runs on; a paid account can still add a daily monitor. Existing accounts are not enrolled on deploy: only a
-// first play that finished within the window qualifies.
+// Daily on every plan: the repeat runs every day (lib/play-cadence.ts watchIntervalS); a watch made by hand stays weekly.
+// Existing accounts are not enrolled on deploy: only a first play that finished within the window qualifies. A repeat
+// created weekly before this change switches to daily at its next run (its cadence is read, not stored).
 // Each account's writes are one transaction, fenced by the tick's lease and ordered with create/resume of a watch by
 // the same per-tenant lock (lib/watch.ts activationCheck): the "no saved play yet" check and the insert cannot interleave
 // with the person saving a play by hand. Nothing here runs a scan or spends anything; the runs are the scheduler's.
@@ -24,9 +25,10 @@ import { watchLeadsStep, type Fence } from './watch.ts'
 import { normalizeIcp } from './scan/icp.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
+import { DAY_S } from './play-cadence.ts'
 
 export const FIRST_PLAY_WINDOW_S = 2 * 86400
-export const REPEAT_INTERVAL_S = 7 * 86400
+export const REPEAT_INTERVAL_S = DAY_S
 const BATCH = 200
 const nowS = () => Math.floor(Date.now() / 1000)
 const noFence: Fence = function* () { /* not fenced */ }

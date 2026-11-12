@@ -7,8 +7,8 @@
 //
 // Funding. A play run is funded by the account's own AI key, as before. The ONE exception is the repeat dazl creates
 // for a new account's first play (lib/play-repeat.ts): with no key of its own, its runs may draw on the free trial
-// (owner scope, Gagan via Quest 2026-11-11 11:48: the first play repeats automatically, weekly on the free plan, under
-// the EXISTING trial caps). They are admitted by the existing trial admission, unchanged (lib/billing/trial-budget.ts
+// (owner scope, Gagan via Quest 2026-11-11 11:48, made daily by the 2026-11-12 decision in lib/play-cadence.ts: the
+// first play repeats automatically under the EXISTING trial caps). They are admitted by the existing trial admission, unchanged (lib/billing/trial-budget.ts
 // admitTrialScan: off unless the trial is configured, a Google sign-in, one trial per company domain, 3 scans per
 // account in total, the per-account total and the global daily ceiling), and the runner then holds each one to the
 // per-scan reserve, as it does every trial scan. Nothing here changes a cap; a run the caps refuse does not happen.
@@ -29,6 +29,9 @@ const FIRST_PLAY_REPEAT_SQL = `SELECT 1 AS x FROM watches w WHERE w.id = ? AND w
   AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.watch_id = w.id AND j.user_id = w.user_id AND j.created_at < w.created_at)`
 export async function isFirstPlayRepeat(db: Db, userId: string, watchId: string): Promise<boolean> {
   return !!(await db.get(FIRST_PLAY_REPEAT_SQL, [watchId, userId]))
+}
+export function* isFirstPlayRepeatStep(t: Tx, userId: string, watchId: string): TxBody<boolean> {
+  return !!(yield* t.get(FIRST_PLAY_REPEAT_SQL, [watchId, userId]))
 }
 
 export type Principal = { id: string; email: string }

@@ -10,6 +10,8 @@
 //     automatic repeat of a new account's first play with no key, the free trial through its existing admission and
 //     caps (unchanged; a refused admission is a refusal here, never a run on anything else);
 //   - the monthly scan quota allows one more scan;
+//   - #1042, free plan, the first play's repeat: the account has started no scan this UTC day (lib/play-cadence.ts), and
+//     the run carries max_usd $0.30, exactly as its scheduled run would;
 //   - no other scan of the tenant is queued, running or finishing (the one-at-a-time rule of POST /api/scan);
 //   - not within RUN_NOW_MIN_GAP_S of the play's last run (no click-spamming the quota or the trial).
 // Key, quota and the active-scan count are read first (a fast refusal that reserves nothing); the active-scan check and
@@ -28,23 +30,26 @@ import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store
 import { readHasKey } from './llm/key-store.ts'
 import { readScanQuota } from './plans.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
-import { admitTrialRun, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, type TrialRun } from './play-funding.ts'
+import { admitTrialRun, isFirstPlayRepeat, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, type TrialRun } from './play-funding.ts'
+import { cappedRunBudget, DAY_S, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, utcDayStart, watchIntervalS } from './play-cadence.ts'
 import { VISIBLE_LEAD } from './play-mail.ts'
 import type { PlayKind } from './play-runs.ts'
 
 export const RUN_NOW_MIN_GAP_S = 3600
-const WEEK_S = 7 * 86400 // a watch's cadence (lib/watch.ts)
 const nowS = () => Math.floor(Date.now() / 1000)
 
-export type RunNowRefusal = 'not_found' | 'paused' | 'no_api_key' | 'quota_exceeded' | 'scan_active' | 'too_soon' | 'trial_used' | 'trial_busy'
+export type RunNowRefusal = 'not_found' | 'paused' | 'no_api_key' | 'quota_exceeded' | 'scan_active' | 'too_soon' | 'trial_used' | 'trial_busy' | 'daily_cap'
 export type RunNowResult = { job_id: string; next_run_at: number; funded_by: 'user' | 'trial' } | { error: RunNowRefusal; retry_at?: number }
 
 interface PlayRow { query: string; icp: string | null; sources: string | null; run_budget: string | null; on: number; last_run_at: number | null; next_run_at: number | null; interval_s: number }
-const WATCH_SQL = 'SELECT query, icp, NULL AS sources, run_budget, active AS "on", last_run_at, next_run_at, 604800 AS interval_s FROM watches WHERE id = ? AND user_id = ?'
+// a watch's interval is its cadence (lib/play-cadence.ts watchIntervalS), filled in by readPlay
+const WATCH_SQL = 'SELECT query, icp, NULL AS sources, run_budget, active AS "on", last_run_at, next_run_at, 0 AS interval_s FROM watches WHERE id = ? AND user_id = ?'
 const MONITOR_SQL = 'SELECT query, icp, sources, NULL AS run_budget, enabled AS "on", last_run_at, next_run_at, interval_hours * 3600 AS interval_s FROM monitors WHERE id = ? AND user_id = ?'
-const readPlay = async (db: Db, userId: string, kind: PlayKind, id: string): Promise<PlayRow | undefined> => {
+const readPlay = async (db: Db, userId: string, kind: PlayKind, id: string): Promise<(PlayRow & { auto: boolean }) | undefined> => {
   const r = await db.get<PlayRow>(kind === 'watch' ? WATCH_SQL : MONITOR_SQL, [id, userId])
-  return r && { ...r, on: Number(r.on), last_run_at: r.last_run_at == null ? null : Number(r.last_run_at), next_run_at: r.next_run_at == null ? null : Number(r.next_run_at), interval_s: Number(r.interval_s) }
+  if (!r) return undefined
+  const auto = kind === 'watch' && await isFirstPlayRepeat(db, userId, id)
+  return { ...r, on: Number(r.on), last_run_at: r.last_run_at == null ? null : Number(r.last_run_at), next_run_at: r.next_run_at == null ? null : Number(r.next_run_at), interval_s: kind === 'watch' ? watchIntervalS(auto) : Number(r.interval_s), auto }
 }
 
 export async function runPlayNow(db: Db, userId: string, kind: PlayKind, id: string, now = nowS(), env: Record<string, string | undefined> = process.env): Promise<RunNowResult> {
@@ -57,6 +62,11 @@ export async function runPlayNow(db: Db, userId: string, kind: PlayKind, id: str
   const funder = keyed || kind !== 'watch' ? null : await trialFunder(db, userId, id, env)
   if (!keyed && !funder) return { error: 'no_api_key' }
   if (!(await readScanQuota(db, userId)).allowed) return { error: 'quota_exceeded' }
+  // #1042: the free plan's daily cap on the first play's repeat (lib/play-cadence.ts); retry_at is the next UTC day
+  const capped = await freeCapApplies(db, userId, p.auto)
+  const capRefusal: RunNowResult = { error: 'daily_cap', retry_at: utcDayStart(now) + DAY_S }
+  const capHit = function* (t: Tx): TxBody<boolean> { return capped && (yield* scansTodayStep(t, userId, now)) >= FREE_DAILY_RUNS }
+  if (capped && await db.tx(capHit)) return capRefusal // before any trial reservation
   if (await countActiveJobs(db, userId, now) >= 1) return { error: 'scan_active' } // before any trial reservation
   let trial: TrialRun | null = null
   if (funder) {
@@ -67,17 +77,18 @@ export async function runPlayNow(db: Db, userId: string, kind: PlayKind, id: str
   // the offer already confirmed for this play's request (#349), as the scheduled run reads it
   const play = await scheduledPlayOffer(db, userId, p.query)
   const offer = play ? { offer: play.offer, seller: play.seller ?? undefined } : {}
-  const next = now + (kind === 'watch' ? WEEK_S : p.interval_s)
+  const next = now + p.interval_s
   const read = p.next_run_at
   let out: RunNowResult = { error: 'scan_active' }
   try {
     out = await db.tx(function* (t: Tx): TxBody<RunNowResult> {
       yield* lockScanAdmission(t, userId)
       if ((yield* countActiveJobsStep(t, userId, now)) >= 1) return { error: 'scan_active' }
+      if (yield* capHit(t)) return capRefusal // a scan started since the check above
       if (kind === 'watch') {
         const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND user_id = ? AND active = 1 AND next_run_at = ?', [now, next, id, userId, read])
         if (r.changes !== 1) return { error: 'scan_active' } // the tick (or another click) ran it in between: that run is the one
-        const job = yield* queryJobStep(t, userId, { id: trial?.jobId, query: p.query, icp: p.icp, watchId: id, runBudget: p.run_budget, ...offer }, now)
+        const job = yield* queryJobStep(t, userId, { id: trial?.jobId, query: p.query, icp: p.icp, watchId: id, runBudget: capped ? cappedRunBudget(p.run_budget) : p.run_budget, ...offer }, now)
         if (trial) yield* markTrialJobStep(t, userId, job)
         return { job_id: job, next_run_at: next, funded_by: trial ? 'trial' : 'user' }
       }
