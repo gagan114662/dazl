@@ -61,7 +61,7 @@ CREATE TABLE autopilot_settings (
       consent_version TEXT,
       consent_at INTEGER,
       daily_cap INTEGER NOT NULL DEFAULT 20 CHECK (daily_cap BETWEEN 1 AND 50)
-    , followups_enabled INTEGER NOT NULL DEFAULT 0);
+    , followups_enabled INTEGER NOT NULL DEFAULT 0, answers_enabled INTEGER NOT NULL DEFAULT 0 CHECK (answers_enabled IN (0,1)), answers_cta TEXT NOT NULL DEFAULT 'signup' CHECK (answers_cta IN ('signup','meeting')), answers_max INTEGER NOT NULL DEFAULT 2 CHECK (answers_max BETWEEN 1 AND 5), answers_facts_version TEXT CHECK (answers_facts_version IS NULL OR length(answers_facts_version) <= 40));
 
 CREATE TABLE autopilot_work (
       message_id TEXT PRIMARY KEY,
@@ -79,6 +79,23 @@ CREATE TABLE bounce_records (
       tenant_id TEXT NOT NULL, outreach_message_id TEXT NOT NULL, recipient TEXT NOT NULL,
       status TEXT NOT NULL, source TEXT NOT NULL, source_gmail_id TEXT, created_at INTEGER NOT NULL,
       PRIMARY KEY (tenant_id, outreach_message_id, recipient)
+    );
+
+CREATE TABLE buyer_answer_decisions (
+      tenant_id     TEXT NOT NULL,
+      gmail_id      TEXT NOT NULL CHECK (length(gmail_id) <= 128),
+      thread_id     TEXT NOT NULL CHECK (length(thread_id) <= 128),
+      action        TEXT NOT NULL CHECK (action IN ('reply','escalate','pause','suppress')),
+      reason        TEXT CHECK (reason IS NULL OR length(reason) <= 40),
+      topics        TEXT CHECK (topics IS NULL OR length(topics) <= 120),
+      facts_version TEXT CHECK (facts_version IS NULL OR length(facts_version) <= 40),
+      status        TEXT NOT NULL CHECK (status IN ('recorded','sending','sent','uncertain','held')),
+      sent_gmail_id TEXT CHECK (sent_gmail_id IS NULL OR length(sent_gmail_id) <= 128),
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      CHECK ((action = 'reply') = (status <> 'recorded')),
+      CHECK ((sent_gmail_id IS NOT NULL) = (status = 'sent')),
+      PRIMARY KEY (tenant_id, gmail_id)
     );
 
 CREATE TABLE calcom_bookings (
@@ -1225,6 +1242,8 @@ CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
 
+CREATE INDEX buyer_answer_decisions_thread ON buyer_answer_decisions (tenant_id, thread_id);
+
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 
 CREATE INDEX commenter_rows_batch ON commenter_rows (batch_id);
@@ -1451,6 +1470,8 @@ CREATE TRIGGER tomb_autopilot_work BEFORE INSERT ON autopilot_work BEGIN SELECT 
 
 CREATE TRIGGER tomb_bounce_records BEFORE INSERT ON bounce_records BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_buyer_answer_decisions BEFORE INSERT ON buyer_answer_decisions BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_calcom_bookings BEFORE INSERT ON calcom_bookings BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_calcom_hooks BEFORE INSERT ON calcom_hooks BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1650,6 +1671,8 @@ CREATE TRIGGER tomb_upd_autopilot_settings BEFORE UPDATE OF tenant_id ON autopil
 CREATE TRIGGER tomb_upd_autopilot_work BEFORE UPDATE OF tenant_id ON autopilot_work BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_bounce_records BEFORE UPDATE OF tenant_id ON bounce_records BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_buyer_answer_decisions BEFORE UPDATE OF tenant_id ON buyer_answer_decisions BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_calcom_bookings BEFORE UPDATE OF tenant_id ON calcom_bookings BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
