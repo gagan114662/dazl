@@ -27,7 +27,7 @@ export interface ReadinessInput {
   // last 10 searches, with complete per-scan rejected and email counts). null when they could not be loaded; omitted by
   // callers that only check other rows.
   messages?: { status: string; lead_id?: string; test?: number | boolean | null }[] | null
-  campaigns?: { id: string; status?: string; query?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; research?: number; held?: number; heldResearch?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
+  campaigns?: { id: string; status?: string; query?: string; qualification: { rejected: number; sourceChecked?: number; confirmedByYou?: number; needsReview?: number; research?: number; held?: number; heldResearch?: number; heldResearchSourceChecked?: number; unverified?: number }; contact?: { withContact: number; readyWithContact?: number; draftable?: number }; outreach?: { drafts: number; approved: number; sent: number } }[] | null
 }
 export type Fix = { kind: 'link'; href: string; label: string } | { kind: 'inline'; label: string }
 export interface Row { id: 'site' | 'brain' | 'play' | 'key' | 'sources' | 'scan' | 'review' | 'gmail' | 'sender' | 'approved' | 'limit'; label: string; state: 'done' | 'todo' | 'unknown'; detail: string; fix: Fix | null; next?: boolean }
@@ -206,10 +206,11 @@ function outcomeOf(j: JobRow, c?: CampaignSummary): string {
   // job's own verified/needs_review are recorded at scan time and can be stale for exactly the leads #683 is about
   // (confirmed out of a hold since the scan ran), so showing them here would reproduce the bug this round exists to fix.
   if (!q) return j.candidates ? `${j.candidates} found; open the campaign for current counts` : 'counts unavailable'
-  // heldResearch is a held subset of sourceChecked/confirmedByYou (listCampaigns' own two-line Campaigns display shows
-  // it the same way: qualification line first, held/research breakdown second). Home shows one line, so the overlap
-  // must come out of sourceChecked here or the same lead is counted once as checked and again as research-only.
-  const verified = Math.max(0, (q.sourceChecked ?? 0) - (q.heldResearch ?? 0))
+  // heldResearch is a held subset of EITHER sourceChecked or confirmedByYou (a lead confirmed out of an uncheckable
+  // hold is confirmedByYou, not sourceChecked) - never both, so only heldResearchSourceChecked (the sourceChecked-only
+  // slice) belongs here (#683 round 3). Subtracting all of heldResearch would wrongly hide a clean, unrelated
+  // source-checked lead whenever the held one happened to be a confirmedByYou lead instead.
+  const verified = Math.max(0, (q.sourceChecked ?? 0) - (q.heldResearchSourceChecked ?? 0))
   const review = q.needsReview ?? 0
   const research = (q.research ?? 0) + (q.heldResearch ?? 0)
   const base = `${verified} source-checked, ${review} need${review === 1 ? 's' : ''} your review`

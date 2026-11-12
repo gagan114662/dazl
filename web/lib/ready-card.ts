@@ -83,7 +83,9 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const researchOf = (c: Camp) => (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)
   const reviewCamp = first(c => reviewable(c) > 0)
   // Nothing to review anywhere: the newest search whose leads are research only, with a step that can change the result - a new search.
-  const researchCamp = reviewCamp ? null : first(c => researchOf(c) > 0)
+  // Only when that search has no unverified lead either (#683 round 3): an unverified lead is still actionable by
+  // checking its source, so "search again" would be the wrong advice while one is sitting right there.
+  const researchCamp = reviewCamp ? null : first(c => researchOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
   const linkCamp = reviewCamp ?? researchCamp ?? first(c => c.status === 'done')
   // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens.
   const reviewN = reviewCamp ? reviewable(reviewCamp) : 0

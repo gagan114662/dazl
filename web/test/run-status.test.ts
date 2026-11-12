@@ -81,4 +81,7 @@ test('#683 round 2: a mixed research-only + unverified result still offers to re
   assert.doesNotMatch(run.label + ' ' + (run.next?.text ?? ''), /change the search|search again/i, 'the unverified lead can still be checked - this must not tell the user to search again')
   assert.match(run.label, /1 research only/)
   assert.match(run.label, /1 unverified/)
+  // #683 round 3 (haiku): the tag must agree with the label/next-action guard above - 'Research only' would wrongly
+  // imply nothing here can be changed, while the unverified lead can still be checked.
+  assert.equal(run.tag, 'Not verified yet')
 })

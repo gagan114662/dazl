@@ -46,9 +46,11 @@ export function currentQual(rows: QualRow[]): CurrentQual & { research: number }
   const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
   for (const r of rows) {
     const st = evidenceStateOf(r)
-    // A source-checked or confirmed lead is still research, never passed, if the time window holds it or it was
-    // confirmed OUT of a hold a check cannot resolve (#683: the same verdict as leadStatus, lib/outreach/campaign-view.ts).
-    const held = r.window_held || !!uncheckableCause(r.human_confirmed_from)
+    // A source-checked or confirmed lead is still research, never passed, if the time window holds it, it was
+    // confirmed OUT of a hold a check cannot resolve, or it carries an uncheckable review_reason of its own (a lead
+    // can be machine/human-verified AND still have a review_reason set - #683 round 3: the same verdict as leadStatus,
+    // lib/outreach/campaign-view.ts, which checks review_reason before evidence state for exactly this case).
+    const held = r.window_held || !!uncheckableCause(r.human_confirmed_from) || !!uncheckableCause(r.review_reason)
     if (r.quarantined_at !== null) q.rejected++
     else if ((st === 'machine' || st === 'human') && held) q.research++
     else if (st === 'machine') q.sourceChecked++
@@ -78,14 +80,17 @@ export function currentRun(run: RunStatus, q: CurrentQual, query?: string | null
   if (q.unverified > 0) parts.push(`${q.unverified} unverified`)
   parts.push(`${q.rejected} rejected`)
   // An older run that did not record its check counts keeps saying so; the label still counts its leads as they are now.
-  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : research > 0 ? 'Research only' : 'Not verified yet'
+  // An unverified lead is still actionable by checking its source (#683 round 3, haiku), so it must outrank "Research
+  // only" here the same way it already does in the label/next-action guard above - "Research only" implies nothing
+  // left can be changed, which isn't true while an unverified lead sits there.
+  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : q.unverified > 0 ? 'Not verified yet' : research > 0 ? 'Research only' : 'Not verified yet'
   const label = `${leads} found: ${parts.join(', ')}`
   // Nothing passed and nothing a check can release: the scan-time "Review them" would hand the user failed research (#352/#683). Offer a
   // step that can change the result instead - but only when every lead is accounted for as research; an unverified lead
   // alongside it is still actionable by checking its source (#683 round 2), which "search again" would wrongly tell it to do instead.
   if (passed === 0 && q.needsReview === 0 && q.unverified === 0 && research > 0) return {
     ...run, tag, label,
-    detail: `Checking ${research === 1 ? 'this lead' : 'these leads'} cannot make ${research === 1 ? 'it' : 'them'} ready (no usable date in your time window, someone else's customer, a different place or a closed opening). Search again with a different signal or source.`,
+    detail: `Checking ${research === 1 ? 'this lead' : 'these leads'} cannot make ${research === 1 ? 'it' : 'them'} ready (no usable date in your time window, someone else's customer, a different place, a closed opening, or a required check that could not run). Search again with a different signal or source.`,
     next: { text: 'Change the search', href: query ? `/app/leads?q=${encodeURIComponent(query)}` : '/app/leads' },
   }
   return { ...run, tag, label }

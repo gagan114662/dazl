@@ -76,19 +76,25 @@ test('plays: a matching campaign row overrides the job\'s stale counts and names
   // The scan recorded 2 needing review; since then both were confirmed out of a hold no check can resolve (#683).
   assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, '0 source-checked, 0 need your review, 2 research-only')
   assert.doesNotMatch(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, /2 need your review/)
-  // heldResearch (held by the time window, no check involved) counts the same as research - and is a HELD SUBSET of
-  // sourceChecked (listCampaigns' own qualification object, same as the Campaigns page reads), so the one lead that is
-  // both source-checked and held-research must not read as two leads: "1 source-checked ... 1 research-only" would be.
-  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 1, confirmedByYou: 0, needsReview: 0, heldResearch: 1 }))[0].outcome, '0 source-checked, 0 need your review, 1 research-only')
+  // heldResearch (held by the time window, no check involved) counts the same as research - and heldResearchSourceChecked
+  // is the sourceChecked-only slice of it (#683 round 3), so the one lead that is both source-checked and held-research
+  // must not read as two leads: "1 source-checked ... 1 research-only" would be.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 1, confirmedByYou: 0, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 1 }))[0].outcome, '0 source-checked, 0 need your review, 1 research-only')
   // A lead that is source-checked AND held for a reason a check cannot resolve, alongside one that is cleanly source-checked:
   // only the held one is research-only, the clean one still counts as checked.
-  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 2, confirmedByYou: 0, needsReview: 0, heldResearch: 1 }))[0].outcome, '1 source-checked, 0 need your review, 1 research-only')
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 2, confirmedByYou: 0, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 1 }))[0].outcome, '1 source-checked, 0 need your review, 1 research-only')
+  // #683 round 3 (council, all three reviewers independently): heldResearch can also be drawn from a CONFIRMED-BY-YOU
+  // lead, not a source-checked one. That must never reduce sourceChecked - the clean source-checked leads stay fully counted.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 2, confirmedByYou: 1, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 0 }))[0].outcome, '2 source-checked, 0 need your review, 1 research-only')
   // No matching campaign row (not loaded, or beyond its own cap): the job's own recorded counts are from scan time and can
   // be stale for exactly the leads #683 is about (confirmed out of a hold since), so nothing current is claimed - never
   // the job's stale needs_review, which would reproduce the original bug.
   assert.equal(recentPlays([j({ candidates: 2 })], 5, [])[0].outcome, '2 found; open the campaign for current counts')
   assert.doesNotMatch(recentPlays([j({ candidates: 2 })], 5, [])[0].outcome, /need your review/)
   assert.equal(recentPlays([j()], 5, [])[0].outcome, 'counts unavailable')
+  // Opus round 3 nit: singular wording ("1 needs your review") for exactly one, never dropped when the stale-counts
+  // branches above moved from showing job counts to "counts unavailable" / "open the campaign".
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 1, research: 0 }))[0].outcome, '0 source-checked, 1 needs your review')
 })
 
 // Instinct #234: a finished search whose leads are all research-only must not read as "5 leads" of yield.

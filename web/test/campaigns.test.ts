@@ -50,7 +50,7 @@ test('one row per search with every stage counted from that search only', () => 
   assert.deepEqual({ ...c, created_at: 0 }, {
     id: 'j1', query: 'Dental owners in Ohio', status: 'done', error: null, created_at: 0,
     discovery: { candidates: 9, leads: 5 },
-    qualification: { sourceChecked: 2, confirmedByYou: 1, needsReview: 1, research: 0, unverified: 0, held: 2, heldResearch: 0, rejected: 1 },
+    qualification: { sourceChecked: 2, confirmedByYou: 1, needsReview: 1, research: 0, unverified: 0, held: 2, heldResearch: 0, heldResearchSourceChecked: 0, rejected: 1 },
     contact: { withContact: 3, readyWithContact: 1, draftable: 1 }, // l1 and l2 have contacts but are timing-held (held: 2); only l4 is qualified, not held, with a contact, and not drafted
     outreach: { drafts: 1, approved: 0, sent: 1, draftsReady: 0, draftsSetup: 0, draftsHeld: 1, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 },
     sequence: { active: 1, stopped: 0 },
@@ -66,7 +66,7 @@ test('one row per search with every stage counted from that search only', () => 
 })
 
 test('next action follows the pipeline order and never skips a gate', () => {
-  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, held: 0, heldResearch: 0, rejected: 0 }, contact: { withContact: 3, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
+  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 3, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0, rejected: 0 }, contact: { withContact: 3, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
   const at = (o: object, undrafted = 0) => nextAction({ ...base, ...o } as typeof base, undrafted)
   assert.deepEqual(at({ status: 'running' }), { label: 'Search still running', href: '/app/leads?job_id=j' })
   assert.deepEqual(at({ status: 'failed', error: 'cancelled' }).label, 'Search cancelled. Run it again if you still want it')
@@ -131,7 +131,7 @@ test('legacy no-excerpt, purged, confirmed and verified leads are counted exactl
   assert.deepEqual(['legacy', 'purged', 'confirmed', 'verified'].map(id => leadEvidenceState(db, 'A', id)), ['unverified', 'machine', 'human', 'machine'])
   assert.deepEqual(['legacy', 'purged', 'confirmed', 'verified'].map(id => draftBlockReason(db, 'A', id)), ['lead_currentness_unconfirmed', 'lead_currentness_unconfirmed', null, 'lead_currentness_unconfirmed'])
   const [c] = listCampaigns(db, 'A')
-  assert.deepEqual(c.qualification, { sourceChecked: 2, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 1, held: 2, heldResearch: 0, rejected: 0 })
+  assert.deepEqual(c.qualification, { sourceChecked: 2, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 1, held: 2, heldResearch: 0, heldResearchSourceChecked: 0, rejected: 0 })
   assert.equal(c.contact.withContact, 4, 'a stored contact is shown as a contact')
   // Only the lead the draft gate accepts counts as ready: the legacy row with a contact does not.
   assert.deepEqual(c.next, { label: 'Approve 1 lead to draft emails', href: '/app/leads?job_id=j1' })
@@ -188,4 +188,21 @@ test('missing setup plus an exhausted daily cap counts as held, not setup', () =
   const c = listCampaigns(db, 'A').find(x => x.id === 'jX')!
   assert.deepEqual([c.outreach.approvedReady, c.outreach.approvedSetup, c.outreach.approvedHeld], [0, 0, 1])
   assert.doesNotMatch(c.next.label, /sender details|connect Gmail|send/i)
+})
+
+// #683 round 3 (council): heldResearch is a held subset of EITHER sourceChecked or confirmedByYou - a lead confirmed
+// out of an uncheckable hold is confirmedByYou, not sourceChecked (the "Keep as research" flow). A one-line reader
+// (Home's plays list, readiness.ts) must subtract only the sourceChecked-only slice, never heldResearch as a whole,
+// or an unrelated clean source-checked lead gets wrongly hidden. heldResearchSourceChecked carries that split.
+test('heldResearchSourceChecked is the sourceChecked-only slice of heldResearch, never the confirmedByYou one', () => {
+  const db = setup()
+  job(db, 'A', 'j1', 'Dental owners in Ohio')
+  // (a plain machine lead with no timing proof set up is held too (currentnessHeld's timingProofGap fallback), but
+  // NOT for an uncheckable reason - so it stays out of heldResearch entirely, unlike the other two below.)
+  lead(db, 'j1', 'clean', {})                                                     // machine-verified, held only by the unproven-timing fallback
+  lead(db, 'j1', 'gate-machine', { review: 'counterparty_signal' })               // machine-verified AND held for an uncheckable reason
+  lead(db, 'j1', 'gate-human', { confidence: null, excerpt: null, confirmed: 5, review: 'counterparty_signal' }) // confirmed by you AND held for an uncheckable reason
+  finish(db, 'j1')
+  const [c] = listCampaigns(db, 'A')
+  assert.deepEqual(c.qualification, { sourceChecked: 2, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 0, held: 3, heldResearch: 2, heldResearchSourceChecked: 1, rejected: 0 })
 })

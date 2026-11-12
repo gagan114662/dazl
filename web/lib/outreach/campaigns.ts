@@ -17,8 +17,12 @@ export interface Campaign {
   // human = confirmed by you, unverified = neither (and not in the review list). held = timing not confirmed yet.
   // needsReview = review-list leads a person's check can still make usable; research = review-list leads it cannot (no usable date under
   // your window, someone else's customer, a different place, a closed opening, a failed required check, an unknown reason - #683, the same
-  // verdict as Home's journey: lib/lead-state.ts reviewIsActionable). heldResearch = the held leads no check can release (a subset of held).
-  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; rejected: number }
+  // verdict as Home's journey: lib/lead-state.ts reviewIsActionable). heldResearch = the held leads no check can release (a subset of held,
+  // drawn from EITHER sourceChecked or confirmedByYou leads - a lead confirmed out of an uncheckable hold is confirmedByYou, not sourceChecked).
+  // heldResearchSourceChecked is the sourceChecked-only slice of heldResearch (#683 round 3): a reader squeezing this into one line (Home's
+  // plays, readiness.ts) must subtract only this from sourceChecked, never all of heldResearch, or a clean source-checked lead can vanish
+  // from the count whenever a DIFFERENT, confirmedByYou lead happens to be the held one.
+  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
   contact: { withContact: number; readyWithContact: number; draftable: number }
@@ -58,7 +62,11 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const held = heldIds.size
     // Of those, the ones only a hold no check can lift keeps: the time window, someone else's customer, a different place, a closed
     // opening (also when the user confirmed out of one), a failed required check. Reviewing the source cannot release them (#683).
-    const heldResearch = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null)).length
+    const heldResearchRows = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null))
+    const heldResearch = heldResearchRows.length
+    // #683 round 3: the sourceChecked-only slice, so a one-line reader can subtract exactly the leads it is about to
+    // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
+    const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
     const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
@@ -87,7 +95,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
-      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, rejected },
+      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected },
       contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
