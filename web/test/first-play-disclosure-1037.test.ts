@@ -52,3 +52,45 @@ test('#1037 the cap module is the one people-search uses', () => {
   assert.equal(FROM_PEOPLE_SEARCH, FIRST_PLAY_MAX)
   assert.equal(firstPlayPeopleCap({ DAZL_FIRST_PLAY_PEOPLE_SEARCHES: '3' }), 3)
 })
+
+// Through the server path (estimateForBody, as /api/scan/estimate calls it): the env the runner reads decides the row.
+import Database from 'better-sqlite3'
+import { asDb } from '../lib/db/client.ts'
+import { estimateForBody } from '../lib/scan/estimate-request.ts'
+async function withEnv<T>(env: Record<string, string | undefined>, f: () => Promise<T>): Promise<T> {
+  const prev: Record<string, string | undefined> = {}
+  for (const k of Object.keys(env)) { prev[k] = process.env[k]; if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
+  try { return await f() } finally { for (const k of Object.keys(prev)) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k] } }
+}
+const serverEstimate = async (hasOwnKey = true) => {
+  const r = await estimateForBody({ mode: 'first5', query: 'B2B SaaS hiring a first SDR' }, { db: asDb(new Database(':memory:')), tenantId: 't1', hasOwnKey, enrichmentVendors: [], model: 'claude-sonnet-4-5' })
+  assert.ok(r.ok, JSON.stringify(r)); return (r as { estimate: ReturnType<typeof estimateRun> }).estimate
+}
+
+test('#1037 server estimate: people search off (PEOPLE_SEARCH_ENABLED=0, or no TinyFish key) -> no people row; a lowered cap flows through', async () => {
+  await withEnv({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: 'k', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined }, async () => assert.equal(row(await serverEstimate(), 'people_search'), undefined))
+  await withEnv({ PEOPLE_SEARCH_ENABLED: undefined, TINYFISH_API_KEY: undefined, TINYFISH_ENABLED: undefined, DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined }, async () => assert.equal(row(await serverEstimate(), 'people_search'), undefined))
+  await withEnv({ PEOPLE_SEARCH_ENABLED: undefined, TINYFISH_API_KEY: 'k', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: '3' }, async () => assert.deepEqual(row(await serverEstimate(), 'people_search')!.units, { min: 0, max: 3 }))
+  await withEnv({ PEOPLE_SEARCH_ENABLED: undefined, TINYFISH_API_KEY: 'k', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: '0' }, async () => assert.equal(row(await serverEstimate(), 'people_search'), undefined))
+})
+
+test('#1037 trial people searches are priced at the trial TinyFish price and say they come from the trial reserve', () => {
+  const e = estimateRun({ budget: FIRST5, payer: 'trial', firstPlayPeopleSearches: 10, trialTinyfishSearchUsd: 0.005, env: { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.5' } })
+  const p = row(e, 'people_search')!
+  assert.deepEqual(p.usd, { min: 0, max: 0.05 }, 'the trial price, not the own-key price')
+  assert.match(p.note ?? '', /paid from the free-trial reserve and never from its last 25%, so fewer may run/)
+  const own = row(estimateRun({ budget: FIRST5, payer: 'you', firstPlayPeopleSearches: 10, trialTinyfishSearchUsd: 0.005, env: { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.5' } }), 'people_search')!
+  assert.deepEqual(own.usd, { min: 0, max: 5 }, 'an own-key first play keeps the operator price')
+})
+
+test('#1037 edge counts: a trial with people search off says "plus 0"; negative, NaN or fractional counts fall back to the maximum', () => {
+  assert.match(row(estimateRun({ budget: null, payer: 'trial', firstPlayPeopleSearches: 0 }), 'tinyfish_search')!.note ?? '', /plus 0 people searches/)
+  for (const bad of [-1, Number.NaN, 2.5]) assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', firstPlayPeopleSearches: bad }), 'people_search')!.units.max, FIRST_PLAY_MAX, String(bad))
+})
+
+test('#1037 run-budget disclosure follows the server count: 0 -> off (no TinyFish call), 3 -> "up to 3"', () => {
+  const off = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(off.status, 'off'); assert.match(off.note, /no TinyFish search, fetch or post-scan people search/)
+  const three = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 3 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(three.status, 'not_covered'); assert.match(three.note, /up to 3 TinyFish people searches/)
+})

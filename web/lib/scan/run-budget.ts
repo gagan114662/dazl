@@ -81,7 +81,12 @@ export interface BudgetDisclosure {
 }
 // Exactly which paid surfaces this budget allows or refuses. Derived from the budget alone, so the response cannot say more
 // or less than the runner enforces. (The test pins each row to the runner's behaviour.)
-export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
+// opts.firstPlayPeopleSearches (#1037): the people searches a first play will really make - the server passes
+// peopleSearchEnabled() ? firstPlayPeopleCap() : 0. Omitted (a browser preview cannot read the operator's env): the code maximum,
+// stated as "up to".
+export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSearches?: number } = {}): BudgetDisclosure {
+  const fp = opts.firstPlayPeopleSearches
+  const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
   const capped = typeof b?.max_usd === 'number'
   const llm = (note: string): { status: SurfaceStatus; note: string } => capped ? { status: 'allowed', note: `${note}; each call is reserved against max_usd and refused when it would pass it` } : { status: 'allowed', note: `${note}; no dollar limit` }
   const row = (surface: string, r: { status: SurfaceStatus; note: string }) => ({ surface, ...r })
@@ -101,7 +106,7 @@ export function describeRunBudget(b: RunBudget | null): BudgetDisclosure {
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', { status: 'refused', note: 'Web-search research is never run: its search-result tokens are bounded by nothing dazl sends, so no run - capped or not - spends on it. When search finds nothing the run ends as budget_stopped' }),
       row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
-      row('search_and_fetch', b?.first5 ? { status: 'not_covered', note: `first5: no TinyFish lead search or page fetch; the leads come from free sources. After the scan, up to ${FIRST_PLAY_MAX} TinyFish people searches (one per ready lead that names nobody yet) look up who to contact, bounded by count, not by max_usd. Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
+      row('search_and_fetch', b?.first5 ? firstPlayPeople === 0 ? { status: 'off', note: 'first5: no TinyFish search, fetch or post-scan people search (people search is off for this deployment); free sources only. Model calls (extraction, scoring) still run and are not free' } : { status: 'not_covered', note: `first5: no TinyFish lead search or page fetch; the leads come from free sources. After the scan, up to ${firstPlayPeople} TinyFish people searches (one per ready lead that names nobody yet) look up who to contact, bounded by count, not by max_usd. Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [
