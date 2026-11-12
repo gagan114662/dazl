@@ -495,10 +495,12 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // job from a keyless account (those run on the shared operator key). Keyless non-trial
 // jobs are left alone (a worker such as Hermes can take them).
 // Fair across tenants (#1081): the tenant with the fewest busy jobs (running, or still in post-finish enrichment, which
-// holds a run slot), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then
-// the oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
+// holds a run slot), then the fewest jobs finished in the last hour (evens out turns even when finish times tie at the
+// second), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then the
+// oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
 // An enrichment row whose end mark never landed (a crash) stops counting as busy after this long.
 const ENRICHING_HOLDS_SLOT_S = 900
+const RECENT_SERVED_S = 3600
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
   // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
   // by the queue bridge instead, so the legacy claimer must skip them
@@ -519,11 +521,12 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
                        SELECT user_id FROM scan_jobs WHERE enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICHING_HOLDS_SLOT_S} AND status = 'done')
                      GROUP BY user_id),
          served AS (SELECT t.user_id, MAX(COALESCE((SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id), 0),
-                                          COALESCE((SELECT MAX(f.finished_at) FROM scan_jobs f WHERE f.user_id = t.user_id), 0)) AS at
+                                          COALESCE((SELECT MAX(f.finished_at) FROM scan_jobs f WHERE f.user_id = t.user_id), 0)) AS at,
+                           (SELECT COUNT(*) FROM scan_jobs h WHERE h.user_id = t.user_id AND h.finished_at >= CAST(strftime('%s','now') AS INTEGER) - ${RECENT_SERVED_S}) AS recent
                     FROM (SELECT DISTINCT user_id FROM eligible) t)
          SELECT e.id, e.user_id, e.business_name, e.industry, e.location, e.attempts, e.query, e.icp, e.sources, e.funded_by, e.watch_id, e.csv_domain, e.run_budget, e.spend_reserved_usd
          FROM eligible e LEFT JOIN running r ON r.user_id = e.user_id LEFT JOIN served v ON v.user_id = e.user_id
-         ORDER BY COALESCE(r.n, 0), COALESCE(v.at, 0), e.created_at, e.rid
+         ORDER BY COALESCE(r.n, 0), COALESCE(v.recent, 0), COALESCE(v.at, 0), e.created_at, e.rid
          LIMIT 1`,
       )
       .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined

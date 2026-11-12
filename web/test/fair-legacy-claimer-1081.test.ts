@@ -56,7 +56,7 @@ test('#1081: within one tenant, jobs are still claimed oldest first', () => {
   assert.equal(claimKeyedJob(db), null)
 })
 
-test('#1081: five tenants with backlogs and 3 slots rotate through every tenant, never FIFO among the idle ones', () => {
+test('#1081: five tenants with backlogs and 3 slots rotate through every tenant evenly, even when finish times tie at the second', () => {
   const db = setup('A', 'B', 'C', 'D', 'E')
   for (const t of ['A', 'B', 'C', 'D', 'E']) queue(db, t, 10)
   const served: Record<string, number> = {}
@@ -64,7 +64,7 @@ test('#1081: five tenants with backlogs and 3 slots rotate through every tenant,
   for (let turn = 0; turn < 30; turn++) {
     const done = slots.shift()!
     served[done.user_id] = (served[done.user_id] ?? 0) + 1
-    finish(db, done.id, 1_800_000_000 + turn) // a strictly later finish each turn
+    finish(db, done.id) // production clock: finishes in the same second tie on finish time
     slots.push(claimKeyedJob(db)!)
   }
   assert.deepEqual(Object.keys(served).sort(), ['A', 'B', 'C', 'D', 'E'], 'every tenant was served')
