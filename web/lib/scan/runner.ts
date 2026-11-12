@@ -70,6 +70,7 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
+import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
@@ -1902,6 +1903,20 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
+    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, on whatever post-finish time is left (it
+    // never delays the crawl or the enrichment above). Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
+    if (emailGuessEnabled()) {
+      const verifier = verifierFromEnv(process.env, deps.fetchImpl)
+      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
+      else if (postCtrl.signal.aborted) trace.note('email_verify', 'skipped', `the post-finish budget (${postFinishBudgetMs()} ms) was used up before the mailbox check`)
+      else try {
+        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: postCtrl.signal })
+        const detail = { leads: v.leads, checked: v.checked, verified: v.verified, over_cap: v.capped }
+        if (v.skipped) trace.note('email_verify', 'skipped', v.skipped)
+        else if (v.stopped) trace.note('email_verify', 'failed', `stopped: ${v.stopped}`, detail)
+        else trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', v.checked ? null : v.capped ? 'the monthly or daily check cap was reached' : 'no high-confidence US guess to check', detail)
+      } catch (e) { trace.note('email_verify', 'failed', e instanceof Error ? e.message.slice(0, 160) : 'error') }
+    }
   } finally {
     clearTimeout(postTimer)
   }

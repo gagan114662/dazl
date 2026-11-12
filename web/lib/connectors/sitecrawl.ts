@@ -9,7 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { emailGuessEnabled, personalAddresses, recordEmailGuesses, verifierFromEnv, verifyCandidates } from '../people/email-pattern.ts'
+import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -622,7 +622,7 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; verifyFetch?: typeof fetch } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -651,10 +651,6 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
-    // #899: the free-tier mailbox check (ZeroBounce, only with ZEROBOUNCE_API_KEY), under the per-tenant daily cap and the per-database monthly cap (the free allowance). Each check is bounded by the adapter's 15 s
-    // abort, not by the per-site crawl budget: it runs after the lead's results are written, so it can only add latency.
-    const verifier = guessing ? verifierFromEnv(deps.env ?? process.env, deps.verifyFetch) : null
-    let verifyStopped = false // the verifier answered it cannot check (bad key, no credits, rate limit): no request for later leads either
     const localsBySite = new Map<string, Set<string>>()
     const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
@@ -782,16 +778,6 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         addEnrichment(db, tenantId, l.id, e); n++
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
-      // The lead's high-confidence US guesses get the capped check; an outcome is only ever stored on the candidate row (a guess
-      // never becomes a contact here). Recorded once per site so the run shows the check ran, stopped, or was capped. It runs AFTER this
-      // lead's crawl results are written (a slow check never delays or cuts off them), and not once the crawl's deadline has fired.
-      if (verifier && !verifyStopped && !deps.signal?.aborted && (r.reason === 'ok' || r.reason === 'none_published')) {
-        try {
-          const v = await verifyCandidates(db, tenantId, l.id, verifier, { env: deps.env ?? process.env, signal: deps.signal })
-          if (v.stopped) verifyStopped = true
-          if (v.checked || v.capped || v.stopped) audit(db, { tenantId, connector: 'email-verify', jobId, lookup: site, status: v.stopped ? `stopped: ${v.stopped}`.slice(0, 200) : `checked ${v.checked}, verified ${v.verified}${v.capped ? `, ${v.capped} over the cap` : ''}`, results: v.verified })
-        } catch { /* never affects the crawl */ }
-      }
     }
   } catch (e) {
     console.error('sitecrawl failed', jobId, e instanceof Error ? e.message : 'error')

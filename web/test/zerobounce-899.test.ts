@@ -4,7 +4,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL } from '../lib/people/zerobounce.ts'
-import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess } from '../lib/people/email-pattern.ts'
+import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
+import { runPostFinishBounded } from '../lib/scan/runner.ts'
+import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
@@ -98,14 +100,14 @@ test('#899 401, 403 and 429 stop the run (the account cannot check now); a 5xx o
   await assert.rejects(zeroBounceVerifier('k', answer({}, 500)).verify('a@b.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'failed')
 })
 
-// The crawl (the only writer of guesses) runs the capped check for the lead's high-confidence US guess, and records it on the
-// candidate row only: the guess never becomes a contact.
+// The crawl (the only writer of guesses) records candidates; the check is the scan's LAST post-finish step (runner), so a slow
+// check can never delay or cut off a site read. The outcome stays on the candidate row: a guess never becomes a contact.
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We have served the community for many years and we care about every family that walks through our doors every single day.</p>'
-async function crawl(env: Record<string, string>, verifyFetch: typeof fetch, opts: { leads?: number; signal?: AbortSignal } = {}) {
+async function crawl(env: Record<string, string>, opts: { leads?: number } = {}) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
-  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('L1', job, 'Acme Logistics', null, 'Acme Logistics is hiring', 'https://news.example.test/a', 'Acme Logistics is hiring', 90, 80)
   if ((opts.leads ?? 1) > 1) db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
@@ -119,47 +121,65 @@ async function crawl(env: Record<string, string>, verifyFetch: typeof fetch, opt
   }
   const beta: Record<string, string> = { '/': html('Beta Freight 9 Elm St, Dallas, TX 75201 <a href="/team">Team</a>'), '/team': html(`${PROSE}<h3>Gil Park</h3><p>CEO</p><h3>Hal Wu</h3><p>CFO</p><h3>Ivy Sol</h3><p>COO</p><p>Press: gil.park@betafreight.com, hal.wu@betafreight.com</p>`) }
   const get: Get = async url => { const u = new URL(url); const p = u.hostname.includes('betafreight') && u.pathname !== '/robots.txt' ? beta[u.pathname] : pages[u.pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
-  await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW, verifyFetch, signal: opts.signal })
-  return db
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW })
+  return { db, job }
 }
+const ON = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5' }
 
-test('#899 crawl: with a key, flag and caps, the guessed (not the published) address is checked and only the candidate row changes', async () => {
+test('#899 the crawl itself sends no mailbox check (it only records guesses), even with a key set', async () => {
+  const { db } = await crawl({ ...ON, ZEROBOUNCE_API_KEY: 'k' })
+  assert.deepEqual(db.prepare("SELECT verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'none' }])
+})
+
+test('#899 job check: the guessed (not the published) address is checked; only the candidate row changes', async () => {
+  const { db, job } = await crawl(ON)
   const sent: string[] = []
-  const db = await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'k' }, (async (u: RequestInfo | URL) => { sent.push(new URL(String(u)).searchParams.get('email')!); return new Response(JSON.stringify({ status: 'valid' })) }) as typeof fetch)
+  const v = await verifyJobCandidates(db, 'A', job, zeroBounceVerifier('k', (async (u: RequestInfo | URL) => { sent.push(new URL(String(u)).searchParams.get('email')!); return new Response(JSON.stringify({ status: 'valid' })) }) as typeof fetch), { env: ON, now: NOW })
   assert.deepEqual(sent, ['cara.diaz@acmelogistics.com'], 'only the high-confidence guess, never a published address')
-  assert.deepEqual(db.prepare("SELECT address, tier, verification, verifier FROM email_candidates WHERE tier = 'guessed'").all(), [{ address: 'cara.diaz@acmelogistics.com', tier: 'guessed', verification: 'verified', verifier: 'zerobounce' }])
-  const enr = db.prepare("SELECT value FROM lead_enrichments WHERE value LIKE '%cara.diaz%'").all()
-  assert.deepEqual(enr, [], 'a verified guess is still not a contact here')
-  const audit = db.prepare("SELECT status, results FROM connector_audit WHERE connector = 'email-verify'").all()
-  assert.deepEqual(audit, [{ status: 'checked 1, verified 1', results: 1 }])
+  assert.deepEqual({ leads: v.leads, checked: v.checked, verified: v.verified }, { leads: 1, checked: 1, verified: 1 })
+  assert.deepEqual(db.prepare("SELECT address, verification, verifier FROM email_candidates WHERE tier = 'guessed'").all(), [{ address: 'cara.diaz@acmelogistics.com', verification: 'verified', verifier: 'zerobounce' }])
+  assert.deepEqual(db.prepare("SELECT value FROM lead_enrichments WHERE value LIKE '%cara.diaz%'").all(), [], 'a verified guess is still not a contact')
+  assert.equal((await verifyJobCandidates(db, 'B', job, zeroBounceVerifier('k', (async () => { throw new Error('must not call') }) as unknown as typeof fetch), { env: ON, now: NOW })).leads, 0, 'another tenant cannot check this job\'s candidates')
 })
 
-test('#899 crawl: no key, or no daily cap, or the flag off -> no request at all', async () => {
-  for (const env of [{ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5' }, { EMAIL_GUESS_ENABLED: '1', ZEROBOUNCE_API_KEY: 'k' }, { EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'k' }] as Record<string, string>[]) {
-    let calls = 0
-    await crawl(env, (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch)
-    assert.equal(calls, 0, JSON.stringify(env))
-  }
-})
-
-test('#899 crawl: a stop (no credits) carries across leads: one request for the whole crawl, never one per lead', async () => {
-  let calls = 0
-  const db = await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'zb-secret-key' }, (async () => { calls++; return new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' })) }) as unknown as typeof fetch, { leads: 2 })
+test('#899 job check: a stop (no credits) ends the whole job after one request; the key never reaches a stored row', async () => {
+  const { db, job } = await crawl(ON, { leads: 2 })
   assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'").get() as { n: number }).n, 2, 'both leads had a guess to check')
-  assert.equal(calls, 1)
-  const audit = db.prepare("SELECT status FROM connector_audit WHERE connector = 'email-verify'").all() as { status: string }[]
-  assert.equal(audit.length, 1); assert.match(audit[0].status, /^stopped: ZeroBounce: .*ran out of credits/)
-  assert.ok(!JSON.stringify(db.prepare('SELECT * FROM connector_audit').all()).includes('zb-secret-key'), 'the key never reaches the audit trail')
+  let calls = 0
+  const v = await verifyJobCandidates(db, 'A', job, zeroBounceVerifier('zb-secret-key', (async () => { calls++; return new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' })) }) as unknown as typeof fetch), { env: ON, now: NOW })
+  assert.equal(calls, 1); assert.match(v.stopped ?? '', /ran out of credits/)
+  for (const t of ['email_candidates', 'connector_audit', 'email_verify_usage']) assert.ok(!JSON.stringify(db.prepare(`SELECT * FROM ${t}`).all()).includes('zb-secret-key'), t)
 })
 
-test('#899 crawl: monthly cap 0 -> no request; a check that hangs past the deadline never undoes the lead\'s crawl results', async () => {
+test('#899 job check: no verifier, flag off, daily cap 0 or monthly cap 0 -> no request at all', async () => {
+  const { db, job } = await crawl(ON)
   let calls = 0
-  await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', EMAIL_VERIFY_MONTHLY_CAP: '0', ZEROBOUNCE_API_KEY: 'k' }, (async () => { calls++; return new Response('{}') }) as unknown as typeof fetch)
+  const zb = zeroBounceVerifier('k', (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch)
+  assert.equal((await verifyJobCandidates(db, 'A', job, null, { env: ON })).skipped, 'no verifier configured')
+  assert.equal((await verifyJobCandidates(db, 'A', job, zb, { env: { EMAIL_VERIFY_DAILY_CAP: '5' } })).skipped, 'EMAIL_GUESS_ENABLED is off')
+  assert.equal((await verifyJobCandidates(db, 'A', job, zb, { env: { EMAIL_GUESS_ENABLED: '1' } })).skipped, 'EMAIL_VERIFY_DAILY_CAP is 0')
+  assert.equal((await verifyJobCandidates(db, 'A', job, zb, { env: { ...ON, EMAIL_VERIFY_MONTHLY_CAP: '0' } })).skipped, 'EMAIL_VERIFY_MONTHLY_CAP is 0')
   assert.equal(calls, 0)
-  const ac = new AbortController()
-  const db = await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'k' }, (async () => { ac.abort(); throw new DOMException('aborted', 'AbortError') }) as unknown as typeof fetch, { signal: ac.signal })
-  const crawled = db.prepare("SELECT status FROM connector_audit WHERE connector = 'sitecrawl' AND lookup = 'acmelogistics.com'").all() as { status: string }[]
-  assert.ok(crawled.length >= 1 && crawled.every(r => r.status !== 'cut_off'), JSON.stringify(crawled))
-  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'L1'").get() as { company_domain: string }).company_domain, 'acmelogistics.com', 'the lead\'s results were written before the check')
-  assert.deepEqual(db.prepare("SELECT verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'uncertain' }])
+})
+
+test('#899 runner: the check is the LAST post-finish step, traced as email_verify; without a key it is skipped visibly', async () => {
+  const { db, job } = await crawl(ON)
+  const keep = { ...process.env }
+  Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0' })
+  try {
+    delete process.env.ZEROBOUNCE_API_KEY
+    const t0 = new EnrichmentTrace()
+    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false } as never, t0)
+    const s0 = JSON.stringify(t0)
+    assert.match(s0, /email_verify/); assert.match(s0, /no ZEROBOUNCE_API_KEY/)
+    process.env.ZEROBOUNCE_API_KEY = 'k'
+    let calls = 0
+    const t1 = new EnrichmentTrace()
+    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t1)
+    assert.equal(calls, 1)
+    const s1 = JSON.stringify(t1)
+    assert.match(s1, /email_verify/); assert.match(s1, /"verified":1/)
+    const order = s1.indexOf('paid_enrichment') < s1.indexOf('email_verify')
+    assert.ok(order, 'after paid enrichment')
+  } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })

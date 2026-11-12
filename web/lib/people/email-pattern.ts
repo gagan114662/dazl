@@ -245,6 +245,30 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   return run
 }
 
+// #899: the mailbox check for one scan's leads, run by the scan runner as its LAST post-finish step (lib/scan/runner.ts
+// runPostFinishBounded), never inside the crawl: a slow check can then only use time nothing else needs, and can never make a
+// finished site read look cut off. Lead by lead under both caps; a stop (bad key, no credits, rate limit) or the cap ends it.
+export async function verifyJobCandidates(db: Database.Database, tenantId: string, jobId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal } = {}): Promise<VerifyRun & { leads: number }> {
+  const out: VerifyRun & { leads: number } = { checked: 0, verified: 0, capped: 0, skipped: null, leads: 0 }
+  if (!emailGuessEnabled(opts.env ?? process.env)) return { ...out, skipped: 'EMAIL_GUESS_ENABLED is off' }
+  if (!verifier) return { ...out, skipped: 'no verifier configured' }
+  let leadIds: string[]
+  try {
+    leadIds = (db.prepare(`SELECT DISTINCT c.lead_id FROM email_candidates c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+      WHERE c.tenant_id = ? AND j.user_id = ? AND l.scan_job_id = ? AND c.verification = 'none' AND c.tier = 'guessed' AND c.confidence = 'high' AND c.country_basis IS NOT NULL
+      ORDER BY c.lead_id`).all(tenantId, tenantId, jobId) as { lead_id: string }[]).map(r => r.lead_id)
+  } catch (e) { if (/no such table/i.test(String((e as Error)?.message))) return out; throw e }
+  for (const leadId of leadIds) {
+    if (opts.signal?.aborted) break
+    const r = await verifyCandidates(db, tenantId, leadId, verifier, opts)
+    if (r.skipped) return { ...out, skipped: r.skipped }
+    out.leads++; out.checked += r.checked; out.verified += r.verified; out.capped += r.capped
+    if (r.stopped) return { ...out, stopped: r.stopped }
+    if (r.capped) break // a cap is reached: later leads would be refused the same way
+  }
+  return out
+}
+
 export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'guessed, catch-all' | 'guessed, undeliverable' | 'guessed, uncertain' | 'guessed, refused'
 
 // #1036 Find work email, free tier: the PUBLISHED address recorded for one named person on this lead (printed on the

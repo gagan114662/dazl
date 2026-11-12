@@ -14,7 +14,7 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    is kept on each row as `country_basis`. This establishes company-site evidence only: a named employee may
    work elsewhere. No person-level recipient-country verification or activation approval follows from it.
 3. **Mailbox verification (built; ZeroBounce free tier wired, #899).** `verifyCandidates` runs a pluggable `MailboxVerifier`. The
-   crawl calls it after a lead's guesses are recorded. Production verifier: ZeroBounce (`lib/people/zerobounce.ts`), used only when
+   scan runner calls it (`verifyJobCandidates`) as the LAST post-finish step, on whatever time is left, traced as `email_verify`. Production verifier: ZeroBounce (`lib/people/zerobounce.ts`), used only when
    **all three** are set: `EMAIL_GUESS_ENABLED=1`, `ZEROBOUNCE_API_KEY` (a free account; never upgraded) and
    `EMAIL_VERIFY_DAILY_CAP` > 0. `EMAIL_VERIFY_MONTHLY_CAP` (optional) can only lower the monthly allowance below the free 100.
    A bad key, no credits or a rate limit stops every further check of that crawl.
