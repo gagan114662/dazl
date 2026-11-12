@@ -181,7 +181,9 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     const init = strip(holder[0].initializer!)
     if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return false
     const fnName = init.expression.text
-    const fn = all(sf, n => ts.isFunctionDeclaration(n) && n.name?.text === fnName)[0] as ts.FunctionDeclaration | undefined
+    // exactly one function of that name in the file (names are not resolved by scope): two may bind differently
+    const fns = all(sf, n => ts.isFunctionDeclaration(n) && n.name?.text === fnName) as ts.FunctionDeclaration[]
+    const fn = fns.length === 1 ? fns[0] : undefined
     if (!fn?.body) return false
     // EVERY `return` of the function (nested functions skipped) must yield nothing, a falsy literal, an object literal, or a
     // `c ? x : y` / `a && b` / `a || b` / `a ?? b` of those; anything else (a variable, a call, ...) is unguarded.
@@ -308,6 +310,8 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     'function pickProvider() { const provider = ownerGuarded(db,t,raw); const fb = { provider: raw }; if (x) return fb; return { provider } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
     'function pickProvider() { if (x) return other(); return { provider: ownerGuarded(db,t,raw) } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
     'function pickProvider() { if (x) return { provider: ownerGuarded(db,t,raw) }; return { ...rawObj } }\nconst p = pickProvider(); await p.provider.complete!(k, x)',
+    // two functions of the holder's name: the raw nested one is the one called
+    'function pickProvider(){ const provider = ownerGuarded(db,t,raw); return { provider, key } }\nfunction g(){ function pickProvider(){ return { provider: raw, key } }\n const p = pickProvider(); await p.provider.complete!(k, x) }',
   ]
   assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
   // every value these can produce is guarded or falsy
