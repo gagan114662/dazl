@@ -275,3 +275,11 @@ test('#899 a US re-crawl that finds no pattern still restores the unchecked gues
   await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
   assert.ok(calls >= 1)
 })
+
+test('#899 the US basis is restored only for guesses on the site this crawl read', async () => {
+  const { db, on } = seeded('A', 'L1')
+  const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  recordEmailGuesses(db, 'A', 'L1', 'other-site.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
+  assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE address LIKE '%@acme.com' AND tier = 'guessed' AND country_basis IS NOT NULL").get() as { n: number }).n, 0)
+})

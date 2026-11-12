@@ -327,7 +327,8 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   }
   // This crawl shows the company in the US again: guesses already recorded and still UNCHECKED take this basis back (a crawl that
   // showed no US address cleared it), whatever this crawl's pattern turns out to be. A checked guess keeps its history.
-  try { db.prepare("UPDATE email_candidates SET country_basis = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND country_basis IS NULL").run(us.basis, tenantId, leadId) }
+  // Only addresses on the site this crawl read: a basis from one site never vouches for guesses made on another.
+  try { db.prepare("UPDATE email_candidates SET country_basis = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND country_basis IS NULL AND lower(address) LIKE ?").run(us.basis, tenantId, leadId, `%@${site.toLowerCase()}`) }
   catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
   const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
