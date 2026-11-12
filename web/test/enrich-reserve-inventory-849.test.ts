@@ -2,7 +2,8 @@
 // the scan cap is a no-op (lib/scan/spend-cap.ts), so the workspace credit pool (lib/enrich/credit-pool.ts) is the only
 // limit: every credit-charging Apollo / People Data Labs call must reserve credits first, in the same flow, before the
 // request. Checked on the TypeScript syntax tree: which modules call the provider functions, and, per paid call, that
-// a reservation comes before it. Behavioral refusals per entry point already exist (enrich-credit-pool: scan waterfall
+// a reservation comes before it. The inventory checks that a reservation exists before the call, not its units or tenant.
+// Behavioral refusals per entry point already exist (enrich-credit-pool: scan waterfall
 // and commenter import; work-email-1036: the work-email lookup).
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -55,7 +56,10 @@ function all(root: ts.Node, pick: (n: ts.Node) => boolean): ts.Node[] {
   walk(root)
   return out
 }
-const calleeName = (c: ts.CallExpression): string | null => { const e = c.expression; return ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : null }
+const calleeName = (c: ts.CallExpression): string | null => {
+  const e = c.expression
+  return ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression) ? e.argumentExpression.text : null
+}
 const enclosingFn = (n: ts.Node): ts.FunctionLikeDeclaration | null => { let p = n.parent; while (p && !ts.isFunctionLike(p)) p = p.parent; return (p as ts.FunctionLikeDeclaration) ?? null }
 const fnName = (f: ts.FunctionLikeDeclaration): string | null => f.name && ts.isIdentifier(f.name) ? f.name.text : null
 const bare = (e: ts.Expression): ts.Expression => { while (ts.isParenthesizedExpression(e)) e = e.expression; return e }
@@ -71,13 +75,17 @@ function importAliases(sf: ts.SourceFile): Map<string, string> {
   }
   return m
 }
-function providerUses(rel: string, text: string): { name: string; node: ts.Identifier }[] {
+function providerUses(rel: string, text: string): { name: string; node: ts.Node }[] {
   const sf = parse(rel, text)
   const alias = importAliases(sf)
   const known = (t: string) => PAID.has(t) || FREE.has(t) || alias.has(t)
-  return (all(sf, n => ts.isIdentifier(n) && known(n.text) && !ts.isImportSpecifier(n.parent) && !(ts.isFunctionDeclaration(n.parent) && n.parent.name === n)) as ts.Identifier[])
+  const ids = (all(sf, n => ts.isIdentifier(n) && known(n.text) && !ts.isImportSpecifier(n.parent) && !(ts.isFunctionDeclaration(n.parent) && n.parent.name === n)) as ts.Identifier[])
     .filter(n => !(ts.isTypeQueryNode(n.parent)))
-    .map(node => ({ name: alias.get(node.text) ?? node.text, node }))
+    .map(node => ({ name: alias.get(node.text) ?? node.text, node: node as ts.Node }))
+  // Bracket access with the provider's name as a string literal (`A['apolloOrgEnrich']`) is a use too.
+  const brackets = (all(sf, n => ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && (PAID.has(n.argumentExpression.text) || FREE.has(n.argumentExpression.text))) as ts.ElementAccessExpression[])
+    .map(n => ({ name: (n.argumentExpression as ts.StringLiteralLike).text, node: n.argumentExpression as ts.Node }))
+  return [...ids, ...brackets]
 }
 function unexpectedCallers(srcs: Src[]): string[] {
   return srcs.filter(s => !VENDOR_MODULES.includes(s.rel) && !CALLERS.includes(s.rel) && providerUses(s.rel, s.text).length > 0).map(s => s.rel)
@@ -213,6 +221,24 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
     })
     if (!passedReserved) out.push(`${rel}:${lineOf(sf, call)} ${name0}`)
   }
+  // Any other reference to a paid function (an alias, `.call`/`.apply`, a callback argument, a destructured dynamic
+  // import, a bracket access that is not called) hands it somewhere the check above cannot follow: rejected. Allowed:
+  // the direct callee of a call (checked above), an import specifier, and type positions (`typeof x`, type references).
+  const isDirectCallee = (n: ts.Node): boolean => {
+    const e = ts.isPropertyAccessExpression(n.parent) && n.parent.name === n ? n.parent : ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n ? n.parent : n
+    return ts.isCallExpression(e.parent) && e.parent.expression === e
+  }
+  const inType = (n: ts.Node): boolean => {
+    let p = n.parent
+    while (ts.isQualifiedName(p)) p = p.parent
+    return ts.isTypeQueryNode(p) || ts.isTypeReferenceNode(p)
+  }
+  const refs = all(sf, n => (ts.isIdentifier(n) && PAID.has(alias.get(n.text) ?? n.text)) ||
+    (ts.isStringLiteralLike(n) && ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n && PAID.has(n.text)))
+  for (const n of refs) {
+    if (ts.isImportSpecifier(n.parent) || inType(n) || isDirectCallee(n)) continue
+    out.push(`${rel}:${lineOf(sf, n)} ${alias.get((n as ts.Identifier | ts.StringLiteralLike).text) ?? (n as ts.Identifier | ts.StringLiteralLike).text} (not a direct call)`)
+  }
   return out
 }
 
@@ -322,6 +348,20 @@ test('#849 inventory: a paid call with no reservation before it is caught, also 
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', IMP + `async function n() { let h; try { h = await ${R} } catch { return null } ${C} }`), [], 'catch exits: guarded')
   assert.equal(caughtIn('lib/x.ts', `async function n2(x: boolean) { let h; if (x) try { h = await ${R} } catch { return null } ${C} }`), 1, 'guarded try inside an unbraced branch')
   assert.equal(caughtIn('lib/x.ts', viaParam + 'async function go2() { const unrelated = await reserveCredits(db, t, "pdl", 5); await run(k, fakeHold) }'), 1, 'passes a hold it did not reserve')
+  // council round 1: a paid function used other than as a direct callee cannot be followed, so it is reported
+  const indirect: Record<string, string> = {
+    alias: 'async function q() { const fn = pdlPeopleSearch; return fn(k, c, f, 5) }',
+    dotCall: 'async function q() { await apolloOrgEnrich.call(null, k, o, f) }',
+    callback: 'async function q() { await runWith(apolloPersonMatch, k) }',
+    callbackSecond: 'async function q() { await retry(() => 0, apolloOrgEnrich) }',
+    dynamicImport: "async function q() { const { apolloOrgEnrich: org } = await import('./apollo.ts'); await org(k, o, f) }",
+    bracket: "async function q() { await A['apolloOrgEnrich'](k, o, f) }",
+  }
+  assert.deepEqual(Object.entries(indirect).filter(([, text]) => caughtIn('lib/enrich/index.ts', text) === 0).map(([k]) => k), [], 'indirect uses in a CALLERS file')
+  assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: "await A['apolloOrgEnrich'](k, o, f)" }]), ['lib/x.ts'], 'bracket access outside CALLERS')
+  assert.deepEqual(unexpectedCallers([{ rel: 'lib/x.ts', text: "await A['apolloPeopleSearch'](k, o, f, 5)" }]), ['lib/x.ts'], 'bracket access to the free function outside CALLERS')
+  // type positions and a reserved direct call are not indirect uses
+  assert.deepEqual(unreservedPaidCalls('lib/x.ts', IMP + `let o: Awaited<ReturnType<typeof apolloOrgEnrich>> = null\nasync function q() { const h = await ${R}; ${C} }`), [], 'typeof in a type')
   // the 0-credit people search needs no reservation
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', 'async function d() { await apolloPeopleSearch(k, o, f, 5) }'), [])
 })
