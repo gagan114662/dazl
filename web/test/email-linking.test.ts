@@ -13,7 +13,7 @@ const mails = (db: Db, to: string) => db.all<{ body: string }>('SELECT body FROM
 const link = (body: string) => /\/verify#t=([a-f0-9]{64})/.exec(body)?.[1]
 const G = (email: string, sub = `g-${email}`) => ({ sub, email, name: 'G' })
 
-bothEngines("Google linking: only the verified account with the identity's email links it; never another account, never by sign-in alone", async ({ db }) => {
+bothEngines("Google linking: only the account with the identity's email links it (an unconfirmed one only through its own fresh session, #1095); never another account, never by sign-in alone", async ({ db }) => {
   await createPasswordUser(user('A'), db); await createPasswordUser(user('B'), db); await createPasswordUser(user('C'), db)
   await verified(db, 'A'); await verified(db, 'B')
   const ga = G('a@example.test')
@@ -22,7 +22,9 @@ bothEngines("Google linking: only the verified account with the identity's email
   assert.equal(await linkGoogle(db, 'B', ga), 'mismatch', "B cannot take a Google identity carrying A's email")
   // #1095: an unconfirmed account with the identity's own (Google-verified) email links and is confirmed by it; see
   // the #1095 test below for the cases that must leave it unconfirmed
-  assert.equal(await linkGoogle(db, 'C', G('c@example.test')), 'linked', 'Google proves the same address the confirmation link would')
+  assert.equal(await linkGoogle(db, 'C', G('c@example.test')), 'unverified', 'without a session the link never confirms the address')
+  const { createSession } = await import('../lib/auth-db.ts')
+  assert.equal(await linkGoogle(db, 'C', G('c@example.test'), await createSession('C', db)), 'linked', 'Google proves the same address the confirmation link would')
   assert.equal(await linkGoogle(db, 'A', ga), 'linked')
   assert.deepEqual(await resolveUser(db, ga), { user_id: 'A', created: false })
   assert.equal(await linkGoogle(db, 'A', ga), 'already')

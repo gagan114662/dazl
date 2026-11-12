@@ -14,8 +14,9 @@ that mailbox just as the confirmation link does and as dazl already trusts to cr
 and every first free search dead-ended. Limits, as built (`lib/auth-google.ts linkGoogle`, PR #1097): a fresh session
 of that account, the same email, an identity no other account holds, all in one transaction with the identity
 insert; `mismatch`, `taken` and a stale session never touch `email_verified_at`; the account's other sessions are
-signed out; a link can only start from a dazl page and sign-in/sign-up accept only same-origin JSON (no cross-site
-login). Residual risk: relies on Google's `email_verified` for non-Gmail addresses, as sign-up already does; not
+signed out; a link start that a browser marks cross-site or same-site (`Sec-Fetch-Site`) is refused, and sign-in and
+sign-up accept only same-origin JSON (no cross-site login); a link that confirms the address also completes the
+sign-up conversion queued for it (lifecycle), as a Google sign-in does. Only with the account's own fresh session. Residual risk: relies on Google's `email_verified` for non-Gmail addresses, as sign-up already does; not
 reviewed by counsel.
 
 ## 2026-11-09: LinkedIn is top priority; the session engagers ship under three rules

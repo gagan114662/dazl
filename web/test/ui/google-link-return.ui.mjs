@@ -167,6 +167,7 @@ try {
       try {
         await page.getByTestId('site-step').waitFor({ timeout: 8000 })
         assert.match(await page.getByTestId('google-link-note').innerText(), /not added/, `site @${width}: the note`)
+        assert.match(await page.getByTestId('trial-refusal').innerText(), /Link Google to this account to read your site free/, `site @${width}: the site-read wording`)
         await wayForward(page, false, 'failed', `site @${width}`)
       } finally { await ctx.close() }
     })
