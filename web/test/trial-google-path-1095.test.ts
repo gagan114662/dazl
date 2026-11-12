@@ -19,7 +19,7 @@ test('#1095: every TrialRefusal member has plain-English copy and a next step; a
     for (const a of n.actions) assert.doesNotMatch(a.label, RAW)
   }
   // an unknown reason (a newer server) still reads as words with a next step
-  const unknown = trialRefusalNotice('some_new_reason', '/app', null)
+  const unknown = trialRefusalNotice('some_new_reason', '/app', { verified: true, google: false })
   assert.doesNotMatch(unknown.text, RAW); assert.ok(unknown.actions.length >= 1)
 })
 
@@ -36,6 +36,15 @@ test('#1095: google_required on an unverified account asks to confirm the email 
   assert.ok(n.actions.some(a => a.kind === 'resend_verification'), 'resend the confirmation link')
   assert.match(n.text, /confirm your email/i)
   assert.ok(!n.actions.some(a => a.kind === 'link_google'), 'Link Google would fail (unverified) until the email is confirmed')
+})
+
+test('#1095: no button before the account is known; a stale session confirms the password before linking (never a reauth_required dead end)', () => {
+  assert.deepEqual(trialRefusalNotice('google_required', '/app', null).actions, [], 'nothing to click until verified/fresh is known')
+  const stale = trialRefusalNotice('google_required', '/app/leads', { verified: true, google: false, fresh: false })
+  assert.ok(stale.actions.some(a => a.kind === 'reauth'), 'confirm it is you')
+  assert.ok(!stale.actions.some(a => a.kind === 'link_google'), 'Link Google would come back reauth_required')
+  assert.match(stale.text, /confirm it is you/i)
+  assert.ok(trialRefusalNotice('google_required', '/app', { verified: true, google: false, fresh: true }).actions.some(a => a.kind === 'link_google'))
 })
 
 test('#1095: the return address is only ever a dazl app page (no open redirect)', () => {

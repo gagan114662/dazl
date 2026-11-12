@@ -1,6 +1,6 @@
 import { connection, NextRequest } from 'next/server'
 import { signInConfig, startAuth } from '@/lib/auth-google'
-import { redirectNoStore, setLinkNextCookie, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
+import { clearLinkNextCookie, redirectNoStore, setLinkNextCookie, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
 import { safeNext } from '@/lib/google-link'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
@@ -22,6 +22,7 @@ export async function GET(req: NextRequest) {
     // #1095: come back to the app page that asked (a refused free scan), not Settings; only a dazl app page is kept
     const next = safeNext(req.nextUrl.searchParams.get('next'))
     if (next) setLinkNextCookie(res, cfg.base, next)
+    else clearLinkNextCookie(res, cfg.base) // an abandoned earlier link must not redirect this one
   }
   return res
 }

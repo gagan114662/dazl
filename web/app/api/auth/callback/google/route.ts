@@ -14,6 +14,9 @@ import { captureError } from '@/lib/ops/errors'
 const back = (base: string, err: string) => {
   const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
   clearOauthCookie(res, base)
+  // a failed or cancelled attempt leaves no link mode or return page behind for the next one (#1095)
+  clearReturnCookie(res, base)
+  clearLinkNextCookie(res, base)
   return res
 }
 

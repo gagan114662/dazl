@@ -146,12 +146,15 @@ export default function LeadsClient() {
   // #1095: a free-trial refusal shown as words with the way forward, and the result of a Google link started here.
   const [trialRefused, setTrialRefused] = useState<{ reason: unknown; query: string } | null>(null)
   const [linkNote, setLinkNote] = useState<{ ok: boolean; text: string } | null>(null)
+  // A search restored after linking Google: the "restore the last profile" response below must not replace it.
+  const restoredSearch = useRef(false)
   useEffect(() => {
     const linked = takeGoogleLinkResult()
     if (!linked) return
     setLinkNote(linked)
+    if (!linked.ok) return // the saved search stays for the next attempt
     const pending = takePendingSearch()
-    if (linked.ok && pending) setQuery(pending.query)
+    if (pending) { restoredSearch.current = true; setQuery(pending.query) }
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -664,7 +667,8 @@ export default function LeadsClient() {
       if (!j) return
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
-      if (!prefill && j.query && !query) setQuery(j.query)
+      if (restoredSearch.current) return // #1095: the search the user was running before linking Google wins
+      if (!prefill && j.query) setQuery(q => q || j.query)
       if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
@@ -719,7 +723,7 @@ export default function LeadsClient() {
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null) }}
             placeholder="Find people who..." />
           <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>

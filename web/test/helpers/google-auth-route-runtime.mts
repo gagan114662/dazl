@@ -163,3 +163,17 @@ test('linking Google from Settings: only the fresh, verified session of the acco
   idEmail = 'pat@example.test'; idSub = 'g-1'
   console.log('GOOGLE_LINK_OK')
 })
+
+test('#1095 link=1&next: a dazl app page is kept for the callback; anything else, or none, clears it (no stale return page)', async () => {
+  setEnv(STAGING)
+  const cookie = (r: Response) => r.headers.getSetCookie().find(c => c.startsWith('dazl_link_next=')) ?? ''
+  const kept = await start.GET(req('https://staging.dazl.ai/api/auth/google?link=1&next=%2Fapp%2Fleads%3Fjob_id%3Dabc'))
+  assert.match(cookie(kept), /^dazl_link_next=%2Fapp%2Fleads%3Fjob_id%3Dabc;.*Path=\/api\/auth/i)
+  assert.match(cookie(kept), /HttpOnly/i)
+  for (const url of ['https://staging.dazl.ai/api/auth/google?link=1&next=https%3A%2F%2Fevil.example', 'https://staging.dazl.ai/api/auth/google?link=1&next=%2F%2Fevil.example', 'https://staging.dazl.ai/api/auth/google?link=1']) {
+    const r = await start.GET(req(url))
+    assert.match(cookie(r), /^dazl_link_next=;.*Max-Age=0/i, url)
+  }
+  // a plain sign-in (not a link) never sets it
+  assert.equal(cookie(await start.GET(req('https://staging.dazl.ai/api/auth/google'))), '')
+})

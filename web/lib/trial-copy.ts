@@ -59,22 +59,28 @@ export const TRIAL_REFUSAL_COPY: Record<TrialRefusal, { text: string; next: Next
   global_daily_cap: { text: "Today's free scans are fully booked. Try again tomorrow (it resets at midnight UTC), or add your own AI key to scan now.", next: 'tomorrow' },
   not_configured: { text: "Free scans aren't available right now. Add your own AI key to scan.", next: 'add_key' },
 }
-export type NoticeAction = { kind: 'link_google' | 'resend_verification' | 'add_key'; label: string; href?: string }
+export type NoticeAction = { kind: 'link_google' | 'resend_verification' | 'reauth' | 'add_key'; label: string; href?: string }
 export interface TrialNotice { text: string; actions: NoticeAction[] }
 const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href: '/app/settings#model-key' }
 
 // here: the page to come back to after linking Google. account: GET /api/auth/email ({ verified, google }), or null
 // while unknown. Linking needs a confirmed email (lib/auth-google.ts linkGoogle), so an unconfirmed account is asked to
 // confirm it first instead of being sent into a link that would fail.
-export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean } | null): TrialNotice {
+// account.fresh: signed in within the last hour (GET /api/auth/reauth); linking needs it, so a stale session confirms the
+// password first instead of coming back from Google with reauth_required. null while unknown: no actions are offered yet.
+export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean; fresh?: boolean } | null): TrialNotice {
   const c = typeof reason === 'string' && reason in TRIAL_REFUSAL_COPY ? TRIAL_REFUSAL_COPY[reason as TrialRefusal] : null
   if (!c) return { text: "Free trial scans can't run right now. Add your own AI key to scan.", actions: [ADD_KEY] }
   if (c.next !== 'link_google') return { text: c.text, actions: [ADD_KEY] }
-  if (account && !account.verified) {
+  if (!account) return { text: c.text, actions: [] }
+  if (!account.verified) {
     return {
       text: `${c.text} First confirm your email: open the link we sent you, then come back and link Google.`,
       actions: [{ kind: 'resend_verification', label: 'Send the confirmation link again' }, ADD_KEY],
     }
+  }
+  if (account.fresh === false) {
+    return { text: `${c.text} First confirm it is you: enter your password.`, actions: [{ kind: 'reauth', label: 'Confirm it is you' }, ADD_KEY] }
   }
   return { text: c.text, actions: [{ kind: 'link_google', label: 'Link Google', href: linkGoogleHref(here) }, ADD_KEY] }
 }
