@@ -130,10 +130,20 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     const decls = all(within, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === r.text) as ts.VariableDeclaration[]
     const assigned = all(within, n => ts.isBinaryExpression(n) && ASSIGN.has(n.operatorToken.kind) && ts.isIdentifier(strip(n.left)) && (strip(n.left) as ts.Identifier).text === r.text) as ts.BinaryExpression[]
     const values = [...decls.flatMap(d => d.initializer ? [d.initializer] : []), ...assigned.map(a => a.right)]
-    // any other write (destructuring, ++, a for-of binding) is not judged: unguarded
+    // any other write (destructuring assignment, ++, a for-of/for-in loop target, a parameter or catch binding) is
+    // treated as an unguarded write: its value is never judged, so the variable is not trusted
     const otherWrites = all(within, n => (ts.isArrayLiteralExpression(n) || ts.isObjectLiteralExpression(n)) && ts.isBinaryExpression(n.parent) && n.parent.left === n
       && all(n, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
       || all(within, n => (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && ts.isIdentifier(strip(n.operand)) && (strip(n.operand) as ts.Identifier).text === r.text).length > 0
+      // names are resolved file-wide (no lexical scopes), so ANY other binding of the same name anywhere in the file - a
+      // function parameter, a for-of/for-in or catch binding, a destructured declaration - may hold a raw provider: unguarded
+      || all(within, n => (ts.isParameter(n) || ts.isBindingElement(n)) && all(n.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
+      || all(within, n => ts.isVariableDeclaration(n) && !ts.isIdentifier(n.name) && all(n.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
+      || all(within, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === r.text && !n.initializer && (ts.isForOfStatement(n.parent.parent) || ts.isForInStatement(n.parent.parent))).length > 0
+      // `for (prov of xs)` / `for (prov in m)` assigning an existing variable (no declaration)
+      || all(within, n => (ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer) && ts.isIdentifier(strip(n.initializer)) && (strip(n.initializer) as ts.Identifier).text === r.text).length > 0
+      // `catch (provider)` and `catch ({ provider })`
+      || all(within, n => ts.isCatchClause(n) && !!n.variableDeclaration && all(n.variableDeclaration.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
     return decls.length > 0 && !otherWrites && values.every(v => safeExpr(v, sf, within, depth + 1)) && values.some(v => guardedExpr(v, sf, within, depth + 1))
   }
   if (ts.isPropertyAccessExpression(r) && ts.isIdentifier(r.expression)) {
@@ -225,7 +235,15 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     'const provider = ownerGuarded(db, t, raw) ?? providers[vendor]\nawait provider.complete(k, p)',
     'const provider = raw || ownerGuarded(db, t, raw)\nawait provider.complete(k, p)',
     'let prov = ownerGuarded(db, t, raw)\nprov ||= providers[vendor]\nawait prov.complete(k, p)',
+    // regression guard: an uninitialised `let` has no guarded value (this already passed the old check)
     'let prov\nawait prov.complete(k, p)',
+    // council: other bindings of a guarded name elsewhere in the file (no lexical scoping) are raw
+    'function a() { const provider = ownerGuarded(db, t, raw) }\nfunction b(provider) { return provider.complete(k, p) }',
+    'const provider = ownerGuarded(db, t, raw)\nfor (const provider of list) await provider.complete(k, p)',
+    'const provider = ownerGuarded(db, t, raw)\nfunction c(x) { const { provider } = x; return provider.complete(k, p) }',
+    'let prov = ownerGuarded(db, t, raw)\nfor (prov of [raw]) { await prov.complete(k, p) }',
+    'let prov = ownerGuarded(db, t, raw)\nfor (prov in rawMap) { await prov.complete(k, p) }',
+    'const provider = ownerGuarded(db, t, raw)\ntry { x() } catch (provider) { await provider.complete(k, p) }',
   ]
   assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
   // every value these can produce is guarded or falsy
