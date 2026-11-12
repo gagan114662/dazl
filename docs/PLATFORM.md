@@ -239,6 +239,7 @@ No table is read or written in Postgres at runtime yet.
 | Temp | leads_new (built and renamed inside `migrateScan` when it widens `leads`) | Not a real table; skip it |
 | Events / signals | company_events, tenant_competitors | PG-schema |
 | Outreach | outreach_messages, outreach_settings, outreach_llm_usage, outreach_signal_context, gmail_accounts, oauth_states, suppressions, consent_ledger, sequences, sequence_steps, sequence_settings, followup_threads, followup_messages, inbound_messages, mail_read_consent, reopen_messages, autopilot_settings, autopilot_audit | PG-schema |
+| Buyer answers | buyer_answer_decisions (`replies/conversation.ts`, #803) | **SQLite-only** |
 | Replies | reply_threads, reply_queries, reply_drafts | PG-schema |
 | Connectors / warm | tenant_connectors, connector_audit, lead_enrichments, tenant_connections, warm_user_paths, calcom_bookings, calcom_hooks | PG-schema |
 | Keys / memory / advanced | tenant_llm_keys, tenant_memory, advanced_consent | PG-schema |

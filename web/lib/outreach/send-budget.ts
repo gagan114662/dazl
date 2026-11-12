@@ -13,6 +13,8 @@ export function accountSendCount(db: Database.Database, tenant: string, now: num
   if (tableExists(db, 'sequence_steps')) count += (db.prepare("SELECT count(*) AS n FROM sequence_steps WHERE tenant_id = ? AND step > 1 AND status IN ('sent','sending','uncertain') AND COALESCE(claimed_at,sent_at,created_at) >= ?").get(tenant, now - 86400) as { n: number }).n
   // A re-open keeps its claim time in sent_at while 'approved' (no schema change), and the delivery time once sent.
   if (tableExists(db, 'reopen_messages')) count += (db.prepare("SELECT count(*) AS n FROM reopen_messages WHERE tenant_id = ? AND status IN ('sent','approved') AND COALESCE(sent_at,created_at) >= ?").get(tenant, now - 86400) as { n: number }).n
+  // #803 automated buyer answers: a claim reserves its slot from the moment it is written ('held' sent nothing).
+  if (tableExists(db, 'buyer_answer_decisions')) count += (db.prepare("SELECT count(*) AS n FROM buyer_answer_decisions WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND created_at >= ?").get(tenant, now - 86400) as { n: number }).n
   return count
 }
 export function anyUncertainSend(db: Database.Database, tenant: string): boolean {
