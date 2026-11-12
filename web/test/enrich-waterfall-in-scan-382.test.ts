@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, enrichmentsForLeads, setEnrichFallback, auditTryReserve, auditSettleClaim, auditReleaseUnsent } from '../lib/connectors/store.ts'
-import { retryHeldEnrichment, claimKeysFor } from '../lib/enrich/index.ts'
+import { retryHeldEnrichment, claimKeysFor, heldEnrichments } from '../lib/enrich/index.ts'
 import { runWithScanSpend, reserveScanSpend, scanCapConfig, scanSpendCalls, spendAttemptRejected, spendVendorRejected } from '../lib/scan/spend-cap.ts'
 import { setDb, asDb } from '../lib/db/client.ts'
 import { providerIssues, providerIssueText } from '../lib/scan/provider-issues.ts'
@@ -207,6 +207,9 @@ test('#382 owner retry refused by the scan cap: nothing sent, the lookup stays h
     assert.equal(r.status, 'refused', JSON.stringify(r))
     assert.match((r as { reason: string }).reason, /over_cap/)
     assert.equal(heldClaims(s.db, 'enrich:pdl'), 1, 'the held item survives for a later retry')
+    assert.equal(heldEnrichments(s.db, 'u1').length, 1, 'and is still LISTED for the owner right away (not hidden for 15 minutes)')
+    const o = paidEnrichmentOutcomes(s.db, 'u1', s.jobId)
+    assert.equal(o.failed, 0, `a refused, unsent retry is not a failed lookup: ${JSON.stringify(o)}`)
   } finally { if (prev === undefined) delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; else process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = prev }
 })
 
@@ -218,4 +221,19 @@ test('#382 an Apollo 404 keeps the attempt-wide stop (not documented as unbilled
   })
   assert.equal(calls.pdl, 0)
   assert.equal(out.rejected, 404)
+})
+
+test('#382 owner retry of an Apollo org lookup: org sent and charged, people step refused by the cap -> "retried", never "nothing was charged"', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const prev = process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = 'apollo'
+  try {
+    const g = auditTryReserve(s.db, { tenantId: 'u1', connector: 'enrich:apollo', jobId: s.jobId, lookup: claimKeysFor(s.leads[0]).stepOrg, status: 'reserved', results: 0 }) as { id: string }
+    assert.ok(g.id)
+    s.db.prepare('UPDATE connector_claims SET claimed_at = claimed_at - 3600').run()
+    s.db.prepare('UPDATE scan_jobs SET spend_cap_usd = 0.3 WHERE id = ?').run(s.jobId) // room for the org call, not the people call
+    const org = { organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }
+    const r = await retryHeldEnrichment(s.db, 'u1', 'lead1', { provider: 'apollo', step: 'org' }, { fetchImpl: router(async () => ok(org), PDL_EMPTY, calls), master })
+    assert.equal(calls.apollo, 1, 'the org call was sent')
+    assert.equal(r.status, 'retried', JSON.stringify(r))
+  } finally { if (prev === undefined) delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; else process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = prev }
 })

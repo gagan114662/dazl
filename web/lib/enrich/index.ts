@@ -620,9 +620,13 @@ export async function retryHeldEnrichment(db: Database.Database, tenantId: strin
   // The re-run draws on the scan's own hard spend cap (lib/scan/spend-cap.ts), as the scan's first pass did.
   // A refusal by that cap sends nothing: the lookup stays held (keepUnsentHeld) and the owner is told it was refused, never "retried".
   const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider, keepUnsentHeld: true }))
-  if (r.outcomes.some(o => o.provider === h.provider && o.outcome === 'spend_refused')) {
-    const why = latestAuditStatus(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: lead.scan_job_id, lookup: h.lookup })
-    return { status: 'refused', reason: why?.startsWith('not sent: ') ? why.slice('not sent: '.length) : 'spend refused' }
+  // 'refused' only when THE LOOKUP THE OWNER PICKED was itself not sent (a refused follow-up step after a sent, charged call is a
+  // retry that ran). It stays listed as held right away: the fresh claim gets back the original claim's age (HELD_AFTER_S gate).
+  const connector = h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL
+  const why = latestAuditStatus(db, { tenantId, connector, jobId: lead.scan_job_id, lookup: h.lookup })
+  if (why?.startsWith('not sent: ')) {
+    db.prepare("UPDATE connector_claims SET claimed_at = ? WHERE tenant_id = ? AND connector = ? AND scan_job_id = ? AND lookup = ? AND status = 'reserved'").run(h.claimedAt, tenantId, connector, lead.scan_job_id, h.lookup)
+    return { status: 'refused', reason: why.slice('not sent: '.length) }
   }
   return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }
 }
