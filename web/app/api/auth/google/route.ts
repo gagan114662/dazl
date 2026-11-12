@@ -1,6 +1,7 @@
 import { connection, NextRequest } from 'next/server'
 import { signInConfig, startAuth } from '@/lib/auth-google'
-import { redirectNoStore, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
+import { redirectNoStore, setLinkNextCookie, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
+import { safeNext } from '@/lib/google-link'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 export async function GET(req: NextRequest) {
@@ -16,6 +17,11 @@ export async function GET(req: NextRequest) {
   // ?reauth=1: re-authenticating from Settings (fresh sign-in for secrets, billing, members); come back there
   if (req.nextUrl.searchParams.get('reauth') === '1') setReturnCookie(res, cfg.base)
   // ?link=1: add Google sign-in to the signed-in account (Settings > Account); the callback decides, never this route
-  if (req.nextUrl.searchParams.get('link') === '1') setReturnCookie(res, cfg.base, 'link')
+  if (req.nextUrl.searchParams.get('link') === '1') {
+    setReturnCookie(res, cfg.base, 'link')
+    // #1095: come back to the app page that asked (a refused free scan), not Settings; only a dazl app page is kept
+    const next = safeNext(req.nextUrl.searchParams.get('next'))
+    if (next) setLinkNextCookie(res, cfg.base, next)
+  }
   return res
 }

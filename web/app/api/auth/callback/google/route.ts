@@ -3,8 +3,9 @@ import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@
 import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
 import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
+import { safeNext } from '@/lib/google-link'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearLinkNextCookie, clearOauthCookie, clearReturnCookie, LINK_NEXT_COOKIE, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
@@ -42,9 +43,12 @@ export async function GET(req: NextRequest) {
     const me = await getSessionUser(req.cookies.get('dazl_session')?.value, db)
     const fresh = !!me && Math.floor(Date.now() / 1000) - me.authedAt <= FRESH_AUTH_S
     const result = !me ? 'signed_out' : !fresh ? 'reauth_required' : await linkGoogle(db, me.actorId, id, req.cookies.get('dazl_session')!.value)
-    const res = redirectNoStore(new URL(`/app/settings?google=${result}#account`, base))
+    // #1095: back to the page that asked (re-validated here), with the result; otherwise Settings as before
+    const next = safeNext(req.cookies.get(LINK_NEXT_COOKIE)?.value)
+    const res = redirectNoStore(new URL(next ? `${next}${next.includes('?') ? '&' : '?'}google=${result}` : `/app/settings?google=${result}#account`, base))
     clearOauthCookie(res, base)
     clearReturnCookie(res, base)
+    clearLinkNextCookie(res, base)
     return res
   }
   const r = await resolveUser(db, id)

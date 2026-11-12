@@ -3,6 +3,7 @@ import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
+import TrialRefusalNotice, { takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
@@ -142,6 +143,16 @@ function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | nu
 
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
+  // #1095: a free-trial refusal shown as words with the way forward, and the result of a Google link started here.
+  const [trialRefused, setTrialRefused] = useState<{ reason: unknown; query: string } | null>(null)
+  const [linkNote, setLinkNote] = useState<{ ok: boolean; text: string } | null>(null)
+  useEffect(() => {
+    const linked = takeGoogleLinkResult()
+    if (!linked) return
+    setLinkNote(linked)
+    const pending = takePendingSearch()
+    if (linked.ok && pending) setQuery(pending.query)
+  }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
   useEffect(() => {
@@ -501,7 +512,7 @@ export default function LeadsClient() {
     }
   }
   async function confirmRun(ack: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
-    setError(''); setStarting(true)
+    setError(''); setTrialRefused(null); setLinkNote(null); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
@@ -511,6 +522,7 @@ export default function LeadsClient() {
       if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === priorIcp }); return }
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
+      if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
@@ -702,14 +714,14 @@ export default function LeadsClient() {
       </div>
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst && <EstimateConfirm est={pendingEst.est} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
           <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => setQuery(e.target.value)}
             placeholder="Find people who..." />
-          <button disabled={busy || starting || scanActive} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
+          <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>
         {!jobId && plays && <div className="mt-4 space-y-2" data-testid="play-suggestions">
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
@@ -913,6 +925,8 @@ export default function LeadsClient() {
         </details>
       </>)}
       {error && <p role="alert" className="text-red-300 text-sm mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2">{error}</p>}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok ? ' Your search is ready: run it.' : ''}</p>}
+      {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">
           <span className="inline-block h-4 w-4 rounded-full border-2 border-gray-500 border-t-white animate-spin" aria-hidden />

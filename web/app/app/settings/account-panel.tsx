@@ -1,15 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { googleLinkResultCopy } from '@/lib/google-link'
 
 type Status = { email: string; verified: boolean; google: boolean }
 const fetchStatus = (): Promise<Status | null> => fetch('/api/auth/email').then(r => r.ok ? r.json() : null).catch(() => null)
-const GOOGLE: Record<string, string> = {
-  linked: 'Google sign-in is added to this account.', already: 'Google sign-in was already added.',
-  taken: 'That Google account already signs in to another dazl account.',
-  mismatch: 'That Google account uses a different email. Use the Google account with this email.',
-  unverified: 'Confirm your email first, then add Google sign-in.', reauth_required: 'Confirm it is you first (sign in again), then add Google sign-in.',
-  signed_out: 'Sign in first, then add Google sign-in.',
-}
 
 // The account's email, whether it is confirmed, changing it, and adding Google sign-in. Joining a team workspace
 // needs a confirmed email.
@@ -20,7 +14,7 @@ export default function AccountPanel() {
   useEffect(() => {
     void fetchStatus().then(setS)
     const g = new URLSearchParams(window.location.search).get('google')
-    if (g && GOOGLE[g]) queueMicrotask(() => setMsg(GOOGLE[g]))
+    if (g) queueMicrotask(() => setMsg(googleLinkResultCopy(g).text))
   }, [])
   async function post(path: string, body: unknown, done: (j: { sent?: boolean; message?: string }) => string) {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
