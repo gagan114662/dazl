@@ -397,9 +397,13 @@ test('HOLD-4 auto-reply markers change only positive/other to auto; every uncert
   const MARKERS = [{ subject: 'Out of office' }, { autoSubmitted: 'auto-replied' }, { precedence: 'bulk' }, { xAutoreply: 'yes' }, { xAutorespond: '1' }]
   const rows: [string, 'ok' | 'empty' | 'malformed', string, string][] = [
     // [body, status, class without markers, class with markers]
-    ['不要再联系我', 'ok', 'uncertain', 'uncertain'], // script the rules cannot read
-    ['Σταματήστε να μου στέλνετε email', 'ok', 'uncertain', 'uncertain'],
-    ['Пожалуйста, больше не пишите', 'ok', 'uncertain', 'uncertain'],
+    ['我下周一回来', 'ok', 'uncertain', 'uncertain'], // script the rules cannot read
+    ['Ευχαριστώ, θα το δω', 'ok', 'uncertain', 'uncertain'],
+    ['Спасибо, я посмотрю', 'ok', 'uncertain', 'uncertain'],
+    // #804: an opt-out in these scripts is an opt-out, with or without markers
+    ['不要再联系我', 'ok', 'opt_out', 'opt_out'],
+    ['Σταματήστε να μου στέλνετε email', 'ok', 'opt_out', 'opt_out'],
+    ['Пожалуйста, больше не пишите', 'ok', 'opt_out', 'opt_out'],
     ['', 'malformed', 'uncertain', 'uncertain'], // undecodable
     ['stop', 'ok', 'uncertain', 'uncertain'], // ambiguous
     ['Not really interested.', 'ok', 'uncertain', 'uncertain'], // positive + negation/hedge
@@ -425,8 +429,8 @@ test('HOLD-4 sync, two tenants with prior consent: non-Latin text behind an Out 
     grantConsent(db, t, e, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:earlier', now: NOW - 2 * DAY })
   const ooo = [{ name: 'Subject', value: 'Out of office' }]
   const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail({
-    [a1.thread]: [msg('z1', 'Li <li@buyer.example>', part('text/plain', '不要再联系我'), ooo)],
-    [a2.thread]: [msg('z2', 'Eleni <eleni@buyer.example>', part('text/plain', 'Σταματήστε να μου στέλνετε email'), ooo)],
+    [a1.thread]: [msg('z1', 'Li <li@buyer.example>', part('text/plain', '我下周一回来'), ooo)],
+    [a2.thread]: [msg('z2', 'Eleni <eleni@buyer.example>', part('text/plain', 'Ευχαριστώ, θα το δω'), ooo)],
     [a3.thread]: [msg('z3', 'Kim <kim@buyer.example>', part('text/plain', ''), ooo)],
   }, []) })
   assert.deepEqual([r.consents, r.reviews, r.optOuts, r.error], [0, 2, 0, undefined])
@@ -441,4 +445,24 @@ test('HOLD-4 sync, two tenants with prior consent: non-Latin text behind an Out 
   // tenant B, same contact as z1: untouched
   assert.equal(hasConsent(db, 'B', 'li@buyer.example', 'email', 'followup', NOW), true)
   assert.equal(stopped(db, 'B', b1.thread), null)
+})
+
+test('#804 sync: a localized or obfuscated opt-out suppresses that address for the tenant (future campaigns), never another tenant', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
+  await tenant(db, 'A', 'me@a-seller.example'); await tenant(db, 'B', 'me@b-seller.example')
+  const bodies = ['请退订，谢谢', 'Proszę mnie wypisać', 'Отпишите меня', 'ＵＮＳＵＢＳＣＲＩＢＥ', 'unsub\u200bscribe please']
+  const sends = bodies.map((_, i) => sent(db, 'A', `p${i}@buyer.example`))
+  const b0 = sent(db, 'B', 'p0@buyer.example')
+  const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail(Object.fromEntries(
+    sends.map((s, i) => [s.thread, [msg(`o${i}`, `P <p${i}@buyer.example>`, part('text/plain', bodies[i]))]]),
+  ), []) })
+  assert.equal(r.error, undefined)
+  assert.equal(r.optOuts, bodies.length)
+  bodies.forEach((b, i) => {
+    assert.equal(cls(db, 'A', `o${i}`), 'opt_out', b)
+    assert.equal(isSuppressed(db, 'A', `p${i}@buyer.example`), true, `${b} suppresses`)
+  })
+  // tenant B's contact with the same address is untouched
+  assert.equal(isSuppressed(db, 'B', 'p0@buyer.example'), false)
+  assert.equal(stopped(db, 'B', b0.thread), null)
 })
