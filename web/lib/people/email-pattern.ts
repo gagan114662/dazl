@@ -356,7 +356,11 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
     if (!guessOwners.has(l)) guessOwners.set(l, new Set())
     guessOwners.get(l)!.add(nameKey(x.name))
   }
-  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)")
+  // A guess already recorded and still UNCHECKED takes this crawl's US basis again (a crawl that showed no US address cleared it);
+  // its format, person and confidence stay as first recorded. A checked guess keeps its history untouched.
+  const ins = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)
+    ON CONFLICT (lead_id, address) DO UPDATE SET country_basis = excluded.country_basis
+    WHERE email_candidates.tenant_id = excluded.tenant_id AND email_candidates.tier = 'guessed' AND email_candidates.verification = 'none'`)
   for (const x of names) {
     if (hasPub.has(nameKey(x.name))) continue
     const l = localFor(pattern.format, x.name)

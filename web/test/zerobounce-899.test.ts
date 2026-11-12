@@ -254,3 +254,14 @@ test('#899 runner: a job row that cannot be read counts as NOT alive: no address
     assert.match(JSON.stringify(t), /its state could not be read/)
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })
+
+test('#899 US -> non-US -> US re-crawls: the guess gets its US basis back and is checked once', async () => {
+  const { db, on } = seeded('A', 'L1')
+  const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '120 Main St, Austin, TX 78701' })
+  const sent: string[] = []
+  await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify(a) { sent.push(a); return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
+  assert.ok(sent.length >= 1, 'the unchecked guesses are checkable again')
+  assert.equal(new Set(sent).size, sent.length, 'each at most once')
+})
