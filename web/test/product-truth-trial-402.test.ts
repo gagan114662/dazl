@@ -31,8 +31,8 @@ const user = async (db: Db, id: string, email: string, google: boolean) => {
 bothEngines('#402 the record agrees with the gate: a password account is refused google_required; with Google the requirement is met', async ({ db }) => {
   const pw = await user(db, 'u-password', 'pat@gmail.com', false)
   const g = await user(db, 'u-google', 'sam@gmail.com', true)
-  const needsGoogle = cap('feature:trial_scans').requires.includes('google_account')
-  assert.equal(await trialRefusal(db, pw, { env: ENV }), needsGoogle ? 'google_required' : null)
+  assert.ok(cap('feature:trial_scans').requires.includes('google_account'))
+  assert.equal(await trialRefusal(db, pw, { env: ENV }), 'google_required')
   assert.equal(await trialRefusal(db, g, { env: ENV }), null, 'a Google account passes the requirement the record names')
   assert.equal(await trialRefusal(db, pw, { env: ENV, kind: 'site_read' }), 'google_required', 'a website read has the same prerequisite')
 })
