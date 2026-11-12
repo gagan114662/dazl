@@ -109,7 +109,10 @@ function assertBoundedPlan(plan: { id: number; parent: number; detail: string }[
   assert.match(text, /SEARCH scan_jobs USING INDEX scan_jobs_enriching \(enrich_started_at>\?\)/, `${label}: the enrichment arm seeks the partial index`)
   // scan_jobs_status serves exactly the 'pending' (eligible) and 'running' arms; a third use is the 'done' history walk
   assert.equal(plan.filter(p => /scan_jobs_status/.test(p.detail)).length, 2, `${label}: no arm walks status='done':\n${text}`)
-  assert.doesNotMatch(text, /SCAN scan_jobs(?! USING)/, `${label}: no full table scan of scan_jobs`)
+  // no full scan of scan_jobs under any alias: the only SCAN steps allowed read the small materialized sets
+  // (e = eligible, t = its distinct tenants, the running union's subquery), never the table
+  const scans = plan.filter(p => /^SCAN /.test(p.detail) && !/^SCAN (e|t|eligible|\(subquery-\d+\))$/.test(p.detail))
+  assert.deepEqual(scans.map(p => p.detail), [], `${label}: no full table scan of scan_jobs (any alias):\n${text}`)
   // the per-tenant figures are computed once per tenant (inside the materialized `served`), not once per pending job
   const byId = new Map(plan.map(p => [p.id, p]))
   const inServed = (p: { parent: number }): boolean => { for (let q = byId.get(p.parent); q; q = byId.get(q.parent)) if (/MATERIALIZE served/.test(q.detail)) return true; return false }
@@ -122,7 +125,9 @@ test('#1081: the claim query plan stays bounded by the queue, never by the done 
   const db = setup('A', 'B')
   queue(db, 'A', 3); queue(db, 'B', 1)
   assertBoundedPlan(claimPlan(db), 'empty history')
-  // a long done history and fresh statistics must not flip the planner back onto scan_jobs_status for the done arm
+  // Each stage pins different regressions; keep both. The empty-history stage (no sqlite_stat1) is the one that
+  // catches the done arm losing `+status` (with statistics SQLite picks scan_jobs_enriching anyway). This stage, with
+  // a long done history and fresh statistics, is the one that catches an arm such as 'running' walking that history.
   const now = Math.floor(Date.now() / 1000)
   const hist = db.transaction(() => [...queue(db, 'A', 2500), ...queue(db, 'B', 2500)])()
   const run = db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?")
