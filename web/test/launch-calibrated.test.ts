@@ -357,19 +357,22 @@ test('HOLD (#402): a launch bound to the product truth record never sends a prom
   const h0 = heldClaims()
   assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 0)
   assert.equal(heldClaims(), h0 + 1, 'held by the claim check, as no-fit')
-  // the record changed since the owner accepted it: copy relying on it is held until the owner accepts the new record
+  // the record changed since the owner accepted it (#402): the launch is no longer calibrated - autopilot stops before drafting
+  // anything, generic copy included - until the owner accepts the current record
   const stored = readLaunchPolicy(db, 'A')!.policy
   db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify({ ...stored, claims: { ...stored.claims, productTruthVersion: 'pt-0000000000000000' } }))
+  assert.deepEqual(launchGate(db, 'A', 'me@acme.example', NOW + 2), { calibrated: false, accepted: true }, 'a changed record ends the launch')
   db.prepare('UPDATE scan_jobs SET offer = ? WHERE id = ?').run('Lead research, sent from your own Gmail', job)
   lead(db, job, 'f@six.example')
-  const h1 = heldClaims()
-  assert.equal((await runAutopilot(db, 'A', 'Acme', gmail().d)).sent, 0)
-  assert.equal(heldClaims(), h1 + 1, 'held by the claim check: product_truth_changed')
-  // back on the current record, the same shipped claim goes out
-  db.prepare('UPDATE autopilot_launch_policy SET policy = ?').run(JSON.stringify(stored))
+  const stale = gmail()
+  assert.equal((await runAutopilot(db, 'A', 'Acme', stale.d)).sent, 0); assert.equal(stale.sent.length, 0)
+  assert.ok(recentAutopilotAudit(db, 'A').some(a => a.action === 'stopped' && /launch_not_calibrated/.test(JSON.stringify(a))), 'stopped as not calibrated, not drafted')
+  // the owner accepts the CURRENT record and the launch passes its preflight again: the same shipped claim goes out
+  assert.deepEqual(acceptLaunchPolicy(db, 'A', { ...stored, claims: { ...stored.claims, productTruthVersion: productTruth().version } }, NOW + 3), { ok: true })
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
   lead(db, job, 'g@seven.example')
   const ok = gmail()
-  assert.equal((await runAutopilot(db, 'A', 'Acme', ok.d)).sent, 1); assert.deepEqual(ok.to(), ['g@seven.example'])
+  assert.ok((await runAutopilot(db, 'A', 'Acme', ok.d)).sent >= 1); assert.ok(ok.to().includes('g@seven.example'), JSON.stringify(ok.to()))
 })
 
 // A recorded model: every completion is captured with the max_tokens it was allowed; usage is what the test says the

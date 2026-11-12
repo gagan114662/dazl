@@ -124,6 +124,11 @@ export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' 
 // #402: the account setup every free-trial run (scan or website read) needs before admission, as the product truth record's
 // `requires` tokens (lib/product-truth.ts). refusal() below enforces exactly this list, so the record and the gate cannot drift.
 export const TRIAL_REQUIRES = ['google_account'] as const
+// One check per listed prerequisite: a token added to TRIAL_REQUIRES without its check here does not typecheck, so the record can
+// never advertise a prerequisite the gate does not enforce.
+const TRIAL_REQUIREMENT_CHECKS: { [K in typeof TRIAL_REQUIRES[number]]: { refusal: TrialRefusal; sql: string } } = {
+  google_account: { refusal: 'google_required', sql: "SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?" },
+}
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
@@ -187,9 +192,9 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
 function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number): TxBody<TrialRefusal | null> {
-  if (TRIAL_REQUIRES.includes('google_account')) {
-    const google = yield* t.get("SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?", [user.id])
-    if (!google) return 'google_required'
+  for (const req of TRIAL_REQUIRES) {
+    const check = TRIAL_REQUIREMENT_CHECKS[req]
+    if (!(yield* t.get(check.sql, [user.id]))) return check.refusal
   }
   const domain = emailDomain(user.email)
   if (domain && !CONSUMER_DOMAINS.has(domain)) {

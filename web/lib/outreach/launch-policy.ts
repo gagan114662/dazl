@@ -242,7 +242,8 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 }
 
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
-// launched by a passing preflight, and the connected mailbox is the policy's sender.
+// launched by a passing preflight, bound (when it binds one) to the CURRENT product truth record, and the connected mailbox is
+// the policy's sender.
 // accepted: a launch policy row exists for the tenant (accepted, stale, re-accepted, invalid) but is not a launch right now.
 // Autopilot must then STOP, not run the warmup: past the warmup's first sends the warmup is unrestricted, and the tenant's
 // last word was a policy. Only a tenant with no row at all is on the warmup.
@@ -253,6 +254,10 @@ export function launchGate(db: Database.Database, tenantId: string, connectedMai
   const s = readLaunchPolicy(db, tenantId)
   if (!s) return { calibrated: false, accepted: false }
   if (s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false, accepted: true }
+  // #402: a policy bound to a product truth record that has since changed (a capability, price or prerequisite moved) is no
+  // longer a launch: autopilot stops until the owner re-accepts the current record. Generic copy that names no capability is
+  // otherwise never re-checked against the change.
+  if (s.policy.claims.productTruthVersion !== undefined && s.policy.claims.productTruthVersion !== productTruth().version) return { calibrated: false, accepted: true }
   if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false, accepted: true }
   return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt, acceptanceId: s.acceptanceId }
 }
