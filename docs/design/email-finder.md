@@ -18,7 +18,8 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    **all three** are set: `EMAIL_GUESS_ENABLED=1`, `ZEROBOUNCE_API_KEY` (a free account; never upgraded) and
    `EMAIL_VERIFY_DAILY_CAP` > 0. `EMAIL_VERIFY_MONTHLY_CAP` (optional) can only lower the monthly allowance below the free 100.
    A bad key, no credits or a rate limit stops every further check of that scan. The check has its own time budget
-   (`EMAIL_VERIFY_BUDGET_MS`, default 20 s, 1-60 s) and stops when the scan is cancelled or taken over.
+   (`EMAIL_VERIFY_BUDGET_MS`, default 20 s, 1-60 s) and stops before the next address when the scan is cancelled or taken over (or its state cannot be read). A later crawl that no
+   longer shows a US address clears the unchecked guesses' US basis, so they are not checked.
    - fails closed: only an explicit `deliverable` answer sets `verification = 'verified'`; `catch_all`,
      `undeliverable`, `unknown`, `refused`, a thrown error, or a malformed answer are stored as their own
      non-verified state and surfaced, never zero-filled;

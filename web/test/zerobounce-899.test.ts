@@ -231,3 +231,26 @@ test('#899 the check\'s own budget: default 20 s, clamped to 1-60 s', () => {
   assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '900000' }), 60_000)
   assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: 'x' }), 20_000)
 })
+
+test('#899 a later crawl that no longer shows a US address clears the unchecked guesses\' US basis: nothing of them is checked', async () => {
+  const { db, on } = seeded('A', 'L1')
+  assert.ok((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed' AND country_basis IS NOT NULL").get() as { n: number }).n > 0)
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO'], { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  let calls = 0
+  const run = await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
+  assert.equal(calls, 0); assert.equal(run.checked, 0)
+})
+
+test('#899 runner: a job row that cannot be read counts as NOT alive: no address is sent (fail closed)', async () => {
+  const { db, job } = await crawl(ON)
+  const keep = { ...process.env }
+  Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
+  let calls = 0
+  try {
+    db.exec('ALTER TABLE scan_jobs RENAME TO scan_jobs_unreadable')
+    const t = new EnrichmentTrace()
+    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t)
+    assert.equal(calls, 0)
+    assert.match(JSON.stringify(t), /its state could not be read/)
+  } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
+})

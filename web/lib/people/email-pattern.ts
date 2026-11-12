@@ -318,7 +318,13 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   if (!emailGuessEnabled(ctx.env ?? process.env)) return null
   const us = usEvidence(ctx.homeText, ctx.where)
-  if (!us.us) return null
+  if (!us.us) {
+    // This crawl no longer shows the company in the US: guesses recorded on earlier US evidence lose it, so none of them can be
+    // sent to the mailbox check (verification only selects rows with a country_basis). Checked rows keep their history.
+    try { db.prepare("UPDATE email_candidates SET country_basis = NULL WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none'").run(tenantId, leadId) }
+    catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
+    return null
+  }
   const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
   const allNames = names.map(x => x.name)
