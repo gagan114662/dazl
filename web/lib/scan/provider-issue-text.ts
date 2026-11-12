@@ -38,7 +38,7 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'budget_exhausted': return `${who} was not used for the remaining leads in this scan: the per-scan lookup limit was reached.`
     case 'circuit_open': return `${who} was skipped for the remaining leads in this scan after repeated failures.`
     case 'key_rejected': return `${who} was skipped for the remaining leads in this scan after the saved key was rejected.`
-    case 'spend_refused': return `${who} not tried for the remaining leads in this scan: ${spendRefusalText(issue.refusal)} Nothing was sent to ${who} for those leads, so nothing was charged for them.`
+    case 'spend_refused': return `${who}: the remaining lookups in this scan were not sent: ${spendRefusalText(issue.refusal)} The refused lookups were not charged; lookups made before the refusal keep their own charges.`
     case 'uncertain': return `${who}: an earlier lookup for a lead in this scan may have been billed but its result was not recorded, so it is held and was not repeated.`
     case 'fallback_off': return `People Data Labs was not tried for leads Apollo could not enrich: a key is saved, but the Apollo-to-PDL fallback is off (Settings > Enrichment).`
     case 'credit_cap': {
@@ -57,8 +57,8 @@ export function providerIssueText(issue: ProviderIssue): string {
 // reason proves; an unknown reason is named as such, never guessed.
 function spendRefusalText(reason: string | undefined): string {
   switch (reason) {
-    case 'provider_rejected': return 'it refused an earlier paid request in this scan (a rejected key or a rate limit), and dazl never sends it another request after a refusal.'
-    case 'scan_provider_rejected': return "the scan's AI or search provider refused an earlier request, so dazl made no further paid request in this scan."
+    case 'vendor_rejected': return 'it refused an earlier paid request in this scan (a rejected key or a rate limit), and dazl never sends it another request after a refusal.'
+    case 'provider_rejected': return "the scan's AI or search provider refused an earlier request, so dazl made no further paid request in this scan."
     case 'accounting_uncertain': return 'an earlier paid request in this scan may have been billed without a confirmed cost (it timed out or the provider failed), so dazl made no further paid request in this scan.'
     case 'over_cap': case 'over_limit': return "this scan's spending cap had no room left for the lookup."
     case 'trial_budget_reached': return "this free scan's spending limit had no room left for the lookup."

@@ -218,7 +218,7 @@ const rejectedAttempts = new WeakMap<ScanSpendCtx, number>()
 // exception. Their documented rejection (a bad key, a 429) stops THAT vendor for the rest of the attempt and nothing else: the
 // waterfall's next provider is a different vendor on a different key and account, so an Apollo 401 says nothing about PDL, and it
 // must not stop the scan's own steps after the waterfall (people search, buyer fit) either. It is never retried: every later
-// reservation of the same vendor in this attempt is refused 'provider_rejected'. It does not end the scan: the waterfall is a
+// reservation of the same vendor in this attempt is refused 'vendor_rejected'. A 404 stays attempt-wide (see rejected() below). It does not end the scan: the waterfall is a
 // post-finish bonus and records its own skip (spendAttemptRejected() stays null). A maybe-billed call (uncertain) is unchanged:
 // it still stops every paid request of the attempt, enrichment included.
 const VENDOR_SCOPED_REJECTION: Partial<Record<SpendKind, 'apollo' | 'pdl'>> = { 'apollo.org': 'apollo', 'apollo.people': 'apollo', 'pdl.people': 'pdl' }
@@ -255,7 +255,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const vendor = VENDOR_SCOPED_REJECTION[kind]
-  if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('provider_rejected')
+  if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('vendor_rejected') // its own reason: THIS vendor refused, not the scan's providers
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -319,7 +319,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     id, kind, usd,
     uncertain() { done = true; uncertainAttempts.add(ctx) },
     rejected(status) {
-      if (vendor) { const m = rejectedVendors.get(ctx) ?? new Map<'apollo' | 'pdl', number>(); if (!m.has(vendor)) m.set(vendor, status); rejectedVendors.set(ctx, m) }
+      // A 404 is not scoped: no source shows an Apollo not-found is unbilled or harmless, so it keeps the attempt-wide stop (PDL's
+      // documented, unbilled 404 no-match never calls rejected()).
+      if (vendor && status !== 404) { const m = rejectedVendors.get(ctx) ?? new Map<'apollo' | 'pdl', number>(); if (!m.has(vendor)) m.set(vendor, status); rejectedVendors.set(ctx, m) }
       else if (!rejectedAttempts.has(ctx)) rejectedAttempts.set(ctx, status)
     },
     async settle(actualUsd) {

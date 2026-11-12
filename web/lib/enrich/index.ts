@@ -11,7 +11,7 @@ import { addEnrichment, audit, auditReleaseUnsent, auditSettleClaim, auditTryRes
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
 import { pdlPeopleSearch } from './pdl.ts'
 import { refundCredits, reserveCredits, settleCredits, CreditRefused, refusalLookup, type CreditHold, type CreditRefusal } from './credit-pool.ts'
-import { runWithJobSpend, spendVendorRejected } from '../scan/spend-cap.ts'
+import { runWithJobSpend } from '../scan/spend-cap.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { getMasterKey } from '../secrets.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
@@ -123,7 +123,7 @@ export async function enrichLeadContacts(
   tenantId: string,
   jobId: string,
   leads: LeadRow[],
-  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov; env?: Record<string, string | undefined> } = {},
+  deps: { fetchImpl?: typeof fetch; master?: Buffer; budget?: Partial<Record<Prov, number>>; only?: Prov; env?: Record<string, string | undefined>; keepUnsentHeld?: boolean } = {},
 ): Promise<EnrichSummary> {
   const fetchImpl = deps.fetchImpl ?? fetch
   const summary: EnrichSummary = { attached: 0, byProvider: { apollo: 0, pdl: 0 }, skipped: [], outcomes: [] }
@@ -182,8 +182,7 @@ export async function enrichLeadContacts(
   const failed = (prov: Prov, e: unknown, lead: LeadRow) => {
     // Refused by the scan's spend gate before any request: the provider was not tried, so it is neither a failure nor a
     // circuit count. The reason latches for the pass (the same gate would refuse every later lead's lookup the same way).
-    // 'provider_rejected' is THIS provider's own earlier refusal, or (spendVendorRejected null) an attempt-wide one by the scan's model / search provider.
-    if (e instanceof SpendRefused) { spendRefused[prov] = e.reason === 'provider_rejected' && spendVendorRejected(prov) === null ? 'scan_provider_rejected' : e.reason; skip(prov, 'spend_refused', lead); return }
+    if (e instanceof SpendRefused) { spendRefused[prov] = e.reason; skip(prov, 'spend_refused', lead); return }
     const code = failCode(e)
     summary.outcomes.push({ leadId: lead.id, provider: prov, outcome: code, attached: 0 })
     if (code === 'auth') open[prov] = 'key_rejected'              // a bad key stops THAT provider for the pass, not the pass
@@ -212,7 +211,7 @@ export async function enrichLeadContacts(
       continue
     }
     const src = lead.company_domain ? `https://${lead.company_domain}` : `https://www.linkedin.com/company/${encodeURIComponent(lead.company.toLowerCase().replace(/[^a-z0-9]+/g, '-'))}`
-    const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl, buyerTitles, env: deps.env }
+    const ctx: Ctx = { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl, buyerTitles, env: deps.env, keepUnsentHeld: deps.keepUnsentHeld === true }
     let stopped = false // a verified/replayed result or a held (uncertain) claim ended this lead's waterfall on purpose
     for (const prov of ['apollo', 'pdl'] as Prov[]) {
       if (deps.only && prov !== deps.only) continue // an owner retry runs exactly the provider whose cost they saw
@@ -288,7 +287,12 @@ export async function enrichLeadContacts(
 const spendRefusalLookup = (reason: string) => `${SPEND_REFUSAL_PREFIX}${reason.replace(/[^a-z_0-9]/g, '').slice(0, 60) || 'unknown'}`
 const unsentStatus = (e: SpendRefused) => `not sent: ${spendRefusalLookup(e.reason)}`
 
-interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[]; env?: Record<string, string | undefined> }
+interface Ctx { db: Database.Database; tenantId: string; jobId: string; lead: LeadRow; where: string[]; evidence: string; established: boolean; src: string; today: string; now: number; fetchImpl: typeof fetch; buyerTitles: string[]; env?: Record<string, string | undefined>; keepUnsentHeld?: boolean }
+// A lookup the spend gate refused before sending (#382). In a scan pass its claim is released (it cannot have been charged). In
+// an OWNER RETRY (keepUnsentHeld) it stays held, recorded as not sent, so the owner's held item and its retry action survive a
+// refusal instead of vanishing behind a "retried" that sent nothing.
+const settleUnsent = (c: Ctx, claim: AuditEntryLike, id: string, e: SpendRefused) => c.keepUnsentHeld ? auditSettleClaim(c.db, claim, id, unsentStatus(e), 0) : auditReleaseUnsent(c.db, claim, id, unsentStatus(e))
+type AuditEntryLike = Parameters<typeof auditReleaseUnsent>[1]
 
 // Credit-pool helpers (lib/enrich/credit-pool.ts). A refusal names its reason; a release or settle that cannot be saved
 // leaves the full reservation counted (an over-count, never an under-count), so it only logs.
@@ -449,7 +453,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
         // sent, so the workspace credit goes back. Any other failure keeps it (whether Apollo charged is unknown).
         // #382: and the claim is released in the same step (never held: nothing was sent), and the attempt stops here - the
         // people step would be refused by the same gate.
-        if (e instanceof SpendRefused) { await releaseUnused(db, hold); auditReleaseUnsent(db, orgClaim, gate.id, unsentStatus(e)); throw e }
+        if (e instanceof SpendRefused) { await releaseUnused(db, hold); settleUnsent(c, orgClaim, gate.id, e); throw e }
         const code = failCode(e)
         auditSettleClaim(db, { ...orgClaim, status: code, results: 0 }, gate.id, code, 0)
         if (e instanceof EnrichError && e.code === 'auth') throw e // a bad key stops the provider for the pass (the claim's audit row carries the auth); the held org claim fails the replay CLOSED
@@ -495,7 +499,7 @@ async function runApollo(c: Ctx, key: string, spend: { used: Record<Prov, number
   catch (e) {
     // Refused before sending: released, never held (#382). When the org call already failed (a 429, a timeout) that failure is
     // why the gate refused this one, so it is what the waterfall records - never the refusal it caused.
-    if (e instanceof SpendRefused) { auditReleaseUnsent(db, peopleClaim, pgate.id, unsentStatus(e)); throw orgFailure ?? e }
+    if (e instanceof SpendRefused) { settleUnsent(c, peopleClaim, pgate.id, e); throw orgFailure ?? e }
     const code = failCode(e); auditSettleClaim(db, { ...peopleClaim, status: code, results: 0 }, pgate.id, code, 0); throw e
   }
   // No unfiltered fallback (#383 review): an extra query per lead is a NEW call shape whose cost is not
@@ -533,7 +537,7 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
   catch (e) {
     // A refusal by the scan's hard spend cap sent nothing: the workspace credits go back and the claim is released (#382: it
     // cannot have been charged, so it is never held for an owner retry). Any other error keeps both.
-    if (e instanceof SpendRefused) { await releaseUnused(db, hold); auditReleaseUnsent(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: 'reserved', results: 0 }, reservationId, unsentStatus(e)); throw e }
+    if (e instanceof SpendRefused) { await releaseUnused(db, hold); settleUnsent(c, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: 'reserved', results: 0 }, reservationId, e); throw e }
     const code = failCode(e); auditSettleClaim(db, { tenantId, connector: ENRICH_PDL, jobId, lookup: peopleKey, status: code, results: 0 }, reservationId, code, 0); throw e
   }
   charged.n += found.length
@@ -598,7 +602,7 @@ export function heldCostText(h: HeldEnrichment): string {
 // The owner retry itself: releases ONLY the one held claim the owner selected. Consent and cost scope are
 // load-bearing: each retry action names the exact provider+step whose cost/limits were disclosed next to it, so
 // an Apollo action never releases a PDL claim and never runs a PDL call (the re-run is scoped to that provider).
-export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, selector: { provider: Prov; step: HeldEnrichment['step'] }, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' | 'cost_unverified' } | { status: 'retried'; attached: number; releases: string[] }> {
+export async function retryHeldEnrichment(db: Database.Database, tenantId: string, leadId: string, selector: { provider: Prov; step: HeldEnrichment['step'] }, deps: { fetchImpl?: typeof fetch; master?: Buffer } = {}): Promise<{ status: 'not_found' | 'nothing_held' | 'cost_unverified' } | { status: 'refused'; reason: string } | { status: 'retried'; attached: number; releases: string[] }> {
   const lead = db.prepare('SELECT l.id, l.company, l.company_domain, l.scan_job_id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as (LeadRow & { scan_job_id: string }) | undefined
   if (!lead) return { status: 'not_found' }
   const h = heldEnrichments(db, tenantId).find(h => h.leadId === leadId && h.provider === selector.provider && h.step === selector.step)
@@ -614,6 +618,11 @@ export async function retryHeldEnrichment(db: Database.Database, tenantId: strin
   })()
   if (!released) return { status: 'nothing_held' }
   // The re-run draws on the scan's own hard spend cap (lib/scan/spend-cap.ts), as the scan's first pass did.
-  const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider }))
+  // A refusal by that cap sends nothing: the lookup stays held (keepUnsentHeld) and the owner is told it was refused, never "retried".
+  const r = await runWithJobSpend(db, tenantId, lead.scan_job_id, () => enrichLeadContacts(db, tenantId, lead.scan_job_id, [{ id: lead.id, company: lead.company, company_domain: lead.company_domain }], { ...deps, only: h.provider, keepUnsentHeld: true }))
+  if (r.outcomes.some(o => o.provider === h.provider && o.outcome === 'spend_refused')) {
+    const why = latestAuditStatus(db, { tenantId, connector: h.provider === 'apollo' ? ENRICH_APOLLO : ENRICH_PDL, jobId: lead.scan_job_id, lookup: h.lookup })
+    return { status: 'refused', reason: why?.startsWith('not sent: ') ? why.slice('not sent: '.length) : 'spend refused' }
+  }
   return { status: 'retried', attached: r.attached, releases: [`${h.provider} ${h.step}`] }
 }

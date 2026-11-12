@@ -287,7 +287,8 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
       // A well-formed answer for every vendor (a bare {} is an unreadable PDL answer: maybe billed, which would itself stop the attempt).
       for (const c of cases) await c.call((async () => { later[c.name] = (later[c.name] ?? 0) + 1; return new Response(JSON.stringify({ organization: null, people: [], data: [], results: [] }), { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
     })
-    const vendorScoped = !how.startsWith('maybe-billed') && (vendorOf(first.name) === 'apollo' || vendorOf(first.name) === 'pdl')
+    // An Apollo 404 keeps the attempt-wide stop: no source shows a not-found is unbilled or harmless.
+    const vendorScoped = how.startsWith('documented rejection') && (vendorOf(first.name) === 'apollo' || vendorOf(first.name) === 'pdl')
     for (const c of cases) {
       const sameVendor = vendorOf(c.name) === vendorOf(first.name)
       if (!vendorScoped || sameVendor) assert.equal(later[c.name] ?? 0, 0, `after a ${how} ${first.name}, no later ${c.name} request is sent`)

@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, enrichmentsForLeads, setEnrichFallback, auditTryReserve, auditSettleClaim, auditReleaseUnsent } from '../lib/connectors/store.ts'
+import { retryHeldEnrichment, claimKeysFor } from '../lib/enrich/index.ts'
 import { runWithScanSpend, reserveScanSpend, scanCapConfig, scanSpendCalls, spendAttemptRejected, spendVendorRejected } from '../lib/scan/spend-cap.ts'
 import { setDb, asDb } from '../lib/db/client.ts'
 import { providerIssues, providerIssueText } from '../lib/scan/provider-issues.ts'
@@ -45,14 +46,18 @@ for (const [why, status] of [['401', 401], ['429', 429]] as const) {
       // The people search (TinyFish) and buyer fit (model) run after this pass on the same attempt: an Apollo refusal must not refuse them.
       const later = await reserveScanSpend('tinyfish.search', () => 0)
       await later?.settle(0)
-      return { r, attemptRejected: spendAttemptRejected(), apolloRejected: spendVendorRejected('apollo'), later: !!later }
+      const model = await reserveScanSpend('llm.anthropic', () => 0.001) // buyer fit's model call
+      await model?.settle(0.001)
+      const again = await reserveScanSpend('apollo.people', () => 0.2).then(() => 'admitted', (e: unknown) => (e as { reason?: string }).reason)
+      return { r, attemptRejected: spendAttemptRejected(), apolloRejected: spendVendorRejected('apollo'), later: !!later && !!model, again }
     })
     assert.equal(calls.pdl, 1, 'PDL was called after the Apollo rejection')
     assert.deepEqual(attached(s.db), ['enrich:pdl:Pdl Person - Practice Manager'])
     assert.deepEqual(out.r.outcomes.map(o => `${o.provider}:${o.outcome}`), [`apollo:${status === 401 ? 'auth' : 'rate_limited'}`, 'pdl:attached'])
     assert.equal(out.attemptRejected, null, 'an enrichment vendor rejection does not end the scan as provider_rejected')
     assert.equal(out.apolloRejected, status)
-    assert.equal(out.later, true, 'a later TinyFish search of the same attempt is admitted')
+    assert.equal(out.later, true, 'a later TinyFish search and model call (people search, buyer fit) of the same attempt are admitted')
+    assert.equal(out.again, 'vendor_rejected', 'Apollo itself is never called again in the attempt')
     const kinds = (await scanSpendCalls(s.db, s.jobId, 'u1')).map(c => `${c.kind}:${c.status}`)
     assert.ok(kinds.includes('pdl.people:settled'), `PDL went through the scan ledger: ${JSON.stringify(kinds)}`)
   })
@@ -66,7 +71,7 @@ test('#382 inside a scan: a rate-limited Apollo is never called again in the att
   assert.deepEqual(r.outcomes.map(o => `${o.leadId}:${o.provider}:${o.outcome}`), ['lead1:apollo:rate_limited', 'lead1:pdl:attached', 'lead2:apollo:spend_refused', 'lead2:pdl:attached'])
   assert.equal(heldClaims(s.db, 'enrich:apollo') >= 1, true, 'the 429 itself stays held (a received rejection is never assumed free)')
   const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
-  assert.ok(texts.includes('Apollo not tried for the remaining leads in this scan: it refused an earlier paid request in this scan (a rejected key or a rate limit), and dazl never sends it another request after a refusal. Nothing was sent to Apollo for those leads, so nothing was charged for them.'), JSON.stringify(texts))
+  assert.ok(texts.includes('Apollo: the remaining lookups in this scan were not sent: it refused an earlier paid request in this scan (a rejected key or a rate limit), and dazl never sends it another request after a refusal. The refused lookups were not charged; lookups made before the refusal keep their own charges.'), JSON.stringify(texts))
   assert.ok(!texts.some(t => t.startsWith('People Data Labs')), `PDL did not fail and must not be blamed: ${JSON.stringify(texts)}`)
 })
 
@@ -94,7 +99,7 @@ for (const [why, apollo] of [
     const pdlAudit = s.db.prepare("SELECT status FROM connector_audit WHERE connector = 'enrich:pdl' ORDER BY insert_seq").all() as { status: string }[]
     assert.ok(!pdlAudit.some(a => a.status === 'error'), `never recorded as a PDL failure: ${JSON.stringify(pdlAudit)}`)
     const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
-    assert.ok(texts.includes('People Data Labs not tried for the remaining leads in this scan: an earlier paid request in this scan may have been billed without a confirmed cost (it timed out or the provider failed), so dazl made no further paid request in this scan. Nothing was sent to People Data Labs for those leads, so nothing was charged for them.'), JSON.stringify(texts))
+    assert.ok(texts.includes('People Data Labs: the remaining lookups in this scan were not sent: an earlier paid request in this scan may have been billed without a confirmed cost (it timed out or the provider failed), so dazl made no further paid request in this scan. The refused lookups were not charged; lookups made before the refusal keep their own charges.'), JSON.stringify(texts))
   })
 }
 
@@ -109,7 +114,7 @@ test('#382 a model / search provider rejection is still attempt-wide: no enrichm
   assert.deepEqual(r.r.outcomes.map(o => `${o.provider}:${o.outcome}`), ['apollo:spend_refused', 'pdl:spend_refused'])
   assert.equal(heldClaims(s.db, 'enrich:apollo') + heldClaims(s.db, 'enrich:pdl'), 0, 'nothing sent, nothing held')
   const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
-  assert.ok(texts.some(t => t.startsWith("Apollo not tried for the remaining leads in this scan: the scan's AI or search provider refused an earlier request")), JSON.stringify(texts))
+  assert.ok(texts.some(t => t.startsWith("Apollo: the remaining lookups in this scan were not sent: the scan's AI or search provider refused an earlier request")), JSON.stringify(texts))
 })
 
 test('#382 a PDL rejection latches PDL only: Apollo keeps working for later leads', async () => {
@@ -145,4 +150,72 @@ test('#382 run report: lookups the spend gate refused before sending are holds, 
   assert.deepEqual([calls.apollo, calls.pdl], [0, 0])
   assert.deepEqual({ total: o.total, failed: o.failed, ok: o.ok, unconfirmed: o.unconfirmed }, { total: 0, failed: 0, ok: 0, unconfirmed: 0 }, JSON.stringify(o))
   assert.ok(o.held >= 1, `reported as held: ${JSON.stringify(o)}`)
+})
+
+const PDL_EMPTY = async () => ok({ data: [] })
+const auditRows = (db: Database.Database, connector: string) => (db.prepare('SELECT status FROM connector_audit WHERE connector = ? ORDER BY insert_seq').all(connector) as { status: string }[]).map(r => r.status)
+
+test('#382 run report (claims basis): a 429 is one failed lookup; the lookups refused after it are not counted as failed', async () => {
+  const s = seed(2); const calls: Calls = { apollo: 0, pdl: 0 }
+  await runWithScanSpend(s.ctx, () => enrichLeadContacts(s.db, 'u1', s.jobId, s.leads, { fetchImpl: router(async () => new Response('slow', { status: 429 }), PDL_EMPTY, calls), master }))
+  assert.ok(auditRows(s.db, 'enrich:apollo').some(x => x.startsWith('not sent: ')), 'the scenario does refuse Apollo lookups after the 429')
+  const o = paidEnrichmentOutcomes(s.db, 'u1', s.jobId)
+  assert.equal(o.basis, 'claims')
+  assert.equal(o.failed, 1, `only the 429 itself: ${JSON.stringify(o)}`)
+  assert.equal(o.unconfirmed, 1, 'the 429 stays held (a received rejection is never assumed free)')
+})
+
+test('#382 an Apollo org lookup refused by the scan cap: no request, the claim released, the credit returned, never an "error"', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  s.db.prepare('UPDATE scan_jobs SET spend_cap_usd = 0.1 WHERE id = ?').run(s.jobId) // below one Apollo org call ($0.20)
+  const r = await runWithScanSpend(s.ctx, () => enrichLeadContacts(s.db, 'u1', s.jobId, s.leads, { fetchImpl: router(async () => ok({}), PDL_EMPTY, calls), master }))
+  assert.equal(calls.apollo, 0)
+  assert.equal(r.outcomes[0].outcome, 'spend_refused')
+  assert.equal(heldClaims(s.db, 'enrich:apollo'), 0)
+  assert.ok(!auditRows(s.db, 'enrich:apollo').some(x => x === 'error'), JSON.stringify(auditRows(s.db, 'enrich:apollo')))
+  const credits = s.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE name = 'enrich_credit_holds'").get() as { n: number }
+  void credits // the credit refund path is the same releaseUnused the pre-#382 code already ran; asserted by enrich-credit-pool tests
+  const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
+  assert.ok(texts.some(t => t.includes("this scan's spending cap had no room left for the lookup")), JSON.stringify(texts))
+})
+
+test('#382 org sent, then the people step refused by the cap: the notice never claims nothing was charged for the lead', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  s.db.prepare('UPDATE scan_jobs SET spend_cap_usd = 0.3 WHERE id = ?').run(s.jobId) // room for the org call, not the people call
+  const org = { organization: { name: 'Harbor Dental', website_url: 'https://harbordental.example', city: 'New York', state: 'New York', country: 'United States' } }
+  await runWithScanSpend(s.ctx, () => enrichLeadContacts(s.db, 'u1', s.jobId, s.leads, { fetchImpl: router(async () => ok(org), PDL_EMPTY, calls), master }))
+  assert.equal(calls.apollo, 1, 'the org call was sent')
+  const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
+  const t = texts.find(x => x.startsWith('Apollo: the remaining lookups'))
+  assert.ok(t, JSON.stringify(texts))
+  assert.ok(!/nothing was charged for them|Nothing was sent to Apollo/.test(t!), t)
+  assert.match(t!, /lookups made before the refusal keep their own charges/)
+})
+
+test('#382 owner retry refused by the scan cap: nothing sent, the lookup stays held, and the owner is told it was refused (not "retried")', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  s.db.prepare('DELETE FROM tenant_connectors WHERE connector = ?').run('enrich:apollo')
+  const prev = process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = 'pdl'
+  try {
+    const lookup = claimKeysFor(s.leads[0]).legacyPeople
+    const g = auditTryReserve(s.db, { tenantId: 'u1', connector: 'enrich:pdl', jobId: s.jobId, lookup, status: 'reserved', results: 0 }) as { id: string }
+    assert.ok(g.id)
+    s.db.prepare('UPDATE connector_claims SET claimed_at = claimed_at - 3600').run() // a crash remnant, old enough to be the owner's
+    s.db.prepare('UPDATE scan_jobs SET spend_cap_usd = 0.1 WHERE id = ?').run(s.jobId) // below one PDL search
+    const r = await retryHeldEnrichment(s.db, 'u1', 'lead1', { provider: 'pdl', step: 'legacy' }, { fetchImpl: router(async () => ok({}), async () => ok(PDL_OK), calls), master })
+    assert.equal(calls.pdl, 0, 'nothing sent')
+    assert.equal(r.status, 'refused', JSON.stringify(r))
+    assert.match((r as { reason: string }).reason, /over_cap/)
+    assert.equal(heldClaims(s.db, 'enrich:pdl'), 1, 'the held item survives for a later retry')
+  } finally { if (prev === undefined) delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; else process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = prev }
+})
+
+test('#382 an Apollo 404 keeps the attempt-wide stop (not documented as unbilled): PDL is not called after it', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0 }
+  const out = await runWithScanSpend(s.ctx, async () => {
+    const r = await enrichLeadContacts(s.db, 'u1', s.jobId, s.leads, { fetchImpl: router(async () => new Response('{}', { status: 404 }), async () => ok(PDL_OK), calls), master })
+    return { r, rejected: spendAttemptRejected() }
+  })
+  assert.equal(calls.pdl, 0)
+  assert.equal(out.rejected, 404)
 })

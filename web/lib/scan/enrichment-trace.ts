@@ -211,6 +211,7 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   // compatibility 'org X' rows land here too (they only ever repeat an org claim) and are not events of their own.
   for (const r of audit) {
     if (claimed.has(key(r.connector, r.lookup)) || r.status === 'ok' || r.status === 'empty') continue
+    if (r.status.startsWith('not sent: ')) continue // #382: refused by the spend gate before sending, claim released; its 'spend_refused' skip row is the hold
     if (HELD.has(r.status)) out.held++; else out.failed++
   }
   return out

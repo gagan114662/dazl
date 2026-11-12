@@ -48,7 +48,7 @@ export async function readProviderIssues(db: Db, tenantId: string, jobId: string
     for (const i of issues) {
       if (i.status !== 'spend_refused') continue
       try {
-        const row = await db.get<{ lookup: string }>(`SELECT lookup FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = 'spend_refused' ORDER BY created_at DESC LIMIT 1`, [tenantId, jobId, i.connector])
+        const row = await db.get<{ lookup: string }>(`SELECT lookup FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = 'spend_refused' ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [tenantId, jobId, i.connector])
         if (row?.lookup.startsWith(SPEND_REFUSAL_PREFIX)) i.refusal = row.lookup.slice(SPEND_REFUSAL_PREFIX.length)
       } catch { /* reason omitted: the sentence then says the spend check refused it, without a reason */ }
     }
