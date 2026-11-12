@@ -73,7 +73,6 @@ export function migrateScan(db: Database.Database): void {
   try { db.exec("ALTER TABLE scan_jobs ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'user'") } catch { /* column exists */ }
   db.exec(`
     CREATE INDEX IF NOT EXISTS scan_jobs_status ON scan_jobs (status, created_at);
-    CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
 
     CREATE TABLE IF NOT EXISTS leads (
       id          TEXT PRIMARY KEY,
@@ -176,6 +175,11 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'batch_id', 'TEXT')
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
+  // #1081 fair claiming (runner.ts claimKeyedJob): each tenant's last claim and last finish, and the jobs still in
+  // post-finish enrichment (they hold a run slot), are index seeks, not table scans.
+  db.exec(`CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
+    CREATE INDEX IF NOT EXISTS scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
+    CREATE INDEX IF NOT EXISTS scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL`)
   // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
   // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
