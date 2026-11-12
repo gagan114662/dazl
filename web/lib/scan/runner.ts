@@ -494,6 +494,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // Atomically claims one pending job whose owner has a key stored, or a trial-funded
 // job from a keyless account (those run on the shared operator key). Keyless non-trial
 // jobs are left alone (a worker such as Hermes can take them).
+// Fair across tenants (#1081): the tenant with the fewest running jobs, then the one served least recently, then the
+// oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
   // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
   // by the queue bridge instead, so the legacy claimer must skip them
@@ -502,11 +504,19 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd FROM scan_jobs
-         WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
-           AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
-           ${excl}
-         ORDER BY created_at, rowid LIMIT 1`,
+        `WITH eligible AS MATERIALIZED (
+           SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd, created_at, rowid AS rid
+           FROM scan_jobs
+           WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
+             AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
+             ${excl}),
+         running AS (SELECT user_id, COUNT(*) AS n FROM scan_jobs WHERE status = 'running' GROUP BY user_id),
+         served AS (SELECT t.user_id, (SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id) AS at
+                    FROM (SELECT DISTINCT user_id FROM eligible) t)
+         SELECT e.id, e.user_id, e.business_name, e.industry, e.location, e.attempts, e.query, e.icp, e.sources, e.funded_by, e.watch_id, e.csv_domain, e.run_budget, e.spend_reserved_usd
+         FROM eligible e LEFT JOIN running r ON r.user_id = e.user_id LEFT JOIN served v ON v.user_id = e.user_id
+         ORDER BY COALESCE(r.n, 0), COALESCE(v.at, 0), e.created_at, e.rid
+         LIMIT 1`,
       )
       .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined
     if (!row) return null
