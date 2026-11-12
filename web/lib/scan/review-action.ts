@@ -37,9 +37,12 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   if (kind === 'no_date') return { label: 'Keep as research', hint: `${RESEARCH}: it has no valid event date (missing, invalid or in the future), so it stays out of drafting. A wider time window does not change that.` }
   if (kind === 'older') return { label: 'Keep as research', hint: `${RESEARCH}: its event date is older than the time window you asked for, so it stays out of drafting. Confirming does not change that for this lead; only a new scan with a wider window can find it as current (it uses your usual scan budget).` }
   if (kind === 'unknown') return { label: 'Keep as research', hint: `${RESEARCH}: it is outside the time window you asked for, so it stays out of drafting.` }
+  // Checked before uncheckableCause: a failed REQUIRED gate is now also in that set (#683 round 2, so Home and the
+  // campaign views treat it as research too), but this specific cause gets its own, more actionable wording here -
+  // only a fresh scan with the check passing clears it, which the generic text below does not say.
+  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
-  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
   // no stored contact (the submitter's email is never kept). Confirming keeps it in the list; it does not identify a
   // person and promises no draft.

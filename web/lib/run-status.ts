@@ -81,8 +81,9 @@ export function currentRun(run: RunStatus, q: CurrentQual, query?: string | null
   const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : research > 0 ? 'Research only' : 'Not verified yet'
   const label = `${leads} found: ${parts.join(', ')}`
   // Nothing passed and nothing a check can release: the scan-time "Review them" would hand the user failed research (#352/#683). Offer a
-  // step that can change the result instead.
-  if (passed === 0 && q.needsReview === 0 && research > 0) return {
+  // step that can change the result instead - but only when every lead is accounted for as research; an unverified lead
+  // alongside it is still actionable by checking its source (#683 round 2), which "search again" would wrongly tell it to do instead.
+  if (passed === 0 && q.needsReview === 0 && q.unverified === 0 && research > 0) return {
     ...run, tag, label,
     detail: `Checking ${research === 1 ? 'this lead' : 'these leads'} cannot make ${research === 1 ? 'it' : 'them'} ready (no usable date in your time window, someone else's customer, a different place or a closed opening). Search again with a different signal or source.`,
     next: { text: 'Change the search', href: query ? `/app/leads?q=${encodeURIComponent(query)}` : '/app/leads' },

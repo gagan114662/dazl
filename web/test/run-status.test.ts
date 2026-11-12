@@ -66,4 +66,19 @@ test('#683: a lead confirmed OUT of a hold a check cannot resolve stays research
   // A confirm-from reason a check CAN resolve stays passed: confirming it was the fix, so it counts toward confirmedByYou.
   const fixed = row({ human_confirmed_at: 5, human_confirmed_from: 'quote_unconfirmed' })
   assert.deepEqual(currentQual([fixed]), { leads: 1, sourceChecked: 0, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 0, rejected: 0 })
+  // Confirmed OUT of a failed REQUIRED check ("Keep as research", #683 round 2): stays research, never confirmedByYou.
+  const gateFailed = row({ human_confirmed_at: 5, human_confirmed_from: 'sales_hiring_check_failed' })
+  assert.deepEqual(currentQual([gateFailed]), { leads: 1, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 1, unverified: 0, rejected: 0 })
+})
+
+// #683 round 2: a lead this check cannot release ("research only") must not drown out a different lead that is still
+// plainly actionable by checking its source - "search again" would be wrong advice for the unverified one.
+test('#683 round 2: a mixed research-only + unverified result still offers to review, never "search again"', () => {
+  // candidates/verified on the job itself only decide the group ('results'); the restated label below comes from q.
+  const found = runStatusOf(job({ candidates: 2, verified: 1, needs_review: 0, lead_count: 2 }) as never)
+  const q = { leads: 2, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 1, unverified: 1, rejected: 0 }
+  const run = currentRun(found, q, 'Dentists in Ohio')
+  assert.doesNotMatch(run.label + ' ' + (run.next?.text ?? ''), /change the search|search again/i, 'the unverified lead can still be checked - this must not tell the user to search again')
+  assert.match(run.label, /1 research only/)
+  assert.match(run.label, /1 unverified/)
 })

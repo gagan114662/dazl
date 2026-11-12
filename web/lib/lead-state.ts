@@ -31,9 +31,11 @@ const CAUSE: Record<string, ResearchCause> = {
 // added to exactly one of them (test/lead-state.test.ts pins this against the Leads view's reason labels), or it fails closed to research on Home.
 export const RESEARCH_REASONS: ReadonlySet<string> = new Set(['outside_window', 'outside_window_undated', 'counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
 
-// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening. A person's check of the source cannot change it, so a lead
-// confirmed out of one of these stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable (currentnessHeld, lib/outreach/currentness.ts).
-const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed'])
+// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening, or a failed
+// REQUIRED check (sales_hiring_check_failed, #683 round 2). A person's check of the source cannot change any of these, so
+// a lead confirmed out of one stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable
+// (currentnessHeld, lib/outreach/currentness.ts).
+const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
 export function uncheckableCause(reason: string | null | undefined): ResearchCause | null {
   return reason && UNCHECKABLE.has(reason) ? CAUSE[reason] : null
 }

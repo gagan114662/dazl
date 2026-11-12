@@ -202,10 +202,16 @@ function outcomeOf(j: JobRow, c?: CampaignSummary): string {
   if (o.kind === 'unrecorded') return 'counts unavailable'
   if (o.kind === 'all_dropped') return `${j.candidates} found, all dropped by the checks`
   const q = c?.qualification
-  const verified = q?.sourceChecked ?? j.verified ?? 0
-  const review = q?.needsReview ?? j.needs_review ?? 0
-  // The campaign row's own counts also split off research-only (#683): without a matching row, nothing is claimed about it.
-  const research = q ? (q.research ?? 0) + (q.heldResearch ?? 0) : 0
+  // Without a matching campaign row (not loaded yet, or beyond listCampaigns' own cap), nothing current is claimed: the
+  // job's own verified/needs_review are recorded at scan time and can be stale for exactly the leads #683 is about
+  // (confirmed out of a hold since the scan ran), so showing them here would reproduce the bug this round exists to fix.
+  if (!q) return j.candidates ? `${j.candidates} found; open the campaign for current counts` : 'counts unavailable'
+  // heldResearch is a held subset of sourceChecked/confirmedByYou (listCampaigns' own two-line Campaigns display shows
+  // it the same way: qualification line first, held/research breakdown second). Home shows one line, so the overlap
+  // must come out of sourceChecked here or the same lead is counted once as checked and again as research-only.
+  const verified = Math.max(0, (q.sourceChecked ?? 0) - (q.heldResearch ?? 0))
+  const review = q.needsReview ?? 0
+  const research = (q.research ?? 0) + (q.heldResearch ?? 0)
   const base = `${verified} source-checked, ${review} need${review === 1 ? 's' : ''} your review`
   return research > 0 ? `${base}, ${research} research-only` : base
 }

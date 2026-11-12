@@ -36,6 +36,8 @@ test('#683: a source-checked or confirmed lead still held is research, never "no
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'outside_window_undated', window_held: true }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
   // A confirm-from reason a check CAN resolve (not in the uncheckable set) stays qualified: confirming it was the fix.
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'quote_unconfirmed' }), []), { stage: 'qualified', text: 'Confirmed by you, not drafted' })
+  // Confirmed OUT of a failed REQUIRED check ("Keep as research", #683 round 2): no confirmation clears it either.
+  assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'sales_hiring_check_failed' }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
 })
 
 test("only this scan's emails are listed", () => {
