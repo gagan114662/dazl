@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #382 b/382-waterfall-in-scan (live-check fix, Hermes-PC FAIL on staging 223b3a4b): inside a real scan an Apollo 401/429 no longer blocks PDL. A documented rejection by a BYOK enrichment vendor (Apollo, PDL) now stops only that vendor for the attempt (`lib/scan/spend-cap.ts`); model/TinyFish/render rejections and every maybe-billed failure (timeout, 5xx) still stop all paid calls. A lookup the spend gate refuses before sending is recorded as `spend_refused` with its reason ("People Data Labs not tried ...") and its claim is released, not held for "Retry unavailable"; a circuit opened by one rejected key says "after the saved key was rejected". Side effect fixed: an Apollo rejection used to also block the post-finish people search and buyer-fit model calls of that scan. Competitive: a tenant with both keys gets the PDL contact Gojiberry-style enrichment promises when Apollo is down or rate-limited. Not verified live: needs a valid PDL key on a staging tenant (PDL free tier).
+
 - #1065 b/415-same-thread-dsn-ref review fix (xhawk High): when two sent rows share a Gmail thread, a DSN that exactly references the sibling row is left unlogged by the row scanned first, so the referenced send (or phase 2) suppresses it instead of the notice being consumed. Competitive: a permanent bounce can no longer slip past suppression (sender reputation). Fixtures only; no live Gmail.
 
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states

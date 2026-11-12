@@ -146,6 +146,9 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
       // A hold (budget, credits, circuit) or a setup row that could not read a key / lead was written BEFORE any request: it is
       // an outcome of its own, never a provider lookup (a new job whose every lead was held also has no claims and lands here).
       if (HELD.has(r.status)) { out.held++; continue }
+      // #382: a lookup the scan's spend gate refused BEFORE sending (its claim released, lib/enrich/index.ts unsentStatus). Not a
+      // lookup and not a failure; the provider's 'spend_refused' skip row above already reports the hold once.
+      if (r.status.startsWith('not sent: ')) continue
       if (PRE_CALL_SETUP.test(r.status)) { out.failed++; continue }
       const org = /^(?:step:)?org /.test(r.lookup)
       const dedupe = `${r.connector}\u0000${org ? 'org ' + r.lookup.replace(/^(?:step:)?org /, '') : r.lookup}\u0000${r.status}\u0000${r.results}`

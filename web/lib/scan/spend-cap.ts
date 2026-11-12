@@ -214,7 +214,18 @@ export function effectiveCapUsd(ctx: ScanSpendCtx): number | null {
 const uncertainAttempts = new WeakSet<ScanSpendCtx>() // one entry per attempt: the context is opened once around the whole attempt
 // A vendor answered a request with a documented rejection (429, 400, ...): counted, never retried, and no further paid request of ANY vendor in this attempt.
 const rejectedAttempts = new WeakMap<ScanSpendCtx, number>()
+// #382: the BYOK enrichment vendors (the tenant's OWN Apollo / PDL keys, the contact waterfall in lib/enrich/index.ts) are the
+// exception. Their documented rejection (a bad key, a 429) stops THAT vendor for the rest of the attempt and nothing else: the
+// waterfall's next provider is a different vendor on a different key and account, so an Apollo 401 says nothing about PDL, and it
+// must not stop the scan's own steps after the waterfall (people search, buyer fit) either. It is never retried: every later
+// reservation of the same vendor in this attempt is refused 'provider_rejected'. It does not end the scan: the waterfall is a
+// post-finish bonus and records its own skip (spendAttemptRejected() stays null). A maybe-billed call (uncertain) is unchanged:
+// it still stops every paid request of the attempt, enrichment included.
+const VENDOR_SCOPED_REJECTION: Partial<Record<SpendKind, 'apollo' | 'pdl'>> = { 'apollo.org': 'apollo', 'apollo.people': 'apollo', 'pdl.people': 'pdl' }
+const rejectedVendors = new WeakMap<ScanSpendCtx, Map<'apollo' | 'pdl', number>>()
 export function spendAttemptRejected(): number | null { const c = store.getStore(); return c && rejectedAttempts.has(c) ? rejectedAttempts.get(c)! : null }
+// The documented rejection status one BYOK enrichment vendor answered in this attempt (null: none).
+export function spendVendorRejected(vendor: 'apollo' | 'pdl'): number | null { const c = store.getStore(); return c ? rejectedVendors.get(c)?.get(vendor) ?? null : null }
 export function spendAttemptUncertain(): boolean { const c = store.getStore(); return !!c && uncertainAttempts.has(c) }
 export interface SpendHold {
   id: string
@@ -226,7 +237,8 @@ export interface SpendHold {
   settle(actualUsd: number | null): Promise<void>
   // The request may have been billed and its outcome is unknown: the row stays 'reserved' and this attempt makes no further paid request.
   uncertain(): void
-  // The vendor refused the request (documented rejection status); call after settle(). The attempt stops paying and the scan ends with its own status.
+  // The vendor refused the request (documented rejection status); call after settle(). The attempt stops paying and the scan ends with its own status
+  // (a BYOK enrichment vendor: only that vendor stops, see VENDOR_SCOPED_REJECTION).
   rejected(status: number): void
 }
 
@@ -242,6 +254,8 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   if (!ctx) return null
   if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
+  const vendor = VENDOR_SCOPED_REJECTION[kind]
+  if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('provider_rejected')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -304,7 +318,10 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   return {
     id, kind, usd,
     uncertain() { done = true; uncertainAttempts.add(ctx) },
-    rejected(status) { if (!rejectedAttempts.has(ctx)) rejectedAttempts.set(ctx, status) },
+    rejected(status) {
+      if (vendor) { const m = rejectedVendors.get(ctx) ?? new Map<'apollo' | 'pdl', number>(); if (!m.has(vendor)) m.set(vendor, status); rejectedVendors.set(ctx, m) }
+      else if (!rejectedAttempts.has(ctx)) rejectedAttempts.set(ctx, status)
+    },
     async settle(actualUsd) {
       if (done) return
       done = true
