@@ -152,9 +152,12 @@ export function migrateEmailGuess(db: Database.Database): void {
   if (!hasP('score')) db.exec('ALTER TABLE email_patterns ADD COLUMN score INTEGER CHECK (score IS NULL OR (score >= 0 AND score <= 100))')
   if (!hasP('runner_up')) db.exec('ALTER TABLE email_patterns ADD COLUMN runner_up INTEGER')
   if (!hasP('evidence')) db.exec('ALTER TABLE email_patterns ADD COLUMN evidence TEXT CHECK (evidence IS NULL OR length(evidence) <= 2000)')
-  // #899: the two cap counts read by verifyCandidates (per tenant per day; per verifier account per month). Postgres: 0064_email_verify_caps.sql.
+  // #899: the per-tenant daily count reads this index; the verifier's monthly checks are an operator ledger with no tenant data
+  // (lib/tenant/scope.ts: global), so a tenant's deletion never frees allowance already spent. Postgres: 0062_email_verify_caps.sql.
   db.exec(`CREATE INDEX IF NOT EXISTS email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
-    CREATE INDEX IF NOT EXISTS email_candidates_verifier_checked ON email_candidates (verifier, checked_at);`)
+    CREATE TABLE IF NOT EXISTS email_verify_usage (
+      verifier TEXT NOT NULL CHECK (length(verifier) <= 40), month TEXT NOT NULL CHECK (length(month) = 7),
+      n INTEGER NOT NULL DEFAULT 0 CHECK (n >= 0), PRIMARY KEY (verifier, month));`)
 }
 
 // ---- part 2: US only. Unknown country counts as not US (docs/DECISIONS.md). ----
@@ -182,7 +185,8 @@ export function verifierFromEnv(env: Record<string, string | undefined> = proces
   const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
   return key ? zeroBounceVerifier(key, fetchImpl) : null
 }
-// The verifier ACCOUNT's checks per calendar month (UTC), across every tenant: the free allowance is the account's, not a tenant's.
+// The verifier's checks per calendar month (UTC) across every tenant of this database: the free allowance is the provider account's,
+// not a tenant's (a second deployment on the same key counts separately; the provider's own refusal stops it).
 // Default and ceiling: the provider's free allowance (ZeroBounce 100). EMAIL_VERIFY_MONTHLY_CAP can only lower it; anything that is
 // not a plain non-negative integer is 0 (no check). Never raised past the free tier: no setting buys checks (#899 decision).
 export function verifyMonthlyCap(env: Record<string, string | undefined> = process.env): number {
@@ -190,7 +194,6 @@ export function verifyMonthlyCap(env: Record<string, string | undefined> = proce
   if (raw === undefined || raw.trim() === '') return ZEROBOUNCE_FREE_MONTHLY
   return /^\d{1,6}$/.test(raw.trim()) ? Math.min(Number(raw.trim()), ZEROBOUNCE_FREE_MONTHLY) : 0
 }
-const monthStartOf = (nowS: number) => { const d = new Date(nowS * 1000); return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000) }
 // Per-tenant checks per UTC day. Default 0: no check runs unless a cap is set explicitly.
 export function verifyDailyCap(env: Record<string, string | undefined> = process.env): number {
   const n = Number(env.EMAIL_VERIFY_DAILY_CAP ?? '0')
@@ -212,16 +215,20 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   const monthCap = verifyMonthlyCap(env)
   if (monthCap === 0) return { ...run, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
   migrateEmailGuess(db)
-  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthStart = monthStartOf(nowS)
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
   const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
   const reserve = db.transaction((address: string): boolean => {
     const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
     if (used >= cap) return false
-    // The account-wide free allowance (every tenant's checks by this verifier this month), counted in the same transaction.
-    const month = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE verifier = ? AND checked_at >= ?').get(vname, monthStart) as { n: number }).n
+    // The verifier's monthly allowance across every tenant of THIS database: an operator ledger (email_verify_usage, no tenant
+    // data), so deleting a tenant's candidate rows never frees allowance already spent. Counted and written in this transaction.
+    // Per database: two deployments sharing one key each count their own; the provider's refusal (a 'stop') is the backstop.
+    const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
     if (month >= monthCap) return false
-    return db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, verifier.name.slice(0, 40), tenantId, leadId, address).changes === 1
+    const won = db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, vname, tenantId, leadId, address).changes === 1
+    if (won) db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = n + 1').run(vname, monthKey)
+    return won
   })
   for (const { address } of rows) {
     if (opts.signal?.aborted) break

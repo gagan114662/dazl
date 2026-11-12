@@ -74,31 +74,52 @@ test('#899 a "stop" answer (bad key / no credits) ends the run after that one re
   assert.deepEqual(st, [{ verification: 'uncertain', n: 1 }])
 })
 
-test('#899 both cap counts read an index (SQLite twin of 0064_email_verify_caps.sql)', () => {
+test('#899 the daily cap count reads an index; the monthly allowance is an operator ledger (SQLite twin of 0062_email_verify_caps.sql)', () => {
   const db = new Database(':memory:'); migrateEmailGuess(db)
   const plan = (sql: string, ...a: unknown[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...a) as { detail: string }[]).map(r => r.detail).join(' | ')
-  assert.match(plan('SELECT count(*) AS n FROM email_candidates WHERE verifier = ? AND checked_at >= ?', 'zerobounce', 0), /email_candidates_verifier_checked/)
   assert.match(plan('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?', 'A', 0), /email_candidates_tenant_checked/)
+  assert.match(plan('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?', 'zerobounce', '2026-11'), /PRIMARY KEY|sqlite_autoindex_email_verify_usage/)
+})
+
+test('#899 deleting a tenant\'s candidate rows never frees allowance already spent', async () => {
+  const { db, on } = seeded('A', 'L1')
+  seeded('B', 'L2', db)
+  let calls = 0
+  const v = { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }
+  const env = { ...on, EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  await verifyCandidates(db, 'A', 'L1', v, { env, now: NOW })
+  db.prepare("DELETE FROM email_candidates WHERE tenant_id = 'A'").run() // tenant A erased
+  const b = await verifyCandidates(db, 'B', 'L2', v, { env, now: NOW + 60_000 })
+  assert.equal(b.checked, 0); assert.equal(calls, 2)
+})
+
+test('#899 401, 403 and 429 stop the run (the account cannot check now); a 5xx only fails that one check', async () => {
+  for (const status of [401, 403, 429]) await assert.rejects(zeroBounceVerifier('k', answer({}, status)).verify('a@b.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'stop', String(status))
+  await assert.rejects(zeroBounceVerifier('k', answer({}, 500)).verify('a@b.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'failed')
 })
 
 // The crawl (the only writer of guesses) runs the capped check for the lead's high-confidence US guess, and records it on the
 // candidate row only: the guess never becomes a contact.
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We have served the community for many years and we care about every family that walks through our doors every single day.</p>'
-async function crawl(env: Record<string, string>, verifyFetch: typeof fetch) {
+async function crawl(env: Record<string, string>, verifyFetch: typeof fetch, opts: { leads?: number; signal?: AbortSignal } = {}) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('L1', job, 'Acme Logistics', null, 'Acme Logistics is hiring', 'https://news.example.test/a', 'Acme Logistics is hiring', 90, 80)
+  if ((opts.leads ?? 1) > 1) db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('L2', job, 'Beta Freight', null, 'Beta Freight is hiring', 'https://news.example.test/b', 'Beta Freight is hiring', 90, 79)
   const pages: Record<string, string> = {
     '/a': html('<a href="https://acmelogistics.com/">site</a>'),
+    '/b': html('<a href="https://betafreight.com/">site</a>'),
     '/robots.txt': 'User-agent: *\nAllow: /',
     '/': html('Acme Logistics 120 Main St, Austin, TX 78701 <a href="/team">Team</a>'),
     '/team': html(`${PROSE}<h3>Dana Lee</h3><p>CEO</p><h3>Ben Ortiz</h3><p>CFO</p><h3>Cara Diaz</h3><p>COO</p><p>Press: dana.lee@acmelogistics.com, ben.ortiz@acmelogistics.com</p>`),
   }
-  const get: Get = async url => { const p = pages[new URL(url).pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
-  await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW, verifyFetch })
+  const beta: Record<string, string> = { '/': html('Beta Freight 9 Elm St, Dallas, TX 75201 <a href="/team">Team</a>'), '/team': html(`${PROSE}<h3>Gil Park</h3><p>CEO</p><h3>Hal Wu</h3><p>CFO</p><h3>Ivy Sol</h3><p>COO</p><p>Press: gil.park@betafreight.com, hal.wu@betafreight.com</p>`) }
+  const get: Get = async url => { const u = new URL(url); const p = u.hostname.includes('betafreight') && u.pathname !== '/robots.txt' ? beta[u.pathname] : pages[u.pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW, verifyFetch, signal: opts.signal })
   return db
 }
 
@@ -119,4 +140,26 @@ test('#899 crawl: no key, or no daily cap, or the flag off -> no request at all'
     await crawl(env, (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch)
     assert.equal(calls, 0, JSON.stringify(env))
   }
+})
+
+test('#899 crawl: a stop (no credits) carries across leads: one request for the whole crawl, never one per lead', async () => {
+  let calls = 0
+  const db = await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'zb-secret-key' }, (async () => { calls++; return new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' })) }) as unknown as typeof fetch, { leads: 2 })
+  assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'").get() as { n: number }).n, 2, 'both leads had a guess to check')
+  assert.equal(calls, 1)
+  const audit = db.prepare("SELECT status FROM connector_audit WHERE connector = 'email-verify'").all() as { status: string }[]
+  assert.equal(audit.length, 1); assert.match(audit[0].status, /^stopped: ZeroBounce: .*ran out of credits/)
+  assert.ok(!JSON.stringify(db.prepare('SELECT * FROM connector_audit').all()).includes('zb-secret-key'), 'the key never reaches the audit trail')
+})
+
+test('#899 crawl: monthly cap 0 -> no request; a check that hangs past the deadline never undoes the lead\'s crawl results', async () => {
+  let calls = 0
+  await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', EMAIL_VERIFY_MONTHLY_CAP: '0', ZEROBOUNCE_API_KEY: 'k' }, (async () => { calls++; return new Response('{}') }) as unknown as typeof fetch)
+  assert.equal(calls, 0)
+  const ac = new AbortController()
+  const db = await crawl({ EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'k' }, (async () => { ac.abort(); throw new DOMException('aborted', 'AbortError') }) as unknown as typeof fetch, { signal: ac.signal })
+  const crawled = db.prepare("SELECT status FROM connector_audit WHERE connector = 'sitecrawl' AND lookup = 'acmelogistics.com'").all() as { status: string }[]
+  assert.ok(crawled.length >= 1 && crawled.every(r => r.status !== 'cut_off'), JSON.stringify(crawled))
+  assert.equal((db.prepare("SELECT company_domain FROM leads WHERE id = 'L1'").get() as { company_domain: string }).company_domain, 'acmelogistics.com', 'the lead\'s results were written before the check')
+  assert.deepEqual(db.prepare("SELECT verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'uncertain' }])
 })

@@ -1,6 +1,8 @@
 // #899 decision (Hermes, delegated by Gagan, 2026-11-12): mailbox verification on a FREE tier only, capped at the free allowance,
 // never auto-upgraded. ZeroBounce: a documented single-address API (docs: zerobounce.net/docs/email-validation-api-quickstart/
-// v2-validate-emails) and a recurring free monthly allowance (100 checks), which needs no card. A free account has no card on file,
+// v2-validate-emails: the endpoint, api_key/email/timeout query parameters and status values below, per those docs as read on
+// 2026-11-12, not yet live-checked) and a recurring free monthly allowance (100 checks, no card: per third-party comparisons,
+// to be confirmed when the free key is created). A free account has no card on file,
 // so the provider itself refuses once the allowance is spent; dazl also stops at the same number first (lib/people/email-pattern.ts
 // verifyMonthlyCap). ZeroBounce documents that an "unknown" result never consumes a credit.
 //
@@ -33,7 +35,8 @@ export function zeroBounceVerifier(apiKey: string, fetchImpl: typeof fetch = fet
       const t = setTimeout(() => ctrl.abort(), ABORT_MS)
       try {
         const r = await fetchImpl(`${ZEROBOUNCE_URL}?${q}`, { method: 'GET', signal: signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal })
-        if (!r.ok) throw new VerifierError(r.status === 401 || r.status === 403 ? 'stop' : 'failed', `ZeroBounce returned ${r.status}`)
+        // A rejected key or a rate limit: the account cannot check now, so the run stops (never burns the allowance on throttled calls).
+        if (!r.ok) throw new VerifierError(r.status === 401 || r.status === 403 || r.status === 429 ? 'stop' : 'failed', `ZeroBounce returned ${r.status}`)
         let j: Record<string, unknown>
         try { j = await r.json() as Record<string, unknown> } catch { throw new VerifierError('failed', 'ZeroBounce answer unreadable') }
         // A bad key or an account out of credits answers 200 with { error: "..." } and no status.

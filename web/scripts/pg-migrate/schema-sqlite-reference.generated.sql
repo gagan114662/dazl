@@ -237,6 +237,10 @@ CREATE TABLE email_tokens (
     used_at INTEGER
   );
 
+CREATE TABLE email_verify_usage (
+      verifier TEXT NOT NULL CHECK (length(verifier) <= 40), month TEXT NOT NULL CHECK (length(month) = 7),
+      n INTEGER NOT NULL DEFAULT 0 CHECK (n >= 0), PRIMARY KEY (verifier, month));
+
 CREATE TABLE evidence_purge_audit (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -1246,8 +1250,6 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
 CREATE INDEX email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
-
-CREATE INDEX email_candidates_verifier_checked ON email_candidates (verifier, checked_at);
 
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
