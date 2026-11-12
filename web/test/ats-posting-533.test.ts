@@ -127,6 +127,19 @@ test('#533 two postings of one company read the board once', async () => {
   } finally { restore() }
 })
 
+test('#533 a refused board read is not remembered: the next posting asks again', async () => {
+  let n = 0
+  const asked: { url: string; accept: string }[] = []
+  const restore = fakeHttps(u => (u.startsWith('https://api.ashbyhq.com/') && ++n === 1 ? { status: 429, type: 'application/json', body: '' } : live()(u)), asked)
+  try {
+    const first = await fetchPageDetailed(ASHBY_URL, async () => null)
+    assert.ok(isFail(first)); assert.equal(first.fail, 'blocked')
+    const second = await fetchPageDetailed('https://jobs.ashbyhq.com/acmeco/11111111-0000-4000-8000-000000000000', async () => null)
+    assert.ok(!isFail(second)); assert.equal((second as Page).postedAt, '2026-10-01')
+    assert.equal(asked.length, 2)
+  } finally { restore() }
+})
+
 test('#533 a large Ashby board (over the 1.5 MB page bound) is still read; the board day only dates a fresh posting', async () => {
   const filler = Array.from({ length: 600 }, (_, i) => ({ id: `22222222-0000-4000-8000-${String(i).padStart(12, '0')}`, title: `Role ${i}`, isListed: true, publishedAt: '2026-10-01T00:00:00Z', jobUrl: 'https://jobs.ashbyhq.com/acmeco/x', descriptionPlain: 'x'.repeat(5000) }))
   const big = JSON.stringify({ jobs: [...filler, ASHBY_BOARD.jobs[1]] })

@@ -105,21 +105,28 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
   })
 }
 
-// #533: several postings of one company cite the same Ashby board record (the whole board): one read serves them all
-// for a short while, so a scan never downloads the same board once per posting (and is less likely to be rate limited).
-// Public data, keyed by the exact API URL; at most BOARD_MEMO_MAX boards, each for BOARD_MEMO_MS.
-const BOARD_MEMO_MS = 120_000, BOARD_MEMO_MAX = 16
-const boardMemo = new Map<string, { at: number; read: ReturnType<typeof once> }>()
+// #533: several postings of one company cite the same Ashby board record (the whole board): one successful read serves
+// them all for a short while, so a scan never downloads the same board once per posting. Only a 2xx answer is kept (a
+// refusal, an error or a thrown read is dropped, so the next posting asks again). Public data, keyed by the exact API
+// URL; bounded to BOARD_MEMO_BYTES of bodies in total and BOARD_MEMO_MS each.
+const BOARD_MEMO_MS = 120_000, BOARD_MEMO_BYTES = 24_000_000
+const boardMemo = new Map<string, { at: number; read: ReturnType<typeof once>; bytes: number }>()
+const memoBytes = () => [...boardMemo.values()].reduce((a, m) => a + m.bytes, 0)
 function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
   const k = url.toString(), now = Date.now()
   for (const [key, m] of boardMemo) if (now - m.at > BOARD_MEMO_MS) boardMemo.delete(key)
   const hit = boardMemo.get(k)
-  if (hit) return hit.read
-  if (boardMemo.size >= BOARD_MEMO_MAX) boardMemo.delete(boardMemo.keys().next().value!)
+  if (hit) return signal?.aborted ? Promise.reject(new Error('aborted')) : hit.read
   // shared, so not tied to one caller's abort signal; it is still bounded by the request timeout
   const read = once(url, TIMEOUT_MS, guardedLookup)
-  boardMemo.set(k, { at: now, read })
-  read.catch(() => boardMemo.delete(k)) // a failed read is not remembered
+  const entry = { at: now, read, bytes: 0 }
+  boardMemo.set(k, entry)
+  read.then(r => {
+    if (r.status < 200 || r.status >= 300) { boardMemo.delete(k); return }
+    entry.bytes = r.body.length
+    // oldest first until the bodies kept fit the bound (this one included: a single board over the bound is not kept)
+    for (const key of boardMemo.keys()) { if (memoBytes() <= BOARD_MEMO_BYTES) break; boardMemo.delete(key) }
+  }, () => boardMemo.delete(k))
   return signal?.aborted ? Promise.reject(new Error('aborted')) : read
 }
 export const resetBoardMemo = () => boardMemo.clear()
