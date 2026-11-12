@@ -241,7 +241,7 @@ const pcOf = (claim: LeadClaim, text: string) => {
   return { pc: checks.find(c => c.check === 'person_current')!, action: overall(checks).action }
 }
 
-test('rival employer in any explicit shape (apposition, adjective, of/for/with, works at/joined ... as) never passes for the target', () => {
+test('#781: rival employer in any explicit shape (apposition, adjective, of/for/with, works at/joined ... as) never passes for the target', () => {
   for (const text of [
     'Pat Example (Sales Director, Rival Corp) thanked Harbor Ledger Analytics for hosting.',
     'Pat Example, Sales Director, Rival Corp, thanked Harbor Ledger Analytics for hosting.',
@@ -276,7 +276,7 @@ test('someone else\'s title at the target, with the claimed person merely in the
   }
 })
 
-test('explicit current-role shapes at the target still pass', () => {
+test('#781: explicit current-role shapes at the target still pass', () => {
   for (const text of [
     'Pat Example, Sales Director, Harbor Ledger Analytics, spoke on the panel.',
     'Pat Example (Sales Director, Harbor Ledger Analytics) spoke on the panel.',
@@ -293,7 +293,7 @@ test('explicit current-role shapes at the target still pass', () => {
   ]) assert.equal(pcOf(PAT, text).pc.status, 'pass', text)
 })
 
-test('former-role wording still fails once the role is positively bound', () => {
+test('#781: former-role wording still fails once the role is positively bound', () => {
   for (const text of [
     'Pat Example, previously Sales Director at Harbor Ledger Analytics, now advises startups.',
     'Pat Example, Sales Director at Harbor Ledger Analytics until 2025, now runs Rival Corp.',
@@ -305,7 +305,7 @@ test('former-role wording still fails once the role is positively bound', () => 
   }
 })
 
-test('adversarial inputs: regex metacharacters in names, huge sentences and repeated names stay fail-closed and fast', () => {
+test('#781: adversarial inputs: regex metacharacters in names, huge sentences and repeated names stay fail-closed and fast', () => {
   const odd: LeadClaim = { ...BASE, company: 'Smith & Sons (UK) Ltd.', person: { name: 'Pat O\'Neil+', title: 'Head (Sales)', source_url: PEOPLE_PAGE } }
   const oddEvent = snap(OWN, page('<p>Smith & Sons (UK) Ltd. opened its new London, United Kingdom office on October 20, 2026.</p>'))
   const check = (text: string) => run(odd, [oddEvent, snap(PEOPLE_PAGE, page(`<p>${text}</p>`))]).find(c => c.check === 'person_current')!.status
