@@ -80,11 +80,24 @@ export function firstAuthenticationResults(root: GPart | undefined): DsnAuth | n
   const first = root?.headers?.find(h => h.name.toLowerCase() === 'authentication-results')?.value ?? ''
   if (!first.trim()) return null
   const authservId = first.split(';', 1)[0].trim().toLowerCase()
+  // RFC 8601 comments "(...)" are free text (Gmail quotes the client's HELO/MAIL FROM there): never read a property
+  // out of one. Strip them (innermost first) before matching.
+  let ar = first
+  for (let i = 0; i < 8 && /\([^()]*\)/.test(ar); i++) ar = ar.replace(/\([^()]*\)/g, ' ')
+  if (/[()]/.test(ar)) return { authservId, passDomains: [] } // unbalanced or absurdly nested comments: nothing is read (fail closed)
+  // the authenticated DOMAIN: Gmail prints smtp.mailfrom as a full address (bounce@example.com)
+  const dom = (v: string) => v.toLowerCase().replace(/^.*@/, '').replace(/^[.]+/, '')
   const passDomains: string[] = []
-  for (const m of first.matchAll(/\bspf=pass\b[^;]*?\bsmtp\.mailfrom=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
-  for (const m of first.matchAll(/\bdkim=pass\b[^;]*?\bheader\.d=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
-  for (const m of first.matchAll(/\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;]+)/gi)) passDomains.push(m[1].toLowerCase().replace(/^[.@]+/, ''))
-  return { authservId, passDomains }
+  for (const m of ar.matchAll(/\bspf=pass\b[^;]*?\bsmtp\.mailfrom=([^\s;]+)/gi)) passDomains.push(dom(m[1]))
+  // #676: a delivery-status notice has a NULL return path (MAIL FROM:<>), so SPF is checked against the HELO identity
+  // and Gmail reports it as `spf=pass ... smtp.helo=<host>` (RFC 7208 s2.3, RFC 8601). Without this a genuine bounce
+  // from the recipient's own MX that is not DKIM-signed (most Postfix/Exim bounces) could never be proven, so it never
+  // suppressed. Same bar as mailfrom: it counts only on the first header of a trusted authserv-id AND only when the
+  // HELO host aligns with the recipient's domain or its DNS MX hosts (dsnProvenance). An IP-literal HELO never aligns.
+  for (const m of ar.matchAll(/\bspf=pass\b[^;]*?\bsmtp\.helo=([^\s;]+)/gi)) passDomains.push(dom(m[1]))
+  for (const m of ar.matchAll(/\bdkim=pass\b[^;]*?\bheader\.d=([^\s;]+)/gi)) passDomains.push(dom(m[1]))
+  for (const m of ar.matchAll(/\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;]+)/gi)) passDomains.push(dom(m[1]))
+  return { authservId, passDomains: passDomains.filter(Boolean) }
 }
 
 const domainMatches = (candidate: string, expected: string[]): boolean =>
