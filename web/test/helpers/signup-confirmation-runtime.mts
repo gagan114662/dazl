@@ -281,7 +281,7 @@ test('#1095 login CSRF: sign-up and sign-in refuse a cross-site request (a forei
   const before = users()
   for (const [route, path] of [[signup, '/api/auth/signup'], [signin, '/api/auth/signin']] as const) {
     const body = { email: `csrf-${path.slice(10)}@example.test`, password: 'correct horse battery 9', name: 'X', business_name: 'X' }
-    for (const headers of [{ origin: 'https://evil.example' }, { 'content-type': 'text/plain' }] as Record<string, string>[]) {
+    for (const headers of [{ origin: 'https://evil.example' }, { origin: 'null' }, { 'content-type': 'text/plain' }] as Record<string, string>[]) {
       const r = await route.POST(req(path, body, headers))
       assert.equal(r.status, 400, `${path} ${JSON.stringify(headers)}`)
       assert.ok(!r.headers.getSetCookie().some(c => /^dazl_session=[0-9a-f]/.test(c)), `${path}: no session`)

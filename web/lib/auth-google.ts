@@ -203,8 +203,9 @@ export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, ses
     // transaction as the identity insert: both happen or neither. mismatch / taken / stale session never get here.
     if (u.v === null) {
       yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, id.email])
-      // Defense in depth: until now nobody had proved this address, so any OTHER session of the account (e.g. whoever
-      // registered it with a password) is signed out; only the session that just proved it is kept.
+      // Defense in depth: until now nobody had proved this address, so the account's OTHER sessions are signed out; only
+      // the session that just proved it is kept. (Whoever set the password can still sign in with it: the protection
+      // against a planted account is that a cross-site page can neither sign a browser in nor start a link, #1095.)
       if (sessionToken !== undefined) yield* t.run("UPDATE sessions SET revoked_at = ?, revoked_by = user_id, revoke_reason = 'google_link_verified' WHERE user_id = ? AND id <> ? AND revoked_at IS NULL", [Math.floor(Date.now() / 1000), userId, createHash('sha256').update(sessionToken).digest('hex')])
     }
     yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])

@@ -157,7 +157,17 @@ try {
       try {
         await page.getByTestId('site-step').waitFor({ timeout: 8000 })
         assert.match(await page.getByTestId('google-link-note').innerText(), /not added \(cancelled or failed\)/, `empty profile @${width}: the note`)
+        await wayForward(page, false, 'failed', `empty profile @${width}`)
         assert.equal(await page.getByTestId('ready-step').count(), 0, `empty profile @${width}: no empty ready card`)
+      } finally { await ctx.close() }
+    })
+    // a link started from the website step (the free site read's guard) comes back there with its way forward
+    await check(`/app site step failed @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app?google=failed', 'site')
+      try {
+        await page.getByTestId('site-step').waitFor({ timeout: 8000 })
+        assert.match(await page.getByTestId('google-link-note').innerText(), /not added/, `site @${width}: the note`)
+        await wayForward(page, false, 'failed', `site @${width}`)
       } finally { await ctx.close() }
     })
     // the reviewer's repro: a failed result with NO saved search still says how it went (never silent Home)

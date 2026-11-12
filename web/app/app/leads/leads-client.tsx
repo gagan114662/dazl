@@ -146,8 +146,6 @@ export default function LeadsClient() {
   // #1095: a free-trial refusal shown as words with the way forward, and the result of a Google link started here.
   const [trialRefused, setTrialRefused] = useState<{ reason: unknown; query: string } | null>(null)
   const [linkNote, setLinkNote] = useState<{ ok: boolean; text: string } | null>(null)
-  // Back from Google (#1095): the note (and, after a failure, the way forward under it) sits below the search card;
-  // bring it on screen so a phone user sees how the link went without scrolling.
   // A search restored after linking Google: the "restore the last profile" response below must not replace it.
   const restoredSearch = useRef(false)
   useEffect(() => {
@@ -562,7 +560,7 @@ export default function LeadsClient() {
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
-      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (!restoredSearch.current) setQuery(s.query) }
+      if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (restoredSearch.current) restoredSearch.current = false; else setQuery(s.query) } // only the first job load after a restore keeps the restored search
     }
     void tick() // immediate first check: a done deep link must not sit on a loading state for a full interval
     const t = setInterval(tick, 5000)

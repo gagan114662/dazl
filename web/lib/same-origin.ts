@@ -5,5 +5,7 @@ import type { NextRequest } from 'next/server'
 export function sameOriginJson(req: NextRequest): boolean {
   if (!(req.headers.get('content-type') || '').includes('application/json')) return false
   const origin = req.headers.get('origin')
-  return !origin || new URL(origin).host === req.headers.get('host')
+  if (!origin) return true
+  // an unparseable Origin (e.g. 'null' from a sandboxed frame or a cross-origin redirect) is not this host
+  try { return new URL(origin).host === req.headers.get('host') } catch { return false }
 }

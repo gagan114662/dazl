@@ -98,7 +98,10 @@ Otherwise the link fails with the reason (`mismatch`, `taken`, `reauth_required`
 longer returned). It returns to the page that started it (`next`, an `/app` path checked by `safeNext`), else
 Settings, with `?google=<result>`. A failed or cancelled Google round trip in link mode returns there too, with
 `?google=failed` (or `google_unverified` when Google itself has not verified the address), never to the sign-in
-page. Linking keeps the current session and never creates one.
+page. Linking keeps the current session and never creates one. A link that confirms the address signs out the
+account's other sessions in the same transaction. A link can be started only from a dazl page (`Sec-Fetch-Site`
+cross-site or same-site is refused), and sign-in and sign-up accept only same-origin JSON, so a cross-site page cannot
+sign a browser in to an account it planted and have that browser link its own Google identity to it.
 
 ## Acceptance tests
 

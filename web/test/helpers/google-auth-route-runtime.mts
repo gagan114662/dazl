@@ -206,8 +206,10 @@ test('#1095 verify-and-link is safe: a cross-site link start is refused; a link 
     assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=failed#account', site)
     assert.ok(!r.headers.getSetCookie().some(c => /^dazl_(return|oauth|link_next)=[^;]/.test(c)), `${site}: no link state is set`)
   }
-  const sameOrigin = await start.GET(new NextRequest('https://staging.dazl.ai/api/auth/google?link=1', { headers: { 'x-forwarded-for': `10.1.0.${++ip}`, 'sec-fetch-site': 'same-origin' } }))
-  assert.ok(sameOrigin.headers.getSetCookie().some(c => /^dazl_return=link;/.test(c)), 'a dazl page can start it')
+  for (const site of ['same-origin', 'none']) { // a dazl page, or typed into the address bar
+    const ok = await start.GET(new NextRequest('https://staging.dazl.ai/api/auth/google?link=1', { headers: { 'x-forwarded-for': `10.1.0.${++ip}`, 'sec-fetch-site': site } }))
+    assert.ok(ok.headers.getSetCookie().some(c => /^dazl_return=link;/.test(c)), `${site}: can start a link`)
+  }
   // an unconfirmed password account with an older session elsewhere and a queued sign-up conversion
   const { createPasswordUser, createSession } = await import('../../lib/auth-db.ts')
   const { queuePendingLifecycleDb } = await import('../../lib/outreach/lifecycle.ts')
@@ -230,4 +232,15 @@ test('#1095 verify-and-link is safe: a cross-site link start is refused; a link 
   assert.ok(revoked(elsewhere).revoked_at, 'every other session is signed out'); assert.equal(revoked(elsewhere).revoke_reason, 'google_link_verified')
   const ev = db.prepare("SELECT activated_at FROM lifecycle_events WHERE event_key = 'signup|verify-link@example.test'").get() as { activated_at: number | null }
   assert.ok(ev.activated_at, 'the queued sign-up conversion is completed (queued cold outreach to this address stops)')
+  // an ALREADY confirmed account linking Google signs nobody out (only a link that confirms the address does)
+  await createPasswordUser({ id: 'VC', email: 'confirmed-link@example.test', name: 'C', business_name: 'C', password_hash: 'h', salt: 's' })
+  db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'VC'").run()
+  const other = await createSession('VC'); const mine = await createSession('VC')
+  idEmail = 'confirmed-link@example.test'; idSub = 'g-confirmed-link'
+  const s2 = await start.GET(req('https://staging.dazl.ai/api/auth/google?link=1'))
+  const c2 = /dazl_oauth=([^;]+)/.exec(s2.headers.getSetCookie().join('\n'))![1]
+  const [state2, n2] = c2.split('.'); nonce = n2
+  const r2 = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=c2&state=${state2}`, `dazl_oauth=${c2}; dazl_return=link; dazl_session=${mine}`))
+  assert.equal(r2.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=linked#account')
+  assert.equal(revoked(other).revoked_at, null, 'a confirmed account keeps its other sessions')
 })
