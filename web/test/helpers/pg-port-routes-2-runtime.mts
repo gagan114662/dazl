@@ -115,7 +115,24 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   out.push(await call('hook other event', hook.POST(signed(JSON.stringify({ triggerEvent: 'BOOKING_CANCELLED' })))))
   out.push(await call('hook bad signature', hook.POST(signed(booking('bk-3', 'pat@firstdental.example'), 'wrong-secret'))))
   out.push(await call('hook unknown tenant', hook.POST(req(`/api/hooks/calcom?u=${B}`, 'POST', booking('bk-4', 'sam@beta.example')))))
-  out.push(await call('calcom after', calcom.GET(req('/api/settings/calcom'))))
+  // #367 outcomes: bk-2 is rescheduled to bk-5 (and the notice replayed), bk-5's slot ends, a person marks it held (the
+  // superseded bk-2 refuses that); bk-1 is cancelled and the cancel replayed. Both engines take the FOR UPDATE path.
+  const ev = (o: object) => JSON.stringify(o)
+  const resched = ev({ triggerEvent: 'BOOKING_RESCHEDULED', createdAt: '2026-01-02T10:00:00.000Z', payload: { uid: 'bk-5', rescheduleUid: 'bk-2', iCalSequence: 1, startTime: '2026-01-05T15:00:00Z', endTime: '2026-01-05T15:30:00Z', attendees: [{ email: 'pat@firstdental.example', name: 'Pat' }] } })
+  out.push(await call('hook rescheduled', hook.POST(signed(resched))))
+  out.push(await call('hook rescheduled replay', hook.POST(signed(resched))))
+  out.push(await call('hook ended', hook.POST(signed(ev({ triggerEvent: 'MEETING_ENDED', uid: 'bk-5', endTime: '2026-01-05T15:30:00Z', attendees: [{ email: 'pat@firstdental.example' }] })))))
+  out.push(await call('calcom held', calcom.POST(req('/api/settings/calcom', 'POST', { action: 'outcome', uid: 'bk-5', outcome: 'held' }))))
+  out.push(await call('calcom held superseded', calcom.POST(req('/api/settings/calcom', 'POST', { action: 'outcome', uid: 'bk-2', outcome: 'held' }))))
+  const cancel = ev({ triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-01-03T10:00:00.000Z', payload: { uid: 'bk-1', iCalSequence: 2, attendees: [{ email: 'nobody@x.example' }] } })
+  out.push(await call('hook cancelled', hook.POST(signed(cancel))))
+  out.push(await call('hook cancelled replay', hook.POST(signed(cancel))))
+  // The list is created_at DESC, then uid; created_at is the wall clock in seconds, so a second boundary that falls
+  // between these writes on one engine and not the other reorders the list (seen on CI at fa0601b1). Compare the
+  // engines on content: sort by uid here.
+  const after = await call('calcom after', calcom.GET(req('/api/settings/calcom')))
+  ;(after.body as { bookings?: { booking_uid: string }[] }).bookings?.sort((x, y) => x.booking_uid.localeCompare(y.booking_uid))
+  out.push(after)
   out.push(await call('enrichment save', enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: 'apollo-test-key-0000001234' }))))
   out.push(await call('enrichment save pdl', enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:pdl', key: 'pdl-test-key-00000000005678' }))))
   out.push(await call('enrichment read', enrichment.GET()))
@@ -169,7 +186,7 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   const rows = {
     memory: await db.all('SELECT tenant_id, icp, positioning, tone, exclusions, objections FROM tenant_memory ORDER BY tenant_id'),
     competitors: await db.all('SELECT tenant_id, name, position FROM tenant_competitors ORDER BY tenant_id, position'),
-    bookings: await db.all('SELECT tenant_id, booking_uid, attendee_email, attendee_name, lead_id FROM calcom_bookings ORDER BY booking_uid'),
+    bookings: await db.all('SELECT tenant_id, booking_uid, attendee_email, attendee_name, lead_id, status, start_at, end_at, ical_seq, detail_ms, cancelled_ms, rescheduled_to, rescheduled_from, ended_at, manual_outcome, lead_prev_stage FROM calcom_bookings ORDER BY booking_uid'),
     leads: await db.all('SELECT id, stage FROM leads ORDER BY id'),
     credentials: await db.all('SELECT tenant_id, connector, last4, enabled FROM tenant_connectors ORDER BY tenant_id, connector'),
     consent: await db.all('SELECT tenant_id, scope, version FROM advanced_consent ORDER BY tenant_id, scope'),
@@ -212,7 +229,11 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.deepEqual((o('competitors after').body as { competitors: string[] }).competitors, ['Bee'])
   assert.deepEqual([o('hook matched'), o('hook duplicate'), o('hook unmatched')].map(x => (x.body as { outcome: string }).outcome), ['matched', 'duplicate', 'unmatched'])
   assert.deepEqual([o('hook bad signature').status, o('hook unknown tenant').status], [401, 404])
-  assert.deepEqual((o('calcom after').body as { bookings: { booking_uid: string }[] }).bookings.map(b => b.booking_uid).sort(), ['bk-1', 'bk-2'])
+  const st = (n: string) => { const b = o(n).body as { outcome?: string; status?: string }; return [o(n).status, b.outcome ?? null, b.status ?? null] }
+  assert.deepEqual(['hook rescheduled', 'hook rescheduled replay', 'hook ended', 'calcom held', 'calcom held superseded', 'hook cancelled', 'hook cancelled replay'].map(st),
+    [[200, 'matched', 'scheduled'], [200, 'duplicate', 'scheduled'], [200, 'matched', 'ended'], [200, null, 'held'], [409, null, null], [200, 'unmatched', 'cancelled'], [200, 'duplicate', 'cancelled']])
+  const after = (o('calcom after').body as { bookings: { booking_uid: string; status: string }[] }).bookings
+  assert.deepEqual(after.map(b => [b.booking_uid, b.status]).sort(), [['bk-1', 'cancelled'], ['bk-2', 'rescheduled'], ['bk-5', 'held']], 'history kept: every uid stays, with its outcome')
   assert.deepEqual((rows as { leads: unknown[] }).leads, [{ id: L.a, stage: 'booked_call' }, { id: L.b, stage: null }].sort((x, y) => x.id.localeCompare(y.id)))
   assert.deepEqual([o('advanced save before consent').status, o('advanced consent').status, o('advanced save').status], [403, 200, 200])
   assert.deepEqual([o('warm import').status, o('warm import again').status], [200, 409])
