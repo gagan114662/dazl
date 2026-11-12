@@ -52,7 +52,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
-import { beginEnrichment, endEnrichment } from './enrichment.ts'
+import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -498,8 +498,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // holds a run slot), then the fewest jobs finished in the last hour (evens out turns even when finish times tie at the
 // second), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then the
 // oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
-// An enrichment row whose end mark never landed (a crash) stops counting as busy after this long.
-const ENRICHING_HOLDS_SLOT_S = 900
+// An enrichment row whose end mark never landed (a crash) stops counting as busy when the UI calls it interrupted.
+const ENRICHING_HOLDS_SLOT_S = ENRICH_STALE_S
 const RECENT_SERVED_S = 3600
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
   // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
