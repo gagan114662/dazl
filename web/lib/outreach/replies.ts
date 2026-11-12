@@ -11,6 +11,9 @@ import { fullText, messageText, type GPart } from './reply-text.ts'
 import { dsnProvenance } from './dsn.ts'
 import { recheckReadAuthority } from './send-authority.ts'
 import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
+import { answerInbound, dazlAuthored } from '../replies/conversation.ts'
+import type { ProductFacts } from '../replies/buyer-answers.ts'
+import type { gmailSend } from '../gmail/oauth.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
 // Reading replies is its own consent and its own Gmail scope (gmail.readonly). dazl opens its outreach threads and bounded candidate delivery notices,
@@ -298,10 +301,10 @@ export function judgeDeliveryNotice(hitId: string, g: NoticeMsg, now: number, fi
 }
 
 // The recorded sends a notice's references name, on the tenant's own sending domain. Any dazl id form maps to the
-// original send id (follow-ups and sequence steps carry the original's id).
+// original send id (follow-ups, sequence steps and automated buyer answers carry the original's id).
 export function referencedSendIds(refs: string[], senderDomain: string): string[] {
   const ids = new Set<string>()
-  for (const r of refs) for (const m of r.matchAll(/<?dazl\.(?:(?:s|f)\d+\.|reopen\.)?([a-z0-9]+)@([^\s<>,;]+)>?/gi))
+  for (const r of refs) for (const m of r.matchAll(/<?dazl\.(?:(?:s|f|a)\d+\.|reopen\.)?([a-z0-9]+)@([^\s<>,;]+)>?/gi))
     if (m[2].toLowerCase() === senderDomain.toLowerCase()) ids.add(m[1])
   return [...ids]
 }
@@ -317,7 +320,9 @@ const defaultResolveMx = async (domain: string): Promise<string[]> => {
   return (await resolveMx(domain)).map(r => r.exchange.toLowerCase())
 }
 
-export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]> }
+// sendFn / baseUrl / flags / facts reach the automated buyer answers (lib/replies/conversation.ts), which run only when the
+// tenant's answer policy is on.
+export interface SyncDeps extends OAuthDeps { fetchImpl?: typeof fetch; clockMs?: () => number; resolveMxFor?: (domain: string) => Promise<string[]>; sendFn?: typeof gmailSend; baseUrl?: string; flags?: Record<string, string | undefined>; facts?: ProductFacts }
 // remaining: background threads (no automated send can reach them) not read this call because of the per-call cap or
 // the time budget; they are read on later calls, oldest check first. neverRead: those of them never read at all (no
 // freshness exists yet: the tick records a hold). freshAsOf: the OLDEST last-read time over every thread in scope after
@@ -392,6 +397,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       if (!thread) { thread = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId; db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(thread, m.id) }
       const t = (await get(`threads/${thread}?format=full`)) as { messages?: GMsg[] }
       out.threads++
+      // #803: the tenant writing in the thread themselves (a message from their mailbox that dazl did not send) pauses
+      // automated answers for the thread.
+      const senderDomain = acct.email.split('@')[1] ?? ''
+      const tenantWroteInThread = (t.messages ?? []).some(g => addr(header(g, 'from')) === acct.email && !dazlAuthored(db, tenantId, g, senderDomain))
+      const orig = db.prepare('SELECT subject FROM outreach_messages WHERE tenant_id = ? AND id = ?').get(tenantId, m.id) as { subject: string } | undefined
       const root = `dazl.${m.id}@${acct.email.split('@')[1]}`
       db.prepare('INSERT OR IGNORE INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at) VALUES (?, ?, ?, ?, ?, ?)').run(tenantId, thread, m.lead_id, m.to_email, root, m.sent_at ?? now)
       for (const g of t.messages ?? []) {
@@ -461,6 +471,15 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           db.prepare("UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, thread)
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
+        // #803: one decision per inbound, at most one grounded answer (lib/replies/conversation.ts; off unless the tenant's
+        // answer policy is on). The full text is used here in memory only; the decision stores none of it.
+        try {
+          await answerInbound(db, tenantId, { threadId: thread, prospect: m.to_email, leadId: m.lead_id, outreachMessageId: m.id, rootMessageId: root, subject: orig?.subject ?? '',
+            tenantWroteInThread, cls, inbound: { gmailId: g.id, from, text, payload: g.payload } }, { ...d, now })
+        } catch (e) {
+          auditAt(db, tenantId, 'buyer_answer_error', e instanceof Error ? e.message.slice(0, 100) : 'error', m.lead_id, m.id, now)
+        }
+        authority() // the answer awaited (token, send): read authority is re-proved before anything more is read or stored
       }
       db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
       readNow.add(m.id)

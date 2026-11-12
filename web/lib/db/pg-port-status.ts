@@ -86,6 +86,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/people/sec-officers.ts': 0,
   'lib/people/work-email.ts': 0,
   'lib/queue/sqlite.ts': 0,
+  'lib/replies/conversation.ts': 0,
   'lib/replies/threads.ts': 4,
   'lib/scan/actionable.ts': 0,
   'lib/scan/blocked-fallback.ts': 0,

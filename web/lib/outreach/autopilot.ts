@@ -41,6 +41,17 @@ export const MIN_CONFIDENCE = 80
 
 export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
 
+// #803: the automated buyer-answer policy (lib/replies/conversation.ts) lives on the tenant's automation settings row, next
+// to the switch it rides on. Off by default; setAnswerPolicy turns it on with the accepted product truth version.
+export const MAX_AUTO_REPLIES_LIMIT = 5
+export const DEFAULT_AUTO_REPLIES = 2
+export function migrateAnswerPolicyColumns(db: Database.Database): void {
+  try { db.exec('ALTER TABLE autopilot_settings ADD COLUMN answers_enabled INTEGER NOT NULL DEFAULT 0 CHECK (answers_enabled IN (0,1))') } catch { /* exists */ }
+  try { db.exec("ALTER TABLE autopilot_settings ADD COLUMN answers_cta TEXT NOT NULL DEFAULT 'signup' CHECK (answers_cta IN ('signup','meeting'))") } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE autopilot_settings ADD COLUMN answers_max INTEGER NOT NULL DEFAULT ${DEFAULT_AUTO_REPLIES} CHECK (answers_max BETWEEN 1 AND ${MAX_AUTO_REPLIES_LIMIT})`) } catch { /* exists */ }
+  try { db.exec('ALTER TABLE autopilot_settings ADD COLUMN answers_facts_version TEXT CHECK (answers_facts_version IS NULL OR length(answers_facts_version) <= 40)') } catch { /* exists */ }
+}
+
 export function migrateAutopilot(db: Database.Database): void {
   migrateLaunchPolicy(db) // a calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405)
   db.exec(`
@@ -71,6 +82,7 @@ export function migrateAutopilot(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS autopilot_audit_action ON autopilot_audit (tenant_id, action);
   `)
   try { db.exec('ALTER TABLE autopilot_settings ADD COLUMN followups_enabled INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  migrateAnswerPolicyColumns(db) // #803 automated buyer-answer policy
   // #411: first touches autopilot drafted but could not send yet (a daily or per-company cap, a temporary Gmail error),
   // with why and when they may go next. next_at NULL = the user decides (warm-up drafts stay the user's to approve).
   // authority = the exact words, recipient, sender identity, offer and consent autopilot was allowed to send; any
