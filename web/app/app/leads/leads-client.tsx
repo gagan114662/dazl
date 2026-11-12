@@ -3,7 +3,7 @@ import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
-import TrialRefusalNotice, { takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
+import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
@@ -151,7 +151,9 @@ export default function LeadsClient() {
   useEffect(() => {
     const linked = takeGoogleLinkResult()
     if (!linked) return
-    const pending = linked.ok ? takePendingSearch() : null // after a failed link the saved search stays for the next attempt
+    // #1095: the search comes back after EVERY result. After a failed link it also stays saved for the next attempt.
+    const pending = takePendingSearch()
+    if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined)
     if (pending) restoredSearch.current = true
     queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query) })
   }, [])
@@ -928,7 +930,7 @@ export default function LeadsClient() {
         </details>
       </>)}
       {error && <p role="alert" className="text-red-300 text-sm mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2">{error}</p>}
-      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {jobId && status === 'loading' && !statusError && (
         <div className="card p-4 mb-4 flex items-center gap-3">

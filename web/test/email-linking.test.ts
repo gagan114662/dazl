@@ -20,12 +20,14 @@ bothEngines("Google linking: only the verified account with the identity's email
   // Google sign-in with A's email does not reach A's account until A links it
   assert.deepEqual(await resolveUser(db, ga), { error: 'email_exists' })
   assert.equal(await linkGoogle(db, 'B', ga), 'mismatch', "B cannot take a Google identity carrying A's email")
-  assert.equal(await linkGoogle(db, 'C', G('c@example.test')), 'unverified', 'an unverified account cannot link')
+  // #1095: an unconfirmed account with the identity's own (Google-verified) email links and is confirmed by it; see
+  // the #1095 test below for the cases that must leave it unconfirmed
+  assert.equal(await linkGoogle(db, 'C', G('c@example.test')), 'linked', 'Google proves the same address the confirmation link would')
   assert.equal(await linkGoogle(db, 'A', ga), 'linked')
   assert.deepEqual(await resolveUser(db, ga), { user_id: 'A', created: false })
   assert.equal(await linkGoogle(db, 'A', ga), 'already')
   assert.equal(await linkGoogle(db, 'B', ga), 'taken')
-  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM oauth_identities'))!.n), 1)
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM oauth_identities'))!.n), 2)
   assert.deepEqual(await emailStatus(db, 'A'), { email: 'a@example.test', verified: true, google: true })
 })
 
@@ -65,4 +67,36 @@ bothEngines('Google linking cannot commit through a session revoked by password 
  assert.equal(await linkGoogle(db,'late-link',G('late-link@example.test'),fresh),'reauth_required')
  await db.run('UPDATE sessions SET authed_at=? WHERE user_id=?',[Math.floor(Date.now()/1000),'late-link'])
  assert.equal(await linkGoogle(db,'late-link',G('late-link@example.test'),fresh),'linked')
+})
+
+const verifiedAt = async (db: Db, id: string) => (await db.get<{ v: number | null }>('SELECT email_verified_at AS v FROM users WHERE id = ?', [id]))!.v
+const identities = async (db: Db, id: string) => Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM oauth_identities WHERE user_id = ?', [id]))!.n)
+
+bothEngines('#1095 verify and link in one step: an unconfirmed password account linking a Google identity with its own email is confirmed and linked; nothing else confirms it', async ({ db }) => {
+  const { createSession } = await import('../lib/auth-db.ts')
+  // same email, Google-verified, fresh session, identity free: linked AND confirmed, in one transaction
+  await createPasswordUser(user('U1'), db)
+  assert.equal(await verifiedAt(db, 'U1'), null, 'fixture: a new password account starts unconfirmed')
+  assert.equal(await linkGoogle(db, 'U1', G('u1@example.test'), await createSession('U1', db)), 'linked')
+  assert.ok(Number(await verifiedAt(db, 'U1')) > 0, 'confirmed by the link')
+  assert.equal(await identities(db, 'U1'), 1)
+  assert.deepEqual(await emailStatus(db, 'U1'), { email: 'u1@example.test', verified: true, google: true })
+  // a different email: mismatch, still unconfirmed, nothing linked
+  await createPasswordUser(user('U2'), db)
+  assert.equal(await linkGoogle(db, 'U2', G('someone-else@example.test'), await createSession('U2', db)), 'mismatch')
+  assert.equal(await verifiedAt(db, 'U2'), null); assert.equal(await identities(db, 'U2'), 0)
+  // an identity another account already holds: taken, still unconfirmed
+  await createPasswordUser(user('U3'), db)
+  assert.equal(await linkGoogle(db, 'U3', G('u3@example.test', 'g-u1@example.test'), await createSession('U3', db)), 'taken')
+  assert.equal(await verifiedAt(db, 'U3'), null); assert.equal(await identities(db, 'U3'), 0)
+  // a stale session: reauth_required, still unconfirmed
+  await createPasswordUser(user('U4'), db)
+  const stale = await createSession('U4', db)
+  await db.run('UPDATE sessions SET authed_at = 1 WHERE user_id = ?', ['U4'])
+  assert.equal(await linkGoogle(db, 'U4', G('u4@example.test'), stale), 'reauth_required')
+  assert.equal(await verifiedAt(db, 'U4'), null); assert.equal(await identities(db, 'U4'), 0)
+  // an already confirmed account keeps its original confirmation time
+  await createPasswordUser(user('U5'), db); await verified(db, 'U5')
+  assert.equal(await linkGoogle(db, 'U5', G('u5@example.test'), await createSession('U5', db)), 'linked')
+  assert.equal(Number(await verifiedAt(db, 'U5')), 1)
 })

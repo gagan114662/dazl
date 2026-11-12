@@ -196,7 +196,11 @@ export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, ses
     if (hit) return hit.user_id === userId ? 'already' : 'taken'
     const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [userId])
     if (!u || u.email !== id.email) return 'mismatch'
-    if (u.v === null) return 'unverified'
+    // #1095 (decision on the issue): an unconfirmed account is confirmed by this link. The ID token was checked with
+    // email_verified (verifyIdToken), so Google vouches that the signer controls exactly this address: the same proof the
+    // confirmation link gives, and the proof dazl already trusts to create verified Google accounts (resolveUser). Same
+    // transaction as the identity insert: both happen or neither. mismatch / taken / stale session never get here.
+    if (u.v === null) yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, id.email])
     yield* t.run("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)", [id.sub, userId])
     return 'linked'
   })

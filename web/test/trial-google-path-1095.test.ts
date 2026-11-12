@@ -31,11 +31,12 @@ test('#1095: google_required on a verified password account offers Link Google b
   assert.equal(link!.href, '/api/auth/google?link=1&next=%2Fapp%2Fleads%3Fjob_id%3Dabc')
 })
 
-test('#1095: google_required on an unverified account asks to confirm the email first (linking needs it), never a dead end', () => {
-  const n = trialRefusalNotice('google_required', '/app', { verified: false, google: false })
-  assert.ok(n.actions.some(a => a.kind === 'resend_verification'), 'resend the confirmation link')
-  assert.match(n.text, /confirm your email/i)
-  assert.ok(!n.actions.some(a => a.kind === 'link_google'), 'Link Google would fail (unverified) until the email is confirmed')
+test('#1095: google_required on an UNCONFIRMED account offers Link Google directly (the link confirms the same address), never a confirm-email step', () => {
+  const n = trialRefusalNotice('google_required', '/app/leads', { verified: false, google: false, fresh: true })
+  const link = n.actions.find(a => a.kind === 'link_google')
+  assert.ok(link, 'Link Google, even before the email is confirmed')
+  assert.equal(link!.href, '/api/auth/google?link=1&next=%2Fapp%2Fleads')
+  assert.doesNotMatch(n.text, /confirm your email|link we sent/i, 'prod sends no confirmation mail (#1089): never send the user to wait for one')
 })
 
 test('#1095: no button before the account is known; a stale session confirms the password before linking (never a reauth_required dead end)', () => {

@@ -49,18 +49,12 @@ export default function TrialRefusalNotice({ reason, query, step, text }: { reas
   useEffect(() => {
     void loadAccount().then(setAccount)
     queueMicrotask(() => setHere(window.location.pathname + window.location.search))
-    // confirming the email in another tab: read the account again when the user comes back to this one
+    // signing in again in another tab: read the account again when the user comes back to this one
     const back = () => { if (document.visibilityState === 'visible') void loadAccount().then(setAccount) }
     document.addEventListener('visibilitychange', back)
     return () => document.removeEventListener('visibilitychange', back)
   }, [])
   const n = trialRefusalNotice(reason, here, account)
-  async function resend() {
-    const r = await fetch('/api/auth/email/send-verification', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => null)
-    const j = r ? await r.json().catch(() => ({})) : {}
-    if (r?.ok && j.sent === false) { setNote('Your email is already confirmed.'); void loadAccount().then(setAccount); return }
-    setNote(r?.ok ? 'Sent. Open the link in your email, then come back here and link Google.' : (typeof j.error === 'string' ? j.error : 'Could not send it. Try again.'))
-  }
   async function reauth(e: React.FormEvent) {
     e.preventDefault()
     const r = await fetch('/api/auth/reauth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) }).catch(() => null)
@@ -74,9 +68,7 @@ export default function TrialRefusalNotice({ reason, query, step, text }: { reas
       {/* text replaces only the lead sentence: the confirm-email / password steps after it still show */}
       <p role="alert">{text ? n.text.replace(TRIAL_REFUSAL_COPY.google_required.text, text) : n.text}</p>
       {n.actions.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-2">
-        {n.actions.map(a => a.kind === 'resend_verification'
-          ? <button key={a.kind} type="button" onClick={() => void resend()} className="btn-primary btn-sm">{a.label}</button>
-          : a.kind === 'reauth'
+        {n.actions.map(a => a.kind === 'reauth'
             ? <form key={a.kind} method="post" onSubmit={e => void reauth(e)} className="flex flex-wrap items-center gap-2">
               <label className="sr-only" htmlFor="trial-reauth-password">Your password</label>
               <input id="trial-reauth-password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" className="field !py-1.5 text-sm" />

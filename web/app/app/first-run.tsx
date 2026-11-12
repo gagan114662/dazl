@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
-import TrialRefusalNotice, { takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
+import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
@@ -114,11 +114,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // ?setup=site starts them at the website.
       // #1095: back from linking Google: say how it went and reopen the same search, ready to run
       const linked = takeGoogleLinkResult()
+      // EVERY result (success or failure) reopens the steps where the search was started (default: ready), with the
+      // note and the search; Home has no place for either, and ?google= is already gone from the address bar.
       if (linked) {
         setLinkNote(linked)
-        // only after a link that worked: after a failed one the saved search stays for the next attempt
-        const pending = linked.ok ? takePendingSearch() : null
-        if (pending) { setAsk(pending.query); setAskIsSuggestion(false); if (pending.step === 'ready' || pending.step === 'ask' || pending.step === 'site') { setStep(pending.step); setReady('wizard'); return } }
+        const pending = takePendingSearch()
+        if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined) // kept for the next attempt
+        if (pending) { setAsk(pending.query); setAskIsSuggestion(false) }
+        const at = pending?.step
+        setStep(at === 'ask' || at === 'site' ? at : 'ready'); setReady('wizard'); return
       }
       const setup = new URLSearchParams(window.location.search).get('setup')
       if (setup === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
@@ -336,7 +340,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
-              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok ? ' Your search is ready: run it.' : ''}</p>}
+              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''}</p>}
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
@@ -459,7 +463,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     <div className="max-w-2xl">
       <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to find')}</ol>
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
-      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''}</p>}
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ask" /></div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">

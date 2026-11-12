@@ -59,7 +59,7 @@ export const TRIAL_REFUSAL_COPY: Record<TrialRefusal, { text: string; next: Next
   global_daily_cap: { text: "Today's free scans are fully booked. Try again tomorrow (it resets at midnight UTC), or add your own AI key to scan now.", next: 'tomorrow' },
   not_configured: { text: "Free scans aren't available right now. Add your own AI key to scan.", next: 'add_key' },
 }
-export type NoticeAction = { kind: 'link_google' | 'resend_verification' | 'reauth' | 'add_key'; label: string; href?: string }
+export type NoticeAction = { kind: 'link_google' | 'reauth' | 'add_key'; label: string; href?: string }
 export interface TrialNotice { text: string; actions: NoticeAction[] }
 const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href: '/app/settings#model-key' }
 
@@ -73,12 +73,7 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
   if (!c) return { text: "Free trial scans can't run right now. Add your own AI key to scan.", actions: [ADD_KEY] }
   if (c.next !== 'link_google') return { text: c.text, actions: [ADD_KEY] }
   if (!account) return { text: c.text, actions: [] }
-  if (!account.verified) {
-    return {
-      text: `${c.text} First confirm your email: open the link we sent you, then come back and link Google.`,
-      actions: [{ kind: 'resend_verification', label: 'Send the confirmation link again' }, ADD_KEY],
-    }
-  }
+  // An unconfirmed account links directly: the Google link confirms the same address (#1095 decision, linkGoogle).
   if (account.fresh === false) {
     return { text: `${c.text} First confirm it is you: enter your password.`, actions: [{ kind: 'reauth', label: 'Confirm it is you' }, ADD_KEY] }
   }

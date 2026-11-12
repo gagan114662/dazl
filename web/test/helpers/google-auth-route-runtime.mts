@@ -182,9 +182,18 @@ test('#1095 a failed or cancelled Google LINK clears link mode and its return pa
   setEnv(STAGING)
   const set = (r: Response, name: string) => r.headers.getSetCookie().find(c => c.startsWith(`${name}=`)) ?? ''
   const failedLink = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=%2Fapp%2Fleads'))
-  assert.match(failedLink.headers.get('location')!, /\/sign-in\?error=google_failed$/)
+  // back to the page that asked, never the sign-in page (whose Google button answers email_exists for this account)
+  assert.equal(failedLink.headers.get('location'), 'https://staging.dazl.ai/app/leads?google=failed')
   assert.match(set(failedLink, 'dazl_return'), /^dazl_return=;.*Max-Age=0/i, 'link mode cleared: the next plain sign-in signs in')
   assert.match(set(failedLink, 'dazl_link_next'), /^dazl_link_next=;.*Max-Age=0/i)
+  // no (or an unsafe) return page: Settings, with the reason
+  const noNext = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=https%3A%2F%2Fevil.example'))
+  assert.equal(noNext.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=failed#account')
+  const withQuery = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=%2Fapp%2Fleads%3Fjob_id%3Dabc'))
+  assert.equal(withQuery.headers.get('location'), 'https://staging.dazl.ai/app/leads?job_id=abc&google=failed')
+  // a plain (non-link) failed sign-in still goes to the sign-in page
+  const plain = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied'))
+  assert.match(plain.headers.get('location')!, /\/sign-in\?error=google_failed$/)
   const failedPreview = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=preview'))
   assert.equal(set(failedPreview, 'dazl_return'), '', 'a preview claim intent survives a failed round trip')
 })

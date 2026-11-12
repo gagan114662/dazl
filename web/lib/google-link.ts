@@ -16,8 +16,10 @@ export function linkGoogleHref(next: string): string {
   return safe ? `/api/auth/google?link=1&next=${encodeURIComponent(safe)}` : '/api/auth/google?link=1'
 }
 
-// What lib/auth-google.ts linkGoogle (and the callback) can answer.
-export const GOOGLE_LINK_RESULTS = ['linked', 'already', 'taken', 'mismatch', 'unverified', 'signed_out', 'reauth_required'] as const
+// What lib/auth-google.ts linkGoogle (and the callback) can answer. failed / google_unverified: the Google round trip
+// itself failed or was cancelled (#1095: the callback returns to the page, never to sign-in). unverified is no longer
+// returned (the link confirms the address) but stays readable for an old ?google= in a bookmark.
+export const GOOGLE_LINK_RESULTS = ['linked', 'already', 'taken', 'mismatch', 'unverified', 'signed_out', 'reauth_required', 'failed', 'google_unverified'] as const
 export type GoogleLinkResult = typeof GOOGLE_LINK_RESULTS[number]
 
 const COPY: Record<GoogleLinkResult, { ok: boolean; text: string }> = {
@@ -26,8 +28,10 @@ const COPY: Record<GoogleLinkResult, { ok: boolean; text: string }> = {
   taken: { ok: false, text: 'That Google account already signs in to another dazl account.' },
   mismatch: { ok: false, text: 'That Google account uses a different email. Use the Google account with this email.' },
   unverified: { ok: false, text: 'Confirm your email first, then add Google sign-in.' },
-  reauth_required: { ok: false, text: 'Confirm it is you first (sign in again), then add Google sign-in.' },
+  reauth_required: { ok: false, text: 'Confirm it is you first: enter your password, then link Google again.' },
   signed_out: { ok: false, text: 'Sign in first, then add Google sign-in.' },
+  failed: { ok: false, text: 'Google sign-in was not added (cancelled or failed). Your search is still here: try Link Google again.' },
+  google_unverified: { ok: false, text: 'Google has not verified that email address yet, so it could not be linked. Verify it with Google, then try again.' },
 }
 export function googleLinkResultCopy(r: unknown): { ok: boolean; text: string } {
   return typeof r === 'string' && r in COPY ? COPY[r as GoogleLinkResult] : { ok: false, text: 'Google sign-in could not be added. Try again.' }
