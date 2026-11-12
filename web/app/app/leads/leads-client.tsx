@@ -730,7 +730,7 @@ export default function LeadsClient() {
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => setQuery(t)} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">

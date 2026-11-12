@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { trialRefusalNotice } from '@/lib/trial-copy'
+import { trialRefusalNotice, TRIAL_REFUSAL_COPY } from '@/lib/trial-copy'
 import { googleLinkResultCopy } from '@/lib/google-link'
 
 // #1095: a refused free-trial scan, in words, with the way forward (never the raw code). Google-required on a password
@@ -71,7 +71,8 @@ export default function TrialRefusalNotice({ reason, query, step, text }: { reas
   }
   return (
     <div className="rounded-lg border border-black/40 bg-[#f4f4f4] px-4 py-3 text-sm text-[#111]" data-testid="trial-refusal-notice">
-      <p role="alert">{text ?? n.text}</p>
+      {/* text replaces only the lead sentence: the confirm-email / password steps after it still show */}
+      <p role="alert">{text ? n.text.replace(TRIAL_REFUSAL_COPY.google_required.text, text) : n.text}</p>
       {n.actions.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-2">
         {n.actions.map(a => a.kind === 'resend_verification'
           ? <button key={a.kind} type="button" onClick={() => void resend()} className="btn-primary btn-sm">{a.label}</button>

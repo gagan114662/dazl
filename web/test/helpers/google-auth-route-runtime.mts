@@ -177,3 +177,14 @@ test('#1095 link=1&next: a dazl app page is kept for the callback; anything else
   // a plain sign-in (not a link) never sets it
   assert.equal(cookie(await start.GET(req('https://staging.dazl.ai/api/auth/google'))), '')
 })
+
+test('#1095 a failed or cancelled Google LINK clears link mode and its return page; any other return intent is kept (#416)', async () => {
+  setEnv(STAGING)
+  const set = (r: Response, name: string) => r.headers.getSetCookie().find(c => c.startsWith(`${name}=`)) ?? ''
+  const failedLink = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=%2Fapp%2Fleads'))
+  assert.match(failedLink.headers.get('location')!, /\/sign-in\?error=google_failed$/)
+  assert.match(set(failedLink, 'dazl_return'), /^dazl_return=;.*Max-Age=0/i, 'link mode cleared: the next plain sign-in signs in')
+  assert.match(set(failedLink, 'dazl_link_next'), /^dazl_link_next=;.*Max-Age=0/i)
+  const failedPreview = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=preview'))
+  assert.equal(set(failedPreview, 'dazl_return'), '', 'a preview claim intent survives a failed round trip')
+})

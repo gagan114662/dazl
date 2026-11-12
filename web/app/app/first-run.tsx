@@ -118,7 +118,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         setLinkNote(linked)
         // only after a link that worked: after a failed one the saved search stays for the next attempt
         const pending = linked.ok ? takePendingSearch() : null
-        if (pending) { setAsk(pending.query); setAskIsSuggestion(false); if (pending.step === 'ready' || pending.step === 'ask') { setStep(pending.step); setReady('wizard'); return } }
+        if (pending) { setAsk(pending.query); setAskIsSuggestion(false); if (pending.step === 'ready' || pending.step === 'ask' || pending.step === 'site') { setStep(pending.step); setReady('wizard'); return } }
       }
       const setup = new URLSearchParams(window.location.search).get('setup')
       if (setup === 'brain') { setStep(profile?.website || profile?.sells ? 'brain' : 'site'); setReady('wizard'); return }
@@ -471,7 +471,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
             : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#666]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
         </div>}
         {/* #1095: a password account is told how to link Google (the free read's guard), never "sign in with Google" */}
-        {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" text="Link Google to this account to read your site free (no card)." /></div>}
+        {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
         {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
