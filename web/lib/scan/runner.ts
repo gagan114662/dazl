@@ -365,9 +365,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
-    if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !structuredDates?.has(canonUrl(cIn.source_url))) {
-      // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whatever day it
-      // claimed (none, or another one: the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held
+    if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
+      // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
+      // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A
+      // claimed day the date rules reject (stale, future, malformed) is never replaced: it keeps the hold, as on any page
       c0 = { ...cIn, event_date: boardDay, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
     } else if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
       if (hiringCand && boardDay === cIn.event_date) {

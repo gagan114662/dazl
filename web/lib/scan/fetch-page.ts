@@ -105,6 +105,25 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
   })
 }
 
+// #533: several postings of one company cite the same Ashby board record (the whole board): one read serves them all
+// for a short while, so a scan never downloads the same board once per posting (and is less likely to be rate limited).
+// Public data, keyed by the exact API URL; at most BOARD_MEMO_MAX boards, each for BOARD_MEMO_MS.
+const BOARD_MEMO_MS = 120_000, BOARD_MEMO_MAX = 16
+const boardMemo = new Map<string, { at: number; read: ReturnType<typeof once> }>()
+function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
+  const k = url.toString(), now = Date.now()
+  for (const [key, m] of boardMemo) if (now - m.at > BOARD_MEMO_MS) boardMemo.delete(key)
+  const hit = boardMemo.get(k)
+  if (hit) return hit.read
+  if (boardMemo.size >= BOARD_MEMO_MAX) boardMemo.delete(boardMemo.keys().next().value!)
+  // shared, so not tied to one caller's abort signal; it is still bounded by the request timeout
+  const read = once(url, TIMEOUT_MS, guardedLookup)
+  boardMemo.set(k, { at: now, read })
+  read.catch(() => boardMemo.delete(k)) // a failed read is not remembered
+  return signal?.aborted ? Promise.reject(new Error('aborted')) : read
+}
+export const resetBoardMemo = () => boardMemo.clear()
+
 const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || isAtsRecordUrl(u)
 
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
@@ -220,7 +239,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
       if (signal?.aborted) return { fail: 'error' }
-      const r = await once(url, TIMEOUT_MS, guardedLookup, signal)
+      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)

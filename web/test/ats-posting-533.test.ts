@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import https from 'node:https'
 import { atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl } from '../lib/sources/ats-posting.ts'
-import { fetchPageDetailed, isFail, type Page } from '../lib/scan/fetch-page.ts'
+import { fetchPageDetailed, isFail, resetBoardMemo, type Page } from '../lib/scan/fetch-page.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
 
 const NOW = Date.parse('2026-11-12T18:00:00Z')
@@ -23,6 +23,7 @@ const ASHBY_BOARD = { jobs: [
 // the real fetchPageDetailed with only the socket faked; records what was asked
 function fakeHttps(serve: (url: string) => { status: number; type: string; body: string }, asked: { url: string; accept: string }[] = []) {
   const real = https.request
+  resetBoardMemo() // each fake board starts unread
   ;(https as { request: unknown }).request = (url: URL, opts: { headers: Record<string, string> }, cb: (res: EventEmitter) => void) => {
     const req = new EventEmitter() as EventEmitter & { end(): void; destroy(): void }
     req.destroy = () => {}
@@ -103,12 +104,26 @@ test('#533 the verifier reads a posting through the board API record, never the 
     // a different claimed day: the posting's own day wins (it is the posting's)
     const other = await verifyLeads([draft({ event_date: '2026-11-01' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
     assert.deepEqual([other.leads[0]?.event_date, other.leads[0]?.event_date_proof], ['2026-10-15', 'ats_structured'])
+    // a claimed day the date rules reject is never replaced by the board's fresh day: it stays held
+    const rejected = await verifyLeads([draft({ event_date: '2019-03-01' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.equal(rejected.leads.length, 0, JSON.stringify(rejected.leads))
+    assert.deepEqual(rejected.review.map(r => r.review_reason), ['event_date_stale'])
     // the board day dates HIRING only: a funding claim cited to a posting gets no date from it, with or without claiming that day
     for (const event_date of [null, '2026-10-15']) {
       const funding = await verifyLeads([draft({ signal: 'Raised a Series A round', event_date })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
       const all = [...funding.leads, ...funding.review]
       assert.ok(all.every(l => l.event_date_proof !== 'ats_structured' && l.event_date_proof !== 'page_bound' && l.event_date == null), JSON.stringify(all.map(l => [l.event_date, l.event_date_proof])))
     }
+  } finally { restore() }
+})
+
+test('#533 two postings of one company read the board once', async () => {
+  const asked: { url: string; accept: string }[] = []
+  const restore = fakeHttps(live(), asked)
+  try {
+    const [a, b] = await Promise.all([fetchPageDetailed(ASHBY_URL, async () => null), fetchPageDetailed('https://jobs.ashbyhq.com/acmeco/11111111-0000-4000-8000-000000000000', async () => null)])
+    assert.ok(!isFail(a) && !isFail(b)); assert.equal((b as Page).postedAt, '2026-10-01')
+    assert.equal(asked.length, 1, JSON.stringify(asked))
   } finally { restore() }
 })
 
@@ -158,6 +173,9 @@ test('#533 a posting the board no longer lists is closed (not found); a refused 
   try {
     const r = await fetchPageDetailed(ASHBY_URL, async () => null)
     assert.ok(!isFail(r)); assert.equal((r as Page).postedAt, null)
+    // ...judged by the normal text rules: a quote naming an old year is held as stale, never dated by the board
+    const old = await verifyLeads([draft({ excerpt: 'Acmeco is hiring a Senior Revenue Operations Manager to own Sales Ops and CRM administration' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.ok([...old.leads, ...old.review].every(l => l.event_date_proof !== 'ats_structured'), JSON.stringify(old))
   } finally { restore() }
 })
 
