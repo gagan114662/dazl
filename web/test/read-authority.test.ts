@@ -177,6 +177,20 @@ test('same-thread authenticated DSN WITHOUT an exact reference to this send: rev
   }
 })
 
+// xhawk review (#1065): the row scanned first must not consume a notice that exactly references its sibling on the same thread.
+test('two sent rows share a thread: a DSN referencing the second suppresses via the second whichever row is scanned first', async () => {
+  for (const firstIsOther of [true, false]) {
+    const db = await setup()
+    const a = sentLead(db, 'b@three.example', NOW - 6 * DAY), b = sentLead(db, 'b@three.example', NOW - 5 * DAY)
+    db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(a.thread, b.mid)
+    // sent order is sent_at DESC (b first); flip by giving the referenced row the older send when firstIsOther is false
+    const ref = firstIsOther ? b.mid : a.mid
+    const r = await syncReplies(db, 'A', opts(gmail({ [a.thread]: [sameThreadDsn('f9', { recipient: 'b@three.example', at: NOW - 3 * DAY, threadId: a.thread, ref: `<dazl.${ref}@acme.example>` })] })))
+    assert.deepEqual([r.bounces, r.reviews], [1, 0], String(firstIsOther))
+    assert.equal(isSuppressed(db, 'A', 'b@three.example'), true)
+  }
+})
+
 test('control: same-thread reference via a follow-up step id or the References header still correlates to the original send', async () => {
   for (const o of [(m: string) => ({ ref: `<dazl.f1.${m}@acme.example>` }), (m: string) => ({ refHeader: `<dazl.${m}@acme.example> <dazl.s2.${m}@ACME.example>` })]) {
     const db = await setup()
