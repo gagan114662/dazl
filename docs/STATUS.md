@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #533 c/533-ats-posting-record (live check 2026-11-12: two Ashby postings for the requested role held "blocked_by_site", undated): a posting URL on Ashby, Greenhouse or Lever is now read through the board's own public API record (lib/sources/ats-posting.ts), never the page, as lib/legal/policy.ts already promised. The record gives the title, location, text and the board's first-published day; a hiring candidate cited to exactly that posting is dated by it (ats_structured, the #460 contract). A posting the board no longer lists is "not found"; a refused or malformed answer is a failed read and is never sent to the render service. Competitive: Gojiberry dates every lead's "Just hired" window; a requested-role posting is now a dated lead instead of held. Not done: binding a company domain from the board slug. Fixtures only; no live scan.
+
 - #1065 b/415-same-thread-dsn-ref review fix (xhawk High): when two sent rows share a Gmail thread, a DSN that exactly references the sibling row is left unlogged by the row scanned first, so the referenced send (or phase 2) suppresses it instead of the notice being consumed. Competitive: a permanent bounce can no longer slip past suppression (sender reputation). Fixtures only; no live Gmail.
 
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states

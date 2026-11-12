@@ -3,8 +3,12 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
+import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl } from '../sources/ats-posting.ts'
 
-export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[] } // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD
+// published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD. postedAt (#533): set only when the
+// page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
+// first-published day for it, the posting's own structured publish date (#460).
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null }
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -61,7 +65,7 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
     const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
     const req = https.request(
       url,
-      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: brregRecordRef(url.toString()) ? 'application/json' : 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
+      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: jsonRecordUrl(url.toString()) ? 'application/json' : 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
       res => {
         const status = res.statusCode ?? 0
         const type = String(res.headers['content-type'] ?? '')
@@ -69,8 +73,9 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
           res.resume()
           return resolve({ status, location: String(res.headers.location ?? ''), type, body: '' })
         }
-        // The ONE non-HTML document a page read accepts: the Norway register's own API record for an entity (#763), rendered below. No other JSON is read.
-        const registryRecord = !!brregRecordRef(url.toString()) && /^application\/json\b/i.test(type)
+        // The only non-HTML documents a page read accepts: the Norway register's own API record for an entity (#763) and a
+        // public ATS board's API record for a posting (#533), each rendered below. No other JSON is read.
+        const registryRecord = jsonRecordUrl(url.toString()) && /^application\/json\b/i.test(type)
         if (!registryRecord && !/^text\/(html|plain)|application\/xhtml/i.test(type)) {
           res.destroy()
           return resolve({ status, type, body: '' })
@@ -94,6 +99,8 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
     req.end()
   })
 }
+
+const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || isAtsRecordUrl(u)
 
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 function decode(s: string): string {
@@ -199,8 +206,10 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
 export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
+  // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
+  const posting = atsPostingRef(rawUrl)
   try {
-    let url = new URL(rawUrl)
+    let url = new URL(posting ? atsRecordUrl(posting) : rawUrl)
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
       if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
       const host = url.hostname.replace(/^\[|\]$/g, '')
@@ -218,7 +227,18 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
       else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
       else if (!html) return { fail: 'error' }
-      else if (/^application\/json\b/i.test(r.type)) {
+      else if (posting) {
+        // Only the record of exactly this posting, with its first-published day; a board that no longer lists it is a closed posting (not found). Any other answer
+        // (HTML, a redirect to a foreign host) is a failed read, never a page.
+        if (!/^application\/json\b/i.test(r.type) || !isAtsRecordUrl(url.toString())) return { fail: 'error' }
+        let body: unknown = null
+        try { body = JSON.parse(html) } catch { return { fail: 'error' } }
+        const rec = atsRecord(body, posting)
+        if (rec === 'missing') return { fail: 'not_found' }
+        if (!rec) return { fail: 'error' }
+        const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
+        return { text: page.text, title: page.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
+      } else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
         const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
         try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
@@ -228,6 +248,8 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         thin = classifyThin(html, t.text)
         if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
       }
+      // a board API that refused the record is a refusal: never sent to the rendering service
+      if (posting) return { fail: thin ?? 'error' }
       // blocked or JavaScript-only: try the rendering service if one is configured
       const rendered = await render(url.toString())
       if (rendered) {
