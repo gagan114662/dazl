@@ -66,13 +66,45 @@ function unexpectedCallers(srcs: { rel: string; text: string }[]): string[] {
   return srcs.filter(s => !s.rel.startsWith('lib/enrich/apollo') && !s.rel.startsWith('lib/enrich/pdl') && !CALLERS.includes(s.rel) && providerUses(s.rel, s.text).length > 0).map(s => s.rel)
 }
 
-// A paid call is reserved when, in its enclosing function, a reservation call comes before it; or the enclosing
-// function takes a CreditHold parameter and every call of that function in the file is itself preceded by one.
-// The reservation's provider argument (3rd) must name the paid call's vendor when it is a literal ('apollo' / 'pdl');
-// a variable (work-email's loop over providers) is accepted.
-function reservedBefore(fn: ts.FunctionLikeDeclaration, pos: number, vendor: 'apollo' | 'pdl'): boolean {
-  return all(fn, n => ts.isCallExpression(n) && RESERVE.has(calleeName(n) ?? '') && n.getStart() < pos
-    && !(n.arguments[2] && ts.isStringLiteralLike(n.arguments[2]) && n.arguments[2].text !== vendor)).length > 0
+// A reservation guards a later call only when ALL hold:
+//  - it is a reserveCredits/holdCredits call in the SAME function (not a nested, possibly-uncalled one), and AWAITED;
+//  - its provider argument (3rd), when a literal ('apollo' / 'pdl'), names the paid call's vendor (work-email passes a
+//    variable from its provider loop, which is accepted);
+//  - its statement dominates the call: the block that holds the statement also holds the call, after it. A reservation
+//    inside try { } counts as its whole try statement, and only when the catch exits (return / continue / break /
+//    throw), so a refused reservation cannot fall through to the call.
+// Not checked (stated in the PR): a nullable result (commenter-import's holdCredits returns null on refusal) being
+// tested before the call; the behavioral tests prove that stop per entry point.
+const EXITS = (s: ts.Statement | undefined) => !!s && (ts.isReturnStatement(s) || ts.isContinueStatement(s) || ts.isBreakStatement(s) || ts.isThrowStatement(s))
+function guards(fn: ts.FunctionLikeDeclaration, target: ts.Node, vendor: 'apollo' | 'pdl'): ts.CallExpression[] {
+  return (all(fn, n => ts.isCallExpression(n) && RESERVE.has(calleeName(n) ?? '')) as ts.CallExpression[]).filter(r => {
+    if (enclosingFn(r) !== fn || r.getStart() >= target.getStart()) return false
+    let up: ts.Node = r.parent
+    while (ts.isParenthesizedExpression(up)) up = up.parent
+    if (!ts.isAwaitExpression(up)) return false
+    const lit = r.arguments[2]
+    if (lit && ts.isStringLiteralLike(lit) && lit.text !== vendor) return false
+    let stmt: ts.Node = r
+    while (stmt.parent && !(ts.isBlock(stmt.parent) || ts.isSourceFile(stmt.parent))) stmt = stmt.parent
+    if (ts.isBlock(stmt.parent) && ts.isTryStatement(stmt.parent.parent) && stmt.parent.parent.tryBlock === stmt.parent) {
+      const t = stmt.parent.parent
+      const c = t.catchClause?.block.statements
+      if (c && !EXITS(c[c.length - 1])) return false
+      stmt = t
+      while (stmt.parent && !(ts.isBlock(stmt.parent) || ts.isSourceFile(stmt.parent))) stmt = stmt.parent
+    }
+    const block = stmt.parent
+    return !!block && target.getStart() >= stmt.getEnd() && target.getEnd() <= block.getEnd()
+  })
+}
+// The variable an awaited reservation is stored in (`const hold = await reserveCredits(...)`, `hold = await ...`,
+// `const hold = refused ? null : await holdCredits(...)`).
+function boundName(r: ts.CallExpression): string | null {
+  let up: ts.Node = r.parent
+  while (ts.isParenthesizedExpression(up) || ts.isAwaitExpression(up) || ts.isConditionalExpression(up)) up = up.parent
+  if (ts.isVariableDeclaration(up) && ts.isIdentifier(up.name)) return up.name.text
+  if (ts.isBinaryExpression(up) && up.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(up.left)) return up.left.text
+  return null
 }
 function unreservedPaidCalls(rel: string, text: string): string[] {
   const sf = parse(rel, text)
@@ -85,11 +117,16 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
     const fn = enclosingFn(call)
     const line = sf.getLineAndCharacterOfPosition(call.getStart()).line + 1
     if (!fn) { out.push(`${rel}:${line} ${name0}`); continue }
-    if (reservedBefore(fn, call.getStart(), vendor)) continue
-    const takesHold = fn.parameters.some(p => p.type && /\bCreditHold\b/.test(p.type.getText(sf)))
+    if (guards(fn, call, vendor).length > 0) continue
+    // The CreditHold-parameter shape (index.ts runPdl): every call of this function must pass, at the CreditHold
+    // position, exactly the variable a guarding reservation was stored in.
+    const idx = fn.parameters.findIndex(p => p.type && /\bCreditHold\b/.test(p.type.getText(sf)))
     const name = fnName(fn)
-    const uses = name ? all(sf, n => ts.isCallExpression(n) && calleeName(n) === name) as ts.CallExpression[] : []
-    const passedReserved = takesHold && uses.length > 0 && uses.every(u => { const f = enclosingFn(u); return !!f && reservedBefore(f, u.getStart(), vendor) })
+    const uses = idx >= 0 && name ? all(sf, n => ts.isCallExpression(n) && calleeName(n) === name) as ts.CallExpression[] : []
+    const passedReserved = uses.length > 0 && uses.every(u => {
+      const f = enclosingFn(u); const arg = u.arguments[idx]
+      return !!f && !!arg && ts.isIdentifier(arg) && guards(f, u, vendor).some(r => boundName(r) === arg.text)
+    })
     if (!passedReserved) out.push(`${rel}:${line} ${name0}`)
   }
   return out
@@ -127,6 +164,14 @@ test('#849 inventory: a paid call with no reservation before it is caught, also 
   // a renamed import is still a paid call; a reservation for the other vendor does not cover it
   assert.equal(unreservedPaidCalls('lib/x.ts', "import { apolloOrgEnrich as org } from './apollo.ts'\nasync function e() { await org(k, o, f) }").length, 1, 'renamed import, unreserved')
   assert.equal(unreservedPaidCalls('lib/x.ts', 'async function g() { const h = await reserveCredits(db, t, "pdl", 5); await apolloOrgEnrich(k, o, f) }').length, 1, 'PDL credits do not cover an Apollo call')
+  // xhawk round 1: an un-awaited reservation, one in a nested function, one in a branch not taken, a try whose catch
+  // falls through, and a CreditHold caller passing a hold other than the one it reserved
+  assert.equal(unreservedPaidCalls('lib/x.ts', 'async function h() { const p = reserveCredits(db, t, "apollo", 1); await apolloOrgEnrich(k, o, f) }').length, 1, 'not awaited')
+  assert.equal(unreservedPaidCalls('lib/x.ts', 'async function i() { const later = async () => { await reserveCredits(db, t, "apollo", 1) }; await apolloOrgEnrich(k, o, f) }').length, 1, 'nested function')
+  assert.equal(unreservedPaidCalls('lib/x.ts', 'async function j(x: boolean) { if (x) { const h = await reserveCredits(db, t, "apollo", 1) } await apolloOrgEnrich(k, o, f) }').length, 1, 'branch not taken')
+  assert.equal(unreservedPaidCalls('lib/x.ts', 'async function m() { let h; try { h = await reserveCredits(db, t, "apollo", 1) } catch { log() } await apolloOrgEnrich(k, o, f) }').length, 1, 'catch falls through')
+  assert.deepEqual(unreservedPaidCalls('lib/x.ts', 'async function n() { let h; try { h = await reserveCredits(db, t, "apollo", 1) } catch { return null } await apolloOrgEnrich(k, o, f) }'), [], 'catch exits: guarded')
+  assert.equal(unreservedPaidCalls('lib/x.ts', viaParam + 'async function go2() { const unrelated = await reserveCredits(db, t, "pdl", 5); await run(k, fakeHold) }').length, 1, 'passes a hold it did not reserve')
   // the 0-credit people search needs no reservation
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', 'async function d() { await apolloPeopleSearch(k, o, f, 5) }'), [])
 })
