@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #1065 b/415-same-thread-dsn-ref review fix (xhawk High): when two sent rows share a Gmail thread, a DSN that exactly references the sibling row is left unlogged by the row scanned first, so the referenced send (or phase 2) suppresses it instead of the notice being consumed. Competitive: a permanent bounce can no longer slip past suppression (sender reputation). Fixtures only; no live Gmail.
+
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states
   registreringsdatoEnhetsregisteret, so the unchanged verifier dates them (`page_bound`). The verifier's page fetcher reads that one JSON record URL shape and nothing else. A Norway task
   (`norway-dental-registry`, brreg only) is on the scoreboard, outside frozen benchmark set v1. Not verified: a keyed scoreboard run (TINYFISH_API_KEY, SCOREBOARD_ANTHROPIC_KEY); registry
