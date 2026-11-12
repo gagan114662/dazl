@@ -98,7 +98,7 @@ test('#1037 run-budget disclosure follows the server count: 0 -> off (no TinyFis
 // Hermes review (CHANGES REQUIRED at bce374aa, finding 1): no string anywhere in the disclosure may name a people-search cap other
 // than the one the run uses - surfaces, excluded_paths and limits alike.
 const peopleCaps = (d: ReturnType<typeof describeRunBudget>) => [...d.surfaces.map(s => s.note), ...d.excluded_paths, ...d.limits]
-  .flatMap(t => [...t.matchAll(/(?:up to|at most) (\d+) (?:TinyFish )?(?:people )?searches/gi)].filter(m => /people|People search/.test(t)).map(m => Number(m[1])))
+  .flatMap(t => /people|People search/.test(t) ? [...t.matchAll(/(?:up to|at most) (\d+) (?:TinyFish )?(?:people )?searches/gi)].map(m => Number(m[1])) : [])
 test('#1037 first5 disclosure states ONE people-search cap everywhere: N for N = 10, 3; none at all for 0', () => {
   for (const n of [10, 3]) {
     const d = describeRunBudget(FIRST5, { firstPlayPeopleSearches: n })
