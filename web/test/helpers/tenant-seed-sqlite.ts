@@ -9,7 +9,7 @@ import { NOT_DIRECT, TENANT_COLUMNS } from '../../lib/tenant/scope.ts'
 
 type Col = { name: string; type: string; notnull: number; dflt_value: unknown; pk: number }
 export const marker = (tag: string, table: string) => `${tag}~${table}`
-const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' } }
+const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' }, work_email_lookups: { status: 'unverified', provider: 'pdl' } } // work_email_lookups: its CHECKs tie the address to the status (#1036)
 const SKIP = new Set(['users', 'tenant_tombstones', 'tenant_tombstone_keys'])
 
 export function tenantTablesSqlite(db: Database.Database): Map<string, Col[]> {

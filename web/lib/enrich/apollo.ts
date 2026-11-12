@@ -4,7 +4,8 @@
 //   organizations/enrich    - 1 credit per organization
 // So this client only ever calls those two endpoints, keeps names/titles/firmographics,
 // and drops any email/phone field even if a paid key returns one (dazl's contact rule
-// is company-published contacts, not brokered personal data).
+// is company-published contacts, not brokered personal data). The one exception is apolloPersonMatch below (#1036):
+// a lookup the user clicks, on the user's own key, that keeps a work email only with Apollo's own status label.
 // Docs: https://docs.apollo.io/reference/people-api-search , /docs/api-pricing
 
 export class EnrichError extends Error {
@@ -102,4 +103,24 @@ export async function apolloPeopleSearch(apiKey: string, org: { domain?: string 
     recordDay: latestDay(p.last_refreshed_at, p.updated_at),
     // p.email / p.phone_numbers deliberately never read
   })).filter(p => p.name && !isMailboxShaped(p.name)).slice(0, max)
+}
+
+// #1036: ONE user-requested work-email lookup for ONE named person (Find work email on a lead). people/match is a paid
+// enrichment on the tenant's own Apollo plan; no scan calls it. Unlike the search above it keeps the work email AND
+// Apollo's own email_status, so the caller (lib/people/work-email.ts) shows as checked only an address Apollo itself
+// reports as verified. Personal emails and phone numbers are never requested (reveal_* false) and never read. Every
+// field is bounded and must be a string; any other shape is null.
+export interface ApolloMatch { name: string | null; first: string | null; last: string | null; title: string | null; email: string | null; emailStatus: string | null; country: string | null; orgDomain: string | null; linkedin: string | null }
+export async function apolloPersonMatch(apiKey: string, q: { first: string; last: string; domain: string; organization?: string | null }, fetchImpl: typeof fetch = fetch): Promise<ApolloMatch | null> {
+  const body: Record<string, unknown> = { first_name: q.first, last_name: q.last, domain: q.domain, reveal_personal_emails: false, reveal_phone_number: false }
+  if (q.organization) body.organization_name = q.organization
+  const j = await call(apiKey, '/api/v1/people/match', body, fetchImpl) as { person?: unknown } | null
+  const p = j && typeof j === 'object' && j.person && typeof j.person === 'object' && !Array.isArray(j.person) ? j.person as Record<string, unknown> : null
+  if (!p) return null
+  const org = orgOf(p)
+  return {
+    name: clean(p.name, 120), first: clean(p.first_name, 60), last: clean(p.last_name, 60), title: clean(p.title, 120),
+    email: clean(p.email, 254), emailStatus: clean(p.email_status, 40), country: clean(p.country, 80),
+    orgDomain: org?.domain ?? null, linkedin: clean(p.linkedin_url),
+  }
 }

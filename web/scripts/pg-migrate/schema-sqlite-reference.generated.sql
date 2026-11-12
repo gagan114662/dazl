@@ -1107,6 +1107,24 @@ CREATE TABLE watches (
     created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   , run_budget TEXT);
 
+CREATE TABLE work_email_lookups (
+      tenant_id  TEXT NOT NULL,
+      lead_id    TEXT NOT NULL,
+      target     TEXT NOT NULL CHECK (length(target) <= 200),
+      status     TEXT NOT NULL CHECK (status IN ('pending','verified','published','unverified','not_found','not_us','rejected','error','uncertain')),
+      provider   TEXT CHECK (provider IS NULL OR provider IN ('site','apollo','pdl')),
+      address    TEXT CHECK (address IS NULL OR length(address) <= 254),
+      detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
+      source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
+      checked_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
+      CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
+      PRIMARY KEY (tenant_id, lead_id, target)
+    );
+
 CREATE TABLE work_queue (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
@@ -1823,6 +1841,8 @@ CREATE TRIGGER tomb_upd_watch_seen BEFORE UPDATE OF watch_id ON watch_seen BEGIN
 
 CREATE TRIGGER tomb_upd_watches BEFORE UPDATE OF user_id ON watches BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
+CREATE TRIGGER tomb_upd_work_email_lookups BEFORE UPDATE OF tenant_id ON work_email_lookups BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
 CREATE TRIGGER tomb_upd_work_queue BEFORE UPDATE OF tenant_id ON work_queue BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_worker_grants BEFORE UPDATE OF tenant_id ON worker_grants BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
@@ -1836,6 +1856,8 @@ CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths BEGIN SELEC
 CREATE TRIGGER tomb_watch_seen BEFORE INSERT ON watch_seen BEGIN SELECT (SELECT user_id FROM watches WHERE id = NEW.watch_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR EXISTS (SELECT 1 FROM watches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.watch_id); END;
 
 CREATE TRIGGER tomb_watches BEFORE INSERT ON watches BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
+CREATE TRIGGER tomb_work_email_lookups BEFORE INSERT ON work_email_lookups BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 

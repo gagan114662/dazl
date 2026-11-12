@@ -41,6 +41,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/leads/[lead]/find-contact',
   '/api/leads/[lead]/quarantine',
   '/api/leads/[lead]/warm-path',
+  '/api/leads/[lead]/work-email',
   '/api/leads/evidence',
   '/api/leads/evidence-recheck',
   '/api/leads/export',
