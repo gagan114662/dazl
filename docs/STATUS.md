@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #1037 b/1037-first-play-truth (live-check item 2): the first play's cost panel no longer says "Free sources only ... No TinyFish search or fetch" / "no ... post-scan people search". The estimate shows a "People search (who to contact)" row (TinyFish, at most DAZL_FIRST_PLAY_PEOPLE_SEARCHES, default 10, one per ready lead naming nobody; no row when people search is off) and the run-budget note says the same; a free-trial (non-first5) estimate counts the first-play people cap (10), not the ordinary 5. Cap moved to a pure module (lib/people/first-play-cap.ts) so client-bundled disclosure code can state it. Not in this PR: live-check item 1 (first play stopping with unbounded_fallback_hold before the people step).
+
 - #1065 b/415-same-thread-dsn-ref review fix (xhawk High): when two sent rows share a Gmail thread, a DSN that exactly references the sibling row is left unlogged by the row scanned first, so the referenced send (or phase 2) suppresses it instead of the notice being consumed. Competitive: a permanent bounce can no longer slip past suppression (sender reputation). Fixtures only; no live Gmail.
 
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states
