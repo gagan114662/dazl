@@ -76,6 +76,9 @@ export function profilePreviewNote(inferred: unknown, coverage: unknown): Previe
     const why = inferred === true ? "dazl used your request's own words for this profile, so it uses its first part only." : 'dazl could not infer more from your request, so this profile uses its first part only.'
     return { text: `${why} ${counts}Add what was left out to the fields below (or shorten the request) before you run the scan.`, dropped: c.dropped.trim() }
   }
+  // coverage on an inferred profile means its words are the request's own (the funding-stage guard's fallback,
+  // lib/scan/icp.ts previewCoverage): never "worked this out" for that
+  if (inferred === true && c && c.complete === true) return { text: "dazl used your request's own words for this profile. Add detail below if you like, then run the scan.", dropped: null }
   if (inferred === true) return { text: 'dazl worked this out from your request. Edit anything that is off, then run the scan.', dropped: null }
   // "as they are" only when the coverage says the whole request is in; anything unreadable never claims it (fails closed)
   if (c && c.complete === true) return { text: 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.', dropped: null }

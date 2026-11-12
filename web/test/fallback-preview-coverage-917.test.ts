@@ -6,6 +6,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { fallbackCoverage, fallbackIcp, keepStatedFundingStage, previewCoverage, type Icp } from '../lib/scan/icp.ts'
 import { profilePreviewNote } from '../lib/error-copy.ts'
+import { randomBytes } from 'node:crypto'
+import Database from 'better-sqlite3'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { saveKey } from '../lib/llm/key-store.ts'
+import { anthropicProvider, openaiProvider } from '../lib/llm/provider.ts'
+import { previewIcp } from '../lib/scan/runner.ts'
 
 const LONG = ('Find independent bookkeeping firms in Ohio and Indiana with 5 to 500 staff that are hiring a controller or a senior accountant this quarter, '
   + 'run by the founder, not part of a franchise or a national chain, that use QuickBooks Online, '
@@ -59,4 +65,31 @@ test('#917: the funding-stage guard falling back to the request\'s words under a
   // a real model reading carries no coverage; a short request is complete; a non-inferred profile always gets one
   assert.equal(previewCoverage(q, { icp: model, inferred: true }), null)
   assert.deepEqual(previewCoverage('Dentists in Ottawa', { icp: fallbackIcp('Dentists in Ottawa'), inferred: false }), { complete: true })
+})
+
+test('#917: through the real preview (previewIcp, stubbed provider) a funding-stage fallback gets coverage and a disclosing note; a short one never says "worked this out"', async () => {
+  const master = randomBytes(32)
+  const db = new Database(':memory:'); migrateAllSqlite(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  // the model answers Series A to a request that states seed: the guard throws that reading out
+  const SERIES_A = JSON.stringify({ summary: 'Series A B2B software companies in Ohio hiring a first sales leader', who: ['Founder'], where: ['Ohio'], signals: ['hiring a sales leader'], exclude: [] })
+  const fetchImpl = (async () => new Response(JSON.stringify({ id: 'm', model: 'claude-sonnet-4-5', content: [{ type: 'text', text: SERIES_A }], usage: { input_tokens: 10, output_tokens: 10 } }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+  const deps = { master, providers: { anthropic: anthropicProvider, openai: openaiProvider }, fetchImpl }
+  const long = 'Seed funded B2B software companies in Ohio with 10 to 50 staff that are hiring their first sales leader this quarter and '
+    + 'that posted about expanding into a second US region; founders still run sales themselves and they sell to mid-market finance teams; '
+    + 'exclude companies that only sell to consumers or that are owned by private equity firms.'
+  const out = await previewIcp(db, 'A', long, deps)
+  assert.ok(!('error' in out), JSON.stringify(out))
+  const ok = out as { icp: Icp; inferred: boolean }
+  const coverage = previewCoverage(long, ok) // what POST /api/scan/icp attaches (route.ts: `const coverage = previewCoverage(query, out)`)
+  assert.equal(coverage?.complete, false, 'the route sends incomplete coverage')
+  const n = profilePreviewNote(ok.inferred, coverage)
+  assert.doesNotMatch(n.text, /worked this out/); assert.match(n.dropped ?? '', /private equity/)
+  // a short seed request with the same contradicting answer: the profile is the request word for word
+  const short = 'Seed funded B2B software companies in Ohio hiring their first sales leader'
+  const out2 = await previewIcp(db, 'A', short, deps) as { icp: Icp; inferred: boolean }
+  const c2 = previewCoverage(short, out2)
+  assert.deepEqual(c2, { complete: true })
+  const n2 = profilePreviewNote(out2.inferred, c2)
+  assert.doesNotMatch(n2.text, /worked this out/, 'never claims inference for the request verbatim')
+  assert.match(n2.text, /your request's own words/)
 })
