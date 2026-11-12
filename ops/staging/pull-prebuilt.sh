@@ -39,8 +39,12 @@ DL=${STAGING_PREBUILT_DIR:-/var/cache/dazl-staging-prebuilt}
 PSTATE=${STAGING_PREBUILT_STATE:-/var/lib/dazl-staging-prebuilt}
 BACKUPS=${STAGING_BACKUP_DIR:-/var/lib/dazl-staging-backups}
 KEEP_BACKUPS=${STAGING_KEEP_BACKUPS:-3}
-# Where deploy.sh records the live commit: the current layout, then the pre-#908 one.
-CURRENT_FILES=${STAGING_CURRENT_SHA_FILES:-/var/lib/dazl-staging-deploy/current-sha $ROOT/current-sha}
+# Where deploy.sh records the live commit: the current, root-owned layout. The pre-#908 path ($ROOT/current-sha) sits
+# inside the service account's own home (#972: root never writes, or trusts, a file by a name that account controls -
+# $ROOT/current-sha itself can be swapped for a symlink or edited by the service account), so deploy.sh itself does not
+# read it; this script only reads the trusted path unless a box still on the old layout explicitly opts in.
+CURRENT_FILES=${STAGING_CURRENT_SHA_FILES:-/var/lib/dazl-staging-deploy/current-sha}
+if [ "${STAGING_TRUST_LEGACY_CURRENT_SHA:-0}" = 1 ] && [ -z "${STAGING_CURRENT_SHA_FILES:-}" ]; then CURRENT_FILES="$CURRENT_FILES $ROOT/current-sha"; fi
 MIN_FREE_BYTES=${MIN_FREE_BYTES:-2147483648}
 DISK_RESERVE_BYTES=${DISK_RESERVE_BYTES:-268435456}
 RETRY_AFTER_S=${STAGING_RETRY_AFTER_S:-1800}
@@ -112,9 +116,12 @@ if [ -e "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp") )) -lt "$RETRY_
 fi
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 manifest_name="staging-prebuilt-$main_sha.json"
-st=0; curl -fsSL --proto '=https' --max-time 60 --max-filesize 65536 -o "$tmp/manifest.json" "$BASE_URL/$manifest_name" 2>"$tmp/curl.err" || st=$?
-if [ $st = 22 ]; then log "no prebuilt build published for main $main_sha yet; nothing to do"; exit 0; fi
+# No -f here: with -f, curl's own exit 22 means ANY HTTP error >= 400, which conflates a true 404 (no build published
+# yet, benign) with 403/429/5xx (a real failure that should alert). Read the actual status code instead.
+st=0; http_code=$(curl -sSL --proto '=https' --max-time 60 --max-filesize 65536 -o "$tmp/manifest.json" -w '%{http_code}' "$BASE_URL/$manifest_name" 2>"$tmp/curl.err") || st=$?
 [ $st = 0 ] || fail "could not fetch $manifest_name (curl exit $st): $(head -c 300 "$tmp/curl.err")"
+if [ "$http_code" = 404 ]; then log "no prebuilt build published for main $main_sha yet; nothing to do"; exit 0; fi
+[ "$http_code" = 200 ] || fail "could not fetch $manifest_name (HTTP $http_code): $(head -c 300 "$tmp/manifest.json")"
 
 # 3. the manifest names exactly this commit, well-formed files, this box's architecture and Node ABI
 box_arch=${STAGING_NODE_ARCH:-$(node -p process.arch)}
