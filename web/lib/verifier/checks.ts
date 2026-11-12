@@ -114,7 +114,12 @@ export function nameTiedToTitle(folded: string, ns: number, ne: number, ts: numb
     return new RegExp(`^(?:\\s*[,(:-]\\s*|\\s+)(?:(?:formerly|previously)(?![\\p{L}])${FORMER_SKIP},\\s*)?(?:${LINK}\\s+)*` +
       `(?:${JOIN}\\s+(?:the\\s+)?${co}\\s+as\\s+(?:(?:its|the|our|a|an|new)\\s+)*)?(?:(?:the\\s+)?${co}(?:'s?)?\\s+)?${MOD}$`, 'u').test(between)
   }
-  if (te <= ns) return ns - te <= 3 && /^\s*,?\s*$/u.test(folded.slice(te, ns))   // "Sales Director Pat Example", "Harbor's Sales Director, Pat Example"
+  if (te <= ns) {
+    // "Sales Director Pat Example's assistant" / "Harbor's Sales Director, Pat Example's former boss": the title belongs to
+    // whoever the possessive hangs off, so a name directly followed by 's never owns the title that precedes it (#781).
+    if (/^'s?(?![\p{L}])/u.test(folded.slice(ne, ne + 3))) return false
+    return ns - te <= 3 && /^\s*,?\s*$/u.test(folded.slice(te, ns))   // "Sales Director Pat Example", "Harbor's Sales Director, Pat Example"
+  }
   return false
 }
 // The title occurrence [ts, te) inside its sentence [ss, se) is explicitly the claimed company's.
@@ -124,7 +129,11 @@ export function titleOfCompany(folded: string, ts: number, te: number, ss: numbe
   const after = folded.slice(te, te + PASSAGE), before = folded.slice(Math.max(ss, ts - PASSAGE), ts)
   const coEnd = `${co}${NOT_WORD}(?!'s?\\s)`   // "at Harbor Ledger Analytics' booth" names Harbor's booth, not Pat's employer
   // "<title> at|of|for|with <Company>"
-  if (new RegExp(`^\\s*,?\\s+(?:at|of|for|with)\\s+(?:the\\s+)?${coEnd}`, 'u').test(after)) return true
+  // The company must END the noun phrase (clause boundary, or a preposition/conjunction/verb): "at Harbor Ledger Analytics
+  // competitor Rival Corp" and "... Holdings Rival Unit" name a different organisation that merely starts with the claimed
+  // company's name, so another word straight after it is not a binding (#781 review, Hermes-PC finding 4).
+  const COMPANY_END = `(?=\\s*(?:[,;:()"\\n]|\\.(?:\\s|$)|$)|\\s+(?:and|but|who|which|since|where|when|until|in|on|from|for|to|as|at|with|is|was|has|had|will|said|says|after|before|during|by|about|of|this|last|next|today|yesterday|now|currently|effective|starting|beginning|where|while|because|so|that|according|under|since|across|within|following|between)${NOT_WORD})`
+  if (new RegExp(`^\\s*,?\\s+(?:at|of|for|with)\\s+(?:the\\s+)?${coEnd}${COMPANY_END}`, 'u').test(after)) return true
   // appositive "<Name>, <title>, <Company>" / "<Name> (<title>, <Company>)": the company closes the apposition
   if (ne <= ts && /^\s*[,(:-]\s*$/u.test(folded.slice(ne, ts)) &&
     new RegExp(`^\\s*,\\s*(?:the\\s+)?${co}\\s*(?:[,;)\\n]|\\.(?:\\s|$)|$)`, 'u').test(after)) return true
@@ -135,6 +144,30 @@ export function titleOfCompany(folded: string, ts: number, te: number, ss: numbe
   // "<Name> joined|works at <Company> as <title>"
   if (new RegExp(`${JOIN}\\s+(?:the\\s+)?${co}\\s+as\\s+(?:(?:its|the|our|a|an|new)\\s+)*$`, 'u').test(before)) return true
   return false
+}
+
+// An active hire/appoint/poach verb whose subject is some OTHER organisation ("Rival Corp hired|has poached|named ..."),
+// before the person/title in the sentence. The subject (sentence start to the verb) must name neither the claimed company
+// nor the person, so "Harbor Ledger Analytics named Pat Example ..." and "Pat Example was named ..." are untouched.
+const HIRE_VERB = /(?<![\p{L}])(?:(?:has|have|had)\s+)?(?:hired|hires|poached|poaches|named|names|appointed|appoints|recruited|recruits|lured|signed|snapped up)(?![\p{L}])/u
+const hiredByOther = (folded: string, ss: number, upTo: number, company: string, name: string): boolean => {
+  const head = folded.slice(Math.max(ss, upTo - PASSAGE), upTo)
+  const m = HIRE_VERB.exec(head)
+  if (!m || m.index === 0) return false
+  const subject = head.slice(0, m.index)
+  if (/(?<![\p{L}])(?:was|were|been|is|being|be)\s*$/u.test(subject)) return false   // passive: the subject is the hired person
+  return tokenPositions(subject, company).length === 0 && tokenPositions(subject, name).length === 0
+}
+// "<Name>, <title> at <Company>, left the company in October" / "..., has since joined Rival Corp": a departure predicate
+// in the clause that follows the title's own clause(s). Anchored right after the title so another person's departure later
+// in a long sentence ("..., who replaced Jane Doe after she retired") is not misread as this person's.
+const departedAfter = (folded: string, from: number, se: number, company: string): string | null => {
+  const rest = folded.slice(from, Math.min(se, from + PASSAGE))
+  const co = escRe(fold(company))
+  const m = new RegExp(`^(?:[^,;).]{0,120}[,;)]\\s*){1,2}?(?:(?:has|have|had|since|then|later|recently|subsequently|also)\\s+)*` +
+    `(?:left|leaves|retired|retires|departed|departs|resigned|resigns|stepped down|steps down|quit|moved on|` +
+    `(?:since |then |later )joined\\s+(?!(?:the\\s+)?(?:company|team|us|our|${co})${NOT_WORD}))`, 'u').exec(rest)
+  return m ? rest.slice(0, 160) : null
 }
 
 interface Read { s: Snapshot; folded: string }
@@ -313,9 +346,17 @@ export function decide(x: DecideInput): CheckResult[] {
             : together ? r('person_current', 'person', 'unknown', `the source names ${p.name}, "${p.title}" and "${claim.company}" in one sentence but never states that ${p.name} is "${claim.company}"'s ${p.title}`)
               : r('person_current', 'person', 'unknown', `the title "${p.title}" and "${claim.company}" are not both in the same sentence as ${p.name} on the source`))
         } else {
-          const titleClauses = tied(bound).map(t => clauseAt(e.folded, t))
+          const boundTitles = tied(bound)
+          // Two more ways a "bound" role is not current (#781, Hermes-PC review): another organisation is the subject of a
+          // hire/appoint/poach verb whose object is this person (unknown: the role may be the new employer's), or the
+          // clause right after the title says the person left/retired/joined someone else (fail).
+          const rivalHire = boundTitles.some(t => hiredByOther(e.folded, bound.ss, Math.min(bound.i, t), claim.company, p.name))
+          const departed = boundTitles.map(t => departedAfter(e.folded, t + titleLen, bound.se, claim.company)).find(x => x)
+          const titleClauses = boundTitles.map(t => clauseAt(e.folded, t))
           const formerClause = titleClauses.find(c => FORMER.test(c) || PAST_STATE.test(c))
-          out.push(formerClause ? r('person_current', 'person', 'fail', `the source describes ${p.name}'s "${p.title}" as a past role ("${formerClause.slice(0, 120)}")`)
+          if (departed) out.push(r('person_current', 'person', 'fail', `the source says ${p.name} left or moved on ("${departed.slice(0, 120)}")`))
+          else if (rivalHire) out.push(r('person_current', 'person', 'unknown', `another organisation hired or named ${p.name} in the same sentence; the source does not say the role is at "${claim.company}" now`))
+          else out.push(formerClause ? r('person_current', 'person', 'fail', `the source describes ${p.name}'s "${p.title}" as a past role ("${formerClause.slice(0, 120)}")`)
             : r('person_current', 'person', 'pass', `${p.name}, ${p.title}, at ${claim.company}, in one sentence on the source with no former-role marker`))
         }
       }

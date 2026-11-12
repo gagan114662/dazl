@@ -340,3 +340,38 @@ test('#781: current/interim/acting/incoming after a possessive company or appoin
     `Harbor Ledger Analytics appointed Pat Example as its ${m} Sales Director.`,
   ]) assert.equal(pcOf(PAT, text).pc.status, 'pass', text)
 })
+
+// #781 Hermes-PC review (changes required at 92b9a7af): each sentence below passed before this commit.
+test('#781: a possessive after the name hands the title to someone else', () => {
+  for (const text of [
+    "Harbor Ledger Analytics Sales Director Pat Example's assistant, Jane Doe, spoke.",
+    "Harbor Ledger Analytics' Sales Director, Pat Example's former boss, spoke.",
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
+})
+
+test('#781: a rival that hired or named the person never yields a current role at the target', () => {
+  for (const text of [
+    'Rival Corp hired Harbor Ledger Analytics Sales Director Pat Example last week.',
+    'Rival Corp has poached Harbor Ledger Analytics Sales Director Pat Example.',
+    "Rival Corp named Pat Example, Harbor Ledger Analytics' Sales Director, as its new CRO.",
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
+  // the target as the hiring subject, and the passive, still bind
+  assert.equal(pcOf(PAT, 'Harbor Ledger Analytics named Pat Example its new Sales Director.').pc.status, 'pass')
+  assert.equal(pcOf(PAT, 'Pat Example was named Sales Director at Harbor Ledger Analytics.').pc.status, 'pass')
+})
+
+test('#781: a departure in the clause after the role means the person is not current', () => {
+  for (const text of [
+    'Pat Example, Sales Director at Harbor Ledger Analytics, left the company in October.',
+    'Pat Example, Sales Director at Harbor Ledger Analytics, has since joined Rival Corp.',
+    'Pat Example, the Sales Director at Harbor Ledger Analytics, retired in 2025.',
+  ]) assert.equal(pcOf(PAT, text).pc.status, 'fail', text)
+  assert.equal(pcOf(PAT, 'Pat Example, Sales Director at Harbor Ledger Analytics, joined the team in 2020 and leads sales.').pc.status, 'pass')
+})
+
+test('#781: a different organisation named straight after the company never binds', () => {
+  for (const text of [
+    'Pat Example is the new Sales Director at Harbor Ledger Analytics competitor Rival Corp.',
+    'Pat Example is Sales Director at Harbor Ledger Analytics Holdings Rival Unit.',
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
+})
