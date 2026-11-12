@@ -10,16 +10,19 @@
 //     by hand ("Watch this weekly") keeps WEEK_S. Which one a watch is comes from lib/play-funding.ts isFirstPlayRepeat
 //     (its only job older than the watch), so no column or migration is needed.
 //   - free plan, 1 scan a day: a scheduled run or a "Find leads now" of that repeat does not start when the account has
-//     already started a scan this UTC day (any scan: a search in Leads, a play run, trial-funded or not; a genuine failure
-//     gives its slot back, as the monthly count does, lib/plans.ts). It is checked inside the transaction that would create
+//     already started a scan this UTC day (any scan: a search in Leads, a play run, trial-funded or not, failed or not:
+//     a hard cap, so a failed run is not followed by a second one the same day). It is checked inside the transaction that would create
 //     the job, under the account's scan admission lock, so a click and a tick cannot both pass it.
 //   - a skipped scheduled run moves to the same time on the next UTC day (never a burst of catch-up runs) and leaves one
 //     audit event (action PLAY_SKIPPED) in the same transaction; Home and Plays read the latest one (skipNotice) and say
 //     the run was skipped until the play runs again.
-//   - at most $0.30: every free-plan run of the repeat carries run_budget.max_usd = FREE_RUN_MAX_USD (lower if the play
-//     already had a lower one). The runner holds the run to it (lib/scan/runner.ts: a trial scan's reserve can only be
-//     lowered by it). The existing trial caps (3 trial scans per account, $ per account, global daily) are unchanged and
-//     still apply on top: a repeat with no key of its own stops when the free searches are used (paused 'trial_used').
+//   - at most $0.30 of dazl's money: every free-plan run of the repeat that runs on the free trial (dazl's keys) carries
+//     run_budget.max_usd = FREE_RUN_MAX_USD (lower if the play already had a lower one), whatever the trial's configured
+//     per-scan reserve; the runner holds it to the lower of the two (lib/scan/runner.ts). A run on the account's OWN key
+//     is billed by the account's own provider and keeps the play's own budget: a max_usd there would also stop Autopilot
+//     and research for that run (lib/scan/runner.ts jobStartsAutopilot), which the decision did not ask for. The existing
+//     trial caps (3 trial scans per account, $ per account, global daily) are unchanged and still apply on top: a repeat
+//     with no key of its own stops when the free searches are used (paused 'trial_used').
 //   - paid plans: no daily cap here; their monthly quota (lib/plans.ts readScanQuota) is the limit, as before.
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { readPlan } from './plans.ts'
@@ -42,9 +45,9 @@ export function nextDayRun(due: number, now: number): number {
   return due >= tomorrow ? due : due + Math.ceil((tomorrow - due) / DAY_S) * DAY_S
 }
 
-// Scans the account started since the UTC day began. Same rule as the monthly count (lib/plans.ts SCANS_THIS_MONTH_SQL)
-// except that trial-funded scans count too: every scan is a scan for the daily cap. Uses scan_jobs_user (user_id, created_at).
-const SCANS_TODAY_SQL = "SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ? AND (status != 'failed' OR error = 'cancelled')"
+// Scans the account started since the UTC day began, every one: trial-funded or not, failed or not (a failed run may
+// already have spent). Uses scan_jobs_user (user_id, created_at).
+const SCANS_TODAY_SQL = 'SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND created_at >= ?'
 export function* scansTodayStep(t: Tx, userId: string, now: number): TxBody<number> {
   return Number((yield* t.get<{ n: number }>(SCANS_TODAY_SQL, [userId, utcDayStart(now)]))!.n)
 }
@@ -71,6 +74,7 @@ export function* skipWatchRunStep(t: Tx, w: { id: string; user_id: string; next_
   const next = nextDayRun(Number(w.next_run_at), now)
   const r = yield* t.run('UPDATE watches SET next_run_at = ? WHERE id = ? AND user_id = ? AND active = 1 AND next_run_at = ?', [next, w.id, w.user_id, w.next_run_at])
   if (r.changes !== 1) return false
+  // decision 'denied': the plan's daily cap refused the run (the event records a refusal, as audit.ts's refusals do)
   yield* recordTx(t, { tenantId: w.user_id, actorId: 'scheduler', actorKind: 'service', action: PLAY_SKIPPED, resourceType: 'watch', resourceId: w.id, decision: 'denied',
     summary: { reason: SKIP_DAILY_CAP, due_at: Number(w.next_run_at), next_run_at: next, daily_runs: FREE_DAILY_RUNS } }, now)
   return true

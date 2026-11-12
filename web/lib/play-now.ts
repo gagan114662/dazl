@@ -11,7 +11,7 @@
 //     caps (unchanged; a refused admission is a refusal here, never a run on anything else);
 //   - the monthly scan quota allows one more scan;
 //   - #1042, free plan, the first play's repeat: the account has started no scan this UTC day (lib/play-cadence.ts), and
-//     the run carries max_usd $0.30, exactly as its scheduled run would;
+//     a trial-funded run carries max_usd $0.30, exactly as its scheduled run would;
 //   - no other scan of the tenant is queued, running or finishing (the one-at-a-time rule of POST /api/scan);
 //   - not within RUN_NOW_MIN_GAP_S of the play's last run (no click-spamming the quota or the trial).
 // Key, quota and the active-scan count are read first (a fast refusal that reserves nothing); the active-scan check and
@@ -88,7 +88,7 @@ export async function runPlayNow(db: Db, userId: string, kind: PlayKind, id: str
       if (kind === 'watch') {
         const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND user_id = ? AND active = 1 AND next_run_at = ?', [now, next, id, userId, read])
         if (r.changes !== 1) return { error: 'scan_active' } // the tick (or another click) ran it in between: that run is the one
-        const job = yield* queryJobStep(t, userId, { id: trial?.jobId, query: p.query, icp: p.icp, watchId: id, runBudget: capped ? cappedRunBudget(p.run_budget) : p.run_budget, ...offer }, now)
+        const job = yield* queryJobStep(t, userId, { id: trial?.jobId, query: p.query, icp: p.icp, watchId: id, runBudget: capped && trial ? cappedRunBudget(p.run_budget) : p.run_budget, ...offer }, now)
         if (trial) yield* markTrialJobStep(t, userId, job)
         return { job_id: job, next_run_at: next, funded_by: trial ? 'trial' : 'user' }
       }

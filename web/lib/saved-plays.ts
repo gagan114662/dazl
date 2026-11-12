@@ -27,11 +27,11 @@ const PAUSED: Record<string, string> = {
   trial_used: 'Paused: your free searches are used up. Add your AI key in Settings to keep it running',
 }
 // #1042: one line under a play about how it repeats and the email after each run
-export const AUTO_NOTE = 'dazl set your first play to search again every day. Nothing is sent to anyone without your OK. Pause it any time.'
+export const AUTO_NOTE = 'dazl set your first play to search again every day. Pause it any time.'
 export const MAIL_NOTE = 'After each run that finds new leads you get an email listing them. Pausing the play stops the runs and the emails.'
 // #1042: the run the free plan's daily cap skipped, said once in words (Plays and Home)
 export function skipLine(s: WatchSkip, timeZone?: string): string {
-  return `Today's search was skipped: the free plan runs 1 search a day and one already ran today.${s.next_run_at ? ` Next search ${whenOf(s.next_run_at, timeZone)}.` : ''}`
+  return `The search due ${dayOf(s.at, timeZone)} was skipped: the free plan runs 1 search a day and another search had already run that day.${s.next_run_at ? ` Next search ${whenOf(s.next_run_at, timeZone)}.` : ''}`
 }
 export const noteOf = (auto: boolean, emails: boolean, skip: string | null = null): string | null => [skip ?? '', auto ? AUTO_NOTE : '', emails ? MAIL_NOTE : ''].filter(Boolean).join(' ') || null
 

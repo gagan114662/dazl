@@ -14,6 +14,8 @@ import { readHasKey } from './llm/key-store.ts'
 import { readScanQuota } from './plans.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
+import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
+import { captureError } from './ops/errors.ts'
 import { cappedRunBudget, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
@@ -170,7 +172,7 @@ const noFence: Fence = function* () { /* not fenced */ }
 //
 // #1042 (lib/play-cadence.ts): the first play's repeat runs again a day later (any other watch a week later). On the free
 // plan it starts only while the account has started no scan this UTC day; otherwise that day's run is skipped (moved to
-// the same time tomorrow, with an audit event Home and Plays read), and each run it does start carries max_usd $0.30.
+// the same time tomorrow, with an audit event Home and Plays read), and each trial-funded run carries max_usd $0.30.
 // The cap is checked before any trial reservation and again inside the job's transaction, under the admission lock.
 export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined> } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence
@@ -190,12 +192,20 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
     // the free plan's daily cap, before anything is reserved: today's run is skipped, not retried every tick
     const capHit = function* (t: Tx): TxBody<boolean> { return capped && (yield* scansTodayStep(t, w.user_id, now)) >= FREE_DAILY_RUNS }
     if (capped) {
-      const out = await db.tx(function* (t) {
-        yield* fence(t)
-        yield* lockScanAdmission(t, w.user_id)
-        if (!(yield* capHit(t))) return 'run' as const
-        return (yield* skipWatchRunStep(t, w, now)) ? 'skipped' as const : 'gone' as const
-      })
+      let out: 'run' | 'skipped' | 'gone'
+      try {
+        out = await db.tx(function* (t) {
+          yield* fence(t)
+          yield* lockScanAdmission(t, w.user_id)
+          if (!(yield* capHit(t))) return 'run' as const
+          return (yield* skipWatchRunStep(t, w, now)) ? 'skipped' as const : 'gone' as const
+        })
+      } catch (e) {
+        // one account's failed skip (e.g. a tenant being deleted refuses the audit write) never stops the other accounts
+        if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
+        captureError(e, { source: 'worker', where: 'watch:daily-cap-skip', tenantId: w.user_id })
+        continue
+      }
       if (out === 'skipped') skipped++
       if (out !== 'run') continue
     }
@@ -218,7 +228,9 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
         if (yield* capHit(t)) return (yield* skipWatchRunStep(t, w, now)) ? 'skipped' : null // a scan started since the check above
         const r = yield* t.run('UPDATE watches SET last_run_at = ?, next_run_at = ? WHERE id = ? AND active = 1 AND next_run_at = ?', [now, now + watchIntervalS(auto), w.id, w.next_run_at])
         if (r.changes !== 1) return null
-        const runBudget = capped ? cappedRunBudget(w.run_budget) : w.run_budget ?? null
+        // $0.30 on dazl's money (a trial-funded run); a run on the account's own key keeps the play's own budget, so it
+        // is not excluded from Autopilot or research the way a budgeted run is (lib/scan/runner.ts jobStartsAutopilot)
+        const runBudget = capped && trial ? cappedRunBudget(w.run_budget) : w.run_budget ?? null
         const id = yield* queryJobStep(t, w.user_id, { id: trial?.jobId, query: w.query, icp: w.icp, watchId: w.id, runBudget, ...(play ? { offer: play.offer, seller: play.seller ?? undefined } : {}) }, now)
         if (trial) yield* markTrialJobStep(t, w.user_id, id)
         return id

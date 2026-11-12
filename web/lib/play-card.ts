@@ -6,6 +6,16 @@ export interface PlayIcp { summary?: string; who?: string[]; industries?: string
 // #1042: auto = the first play's automatic repeat, which runs every day; skipped = a run the free plan's daily cap skipped
 export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null; auto?: boolean; skipped?: { at: number; next_run_at: number | null } | null }
 
+// #1042: Home's line about a run the free plan's daily cap skipped. Taken from the account's live first-play repeat
+// whatever Home's play card shows: the skip happens BECAUSE another search ran that day, and that search (usually a
+// different request) is what the card shows then.
+export function skipNoticeLine(watches: PlayWatch[] | null, timeZone?: string): string | null {
+  const w = watches?.find(x => x.active && x.auto && x.skipped)
+  if (!w?.skipped) return null
+  const day = (t: number) => new Date(t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone })
+  return `Your daily play "${playName(w.query, null)}" skipped its search due ${day(w.skipped.at)}: the free plan runs 1 search a day and another search had already run that day.${w.skipped.next_run_at ? ` Next search ${day(w.skipped.next_run_at)}.` : ''}`
+}
+
 const GENERIC = /^(?:independent|small|smaller|growing|local|b2b|smb|mid-?sized|established|new)\s+/i
 const SIGNALS: [RegExp, string][] = [
   [/open|new (?:location|office|clinic|site)|second (?:office|location)|expan/i, 'expanding'],
@@ -48,8 +58,8 @@ export function playPace(job: { status: string; error: string | null; created_at
     return { status: job.status === 'failed' && job.error !== 'no_candidates' ? 'failed' : 'done', label: last, pace: `Last run ${day(job.created_at)}; schedule unavailable` }
   }
   // the free plan's daily cap skipped today's run: said here, on Home, until the play runs again
-  if (w && w.active && w.skipped) return { status: 'live', label: 'Live', pace: `Runs every day. Today's search was skipped: the free plan runs 1 search a day and one already ran today${w.next_run_at ? `. Next search ${day(w.next_run_at)}` : ''}` }
-  if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs ${every}${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}${w.auto ? '. Nothing is sent without your OK' : ''}` }
+  if (w && w.active && w.skipped) return { status: 'live', label: 'Live', pace: `Runs every day. The search due ${day(w.skipped.at)} was skipped: the free plan runs 1 search a day and another search had already run that day${w.next_run_at ? `. Next search ${day(w.next_run_at)}` : ''}` }
+  if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs ${every}${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}` }
   if (w) return { status: 'paused', label: 'Paused', pace: `${Every}, paused${w.paused_reason ? ` (${w.paused_reason.replace(/_/g, ' ')})` : ''}` }
   if (job.status === 'failed' && job.error === 'no_candidates') return { status: 'done', label: 'No results', pace: `Ran once, ${day(job.created_at)}` }
   if (job.status === 'failed') return { status: 'failed', label: job.error === 'cancelled' ? 'Stopped' : 'Failed', pace: `Ran once, ${day(job.created_at)}` }

@@ -11,7 +11,7 @@ import { repeatFirstPlays, REPEAT_INTERVAL_S } from '../lib/play-repeat.ts'
 import { runPlayNow } from '../lib/play-now.ts'
 import { runNowMessage } from '../lib/play-new-view.ts'
 import { savedPlays } from '../lib/saved-plays.ts'
-import { playPace } from '../lib/play-card.ts'
+import { playPace, skipNoticeLine } from '../lib/play-card.ts'
 import { composePlayRunMail, sendPlayRunMails } from '../lib/play-mail.ts'
 import { savePlan } from '../lib/plans.ts'
 import { cappedRunBudget, DAY_S, FREE_RUN_MAX_USD, nextDayRun, PLAY_SKIPPED, utcDayStart, WEEK_S } from '../lib/play-cadence.ts'
@@ -40,9 +40,9 @@ async function account(db: Db, id: string, email: string) {
 }
 const giveKey = (db: Db, t: string) => db.run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'x', '1234', 1)", [t])
 // a scan of tenant t created at `at`, finished 5 minutes later
-async function scan(db: Db, t: string, at: number, o: { status?: 'done' | 'failed'; error?: string | null; watchId?: string; company?: string } = {}) {
+async function scan(db: Db, t: string, at: number, o: { status?: 'done' | 'failed'; error?: string | null; watchId?: string; company?: string; query?: string } = {}) {
   const id = id24()
-  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at, watch_id) VALUES (?, ?, 'x', '-', '-', ?, ?, 'running', ?, ?)", [id, t, Q, ICP, at, o.watchId ?? null])
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at, watch_id) VALUES (?, ?, 'x', '-', '-', ?, ?, 'running', ?, ?)", [id, t, o.query ?? Q, ICP, at, o.watchId ?? null])
   if (o.company) await db.run("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, score, watch_new) VALUES (?, ?, ?, NULL, 'hiring', 'https://n.example/a', 50, 1)", [id24(), id, o.company])
   await db.run('UPDATE scan_jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?', [o.status ?? 'done', o.error ?? null, at + 300, id])
   return id
@@ -76,7 +76,8 @@ bothEngines('#1042 daily: the first play\'s repeat says "next search tomorrow" a
   const [p] = savedPlays([row] as never, null, 'UTC', FIN + 120)
   assert.equal(p.schedule, 'Daily')
   assert.match(p.note ?? '', /search again every day/)
-  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /^Runs every day, next .*Nothing is sent without your OK/)
+  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /^Runs every day, next /)
+  assert.equal(skipNoticeLine([row]), null, 'nothing skipped: no Home notice')
   // three consecutive days, each a run one day after the last (keyed, free plan: one scan a day)
   for (const d of [0, 1, 2]) {
     const at = due1 + d * DAY
@@ -103,10 +104,10 @@ bothEngines('#1042 daily: the first play\'s repeat says "next search tomorrow" a
 bothEngines('#1042 free plan: a scan already started today skips that day\'s run (same time tomorrow), and Plays and Home say so until it runs', async ({ db }) => {
   const w = await firstPlay(db, A, 'a@a.example')
   const due1 = FIN + DAY
-  // a genuine failure today gives its slot back (as the monthly count does): the run still happens
-  await scan(db, A, utcDayStart(due1) + 2 * H, { status: 'failed', error: 'no_candidates' })
-  // a search the person ran in Leads this morning is today's one scan
-  await scan(db, A, utcDayStart(due1) + 8 * H)
+  // another account's scan today is not this account's (the cap is per account)
+  await account(db, B, 'b@b.example'); await scan(db, B, utcDayStart(due1) + H)
+  // a search the person ran in Leads this morning (a different request) is today's one scan
+  const other = await scan(db, A, utcDayStart(due1) + 8 * H, { query: 'Roofers in Ohio' })
   assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   assert.deepEqual(await jobsAt(db, A, due1), [], 'no scan queued')
   assert.deepEqual([Number((await watch(db, w))!.next_run_at), (await watch(db, w))!.active], [due1 + DAY, 1], 'still live; moved to the same time tomorrow')
@@ -118,14 +119,21 @@ bothEngines('#1042 free plan: a scan already started today skips that day\'s run
   // Plays and Home say why
   const [row] = await listWatches(db, A, due1 + 600)
   assert.deepEqual(row.skipped, { at: due1, reason: 'free_daily_cap', next_run_at: due1 + DAY })
+  const dueDay = new Date(due1 * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   const [p] = savedPlays([row] as never, null, 'UTC', due1 + 600)
-  assert.match(p.note ?? '', /^Today's search was skipped: the free plan runs 1 search a day and one already ran today\. Next search /)
-  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /Today's search was skipped: the free plan runs 1 search a day/)
-  // the next day it runs, held to $0.30, and the notice goes away
+  assert.match(p.note ?? '', new RegExp(`^The search due ${dueDay} \\d{4} was skipped: the free plan runs 1 search a day and another search had already run that day\\. Next search `))
+  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /^Runs every day\. The search due .+ was skipped: the free plan runs 1 search a day/)
+  // Home's play card shows the NEWEST search (the Roofers one), whose query matches no play: the notice is still on Home,
+  // and it names the day, so it stays true the next morning
+  assert.equal(playPace({ status: 'done', error: null, created_at: utcDayStart(due1) + 8 * H, query: 'Roofers in Ohio' }, [row]).pace.includes('skipped'), false)
+  assert.match(skipNoticeLine([row], 'UTC') ?? '', new RegExp(`^Your daily play ".+" skipped its search due ${dueDay}: the free plan runs 1 search a day and another search had already run that day\\. Next search `))
+  assert.ok(other)
+  // the next day it runs on the account's own key, with the play's own budget (none: Autopilot and research are not
+  // turned off for it), and the notice goes away
   const due2 = due1 + DAY
   assert.deepEqual(await runDueWatches(db, { now: due2, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   const [job] = await jobsAt(db, A, due2)
-  assert.deepEqual(JSON.parse(job.run_budget!), { max_usd: FREE_RUN_MAX_USD })
+  assert.equal(job.run_budget, null)
   assert.equal((await listWatches(db, A, due2 + 60))[0].skipped, null)
   // a paused play shows no skip line
   await scan(db, A, utcDayStart(due2 + DAY) + H)
@@ -145,8 +153,14 @@ bothEngines('#1042 free plan, no key of its own: a capped day reserves nothing f
   assert.deepEqual(await runDueWatches(db, { now: due1 + DAY, env: TRIAL_ENV }), { ran: 1, paused: 0, skipped: 0 })
   const [job] = await jobsAt(db, A, due1 + DAY)
   assert.equal(job.funded_by, 'trial')
-  assert.equal(JSON.parse(job.run_budget!).max_usd, 0.3)
-  assert.equal(Number((await watch(db, w))!.next_run_at), due1 + 2 * DAY)
+  assert.deepEqual(JSON.parse(job.run_budget!), { max_usd: FREE_RUN_MAX_USD }, "dazl's money: held to $0.30")
+  // Find leads now on the free trial carries it too (a later day, no scan yet that day)
+  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [job.id]); await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [due1 + DAY + 300, job.id])
+  const click = utcDayStart(due1 + 2 * DAY) + 2 * H
+  const r = await runPlayNow(db, A, 'watch', w, click, TRIAL_ENV)
+  assert.ok('job_id' in r && r.funded_by === 'trial', JSON.stringify(r))
+  assert.deepEqual(JSON.parse((await jobsAt(db, A, click))[0].run_budget!), { max_usd: FREE_RUN_MAX_USD })
+  assert.equal(Number((await watch(db, w))!.next_run_at), click + DAY)
 })
 
 bothEngines('#1042 the daily cap is re-checked inside the run\'s transaction: a scan started after the first check skips the day', async ({ db }) => {
@@ -158,6 +172,29 @@ bothEngines('#1042 the daily cap is re-checked inside the run\'s transaction: a 
   assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0, skipped: 1 })
   assert.deepEqual(await jobsAt(db, A, due1), [])
   assert.equal(Number((await watch(db, w))!.next_run_at), due1 + DAY)
+})
+
+bothEngines('#1042 the free daily cap is hard: a failed run that day still uses it (no second run the same day)', async ({ db }) => {
+  const w = await firstPlay(db, A, 'a@a.example')
+  const due1 = FIN + DAY
+  await scan(db, A, utcDayStart(due1) + 2 * H, { status: 'failed', error: 'no_candidates' })
+  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  const click = due1 + 2 * H
+  assert.deepEqual(await runPlayNow(db, A, 'watch', w, click, NO_TRIAL), { error: 'daily_cap', retry_at: utcDayStart(click) + DAY })
+})
+
+bothEngines('#1042 one account\'s failed skip write never stops the other accounts\' runs', async ({ db }) => {
+  const wa = await firstPlay(db, A, 'a@a.example')
+  await account(db, B, 'b@b.example'); await giveKey(db, B); await scan(db, B, T0 + 60)
+  const [wb] = await repeatFirstPlays(db, { now: FIN + 120 })
+  const due = FIN + 60 + DAY // both due; A first
+  await scan(db, A, utcDayStart(due) + H)
+  let calls = 0
+  const flaky: Fence = function* () { if (++calls === 1) throw new Error('audit write refused') }
+  assert.deepEqual(await runDueWatches(db, { now: due, env: NO_TRIAL, fence: flaky }), { ran: 1, paused: 0, skipped: 0 })
+  assert.equal(Number((await watch(db, wa))!.next_run_at), FIN + DAY, 'A untouched: retried by the next tick')
+  assert.equal((await jobsAt(db, B, due)).length, 1, 'B ran')
+  assert.ok(wb)
 })
 
 bothEngines('#1042 paid plan: no daily cap; the plan\'s quota decides and the play keeps its own budget', async ({ db }) => {
@@ -183,12 +220,12 @@ bothEngines('#1042 Find leads now on the free plan: once a scan ran today it is 
   const msg = runNowMessage(429, r as never, 'UTC')
   assert.equal(msg.ok, false)
   assert.match(msg.text, /^The free plan runs this play once a day and a search already ran today\. It can run again after /)
-  // the next day it runs, moves the next scheduled run a day out and carries the $0.30 budget
+  // the next day it runs and moves the next scheduled run a day out (own key: no added budget)
   const next = utcDayStart(click) + DAY + 9 * H
   const ok = await runPlayNow(db, A, 'watch', w, next, NO_TRIAL)
   assert.ok('job_id' in ok, JSON.stringify(ok))
   assert.equal(ok.next_run_at, next + DAY)
-  assert.deepEqual(JSON.parse((await jobsAt(db, A, next))[0].run_budget!), { max_usd: 0.3 })
+  assert.equal((await jobsAt(db, A, next))[0].run_budget, null)
   // on a paid plan the same click the same day runs (the plan's quota decides), with the play's own budget
   await account(db, B, 'b@b.example'); await giveKey(db, B); await scan(db, B, T0)
   const [wb] = await repeatFirstPlays(db, { now: FIN + 60 })

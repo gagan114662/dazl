@@ -181,7 +181,7 @@ export default function PlaysClient() {
             })}
           </div>
         )}
-      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s daily repeat can use your free searches while you have some left. On the free plan it runs at most 1 search a day (skipped on a day you already ran one), each held to $0.30. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
+      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s daily repeat can use your free searches while you have some left. On the free plan that repeat runs at most 1 search a day (skipped on a day another search already ran), and its runs on your free searches are held to $0.30. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
     </div>
   )
 }

@@ -16,6 +16,7 @@ import { NEW_LIMIT, playNew, runPlayNow, seenThrough } from '../lib/play-now.ts'
 import { runEnded, runNowMessage } from '../lib/play-new-view.ts'
 import { noteOf, savedPlays } from '../lib/saved-plays.ts'
 import { setTransportForTests } from '../lib/system-mail.ts'
+import { LeaseLost } from '../lib/shared/lease.ts'
 
 const DAY = 86400
 const NOW = Math.floor(Date.now() / 1000)
@@ -235,8 +236,8 @@ bothEngines('#1042 a trial reservation for a run that did not happen is given ba
   assert.deepEqual(await reservations(db, A), [], 'released: no attempt or money held for a run that never existed')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_scans'), 0)
   // the fence throws (lease lost): the error propagates and the reservation is still released
-  const lost: Fence = function* () { throw new Error('lease lost') }
-  await assert.rejects(runDueWatches(db, { now: due, env: TRIAL_ENV, fence: lost }), /lease lost/)
+  const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
+  await assert.rejects(runDueWatches(db, { now: due, env: TRIAL_ENV, fence: lost }), LeaseLost)
   assert.deepEqual(await reservations(db, A), [])
   // a scan of the account is running: skipped before any reservation
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '-', '-', 'q', 'running', ?)", [id24(), A, NOW])
