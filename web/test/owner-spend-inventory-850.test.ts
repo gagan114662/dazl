@@ -50,7 +50,7 @@ const NOT_MODEL = ['lib/queue/scan-claimer.ts', 'lib/scan/queue-runner.ts']
 const METHODS = new Set(['complete', 'completeDetailed', 'research'])
 const ALIASABLE = new Set(['complete', 'completeDetailed'])
 type Use = { line: number; method: string; receiver: ts.Expression | null; sf: ts.SourceFile }
-const strip = (e: ts.Expression): ts.Expression => (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e)) ? strip(e.expression) : e
+const strip = (e: ts.Expression): ts.Expression => (ts.isNonNullExpression(e) || ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e)) ? strip(e.expression) : e
 function methodOf(e: ts.Node): { method: string; receiver: ts.Expression } | null {
   if (ts.isPropertyAccessExpression(e) && METHODS.has(e.name.text)) return { method: e.name.text, receiver: e.expression }
   if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression) && METHODS.has(e.argumentExpression.text)) return { method: e.argumentExpression.text, receiver: e.expression }
@@ -134,7 +134,10 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     // treated as an unguarded write: its value is never judged, so the variable is not trusted
     const otherWrites = all(within, n => (ts.isArrayLiteralExpression(n) || ts.isObjectLiteralExpression(n)) && ts.isBinaryExpression(n.parent) && n.parent.left === n
       && all(n, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
-      || all(within, n => (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && ts.isIdentifier(strip(n.operand)) && (strip(n.operand) as ts.Identifier).text === r.text).length > 0
+      || all(within, n => (ts.isPostfixUnaryExpression(n) || ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken))
+        && ts.isIdentifier(strip(n.operand)) && (strip(n.operand) as ts.Identifier).text === r.text).length > 0
+      // `import { provider }`, `import provider from`, `import * as provider`: a binding whose value is never judged
+      || all(within, n => (ts.isImportSpecifier(n) || ts.isImportClause(n) || ts.isNamespaceImport(n) || ts.isImportEqualsDeclaration(n)) && n.name?.text === r.text).length > 0
       // names are resolved file-wide (no lexical scopes), so ANY other binding of the same name anywhere in the file - a
       // function parameter, a for-of/for-in or catch binding, a destructured declaration - may hold a raw provider: unguarded
       || all(within, n => (ts.isParameter(n) || ts.isBindingElement(n)) && all(n.name, m => ts.isIdentifier(m) && m.text === r.text).length > 0).length > 0
@@ -150,8 +153,20 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
     // the holder's declaration in the function that encloses this use (each function has its own `const p = ...`)
     let scope: ts.Node = r
     while (scope.parent && !ts.isFunctionLike(scope)) scope = scope.parent
-    const holder = all(scope, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === (r.expression as ts.Identifier).text && !!n.initializer) as ts.VariableDeclaration[]
+    const name = r.expression.text
+    const holder = all(scope, n => ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && !!n.initializer) as ts.VariableDeclaration[]
     if (holder.length !== 1) return false
+    // the holder is judged by its declaration alone, so any other write to it or into it in the enclosing function -
+    // `p = ...`, `p.provider = ...`, `p++`, destructuring into it, a parameter/catch/for binding or import of the name - is unguarded
+    const rootIs = (e: ts.Expression): boolean => { const x = strip(e)
+      return ts.isIdentifier(x) ? x.text === name : (ts.isPropertyAccessExpression(x) || ts.isElementAccessExpression(x)) && rootIs(x.expression) }
+    const named = (b: ts.Node): boolean => all(b, m => ts.isIdentifier(m) && m.text === name).length > 0
+    if (all(scope, n => ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        && (rootIs(n.left) || (ts.isArrayLiteralExpression(n.left) || ts.isObjectLiteralExpression(n.left)) && named(n.left))).length > 0) return false
+    if (all(scope, n => (ts.isPostfixUnaryExpression(n) || ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) && rootIs(n.operand)).length > 0) return false
+    if (all(scope, n => (ts.isParameter(n) || ts.isBindingElement(n) || ts.isCatchClause(n) && !!n.variableDeclaration) && named(ts.isCatchClause(n) ? n.variableDeclaration!.name : (n as ts.ParameterDeclaration | ts.BindingElement).name)).length > 0) return false
+    if (all(scope, n => (ts.isForOfStatement(n) || ts.isForInStatement(n)) && named(n.initializer)).length > 0) return false
+    if (all(scope, n => (ts.isImportSpecifier(n) || ts.isImportClause(n) || ts.isNamespaceImport(n) || ts.isImportEqualsDeclaration(n)) && n.name?.text === name).length > 0) return false
     const init = strip(holder[0].initializer!)
     if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return false
     const fnName = init.expression.text
@@ -163,8 +178,8 @@ function guardedExpr(e: ts.Expression, sf: ts.SourceFile, within: ts.Node = sf, 
       .flatMap(o => o.properties)
       .filter(p => p.name && ts.isIdentifier(p.name) && p.name.text === r.name.text)
     return sets.length > 0 && sets.every(p =>
-      ts.isShorthandPropertyAssignment(p) ? guardedExpr(p.name, sf, fn.body!, depth + 1)
-        : ts.isPropertyAssignment(p) ? guardedExpr(p.initializer, sf, fn.body!, depth + 1) : false)
+      ts.isShorthandPropertyAssignment(p) ? guardedExpr(p.name, sf, fn, depth + 1)
+        : ts.isPropertyAssignment(p) ? guardedExpr(p.initializer, sf, fn, depth + 1) : false)
   }
   return false
 }
@@ -244,6 +259,10 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     'let prov = ownerGuarded(db, t, raw)\nfor (prov of [raw]) { await prov.complete(k, p) }',
     'let prov = ownerGuarded(db, t, raw)\nfor (prov in rawMap) { await prov.complete(k, p) }',
     'const provider = ownerGuarded(db, t, raw)\ntry { x() } catch (provider) { await provider.complete(k, p) }',
+    // council round 2: an import of the same name is a raw binding; a holder (`p.provider`) written after its declaration
+    "import { provider } from './raw'\nfunction g() { const provider = ownerGuarded(db, t, raw) }\nawait provider.complete(k, p)",
+    'function pickProvider() { const provider = raw && ownerGuarded(db, t, raw); return provider ? { provider, key } : null }\nlet p = pickProvider(); if (!p) p = { provider: raw, key }; await p.provider.complete!(p.key, x)',
+    'function pickProvider() { const provider = ownerGuarded(db, t, raw); return { provider, key } }\nconst p = pickProvider(); p.provider = raw; await p.provider.complete!(k, x)',
   ]
   assert.deepEqual(UNGUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length !== 1), [], 'each must be flagged unguarded')
   // every value these can produce is guarded or falsy
@@ -251,6 +270,7 @@ test('#850 inventory: a second, unguarded call in a file that already guards one
     'const provider = ok ? ownerGuarded(db, t, raw) : null\nawait provider.complete(k, p)',
     'const provider = raw ? (x ? guardProvider(raw) : ownerGuarded(db, t, raw)) : undefined\nawait provider.complete(k, p)',
     'let prov = null\nprov = ownerGuarded(db, t, raw)\nawait prov.complete(k, p)',
+    'const provider = ownerGuarded(db, t, raw)\nif (!provider) return\nawait provider.complete(k, p)',
   ]
   assert.deepEqual(GUARDED_VALUES.filter(text => unguardedUses('lib/seo/x.ts', text).length > 0), [], 'each must pass')
 })
