@@ -7,8 +7,8 @@
 // while A's backlog and slow provider are still in flight, and must keep doing so on the next tick. That scenario runs
 // with the shared scan queue switched on (DAZL_SCAN_SHARED_QUEUE=1). The control runs the same load with the flag unset
 // (the default): the tick's kick condition is unchanged (no watch or monitor ran, so it kicks nothing), and the next
-// status-poll kick goes to the in-process claimer, where A's backlog takes every run slot and B's and C's scans starve,
-// which is the bug.
+// status-poll kick goes to the in-process claimer. That claimer used to give A's backlog every run slot while B's and
+// C's scans starved (the bug); since #1081 it is fair across tenants too, so unsetting the flag cannot bring it back.
 //
 // Synthetic data only. Gmail and the model provider are stubs (globalThis.fetch and RunDeps.providers); any other URL
 // answers 404 and is recorded, so nothing leaves the process (the net fence is loaded too). The route injects no clock,
@@ -199,7 +199,7 @@ async function fairUnderLoad(w: Awaited<ReturnType<typeof loaded>>) {
   assert.ok(strays.every(u => !u.includes('googleapis')), 'every Gmail request was a stubbed thread read')
 }
 
-test('[sqlite] control, flag unset (the default): the tick kicks no scan as before, and the in-process claimer starves B\'s and C\'s scans behind A\'s backlog', async () => {
+test('[sqlite] #1081 flag unset (the default): the tick kicks no scan as before, and the in-process claimer is fair too: B\'s and C\'s scans run while A\'s backlog waits', async () => {
   delete process.env.DAZL_SCAN_SHARED_QUEUE
   const w = await loaded()
   try {
@@ -212,9 +212,8 @@ test('[sqlite] control, flag unset (the default): the tick kicks no scan as befo
     // the next kick (a user's status poll, as in production) goes to the in-process claimer, through the same runner
     const { kickRunner } = await import('./tenant-load-runner-shim.ts')
     void kickRunner(w.raw)
-    await until(() => w.count('A', 'running') === 3, "A's scans take the run slots")
-    await sleep(300)
-    assert.deepEqual([w.count('A', 'running'), w.count('B', 'pending'), w.count('C', 'pending')], [3, 1, 1], "every slot is A's; B and C wait")
-    assert.equal(providerCalls.B ?? 0, 0); assert.equal(providerCalls.C ?? 0, 0)
+    await until(() => w.count('B', 'done') === 1 && w.count('C', 'done') === 1, "B's and C's scans ran to done")
+    assert.equal(providerCalls.B > 0 && providerCalls.C > 0, true, "B's and C's providers were called")
+    assert.deepEqual([w.count('A', 'running'), w.count('A', 'pending')], [1, 39], "A got one of the 3 slots, not all of them; its backlog waits")
   } finally { await settle(w) }
 })

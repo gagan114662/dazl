@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
-import { writeTryReserve, writeSettleClaim, readOutcomeAsync } from '../lib/connectors/store.ts'
+import { writeTryReserve, writeSettleClaim, readOutcomeAsync, writeReleaseUnsent } from '../lib/connectors/store.ts'
 
 test('connector_claims: two PG connections racing one lookup - exactly one claim wins; terminal replays free; transient holds', { skip: pgSkip }, async () => {
   const s = await freshSchema()
@@ -59,6 +59,15 @@ test('connector_claims: two PG connections racing one lookup - exactly one claim
       assert.equal(await releaseHeldClaimAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, 'owner retry: test'), false, 'a terminal memo claim refuses release')
       const still = await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false })
       assert.equal(still?.memo, memo, 'the memo survives the refused release')
+      // #382: a lookup refused by the scan's spend gate BEFORE it was sent is released, never held; a terminal memo claim never is.
+      const key7 = { ...key, lookup: 'people Unsent Co (unsent.example)' }
+      const w7 = await writeTryReserve(a, key7)
+      assert.ok('id' in w7)
+      await writeReleaseUnsent(a, key7, (w7 as { id: string }).id, 'not sent: spend refused: accounting_uncertain')
+      assert.equal(await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key7.lookup }, { legacyAudit: false }), null, '#382 the unsent claim is gone')
+      assert.ok('id' in (await writeTryReserve(b, key7)), '#382 the unsent lookup can be claimed again (it cost nothing)')
+      await writeReleaseUnsent(a, { ...key, lookup: key5.lookup }, 'no-such-audit-row', 'not sent: spend refused: over_cap')
+      assert.equal((await readOutcomeAsync(a, { tenantId: 't1', connector: 'enrich:pdl', jobId: 'j1', lookup: key5.lookup }, { legacyAudit: false }))?.memo, memo, '#382 a settled memo claim is never released as unsent')
     }
   } finally { await a.close(); await b.close(); await s.drop() }
 })
