@@ -47,6 +47,10 @@ export function guardedLookup(hostname: string, options: { all?: boolean }, cb: 
 }
 
 const MAX_BYTES = 1_500_000
+// #533: an Ashby board record lists every posting with its text (Ashby has no single-posting endpoint), so a large
+// company's board is bigger than a page; it is read up to this bound. A body cut at the bound does not parse and is a
+// failed read, never a page.
+const ATS_RECORD_MAX_BYTES = 12_000_000
 const MAX_REDIRECTS = 3
 const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
 // The PAID render request (reserved 'render' on the scan's spend cap) is given up on after this; exported for the
@@ -82,9 +86,10 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
         }
         const chunks: Buffer[] = []
         let n = 0
+        const cap = isAtsRecordUrl(url.toString()) ? ATS_RECORD_MAX_BYTES : MAX_BYTES
         res.on('data', (c: Buffer) => {
           n += c.length
-          if (n > MAX_BYTES) { res.destroy(); resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }) } else chunks.push(c)
+          if (n > cap) { res.destroy(); resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }) } else chunks.push(c)
         })
         res.on('end', () => resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }))
         res.on('error', reject)
@@ -219,6 +224,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)
+        if (posting && !isAtsRecordUrl(url.toString())) return { fail: 'error' } // a posting's record is never followed off the board API hosts
         continue
       }
       let thin: 'blocked' | 'js_required' | null = null
@@ -237,7 +243,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         if (rec === 'missing') return { fail: 'not_found' }
         if (!rec) return { fail: 'error' }
         const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
-        return { text: page.text, title: page.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
+        return { text: page.text, title: page.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
       } else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
         const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date

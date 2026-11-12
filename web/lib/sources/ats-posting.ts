@@ -16,7 +16,8 @@ export interface AtsPostingRef { kind: AtsKind; org: string; id: string }
 
 // The posting a URL names, or null. Only the documented posting shapes:
 //   https://jobs.ashbyhq.com/{org}/{uuid}[/application]
-//   https://boards.greenhouse.io/{org}/jobs/{number}, https://job-boards.greenhouse.io/{org}/jobs/{number} (also .eu.)
+//   https://boards.greenhouse.io/{org}/jobs/{number}, https://job-boards.greenhouse.io/{org}/jobs/{number}
+//   (EU-hosted Greenhouse boards are not claimed: their API host is not one the policy lists, so they keep the page read)
 //   https://jobs.lever.co/{org}/{uuid}[/apply]
 // Query strings (?action=apply, utm_...) and a trailing slash are ignored; anything else is not a posting.
 export function atsPostingRef(raw: string): AtsPostingRef | null {
@@ -25,7 +26,7 @@ export function atsPostingRef(raw: string): AtsPostingRef | null {
   if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null
   const host = u.hostname.toLowerCase(), parts = u.pathname.split('/').filter(Boolean)
   if (host === 'jobs.ashbyhq.com' && (parts.length === 2 || (parts.length === 3 && parts[2] === 'application')) && TOKEN.test(parts[0]) && UUID.test(parts[1])) return { kind: 'ashby', org: parts[0], id: parts[1].toLowerCase() }
-  if (/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(host) && parts.length === 3 && parts[1] === 'jobs' && TOKEN.test(parts[0]) && /^\d{1,15}$/.test(parts[2])) return { kind: 'greenhouse', org: parts[0], id: parts[2] }
+  if (/^(?:boards|job-boards)\.greenhouse\.io$/.test(host) && parts.length === 3 && parts[1] === 'jobs' && TOKEN.test(parts[0]) && /^\d{1,15}$/.test(parts[2])) return { kind: 'greenhouse', org: parts[0], id: parts[2] }
   if (host === 'jobs.lever.co' && (parts.length === 2 || (parts.length === 3 && parts[2] === 'apply')) && TOKEN.test(parts[0]) && UUID.test(parts[1])) return { kind: 'lever', org: parts[0], id: parts[1].toLowerCase() }
   return null
 }
@@ -51,16 +52,18 @@ function isoDay(v: unknown): string | null {
 }
 const BOARD: Record<AtsKind, string> = { ashby: 'Ashby', greenhouse: 'Greenhouse', lever: 'Lever' }
 
-// The record for exactly this posting: its title, location, first-published day and description (html: Greenhouse
-// sends escaped HTML; the caller turns it into text). Null when the body is not this posting's record (another id, not
-// listed, no title) or carries no first-published day: such a record proves nothing and is read as a failed read.
-export interface AtsRecord { title: string; location: string; posted: string; description: string; html: boolean; board: string; org: string }
+// The record for exactly this posting: its title, location, first-published day (null when the record states none:
+// an undated page, judged by the normal rules) and description (html: Greenhouse sends escaped HTML; the caller turns it
+// into text). Null when the body is not this posting's record (another id, no title): read as a failed read.
+export interface AtsRecord { title: string; location: string; posted: string | null; description: string; html: boolean; board: string; org: string }
 // 'missing': an Ashby board that answered but does not list this posting (closed or unlisted).
 export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing' | null {
   let job: Record<string, unknown> | null = null
   if (r.kind === 'ashby') {
     if (!isObj(body) || !Array.isArray(body.jobs)) return null
-    job = (body.jobs.find(j => isObj(j) && (str(j.id).toLowerCase() === r.id || str(j.jobUrl).toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '').endsWith(`/${r.id}`))) as Record<string, unknown> | undefined) ?? null
+    // the posting with exactly this id; a jobUrl ending in it only when no posting has the id
+    const jobs = body.jobs.filter(isObj)
+    job = jobs.find(j => str(j.id).toLowerCase() === r.id) ?? jobs.find(j => str(j.jobUrl).toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '').endsWith(`/${r.id}`)) ?? null
     if (!job || job.isListed === false) return 'missing'
   } else if (isObj(body)) job = body
   if (!job) return null
@@ -69,15 +72,22 @@ export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing
   const title = str(r.kind === 'lever' ? job.text : job.title)
   // the documented first-published fields only; updated_at is never a posting date
   const posted = isoDay(r.kind === 'ashby' ? job.publishedAt : r.kind === 'greenhouse' ? job.first_published : job.createdAt)
-  if (!title || !posted) return null
+  if (!title) return null
   const location = r.kind === 'greenhouse' ? str(isObj(job.location) ? job.location.name : '') : r.kind === 'lever' ? str(isObj(job.categories) ? job.categories.location : '') : str(job.location)
-  const description = r.kind === 'greenhouse' ? (typeof job.content === 'string' ? job.content : '') : typeof job.descriptionPlain === 'string' ? job.descriptionPlain : ''
+  // Lever keeps the responsibilities / requirements bullets in lists[] and the closing text in additionalPlain: all of
+  // the posting's own text is read, so a quote from a bullet is found
+  const lever = r.kind === 'lever' ? [
+    ...(Array.isArray(job.lists) ? job.lists.flatMap(l => isObj(l) ? [str(l.text), str(typeof l.content === 'string' ? l.content.replace(/<[^>]+>/g, ' ') : '')] : []) : []),
+    str(job.additionalPlain),
+  ].filter(Boolean).join(' ') : ''
+  const description = r.kind === 'greenhouse' ? (typeof job.content === 'string' ? job.content : '') : [typeof job.descriptionPlain === 'string' ? job.descriptionPlain : '', lever].filter(Boolean).join(' ')
   return { title: title.slice(0, 200), location: location.slice(0, 120), posted, description: description.slice(0, 200_000), html: r.kind === 'greenhouse', board: BOARD[r.kind], org: r.org }
 }
 
-// The page text the verifier reads: one line naming the posting, its board and its first-published day, then the
-// posting's own text. Both the quote check and the date read run on exactly this text.
+// The page text the verifier reads: one line naming the posting and its board, then the posting's own text. The
+// first-published day is NOT written into the text: it travels only as the page's postedAt, so it can date a hiring
+// candidate for exactly this posting and can never be bound by the text rules to any other claim (a funding round).
 export function atsPageText(rec: AtsRecord, descriptionText: string): { text: string; title: string } {
-  const head = `${rec.title}${rec.location ? ` (${rec.location})` : ''}. Job posting on the ${rec.org} ${rec.board} job board, first published ${rec.posted}.`
+  const head = `${rec.title}${rec.location ? ` (${rec.location})` : ''}. Job posting on the ${rec.org} ${rec.board} job board.`
   return { text: `${head} ${descriptionText.replace(/\s+/g, ' ').trim()}`.trim().slice(0, 100_000), title: `${rec.title} @ ${rec.org}`.slice(0, 300) }
 }

@@ -48,7 +48,8 @@ test('#533 posting URLs: only the documented Ashby / Greenhouse / Lever posting 
   assert.deepEqual(atsPostingRef(ASHBY_URL), { kind: 'ashby', org: 'acmeco', id: ID })
   assert.deepEqual(atsPostingRef(`${ASHBY_URL}/application?utm_source=x`), { kind: 'ashby', org: 'acmeco', id: ID })
   assert.deepEqual(atsPostingRef('https://boards.greenhouse.io/acmeco/jobs/4012345?gh_src=x'), { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
-  assert.deepEqual(atsPostingRef('https://job-boards.eu.greenhouse.io/acmeco/jobs/4012345'), { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
+  assert.deepEqual(atsPostingRef('https://job-boards.greenhouse.io/acmeco/jobs/4012345'), { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
+  assert.equal(atsPostingRef('https://job-boards.eu.greenhouse.io/acmeco/jobs/4012345'), null, 'EU boards keep the page read (their API host is not a listed one)')
   assert.deepEqual(atsPostingRef(`https://jobs.lever.co/acmeco/${LID}/apply`), { kind: 'lever', org: 'acmeco', id: LID })
   for (const no of ['https://jobs.ashbyhq.com/acmeco', 'https://jobs.ashbyhq.com/acmeco/not-a-uuid', 'http://jobs.ashbyhq.com/acmeco/' + ID, 'https://boards.greenhouse.io/acmeco', 'https://boards.greenhouse.io/acmeco/jobs/abc',
     'https://jobs.lever.co/acmeco', 'https://evil.example/jobs.ashbyhq.com/acmeco/' + ID, 'https://jobs.ashbyhq.com.evil.example/acmeco/' + ID, 'not a url']) assert.equal(atsPostingRef(no), null, no)
@@ -64,14 +65,21 @@ test('#533 the record: exactly this posting, its first-published day only (never
   assert.ok(a && a !== 'missing'); assert.equal(a.posted, '2026-10-15'); assert.equal(a.title, 'Senior Revenue Operations Manager - Sales Ops & Strategy')
   assert.equal(atsRecord({ jobs: [{ ...ASHBY_BOARD.jobs[1], isListed: false }] }, { kind: 'ashby', org: 'acmeco', id: ID }), 'missing', 'unlisted = closed')
   assert.equal(atsRecord({ jobs: [] }, { kind: 'ashby', org: 'acmeco', id: ID }), 'missing')
-  assert.equal(atsRecord({ jobs: [{ ...ASHBY_BOARD.jobs[1], publishedAt: undefined }] }, { kind: 'ashby', org: 'acmeco', id: ID }), null, 'listed but undated: no record (updatedAt is not a posting date)')
+  const undated = atsRecord({ jobs: [{ ...ASHBY_BOARD.jobs[1], publishedAt: undefined }] }, { kind: 'ashby', org: 'acmeco', id: ID })
+  assert.ok(undated && undated !== 'missing'); assert.equal(undated.posted, null, 'listed but undated: an undated record (updatedAt is never a posting date)')
   assert.equal(atsRecord({ nope: 1 }, { kind: 'ashby', org: 'acmeco', id: ID }), null)
   const gh = atsRecord({ id: 4012345, title: 'Sales Operations Manager', location: { name: 'Remote' }, first_published: '2026-10-20T12:00:00-04:00', updated_at: '2026-11-11T00:00:00-04:00', content: '&lt;p&gt;Run Sales Ops&lt;/p&gt;' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
   assert.ok(gh && gh !== 'missing'); assert.deepEqual([gh.posted, gh.location, gh.html], ['2026-10-20', 'Remote', true])
   assert.equal(atsRecord({ id: 999, title: 'x', first_published: '2026-10-20' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' }), null, 'another posting')
-  assert.equal(atsRecord({ id: 4012345, title: 'x', updated_at: '2026-11-11' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' }), null, 'updated_at alone is no date')
+  assert.equal((atsRecord({ id: 4012345, title: 'x', updated_at: '2026-11-11' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' }) as { posted: string | null }).posted, null, 'updated_at alone is no date')
+  // exact id wins over a jobUrl that merely ends in it
+  const twin = atsRecord({ jobs: [{ ...ASHBY_BOARD.jobs[0], jobUrl: `https://jobs.ashbyhq.com/acmeco/${ID}`, publishedAt: '2020-01-01' }, ASHBY_BOARD.jobs[1]] }, { kind: 'ashby', org: 'acmeco', id: ID })
+  assert.ok(twin && twin !== 'missing'); assert.equal(twin.posted, '2026-10-15')
   const lv = atsRecord({ id: LID, text: 'CRM Administrator', createdAt: Date.parse('2026-10-25T08:00:00Z'), categories: { location: 'London' }, descriptionPlain: 'Own the CRM.' }, { kind: 'lever', org: 'acmeco', id: LID })
   assert.ok(lv && lv !== 'missing'); assert.deepEqual([lv.posted, lv.title, lv.location], ['2026-10-25', 'CRM Administrator', 'London'])
+  // Lever's bullets (lists[]) and closing text are the posting's own text too: a quote from a requirement is on the page
+  const lb = atsRecord({ id: LID, text: 'CRM Administrator', createdAt: Date.parse('2026-10-25T08:00:00Z'), descriptionPlain: 'Own the CRM.', lists: [{ text: 'Requirements', content: '<li>3+ years administering Salesforce for a sales team</li>' }], additionalPlain: 'We sponsor visas.' }, { kind: 'lever', org: 'acmeco', id: LID })
+  assert.ok(lb && lb !== 'missing'); assert.match(lb.description, /Requirements 3\+ years administering Salesforce for a sales team We sponsor visas\./)
 })
 
 test('#533 the verifier reads a posting through the board API record, never the page: readable, dated by the board, not "blocked"', async () => {
@@ -81,7 +89,8 @@ test('#533 the verifier reads a posting through the board API record, never the 
     const page = await fetchPageDetailed(`${ASHBY_URL}?action=apply`, async () => { throw new Error('the rendering service is never used for a posting') })
     assert.ok(!isFail(page), JSON.stringify(page))
     assert.equal((page as Page).postedAt, '2026-10-15')
-    assert.match((page as Page).text, /^Senior Revenue Operations Manager - Sales Ops & Strategy \(Berlin\)\. Job posting on the acmeco Ashby job board, first published 2026-10-15\. Acmeco is hiring/)
+    assert.match((page as Page).text, /^Senior Revenue Operations Manager - Sales Ops & Strategy \(Berlin\)\. Job posting on the acmeco Ashby job board\. Acmeco is hiring/)
+    assert.doesNotMatch((page as Page).text, /2026-10-15/, 'the day travels as postedAt only, never as text another claim could bind to')
     assert.deepEqual(asked.map(a => [a.url, a.accept]), [['https://api.ashbyhq.com/posting-api/job-board/acmeco', 'application/json']], 'only the API host; the posting page is never requested')
     // through the verifier: the requested-role posting is a verified, dated lead (it was held "blocked_by_site", undated)
     const o = await verifyLeads([draft()], u => fetchPageDetailed(u, async () => null), new Date(NOW))
@@ -91,9 +100,37 @@ test('#533 the verifier reads a posting through the board API record, never the 
     // a claimed day equal to the board's is kept with the same proof
     const same = await verifyLeads([draft({ event_date: '2026-10-15' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
     assert.deepEqual([same.leads[0]?.event_date, same.leads[0]?.event_date_proof], ['2026-10-15', 'ats_structured'])
-    // the board day dates HIRING only: a funding claim cited to a posting gets no date from it
-    const funding = await verifyLeads([draft({ signal: 'Raised a Series A round', excerpt: 'Acmeco is hiring a Senior Revenue Operations Manager to own Sales Ops and CRM administration' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
-    assert.ok([...funding.leads, ...funding.review].every(l => l.event_date_proof !== 'ats_structured'), JSON.stringify(funding))
+    // a different claimed day: the posting's own day wins (it is the posting's)
+    const other = await verifyLeads([draft({ event_date: '2026-11-01' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.deepEqual([other.leads[0]?.event_date, other.leads[0]?.event_date_proof], ['2026-10-15', 'ats_structured'])
+    // the board day dates HIRING only: a funding claim cited to a posting gets no date from it, with or without claiming that day
+    for (const event_date of [null, '2026-10-15']) {
+      const funding = await verifyLeads([draft({ signal: 'Raised a Series A round', event_date })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+      const all = [...funding.leads, ...funding.review]
+      assert.ok(all.every(l => l.event_date_proof !== 'ats_structured' && l.event_date_proof !== 'page_bound' && l.event_date == null), JSON.stringify(all.map(l => [l.event_date, l.event_date_proof])))
+    }
+  } finally { restore() }
+})
+
+test('#533 a large Ashby board (over the 1.5 MB page bound) is still read; the board day only dates a fresh posting', async () => {
+  const filler = Array.from({ length: 600 }, (_, i) => ({ id: `22222222-0000-4000-8000-${String(i).padStart(12, '0')}`, title: `Role ${i}`, isListed: true, publishedAt: '2026-10-01T00:00:00Z', jobUrl: 'https://jobs.ashbyhq.com/acmeco/x', descriptionPlain: 'x'.repeat(5000) }))
+  const big = JSON.stringify({ jobs: [...filler, ASHBY_BOARD.jobs[1]] })
+  assert.ok(big.length > 3_000_000)
+  let restore = fakeHttps(live({ 'https://api.ashbyhq.com/': { body: big } }))
+  try {
+    const page = await fetchPageDetailed(ASHBY_URL, async () => null)
+    assert.ok(!isFail(page), JSON.stringify(page)); assert.equal((page as Page).postedAt, '2026-10-15')
+  } finally { restore() }
+  // a stale posting: the board's own day dates it, and the date rules hold it (never a fresh lead)
+  restore = fakeHttps(live({ 'https://api.ashbyhq.com/': { body: JSON.stringify({ jobs: [{ ...ASHBY_BOARD.jobs[1], publishedAt: '2025-01-02T00:00:00Z' }] }) } }))
+  try {
+    const o = await verifyLeads([draft()], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.equal(o.leads.length, 0, JSON.stringify(o.leads))
+    assert.deepEqual(o.review.map(r => [r.review_reason, r.event_date]), [['event_date_stale', '2025-01-02']])
+    // claiming a fresh day does not hide a stale posting
+    const claimed = await verifyLeads([draft({ event_date: '2026-11-01' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.equal(claimed.leads.length, 0, JSON.stringify(claimed.leads))
+    assert.deepEqual(claimed.review.map(r => [r.review_reason, r.event_date]), [['event_date_stale', '2025-01-02']])
   } finally { restore() }
 })
 
@@ -105,13 +142,43 @@ test('#533 a posting the board no longer lists is closed (not found); a refused 
     ['rate limited', { [api]: { status: 429 } }, 'blocked'],
     ['HTML instead of JSON', { [api]: { type: 'text/html', body: '<html>hi</html>' } }, 'error'],
     ['malformed JSON', { [api]: { body: '{"jobs":' } }, 'error'],
-    ['undated posting', { [api]: { body: JSON.stringify({ jobs: [{ ...ASHBY_BOARD.jobs[1], publishedAt: null }] }) } }, 'error'],
+    ['redirect off the API host', { [api]: { status: 302, type: 'text/html' } }, 'error'],
   ]
   for (const [name, over, fail] of cases) {
-    const restore = fakeHttps(live(over))
+    const asked: { url: string; accept: string }[] = []
+    const restore = fakeHttps(live(over), asked)
     try {
       const r = await fetchPageDetailed(ASHBY_URL, async () => { throw new Error('never rendered') })
       assert.ok(isFail(r), name); assert.equal(r.fail, fail, name)
+      assert.ok(asked.every(a => a.url.startsWith('https://api.ashbyhq.com/')), `${name}: ${JSON.stringify(asked)}`)
     } finally { restore() }
+  }
+  // a record the board states without a first-published day is an undated page (the normal rules judge it), never a dated one
+  const restore = fakeHttps(live({ [api]: { body: JSON.stringify({ jobs: [{ ...ASHBY_BOARD.jobs[1], publishedAt: null }] }) } }))
+  try {
+    const r = await fetchPageDetailed(ASHBY_URL, async () => null)
+    assert.ok(!isFail(r)); assert.equal((r as Page).postedAt, null)
+  } finally { restore() }
+})
+
+test('#533 Greenhouse and Lever postings through the real fetcher: exactly this posting, a closed one is not found, a quote from a Lever bullet is on the page', async () => {
+  const GH = 'https://job-boards.greenhouse.io/acmeco/jobs/4012345', GH_API = 'https://boards-api.greenhouse.io/v1/boards/acmeco/jobs/4012345'
+  const LV = `https://jobs.lever.co/acmeco/${LID}`, LV_API = `https://api.lever.co/v0/postings/acmeco/${LID}?mode=json`
+  const gh = { id: 4012345, title: 'Sales Operations Manager', location: { name: 'Remote' }, first_published: '2026-10-20T12:00:00-04:00', content: '&lt;p&gt;Acmeco needs a Sales Operations Manager to run our CRM and forecasting process.&lt;/p&gt;' }
+  const lv = { id: LID, text: 'CRM Administrator', createdAt: Date.parse('2026-10-25T08:00:00Z'), descriptionPlain: 'Acmeco is growing.', lists: [{ text: 'Requirements', content: '<li>Acmeco needs 3+ years administering Salesforce for a sales team</li>' }] }
+  const serve = (over: Record<string, { status?: number; body?: string }>) => (u: string) => {
+    const o = over[u]; if (o) return { status: o.status ?? 200, type: 'application/json', body: o.body ?? '' }
+    return { status: 403, type: 'text/html', body: '' }
+  }
+  let restore = fakeHttps(serve({ [GH_API]: { body: JSON.stringify(gh) }, [LV_API]: { body: JSON.stringify(lv) } }))
+  try {
+    const g = await fetchPageDetailed(GH, async () => null)
+    assert.ok(!isFail(g)); assert.equal((g as Page).postedAt, '2026-10-20'); assert.match((g as Page).text, /Acmeco needs a Sales Operations Manager to run our CRM/)
+    const o = await verifyLeads([draft({ source_url: `${LV}/apply`, signal: 'Hiring a CRM Administrator', excerpt: 'Acmeco needs 3+ years administering Salesforce for a sales team' })], u => fetchPageDetailed(u, async () => null), new Date(NOW))
+    assert.deepEqual(o.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-25', 'ats_structured']], JSON.stringify(o))
+  } finally { restore() }
+  for (const [name, over, fail] of [['another posting under this id', { [GH_API]: { body: JSON.stringify({ ...gh, id: 999 }) } }, 'error'], ['closed (404)', { [GH_API]: { status: 404 } }, 'not_found']] as const) {
+    restore = fakeHttps(serve(over))
+    try { const r = await fetchPageDetailed(GH, async () => null); assert.ok(isFail(r), name); assert.equal(r.fail, fail, name) } finally { restore() }
   }
 })
