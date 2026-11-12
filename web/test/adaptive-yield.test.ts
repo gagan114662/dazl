@@ -173,6 +173,18 @@ test('#381 budget near-exhausted (non-trial, own max_usd): the adaptive round\'s
   } finally { process.env = saved }
 })
 
+test('#1082 the platform search budget exhausted by round one: the adaptive round stops as search_cap, never "found nothing"', async () => {
+  const saved = process.env.TINYFISH_GLOBAL_SEARCH_DAILY
+  process.env.TINYFISH_GLOBAL_SEARCH_DAILY = '8' // half (the fair-share room kept for one more tenant) is round one's four
+  try {
+    const s = await scan()
+    assert.equal(s.r, 'done')
+    assert.equal(s.searched.length, 4, `round one used this tenant's share: ${JSON.stringify(s.searched)}`)
+    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), 'the refused search was never sent')
+  } finally { if (saved === undefined) delete process.env.TINYFISH_GLOBAL_SEARCH_DAILY; else process.env.TINYFISH_GLOBAL_SEARCH_DAILY = saved }
+})
+
 test('#381 tenant daily cap exhausted by round one: the adaptive round stops with a visible status and makes no provider call', async () => {
   const saved = process.env.TINYFISH_TENANT_DAILY
   process.env.TINYFISH_TENANT_DAILY = '4' // exactly round one's four searches

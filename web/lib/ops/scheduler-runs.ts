@@ -26,6 +26,7 @@
 // work overdue (the oldest due sequence step more than OVERDUE_ALERT_S past its due time). The operator view
 // is counts only; a tenant sees only its own rows.
 // Queries are on the Db layer (SQLite today, Postgres after the cutover: lib/db/migrations/pg/0019_scheduler_runs.sql).
+import { tinyfishToday } from '../search/tinyfish.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike } from '../db/client.ts'
@@ -306,5 +307,8 @@ export async function schedulerHealthResponse(d: DbLike, now = nowS()): Promise<
     if (!/no such table|does not exist/i.test(e instanceof Error ? e.message : '')) throw e
     h = { ok: true, operational: { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error_class: null, unresolved_failure: null }, tenants: { tracked: 0, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null }, problems: [] }
   }
-  return Response.json(h, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
+  // #1082: today's operator search budget, counts only (no tenant ids); never affects ok/status
+  let tinyfish_today: Awaited<ReturnType<typeof tinyfishToday>> | null = null
+  try { tinyfish_today = await tinyfishToday(d, now) } catch { tinyfish_today = null }
+  return Response.json({ ...h, tinyfish_today }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

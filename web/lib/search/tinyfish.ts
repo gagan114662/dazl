@@ -52,8 +52,9 @@ const bump = (t: Tx, day: string, tenant: string, kind: 'search' | 'fetch', by: 
 // #1082 fair share of the operator's daily budget, per kind, in the caps transaction (same lock, both engines):
 //  - DAZL_GROWTH_TENANT_ID (dazl's own growth tenant) has a reserved slice, TINYFISH_GROWTH_RESERVE_PCT of the global
 //    cap (default 20), that no other tenant can consume; it also takes a fair share of the rest like any tenant.
-//  - Every tenant's share of the rest (the pool) is pool / tenants active today (this one included), never below one
-//    full scan, and never more than what is left of the pool.
+//  - Every tenant's share of the rest (the pool) is pool / (other tenants active today + 2): room is always kept for one
+//    more tenant, so whoever runs first cannot take the whole day. Never below one full scan (capped at half the pool),
+//    never more than what is left of the pool.
 // room = units this tenant may still use today; capacity = the platform share (not the per-scan or tenant cap) is the limit.
 const growthTenant = (env: Env) => env.DAZL_GROWTH_TENANT_ID?.trim() || null
 const reservePct = (env: Env) => { const v = Number(env.TINYFISH_GROWTH_RESERVE_PCT); return Number.isFinite(v) && v >= 0 && v <= 90 ? v : 20 }
@@ -70,8 +71,11 @@ export function* fairRoom(t: Tx, day: string, tenant: string, kind: 'search' | '
   const total = yield* used(t, day, null, kind)
   const growthUsed = growth ? yield* kindUsedBy(t, day, growth, kind) : 0
   const poolUsed = total - growthUsed + Math.max(0, growthUsed - reserve)
-  const others = yield* t.get<{ n: number }>('SELECT COUNT(DISTINCT tenant_id) AS n FROM tinyfish_usage WHERE day = ? AND kind = ? AND n > 0 AND tenant_id <> ?', [day, kind, tenant])
-  const share = Math.max(oneScan, Math.floor(pool / (Number(others!.n) + 1)))
+  // other tenants active today on this kind; the growth tenant lives on its reserve, so it does not shrink everyone's share
+  const others = yield* t.get<{ n: number }>('SELECT COUNT(DISTINCT tenant_id) AS n FROM tinyfish_usage WHERE day = ? AND kind = ? AND n > 0 AND tenant_id <> ? AND tenant_id <> ?', [day, kind, tenant, growth ?? ''])
+  // Room is always kept for one more tenant (the +2): a tenant that runs first, alone, cannot take the whole day before
+  // anyone else arrives. The floor is one full scan, but never more than half the pool.
+  const share = Math.max(Math.floor(pool / (Number(others!.n) + 2)), Math.min(oneScan, Math.floor(pool / 2)))
   const mine = yield* kindUsedBy(t, day, tenant, kind)
   if (growth && tenant === growth) {
     const fromPool = Math.max(0, Math.min(share - Math.max(0, mine - reserve), pool - poolUsed))
@@ -79,6 +83,16 @@ export function* fairRoom(t: Tx, day: string, tenant: string, kind: 'search' | '
   }
   return Math.max(0, Math.min(share - mine, pool - poolUsed, global - total))
 }
+// #1082: today's operator budget for the ops status (counts only: no tenant ids, queries or URLs). per_tenant is each
+// active tenant's units today, largest first.
+export async function tinyfishToday(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number }; per_tenant: number[] }> {
+  const L = limits(env), day = dayOf(now)
+  const rows = await asDb(db).all<{ kind: string; tenant_id: string; n: number }>('SELECT kind, tenant_id, n FROM tinyfish_usage WHERE day = ?', [day])
+  const sum = (k: string) => rows.filter(r => r.kind === k).reduce((a, r) => a + Number(r.n), 0)
+  const per = new Map<string, number>(); for (const r of rows) per.set(r.tenant_id, (per.get(r.tenant_id) ?? 0) + Number(r.n))
+  return { search: { used: sum('search'), cap: L.globalSearchDaily }, fetch: { used: sum('fetch'), cap: L.globalFetchDaily }, per_tenant: [...per.values()].sort((a, b) => b - a) }
+}
+
 // #1082: one operator alert per UTC day when the platform has used over 80% of a daily cap before 18:00 UTC (the error
 // reporter, like the health route's alerts); the key in rate_limits keeps it to one per day per kind across instances.
 function* earlyHighUse(t: Tx, day: string, now: number, kind: 'search' | 'fetch', L: Limits): TxBody<{ used: number; cap: number } | null> {

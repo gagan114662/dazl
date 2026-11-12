@@ -25,16 +25,27 @@ const fetchUnits = async (db: Db, tenant: string, n: number, env: Record<string,
 }
 const total = async (db: Db, kind = 'fetch') => Number((await db.get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE kind = ?', [kind]))!.n)
 
-bothEngines('#1082: a second tenant still gets its fair share after the first tenant ran hard (the first is held to pool / active tenants)', async ({ db }) => {
+bothEngines('#1082: a second tenant still gets its fair share after the first tenant ran hard (room is kept for one more tenant)', async ({ db }) => {
   await resetTinyfishState(db)
   const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '60' }
-  for (let i = 0; i < 3; i++) assert.equal(await fetchUnits(db, 'A', 10, env), 10) // A alone: 30 of 60
-  assert.equal(await fetchUnits(db, 'B', 10, env), 10, 'B arrives')
-  // share = 60 / 2 = 30: A is at its share; first-come-first-served would let A keep taking the rest
-  assert.equal(await fetchUnits(db, 'A', 10, env), 0, 'A is held at its share now that B is active')
+  // A alone: share = 60 / (0 + 2) = 30; first-come-first-served would let A take all 60
+  for (let i = 0; i < 3; i++) assert.equal(await fetchUnits(db, 'A', 10, env), 10)
+  assert.equal(await fetchUnits(db, 'A', 10, env), 0, 'A alone stops at half: room kept for the next tenant')
+  // B arrives: B's share = 60 / (1 + 2) = 20 (room is still kept for a third tenant)
   assert.equal(await fetchUnits(db, 'B', 10, env), 10)
-  assert.equal(await fetchUnits(db, 'B', 10, env), 10, 'B reaches its own share of 30')
+  assert.equal(await fetchUnits(db, 'B', 10, env), 10)
+  assert.equal(await fetchUnits(db, 'B', 10, env), 0, 'B stops at its share; 10 units stay for the next tenant')
+  assert.equal(await fetchUnits(db, 'C', 10, env), 10, 'a third tenant still finds room')
   assert.equal(await total(db), 60)
+})
+
+bothEngines('#1082: the issue\'s staging check: global 30, 25 fetches a scan, A runs two scans then B; B still gets a fair share', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '30', TINYFISH_FETCHES_PER_SCAN: '25' }
+  const scan = async (t: string) => { const spent = { fetches: 0 }; let got = 0; for (let i = 0; i < 3; i++) { const r = await tfFetch(db, t, urls(10, `${t}${i}x`), spent, { env, now: NOON, fetchImpl: okFetch }); if (r.ok) got += r.pages.length } return got }
+  const a1 = await scan('A'), a2 = await scan('A'), b1 = await scan('B'), b2 = await scan('B')
+  assert.equal(a1 + a2, 15, `A: ${a1}+${a2}`)
+  assert.equal(b1 + b2, 15, `B: ${b1}+${b2}`)
 })
 
 bothEngines('#1082: three tenants racing for the last units never pass the global cap', async ({ db }) => {
@@ -58,11 +69,11 @@ bothEngines('#1082: the growth tenant keeps its reserved slice; other tenants ca
 bothEngines('#1082: a share-limited fetch is recorded as capacity (results are thinner), and a share-refused search returns cap to its caller', async ({ db }) => {
   await resetTinyfishState(db)
   const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '15', TINYFISH_FETCHES_PER_SCAN: '10' }
-  await fetchUnits(db, 'A', 10, env) // A 10 of 15
+  assert.equal(await fetchUnits(db, 'A', 10, env), 7, 'A alone: half the pool (room kept for one more tenant)')
   const trace = new SearchTrace()
-  assert.equal(await fetchUnits(db, 'B', 10, env, NOON, trace), 5, 'B is cut to what is left')
+  assert.equal(await fetchUnits(db, 'B', 10, env, NOON, trace), 7, 'B is cut to its share')
   const s = summarizeTrace(trace)
-  assert.equal(s.fetch_capacity_trimmed, 5, 'the 5 pages left out are counted as capacity')
+  assert.equal(s.fetch_capacity_trimmed, 3, 'the 3 pages left out are counted as capacity')
   // searches: global 6; A uses its share, then the share refuses with 'cap' (callers stop) recorded as capacity
   const t2 = new SearchTrace()
   for (let i = 0; i < 8; i++) await tfSearch(db, 'A', `q${i}`, {}, { searches: 0 }, { env: ENV, now: NOON, fetchImpl: okFetch, trace: t2 })
