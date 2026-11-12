@@ -57,7 +57,7 @@ test('#917: source order: the scan route refuses a lossy profile before offers, 
   assert.ok(at > 0)
   for (const later of ['readSellerLine(', 'budgetedIcp(', 'trialPrincipal(', 'normalizeScanBudget(']) assert.ok(src.indexOf(later) > at, later)
   const preview = readFileSync(new URL('../app/api/scan/icp/route.ts', import.meta.url), 'utf8')
-  assert.match(preview, /coverage: fallbackCoverage\(query\)/)
+  assert.match(preview, /const coverage = previewCoverage\(query, out\)/)
 })
 
 test('#917: POST /api/scan refuses each lossy profile with zero jobs and zero provider requests (real handler, stubbed)', () => {

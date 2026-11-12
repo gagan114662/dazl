@@ -66,15 +66,18 @@ export function lossyProfileCopy(j: { message?: unknown; loss?: unknown }): stri
 // show what was left out, and never claim the request's words are all used. Client-safe; the coverage is untrusted JSON.
 export type PreviewNote = { text: string; dropped: string | null }
 export function profilePreviewNote(inferred: unknown, coverage: unknown): PreviewNote {
-  if (inferred === true) return { text: 'dazl worked this out from your request. Edit anything that is off, then run the scan.', dropped: null }
   const c = coverage && typeof coverage === 'object' ? coverage as { complete?: unknown; kept_chars?: unknown; request_chars?: unknown; dropped?: unknown } : null
+  // a cut request is disclosed whatever made the profile (the funding-stage guard can fall back to the request's words
+  // under an inferred profile, lib/scan/icp.ts previewCoverage)
   if (c && c.complete === false && typeof c.dropped === 'string' && c.dropped.trim()) {
-    const kept = Number(c.kept_chars), total = Number(c.request_chars)
+    // counts only when both are real numbers (Number(null) is 0: 'the first 0 of your 388' would contradict the text)
+    const kept = typeof c.kept_chars === 'number' ? c.kept_chars : NaN, total = typeof c.request_chars === 'number' ? c.request_chars : NaN
     const counts = Number.isFinite(kept) && Number.isFinite(total) && total > kept ? `Only the first ${kept} of your ${total} characters are in this profile; the last ${total - kept} are not. ` : 'Only the first part of your request is in this profile. '
-    return {
-      text: `dazl could not infer more from your request, so this profile uses its first part only. ${counts}Add what was left out below (or shorten the request) before you run the scan.`,
-      dropped: c.dropped.trim(),
-    }
+    const why = inferred === true ? "dazl used your request's own words for this profile, so it uses its first part only." : 'dazl could not infer more from your request, so this profile uses its first part only.'
+    return { text: `${why} ${counts}Add what was left out to the fields below (or shorten the request) before you run the scan.`, dropped: c.dropped.trim() }
   }
-  return { text: 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.', dropped: null }
+  if (inferred === true) return { text: 'dazl worked this out from your request. Edit anything that is off, then run the scan.', dropped: null }
+  // "as they are" only when the coverage says the whole request is in; anything unreadable never claims it (fails closed)
+  if (c && c.complete === true) return { text: 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.', dropped: null }
+  return { text: 'dazl could not infer more; this profile is built from your request. Check that it covers everything before you run the scan.', dropped: null }
 }
