@@ -189,6 +189,19 @@ test('review: the quote keeps a passage that names the company when the default 
   const q = quoteFor(text, 'Account Executive', at, 'Brightloop')
   assert.match(q, /Brightloop/); assert.ok(q.length <= 300); assert.ok(text.includes(q), 'verbatim')
   const far = 'Brightloop. ' + 'z '.repeat(400) + 'Account Executive tail'
-  const q2 = quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'); assert.match(q2, /Brightloop/); assert.ok(far.includes(q2))
+  const q2 = quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'); assert.equal(q2, '', 'name and title too far apart for one 300-char passage: no company-only quote that lacks the role')
+  assert.equal(quoteFor('Brightloop hiring. ' + 'z '.repeat(400) + 'unrelated', 'Account Executive', -1, 'Brightloop'), '', 'title not on the page: no quote')
   assert.equal(quoteFor('Join us as Account Executive now', 'Account Executive', 8), 'Join us as Account Executive now', 'no company: unchanged')
+})
+
+test('review: shared-hosting tenants are different owners (public-suffix aware); a co.uk subdomain is still the same site', async () => {
+  const mk = (job: string) => async (url: string) => {
+    const u = new URL(url); if (u.pathname === '/robots.txt') return { status: 404, body: '', finalUrl: url }
+    if (u.hostname === 'alice.github.io' && u.pathname === '/careers') return { status: 200, body: '<h2>Roles</h2><a href="' + job + '">Account Executive</a>', finalUrl: url }
+    return { status: 200, body: '<h1>Account Executive</h1><p>Join Alice as Account Executive today in the team.</p>', finalUrl: url }
+  }
+  const other = await careersSalesVacancy('alice.github.io', mk('https://bob.github.io/jobs/ae') as never, {})
+  assert.equal(other.vacancy, null, 'bob.github.io is not alice.github.io')
+  const same = await careersSalesVacancy('alice.github.io', mk('https://alice.github.io/jobs/ae') as never, {})
+  assert.equal(same.reason, 'found')
 })

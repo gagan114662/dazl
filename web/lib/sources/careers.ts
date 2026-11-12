@@ -52,6 +52,8 @@ export const careersAdapter: SourceAdapter = {
     if (sites.size === 0) { note?.('out_of_coverage'); return [] }
     const t0 = careersLimits.now()
     let failed = false
+    let curSite = '' // the site being read now; a request to any OTHER host is checked against that host's own robots.txt first
+    const over = () => careersLimits.now() - t0 > careersLimits.budgetMs
     // robots.txt per host, so a redirect hop is checked against the TARGET's rules (an allowed /careers must not lead into a disallowed /private/jobs).
     const robotsCache = new Map<string, Promise<{ allows: (p: string) => boolean } | null>>()
     const robotsOf = (raw: SafeGet, host: string) => {
@@ -59,19 +61,31 @@ export const careersAdapter: SourceAdapter = {
       // This fetch is raw: it does not follow redirects (unlike get()'s own robots.txt check, which does via the
       // isRobots hop loop). A 3xx here is therefore an UNRESOLVED robots.txt, not an absent one - its body is empty
       // or unrelated, and parsing it as rules would accidentally read as "no restrictions found" (allow all). Only a
-      // definite 4xx (minus the already-excluded blocked codes) means no robots policy exists; a redirect we never
-      // followed is unreachable, the same as a blocked or failing fetch.
-      if (!r) { r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => !x || x.status === 0 || x.truncated || x.status >= 500 || x.status === 401 || x.status === 403 || x.status === 429 || (x.status >= 300 && x.status < 400) ? null : x.status >= 400 ? { allows: () => true } : parseRobots(x.body, host)).catch(() => null); robotsCache.set(host, r) }
+      // explicit 404 / 410 means no robots policy exists (same rule as the site's own robots.txt in careers-page.ts); every other 4xx (400, 451, ...), a redirect
+      // we never followed, a cut body or a failing fetch is unreachable: the target is not fetched.
+      // This request is budget-guarded like every other: none STARTS after budgetMs (a cached answer costs nothing, so it is still served).
+      if (!r) {
+        if (over()) { note?.('budget'); failed = true; return Promise.resolve(null) }
+        r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => !x || x.status === 0 || x.truncated || x.status >= 500 || (x.status >= 300 && x.status < 400) ? null : x.status === 404 || x.status === 410 ? { allows: () => true } : x.status >= 400 ? null : parseRobots(x.body, host)).catch(() => null); robotsCache.set(host, r)
+      }
       return r
     }
     const get = (raw: SafeGet): Get => async (url, o) => {
-      const over = () => careersLimits.now() - t0 > careersLimits.budgetMs
       if (o?.signal?.aborted) { failed = true; return null }
       // The getter does not follow redirects, so a same-site https redirect (apex -> www, /careers -> /careers/) is followed here, at most twice. An off-site hop is
       // returned as that site's (empty) page so the careers reader reports wrong_domain; a failed request or an unfollowable redirect is unreadable, not "no vacancy".
       let at = url
       const isRobots = /\/robots\.txt$/.test(new URL(url).pathname)
       for (let hop = 0; hop <= 2; hop++) {
+        // A request to a host other than the site being read (a job link on jobs.example.com) obeys THAT host's robots.txt, not the origin's.
+        if (!isRobots) {
+          const u = new URL(at)
+          if (bare(u.hostname) !== bare(curSite)) {
+            const rb = await robotsOf(raw, u.hostname)
+            if (!rb) { failed = true; return null }
+            if (!rb.allows(u.pathname)) return { status: 404, body: '', finalUrl: at }
+          }
+        }
         if (over()) { note?.('budget'); failed = true; return null } // checked before EVERY request, so a slow redirect chain cannot run past the budget
         const r = await raw(at, { accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5', headers: UA })
         if (!r || r.status === 0) break
@@ -98,7 +112,7 @@ export const careersAdapter: SourceAdapter = {
     let n = 0
     for (const [site, company] of sites) {
       if (n++ >= careersLimits.maxSites) { note?.('site_cap'); break }
-      failed = false
+      failed = false; curSite = site
       let res: Awaited<ReturnType<typeof careersSalesVacancy>>
       try { res = await careersSalesVacancy(site, get(http), { company, now: careersLimits.now(), firstPaths: given.get(site) }) } catch { note?.('site_error'); continue }
       const v = res.vacancy

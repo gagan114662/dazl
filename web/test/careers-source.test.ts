@@ -216,3 +216,30 @@ test('review (Quest #1034): non-string input entries are skipped, never a crash;
   assert.deepEqual(q, [])
   for (const v of [null, undefined, 3, {}, []]) { assert.equal(siteOf(v as unknown as string), null) }
 })
+
+test('review: a job link on another host obeys THAT host\'s robots.txt; a 451 / 400 robots is unreachable; budget stops the robots fetch', async () => {
+  const mkIndex = '<h2>Roles</h2><a href="https://jobs.brightloop.io/private/ae">Account Executive - London</a>'
+  const asked: string[] = []
+  const http: SafeGet = async url => {
+    asked.push(url); const u = new URL(url)
+    if (u.hostname === 'jobs.brightloop.io' && u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nDisallow: /private/' }
+    if (u.pathname === '/robots.txt') return { status: 404, body: '' }
+    if (u.hostname === 'brightloop.io' && u.pathname === '/careers') return { status: 200, body: page(mkIndex) }
+    return { status: 200, body: page(JOB) }
+  }
+  const r = await run(http)
+  assert.equal(r.items.length, 0)
+  assert.ok(asked.some(u => u === 'https://jobs.brightloop.io/robots.txt'), 'target host robots read')
+  assert.ok(!asked.some(u => u.endsWith('/private/ae')), 'disallowed job link never fetched')
+  for (const status of [400, 451]) {
+    const a2: string[] = []
+    const h2: SafeGet = async url => { a2.push(url); if (url === 'https://jobs.brightloop.io/robots.txt') return { status, body: '' }; return http(url) }
+    const r2 = await run(h2); assert.equal(r2.items.length, 0, `robots ${status}`); assert.ok(!a2.some(u => u.endsWith('/private/ae')), `robots ${status}: unreachable, not "no rules"`)
+  }
+  const saved = careersLimits.now; let t = 0; careersLimits.now = () => t
+  try {
+    const a3: string[] = []
+    const h3: SafeGet = async url => { a3.push(url); if (url.endsWith('/careers')) t = 13_000; return http(url) } // the page read burns the budget
+    const r3 = await run(h3); assert.equal(r3.items.length, 0); assert.ok(!a3.some(u => u === 'https://jobs.brightloop.io/robots.txt'), 'no robots request starts after budgetMs')
+  } finally { careersLimits.now = saved }
+})

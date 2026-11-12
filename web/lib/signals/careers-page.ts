@@ -4,6 +4,7 @@
 // date its roles, so nothing here is a posting date and nothing may be used as an event date). Unknown stays unknown:
 //   no careers page / robots unreachable / page unreachable / no sales role / a closed or "no open positions" marker  ->  vacancy null + the reason.
 // Funding, engineering growth, generic "GTM plans" and another company's jobs are not a vacancy: only a role-shaped title that isGtmRole() accepts counts.
+import { getDomain } from 'tldts'
 import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 
@@ -20,7 +21,9 @@ const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/com
 const MAX_PAGES = 4
 const ROLE_NOUN = /\b(?:executive|manager|representative|rep|sdr|bdr|director|head|lead|specialist|associate|officer|vp|vice president|consultant|engineer|partner|advisor|owner)\b/i
 const CLOSED = /\b(?:no (?:current |open |active )?(?:openings|vacancies|positions|roles|jobs)|not (?:currently |actively )?(?:hiring|recruiting)|no longer (?:accepting|available|open|hiring)|(?:position|role|job|vacancy)s? (?:has been |have been |is |are |was )?(?:filled|closed|taken)|applications? (?:are |is )?closed|past (?:positions|roles|openings|jobs)|previous (?:positions|roles|openings)|currently closed|nothing (?:open|available)|check back (?:later|soon))\b/i
-const registrable = (h: string) => { const l = h.toLowerCase().replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
+// Public-suffix aware, private suffixes included: alice.github.io and bob.github.io are DIFFERENT owners (the old hand-written rule collapsed both to github.io).
+// A host with no registrable domain (an IP, an unknown suffix) falls back to the bare host, so it only ever equals itself.
+const registrable = (h: string) => { const b = h.toLowerCase().replace(/^www\./, ''); return getDomain(b, { allowPrivateDomains: true }) ?? b }
 const visible = (html: string) => html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
 const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
 const flat = (html: string) => decode(visible(html).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
@@ -162,7 +165,8 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
 }
 
 // The quote is a verbatim passage of the posting. The default window (60 before the title, 160 after) can miss the company's name, and the source prompt needs a passage that
-// names it: when the name is outside the window, widen to one span holding the title and the name if that fits in 300 characters, else take the passage around the name.
+// names it AND shows the vacancy: when the name is outside the window, widen to one span holding the title and the name if that fits in 300 characters. If no such span
+// exists the result is '' (no quote): a company-only passage would carry no role, so extraction would have to drop it or invent support. Callers skip an empty quote.
 export function quoteFor(text: string, title: string, at: number, company?: string): string {
   const win = at >= 0 ? text.slice(Math.max(0, at - 60), at + title.length + 160) : title
   const name = company?.trim()
@@ -170,7 +174,7 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
   const ci = text.toLowerCase().indexOf(name.toLowerCase())
   if (ci < 0) return win.slice(0, 300)
   if (at >= 0) { const a = Math.max(0, Math.min(at, ci) - 20), b = Math.min(text.length, Math.max(at + title.length, ci + name.length) + 20); if (b - a <= 300) return text.slice(a, b) }
-  return text.slice(Math.max(0, ci - 60), ci + name.length + 160).slice(0, 300)
+  return ''
 }
 export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[] } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
