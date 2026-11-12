@@ -3,6 +3,7 @@
 // queue each tenant's own scan with the play's own query, record it, and fold the results into that play only. A run
 // whose lease fence fails writes nothing.
 import test from 'node:test'
+import { LeaseLost } from '../lib/shared/lease.ts'
 import assert from 'node:assert/strict'
 import { pgDb, type Tx } from '../lib/db/client.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
@@ -37,10 +38,11 @@ test('[pg] watches and monitors: tenant-scoped reads and actions, scheduled runs
     assert.deepEqual(await db.get('SELECT enabled FROM monitors WHERE id = ?', [mid.B]), { enabled: 1 })
 
     // a run that lost its lease: the fence throws inside each transaction, so nothing is written
-    const lost: Fence = function* () { throw new Error('lease lost') }
+    // (the tick's fence throws LeaseLost; any other error is one account's failure, recorded while the pass goes on, #1042)
+    const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
     const due = now + 8 * 86400
-    await assert.rejects(runDueWatches(db, { now: due, fence: lost }), /lease lost/)
-    await assert.rejects(runDueMonitors(db, { now: due, fence: lost }), /lease lost/)
+    await assert.rejects(runDueWatches(db, { now: due, fence: lost }), LeaseLost)
+    await assert.rejects(runDueMonitors(db, { now: due, fence: lost }), LeaseLost)
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM scan_jobs'))!.n), 0)
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM monitor_runs'))!.n), 0)
 
