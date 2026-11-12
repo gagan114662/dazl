@@ -1245,6 +1245,10 @@ CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
 
+CREATE INDEX email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
+
+CREATE INDEX email_candidates_verifier_checked ON email_candidates (verifier, checked_at);
+
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
 CREATE UNIQUE INDEX hiring_feed_crawl_company ON hiring_feed_crawl(tenant_id, company_key);

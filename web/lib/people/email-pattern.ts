@@ -5,12 +5,14 @@
 // and fails closed: only an explicit "deliverable" answer from a real check makes a candidate verified; catch-all,
 // unknown, refused, errors and a check that never finished stay non-verified and are surfaced as such.
 // Nothing here is shown, stored as a contact, or sent: candidates live in their own tables (email_patterns,
-// email_candidates), which no page and no outreach path reads. No verifier provider is wired (verifierFromEnv returns
-// null): choosing and paying for one is the owner's call. Off unless EMAIL_GUESS_ENABLED=1.
+// email_candidates), which no page and no outreach path reads. The one wired verifier is ZeroBounce's FREE tier (#899 decision,
+// lib/people/zerobounce.ts), used only when ZEROBOUNCE_API_KEY is set and capped at its free monthly allowance. Off unless
+// EMAIL_GUESS_ENABLED=1.
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
+import { VerifierError, zeroBounceVerifier, ZEROBOUNCE_FREE_MONTHLY } from './zerobounce.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -150,6 +152,9 @@ export function migrateEmailGuess(db: Database.Database): void {
   if (!hasP('score')) db.exec('ALTER TABLE email_patterns ADD COLUMN score INTEGER CHECK (score IS NULL OR (score >= 0 AND score <= 100))')
   if (!hasP('runner_up')) db.exec('ALTER TABLE email_patterns ADD COLUMN runner_up INTEGER')
   if (!hasP('evidence')) db.exec('ALTER TABLE email_patterns ADD COLUMN evidence TEXT CHECK (evidence IS NULL OR length(evidence) <= 2000)')
+  // #899: the two cap counts read by verifyCandidates (per tenant per day; per verifier account per month). Postgres: 0064_email_verify_caps.sql.
+  db.exec(`CREATE INDEX IF NOT EXISTS email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
+    CREATE INDEX IF NOT EXISTS email_candidates_verifier_checked ON email_candidates (verifier, checked_at);`)
 }
 
 // ---- part 2: US only. Unknown country counts as not US (docs/DECISIONS.md). ----
@@ -170,9 +175,22 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 export type Verification = typeof VERIFICATIONS[number]
 export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string }
-// A provider adapter. Tests inject a fake; production has none until the owner picks and approves a provider.
+// A provider adapter. Tests inject a fake. Production: ZeroBounce's free tier when ZEROBOUNCE_API_KEY is set, else none (today's
+// behaviour: candidates stay 'guessed', unverified).
 export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
-export function verifierFromEnv(env: Record<string, string | undefined> = process.env): MailboxVerifier | null { void env; return null }
+export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): MailboxVerifier | null {
+  const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
+  return key ? zeroBounceVerifier(key, fetchImpl) : null
+}
+// The verifier ACCOUNT's checks per calendar month (UTC), across every tenant: the free allowance is the account's, not a tenant's.
+// Default and ceiling: the provider's free allowance (ZeroBounce 100). EMAIL_VERIFY_MONTHLY_CAP can only lower it; anything that is
+// not a plain non-negative integer is 0 (no check). Never raised past the free tier: no setting buys checks (#899 decision).
+export function verifyMonthlyCap(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.EMAIL_VERIFY_MONTHLY_CAP
+  if (raw === undefined || raw.trim() === '') return ZEROBOUNCE_FREE_MONTHLY
+  return /^\d{1,6}$/.test(raw.trim()) ? Math.min(Number(raw.trim()), ZEROBOUNCE_FREE_MONTHLY) : 0
+}
+const monthStartOf = (nowS: number) => { const d = new Date(nowS * 1000); return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000) }
 // Per-tenant checks per UTC day. Default 0: no check runs unless a cap is set explicitly.
 export function verifyDailyCap(env: Record<string, string | undefined> = process.env): number {
   const n = Number(env.EMAIL_VERIFY_DAILY_CAP ?? '0')
@@ -180,7 +198,7 @@ export function verifyDailyCap(env: Record<string, string | undefined> = process
 }
 const OUTCOME: Record<VerifyAnswer['outcome'], Verification> = { deliverable: 'verified', catch_all: 'catch_all', undeliverable: 'undeliverable', unknown: 'uncertain', refused: 'refused' }
 
-export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null }
+export interface VerifyRun { checked: number; verified: number; capped: number; skipped: string | null; stopped?: string }
 // Checks a lead's unchecked US candidates, one reserved slot at a time. The slot (verification='pending', checked_at)
 // is written and counted inside a transaction BEFORE the provider call, so the cap holds even if the call or the
 // process dies; a pending row is never verified.
@@ -191,22 +209,31 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   if (!verifier) return { ...run, skipped: 'no verifier configured' }
   const cap = verifyDailyCap(env)
   if (cap === 0) return { ...run, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
+  const monthCap = verifyMonthlyCap(env)
+  if (monthCap === 0) return { ...run, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
   migrateEmailGuess(db)
-  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400)
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthStart = monthStartOf(nowS)
+  const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
   const reserve = db.transaction((address: string): boolean => {
     const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
     if (used >= cap) return false
+    // The account-wide free allowance (every tenant's checks by this verifier this month), counted in the same transaction.
+    const month = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE verifier = ? AND checked_at >= ?').get(vname, monthStart) as { n: number }).n
+    if (month >= monthCap) return false
     return db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, verifier.name.slice(0, 40), tenantId, leadId, address).changes === 1
   })
   for (const { address } of rows) {
     if (opts.signal?.aborted) break
     if (!reserve(address)) { run.capped = rows.length - run.checked; break }
     let v: Verification = 'uncertain'
-    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch { v = 'uncertain' }
+    let stop: string | null = null
+    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
     db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
     run.checked++
     if (v === 'verified') run.verified++
+    // The account cannot check at all (bad key, no free checks left): no further request this run.
+    if (stop) { run.stopped = stop; break }
   }
   return run
 }

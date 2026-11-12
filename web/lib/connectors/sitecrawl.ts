@@ -9,7 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
+import { emailGuessEnabled, personalAddresses, recordEmailGuesses, verifierFromEnv, verifyCandidates } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -622,7 +622,7 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; verifyFetch?: typeof fetch } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -651,6 +651,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
+    // #899: the free-tier mailbox check (ZeroBounce, only with ZEROBOUNCE_API_KEY), under the per-tenant daily and account monthly caps.
+    const verifier = guessing ? verifierFromEnv(deps.env ?? process.env, deps.verifyFetch) : null
     const localsBySite = new Map<string, Set<string>>()
     const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
@@ -750,6 +752,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
       if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
+      // The lead's high-confidence US guesses get the capped check; an outcome is only ever stored on the candidate row (a guess
+      // never becomes a contact here). Recorded once per site so the run shows the check ran, stopped, or was capped.
+      if (verifier && (r.reason === 'ok' || r.reason === 'none_published')) {
+        try {
+          const v = await verifyCandidates(db, tenantId, l.id, verifier, { env: deps.env ?? process.env, signal: deps.signal })
+          if (v.checked || v.capped || v.stopped) audit(db, { tenantId, connector: 'email-verify', jobId, lookup: site, status: v.stopped ? `stopped: ${v.stopped}`.slice(0, 200) : `checked ${v.checked}, verified ${v.verified}${v.capped ? `, ${v.capped} over the cap` : ''}`, results: v.verified })
+        } catch { /* never affects the crawl */ }
+      }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the

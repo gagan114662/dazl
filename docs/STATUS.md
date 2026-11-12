@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #899 b/899-free-mailbox-verifier (Hermes decision 2026-11-12: free tier only): ZeroBounce's free tier is wired as the mailbox verifier (`lib/people/zerobounce.ts`) when `ZEROBOUNCE_API_KEY` is set; the crawl now runs the existing capped `verifyCandidates` for a lead's high-confidence US guesses. New account-wide monthly cap = the free allowance (100, `EMAIL_VERIFY_MONTHLY_CAP` can only lower it), on top of the per-tenant daily cap (`EMAIL_VERIFY_DAILY_CAP`, still 0 by default). A bad key / no-credits answer stops the run; only "valid" verifies, catch-all never does. Migration 0064 (two indexes; 0062/0063 are claimed by open PRs). Privacy text names ZeroBounce. Not yet: showing a verified guess in Find work email (#1036 follow-up, needs a work_email_lookups schema change). Not verified live: needs a free ZeroBounce key on staging.
+
 - #1065 b/415-same-thread-dsn-ref review fix (xhawk High): when two sent rows share a Gmail thread, a DSN that exactly references the sibling row is left unlogged by the row scanned first, so the referenced send (or phase 2) suppresses it instead of the notice being consumed. Competitive: a permanent bounce can no longer slip past suppression (sender reputation). Fixtures only; no live Gmail.
 
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states
