@@ -94,3 +94,35 @@ test('#1037 run-budget disclosure follows the server count: 0 -> off (no TinyFis
   const three = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 3 }).surfaces.find(x => x.surface === 'search_and_fetch')!
   assert.equal(three.status, 'not_covered'); assert.match(three.note, /up to 3 TinyFish people searches/)
 })
+
+// Hermes review (CHANGES REQUIRED at bce374aa, finding 1): no string anywhere in the disclosure may name a people-search cap other
+// than the one the run uses - surfaces, excluded_paths and limits alike.
+const peopleCaps = (d: ReturnType<typeof describeRunBudget>) => [...d.surfaces.map(s => s.note), ...d.excluded_paths, ...d.limits]
+  .flatMap(t => [...t.matchAll(/(?:up to|at most) (\d+) (?:TinyFish )?(?:people )?searches/gi)].filter(m => /people|People search/.test(t)).map(m => Number(m[1])))
+test('#1037 first5 disclosure states ONE people-search cap everywhere: N for N = 10, 3; none at all for 0', () => {
+  for (const n of [10, 3]) {
+    const d = describeRunBudget(FIRST5, { firstPlayPeopleSearches: n })
+    assert.deepEqual([...new Set(peopleCaps(d))], [n], `N=${n}: ${JSON.stringify(peopleCaps(d))}`)
+    assert.ok(d.excluded_paths.some(x => x.startsWith(`People search after the scan - a first play or free-trial scan: up to ${n} `)))
+  }
+  const off = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 0 })
+  assert.deepEqual(peopleCaps(off), [], JSON.stringify(off.excluded_paths))
+  assert.ok(!off.excluded_paths.some(x => x.startsWith('People search after the scan')), 'the people line is dropped at 0')
+})
+test('#1037 a free-trial scan with a budget states the trial cap; an ordinary scan keeps "at most 5"', () => {
+  const trial = describeRunBudget({ max_usd: 1 }, { firstPlayPeopleSearches: 10, trial: true })
+  assert.ok(trial.excluded_paths.some(x => /a first play or free-trial scan: up to 10 /.test(x)))
+  assert.ok(!trial.excluded_paths.some(x => /at most 5 TinyFish searches/.test(x)))
+  const own = describeRunBudget({ max_usd: 1 }, { firstPlayPeopleSearches: 10 })
+  assert.ok(own.excluded_paths.some(x => /^People search after the scan - at most 5 TinyFish searches/.test(x)))
+})
+// Finding 3: a non-first5 trial scan's people searches are paid from the trial reserve at the trial price.
+test('#1037 trial (non-first5) search row: lead searches at the operator price, people searches at the trial price', () => {
+  const e = estimateRun({ budget: null, payer: 'trial', firstPlayPeopleSearches: 10, trialTinyfishSearchUsd: 0.004, env: { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.5' } })
+  const r = row(e, 'tinyfish_search')!
+  const leadSearches = r.units.max - 10
+  assert.equal(Math.round(r.usd!.max * 1e6) / 1e6, Math.round((0.5 * leadSearches + 0.004 * 10) * 1e6) / 1e6)
+  assert.match(r.note ?? '', /people searches are paid from the free-trial reserve at \$0\.0040? each/)
+  const own = row(estimateRun({ budget: null, payer: 'you', firstPlayPeopleSearches: 10, trialTinyfishSearchUsd: 0.004, env: { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.5' } }), 'tinyfish_search')!
+  assert.equal(Math.round(own.usd!.max * 1e6) / 1e6, Math.round(0.5 * own.units.max * 1e6) / 1e6, 'an own-key scan prices every search at the operator price')
+})

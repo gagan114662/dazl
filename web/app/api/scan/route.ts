@@ -197,7 +197,7 @@ export async function POST(req: NextRequest) {
     }).immediate()
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
-    return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0 }) } : { job_id }, { status: 202 })
+    return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
   } catch (e) {
     if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
     if (e instanceof AdmissionRefused && refused) return refused
