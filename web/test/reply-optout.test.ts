@@ -466,3 +466,12 @@ test('#804 sync: a localized or obfuscated opt-out suppresses that address for t
   assert.equal(isSuppressed(db, 'B', 'p0@buyer.example'), false)
   assert.equal(stopped(db, 'B', b0.thread), null)
 })
+
+test('REVIEW invisible variation selectors cannot hide an unsubscribe; split "opt out" does not backtrack on long whitespace', () => {
+  assert.equal(classifyReply('un️subscribe'), 'opt_out')
+  assert.equal(classifyReply('please un᠋sub️scribe me'), 'opt_out')
+  assert.equal(classifyReply('opt - out'), 'opt_out')
+  const t0 = Date.now()
+  classifyReply('opt' + ' '.repeat(200_000) + 'x')
+  assert.ok(Date.now() - t0 < 1000, 'long whitespace near-match is linear')
+})

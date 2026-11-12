@@ -70,7 +70,7 @@ export type ReplyClass = 'opt_out' | 'negative' | 'positive' | 'auto' | 'uncerta
 const words = (alts: string[]) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${alts.join('|')})(?![\\p{L}\\p{N}])`, 'iu')
 const OPT_OUT = words([
   // English
-  'un[\\s-]*subscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt\\s*-?\\s*out', 'cease',
+  'un[\\s-]*subscribe', 'remove me', 'stop (?:emailing|email|contacting|sending|messaging|reaching out)', 'do not (?:contact|email|reach out)', "don'?t (?:contact|email|reach out)", 'take me off', 'opt[\\s-]*out', 'cease',
   'never (?:contact|email|message) (?:me|us)', 'leave me alone', "(?:do not|don'?t) send (?:me |us )?(?:any )?(?:more )?(?:e-?mails?|messages?)",
   'no more (?:e-?mails?|messages?)', 'take (?:me|us) out of', 'remove (?:my|our) (?:address|e-?mail)',
   // Spanish, French, German, Portuguese, Italian, Dutch
@@ -96,7 +96,9 @@ const OPT_OUT_CJK = /退订|退訂|取消订阅|取消訂閱|不要再(?:发|發
 // The text the stop rules read: compatibility forms folded (fullwidth "ｕｎｓｕｂｓｃｒｉｂｅ" is "unsubscribe") and invisible
 // format characters removed (zero-width spaces, soft hyphens, joiners), so an opt-out cannot hide from them. Only the stop
 // rules read this form; positive wording is still read from the raw text, so folding can never create consent.
-const stopForm = (t: string) => t.normalize('NFKC').replace(/\p{Cf}/gu, '')
+// Variation selectors (U+FE00-FE0F, U+E0100-E01EF), the Mongolian free variation selectors and other default-ignorable
+// invisibles are not \p{Cf}, so they are stripped explicitly ("un\uFE0Fsubscribe" must still read as unsubscribe).
+const stopForm = (t: string) => t.normalize('NFKC').replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
 const NEGATIVE = words([
   'not interested', 'no thanks', 'no thank you', 'not for us', 'not a fit', 'no longer interested', 'wrong person',
   // explicit rejections: a later positive word never turns them into interest
