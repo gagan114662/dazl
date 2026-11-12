@@ -13,7 +13,8 @@ import * as ts from 'typescript'
 const ROOT = join(import.meta.dirname, '..')
 
 // Credit-charging calls (lib/enrich/apollo.ts, lib/enrich/pdl.ts).
-const PAID = new Set(['apolloOrgEnrich', 'apolloPersonMatch', 'pdlPeopleSearch', 'pdlPersonEnrich'])
+const VENDOR: Record<string, 'apollo' | 'pdl'> = { apolloOrgEnrich: 'apollo', apolloPersonMatch: 'apollo', pdlPeopleSearch: 'pdl', pdlPersonEnrich: 'pdl' }
+const PAID = new Set(Object.keys(VENDOR))
 // 0-credit by contract (lib/enrich/index.ts STEP 2, lib/scan/commenter-import.ts): no reservation needed.
 const FREE = new Set(['apolloPeopleSearch'])
 // The only modules allowed to call them.
@@ -44,11 +45,22 @@ const enclosingFn = (n: ts.Node): ts.FunctionLikeDeclaration | null => { let p =
 const fnName = (f: ts.FunctionLikeDeclaration): string | null => f.name && ts.isIdentifier(f.name) ? f.name.text : null
 
 // Any use of a provider function counts (a call, or a reference handed elsewhere), so an alias cannot hide a caller.
+// Local names bound to a provider function by an import, renamed or not (`import { apolloOrgEnrich as org }`).
+function importAliases(sf: ts.SourceFile): Map<string, string> {
+  const m = new Map<string, string>()
+  for (const s of all(sf, n => ts.isImportSpecifier(n)) as ts.ImportSpecifier[]) {
+    const orig = (s.propertyName ?? s.name).text
+    if (PAID.has(orig) || FREE.has(orig)) m.set(s.name.text, orig)
+  }
+  return m
+}
 function providerUses(rel: string, text: string): { name: string; node: ts.Identifier }[] {
   const sf = parse(rel, text)
-  return (all(sf, n => ts.isIdentifier(n) && (PAID.has(n.text) || FREE.has(n.text)) && !ts.isImportSpecifier(n.parent) && !(ts.isFunctionDeclaration(n.parent) && n.parent.name === n)) as ts.Identifier[])
+  const alias = importAliases(sf)
+  const known = (t: string) => PAID.has(t) || FREE.has(t) || alias.has(t)
+  return (all(sf, n => ts.isIdentifier(n) && known(n.text) && !ts.isImportSpecifier(n.parent) && !(ts.isFunctionDeclaration(n.parent) && n.parent.name === n)) as ts.Identifier[])
     .filter(n => !(ts.isTypeQueryNode(n.parent)))
-    .map(node => ({ name: node.text, node }))
+    .map(node => ({ name: alias.get(node.text) ?? node.text, node }))
 }
 function unexpectedCallers(srcs: { rel: string; text: string }[]): string[] {
   return srcs.filter(s => !s.rel.startsWith('lib/enrich/apollo') && !s.rel.startsWith('lib/enrich/pdl') && !CALLERS.includes(s.rel) && providerUses(s.rel, s.text).length > 0).map(s => s.rel)
@@ -56,22 +68,29 @@ function unexpectedCallers(srcs: { rel: string; text: string }[]): string[] {
 
 // A paid call is reserved when, in its enclosing function, a reservation call comes before it; or the enclosing
 // function takes a CreditHold parameter and every call of that function in the file is itself preceded by one.
-function reservedBefore(fn: ts.FunctionLikeDeclaration, pos: number): boolean {
-  return all(fn, n => ts.isCallExpression(n) && RESERVE.has(calleeName(n) ?? '') && n.getStart() < pos).length > 0
+// The reservation's provider argument (3rd) must name the paid call's vendor when it is a literal ('apollo' / 'pdl');
+// a variable (work-email's loop over providers) is accepted.
+function reservedBefore(fn: ts.FunctionLikeDeclaration, pos: number, vendor: 'apollo' | 'pdl'): boolean {
+  return all(fn, n => ts.isCallExpression(n) && RESERVE.has(calleeName(n) ?? '') && n.getStart() < pos
+    && !(n.arguments[2] && ts.isStringLiteralLike(n.arguments[2]) && n.arguments[2].text !== vendor)).length > 0
 }
 function unreservedPaidCalls(rel: string, text: string): string[] {
   const sf = parse(rel, text)
+  const alias = importAliases(sf)
+  const paidName = (c: ts.CallExpression): string | null => { const n = calleeName(c); const o = n ? alias.get(n) ?? n : null; return o && PAID.has(o) ? o : null }
   const out: string[] = []
-  for (const call of all(sf, n => ts.isCallExpression(n) && PAID.has(calleeName(n) ?? '')) as ts.CallExpression[]) {
+  for (const call of all(sf, n => ts.isCallExpression(n) && paidName(n) !== null) as ts.CallExpression[]) {
+    const name0 = paidName(call)!
+    const vendor = VENDOR[name0]
     const fn = enclosingFn(call)
     const line = sf.getLineAndCharacterOfPosition(call.getStart()).line + 1
-    if (!fn) { out.push(`${rel}:${line} ${calleeName(call)}`); continue }
-    if (reservedBefore(fn, call.getStart())) continue
+    if (!fn) { out.push(`${rel}:${line} ${name0}`); continue }
+    if (reservedBefore(fn, call.getStart(), vendor)) continue
     const takesHold = fn.parameters.some(p => p.type && /\bCreditHold\b/.test(p.type.getText(sf)))
     const name = fnName(fn)
     const uses = name ? all(sf, n => ts.isCallExpression(n) && calleeName(n) === name) as ts.CallExpression[] : []
-    const passedReserved = takesHold && uses.length > 0 && uses.every(u => { const f = enclosingFn(u); return !!f && reservedBefore(f, u.getStart()) })
-    if (!passedReserved) out.push(`${rel}:${line} ${calleeName(call)}`)
+    const passedReserved = takesHold && uses.length > 0 && uses.every(u => { const f = enclosingFn(u); return !!f && reservedBefore(f, u.getStart(), vendor) })
+    if (!passedReserved) out.push(`${rel}:${line} ${name0}`)
   }
   return out
 }
@@ -81,7 +100,8 @@ test('#849 inventory: only the known enrichment entry points call the Apollo / P
 })
 
 test('#849 inventory: a new caller is caught, however it reaches the function (the check is not vacuous)', () => {
-  for (const text of ['await apolloOrgEnrich(k, { domain: d }, f)', 'const fn = pdlPeopleSearch\nawait fn(k, c, f, 5)', 'await run(apolloPersonMatch)']) {
+  for (const text of ['await apolloOrgEnrich(k, { domain: d }, f)', 'const fn = pdlPeopleSearch\nawait fn(k, c, f, 5)', 'await run(apolloPersonMatch)',
+    "import { apolloOrgEnrich as org } from '@/lib/enrich/apollo'\nawait org(k, o, f)"]) {
     assert.deepEqual(unexpectedCallers([{ rel: 'app/api/leads/x/route.ts', text }]), ['app/api/leads/x/route.ts'], text)
   }
 })
@@ -104,6 +124,9 @@ test('#849 inventory: a paid call with no reservation before it is caught, also 
   const viaParam = 'async function run(k: string, hold: CreditHold) { return pdlPeopleSearch(k, c, f, 5) }\n'
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', viaParam + 'async function go() { const hold = await reserveCredits(db, t, "pdl", 5); await run(k, hold) }'), [])
   assert.equal(unreservedPaidCalls('lib/x.ts', viaParam + 'async function go() { await run(k, fakeHold) }').length, 1, 'a caller that never reserved')
+  // a renamed import is still a paid call; a reservation for the other vendor does not cover it
+  assert.equal(unreservedPaidCalls('lib/x.ts', "import { apolloOrgEnrich as org } from './apollo.ts'\nasync function e() { await org(k, o, f) }").length, 1, 'renamed import, unreserved')
+  assert.equal(unreservedPaidCalls('lib/x.ts', 'async function g() { const h = await reserveCredits(db, t, "pdl", 5); await apolloOrgEnrich(k, o, f) }').length, 1, 'PDL credits do not cover an Apollo call')
   // the 0-credit people search needs no reservation
   assert.deepEqual(unreservedPaidCalls('lib/x.ts', 'async function d() { await apolloPeopleSearch(k, o, f, 5) }'), [])
 })
