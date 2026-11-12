@@ -237,6 +237,10 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
       })
       if (out === 'skipped') skipped++
       else job = out
+    } catch (e) {
+      // one account's failed run or skip write never stops the other accounts (the trial reservation goes back below)
+      if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
+      captureError(e, { source: 'worker', where: 'watch:run-due', tenantId: w.user_id })
     } finally { if (trial && !job) await releaseTrialRun(db, w.user_id, trial) } // refused or threw: the attempt goes back
     if (job) ran++
   }

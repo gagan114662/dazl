@@ -122,7 +122,7 @@ bothEngines('#1042 free plan: a scan already started today skips that day\'s run
   const dueDay = new Date(due1 * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
   const [p] = savedPlays([row] as never, null, 'UTC', due1 + 600)
   assert.match(p.note ?? '', new RegExp(`^The search due ${dueDay} \\d{4} was skipped: the free plan runs 1 search a day and another search had already run that day\\. Next search `))
-  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /^Runs every day\. The search due .+ was skipped: the free plan runs 1 search a day/)
+  assert.match(playPace({ status: 'done', error: null, created_at: T0, query: Q }, [row]).pace, /^Runs every day, next /, 'the skip is said once, in the Home notice below')
   // Home's play card shows the NEWEST search (the Roofers one), whose query matches no play: the notice is still on Home,
   // and it names the day, so it stays true the next morning
   assert.equal(playPace({ status: 'done', error: null, created_at: utcDayStart(due1) + 8 * H, query: 'Roofers in Ohio' }, [row]).pace.includes('skipped'), false)
@@ -195,6 +195,16 @@ bothEngines('#1042 one account\'s failed skip write never stops the other accoun
   assert.equal(Number((await watch(db, wa))!.next_run_at), FIN + DAY, 'A untouched: retried by the next tick')
   assert.equal((await jobsAt(db, B, due)).length, 1, 'B ran')
   assert.ok(wb)
+  // the same inside the run's own transaction (the fence runs first there too): A's due run throws in its job
+  // transaction and is recorded, B still has its last run queued (one scan at a time: deferred), C runs
+  const C3 = 'c'.repeat(32); const wc = await firstPlay(db, C3, 'c@c.example')
+  const next = due + DAY
+  await db.run('UPDATE watches SET next_run_at = ? WHERE id IN (?, ?)', [next, wb, wc])
+  let n2 = 0
+  const failsInRun: Fence = function* () { if (++n2 === 2) throw new Error('job write refused') }
+  assert.deepEqual(await runDueWatches(db, { now: next, env: NO_TRIAL, fence: failsInRun }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual((await db.all<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE created_at = ?', [next])).map(x => x.user_id), [C3])
+  assert.equal(Number((await watch(db, wa))!.next_run_at), FIN + DAY, 'A untouched: due again on the next tick')
 })
 
 bothEngines('#1042 paid plan: no daily cap; the plan\'s quota decides and the play keeps its own budget', async ({ db }) => {

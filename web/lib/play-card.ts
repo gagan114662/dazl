@@ -57,8 +57,6 @@ export function playPace(job: { status: string; error: string | null; created_at
     const last = job.status === 'failed' ? (job.error === 'no_candidates' ? 'No results' : job.error === 'cancelled' ? 'Stopped' : 'Failed') : 'Done'
     return { status: job.status === 'failed' && job.error !== 'no_candidates' ? 'failed' : 'done', label: last, pace: `Last run ${day(job.created_at)}; schedule unavailable` }
   }
-  // the free plan's daily cap skipped today's run: said here, on Home, until the play runs again
-  if (w && w.active && w.skipped) return { status: 'live', label: 'Live', pace: `Runs every day. The search due ${day(w.skipped.at)} was skipped: the free plan runs 1 search a day and another search had already run that day${w.next_run_at ? `. Next search ${day(w.next_run_at)}` : ''}` }
   if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs ${every}${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}` }
   if (w) return { status: 'paused', label: 'Paused', pace: `${Every}, paused${w.paused_reason ? ` (${w.paused_reason.replace(/_/g, ' ')})` : ''}` }
   if (job.status === 'failed' && job.error === 'no_candidates') return { status: 'done', label: 'No results', pace: `Ran once, ${day(job.created_at)}` }
