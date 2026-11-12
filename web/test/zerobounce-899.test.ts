@@ -52,7 +52,7 @@ function seeded(tenant: string, lead: string, db = new Database(':memory:')) {
 }
 const NOW = Date.parse('2026-11-12T12:00:00Z')
 
-test('#899 the monthly cap is the verifier ACCOUNT\'s, across tenants: once it is used up, another tenant gets no check', async () => {
+test('#899 the monthly cap is the verifier\'s per database, across tenants: once it is used up, another tenant gets no check', async () => {
   const { db, on } = seeded('A', 'L1')
   seeded('B', 'L2', db)
   let calls = 0

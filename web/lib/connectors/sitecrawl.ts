@@ -651,7 +651,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const guessing = emailGuessEnabled(deps.env ?? process.env)
-    // #899: the free-tier mailbox check (ZeroBounce, only with ZEROBOUNCE_API_KEY), under the per-tenant daily and account monthly caps.
+    // #899: the free-tier mailbox check (ZeroBounce, only with ZEROBOUNCE_API_KEY), under the per-tenant daily cap and the per-database monthly cap (the free allowance). Each check is bounded by the adapter's 15 s
+    // abort, not by the per-site crawl budget: it runs after the lead's results are written, so it can only add latency.
     const verifier = guessing ? verifierFromEnv(deps.env ?? process.env, deps.verifyFetch) : null
     let verifyStopped = false // the verifier answered it cannot check (bad key, no credits, rate limit): no request for later leads either
     const localsBySite = new Map<string, Set<string>>()
