@@ -94,18 +94,25 @@ const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const NOT_WORD = '(?![\\p{L}\\p{N}])'
 // Words that may sit between a name and its own title: "Pat Example is now the Sales Director", "Pat Example, formerly
 // Sales Director", "Harbor Ledger Analytics named Pat Example its new Sales Director", "promoted Pat Example to ...".
-const LINK = '(?:is|was|are|is now|now|has been|had been|became|becomes|remains|serves as|served as|currently|also|' +
+const LINK = '(?:is|was|are|now|has been|had been|became|becomes|remains|serves as|served as|currently|also|' +
   'formerly|previously|former|named|appointed|promoted|elected|made|hired as|as|to|the|our|its|their|a|an|new|current|interim|acting|incoming)'
+// Modifiers a source may put between a possessive company / appointment determiner and the title (one list, used by
+// nameTiedToTitle and titleOfCompany so the two cannot drift: "Harbor's interim Sales Director").
+const MOD = '(?:(?:new|current|interim|acting|incoming)\\s+)*'
 const JOIN = '(?:joined|joins|has joined|works at|works for|works with|is with|serves at)'
 const APPOINT = '(?:has |have )?(?:named|names|appointed|appoints|hired|hires|promoted|promotes|elected|made|welcomed|welcomes|announced|added)'
+// What may sit between "formerly" and the comma that closes it: a short phrase that places the claimed person's OWN past
+// role ("formerly VP at OldCo", "formerly at OldCo"). It must name an employer (at|of|with|for) and may not hand the
+// role to someone else ("formerly managed by Jane Doe, Sales Director at ..." apposes Jane, not the claimed name).
+const FORMER_SKIP = '(?=[^,;()]*\\b(?:at|of|with|for)\\b)(?:(?!\\bby\\b)[^,;()]){0,80}'
 // The name occurrence [ns, ne) is tied to the title occurrence starting at ts / ending at te.
 export function nameTiedToTitle(folded: string, ns: number, ne: number, ts: number, te: number, company: string): boolean {
   const co = escRe(fold(company))
   if (ne <= ts) {
     if (ts - ne > PASSAGE) return false
     const between = folded.slice(ne, ts)
-    return new RegExp(`^(?:\\s*[,(:-]\\s*|\\s+)(?:(?:formerly|previously)(?![\\p{L}])[^,;()]{0,80},\\s*)?(?:${LINK}\\s+)*` +
-      `(?:${JOIN}\\s+(?:the\\s+)?${co}\\s+as\\s+(?:(?:its|the|our|a|an|new)\\s+)*)?(?:(?:the\\s+)?${co}(?:'s?)?\\s+)?$`, 'u').test(between)
+    return new RegExp(`^(?:\\s*[,(:-]\\s*|\\s+)(?:(?:formerly|previously)(?![\\p{L}])${FORMER_SKIP},\\s*)?(?:${LINK}\\s+)*` +
+      `(?:${JOIN}\\s+(?:the\\s+)?${co}\\s+as\\s+(?:(?:its|the|our|a|an|new)\\s+)*)?(?:(?:the\\s+)?${co}(?:'s?)?\\s+)?${MOD}$`, 'u').test(between)
   }
   if (te <= ns) return ns - te <= 3 && /^\s*,?\s*$/u.test(folded.slice(te, ns))   // "Sales Director Pat Example", "Harbor's Sales Director, Pat Example"
   return false
@@ -124,7 +131,7 @@ export function titleOfCompany(folded: string, ts: number, te: number, ss: numbe
   // "<Company>'s <title>", "<Company> <title>", "Ex-<Company> <title>"
   if (new RegExp(`(?<![\\p{L}\\p{N}])${co}(?:'s?)?\\s+(?:(?:new|current|interim|acting|incoming)\\s+)?$`, 'u').test(before)) return true
   // "<Company> named|appointed|hired|promoted <Name> (as|to|its) <title>"
-  if (new RegExp(`(?<![\\p{L}\\p{N}])${co}\\s+${APPOINT}\\s+${nm}\\s*,?\\s*(?:(?:as|to|its|our|the|new|a|an)\\s+)*$`, 'u').test(before)) return true
+  if (new RegExp(`(?<![\\p{L}\\p{N}])${co}\\s+${APPOINT}\\s+${nm}\\s*,?\\s*(?:(?:as|to|its|our|the|new|a|an|current|interim|acting|incoming)\\s+)*$`, 'u').test(before)) return true
   // "<Name> joined|works at <Company> as <title>"
   if (new RegExp(`${JOIN}\\s+(?:the\\s+)?${co}\\s+as\\s+(?:(?:its|the|our|a|an|new)\\s+)*$`, 'u').test(before)) return true
   return false
@@ -278,11 +285,17 @@ export function decide(x: DecideInput): CheckResult[] {
       if (!nameAt.length) out.push(r('person_current', 'person', e.s.truncated ? 'unknown' : 'fail', `${p.name} is not named on ${p.source_url}`))
       else {
         // Per name occurrence: the titles and company mentions inside its own sentence.
+        // Positions are sorted, so a binary search finds each occurrence's window without rescanning or copying the
+        // whole list per name (a long sentence repeating name/title/company stays near-linear, not N squared).
+        const lowerBound = (a: number[], x: number) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m } return lo }
+        const slice = (a: number[], from: number, to: number) => a.slice(lowerBound(a, from), lowerBound(a, to))
+        let span: [number, number] | null = null   // names are in order: one scan per sentence, not per occurrence
         const reads = nameAt.map(i => {
-          const [ss, se] = sentenceSpan(e.folded, i)
-          const inS = (x: number) => x >= ss && x < se
+          if (!span || i < span[0] || i >= span[1]) span = sentenceSpan(e.folded, i)
+          const [ss, se] = span
           // only titles within one passage of the name can be its own (this also bounds the work on a huge sentence)
-          return { i, ss, se, titles: titleAt.filter(t => inS(t) && Math.abs(t - i) <= PASSAGE), companies: companyAt.filter(inS) }
+          const titles = slice(titleAt, Math.max(ss, i - PASSAGE), Math.min(se, i + PASSAGE + 1))
+          return { i, ss, se, titles, hasCompany: lowerBound(companyAt, ss) < lowerBound(companyAt, se) }
         })
         const employerOf = (t: number, ss: number, se: number) => attachedEmployer(e.folded, t, t + titleLen, ss, se, p.name)
         const ofCompany = (phrase: string) => tokenPositions(phrase, claim.company).length > 0 || fold(claim.company).startsWith(`${phrase} `)   // a name cut at its own "and" ("Smith and Sons")
@@ -292,10 +305,10 @@ export function decide(x: DecideInput): CheckResult[] {
         // A title counts only when tied to THIS name occurrence and explicitly to the claimed company (positive binding).
         const tied = (rd: typeof reads[number]) => forClaim(rd).filter(t => nameTiedToTitle(e.folded, rd.i, rd.i + nameLen, t, t + titleLen, claim.company) &&
           titleOfCompany(e.folded, t, t + titleLen, rd.ss, rd.i + nameLen, p.name, claim.company))
-        const bound = reads.find(rd => rd.companies.length > 0 && tied(rd).length > 0)
+        const bound = reads.find(rd => rd.hasCompany && tied(rd).length > 0)
         const rival = reads.map(rd => ({ rd, emps: rd.titles.map(t => employerOf(t, rd.ss, rd.se)) })).find(x => x.emps.length > 0 && x.emps.every(emp => emp !== null && !ofCompany(emp)))
         if (bound === undefined) {
-          const together = reads.some(rd => rd.companies.length > 0 && rd.titles.length > 0)
+          const together = reads.some(rd => rd.hasCompany && rd.titles.length > 0)
           out.push(rival ? r('person_current', 'person', 'unknown', `the source gives ${p.name}'s "${p.title}" role at ${rival.emps[0]}, not at "${claim.company}"`)
             : together ? r('person_current', 'person', 'unknown', `the source names ${p.name}, "${p.title}" and "${claim.company}" in one sentence but never states that ${p.name} is "${claim.company}"'s ${p.title}`)
               : r('person_current', 'person', 'unknown', `the title "${p.title}" and "${claim.company}" are not both in the same sentence as ${p.name} on the source`))

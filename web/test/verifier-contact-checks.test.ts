@@ -318,3 +318,25 @@ test('#781: adversarial inputs: regex metacharacters in names, huge sentences an
   assert.equal(pc.status, 'unknown')
   assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`)
 })
+
+// #781 review fixes (xhawk on #1077): former-clause skip, backtracking, repeated-occurrence cost, shared modifiers.
+test('#781: a "formerly ..." clause about someone else never lends its title to the claimed name', () => {
+  const { pc, action } = pcOf(PAT, 'Pat Example, formerly managed by Jane Doe, Sales Director at Harbor Ledger Analytics, spoke.')
+  assert.notEqual(pc.status, 'pass'); assert.notEqual(action, 'accept')
+})
+
+test('#781: repeated "is now" near-matches and 20k-occurrence sentences finish quickly and never pass', () => {
+  const t0 = Date.now()
+  const a = pcOf(PAT, `Pat Example ${'is now '.repeat(30)}x Sales Director, Harbor Ledger Analytics.`)
+  assert.notEqual(a.pc.status, 'pass')
+  const b = pcOf(PAT, 'Pat Example Sales Director Harbor Ledger Analytics '.repeat(2000))
+  assert.notEqual(b.pc.status, 'fail')
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`)
+})
+
+test('#781: current/interim/acting/incoming after a possessive company or appointment still bind and pass', () => {
+  for (const m of ['current', 'interim', 'acting', 'incoming']) for (const text of [
+    `Pat Example is Harbor Ledger Analytics' ${m} Sales Director.`,
+    `Harbor Ledger Analytics appointed Pat Example as its ${m} Sales Director.`,
+  ]) assert.equal(pcOf(PAT, text).pc.status, 'pass', text)
+})
