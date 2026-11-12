@@ -111,7 +111,7 @@ export function nameTiedToTitle(folded: string, ns: number, ne: number, ts: numb
   return false
 }
 // The title occurrence [ts, te) inside its sentence [ss, se) is explicitly the claimed company's.
-export function titleOfCompany(folded: string, ts: number, te: number, ss: number, ns: number, ne: number, name: string, company: string): boolean {
+export function titleOfCompany(folded: string, ts: number, te: number, ss: number, ne: number, name: string, company: string): boolean {
   const co = escRe(fold(company)), nm = escRe(fold(name))
   // bounded windows: every shape below is a short phrase next to the title, so a huge sentence costs nothing extra
   const after = folded.slice(te, te + PASSAGE), before = folded.slice(Math.max(ss, ts - PASSAGE), ts)
@@ -291,7 +291,7 @@ export function decide(x: DecideInput): CheckResult[] {
         const nameLen = fold(p.name).length
         // A title counts only when tied to THIS name occurrence and explicitly to the claimed company (positive binding).
         const tied = (rd: typeof reads[number]) => forClaim(rd).filter(t => nameTiedToTitle(e.folded, rd.i, rd.i + nameLen, t, t + titleLen, claim.company) &&
-          titleOfCompany(e.folded, t, t + titleLen, rd.ss, rd.i, rd.i + nameLen, p.name, claim.company))
+          titleOfCompany(e.folded, t, t + titleLen, rd.ss, rd.i + nameLen, p.name, claim.company))
         const bound = reads.find(rd => rd.companies.length > 0 && tied(rd).length > 0)
         const rival = reads.map(rd => ({ rd, emps: rd.titles.map(t => employerOf(t, rd.ss, rd.se)) })).find(x => x.emps.length > 0 && x.emps.every(emp => emp !== null && !ofCompany(emp)))
         if (bound === undefined) {
