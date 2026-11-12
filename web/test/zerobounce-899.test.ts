@@ -265,3 +265,13 @@ test('#899 US -> non-US -> US re-crawls: the guess gets its US basis back and is
   assert.ok(sent.length >= 1, 'the unchecked guesses are checkable again')
   assert.equal(new Set(sent).size, sent.length, 'each at most once')
 })
+
+test('#899 a US re-crawl that finds no pattern still restores the unchecked guesses\' US basis', async () => {
+  const { db, on } = seeded('A', 'L1')
+  const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' }) // no pattern this time
+  let calls = 0
+  await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
+  assert.ok(calls >= 1)
+})

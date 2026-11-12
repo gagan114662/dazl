@@ -325,6 +325,10 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
     catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
     return null
   }
+  // This crawl shows the company in the US again: guesses already recorded and still UNCHECKED take this basis back (a crawl that
+  // showed no US address cleared it), whatever this crawl's pattern turns out to be. A checked guess keeps its history.
+  try { db.prepare("UPDATE email_candidates SET country_basis = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND country_basis IS NULL").run(us.basis, tenantId, leadId) }
+  catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
   const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
   const allNames = names.map(x => x.name)
@@ -356,11 +360,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
     if (!guessOwners.has(l)) guessOwners.set(l, new Set())
     guessOwners.get(l)!.add(nameKey(x.name))
   }
-  // A guess already recorded and still UNCHECKED takes this crawl's US basis again (a crawl that showed no US address cleared it);
-  // its format, person and confidence stay as first recorded. A checked guess keeps its history untouched.
-  const ins = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)
-    ON CONFLICT (lead_id, address) DO UPDATE SET country_basis = excluded.country_basis
-    WHERE email_candidates.tenant_id = excluded.tenant_id AND email_candidates.tier = 'guessed' AND email_candidates.verification = 'none'`)
+  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)")
   for (const x of names) {
     if (hasPub.has(nameKey(x.name))) continue
     const l = localFor(pattern.format, x.name)
