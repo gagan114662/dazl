@@ -25,14 +25,38 @@ FAKE_GIT = r'''#!/usr/bin/env bash
 printf '%s\trefs/heads/main\n' "$(cat "$FAKE_T/main")"
 '''
 FAKE_CURL = r'''#!/usr/bin/env bash
-out=; url=
+# Models two real curl call shapes the script uses: the manifest fetch (no -f, reads -w '%{http_code}' from stdout -
+# round 2, #1061/#907: the old -f call conflated a true 404 with 403/429/5xx) and the asset downloads (still -fsSL,
+# which exits 22 on any HTTP error >= 400, 404 included).
+out=; url=; has_f=0; has_w=0
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift 2;; --max-time|--max-filesize|--proto|--retry) shift 2;; -*) shift;; *) url=$1; shift;; esac
+  case "$1" in
+    -o) out=$2; shift 2;;
+    -w) has_w=1; shift 2;;
+    --max-time|--max-filesize|--proto|--retry) shift 2;;
+    -*) [[ "$1" == *f* ]] && has_f=1; shift;;
+    *) url=$1; shift;;
+  esac
 done
 echo "$url" >> "$FAKE_T/curl.log"
+# force-status lets a test simulate a specific HTTP status (403/429/5xx) for the manifest fetch, which the real file-
+# exists/missing split below can't produce - a status other than 404 must be a real failure, never "nothing to do".
+if [ -f "$FAKE_T/force-status" ]; then
+  code=$(cat "$FAKE_T/force-status")
+  [ -n "$out" ] && printf 'error body' > "$out"
+  if [ $has_f = 1 ] && [ "$code" -ge 400 ]; then echo "curl: (22) The requested URL returned error: $code" >&2; exit 22; fi
+  [ $has_w = 1 ] && printf '%s' "$code"
+  exit 0
+fi
 f="$FAKE_T/assets/${url##*/}"
-[ -f "$f" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
-cp "$f" "$out"
+if [ -f "$f" ]; then
+  [ -n "$out" ] && cp "$f" "$out"
+  [ $has_w = 1 ] && printf '200'
+  exit 0
+fi
+if [ $has_f = 1 ]; then echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; fi
+[ $has_w = 1 ] && printf '404'
+exit 0
 '''
 FAKE_LOG = r'''#!/usr/bin/env bash
 echo "$(basename "$0") $*" >> "$FAKE_T/migrate.log"
@@ -143,6 +167,18 @@ class PullPrebuiltTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('no prebuilt build published for main ' + B, r.stdout)
         self.assertFalse(self.deployed()); self.assertEqual(self.live(), A)
+
+    def test_manifest_fetch_real_error_is_not_treated_as_not_built_yet(self):
+        # #1061/#907 round 2: curl -f's exit 22 meant ANY HTTP error >= 400 read the same as a benign true 404 - a
+        # real 403/429/5xx must alert instead of silently waiting for a build that is never coming.
+        for code in ('403', '429', '500', '503'):
+            with self.subTest(code=code):
+                (self.t / 'force-status').write_text(code)
+                r = self.run_pull()
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn(f'HTTP {code}', r.stdout + r.stderr)
+                self.assertNotIn('nothing to do', r.stdout)
+                self.assertFalse(self.deployed()); self.assertEqual(self.live(), A)
 
     # --- the deploy ---------------------------------------------------------------------------------------------------
     def test_deploys_main_from_the_verified_build_lockfile_unchanged(self):
