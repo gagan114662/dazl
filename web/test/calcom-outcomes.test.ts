@@ -237,23 +237,98 @@ test('F2: the lead link follows the winning attendee: every order of {created, n
   }
 })
 
+// Booking A first named Sam as its primary attendee (iCalSequence 0), then an update (sequence 1, any arrival order) names
+// Jane: the link moves from Sam's lead to Jane's.
+const samFirstA = ev({ triggerEvent: 'BOOKING_CREATED', createdAt: '2026-10-01T08:00:00.000Z', payload: { uid: 'A', iCalSequence: 0, startTime: '2026-10-10T10:00:00Z', endTime: '2026-10-10T10:30:00Z', attendees: [{ email: 'colleague@acme.example', name: 'Sam' }] } })
+const janeUpdateA = ev({ triggerEvent: 'BOOKING_CREATED', createdAt: '2026-10-01T09:00:00.000Z', payload: { uid: 'A', iCalSequence: 1, startTime: '2026-10-10T10:00:00Z', endTime: '2026-10-10T10:30:00Z', attendees: jane } })
+
 test('F2: a booking relinked away from a lead that still has its own booking leaves that lead\'s earlier stage with it (every order)', async () => {
-  // A: Jane's meeting, whose guest-first no-show notice briefly links it to Sam's lead. C: Sam's own meeting, later
-  // cancelled. Sam's lead must end on its earlier stage whichever booking first remembered it.
-  const guestNoShowA = ev({ triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-10-10T11:00:00.000Z', payload: { bookingUid: 'A', attendees: [{ email: 'colleague@acme.example', noShow: true }] } })
+  // A: first Sam's, then Jane's. C: Sam's own meeting, later cancelled. Sam's lead must end on its earlier stage
+  // whichever booking first remembered it.
   const sam = [{ email: 'colleague@acme.example', name: 'Sam' }]
   const createdC = ev({ triggerEvent: 'BOOKING_CREATED', createdAt: '2026-10-01T10:00:00.000Z', payload: { uid: 'C', iCalSequence: 0, startTime: '2026-10-11T10:00:00Z', endTime: '2026-10-11T10:30:00Z', attendees: sam } })
   const cancelC = ev({ triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-10-02T10:00:00.000Z', payload: { uid: 'C', iCalSequence: 1, startTime: '2026-10-11T10:00:00Z', endTime: '2026-10-11T10:30:00Z', attendees: sam } })
   const finals: unknown[] = []
-  for (const order of permutations([guestNoShowA, createdC, created, cancelC])) {
+  for (const order of permutations([samFirstA, createdC, janeUpdateA, cancelC])) {
     const db = setup2()
     await deliver(db, order)
-    const why = order.map(e => (e.kind === 'booking' ? `${e.trigger}:${e.uid}` : `${e.kind}:${e.uid}`)).join(' > ')
+    const why = order.map(e => (e.kind === 'booking' ? `${e.trigger}:${e.uid}:${e.icalSeq}` : `${e.kind}:${e.uid}`)).join(' > ')
     assert.deepEqual(stages(db), { 'lead-1': 'booked_call', 'lead-2': 'contacted' }, why)
     assert.deepEqual(state(db).rows.map(r => [r.booking_uid, r.lead_id, r.status]), [['A', 'lead-1', 'scheduled'], ['C', 'lead-2', 'cancelled']], why)
     finals.push(state(db).rows)
   }
   for (const f of finals) assert.deepEqual(f, finals[0])
+})
+
+test('R1: without a booking event, no-show notices never decide the lead; MEETING_ENDED names the primary attendee (every order)', async () => {
+  const guestNoShow = ev({ triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-10-10T11:00:00.000Z', payload: { bookingUid: 'A', attendees: [{ email: 'colleague@acme.example', noShow: true }] } })
+  const janeShowed = ev({ triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-10-10T11:01:00.000Z', payload: { bookingUid: 'A', attendees: [{ email: 'jane@acme.example', noShow: false }] } })
+  const endedA = ev({ triggerEvent: 'MEETING_ENDED', uid: 'A', endTime: '2026-10-10T10:30:00Z', attendees: jane })
+  const run = async (events: CalEvent[]) => {
+    const finals: unknown[] = []
+    for (const order of permutations(events)) {
+      const db = setup2()
+      await deliver(db, [...order, ...order.slice().reverse()])
+      finals.push({ rows: state(db).rows, stages: stages(db) })
+    }
+    for (const f of finals) assert.deepEqual(f, finals[0], `orders of ${events.map(e => e.kind).join(', ')} diverge`)
+    return finals[0] as { rows: Record<string, unknown>[]; stages: Record<string, string | null> }
+  }
+  // P1: the guest's no-show and MEETING_ENDED (attendees [jane, sam]): the booking is Jane's in both orders
+  const p1 = await run([guestNoShow, endedA])
+  assert.deepEqual(p1.rows.map(r => [r.attendee_email, r.lead_id, r.status]), [['jane@acme.example', 'lead-1', 'ended']])
+  assert.deepEqual(p1.stages, { 'lead-1': 'booked_call', 'lead-2': 'contacted' })
+  // P2: two no-show notices for two attendees, nothing naming the primary: unlinked, no lead touched, in both orders
+  const p2 = await run([guestNoShow, janeShowed])
+  assert.deepEqual(p2.rows.map(r => [r.attendee_email, r.lead_id, r.status]), [['', null, 'scheduled']])
+  assert.deepEqual(p2.stages, { 'lead-1': 'replied', 'lead-2': 'contacted' })
+  // and once the booking event arrives it links to Jane's lead whatever came first
+  const all = await run([guestNoShow, janeShowed, created])
+  assert.deepEqual(all.rows.map(r => [r.attendee_email, r.lead_id]), [['jane@acme.example', 'lead-1']])
+  assert.deepEqual(all.stages, { 'lead-1': 'booked_call', 'lead-2': 'contacted' })
+})
+
+test('R3: a lead lock the plan did not take first reruns the whole transaction (leads always before booking rows), bounded', async () => {
+  // Simulates a commit that relinks A between the unlocked planning read and the locked read: just before the first
+  // booking-row lock statement, A's link is moved to lead-2 inside the transaction. The locked plan then needs lead-2,
+  // which was not locked first: the transaction must roll back and rerun with lead-2 in its plan.
+  const raw = setup2()
+  await deliver(raw, [created])
+  const { db, log } = pgShaped(raw)
+  let injections = 1, moves = 0
+  const inner = db.tx.bind(db)
+  ;(db as { tx: unknown }).tx = (body: (t: Tx) => Generator<TxOp, unknown, unknown>) => inner((t: Tx) => (function* () {
+    const g = body(t)
+    let step = g.next()
+    while (!step.done) {
+      if (injections > 0 && ROW_LOCK.test(step.value.sql)) { injections--; raw.prepare("UPDATE calcom_bookings SET lead_id = ? WHERE booking_uid = 'A'").run(`lead-${2 + moves++}`) }
+      step = g.next(yield step.value)
+    }
+    return step.value
+  })())
+  const noShowGuest = ev({ triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-10-10T11:00:00.000Z', payload: { bookingUid: 'A', attendees: [{ email: 'colleague@acme.example', noShow: true }] } })
+  assert.deepEqual(await recordEvent(db, T, noShowGuest), { outcome: 'matched', status: 'scheduled' })
+  const txStarts = log.map((l, i) => (l.startsWith('INSERT INTO calcom_bookings') ? i : -1)).filter(i => i >= 0)
+  assert.equal(txStarts.length, 2, 'one rerun')
+  const second = log.slice(txStarts[1])
+  assert.deepEqual(second.filter(l => LEAD_LOCK.test(l)).map(l => JSON.parse(l.slice(l.lastIndexOf(' [')))[0]), ['lead-1', 'lead-2'], 'the rerun locks the lead it found, up front')
+  for (const part of [log.slice(0, txStarts[1]), second]) {
+    const lastLead = part.reduce((m, l, i) => (LEAD_LOCK.test(l) ? i : m), -1), firstRow = part.findIndex(l => ROW_LOCK.test(l))
+    assert.ok(lastLead < firstRow, 'never a lead lock after a booking-row lock')
+  }
+  assert.equal(state(raw).rows[0].lead_id, 'lead-1', 'the first attempt rolled back; the rerun sees the committed link')
+  // a link that moves to yet another lead under every attempt: bounded, the error surfaces (the webhook answers 500,
+  // Cal.com retries)
+  injections = 99; moves = 1
+  await assert.rejects(recordEvent(db, T, noShowGuest), /lead lock plan changed/)
+  assert.equal(log.filter(l => l.startsWith('INSERT INTO calcom_bookings')).length, 2 + 3, 'three attempts, no more')
+  // setManualOutcome reruns the same way
+  injections = 1; moves = 0
+  const before = log.length
+  assert.deepEqual(await setManualOutcome(db, T, 'actor-1', 'A', 'cancelled', {}, 1000), { ok: true, status: 'cancelled' })
+  const manual = log.slice(before)
+  assert.equal(manual.filter(l => ROW_LOCK.test(l)).length, 2, 'one rerun')
+  assert.deepEqual(manual.filter(l => LEAD_LOCK.test(l)).map(l => JSON.parse(l.slice(l.lastIndexOf(' [')))[0]), ['lead-1', 'lead-1', 'lead-2'])
 })
 
 test('F4: held / no-show need the meeting to be over (end passed or MEETING_ENDED), not just started; fail closed without either', async () => {
@@ -351,7 +426,7 @@ test('F3: recordEvent and setManualOutcome lock the affected lead rows (id order
   // a relink touches two leads: both locked, in id order, whichever the booking moves from and to
   {
     const raw = setup2()
-    await deliver(raw, [ev({ triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-10-10T11:00:00.000Z', payload: { bookingUid: 'A', attendees: [{ email: 'colleague@acme.example', noShow: true }] } })])
+    await deliver(raw, [samFirstA])
     const { db, log } = pgShaped(raw)
     await recordEvent(db, T, created)
     assertLockOrder(log, ['lead-1', 'lead-2'], 'recordEvent relink')

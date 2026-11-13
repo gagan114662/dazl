@@ -35,12 +35,16 @@ test('can_configure follows the role, with and without a signing secret', async 
   const get = async (u: string) => withJar(new Map([['dazl_session', tokens[u]]]), async () => {
     const res = await route.GET(new NextRequest('http://localhost/api/settings/calcom', { method: 'GET', headers: { host: 'localhost', origin: 'http://localhost' } }))
     assert.equal(res.status, 200)
-    return await res.json() as { configured: boolean; can_configure: unknown; secret_hidden: boolean }
+    return await res.json() as { configured: boolean; can_configure: unknown; secret_hidden: boolean; now: unknown }
   })
   const seen = async () => Object.fromEntries(await Promise.all(Object.keys(role).map(async u => { const j = await get(u); return [role[u], [j.configured, j.can_configure, j.secret_hidden]] })))
   // no secret yet: secret_hidden is false for every role, so it cannot be the permission signal
   assert.deepEqual(await seen(), { owner: [false, true, false], admin: [false, true, false], operator: [false, false, false], viewer: [false, false, false] })
   await rotateSecret(await getDb(), 'A')
   assert.deepEqual(await seen(), { owner: [true, true, false], admin: [true, true, false], operator: [true, false, true], viewer: [true, false, true] })
+  // R4: the server's clock, in epoch seconds, for the panel's held / no-show rule
+  const t0 = Math.floor(Date.now() / 1000)
+  const { now } = await get('V')
+  assert.ok(typeof now === 'number' && Number.isInteger(now) && now >= t0 && now <= Math.floor(Date.now() / 1000), `now = ${String(now)}`)
   console.log('CALCOM ROLES ok')
 })

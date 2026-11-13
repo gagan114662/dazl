@@ -26,6 +26,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     configured: !!secret,
     can_configure: reveal,
+    // the server's clock (epoch seconds): the panel offers held / no-show by the rule setManualOutcome applies, with this now
+    now: Math.floor(Date.now() / 1000),
     secret: reveal ? secret : null,
     secret_hidden: !!secret && !reveal,
     webhook_url: `${(process.env.PUBLIC_BASE_URL || req.nextUrl.origin).replace(/\/$/, '')}/api/hooks/calcom?u=${encodeURIComponent(user.tenantId)}`,

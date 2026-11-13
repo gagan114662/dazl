@@ -11,9 +11,9 @@ const LABEL: Record<Status, string> = {
 }
 
 export default function CalcomPanel() {
-  const [st, setSt] = useState<{ configured: boolean; can_configure: boolean; secret: string | null; secret_hidden?: boolean; webhook_url: string; bookings: Booking[]; loadedAt: number } | null>(null)
+  const [st, setSt] = useState<{ configured: boolean; can_configure: boolean; secret: string | null; secret_hidden?: boolean; webhook_url: string; bookings: Booking[]; now: number } | null>(null)
   const [msg, setMsg] = useState('')
-  const fetchState = () => fetch('/api/settings/calcom').then(r => (r.ok ? r.json() : null)).then(j => { if (j) setSt({ ...j, loadedAt: Date.now() }) }).catch(() => {})
+  const fetchState = () => fetch('/api/settings/calcom').then(r => (r.ok ? r.json() : null)).then(j => { if (j) setSt(j) }).catch(() => {})
   async function load() { await fetchState() }
   useEffect(() => { void fetchState() }, [])
   async function rotate() {
@@ -31,7 +31,7 @@ export default function CalcomPanel() {
   // Controls follow the server: can_configure is the POST route's gate, reconcileActions the same meeting-over rule
   // setManualOutcome applies (held / no-show only once the meeting's end has passed or Cal.com reported it ended).
   const canConfigure = st.can_configure === true
-  const nowS = Math.floor(st.loadedAt / 1000)
+  const nowS = st.now // the server's clock (GET), the one setManualOutcome checks: a browser clock that is off does not move the buttons
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Cal.com bookings</h2>
@@ -53,7 +53,7 @@ export default function CalcomPanel() {
         <ul className="text-sm mt-3 space-y-1">
           {st.bookings.map(b => { const acts = reconcileActions(b, canConfigure, nowS); return (
             <li key={b.booking_uid}>
-              {b.attendee_name || b.attendee_email} - {b.lead_id ? <>matched to <span className="font-medium">{b.company || b.lead_name}</span></> : <span className="text-[#555]">no matching lead</span>}
+              {b.attendee_name || b.attendee_email || 'Attendee not known yet'} - {b.lead_id ? <>matched to <span className="font-medium">{b.company || b.lead_name}</span></> : <span className="text-[#555]">no matching lead</span>}
               {' '}<span data-testid="booking-status">[{LABEL[b.status] ?? b.status}{b.manual_outcome ? ', set by hand' : ''}]</span>
               {' '}<span className="text-[#999] text-xs">{b.start_at !== null ? `meeting ${new Date(b.start_at * 1000).toLocaleString()}` : `received ${new Date(b.created_at * 1000).toLocaleDateString()}`}</span>
               {acts.length > 0 && (

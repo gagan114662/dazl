@@ -23,6 +23,9 @@ test('the panel gates its controls on can_configure and the shared reconcileActi
   assert.match(src, /import \{ reconcileActions, type BookingStatus as Status \} from '@\/lib\/calcom\/outcome-rules'/)
   assert.match(src, /const canConfigure = st\.can_configure === true/)
   assert.match(src, /reconcileActions\(b, canConfigure, nowS\)/)
+  // R4: the meeting-over rule runs on the server's clock from GET, not the browser's
+  assert.match(src, /const nowS = st\.now\b/)
+  assert.doesNotMatch(src, /Date\.now\(\)|loadedAt/)
   assert.match(src, /\{canConfigure && <button [^>]*onClick=\{rotate\}>Rotate secret<\/button>\}/)
   assert.match(src, /\) : canConfigure \? \(\s*<button className="btn-primary" onClick=\{rotate\}>Set up the webhook<\/button>/)
   // secret_hidden only decides whether to print the secret or the "only admins and owners" note
