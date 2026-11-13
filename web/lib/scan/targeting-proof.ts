@@ -50,7 +50,7 @@ function eventShown(event: string | undefined, object: string | undefined, quote
 function gateEventShown(event: string | undefined, object: string | undefined, quote: string, lead: ProofLead, query: string | null | undefined): boolean {
   if (event !== 'open') return quoteShowsEventMain(quote, lead.company) && eventMatches(event, object, quote)
   if (quoteShowsEventMain(quote, lead.company) && mainOpenMatches(object, quote)) return true
-  return newOpeningShown(quote, lead.company, k => eventMatchSpan(event, object, k), requestPlaces(query), EVENT_NOT)
+  return newOpeningShown(quote, lead.company, k => eventMatchSpan(event, object, k, lead.company), requestPlaces(query), EVENT_NOT)
 }
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".

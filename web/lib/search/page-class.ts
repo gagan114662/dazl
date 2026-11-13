@@ -32,7 +32,7 @@ export function needsEventBeyondHiring(signals: string[] | undefined, query: str
 // One source for both readers (targeting.ts EVENTS 'open' adds it as its noun-first alternatives): capture group 1 is the
 // noun of the noun-first form, group 2 the noun of the grand-opening form.
 const NF_LEAD = String.raw`(?:brand\s+)?(?:new|our\s+(?:new|second|third|fourth|fifth|\d+(?:st|nd|rd|th))|second|third|fourth|fifth|\d+(?:st|nd|rd|th))`
-const NF_FILL = String.raw`(?:(?!(?:and|or|with|for|to|of|the|a|an|is|are|patients?|team|teams|manager|managers|staff|hours?|sales|role|roles|job|jobs)\b)[a-z]+\s+){0,2}?`
+const NF_FILL = String.raw`(?:(?!(?:and|or|with|for|to|of|the|a|an|is|are|patients?|team|teams|manager|managers|staff|hours?|sales|role|roles|job|jobs)\b)[a-z]+\s+){0,4}?`   // up to 4: a lead's own 3-word name fits ("Our new Metro City Dentistry clinic"); the words are checked (sales-hiring-gate openingAttributable)
 const NF_NOUN = String.raw`(locations?|offices?|clinics?|stores?|branch(?:es)?|restaurants?|studios?|practices?|warehouses?|showrooms?|shops?|gyms?|salons?)`
 const NF_PLACE = String.raw`(?:\s+(?:in|at|on)\s+(?:(?!\b(?:by|from|of)\b)[^.!?;,]){1,60}?)?`
 const NF_VERB = String.raw`\s+(?:is\s+|are\s+|has\s+|have\s+)?(?:now\s+|officially\s+|finally\s+)*(?:open|opened)\b`
@@ -48,7 +48,7 @@ const anyDayMonth = (t: string) => t.split(/[^A-Za-z]+/).some(w => DAY_MONTH.tes
 const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|couple|many|time|order|person|line|style|business|session|progress|stages?|phases?|christmas|easter|thanksgiving|halloween|hanukkah|diwali|ramadan|eid)$/i
 // The words a caption may put between "new" and the premises when it has no case to tell a name by (Title Case, ALL CAPS,
 // all lower case): the lead's own name, or one of these.
-const PREMISES_ADJ = /^(?:dental|dentistry|medical|family|pediatric|paediatric|orthodontic|cosmetic|veterinary|vet|physio|physiotherapy|chiropractic|wellness|health|beauty|hair|nail|fitness|flagship|downtown|uptown|larger|bigger|expanded|modern|beautiful|main|second|third|fourth|fifth|satellite|community|walk-in|urgent|care|retail|pop-up|popup)$/i
+export const PREMISES_ADJ = /^(?:dental|dentistry|medical|family|pediatric|paediatric|orthodontic|cosmetic|veterinary|vet|physio|physiotherapy|chiropractic|wellness|health|beauty|hair|nail|fitness|flagship|downtown|uptown|larger|bigger|expanded|modern|beautiful|main|second|third|fourth|fifth|satellite|community|walk-in|urgent|care|retail|pop-up|popup)$/i
 const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
 // A place after in / at / on: a street address, "the heart of <Name>", or a proper name (capitalised in mixed-case text;
 // in all-lower or all-caps text, a word that is not an article, number or common noun).
@@ -109,7 +109,8 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
     if (!mixed && noun > 0 && words.slice(1, noun).some(w => !/^(?:new|our|brand)$/i.test(w) && !own.has(w.toLowerCase()) && !PREMISES_ADJ.test(w))) return false
     // the word right before the noun is a place ("Our new Woodbridge location") only after "our" or the lead's own name
     const ours = words.slice(0, Math.max(0, noun - 1)).some(w => /^our$/i.test(w) || own.has(w.toLowerCase()))
-    if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && !(ours && k + 1 === noun - 1))) return false
+    // in mixed-case text a capitalised word before the noun is a name, whatever the noun's case ("New Bright Smiles Clinic")
+    if (mixed && noun > 0 && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && !(ours && k + 1 === noun - 1))) return false
   }
   if (rest === '' || /^(?:its|their)\s+doors\b/i.test(rest) || /^for\s+business\b/i.test(rest)) return clean(rest.replace(/^(?:its|their)\s+doors\b|^for\s+business\b/i, ''))
   if (/\bfor\s+(?:[a-z]+\s+){0,2}[A-Z][\w&'-]*(?:\s+[A-Z][\w&'-]*)*\s+(?:patients|clients|customers|members)\b/.test(rest)) return false

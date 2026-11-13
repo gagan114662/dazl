@@ -98,8 +98,8 @@ function techAtoms(q: string, add: (a: Atom) => void): void {
 // (NOUN_FIRST_OPEN_SRC: never hours, availability, a future or someone else's opening).
 // ok: an extra check a match must pass (the noun-first opening's allow-list, page-class.ts nounFirstOk); a verb-first
 // match (group 1) is not subject to it.
-const EVENTS: { event: string; re: RegExp; object?: number | number[]; ok?: (text: string, m: RegExpMatchArray) => boolean }[] = [
-  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3], ok: (text, m) => !!m[1] || nounFirstOk(text, m) },
+const EVENTS: { event: string; re: RegExp; object?: number | number[]; ok?: (text: string, m: RegExpMatchArray, company?: string | null) => boolean }[] = [
+  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3], ok: (text, m, company) => !!m[1] || nounFirstOk(text, m, company) },
   { event: 'launch', re: /\b(?:launched|launching|launches|released|unveiled)\s+(?:(?:a|an|its|their|new|first)\s+)*([a-z][\w-]*)/gi, object: 1 },
   { event: 'expand', re: /\b(?:expanded|expanding|expands|expansion)(?:\s+(?:into|to|in)\s+([a-z][\w-]*))?/gi, object: 1 },
   { event: 'acquire', re: /\b(?:acquired|acquires|acquisitions?|merged|merger)\b/gi },
@@ -404,11 +404,12 @@ export function mainOpenMatches(object: string | undefined, text: string): boole
   return false
 }
 // Where in the text the event (and object) first shows ([start, end]), or null.
-export function eventMatchSpan(event: string | undefined, object: string | undefined, text: string): [number, number] | null {
+// company: the lead, so a noun-first opening is read with the same company-aware allow-list as the sales-hiring gate.
+export function eventMatchSpan(event: string | undefined, object: string | undefined, text: string, company?: string | null): [number, number] | null {
   const e = EVENTS.find(x => x.event === event)
   if (!e) return null
   for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
-    if (e.ok && !e.ok(text, m)) continue
+    if (e.ok && !e.ok(text, m, company)) continue
     const span: [number, number] = [m.index ?? 0, (m.index ?? 0) + m[0].length]
     if (!object || !e.object) return span
     const got = objectOf(e, m)
