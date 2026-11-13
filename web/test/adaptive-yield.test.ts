@@ -37,7 +37,8 @@ type Opts = { recurring?: 'watch' | 'monitor' | 'monitor_tick' | 'monitor_now';
   adaptiveOff?: boolean
   adaptiveFlag?: string
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
-  signals?: string[]; aVerifies?: boolean; rejectCompanyB?: boolean; deps?: Partial<RunDeps> }
+  signals?: string[]; aVerifies?: boolean; rejectCompanyB?: boolean; deps?: Partial<RunDeps>
+  prepare?: (db: Database.Database) => void; env?: Record<string, string> }
 async function scan(o: Opts = {}) {
   resetTinyfishState()
   const icp = { summary: 'Ohio SMBs hiring', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: o.signals ?? ['payroll job', 'new front desk coordinator position posted'], exclude: [] }
@@ -45,6 +46,7 @@ async function scan(o: Opts = {}) {
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateFeedback(db)
   if (o.rejectCompanyB) db.prepare("INSERT INTO lead_feedback (id, tenant_id, version, verdict, level, reason, company_key, created_at) VALUES ('fb-b', 'A', 1, 'reject', 'account', 'not_useful', ?, ?)").run(companyKey(B.company), Date.now())
   saveKey(db, 'A', 'anthropic', KEY, master)
+  o.prepare?.(db)
   // a monitor's job queued by the production paths: the scheduled tick (runDueMonitors) or "Find leads now" (runPlayNow)
   let jid: string
   if (o.recurring === 'monitor_tick' || o.recurring === 'monitor_now') {
@@ -104,13 +106,17 @@ async function scan(o: Opts = {}) {
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
   if (o.adaptiveOff) delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED; else process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = o.adaptiveFlag ?? '1'
+  const envBefore = Object.fromEntries(Object.keys(o.env ?? {}).map(k => [k, process.env[k]])); Object.assign(process.env, o.env ?? {})
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null, ...o.deps })
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
     const leads = db.prepare("SELECT company, source_url, review_reason FROM leads WHERE scan_job_id = ? ORDER BY rowid").all(job.id) as { company: string; source_url: string; review_reason: string | null }[]
     const jobRow = db.prepare('SELECT status, error, verified FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; verified: number }
     return { db, jobId: job.id, r, searched, fetchBatches, extractions, pageReads, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
-  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
+  } finally {
+    globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED
+    for (const [k, v] of Object.entries(envBefore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  }
 }
 
 test('#381 zero actionable after round one: one different, bounded round on unseen pages finds a lead the same verifier accepts', async () => {
@@ -192,6 +198,25 @@ test('#381 budget near-exhausted (non-trial, own max_usd): the adaptive round\'s
     assert.ok(refusals >= 1, 'the refusal is recorded on the scan spend ledger (a budget refusal, not a count cap)')
     assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from a round that never ran is kept')
   } finally { process.env = saved }
+})
+
+test('#1082 the platform search budget exhausted by round one: the adaptive round stops as search_cap, never "found nothing"', async () => {
+  const saved = process.env.TINYFISH_GLOBAL_SEARCH_DAILY
+  process.env.TINYFISH_GLOBAL_SEARCH_DAILY = '8' // half (the fair-share room kept for one more tenant) is round one's four
+  try {
+    const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+    const s = await scan({ env: { DAZL_RUN_REPORT: '1' }, prepare: db => migrateAllSqlite(db) })
+    assert.equal(s.r, 'done')
+    assert.equal(s.searched.length, 4, `round one used this tenant's share: ${JSON.stringify(s.searched)}`)
+    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), 'the refused search was never sent')
+    // the adaptive round's own capacity report (council on the f144ccf1 fixes): the run report and the status note say so
+    const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+    const { sqliteDb } = await import('../lib/db/client.ts')
+    const st = await readScanStatus(sqliteDb(s.db), 'A', s.jobId) as { run_report: { capacity: { searches: number } | null }[]; capacity_note: string | null }
+    assert.ok((st.run_report.at(-1)?.capacity?.searches ?? 0) > 0, JSON.stringify(st.run_report.at(-1)?.capacity))
+    assert.equal(st.capacity_note, 'Platform search capacity reached today: results are thinner.')
+  } finally { if (saved === undefined) delete process.env.TINYFISH_GLOBAL_SEARCH_DAILY; else process.env.TINYFISH_GLOBAL_SEARCH_DAILY = saved }
 })
 
 test('#381 tenant daily cap exhausted by round one: the adaptive round stops with a visible status and makes no provider call', async () => {
@@ -334,4 +359,25 @@ test('#381 D3 provenance: round-two TinyFish text URLs reach the end-of-run veri
   const prov = lines.map(l => { try { return JSON.parse(l) as { verify_provenance?: { verifier_ok_tinyfish_had_text: number; candidates: number } } } catch { return null } }).find(x => x?.verify_provenance)?.verify_provenance
   assert.ok(prov, 'verify_provenance was emitted')
   assert.ok(prov.verifier_ok_tinyfish_had_text >= 1, `round two's page (B) counted as TinyFish-had-text: ${JSON.stringify(prov)}`)
+})
+
+// #1082 acceptance 3, end to end through the real runner (Hermes-PC review at f144ccf1, finding 2): when the platform's
+// daily TinyFish share trims a real scan's fetches, its run report records the capacity and the status read sends the
+// "results are thinner" note; the same scan with room to spare sends none.
+test('#1082 a scan the platform share trims reports capacity in its run report and the status read says results are thinner', async () => {
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const today = new Date().toISOString().slice(0, 10)
+  // another tenant already used the whole day's fetch allowance (4), so round one's fetch is refused for capacity
+  const trimmed = await scan({ aVerifies: true, env: { TINYFISH_GLOBAL_FETCH_DAILY: '4', DAZL_RUN_REPORT: '1' },
+    prepare: db => { migrateAllSqlite(db); db.prepare("INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, 'Z', 'fetch', 4)").run(today) } })
+  const st = await readScanStatus(sqliteDb(trimmed.db), 'A', trimmed.jobId) as { run_report: { capacity: { searches: number; fetches: number } | null }[]; capacity_note: string | null }
+  assert.ok((st.run_report.at(-1)?.capacity?.fetches ?? 0) > 0, `the run report counts the trimmed fetches: ${JSON.stringify(st.run_report.at(-1)?.capacity)}`)
+  assert.equal(st.capacity_note, 'Platform search capacity reached today: results are thinner.')
+  // control: no other tenant, room to spare -> no capacity, no note
+  const clear = await scan({ aVerifies: true, env: { TINYFISH_GLOBAL_FETCH_DAILY: '1000', DAZL_RUN_REPORT: '1' }, prepare: db => migrateAllSqlite(db) })
+  const st2 = await readScanStatus(sqliteDb(clear.db), 'A', clear.jobId) as { run_report: { capacity: unknown }[]; capacity_note: string | null }
+  assert.equal(st2.run_report.at(-1)?.capacity ?? null, null)
+  assert.equal(st2.capacity_note, null)
 })

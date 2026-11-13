@@ -5,13 +5,16 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob, getJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateRunReport } from '../lib/scan/run-report.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { leadStatus } from '../lib/outreach/campaign-view.ts'
 
 const hex = () => randomBytes(12).toString('hex')
 function fixture() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db)
+  // The gate markers and run report are read too (#1062: the draft guard's verdict, lib/scan/held-state.ts requiredGateHeldForJob).
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateRunReport(db)
   const job = (t: string, q: string) => { const id = createJob(db, t, { business_name: 'x', industry: 'test', location: 'test' }); db.prepare("UPDATE scan_jobs SET status='running', query=? WHERE id=?").run(q, id); return id }
   const lead = (j: string, company: string) => { const id = hex(); db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES(?,?,?,'',?,'Hiring','https://x.invalid/a','quote',80,70)").run(id, j, company, `${id}@x.invalid`); return id }
   const msg = (t: string, l: string, status: string, created: number) => db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status,created_at,sent_at) VALUES(?,?,?,?,?,?,?,?,?)").run(hex(), t, l, `${l}@x.invalid`, `Subject ${l}`, 'Fixture body text long enough for the guard, twenty chars plus.', status, created, status === 'sent' ? created : null)
