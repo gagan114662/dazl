@@ -10,6 +10,7 @@ import { migratePlatform } from '../db/platform-tables.ts'
 import type { Evidence } from '../sources/types.ts'
 import type { SearchTrace } from './trace.ts'
 import { flatProfile } from '../scan/icp.ts'
+import { captureError } from '../ops/errors.ts'
 
 // TinyFish Search + Fetch as the scan search backend (https://docs.tinyfish.ai/search-api, /fetch-api).
 // The key is the OPERATOR's (TINYFISH_API_KEY). It is read from the environment on the server only, sent only in the
@@ -48,6 +49,72 @@ function* used(t: Tx, day: string, tenant: string | null, kind: 'search' | 'fetc
 }
 const bump = (t: Tx, day: string, tenant: string, kind: 'search' | 'fetch', by: number) =>
   t.run('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?) ON CONFLICT(day, tenant_id, kind) DO UPDATE SET n = tinyfish_usage.n + excluded.n', [day, tenant, kind, by])
+// #1082 fair share of the operator's daily budget, per kind, in the caps transaction (same lock, both engines):
+//  - DAZL_GROWTH_TENANT_ID (dazl's own growth tenant) has a reserved slice, TINYFISH_GROWTH_RESERVE_PCT of the global
+//    cap (default 20), that no other tenant can consume; it also takes a fair share of the rest like any tenant.
+//  - Every tenant's share of the rest (the pool) is pool / (other tenants active today + 2): room is always kept for one
+//    more tenant, so whoever runs first cannot take the whole day. Never below one full scan (capped at half the pool),
+//    never more than what is left of the pool.
+// room = units this tenant may still use today; capacity = the platform share (not the per-scan or tenant cap) is the limit.
+const growthTenant = (env: Env) => env.DAZL_GROWTH_TENANT_ID?.trim() || null
+const reservePct = (env: Env) => { const raw = env.TINYFISH_GROWTH_RESERVE_PCT?.trim(); const v = raw ? Number(raw) : NaN; return Number.isFinite(v) && v >= 0 && v <= 90 ? v : 20 } // blank = unset (Number('') is 0)
+function* kindUsedBy(t: Tx, day: string, tenant: string, kind: 'search' | 'fetch'): TxBody<number> {
+  const r = yield* t.get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND tenant_id = ? AND kind = ?', [day, tenant, kind])
+  return Number(r!.n)
+}
+export function* fairRoom(t: Tx, day: string, tenant: string, kind: 'search' | 'fetch', L: Limits, env: Env): TxBody<number> {
+  const global = kind === 'search' ? L.globalSearchDaily : L.globalFetchDaily
+  const oneScan = kind === 'search' ? L.searchesPerScan : L.fetchesPerScan
+  const growth = growthTenant(env)
+  const reserve = growth ? Math.floor(global * reservePct(env) / 100) : 0
+  const pool = global - reserve
+  const total = yield* used(t, day, null, kind)
+  const growthUsed = growth ? yield* kindUsedBy(t, day, growth, kind) : 0
+  const poolUsed = total - growthUsed + Math.max(0, growthUsed - reserve)
+  // other tenants active today on this kind; the growth tenant lives on its reserve, so it does not shrink everyone's share
+  const others = yield* t.get<{ n: number }>('SELECT COUNT(DISTINCT tenant_id) AS n FROM tinyfish_usage WHERE day = ? AND kind = ? AND n > 0 AND tenant_id <> ? AND tenant_id <> ?', [day, kind, tenant, growth ?? ''])
+  // Room is always kept for one more tenant (the +2): a tenant that runs first, alone, cannot take the whole day before
+  // anyone else arrives. The floor is one full scan, but never more than half the pool.
+  const share = Math.max(Math.floor(pool / (Number(others!.n) + 2)), Math.min(oneScan, Math.floor(pool / 2)))
+  const mine = yield* kindUsedBy(t, day, tenant, kind)
+  if (growth && tenant === growth) {
+    const fromPool = Math.max(0, Math.min(share - Math.max(0, mine - reserve), pool - poolUsed))
+    return Math.max(0, Math.min(global - total, Math.max(0, reserve - mine) + fromPool))
+  }
+  return Math.max(0, Math.min(share - mine, pool - poolUsed, global - total))
+}
+// #1082: today's platform totals, summed in SQL (one row per kind): the public /api/health/scheduler reads this, so its
+// cost never grows with the number of active tenants (Hermes-PC review at f144ccf1, finding 3).
+export async function tinyfishTotals(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number } }> {
+  const L = limits(env), day = dayOf(now)
+  const rows = await asDb(db).all<{ kind: string; n: number }>('SELECT kind, COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? GROUP BY kind', [day])
+  const sum = (k: string) => Number(rows.find(r => r.kind === k)?.n ?? 0)
+  return { search: { used: sum('search'), cap: L.globalSearchDaily }, fetch: { used: sum('fetch'), cap: L.globalFetchDaily } }
+}
+// The operator's view (app/api/internal/tinyfish-today): the totals plus the largest TINYFISH_TOP_TENANTS (10) tenants'
+// units today, largest first, and how many tenants are active - all bounded in SQL. Counts only: no tenant ids.
+export const TINYFISH_TOP_TENANTS = 10
+export async function tinyfishToday(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number }; per_tenant: number[]; active_tenants: number }> {
+  const day = dayOf(now)
+  const totals = await tinyfishTotals(db, now, env)
+  const top = await asDb(db).all<{ n: number }>('SELECT SUM(n) AS n FROM tinyfish_usage WHERE day = ? GROUP BY tenant_id HAVING SUM(n) > 0 ORDER BY SUM(n) DESC LIMIT ?', [day, TINYFISH_TOP_TENANTS])
+  const active = await asDb(db).get<{ n: number }>('SELECT COUNT(DISTINCT tenant_id) AS n FROM tinyfish_usage WHERE day = ? AND n > 0', [day])
+  return { ...totals, per_tenant: top.map(r => Number(r.n)), active_tenants: Number(active?.n ?? 0) }
+}
+
+// #1082: one operator alert per UTC day when the platform has used over 80% of a daily cap before 18:00 UTC (the error
+// reporter, like the health route's alerts); the key in rate_limits keeps it to one per day per kind across instances.
+function* earlyHighUse(t: Tx, day: string, now: number, kind: 'search' | 'fetch', L: Limits): TxBody<{ used: number; cap: number } | null> {
+  if (new Date(now * 1000).getUTCHours() >= 18) return null
+  const cap = kind === 'search' ? L.globalSearchDaily : L.globalFetchDaily
+  const u = yield* used(t, day, null, kind)
+  if (u * 5 <= cap * 4) return null
+  const key = `tinyfish:alert80:${kind}:${day}`
+  if (yield* t.get('SELECT 1 AS x FROM rate_limits WHERE key = ?', [key])) return null
+  yield* t.run('INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, ?) ON CONFLICT (key) DO NOTHING', [key, (now + 2 * 86400) * 1000])
+  return { used: u, cap }
+}
+
 // The caps are checked and the use recorded in one transaction, so concurrent calls cannot both pass a cap: SQLite runs
 // it synchronously, and on Postgres the day's advisory lock orders it against every other instance.
 function* lockDay(t: Tx, day: string): TxBody<void> {
@@ -61,7 +128,7 @@ function* lockDay(t: Tx, day: string): TxBody<void> {
 // Checked inside the caps transaction, so on Postgres the day's advisory lock orders them across instances too.
 const MINUTE_KEY = 'tinyfish:minute', BLOCKED_KEY = 'tinyfish:blocked'
 // Kept for tests that share one store between scenarios; the state is in the store, so a fresh store starts clean.
-export const resetTinyfishState = async (db?: DbLike) => { if (db) await asDb(db).run('DELETE FROM rate_limits WHERE key IN (?, ?)', [MINUTE_KEY, BLOCKED_KEY]) }
+export const resetTinyfishState = async (db?: DbLike) => { if (db) { await asDb(db).run('DELETE FROM rate_limits WHERE key IN (?, ?)', [MINUTE_KEY, BLOCKED_KEY]); await asDb(db).run("DELETE FROM rate_limits WHERE key LIKE 'tinyfish:alert80:%'") } }
 function* allow(t: Tx, now: number, perMinute: number): TxBody<boolean> {
   const ms = now * 1000
   const b = yield* t.get<{ reset_at: number }>('SELECT reset_at FROM rate_limits WHERE key = ?', [BLOCKED_KEY])
@@ -79,6 +146,11 @@ async function block(db: DbLike, untilS: number): Promise<void> {
     await asDb(db).run(`INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 0, ?)
       ON CONFLICT (key) DO UPDATE SET reset_at = CASE WHEN excluded.reset_at > rate_limits.reset_at THEN excluded.reset_at ELSE rate_limits.reset_at END`, [BLOCKED_KEY, untilS * 1000])
   } catch { /* the call already failed; a store error here leaves the breaker as it was */ }
+}
+
+// Counts only, to the operator's error reporter: no tenant, query or URL.
+function reportHighUse(kind: 'search' | 'fetch', a: { used: number; cap: number }): void {
+  try { captureError(new Error(`TinyFish ${kind} budget over 80 percent used before 18:00 UTC: ${a.used} of ${a.cap}`), { source: 'worker', where: 'tinyfish:budget' }) } catch { /* reporting never blocks a scan */ }
 }
 
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
@@ -114,14 +186,21 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.search({ query, attempted: false, outcome: 'disabled', hits: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
-  const gate = await asDb(db).tx(function* (t: Tx): TxBody<'cap' | 'rate' | 'go'> {
+  let alert: { used: number; cap: number } | null = null
+  const gate = await asDb(db).tx(function* (t: Tx): TxBody<'cap' | 'capacity' | 'rate' | 'go'> {
     yield* lockDay(t, day)
-    if (spent.searches >= L.searchesPerScan || (yield* used(t, day, tenant, 'search')) >= L.tenantDaily || (yield* used(t, day, null, 'search')) >= L.globalSearchDaily) return 'cap'
+    if (spent.searches >= L.searchesPerScan || (yield* used(t, day, tenant, 'search')) >= L.tenantDaily) return 'cap'
+    // the platform's share (#1082): the global cap, the growth reserve and this tenant's fair share of the rest
+    if ((yield* fairRoom(t, day, tenant, 'search', L, env)) < 1) return 'capacity'
     if (!(yield* allow(t, now, L.perMinute))) return 'rate'
     spent.searches++; yield* bump(t, day, tenant, 'search', 1)
+    alert = yield* earlyHighUse(t, day, now, 'search', L)
     return 'go'
   })
-  if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate } }
+  if (alert) reportHighUse('search', alert)
+  // 'capacity' is recorded as its own outcome (the run report says results are thinner) and returned as 'cap', so every
+  // caller that stops at a cap stops here too.
+  if (gate !== 'go') { d.trace?.search({ query, attempted: false, outcome: gate, hits: null }); return { ok: false, reason: gate === 'capacity' ? 'cap' : gate } }
   await d.charge?.('search', 1)
   // Inside a scan: reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal sends nothing.
   let hold: SpendHold | null
@@ -149,21 +228,34 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   return { ok: true, hits }
 }
 
-export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number }> {
+export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number; capacity?: true; tenantLeft?: number }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
-  const gate = await asDb(db).tx(function* (t: Tx): TxBody<{ out: 'cap' | 'rate' | 'go'; batch: string[] }> {
+  let alert: { used: number; cap: number } | null = null
+  const gate = await asDb(db).tx(function* (t: Tx): TxBody<{ out: 'cap' | 'capacity' | 'rate' | 'go'; batch: string[]; trimmed: number; tenantLeft: number }> {
     yield* lockDay(t, day)
-    const room = Math.min(10, L.fetchesPerScan - spent.fetches, L.tenantDaily - (yield* used(t, day, tenant, 'search')), L.globalFetchDaily - (yield* used(t, day, null, 'fetch')))
+    const tenantRoom = L.tenantDaily - (yield* used(t, day, tenant, 'search'))
+    const own = Math.min(10, urls.length, L.fetchesPerScan - spent.fetches, tenantRoom)
+    // what the tenant's own daily cap still allows after this batch's own units: a caller recording pages it will not try
+    // as capacity never counts ones the tenant cap would have refused anyway
+    const tenantLeft = Math.max(0, tenantRoom - Math.max(0, own))
+    // the platform's share (#1082) can only lower what this scan's own caps allow; what it removes is "capacity"
+    const room = Math.min(own, yield* fairRoom(t, day, tenant, 'fetch', L, env))
     const batch = urls.slice(0, Math.max(0, room))
-    if (batch.length === 0) return { out: 'cap', batch }
-    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch }
+    const trimmed = Math.max(0, own) - batch.length
+    if (batch.length === 0) return { out: own > 0 ? 'capacity' : 'cap', batch, trimmed, tenantLeft }
+    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch, trimmed, tenantLeft }
     spent.fetches += batch.length; yield* bump(t, day, tenant, 'fetch', batch.length)
-    return { out: 'go', batch }
+    alert = yield* earlyHighUse(t, day, now, 'fetch', L)
+    return { out: 'go', batch, trimmed, tenantLeft }
   })
+  if (alert) reportHighUse('fetch', alert)
   const batch = gate.batch
-  if (gate.out === 'cap') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'cap', pages: null }); return { ok: false, reason: 'cap' } }
+  // a share refusal records the units the share removed (what this scan's own caps would have allowed), not every URL asked
+  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return gate.out === 'capacity' ? { ok: false, reason: 'cap', capacity: true, tenantLeft: gate.tenantLeft } : { ok: false, reason: 'cap' } }
+  // a batch the platform share cut short: the pages it left out are recorded as not fetched for capacity
+  if (gate.trimmed > 0) d.trace?.fetch({ requested: gate.trimmed, attempted: false, outcome: 'capacity', pages: null })
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
   await d.charge?.('fetch', batch.length)
   let hold: SpendHold | null
@@ -244,7 +336,14 @@ export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], sp
   let first: Fail | null = null; let firstStatus: number | undefined; let anyOk = false
   for (let i = 0; i < todo.length; i += 10) {
     const r = await tfFetch(db, tenant, todo.slice(i, i + 10), spent, d)
-    if (!r.ok) { first = first ?? r.reason; firstStatus = firstStatus ?? r.status; break }
+    if (!r.ok) {
+      first = first ?? r.reason; firstStatus = firstStatus ?? r.status
+      // #1082: the platform share refused this batch, so it would refuse the ones not tried either: those pages are left
+      // out for capacity too, and are recorded as such (the run report's count, not only the first batch's 10)
+      const rest = Math.min(todo.length - (i + 10), r.tenantLeft ?? 0)   // never more than the tenant's own daily cap still allows
+      if (r.capacity && rest > 0) d.trace?.fetch({ requested: rest, attempted: false, outcome: 'capacity', pages: null })
+      break
+    }
     anyOk = true; pages.push(...r.pages)
   }
   if (!anyOk) return firstStatus === undefined ? { ok: false, reason: first ?? 'cap' } : { ok: false, reason: first ?? 'cap', status: firstStatus }

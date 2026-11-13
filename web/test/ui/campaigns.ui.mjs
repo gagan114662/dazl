@@ -77,7 +77,7 @@ try {
   assert.equal(await text(nyc, 'outreach'), 'Outreach2 draft, 0 approved, 0 sent2 held, 0 waiting on setup')
   assert.match(await ohio.textContent(), /Dental owners in Ohio/)
   assert.equal(await text(ohio, 'discovery'), 'Discovery4 foundfrom 9 candidates')
-  assert.equal(await text(ohio, 'qualification'), 'Qualification2 source-checked, 0 confirmed by you, 1 to review2 timing not confirmed, 0 unverified, 1 rejected')
+  assert.equal(await text(ohio, 'qualification'), 'Qualification2 source-checked, 0 confirmed by you, 1 to review2 timing not confirmed, 0 research only, 0 unverified, 1 rejected')
   assert.equal(await text(ohio, 'contact'), 'Contact2 with a contact')
   assert.equal(await text(ohio, 'outreach'), 'Outreach1 draft, 0 approved, 1 sent1 held, 0 waiting on setup')
   assert.equal(await text(ohio, 'sequence'), 'Sequence0 running0 finished or stopped')
@@ -86,7 +86,7 @@ try {
   assert.equal(await ohio.getByTestId('next-action').getAttribute('href'), `/app/leads?job_id=${'a'.repeat(24)}`)
   // The legacy row is unverified (no stored excerpt) and is never offered as ready to draft.
   assert.match(await legacy.textContent(), /Legacy search/)
-  assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 1 unverified, 0 rejected')
+  assert.equal(await text(legacy, 'qualification'), 'Qualification0 source-checked, 0 confirmed by you, 0 to review0 timing not confirmed, 0 research only, 1 unverified, 0 rejected')
   assert.equal(await text(legacy, 'contact'), 'Contact1 with a contact')
   assert.equal(await legacy.getByTestId('next-action').textContent(), 'Check 1 unverified lead against their sources', 'an honest research step, never "nothing waiting"')
   if (process.env.SHOTS) {
@@ -113,7 +113,7 @@ try {
     assert.equal(await d.getByTestId('run-tag').getAttribute('title'), 'None passed: you rejected the 1 lead this search found', 'tooltip: not the scan-time "1 source-checked"')
     assert.equal(await d.getByTestId('run-label').textContent(), 'None passed: you rejected the 1 lead this search found')
     assert.equal(await text(d, 'discovery'), 'Discovery1 foundfrom 1 candidates')
-    assert.equal(await text(d, 'qualification'), 'QualificationNone passed: 1 rejected0 timing not confirmed, 0 unverified, 1 rejected', 'funnel')
+    assert.equal(await text(d, 'qualification'), 'QualificationNone passed: 1 rejected0 timing not confirmed, 0 research only, 0 unverified, 1 rejected', 'funnel')
     assert.equal(await d.getByTestId('next-action').textContent(), 'Try a broader search', 'next step')
     assert.equal(await d.getByTestId('next-action').getAttribute('href'), `/app/leads?q=${encodeURIComponent('Dental practices in a big city - opening a new location')}`)
     assert.doesNotMatch(await d.textContent(), /Leads found|Nothing waiting on you/)

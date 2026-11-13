@@ -14,7 +14,8 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
+import { heldCopyBoard } from '../sources/ats-posting.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -404,7 +405,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // A copy can only promote the candidate to `passed`; any miss leaves it exactly where the real failure put it.
       const copy = why && held ? held.text.copyFor(held.attempt, c.source_url, why) : null
       if (copy?.ok) {
-        const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
+        // a copy of a board posting keeps the board identity the posting URL gives (#1126): never title-matched as an ordinary page
+        const board = heldCopyBoard(c.source_url, copy.page.title)
+        const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt, ...(board ? { board } : {}) }
         // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
         let cc = c
         const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
@@ -440,8 +443,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
-        const hay = `${norm(page.title)} ${norm(page.text).slice(0, 4000)}`
-        if (key.length >= 2 && hasPhrase(hay, key)) {
+        // a board record's heading is its board identity (#1126), never its job title or slug as a phrase
+        const named = page.board ? pageHeadingNames(page, key) || hasPhrase(norm(page.text).slice(0, 4000), key) : hasPhrase(`${norm(page.title)} ${norm(page.text).slice(0, 4000)}`, key)
+        if (key.length >= 2 && named) {
           toReview(c, 'quote_unconfirmed'); continue
         }
       }
@@ -1292,6 +1296,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
+    const capacityUnits = { searches: 0, fetches: 0 } // #1082: units the platform share left out, both rounds
     let tfCandidates = 0 // candidates TinyFish round one extracted (the adaptive round only follows a round that ran)
     let budgetRefusal: string | null = null // the spend guard's exact reason for that refusal (diagnostics only)
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
@@ -1333,6 +1338,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const fb = feedbackGate(db, job.user_id), fbCounts: Record<string, number> = {}
     const forget = <T extends LeadDraft>(list: T[]) => fb.apply(list, fbCounts, auditDrop(audit))   // before the verifier: a rejected company costs no fetch
     { const st = { ...summarizeTrace(diag.trace), ...diag.info }
+      // #1082: the platform's fair share of the operator's search budget limited this scan (results are thinner)
+      capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0
+      if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null, audit, ownFetch: verifierFetch }) }
     const fetchP = cachedFetcher(recordingFetcher(deps.trace ? deps.trace.pageFetcher(deps.fetchPage ?? fetchPageDetailed) : deps.fetchPage ?? fetchPageDetailed, verifierFetch))
     // TinyFish off, capped, failing or empty: try the free news search before the provider's paid web search. Not after
@@ -1596,10 +1604,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
           const st = summarizeTrace(diag2.trace)
           ledger.stats('search:adaptive', { ...st, ...diag2.info })
+          capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0
+          if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
           diag.tfTextUrls.push(...diag2.tfTextUrls) // verify_provenance at the end of the run counts round-two pages too (D3)
           const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
           const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
-          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : st.searches_not_attempted.cap ? 'search_cap' : 'empty') // money vs count: a budget refusal is never the search-cap status (D1)
+          // #1082: a search the platform share refused ('capacity') is a search cap too, never "found nothing"
+          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : (st.searches_not_attempted.cap || st.searches_not_attempted.capacity) ? 'search_cap' : 'empty') // money vs count: a budget refusal is never the search-cap status (D1)
           else {
             ledger.candidates('search:adaptive', fresh)
             assertOwned(db, job)

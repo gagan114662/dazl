@@ -18,10 +18,26 @@ test('without an email: rejected, then review, then evidence state; never "verif
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: null }), []).text, 'Rejected')
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected' }), []).text, 'Rejected', 'a reject with no reason')
   assert.equal(leadStatus(lead('a', { quarantined_at: 1, quarantine_reason: 'Rejected: Wrong company' }), []).text, 'Rejected: Wrong company')
-  assert.deepEqual(leadStatus(lead('a', { review_reason: 'no_quote' }), []), { stage: 'review', text: 'Needs your review' })
+  assert.deepEqual(leadStatus(lead('a', { review_reason: 'quote_unconfirmed' }), []), { stage: 'review', text: 'Needs your review' })
+  // #683: research-only reasons, a window hold and unknown reasons are research, never "Needs your review".
+  for (const o of [{ review_reason: 'no_quote' }, { review_reason: 'outside_window_undated' }, { review_reason: 'counterparty_signal' }, { review_reason: 'quote_unconfirmed', window_held: true }])
+    assert.deepEqual(leadStatus(lead('a', o), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' }, JSON.stringify(o))
   assert.deepEqual(leadStatus(lead('a'), []), { stage: 'qualified', text: 'Source-checked, not drafted' })
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5 }), []), { stage: 'qualified', text: 'Confirmed by you, not drafted' })
   assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null }), []), { stage: 'unverified', text: 'Not verified - check the source' }, 'legacy row with a confidence but no excerpt')
+})
+
+test('#683: a source-checked or confirmed lead still held is research, never "not drafted"', () => {
+  // Machine-verified but the time window holds it: review never ran, so there is no review_reason - only window_held.
+  assert.deepEqual(leadStatus(lead('a', { window_held: true }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
+  // Confirmed OUT of a hold no check can resolve ("Keep as research"): review_reason is cleared, human_confirmed_from keeps why.
+  assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'counterparty_signal' }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
+  // Confirmed OUT of a window hold the same way.
+  assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'outside_window_undated', window_held: true }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
+  // A confirm-from reason a check CAN resolve (not in the uncheckable set) stays qualified: confirming it was the fix.
+  assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'quote_unconfirmed' }), []), { stage: 'qualified', text: 'Confirmed by you, not drafted' })
+  // Confirmed OUT of a failed REQUIRED check ("Keep as research", #683 round 2): no confirmation clears it either.
+  assert.deepEqual(leadStatus(lead('a', { evidence_excerpt: null, human_confirmed_at: 5, human_confirmed_from: 'sales_hiring_check_failed' }), []), { stage: 'research', text: 'Research only - checking the source cannot make it ready' })
 })
 
 test("only this scan's emails are listed", () => {
