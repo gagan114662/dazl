@@ -118,11 +118,12 @@ test('#882 #759 a real scan\'s board-dated hiring lead raises one new_company al
 })
 
 test('#882 a real scan\'s posting published outside the play\'s window is stored by the scan but raises no alert and no event', async () => {
-  const x = await monitorScan(daysAgo(200))
+  const old = daysAgo(200) // read once: the same day is served and asserted even if the run crosses UTC midnight
+  const x = await monitorScan(old)
   // the scan did store the posting, dated by the board (held for review as outside the window): the detector is what keeps it out
   const rows = leadRows(x.db)
   assert.equal(rows.length, 1, JSON.stringify(x.job))
-  assert.deepEqual([rows[0].company, rows[0].event_date, rows[0].event_date_proof], ['Flexport', daysAgo(200), 'ats_structured'], JSON.stringify(rows[0]))
+  assert.deepEqual([rows[0].company, rows[0].event_date, rows[0].event_date_proof], ['Flexport', old, 'ats_structured'], JSON.stringify(rows[0]))
   assert.equal(await collectMonitorResults(sqliteDb(x.db), { now: nowS() + ENRICH_STALE_S + 60 }), 0)
   assert.equal((x.db.prepare('SELECT count(*) AS n FROM monitor_events').get() as { n: number }).n, 0)
   assert.equal((x.db.prepare('SELECT new_count FROM monitor_runs').get() as { new_count: number }).new_count, 0)
