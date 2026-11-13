@@ -65,6 +65,12 @@ function sampleOf(db: Database.Database, tenantId: string, leadId: string, id: s
   return { leadId, to: m.to_email, body: m.body, evidenceOk: !code || dateBad || contactBad, dateOk: !dateBad, contactOk: !contactBad, claimIssues }
 }
 
+// The calibration sample's candidates (parameters: tenant, minimum confidence, tenant). Never a staging real-company check lead
+// (#1036: source_kind 'staging_check', a real company's inbox the tester did not choose to contact).
+export const CALIBRATION_CANDIDATES_SQL = `SELECT l.id, l.contact, l.source_url, l.signal, l.evidence_excerpt, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL} AND l.quarantined_at IS NULL AND COALESCE(l.source_kind, '') <> 'staging_check'
+     ORDER BY l.score DESC LIMIT 200`
+
 export async function runCalibration(db: Database.Database, tenantId: string, businessName: string, d: Deps = {}): Promise<PreflightResult> {
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stored = readLaunchPolicy(db, tenantId)
@@ -81,10 +87,7 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
   // samples: the audience's best verified leads with a published recipient, as autopilot would pick them, skipping excluded recipients.
   // A sample draft is an ordinary draft the tenant owns: autopilot never re-drafts a lead that already has a message, so
   // these leads are sent by hand (or deleted) by the tenant, never by the launch; they appear as drafts in Outreach.
-  const candidates = db.prepare(
-    `SELECT l.id, l.contact, l.source_url, l.signal, l.evidence_excerpt, j.id AS play FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL} AND l.quarantined_at IS NULL
-     ORDER BY l.score DESC LIMIT 200`).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null; play: string }[]
+  const candidates = db.prepare(CALIBRATION_CANDIDATES_SQL).all(tenantId, MIN_CONFIDENCE, tenantId) as { id: string; contact: string | null; source_url: string | null; signal: string | null; evidence_excerpt: string | null; play: string }[]
   const crawlRows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl'")
   const samples: SampleDraft[] = []
   for (const c of candidates) {
