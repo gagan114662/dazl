@@ -18,6 +18,7 @@
 // sidebar) is never dated by it.
 import { postingDay } from '../sources/ats-posting.ts'
 import { eventDateBound } from './event-date-binding.ts'
+import { datePositions, eventYears } from './date-in-text.ts'
 
 export type SocialPlatform = 'instagram' | 'facebook' | 'linkedin' | 'x' | 'tiktok' | 'youtube'
 export interface SocialPostRef { platform: SocialPlatform; id: string }
@@ -111,7 +112,8 @@ function restOfObject(s: string, i: number, max = 400_000): Map<string, unknown>
   return out
 }
 const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, 5000) : '')
+// line breaks are kept: a caption ends its sentences with them as often as with punctuation
+const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/[ \t\r\f\v]+/g, ' ').replace(/ *\n\s*/g, '\n').trim().slice(0, 5000) : '')
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 const toText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, e: string) => {
   if (e[0] !== '#') return ENT[e.toLowerCase()] ?? ' '
@@ -202,23 +204,57 @@ export function socialPostOf(rawUrl: string, finalUrl: string, html: string, now
 }
 
 const ws = (s: string) => s.replace(/\s+/g, ' ').trim()
-// The quote states its event at another time than the post's: "3 days ago", "last year", "yesterday", "since 2019", "back in",
-// "soon", "tomorrow", "next month", "will open", "upcoming". The post's day is then not the event's day.
-const OTHER_TIME = /\b(?:ago|last\s+(?:week|weekend|month|year|spring|summer|fall|autumn|winter)|yesterday|earlier\s+this|since|back\s+in|years?\s+(?:of|in\s+business)|soon|tomorrow|next\s+(?:week|weekend|month|year|spring|summer|fall|autumn|winter)|upcoming|will|shall|going\s+to)\b/i
-// A post about another time altogether.
-const RETRO = /\b(?:throwback|anniversary|flashback|tbt)\b/i
+// #878 review (CHANGES at ad04c841): the post's time is the event's day only when NOTHING in the quote or in the post's sentence
+// that carries it says when: any stated day (datePositions), any year, a month or weekday name, today / tomorrow / yesterday /
+// tonight, this / last / next <anything>, a season, "N days ago", "for five years", "since ...", "recently", "back in", and
+// future or ongoing wording (opening, opens, will, coming, soon, upcoming, planned). Any of them means the statement carries its
+// own time (or none we can read), so the post day is not taken: the text binding alone decides, as on any page. Fail closed.
+const MONTH = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i
+const MAY = /\bMay\b/   // "may" the verb is not a month: only the capitalised word counts (in any position)
+const WHEN = /\b(?:(?:mon|tues|wednes|thurs|fri|satur|sun)days?|weekends?|today|tonight|tomorrow|yesterday|(?:this|last|next|past|coming|previous|following|same|that)\s+(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|week|weekend|month|year|season|morning|afternoon|evening|night|day|time|spring|summer|fall|autumn|winter|quarter)|spring|summer|fall|autumn|winter|ago|since|recent(?:ly)?|earlier|later|back\s+in|for\s+(?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|many|a\s+few|over|more\s+than|nearly|almost)\b[^.!?]{0,20}?\b(?:days?|weeks?|months?|years?|decades?)|years?\s+(?:of|in\s+business)|anniversary|throwback|flashback|tbt|opening|opens|will|shall|going\s+to|coming|soon|upcoming|plan(?:s|ned|ning)?|next)\b/i
+const YEAR = /\b(?:19|20)\d\d\b/
+function statesTime(s: string): string | null {
+  if (datePositions(s).length) return 'a stated day'
+  if (YEAR.test(s) || eventYears(s).length) return 'a year'
+  if (MONTH.test(s.replace(/\bmay\b/g, ' ')) || MAY.test(s)) return 'a month'
+  const w = WHEN.exec(s); return w ? `"${w[0]}"` : null
+}
+// A post about another company's event: the company is named only after a congratulation / thanks / "at" / "to" / "for" / "with"
+// ("Congrats to our friends at Northwind Dental on opening ..."): the post's author is someone else and its day is theirs.
+function thirdParty(sentence: string, company: string): boolean {
+  const name = ws(company).toLowerCase(), low = sentence.toLowerCase()
+  if (name.length < 2) return false
+  const at: number[] = []
+  for (let i = low.indexOf(name); i >= 0; i = low.indexOf(name, i + 1)) at.push(i)
+  if (!at.length) return false
+  if (/\b(?:congrat\w*|kudos|thanks?|thank\s+you|shout\s*-?\s*out|cheers|proud\s+of|happy\s+for|excited\s+for)\b/i.test(sentence.slice(0, at[0]))) return true
+  // every mention is an object ("at / to / for / with / from / of / by" right before it): the company is never the one speaking
+  return at.every(i => /\b(?:at|to|for|with|from|of|by)\s+(?:(?:our|the|my|your)\s+)?(?:(?:friends?|neighbou?rs?|team|folks|people|partners?|clients?)\s+(?:at|from)\s+)?$/i.test(sentence.slice(0, i)))
+}
 
-// Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text,
-// states no other time, and the existing binding rule (eventDateBound) ties the day to this company and event when the post's
-// day stands as the dateline of the post's statement: "<day> - <the post's text from the quote on>".
+// Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text, neither
+// the quote nor the post's sentence that carries it states any time (statesTime) or reads as another party's post (thirdParty),
+// and the existing binding rule (eventDateBound) ties the day to this company and event when the post's day stands as the
+// dateline of the post's statement: "<day> - <the post's text from the quote on>".
 export function socialPostBound(post: SocialPost | null | undefined, quote: string, company: string): { bound: boolean; why: string } {
   if (!post) return { bound: false, why: 'no social post record' }
   const q = ws(quote).replace(/^(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+$/, '')
   if (q.length < 20) return { bound: false, why: 'no quote' }
-  const own = post.texts.map(ws).find(t => t.toLowerCase().includes(q.toLowerCase()))
-  if (!own) return { bound: false, why: "the quote is not in the post's own text" }
-  if (RETRO.test(own)) return { bound: false, why: 'the post looks back at an earlier time' }
-  if (OTHER_TIME.test(q)) return { bound: false, why: "the quote states another time than the post's" }
+  const raw = post.texts.find(t => ws(t).toLowerCase().includes(q.toLowerCase()))
+  if (raw === undefined) return { bound: false, why: "the quote is not in the post's own text" }
+  const own = ws(raw)
+  // the sentence(s) of the post that carry the quote: line breaks and . ! ? end a sentence (captions break lines without punctuation)
+  const lines = raw.replace(/[ \t\r\f\v]+/g, ' ')
+  const re = new RegExp(q.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'i')
+  const m = re.exec(lines)
+  if (!m) return { bound: false, why: "the quote is not in the post's own text" }
+  const startAt = Math.max(...['\n', '. ', '! ', '? '].map(b => { const k = lines.lastIndexOf(b, m.index); return k < 0 ? 0 : k + b.length }))
+  const ends = ['\n', '. ', '! ', '? '].map(b => lines.indexOf(b, m.index + m[0].length)).filter(k => k >= 0)
+  const sentence = ws(lines.slice(startAt, ends.length ? Math.min(...ends) + 1 : lines.length))
+  const when = statesTime(q) ?? statesTime(sentence)
+  if (when) return { bound: false, why: `the quote or its sentence states its own time (${when}), so the post's day is not its event's day` }
+  if (/\b(?:anniversary|throwback|flashback|tbt)\b/i.test(own)) return { bound: false, why: 'the post looks back at an earlier time' }
+  if (thirdParty(sentence, company)) return { bound: false, why: "the post speaks about this company from someone else's side" }
   const at = own.toLowerCase().indexOf(q.toLowerCase())
   const b = eventDateBound(post.day, `${post.day} - ${own.slice(at)}`, q, company)
   return b.bound

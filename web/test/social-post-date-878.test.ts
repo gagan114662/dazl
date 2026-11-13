@@ -249,3 +249,69 @@ test('#878 end to end: an Instagram-cited opening lead gets the clause row "evid
     assert.doesNotMatch(r!.reasons.join(' '), /not tied to this company and event/)
   } finally { restore() }
 })
+
+// ---- review at ad04c841 (CHANGES): the post's day must never date a statement that carries its own time, or another party's post
+const TIMED: string[] = [
+  'Northwind Dental opened a new location in Leslieville in March 2025, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville in 2025, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville on October 1, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville last Friday, our second clinic.',
+  'Northwind Dental grand opening of our Leslieville location this Saturday, October 25!',
+  'Northwind Dental is opening a new location in Leslieville on Saturday.',
+  'Northwind Dental opens a new location in Leslieville in December, our second clinic.',
+  'Northwind Dental has been open in Leslieville for five years, thanks to all our patients.',
+  'Northwind Dental opened a new location in Leslieville in spring 2024, our second clinic.',
+  'Northwind Dental opened its first location in Leslieville in 2019 and its second today.',
+  'Northwind Dental opened a new location in Leslieville yesterday, our second clinic.',
+  'Northwind Dental recently opened a new location in Leslieville, our second clinic.',
+]
+const quoteOf = (caption: string) => caption.replace(/[!.]$/, '')
+// a time stated anywhere in the quote's own sentence counts, even when the quote is cut before it
+const CUT = { caption: 'Northwind Dental opened a new location in Leslieville on October 1, our second clinic.', quote: 'Northwind Dental opened a new location in Leslieville' }
+
+test('#878 review R1: a quote, or the post sentence that carries it, stating its own time (or none we can read) never takes the post day', () => {
+  for (const caption of TIMED) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    assert.equal(post?.day, '2026-10-20', caption)
+    const r = socialPostBound(post, quoteOf(caption), 'Northwind Dental')
+    assert.equal(r.bound, false, `${caption}: ${r.why}`)
+  }
+  const cut = socialPostOf(IG, IG, igPage({ caption: CUT.caption }), NOW)
+  assert.equal(socialPostBound(cut, CUT.quote, 'Northwind Dental').bound, false, 'the date sits in the same sentence, after the cut quote')
+  // a time in ANOTHER sentence of the caption does not stop the quote's own sentence from being dated by the post
+  const other = socialPostOf(IG, IG, igPage({ caption: `${QUOTE}\nOpen Monday to Saturday, 9am to 6pm.` }), NOW)
+  assert.equal(socialPostBound(other, QUOTE, 'Northwind Dental').bound, true)
+})
+
+test('#878 review R1/R2: through the verifier (claimed day none), every timed quote ends undated or held, never page_bound with the post day; a quote\'s own day wins', async () => {
+  for (const caption of [...TIMED, CUT.caption]) {
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption, takenAt: at('2026-10-20T15:30:12Z') }) }))
+    try {
+      const quote = caption === CUT.caption ? CUT.quote : quoteOf(caption)
+      const o = await verifyLeads([draft({ excerpt: quote })], read, new Date(NOW))
+      const all = [...o.leads, ...o.review]
+      assert.ok(all.length >= 1, caption)
+      for (const l of all) assert.ok(l.event_date !== '2026-10-20' && l.event_date_proof !== 'page_bound', `${caption}: ${JSON.stringify([l.event_date, l.event_date_proof, (l as { review_reason?: string }).review_reason])}`)
+    } finally { restore() }
+  }
+  // R2: a quote naming its own day keeps that day (the text binding), never the post's
+  const DAYED = 'Northwind Dental opened a new location in Leslieville on October 1, 2026, our second clinic.'
+  const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption: DAYED }) }))
+  try {
+    const own = await verifyLeads([draft({ excerpt: quoteOf(DAYED), event_date: '2026-10-01' })], read, new Date(NOW))
+    assert.deepEqual(own.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-01', 'page_bound']])
+    assert.doesNotMatch(own.leads[0].event_date_proof_note ?? '', /post's own structured publish time/)
+    const none = await verifyLeads([draft({ excerpt: quoteOf(DAYED) })], read, new Date(NOW))
+    assert.deepEqual(none.leads.map(l => [l.event_date, l.event_date_proof ?? null]), [[null, null]])
+  } finally { restore() }
+})
+
+test('#878 review R5: another party\'s post about the company (congratulations, "our friends at") is not dated by the post', () => {
+  for (const caption of ['Congrats to our friends at Northwind Dental, who opened a new location in Leslieville!', 'Huge shout-out to Northwind Dental, who opened a new location in Leslieville.', 'We designed the space for our friends at Northwind Dental, who opened a new location in Leslieville.']) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    assert.equal(socialPostBound(post, quoteOf(caption), 'Northwind Dental').bound, false, caption)
+  }
+  // the company's own post that also thanks someone is still its own
+  const own = socialPostOf(IG, IG, igPage({ caption: 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team!' }), NOW)
+  assert.equal(socialPostBound(own, 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team', 'Northwind Dental').bound, true)
+})
