@@ -133,6 +133,13 @@ jobs:
           mkdir -p preview/lossy-profile
           SHOTS=preview/lossy-profile node test/ui/lossy-profile.ui.mjs | tee /tmp/lp.out
           ! grep -q '^SKIP' /tmp/lp.out
+      # #1095: back from Link Google, every result (linked, already, each failure) says how it went, restores the same search and reopens the step where it started, on onboarding and Leads, at 1280 and 390. It must run, not skip.
+      - name: Google link return (note, restored search, open step, Run enabled)
+        run: |
+          set -o pipefail
+          mkdir -p preview/google-link-return
+          SHOTS=preview/google-link-return node test/ui/google-link-return.ui.mjs | tee /tmp/glr.out
+          ! grep -q '^NOT RUN' /tmp/glr.out
       # The #409 KeyInline nested-form regression: inside the first-run brain form, 'Save key' (click AND Enter) must run the real llm-key PUT with zero native document POSTs. It must run, not skip.
       - name: KeyInline save inside the brain form (no nested-form capture, click + Enter)
         run: |
