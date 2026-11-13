@@ -90,7 +90,7 @@ export function genericPlace(query: string): Place | null {
 // job-board source never ran and the trial's only readable, dated hiring evidence was never read. A US "<City>, <ST>" or
 // "<City>, <State name>" is that CITY: a posting is in it when its location names the city as a whole word and names no other US state.
 // The city never widens to its state (Dallas, TX is not Austin, TX).
-const CITY_LEAD_STOP = new Set(['account', 'accounts', 'executive', 'executives', 'manager', 'managers', 'sales', 'hiring', 'hire', 'hires', 'companies', 'company', 'startups', 'startup', 'find', 'b2b', 'saas', 'representative', 'representatives', 'director', 'directors', 'engineer', 'engineers', 'developer', 'developers', 'ae', 'aes', 'sdr', 'sdrs', 'bdr', 'bdrs', 'senior', 'junior', 'lead', 'head', 'vp', 'firms', 'agencies', 'dental', 'clinics', 'practices', 'in', 'near', 'at', 'the', 'and', 'or', 'for', 'of', 'from', 'tech', 'software', 'fintech', 'healthtech', 'marketing', 'operations', 'customer', 'success', 'growth', 'founder', 'founders', 'first', 'new', 'our', 'their'])
+const CITY_LEAD_STOP = new Set(['account', 'accounts', 'executive', 'executives', 'manager', 'managers', 'sales', 'hiring', 'hire', 'hires', 'companies', 'company', 'startups', 'startup', 'find', 'b2b', 'saas', 'representative', 'representatives', 'director', 'directors', 'engineer', 'engineers', 'developer', 'developers', 'ae', 'aes', 'sdr', 'sdrs', 'bdr', 'bdrs', 'senior', 'junior', 'lead', 'head', 'vp', 'firms', 'agencies', 'dental', 'clinics', 'practices', 'in', 'near', 'at', 'the', 'and', 'or', 'for', 'of', 'from', 'tech', 'software', 'fintech', 'healthtech', 'marketing', 'operations', 'customer', 'success', 'growth', 'founder', 'founders', 'first', 'our', 'their', 'team', 'teams'])
 export function usCityPlace(text: string): Place | null {
   const m = /(?:^|[\s(])((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?=$|[\s,.;)])/u.exec(text)
   if (!m) return null
@@ -98,6 +98,8 @@ export function usCityPlace(text: string): Place | null {
   // words are dropped while they are role / request words, so the city is what is left (multi-word cities such as San Jose or Kansas City stay whole)
   const words = m[1].split(/\s+/)
   while (words.length > 1 && CITY_LEAD_STOP.has(words[0].toLowerCase())) words.shift()
+  // a role / request word is never itself the city ("Sales Manager, Texas" names the state, not a city called Manager): no city, so stateIn runs
+  if (CITY_LEAD_STOP.has(words[words.length - 1].toLowerCase())) return null
   m[1] = words.join(' ')
   const abbr = STATES[m[2]] ? m[2] : Object.keys(STATES).find(k => STATES[k].toLowerCase() === m[2].toLowerCase())
   if (!abbr) return null

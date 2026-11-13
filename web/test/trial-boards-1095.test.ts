@@ -70,6 +70,10 @@ test('#1095: a US "<City>, <ST>" is a place for the job-board source; it never w
   for (const [q, city, loc] of [['Account Executive Austin, TX', 'Austin, TX', 'Austin, TX'], ['Sales Manager Dallas, Texas', 'Dallas, TX', 'Dallas, TX'], ['Companies hiring AEs. Austin, TX', 'Austin, TX', 'Austin, Texas'], ['St. Louis, MO sales', 'St. Louis, MO', 'St. Louis, MO'], ['Salt Lake City, UT', 'Salt Lake City, UT', 'Salt Lake City, UT']] as const) {
     const pl = placeIn(q); assert.equal(pl?.name, city, q); assert.equal(pl!.ok(loc), true, `${q} matches ${loc}`)
   }
+  // a role word before ", <State>" is not a city: the request keeps its state place (review round 2 on #1155); a "New ..." city keeps its name
+  for (const q of ['Sales Manager, Texas', 'Account Executive, Texas', 'Founders, Texas']) assert.equal(placeIn(q)?.name, 'Texas', q)
+  assert.equal(placeIn('SDR Team Lead, California')?.name, 'California')
+  assert.equal(placeIn('in New Orleans, LA')?.name, 'New Orleans, LA')
 })
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {
