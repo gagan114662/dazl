@@ -14,5 +14,5 @@ test('sign-up answers the same for every address and signs nobody in; only a con
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 180000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  for (const marker of ['SIGNUP SAME ANSWER ok', 'SIGNUP TIMING median', 'SIGNUP CONFIRMATION GATE ok', 'SIGNUP MALFORMED ok', 'SIGNUP CAP+RACE ok', 'SIGNUP NO-MAIL ok', 'SIGNUP LEGACY ok']) assert.ok(r.stdout.includes(marker), marker)
+  for (const marker of ['SIGNUP SAME ANSWER ok', 'SIGNUP TIMING median', 'SIGNUP CONFIRMATION GATE ok', 'SIGNUP MALFORMED ok', 'SIGNUP CAP+RACE ok', 'SIGNUP NO-MAIL ok', 'SIGNUP LEGACY ok', 'SIGNUP LOGIN-CSRF ok']) assert.ok(r.stdout.includes(marker), marker)
 })
