@@ -164,7 +164,9 @@ test('inventory: each gated module reserves its kind before its request, and daz
   assert.deepEqual([...new Set(Object.values(PAID).flatMap(p => p.kind))].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
   // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
-  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  assert.match(runner, /const pooledByRunner = !job\.csv_domain && ownerLimits\(job\.user_id\) !== null/)
   assert.equal([...runner.matchAll(/\(deps\.autopilot \?\? runAutopilot\)\(/g)].length, 1)
   assert.match(runner, /outsideScanSpend\(\(\) => \(deps\.autopilot \?\? runAutopilot\)\(/)
   assert.match(SOURCES.find(s => s.rel === 'lib/enrich/index.ts')!.text, /runWithJobSpend\(db, tenantId, lead\.scan_job_id, \(\) => enrichLeadContacts\(/, 'the owner retry draws on its scan')

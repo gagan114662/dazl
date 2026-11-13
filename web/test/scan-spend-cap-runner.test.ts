@@ -129,6 +129,32 @@ test('runner under an owner pool: model calls settle to the vendor-reported usag
   assert.ok(!(await poolRows(x.db, 'A')).some(r => r.period.startsWith('p:')), 'no residual pending markers')
 })
 
+// #846/#847: an account with NO operator entry used to have no day or month cap at all (only the per-scan cap). Now the
+// deployment defaults apply to it at the transport, in the scan cap's own transaction.
+test('#846 #847 runner: a scan of an account with no operator entry reserves every model call on its default day and month caps, settled to the reported usage', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: undefined }, true)
+  const models = x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length
+  assert.ok(models >= 2, JSON.stringify({ r: x.r, row: x.row }))
+  const perCall = (400 * 3 + 60 * 15) / 1e6
+  const rows = (await poolRows(x.db, 'A')).map(r => [r.period.slice(0, 2), Math.round(r.reserved_usd * 1e9) / 1e9, Math.round(r.reported_usd * 1e9) / 1e9, r.calls])
+  const want = Math.round(models * perCall * 1e9) / 1e9
+  assert.deepEqual(rows, [['d:', want, want, models], ['m:', want, want, models]], 'one move per model call on each window: counted once, at the reported cost')
+})
+
+test('#846 runner: past the deployment day cap the first model request is never sent; the scan stops budget_stopped with owner_pool_limit recorded', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, true)
+  assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
+  assert.deepEqual(x.calls.filter(c => c.status === 'refused').map(c => [c.kind, c.reason]).slice(0, 1), [['llm.anthropic', 'owner_pool_limit']])
+  assert.equal(x.row.error, 'budget_stopped')
+  assert.deepEqual(await poolRows(x.db, 'A'), [], 'a refused reservation writes nothing')
+})
+
+test('#847 runner: past the deployment month cap the first model request is never sent', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: '0.0001' }, true)
+  assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
+  assert.equal(x.row.error, 'budget_stopped')
+})
+
 const OWNER = { DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20' }
 const modelCalls = (x: Awaited<ReturnType<typeof run>>) => x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length
 const rowOf = async (x: Awaited<ReturnType<typeof run>>, k: 'm:' | 'd:') => (await poolRows(x.db, 'A')).find(r => r.period.startsWith(k))!

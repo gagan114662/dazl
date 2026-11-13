@@ -134,9 +134,10 @@ test('the two refusals are distinct and never cross: owner pool -> spend_limit; 
     try { assert.deepEqual(await read(own, provider(seen, { fail: true }), neverTrial), { error: 'provider_failed' }) } finally { restore() }
     assert.deepEqual(records.map(r => [r.source, r.where]), [['process', 'scan:icp-from-site:own']], 'the own-key failure is recorded (R4-8)')
     assert.deepEqual(seen, [KEY])
-    // Only a day limit is set here: one window row, holding the failed call's worst-case reservation, nothing reported.
+    // Only a day entry is set here: the day and (#847) the default month window, each holding the failed call's
+    // worst-case reservation, nothing reported.
     const rows = await pool(own)
-    assert.deepEqual(rows.map(r => [r[0], (r[1] as number) > 0, r[2], r[3]]), [['d:', true, 0, 1]], `the failed call's worst-case reservation is kept: ${JSON.stringify(rows)}`)
+    assert.deepEqual(rows.map(r => [r[0], (r[1] as number) > 0, r[2], r[3]]), [['d:', true, 0, 1], ['m:', true, 0, 1]], `the failed call's worst-case reservation is kept: ${JSON.stringify(rows)}`)
   })
 })
 

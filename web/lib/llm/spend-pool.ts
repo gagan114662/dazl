@@ -281,13 +281,15 @@ export function ownerLimits(userId: string, env: Env = process.env): PoolLimits 
 export function* reservePoolWindows(t: Tx, owner: string, limits: PoolLimits, usd: number, nowS: number): TxBody<boolean> {
   if (!(Number.isFinite(usd) && usd >= 0)) return false
   if (usd === 0) return true
-  const raised: string[] = []
+  const raised: string[] = [], created: string[] = []
   for (const [w, limit] of windows(limits)) {
     const period = periodOf(w, nowS)
-    yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])
+    if ((yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])).changes === 1) created.push(period)
     const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= ?', [usd, nowS, owner, period, usd, limit + EPS])
     if (r.changes !== 1) {
       for (const p of raised) yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd - ? < 0 THEN 0 ELSE reserved_usd - ? END, calls = calls - 1 WHERE tenant_id = ? AND period = ?', [usd, usd, owner, p])
+      // A refusal leaves the store as it found it: a window row this reservation created goes again.
+      for (const p of created) yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ? AND calls = 0', [owner, p])
       return false
     }
     raised.push(period)
