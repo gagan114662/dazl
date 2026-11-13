@@ -15,6 +15,7 @@ import { migrateEvents } from '../lib/events/store.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { GRADING_FAILED_WHY } from '../lib/scan/score.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -28,7 +29,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const USAGE_IN = 6000, USAGE_OUT = 300 // about 0.0225 per call at the sonnet price
 type Calls = { complete: number; research: number; maxTokens: number[]; promptBytes: number }
 // sameDb: run a second job in the store of an earlier run (the owner pool lives in that store, as in the app).
-function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, sameDb: Database.Database | null = null, countMode: 'ok' | 'huge' | 'fail' = 'ok') {
+function run(budgetJson: string | null, model: string | undefined, tinyfishHits = true, failExtraction = false, noIcp = false, sameDb: Database.Database | null = null, countMode: 'ok' | 'huge' | 'fail' = 'ok', reportUsage: boolean | ((maxTokens: number) => boolean) = true, score = false) {
   const counts: { model: string; content: string }[] = []
   resetTinyfishState()
   const calls: Calls = { complete: 0, research: 0, maxTokens: [], promptBytes: 0 }
@@ -53,7 +54,7 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
     research: async () => { calls.research++; return { text: '', citedUrls: [] } },
     complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'none'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
     // A real provider returns its usage; the runner settles each call to it (#363). Without usage the worst case stays reserved and the scan stops after one call.
-    completeDetailed: async (k: string, p: string, f?: typeof fetch, maxTokens?: number) => ({ text: await anth.complete!(k, p, f, maxTokens), model: model ?? null, usage: { input_tokens: USAGE_IN, output_tokens: USAGE_OUT } }) as never,
+    completeDetailed: async (k: string, p: string, f?: typeof fetch, maxTokens?: number) => ({ text: await anth.complete!(k, p, f, maxTokens), model: model ?? null, usage: (typeof reportUsage === 'function' ? reportUsage(maxTokens ?? 0) : reportUsage) ? { input_tokens: USAGE_IN, output_tokens: USAGE_OUT } : undefined }) as never,
     ...(model ? { configuredModel: () => model } : {}),
   }
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: anth, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
@@ -61,7 +62,7 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
   const realFetch = globalThis.fetch
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
-  return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null })
+  return runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score, judge: null })
     .then(r => ({ r, calls, counts, db, err: (db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(job.id) as { error: string | null }).error }))
     .finally(() => { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY })
 }
@@ -89,6 +90,24 @@ test('with room, calls proceed and the reserved worst case stays within the limi
   const x = await run('{"max_usd":5}', 'claude-sonnet-4-5')
   assert.ok(x.calls.complete >= 2, 'query plan and extraction ran')
   assert.notEqual(x.err, 'budget_stopped')
+})
+
+test('#850: a per-job budget whose provider reports no usage stops after ONE paid call and records a budget hold, never done', async () => {
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'ok', false)
+  assert.equal(x.calls.complete, 1, 'no second paid call after a completion with no usage')
+  const row = x.db.prepare('SELECT status, error FROM scan_jobs').get() as { status: string; error: string | null }
+  assert.notEqual(row.status, 'done')
+  assert.equal(row.error, 'budget_stopped')
+})
+
+test('#850: when the refused call is lead grading (extraction reported no usage), no grading call is made and every lead is held at fit 0, never shown graded', async () => {
+  const control = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'ok', true, true)
+  assert.ok(control.calls.maxTokens.includes(2500), 'fixture precondition: with usage reported, grading runs')
+  const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'ok', m => m === 300, true)
+  assert.ok(!x.calls.maxTokens.includes(2500), 'the grading call was refused, not sent')
+  const leads = x.db.prepare('SELECT fit, why FROM leads').all() as { fit: number | null; why: string | null }[]
+  assert.ok(leads.length > 0, 'fixture precondition: the scan stored leads')
+  for (const l of leads) { assert.equal(l.fit, 0); assert.ok(l.why?.includes(GRADING_FAILED_WHY), l.why ?? 'no why') }
 })
 
 test('a retry after a failed attempt is not allowed in budget mode: attempts never multiply the spend', async () => {
