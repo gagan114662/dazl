@@ -284,7 +284,7 @@ test('#381 the estimate states the adaptive round in its maxima wherever the rou
   ] as const) assert.equal(rows(e).extraction.units.max, 3, why)
   // the budget disclosure states the round as the estimate does (review on #1132)
   const { BUDGET_EXCLUDED_PATHS } = await import('../lib/scan/run-budget.ts')
-  assert.ok(BUDGET_EXCLUDED_PATHS.some(p => p.includes(`at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan`) && p.includes(`one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages`) && /never a free-trial scan, a run with paid_fallback=false or a scheduled play run/.test(p)))
+  assert.ok(BUDGET_EXCLUDED_PATHS.some(p => p.includes(`at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan`) && p.includes(`one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages`) && /never a free-trial scan, a run with paid_fallback=false or a play's run/.test(p)))
   const trial = rows(estimateRun({ budget: null, payer: 'trial', env: priced }))
   assert.equal(trial.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan, 'a trial scan never runs the round')
 })

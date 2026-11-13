@@ -9,8 +9,8 @@ Decided by the builder session under the lane's delegation from the owner (Herme
 decisions yourself, sensibly, and note them in the PR"); reversible by the owner. The bounded adaptive round built in
 #655 (one more TinyFish round when round one verified no lead: at most 3 searches, 6 pages and 1 extraction, different
 queries on unseen pages, the same per-tenant daily caps, spend guards and verifier) runs by default for a scan a person
-starts. It never runs for a free-trial scan, a run with paid_fallback=false, or a scheduled play run (a watch or monitor
-runs unattended under the caps it was confirmed with). The price estimate's maxima and the budget disclosure state it.
+starts in Leads. It never runs for a free-trial scan, a run with paid_fallback=false, or a play's run (a watch's or
+monitor's, scheduled or "Find leads now": a play runs under the caps it was confirmed with and gets no new estimate). The price estimate's maxima and the budget disclosure state it.
 The operator turns it off with DAZL_ADAPTIVE_DISCOVERY_ENABLED=0. No new paid service: TinyFish is the existing operator
 source under its existing daily cap; the extraction runs on the account's own key. Why: the audit (2026-11-12) measured
 0.84 ready leads per scan; a scan that verified nothing gave up after one batch.
