@@ -13,7 +13,7 @@ const hex = () => randomBytes(12).toString('hex')
 // proof: how the scan established the event day (leads.event_date_proof). Default 'page_bound', what the scanner writes for a day the
 // cited page ties to the event. date_status is stored the way the scanner stores it today ('unverified' with a day, else 'undated');
 // legacyStatus overrides it for rows written before 2026-10-23.
-interface L { company?: string; domain?: string | null; date?: string | null; proof?: string | null; legacyStatus?: string; signal?: string; kind?: string | null; url?: string; review?: string | null; conf?: number | null; quarantined?: boolean; reachable?: boolean; held?: boolean }
+interface L { company?: string; domain?: string | null; date?: string | null; proof?: string | null; legacyStatus?: string; signal?: string; fit?: number | null; kind?: string | null; url?: string; review?: string | null; conf?: number | null; quarantined?: boolean; reachable?: boolean; held?: boolean }
 
 async function play(db: Db, user: string, o: { query?: string; policy?: AlertPolicy } = {}): Promise<string> {
   // a monitor run is a scan on the account's own AI key (#759): every play here belongs to an account that has one
@@ -33,10 +33,10 @@ async function run(db: Db, user: string, mon: string, at: number, leads: L[]) {
   for (const l of leads) {
     const id = hex()
     const date = l.date === undefined ? '2026-10-20' : l.date
-    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, event_date_proof, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key)
-      VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, event_date_proof, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key, fit)
+      VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, job, l.company ?? 'Harbor Dental', l.signal ?? 'opened a second location', l.url ?? 'https://news.example/harbor-opens', date, l.legacyStatus ?? (date ? 'unverified' : 'undated'), l.proof === undefined ? 'page_bound' : l.proof,
-        l.conf === undefined ? 80 : l.conf, l.review ?? null, l.domain === undefined ? 'harbordental.example' : l.domain, l.kind === undefined ? 'expansion' : l.kind, l.quarantined ? at : null, id])
+        l.conf === undefined ? 80 : l.conf, l.review ?? null, l.domain === undefined ? 'harbordental.example' : l.domain, l.kind === undefined ? 'expansion' : l.kind, l.quarantined ? at : null, id, l.fit ?? null])
     const enr = (connector: string, kind: string, value: string) => db.run('INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [hex(), id, user, connector, kind, value, 'https://invalid.example/', '2026-10-30', at])
     if (l.reachable) await enr('scan:actionable', 'actionability', 'Actionable: domain, person and published contact confirmed')
@@ -154,59 +154,80 @@ bothEngines('a run is folded only after its enrichment settles, so a contact con
 
 // The 16 leads of a real staging scan, as stored (demo workspace, 2026-11-13, request "B2B software companies hiring
 // account executives"; read through the read-only ops door): company, company_domain, signal, signal_kind, event_date, date_status,
-// event_date_proof, confidence, review_reason, the scan:actionable verdict, source_url. No row has date_status 'verified'.
-type RealRow = [string, string | null, string, string | null, string | null, string, string | null, number | null, string | null, string | null, string]
+// event_date_proof, confidence, review_reason, the scan:actionable verdict, source_url, fit. No row has date_status 'verified'.
+// The one ready lead with a board-proven day (Flexport) was graded fit 0 by that scan: the Leads list hides it by default.
+type RealRow = [string, string | null, string, string | null, string | null, string, string | null, number | null, string | null, string | null, string, number | null]
 const REAL_SCAN: RealRow[] = [
-  ["Zendesk", null, "Zendesk is hiring a Senior Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://zendesk.wd1.myworkdayjobs.com/en-US/zendesk/job/Senior-Enterprise-Account-Executive_R35179"],
-  ["Salesforce", null, "Salesforce is hiring an Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://www.salesforce.com/company/careers/jobs/jr332958/enterprise-account-executive-tech-media/"],
-  ["Luware US Inc.", null, "Luware US Inc. is hiring an Account Executive for IT/SaaS B2B", null, null, "undated", null, null, "quote_unconfirmed", null, "https://www.builtinnyc.com/job/account-executive-100-saas-b2b-new-york-city/10996508"],
-  ["Cisco", null, "Cisco is hiring an Account Executive for Splunk", null, null, "undated", null, null, "quote_unconfirmed", null, "https://careers.cisco.com/global/en/job/CISCISGLOBAL2027734EXTERNALENGLOBAL/Account-Executive-Splunk"],
-  ["Alteryx", null, "Alteryx is hiring an Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://alteryx.wd108.myworkdayjobs.com/alteryxcareers/job/massachusetts-usa---remote/enterprise-account-executive_r12452"],
-  ["Wash-Dry-Fold POS", null, "Wash-Dry-Fold POS is hiring an Account Executive for SaaS B2B", null, null, "undated", null, null, "quote_unconfirmed", null, "https://dynamitejobs.com/company/washdryfold/remote-job/account-executive-saas-b2b"],
-  ["Deel", null, "Deel is hiring an Account Executive for Expansion", null, null, "undated", null, null, "needs_javascript", null, "https://jobs.deel.com/deel/job-details/56c0a201-45b4-41c5-9b0c-9f8d7ec37144/overview"],
-  ["ServiceNow", null, "ServiceNow is hiring a Senior CRM Account Executive", null, null, "undated", null, null, "quote_unconfirmed", null, "https://careers.servicenow.com/jobs/744000161318480/sr-crm-account-executive-financial-services/"],
-  ["Flexport", "flexport.com", "Flexport is hiring an Account Executive for Enterprise", null, "2026-11-12", "unverified", "ats_structured", 60, null, "Not actionable yet: fit below threshold", "https://job-boards.greenhouse.io/flexport/jobs/8383190"],
-  ["Zapier", null, "Hiring a Sales Assist Representative", null, "2026-06-08", "unverified", "ats_structured", null, "quote_unconfirmed", null, "https://jobs.ashbyhq.com/zapier/6adee270-03bf-4b1b-915b-eba5fb56d1b6"],
-  ["Qualtrics", "qualtrics.com", "Qualtrics is hiring enterprise account executives", null, null, "undated", null, 60, null, "Not actionable yet: fit below threshold", "https://builtin.com/articles/companies-hiring-enterprise-account-executives"],
-  ["PagerDuty", null, "PagerDuty is hiring enterprise account executives", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://builtin.com/articles/companies-hiring-enterprise-account-executives"],
-  ["Atlassian", null, "Atlassian is hiring an Account Executive Manager for SMB+", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://builtin.com/job/account-executive-manager-smb/12211862"],
-  ["Geniebelt", null, "Geniebelt is hiring an Account Executive for B2B SaaS in the Nordics", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://thehub.io/jobs/6aacf42ef7b0b835b0a08c07"],
-  ["Kong", null, "Kong is hiring an Enterprise Account Executive", null, "2026-11-12", "undated", null, null, "no_sales_hiring_evidence", null, "https://www.indexventures.com/startup-jobs/kong/enterprise-account-executive-austin/"],
-  ["Dynatrace", "dynatrace.com", "Dynatrace is hiring an Enterprise Acquisition Account Executive", null, "2026-09-17", "undated", null, null, "no_sales_hiring_evidence", null, "https://www.dynatrace.com/careers/jobs/1409624000/"],
+  ["Zendesk", null, "Zendesk is hiring a Senior Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://zendesk.wd1.myworkdayjobs.com/en-US/zendesk/job/Senior-Enterprise-Account-Executive_R35179", null],
+  ["Salesforce", null, "Salesforce is hiring an Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://www.salesforce.com/company/careers/jobs/jr332958/enterprise-account-executive-tech-media/", null],
+  ["Luware US Inc.", null, "Luware US Inc. is hiring an Account Executive for IT/SaaS B2B", null, null, "undated", null, null, "quote_unconfirmed", null, "https://www.builtinnyc.com/job/account-executive-100-saas-b2b-new-york-city/10996508", null],
+  ["Cisco", null, "Cisco is hiring an Account Executive for Splunk", null, null, "undated", null, null, "quote_unconfirmed", null, "https://careers.cisco.com/global/en/job/CISCISGLOBAL2027734EXTERNALENGLOBAL/Account-Executive-Splunk", null],
+  ["Alteryx", null, "Alteryx is hiring an Enterprise Account Executive", null, null, "undated", null, null, "needs_javascript", null, "https://alteryx.wd108.myworkdayjobs.com/alteryxcareers/job/massachusetts-usa---remote/enterprise-account-executive_r12452", null],
+  ["Wash-Dry-Fold POS", null, "Wash-Dry-Fold POS is hiring an Account Executive for SaaS B2B", null, null, "undated", null, null, "quote_unconfirmed", null, "https://dynamitejobs.com/company/washdryfold/remote-job/account-executive-saas-b2b", null],
+  ["Deel", null, "Deel is hiring an Account Executive for Expansion", null, null, "undated", null, null, "needs_javascript", null, "https://jobs.deel.com/deel/job-details/56c0a201-45b4-41c5-9b0c-9f8d7ec37144/overview", null],
+  ["ServiceNow", null, "ServiceNow is hiring a Senior CRM Account Executive", null, null, "undated", null, null, "quote_unconfirmed", null, "https://careers.servicenow.com/jobs/744000161318480/sr-crm-account-executive-financial-services/", null],
+  ["Flexport", "flexport.com", "Flexport is hiring an Account Executive for Enterprise", null, "2026-11-12", "unverified", "ats_structured", 60, null, "Not actionable yet: fit below threshold", "https://job-boards.greenhouse.io/flexport/jobs/8383190", 0],
+  ["Zapier", null, "Hiring a Sales Assist Representative", null, "2026-06-08", "unverified", "ats_structured", null, "quote_unconfirmed", null, "https://jobs.ashbyhq.com/zapier/6adee270-03bf-4b1b-915b-eba5fb56d1b6", null],
+  ["Qualtrics", "qualtrics.com", "Qualtrics is hiring enterprise account executives", null, null, "undated", null, 60, null, "Not actionable yet: fit below threshold", "https://builtin.com/articles/companies-hiring-enterprise-account-executives", 0],
+  ["PagerDuty", null, "PagerDuty is hiring enterprise account executives", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://builtin.com/articles/companies-hiring-enterprise-account-executives", 0],
+  ["Atlassian", null, "Atlassian is hiring an Account Executive Manager for SMB+", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://builtin.com/job/account-executive-manager-smb/12211862", 0],
+  ["Geniebelt", null, "Geniebelt is hiring an Account Executive for B2B SaaS in the Nordics", null, null, "undated", null, null, "no_sales_hiring_evidence", null, "https://thehub.io/jobs/6aacf42ef7b0b835b0a08c07", 0],
+  ["Kong", null, "Kong is hiring an Enterprise Account Executive", null, "2026-11-12", "undated", null, null, "no_sales_hiring_evidence", null, "https://www.indexventures.com/startup-jobs/kong/enterprise-account-executive-austin/", 0],
+  ["Dynatrace", "dynatrace.com", "Dynatrace is hiring an Enterprise Acquisition Account Executive", null, "2026-09-17", "undated", null, null, "no_sales_hiring_evidence", null, "https://www.dynatrace.com/careers/jobs/1409624000/", 0],
 ]
-bothEngines('#882 real staging scan: its one ready, board-dated hiring lead (Flexport) alerts once; the ready undated lead and the 14 review-lane leads never do', async ({ db }) => {
+bothEngines('#882 real staging scan: its board-dated ready lead (Flexport) becomes an event; graded fit 0 it is hidden in Leads and raises no alert; the 15 others never become events', async ({ db }) => {
   const mon = await play(db, 'u1', { query: 'B2B software companies hiring account executives' })
   const at = Math.floor(Date.parse('2026-11-13T09:27:42Z') / 1000) // when the real scan started
-  const fold = async (runAt: number) => {
+  const fold = async (runAt: number, regrade?: number) => {
     await db.run('UPDATE monitors SET next_run_at = ? WHERE id = ?', [runAt, mon])
     const [job] = await runDueMonitors(db, { now: runAt })
     await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [job])
-    for (const [company, domain, signal, kind, date, status, proof, conf, review, actionability, url] of REAL_SCAN) {
+    for (const [company, domain, signal, kind, date, status, proof, conf, review, actionability, url, fit] of REAL_SCAN) {
       const id = hex()
-      await db.run(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, signal_kind, source_url, event_date, date_status, event_date_proof, confidence, review_reason, dedup_key)
-        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, job, company, domain, signal, kind, url, date, status, proof, conf, review, id])
+      await db.run(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, signal_kind, source_url, event_date, date_status, event_date_proof, confidence, review_reason, dedup_key, fit)
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, job, company, domain, signal, kind, url, date, status, proof, conf, review, id, regrade !== undefined && company === 'Flexport' ? regrade : fit])
       if (actionability) await db.run('INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [hex(), id, 'u1', 'scan:actionable', 'actionability', actionability, 'https://invalid.example/', '2026-11-13', runAt])
     }
     await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ?, enrich_finished_at = ? WHERE id = ?", [runAt + 78, runAt + 176, job])
     await collectMonitorResults(db, { now: runAt + 300 })
     const r = (await db.get<{ id: string; new_count: number }>('SELECT id, new_count FROM monitor_runs WHERE job_id = ?', [job]))!
-    return { newCount: Number(r.new_count), alerts: await db.all<{ kind: string; company: string; event_key: string; latency_s: number }>('SELECT kind, company, event_key, latency_s FROM monitor_alerts WHERE run_id = ?', [r.id]) }
+    return { newCount: Number(r.new_count), alerts: (await db.all<{ kind: string; company: string; event_key: string; latency_s: number }>('SELECT kind, company, event_key, latency_s FROM monitor_alerts WHERE run_id = ?', [r.id])).map(a => [a.kind, a.company, a.event_key, Number(a.latency_s)]) }
   }
-  const first = await fold(at)
+  const events = async () => (await db.all<{ event_key: string; occurred_at: number; first_seen_at: number; last_checked_at: number; actionable_at: number | null; reachable_at: number | null }>("SELECT event_key, occurred_at, first_seen_at, last_checked_at, actionable_at, reachable_at FROM monitor_events WHERE user_id = 'u1'"))
+    .map(e => [e.event_key, Number(e.occurred_at), Number(e.first_seen_at), Number(e.last_checked_at), e.actionable_at == null ? null : Number(e.actionable_at), e.reachable_at])
   const day = Date.parse('2026-11-12T00:00:00Z') / 1000
-  assert.equal(first.newCount, 1)
-  assert.deepEqual(first.alerts.map(a => [a.kind, a.company, a.event_key, Number(a.latency_s)]), [['new_company', 'Flexport', 'd:flexport.com|2026-11-12|signal', at + 300 - day]])
-  // only Flexport became an event: Zapier's board-dated posting is in review (and from June), Qualtrics is ready but has no proven day,
-  // Kong and Dynatrace carry a day the scan could not prove
-  const events = await db.all<{ event_key: string; occurred_at: number; first_seen_at: number; last_checked_at: number; actionable_at: number | null; reachable_at: number | null }>("SELECT event_key, occurred_at, first_seen_at, last_checked_at, actionable_at, reachable_at FROM monitor_events WHERE user_id = 'u1'")
-  assert.deepEqual(events.map(e => [e.event_key, Number(e.occurred_at), Number(e.first_seen_at), Number(e.last_checked_at), Number(e.actionable_at), e.reachable_at]), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 300, at + 300, null]])
+  // The rows exactly as the scan stored them. Before the fix nothing here could ever become an event (no row is 'verified').
+  // Now Flexport's posting is an event with its three times and a source cursor, but no alert: its own scan graded it fit 0, so the
+  // Leads list hides it. Zapier's board-dated posting is in review and from June; Qualtrics is ready but has no proven day (and fit 0);
+  // Kong and Dynatrace carry a day the scan could not prove.
+  assert.deepEqual(await fold(at), { newCount: 0, alerts: [] })
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 300, null, null]])
   assert.deepEqual((await db.all<{ source: string; last_event_at: number }>('SELECT source, last_event_at FROM monitor_cursors WHERE monitor_id = ?', [mon])).map(c => [c.source, Number(c.last_event_at)]), [['job-boards.greenhouse.io', day]])
-  // the next run returns the same 16 leads: nothing new, the event is only re-checked
-  const second = await fold(at + 7 * DAY)
-  assert.deepEqual([second.newCount, second.alerts.length], [0, 0])
-  const again = (await db.get<{ first_seen_at: number; last_checked_at: number }>("SELECT first_seen_at, last_checked_at FROM monitor_events WHERE user_id = 'u1'"))!
-  assert.deepEqual([Number(again.first_seen_at), Number(again.last_checked_at)], [at + 300, at + 7 * DAY + 300])
+  // the next run returns the same 16 leads: still nothing new, the event is only re-checked
+  assert.deepEqual(await fold(at + 7 * DAY), { newCount: 0, alerts: [] })
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 7 * DAY + 300, null, null]])
+  // NOT the real grade from here on: had a run graded that same lead as one the list shows (fit 3), it is a new company, once
+  assert.deepEqual(await fold(at + 14 * DAY, 3), { newCount: 1, alerts: [['new_company', 'Flexport', 'd:flexport.com|2026-11-12|signal', at + 14 * DAY + 300 - day]] })
+  assert.deepEqual(await fold(at + 21 * DAY, 3), { newCount: 0, alerts: [] })
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 21 * DAY + 300, at + 14 * DAY + 300, null]])
+})
+
+bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown one (fit 2+, or ungraded) does; a stored non-hiring kind is never dated by a job board day', async ({ db }) => {
+  const mon = await play(db, 'u1')
+  assert.deepEqual(await run(db, 'u1', mon, NOW, [
+    { company: 'Zero Dental', domain: 'zero.example', fit: 0 },
+    { company: 'One Dental', domain: 'one.example', fit: 1 },
+    // hiring wording in the signal, but the stored kind says funding: the posting's day is not the funding round's day
+    { company: 'Series Dental', domain: 'series.example', proof: 'ats_structured', kind: 'funding', signal: 'Series Dental raised a Series B and is hiring 40 hygienists' },
+  ]), { newCount: 0, kinds: [] })
+  assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_events WHERE entity_key = 'd:series.example'"))!.n), 0)
+  assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_events WHERE actionable_at IS NULL"))!.n), 2, 'the hidden leads are seen, not actionable')
+  assert.deepEqual(await run(db, 'u1', mon, NOW + 7 * DAY, [
+    { company: 'Two Dental', domain: 'two.example', fit: 2 },
+    { company: 'Ungraded Dental', domain: 'ungraded.example', fit: null },
+    { company: 'Zero Dental', domain: 'zero.example', fit: 4 },   // graded again, now shown: its first alert
+  ]), { newCount: 3, kinds: ['new_company', 'new_company', 'new_company'] })
 })
 
 bothEngines('#882 a row from before 2026-10-23 with date_status verified and no proof never alerts; a board day dates a hiring trigger only', async ({ db }) => {
@@ -236,7 +257,7 @@ bothEngines('#759 a monitor on an account with no AI key of its own pauses with 
 })
 
 test('pure rules: keys are spelling-independent; undated, out-of-window and unverified leads never alert', () => {
-  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: '2026-10-20', event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, held: false, reachable: false }
+  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: '2026-10-20', event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
   assert.equal(entityKeyOf({ company: 'HARBOR Dental, Inc', company_domain: null }), entityKeyOf({ company: 'harbor dental', company_domain: null }))
   assert.equal(entityKeyOf({ company: 'x', company_domain: 'https://www.Harbor.example/about' }), 'd:harbor.example')
   assert.equal(eventKeyOf(l), eventKeyOf({ ...l, source_url: 'https://b.example/y' }))
@@ -248,6 +269,16 @@ test('pure rules: keys are spelling-independent; undated, out-of-window and unve
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: null, signal: 'Flexport is hiring an Account Executive for Enterprise' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'hiring' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'hiring_relevant_role' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
+  // a stored non-hiring kind wins over hiring wording in the text (the shared rule would let these through)
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'funding', signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { suppress: 'undated' })
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signal: 'Harbor Dental expands its hiring team' }, null, false, 'all', W, NOW), { suppress: 'undated' })
+  // the page itself tying the day to the event is not a board day: the kind does not matter
+  assert.deepEqual(decide({ ...l, event_date_proof: 'page_bound', signal_kind: 'funding', signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
+  // the Leads list hides the low-fit tier: no alert opens on a hidden lead
+  assert.deepEqual(decide({ ...l, fit: 0 }, null, false, 'all', W, NOW), { suppress: 'not_actionable' })
+  assert.deepEqual(decide({ ...l, fit: 1 }, null, false, 'all', W, NOW), { suppress: 'not_actionable' })
+  assert.deepEqual(decide({ ...l, fit: 2 }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   assert.deepEqual(decide({ ...l, event_date: null }, null, false, 'all', W, NOW), { suppress: 'undated' })
   assert.deepEqual(decide({ ...l, event_date: '2026-02-30' }, null, false, 'all', W, NOW), { suppress: 'undated' }, 'not a calendar day: no proven day')
   assert.deepEqual(decide({ ...l, event_date: '2026-11-20' }, null, false, 'all', W, NOW), { suppress: 'undated' }, 'a future day is not a proven event day')
@@ -268,7 +299,7 @@ test('missed-run arithmetic', () => {
 })
 
 test('window boundary: 90 days back is inside, 91 is out_of_window; a play\'s own window beats the default', () => {
-  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: null, event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, held: false, reachable: false }
+  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: null, event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
   const back = (days: number) => new Date((NOW - days * DAY) * 1000).toISOString().slice(0, 10)
   const W = DEFAULT_EVENT_WINDOW_DAYS
   assert.equal(W, 90)

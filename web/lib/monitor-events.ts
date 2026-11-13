@@ -75,6 +75,7 @@ export interface RunLead {
   event_date_proof: string | null   // how the scan established event_date ('page_bound' | 'ats_structured'); null: unproven, never an event
   signal: string | null             // the lead's stated trigger: a job board's publish day dates a hiring trigger only
   source_url: string; review_reason: string | null; confidence: number | null; quarantined_at: number | null
+  fit: number | null  // the scan's own fit grade; the Leads list hides the low-fit tier (fit <= 1) by default
   held: boolean       // a required gate failed and its review write was rejected (the scan:gate marker): never verified
   reachable: boolean  // the scan's own actionability verdict: domain, matching person and published route confirmed
 }
@@ -91,10 +92,18 @@ const dayStartS = (d: string) => Math.floor(Date.parse(`${d}T00:00:00Z`) / 1000)
 
 // Verified: what the pipeline already treats as a usable lead. A review-lane item (blocked page, needs JavaScript, quote
 // unconfirmed...), a quarantined lead or a held one is research, never a new actionable lead.
-export const verified = (l: RunLead): boolean => l.review_reason == null && l.confidence != null && l.quarantined_at == null && !l.held && !!l.company.trim()
+// It must also be a lead the Leads list SHOWS: the low-fit tier (fit 0-1) is hidden there by default, and an alert that opens on a
+// lead the list hides is a false alert. Same visibility as a weekly play's "new" count (lib/play-mail.ts VISIBLE_LEAD). An ungraded lead
+// (fit null) is shown, so it counts; a visible lead the scan calls "fit below threshold" (fit 2-3) is still a ready lead in the list.
+export const verified = (l: RunLead): boolean => l.review_reason == null && l.confidence != null && l.quarantined_at == null && !l.held && !!l.company.trim() && (l.fit == null || l.fit > 1)
 
 // The event day is proven by the cited source (the same verdict the lead card shows as "verified on the cited source").
-export const dated = (l: Pick<RunLead, 'event_date' | 'event_date_proof' | 'signal' | 'signal_kind'>, now: number): boolean => eventDayVerified(l, { now: new Date(now * 1000) })
+// One rule is stricter here than on the card: a job board's publish day dates a HIRING event only, and a stored signal kind that is
+// not hiring wins over hiring wording in the signal text ("Raised a Series B and is hiring 40 engineers", kind funding, would otherwise
+// alert as a funding event dated by the posting). The shared predicate (isHiringTrigger) lets the wording through; the monitor does not.
+const HIRING_KINDS = new Set(['hiring', 'hiring_relevant_role'])
+export const dated = (l: Pick<RunLead, 'event_date' | 'event_date_proof' | 'signal' | 'signal_kind'>, now: number): boolean =>
+  eventDayVerified(l, { now: new Date(now * 1000) }) && !(l.event_date_proof === 'ats_structured' && !!l.signal_kind && !HIRING_KINDS.has(l.signal_kind))
 
 export type Suppress = 'undated' | 'out_of_window' | 'not_actionable' | 'already_seen' | 'policy'
 export interface PriorEvent { actionable_at: number | null; reachable_at: number | null }
