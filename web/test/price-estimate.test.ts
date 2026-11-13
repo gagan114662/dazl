@@ -287,4 +287,15 @@ test('#381 the estimate states the adaptive round in its maxima wherever the rou
   assert.ok(BUDGET_EXCLUDED_PATHS.some(p => p.includes(`at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan`) && p.includes(`one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages`) && /never a free-trial scan, a run with paid_fallback=false or a play's run/.test(p)))
   const trial = rows(estimateRun({ budget: null, payer: 'trial', env: priced }))
   assert.equal(trial.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan, 'a trial scan never runs the round')
+  // the search_and_fetch surface row (rendered above the excluded paths in the budget panel) states the round too, and only
+  // where it can run (review at 42598918 on #1132)
+  const { describeRunBudget } = await import('../lib/scan/run-budget.ts')
+  const sf = (b: Parameters<typeof describeRunBudget>[0], o: Parameters<typeof describeRunBudget>[1] = {}) => describeRunBudget(b, o).surfaces.find(x => x.surface === 'search_and_fetch')!.note
+  const round = `plus at most ${ADAPTIVE_SEARCHES} searches + ${ADAPTIVE_FETCHES} pages in one more round when the first round verifies no lead`
+  for (const [why, note] of [['no budget', sf(null)], ['max_usd', sf({ max_usd: 2 })], ['judge=false', sf({ judge: false })]] as const) {
+    assert.ok(note.includes(`${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default, ${round}`), `${why}: ${note}`)
+    assert.match(note, /never a play's run; off for the deployment with DAZL_ADAPTIVE_DISCOVERY_ENABLED=0/, why)
+  }
+  for (const [why, note] of [['paid_fallback=false', sf({ paid_fallback: false })], ['a free-trial scan', sf(null, { trial: true })], ['first5', sf({ first5: true })]] as const)
+    assert.ok(!/one more round/.test(note), `${why}: the round cannot run there, so the row does not state it: ${note}`)
 })
