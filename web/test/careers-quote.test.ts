@@ -52,7 +52,8 @@ const verifierPage = (board: Board, desc: string) => async (url: string) => {
   const rec = atsRecord(JSON.parse(board === 'ashby' ? ashbyBoard(desc) : board === 'lever' ? leverRecord(desc) : ghRecord(desc)), ref)
   if (!rec || rec === 'missing') return { fail: 'not_found' }
   const p = atsPageText(rec, rec.html ? ghText(rec.description) : rec.description)
-  return { text: p.text, title: p.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
+  // board: the identity fetch-page attaches to a board record since #1126 (#1143); absent before it, so this stays valid on older code
+  return { text: p.text, title: p.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [], ...((p as { board?: unknown }).board ? { board: (p as { board?: unknown }).board } : {}) }
 }
 // the Greenhouse content as the verifier reads it: lib/scan/fetch-page.ts's own htmlToText(decode(content)), never a hand-written copy. (Before #767 decode was
 // not exported; the fallback is a verbatim copy of it, used only then, so each test here fails for its own reason against an older careers-page.ts.)
