@@ -247,6 +247,26 @@ export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
 }
 
+// #1126: does the board that published a posting name this company? The board's stated company name wins; its slug is
+// only the fallback. Either one names the company only as its WHOLE key: "acme-health" (or a stated "Acme Health") is
+// "Acme Health", never "Health" or "Acme" alone. A name glued together equals the key with its spaces removed
+// ("macquarietechnologygroup" is "Macquarie Technology Group"), the same whole-name identity companyOwnsDomain gives a
+// domain label, with the same 3-character floor; a slug that merely contains the name ("acmehealth" for "Acme") is not it.
+const compact = (k: string) => k.replace(/[^\p{L}\p{N}]+/gu, '')
+export function boardNamesCompany(board: { company: string | null; slug: string }, key: string): boolean {
+  if (key.length < 2) return false
+  const named = companyKey(board.company ? board.company : board.slug.replace(/[-_.]+/g, ' '))
+  return named === key || (compact(key).length >= 3 && compact(named) === compact(key))
+}
+// The page's own heading names the company: the title as a phrase, except for a posting read through its board's record,
+// whose heading is the posting title plus the board's identity (boardNamesCompany). Shared by every check that accepts
+// "named in the quote or the page title" (verifyEvidence, the job-feed intake, the source review).
+export function pageHeadingNames(page: Pick<Page, 'title' | 'board'>, key: string): boolean {
+  if (key.length < 2) return false
+  if (page.board) return hasPhrase(norm(page.board.title), key) || boardNamesCompany(page.board, key)
+  return hasPhrase(norm(page.title), key)
+}
+
 function parseDay(s: string | null): Date | null {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
   const d = new Date(`${s}T00:00:00Z`)
@@ -262,11 +282,11 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   const at = text.indexOf(excerpt)
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
 
-  // The company must be named in the quoted passage itself or in the page title.
+  // The company must be named in the quoted passage itself or in the page title (for a board record: the board's identity, #1126).
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const entityOk = hasPhrase(excerpt, key) || hasPhrase(norm(page.title), key)
+  const entityOk = hasPhrase(excerpt, key) || pageHeadingNames(page, key)
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70
