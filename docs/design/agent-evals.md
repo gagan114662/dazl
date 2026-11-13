@@ -223,7 +223,8 @@ is rendered from the truth claim by a fixed template (`claimText`), and any othe
 `evidence` must state its kind (and not use a kind word in another sense, such as "a round of layoffs"), detail, person,
 contact, date and status: a retraction or plan in its own words, and an assertion that is neither negated nor a failure,
 modal, rumour or plan (checked on the whole evidence; only the keyword of a set-apart clause is masked). The sentence
-the evidence sits in must name the fact's company as a whole name ("Querix Labs" does not name Querix) and no other
+the evidence sits in must name the fact's company as a whole name and as a subject ("Querix Labs", "Acme Querix",
+"Querix-backed", "Querix's spin-off" and "Former Querix staff" do not name Querix; "The Querix team" and "QUERIX" do) and no other
 company of the item, except one it sets apart: a clause bounded by punctuation on both sides whose body is a company name
 (", no relation to Corvid Robotics,"). Instructions and publication or refresh dates are exempt. A role or contact claim
 is about now ("is the current ..."), so only an undated assertion supports it; an acquisition claim names its acquirer
@@ -322,6 +323,14 @@ passed the deterministic checks (quote on the page, company named, date). Its an
 a lead it calls `contradicts`. It has no send or tool authority.
 
 **Limits and what is not built:**
+- The corpus checks that bind records to their text are lexical, from word lists in `lib/evals/judge.ts`, not a parser:
+  `KIND_WORDS` and `KIND_EXCLUSIONS` (a kind word used in another sense: only the senses listed are caught),
+  `NEGATIONS` and `HEDGES` (a negation, failure, modal, rumour or plan in other words is not caught), `STATUS_WORDS`,
+  `DETAIL_WORDS` and `MONTH_WORDS` (English, French, German, Spanish and Portuguese only), and the set-apart keywords in
+  `SET_APART` ("no relation to", "unlike", ...). Subject binding is by name position (`namesCompany`), so a sentence whose
+  real subject is another company, named in a way it does not recognise, can still pass. These keep the corpus honest
+  against the edits tried in review; they are not proof against every paraphrase, and a corpus change is still a
+  reviewed PR.
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
 - The real-model run is built but has not run (`lib/evals/judge-validation-run.ts`, `scripts/judge-validation-run.mts`).
   It is separate from the stub harness above, which never loads it. One run covers both judges on both splits; the

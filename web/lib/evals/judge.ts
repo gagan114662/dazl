@@ -249,14 +249,26 @@ const setApartWith = (text: string, keep: (lead: string, name: string) => string
   words(name).some(x => NEGATIONS.includes(x) || HEDGES.includes(x)) ? m : keep(lead, name))
 const maskSetApart = (text: string) => setApartWith(text, (lead, name) => `${lead}${name}`)
 const dropSetApart = (text: string) => setApartWith(text, lead => lead.trim().startsWith('(') ? '(' : ' ')
-// Whether `text` names `company` as a whole name: case aside, not inside a longer word, and not followed by another
-// capitalised name word ("Querix Labs" does not name "Querix").
+// Whether `text` names `company` as the whole name of a subject: case aside (folded one code point at a time, so the
+// compare never changes length and never falls back to a looser match), not inside a longer word, and not part of a
+// longer name or a modifier. Refused: a capitalised name word directly before it ("Acme Querix"), except a sentence-initial
+// article ("The Querix"); another capitalised name word after it ("Querix Labs"); a hyphen compound ("Querix-backed");
+// and a possessive ("Querix's spin-off"). So "Former Querix staff founded Norland" does not name Querix as a subject.
+const ARTICLES = ['the', 'a', 'an', 'die', 'der', 'das', 'le', 'la', 'les', 'el', 'los', 'las', 'o', 'os', 'as']
+const fold = (s: string) => Array.from(tidy(s)).map(ch => { const l = ch.toLowerCase(); return Array.from(l).length === 1 ? l : ch })
 export function namesCompany(text: string, company: string): boolean {
-  const t = tidy(text), lower = t.toLowerCase(), c = tidy(company).toLowerCase()
-  if (!c || lower.length !== t.length) return squash(text).includes(squash(company))
-  for (let at = lower.indexOf(c); at >= 0; at = lower.indexOf(c, at + 1)) {
-    const before = t.slice(0, at), after = t.slice(at + c.length)
-    if (/[\p{L}\p{N}]$/u.test(before) || /^[\p{L}\p{N}]/u.test(after) || /^\s+(?:&\s+)?\p{Lu}/u.test(after)) continue
+  const t = Array.from(tidy(text)), f = fold(text), c = fold(company)
+  if (!c.length) return false
+  for (let at = 0; at + c.length <= f.length; at++) {
+    if (c.some((ch, k) => f[at + k] !== ch)) continue
+    const before = t.slice(0, at).join(''), after = t.slice(at + c.length).join('')
+    if (/[\p{L}\p{N}]$/u.test(before) || /^[\p{L}\p{N}]/u.test(after)) continue
+    if (/^\s+(?:&\s+)?\p{Lu}/u.test(after) || /^-\p{L}/u.test(after) || /^['’]s(?![\p{L}\p{N}])/u.test(after)) continue
+    const prev = /(\p{Lu}[\p{L}\p{N}&'’.-]*)\s+$/u.exec(before)
+    if (prev && (prev.index === 0 || /[\s(]$/u.test(before.slice(0, prev.index)))) {
+      const sentenceStart = /(?:^|[.!?:]\s*)$/u.test(before.slice(0, prev.index).trimEnd())
+      if (!(sentenceStart && ARTICLES.includes(prev[1].toLowerCase()))) continue
+    }
     return true
   }
   return false

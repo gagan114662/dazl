@@ -35,6 +35,10 @@ const withItem = (id: string, f: (it: JudgeItem) => void) => { const c = structu
 const cli = (...args: string[]) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/judges.mts', ...args], {
   cwd: WEB, encoding: 'utf8', env: { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' }, timeout: 120_000,
 })
+// cal-plain-pos with its one source reduced to `sentence`, which is also the funding fact's evidence (undated) and its quote
+const onlySentence = (sentence: string) => withItem('cal-plain-pos', it => {
+  it.sources[0].text = `${sentence}.`; it.truth!.facts[0].evidence = sentence; delete it.truth!.facts[0].date; it.quote = sentence
+})
 const tmp = () => mkdtempSync(join(tmpdir(), 'dazl-judge-'))
 
 test('finding 1: truth records must be stated by the text they describe - the displayed claim, and each fact\'s evidence', () => {
@@ -334,6 +338,19 @@ test('R8: a set-apart clause must be punctuation-bounded with a company-name bod
 test('R9: a company is named only as a whole name: "Querix Labs" does not name Querix', () => {
   refused(withItem('cal-plain-pos', it => { it.sources[0].text = it.sources[0].text.replace('Querix,', 'Querix Labs,') }), /cal-plain-pos: fact 1: the sentence of its evidence does not name its company Querix/, 'Querix Labs')
   refused(withItem('cal-plain-pos', it => { it.sources[0].text = it.sources[0].text.replace('Querix,', 'Querixa,') }), /does not name its company Querix/, 'Querixa')
+  // R13 (round 3): a capitalised word before the name, a hyphen compound, and a dotted capital I that changes the length
+  // of a lower-cased string (no fallback to a looser match)
+  for (const sentence of ['Acme Querix raised a seed round', 'Querix-backed Norland raised a seed round', 'Querix Labs raised a seed round in İzmir']) {
+    refused(onlySentence(sentence), /cal-plain-pos: fact 1: the sentence of its evidence does not name its company Querix/, sentence)
+  }
+  // still named: any case, a sentence-initial article, and plain punctuation around the name
+  for (const sentence of ['QUERIX raised a seed round', 'The Querix team raised a seed round', 'Querix, a London startup, raised a seed round']) checkCorpus(onlySentence(sentence))
+})
+
+test('R14: a possessive or attributive use of the name is not the subject', () => {
+  for (const sentence of ["Querix's spin-off Norland raised a seed round", 'Former Querix staff founded Norland, which raised a seed round']) {
+    refused(onlySentence(sentence), /cal-plain-pos: fact 1: the sentence of its evidence does not name its company Querix/, sentence)
+  }
 })
 
 test('R10: the rendered claim says what the label means: an acquirer is named, and a "current" role needs an undated assertion', () => {
