@@ -45,7 +45,7 @@ const ZERO = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, ti
 const OFF = { ...FULL, reply_reading: false, tiles: { ...FULL.tiles, replied: null, interested: null }, by_signal: FULL.by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })) }
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
-const READY = { window_days: 30, ready: 3, scans_checked: 2, scans_in_window: 2 }
+const READY = { window_days: 30, ready: 3, scans_checked: 2, scans_in_window: 2, scans: [{ job_id: 'a'.repeat(24), ready: 3 }] }
 async function open(width, results, ready = READY) {
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -77,7 +77,7 @@ try {
     assert.equal(await tile('ready'), '3Ready leads', 'the Leads page\'s ready count (acceptance 1)'); assert.match(await page.getByTestId('new-leads').textContent(), /\(4 new\)/); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
     assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), '/app/inbox?status=all')
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
-    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads?latest=1')
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), `/app/leads?job_id=${'a'.repeat(24)}`, 'the tile opens the scan its 3 ready leads are in')
     assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), '/app/inbox?status=all&class=positive')
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
@@ -117,9 +117,10 @@ try {
     assert.match(await page.getByTestId('by-signal').textContent(), /unknown/)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390: no horizontal scroll')
     out.push('reply reading off: Replied and Interested unknown, with the way to turn it on'); await ctx.close() }
-  { const { ctx, page } = await open(390, FULL, { window_days: 30, ready: 7, scans_checked: 10, scans_in_window: 12 })
+  { const { ctx, page } = await open(390, FULL, { window_days: 30, ready: 7, scans_checked: 10, scans_in_window: 12, scans: [{ job_id: 'a'.repeat(24), ready: 4 }, { job_id: 'b'.repeat(24), ready: 3 }] })
     await page.getByTestId('ready-partial').waitFor({ timeout: 20000 })
-    assert.match(await page.getByTestId('tile-ready').textContent(), /7Ready leadsIn your 10 newest scans/)
+    assert.match(await page.getByTestId('tile-ready').textContent(), /7Ready leadsIn 2 scans: opens your scansIn your 10 newest scans/)
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads', 'ready leads in two scans: the tile opens the list of scans, not one scan with fewer rows')
     out.push('more scans than checked: says how many'); await ctx.close() }
   { const { ctx, page } = await open(1280, FULL, 'fail')
     await page.getByTestId('ready-unread').waitFor({ timeout: 20000 })

@@ -26,6 +26,8 @@ export default function HomeResultsPanel() {
   if (r === null) return null
   if (r === 'failed') return <p className="text-sm text-[var(--ink-3)] mb-4" role="status" data-testid="results-unread">Your last 30 days could not be loaded. Refresh to retry.</p>
   const t = r.tiles
+  const readyScans = ready && ready !== 'failed' ? ready.scans ?? [] : []
+  const readyHref = readyScans.length === 1 ? `/app/leads?job_id=${readyScans[0].job_id}` : '/app/leads'
   // nothing at all in the window: no counts AND nothing to list (a stored reply is never hidden behind the empty state)
   const empty = t.leads === 0 && t.contacted === 0 && !t.replied && r.latest_leads.length === 0 && r.latest_replies.length === 0
   // null = unknown (reply reading is off): a dash read out as "unknown", never a 0 nobody observed
@@ -37,11 +39,14 @@ export default function HomeResultsPanel() {
     <section className="mb-6" aria-labelledby="h-results" data-testid="home-results">
       <h2 id="h-results" className="font-semibold mb-2">Last {r.window_days} days</h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Link href="/app/leads?latest=1" className="card p-4 block hover:border-black/30" data-testid="tile-ready">
-          {/* the Leads page's own verdict: every hold clear (lib/outreach/home-ready.ts); a read that fails says so, never a 0 */}
+        {/* The tile opens where its number is: the one scan holding every ready lead, else the list of scans (never a scan that
+            shows fewer rows than the tile says). */}
+        <Link href={readyHref} className="card p-4 block hover:border-black/30" data-testid="tile-ready">
+          {/* Home's "Leads ready" rule, every hold clear (lib/outreach/home-ready.ts); a read that fails says so, never a 0 */}
           <div className="text-2xl font-semibold tabular-nums">{ready === null ? <><span aria-hidden="true">...</span><span className="sr-only">checking</span></> : ready === 'failed' ? <><span aria-hidden="true">-</span><span className="sr-only">could not be checked</span></> : ready.ready}</div>
           <div className="text-xs text-[var(--ink-2)]">Ready leads</div>
           {ready === 'failed' && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-unread">Could not check. Refresh to retry.</div>}
+          {readyScans.length > 1 && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-scans">In {readyScans.length} scans: opens your scans</div>}
           {ready && ready !== 'failed' && ready.scans_in_window > ready.scans_checked && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">In your {ready.scans_checked} newest scans</div>}
         </Link>
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
