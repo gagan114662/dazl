@@ -1390,7 +1390,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // refusal, accounting failure, auth error or stop): per-class failure counts, the non-200 statuses seen and the
         // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays
         // distinguishable, and a refusal after a searched query never erases the query's recorded truth.
-        if (note.searched) ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
+        ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
       }
       if (leads && leads.length === 0) leads = null
     }

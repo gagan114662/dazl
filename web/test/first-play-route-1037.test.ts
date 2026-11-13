@@ -137,3 +137,12 @@ test('#1037 FREE TRIAL first play: the capped fallback is paid from the trial re
   const poor = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '5' }, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5' })))
   assert.equal(poor.calls.searches.length, 0, 'a search the reserve cannot pay is never sent')
 })
+
+test('#1037 first play: news switched on but no runnable news query -> the report still carries news status and zero counts', async () => {
+  let newsCalls = 0
+  const newsHttp = async () => { newsCalls++; return { ok: true, status: 200, text: '{"articles":[]}' } }
+  const r = await runFixture(base(FUNDING, { modelQueries: ['site:sifted.example seed round', 'site:techcrunch.com seed London'], deps: { newsHttp } }))
+  assert.equal(newsCalls, 0, 'no news query was runnable')
+  assert.equal(sourceStatus(r, 'search:news'), 'unavailable')
+  assert.deepEqual(rep(r).news, { attempted: 0, failed: 0, limited: 0, malformed: 0, failure_classes: {}, http_statuses: {}, query_classes: {} })
+})
