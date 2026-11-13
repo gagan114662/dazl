@@ -87,7 +87,7 @@ CREATE TABLE calcom_bookings (
       attendee_email TEXT NOT NULL,
       attendee_name  TEXT,
       lead_id        TEXT,
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled')), start_at INTEGER, end_at INTEGER, ical_uid TEXT, ical_seq INTEGER, detail_ms INTEGER, attendees TEXT, cancelled_ms INTEGER, rescheduled_to TEXT, rescheduled_from TEXT, ended_at INTEGER, no_show_marks TEXT, manual_outcome TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled')), manual_at INTEGER, manual_by TEXT, last_event_ms INTEGER, lead_prev_stage TEXT,
       PRIMARY KEY (tenant_id, booking_uid)
     );
 
@@ -236,6 +236,10 @@ CREATE TABLE email_tokens (
     expires_at INTEGER NOT NULL,
     used_at INTEGER
   );
+
+CREATE TABLE email_verify_usage (
+      verifier TEXT NOT NULL CHECK (length(verifier) <= 40), month TEXT NOT NULL CHECK (length(month) = 7),
+      n INTEGER NOT NULL DEFAULT 0 CHECK (n >= 0), PRIMARY KEY (verifier, month));
 
 CREATE TABLE evidence_purge_audit (
   id TEXT PRIMARY KEY,
@@ -1117,7 +1121,7 @@ CREATE TABLE work_email_lookups (
       detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
       source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
       checked_at INTEGER,
-      updated_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL, mailbox_check TEXT CHECK (mailbox_check IS NULL OR mailbox_check IN ('pending','valid','catch_all','undeliverable','uncertain','refused')), mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR length(mailbox_verifier) <= 40), mailbox_checked_at INTEGER,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
       CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
       CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
@@ -1225,6 +1229,8 @@ CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
 
+CREATE INDEX calcom_bookings_tenant_lead ON calcom_bookings (tenant_id, lead_id, booking_uid);
+
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 
 CREATE INDEX commenter_rows_batch ON commenter_rows (batch_id);
@@ -1244,6 +1250,8 @@ CREATE INDEX crawl_pages_job ON crawl_pages (scan_job_id);
 CREATE INDEX csv_batches_user ON csv_batches (user_id, created_at);
 
 CREATE INDEX csv_rows_batch ON csv_rows (batch_id);
+
+CREATE INDEX email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
 
 CREATE INDEX email_tokens_user ON email_tokens (user_id, purpose);
 
@@ -1283,6 +1291,8 @@ CREATE INDEX monitor_alerts_monitor ON monitor_alerts (monitor_id, at);
 
 CREATE INDEX monitor_events_entity ON monitor_events (user_id, entity_key);
 
+CREATE INDEX monitor_runs_job ON monitor_runs (job_id);
+
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 
 CREATE INDEX monitors_due ON monitors (enabled, next_run_at);
@@ -1305,11 +1315,17 @@ CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
 
+CREATE INDEX scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL;
+
 CREATE INDEX scan_jobs_insert_seq_idx ON scan_jobs (insert_seq);
 
 CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
+
+CREATE INDEX scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
+
+CREATE INDEX scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
@@ -1356,6 +1372,8 @@ CREATE INDEX warm_user_paths_insert_seq_idx ON warm_user_paths (insert_seq);
 CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);
 
 CREATE INDEX watches_due ON watches (active, next_run_at);
+
+CREATE INDEX work_email_lookups_mailbox_checked ON work_email_lookups (tenant_id, mailbox_checked_at);
 
 CREATE INDEX work_queue_claimable
         ON work_queue(status, not_before, created_at);

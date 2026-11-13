@@ -22,11 +22,16 @@ test('copy matches behaviour: no "approve every send" vs autopilot contradiction
   for (const p of ['app/app/seo/brief-panel.tsx', 'app/app/seo/newsjack-panel.tsx']) assert.match(read(p), /markdownToPlain\(/, p)
 })
 
-test('homepage claims match behaviour (Instinct #326): example demo labelled, weekly plays, held not dropped, provider costs at Pro', () => {
+test('homepage claims match behaviour (Instinct #326, #1042): example demo labelled, first play daily, held not dropped, provider costs at Pro', () => {
   const page = read('app/page.tsx'); const demo = read('app/landing-demo.tsx')
-  // lib/watch.ts schedules a play's next run a week out; nothing runs daily.
-  assert.match(read('lib/watch.ts'), /WEEK_S = 7 \* 86400/)
-  for (const t of [page, demo]) assert.doesNotMatch(t, /\bdaily\b|every day/i)
+  // #1042 (decision 2026-11-12): the first play's automatic repeat runs every day (lib/play-repeat.ts, lib/play-cadence.ts);
+  // a play saved by hand still runs weekly. So the homepage may say "every day" only about the first Play.
+  assert.match(read('lib/play-cadence.ts'), /DAY_S = 86400/)
+  assert.match(read('lib/play-cadence.ts'), /watchIntervalS = \(auto: boolean\): number => auto \? DAY_S : WEEK_S/)
+  assert.match(read('lib/play-repeat.ts'), /REPEAT_INTERVAL_S = DAY_S/)
+  assert.match(page, /Your first Play runs again every day/)
+  assert.equal(page.match(/\bdaily\b|every day/gi)?.length, 2, 'the step title and its first-Play sentence only')
+  assert.doesNotMatch(demo, /\bdaily\b|every day/i)
   assert.match(demo, /Live · runs weekly/)
   // The demo's people and companies are invented: labelled on screen and for screen readers.
   assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)

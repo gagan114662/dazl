@@ -42,6 +42,8 @@ const firstSentence = (s: string) => {
 
 export function approveState(l: CardLead): ApproveState {
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
+  // #1062: before the review reason - confirming the source cannot release a required check that has not passed.
+  if (l.gate_held) return { ok: false, reason: 'A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead. Check the source under Needs your review first.' }
   if (l.window_held) return { ok: false, reason: 'Outside the time window you asked for, or its date is unknown. Research only.' }
   if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Not verified. Check the source first.' }

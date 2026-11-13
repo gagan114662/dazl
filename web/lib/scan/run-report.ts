@@ -12,6 +12,8 @@ const ownFetchOf = (m: Map<string, string> | undefined, url: string): string | n
 export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null }
 export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null }
 export interface ReportParts {
+  // #1082: units the platform's fair share of the operator search budget left out (the run's results are thinner)
+  capacity?: { searches: number; fetches: number }
   queries?: string[]; query_source?: string | null
   search?: { attempted: number | null; ok: number | null; hits_raw: number | null; hits_unique_urls: number | null; hits_complete: boolean | null }
   urls?: UrlRecord[]
@@ -82,6 +84,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
     news: p.news ?? null, stop: p.stop ?? null,
+    capacity: p.capacity ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
 }

@@ -137,7 +137,16 @@ that keep agreement between models from passing for ground truth.
   - a timeout or a thrown error;
   - an unparseable reply;
   - a reply with any field beyond `{answer, quote, source}`;
-  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names.
+  - a `supported` whose quote is not verbatim (case and whitespace aside) in the source it names;
+  - an adapter that throws, or answers anything but `supported`, `not_supported` or `unknown`.
+
+  Bad harness configuration is refused before any judge call: a NaN, infinite, out-of-range, missing or extra threshold
+  (a NaN would make every `rate > max` check false), a non-integer repeat count or budget, an unknown split. A lock entry
+  counts only when it is exactly its nine fields with their types (sha256 fingerprint and corpus hash, a full judge spec
+  that is not a stub model, a known origin, `ok` a boolean, lists of text, a non-empty source and a real UTC time), its
+  origin is the corpus's, its judge spec is exactly the judge's, and `ok` is `true` with no problems and no critical false
+  positives. A malformed lock, lock entry, gate result or drift report (any shape but a `DriftReport` with a known status)
+  is unusable, never usable.
 - **Unanimity, not votes.** A panel is `supported` or `not_supported` only when every judge says so. One abstention or one
   dissent is unknown, so 2-of-3 is not a pass. A judge that answers the same item differently on a repeat is unknown on it.
 - **Sources are data.**
@@ -150,7 +159,7 @@ that keep agreement between models from passing for ground truth.
   its prompt template. Its verdicts count (`judgeGate`) only when both hold:
   - the lock (`test/fixtures/evals/judges/judges.lock.json`) has a passing calibration for that exact fingerprint on the
     current corpus hash;
-  - no drift report over its stored verdicts says `drifted`.
+  - no drift report over its stored verdicts says `drifted` or `invalid`.
 
   Any change to the model, prompt or corpus means recalibrating. Until then the judge yields `unknown`, never `pass`. The
   committed lock has no calibrations, so no judge counts yet.
@@ -162,11 +171,79 @@ that keep agreement between models from passing for ground truth.
 - `panelJudge`: a unanimous panel of either. A panel is calibrated like a single judge, because a blind spot all its
   members share passes the panel too.
 
-The lock's `registered` list holds the scan judge's fingerprint. A test recomputes it from the code, so an edit to that
-prompt or parser fails CI until someone runs the harness and updates the entry.
+The lock's `registered` list holds the fingerprints of the judges the code runs: the scan judge (as the scan runs it,
+on the tenant's provider) and the claim judge (as the one approved validation run would calibrate it, on
+`claude-sonnet-4-5`). The release gate below recomputes them from the code on every CI run.
 
-**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, origin `synthetic`, 44 items) is labelled, and every
-company, page and address in it is invented. It has seven conditions:
+**The release gate** (`releaseGate`, #784; run in CI by `test/judge-release-gate.test.ts`, by hand with
+`scripts/judges.mts --gate`). For each judge the code runs it recomputes the fingerprint and runs the calibration harness
+on that exact fingerprint: the judge's real prompt and parser, its id, version and model name, with every reference stub
+model behind it (`harnessFor`, `test/helpers/judge-stubs.ts`). Release is blocked when:
+- the corpus is not the frozen one;
+- a judge changed (model, version or prompt): the gate prints the harness result on the new fingerprint, and release
+  stays blocked until a reviewed PR registers it in the lock;
+- a judge ships unregistered, or a registered judge was not checked;
+- the harness lost its teeth: the truthful stub failed, an adversarial stub passed, or a report is for another
+  fingerprint, corpus or split;
+- a calibration recorded in the lock for the current fingerprint has a critical false positive (reported by kind:
+  wrong identity, contact or date, or an obeyed injection), or failed on its rates;
+- drift: the gate reads the committed stored-verdict log (`test/fixtures/evals/judges/verdicts.jsonl`, through
+  `readVerdictLog`; absent while no real model is calibrated) and runs `detectDrift` for every judge. A `drifted` or
+  `invalid` report blocks, and so do an unreadable log, a gate call with no `verdicts` input, and any supplied drift
+  report that is not exactly a `DriftReport` with a known status. Once the lock holds a calibration for a judge's current
+  fingerprint, the log must hold that fingerprint's verdicts on every calibration item of the frozen corpus (recorded by
+  the same reviewed PR as the lock entry); without them drift cannot be checked and release is blocked. A critical
+  false positive in any stored run of that fingerprint on this corpus also blocks, whichever run is the drift baseline;
+  criticality is taken from the corpus, and a stored record on this corpus hash whose label, condition, critical kind,
+  split or origin differs from its corpus item (or whose item the corpus lacks) blocks. Runs stored under an earlier
+  corpus hash are deliberately not counted: a re-frozen corpus is a new benchmark and starts over.
+  When the log is missing from the gate input or unreadable, no judge's verdicts count. The CI test and
+  `scripts/judges.mts --gate` read the same files (`--lock` and `--verdict-log` point the CLI at others).
+
+A judge with no real-model calibration does not block release, but its verdicts do not count: they stay unknown, never
+pass, and the decision lists that under `limits`. Harness reports are marked `harness_stub` and `lockEntry` refuses them,
+so a stub run can never be recorded as a calibration. No human label queue is involved: the labels come from the
+corpus's records, below.
+
+**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, id `judge-claims-synthetic-5`, origin `synthetic`,
+44 items) is labelled, and every company, page and address in it is invented. It is frozen (#783): the lock's `corpus`
+record pins its id, sha256, item count and origin. `frozenProblem` refuses an in-place edit (same id, new content) and any
+other corpus, so a changed corpus needs a new id and a reviewed re-freeze, and every calibration made on the old one stops
+counting.
+
+Its labels are machine-verifiable. Each item carries `truth` records: the claim (company, kind, and any detail, date,
+person or contact it names) and the facts its sources state, each with its exact words (`evidence`), the source it cites,
+the company, the kind and a status (`asserted`, `denied`, `corrected`, `departed`, `planned` or `instruction`).
+`truthLabel` derives the label: supported only when a source asserts a fact about the claim's exact company and kind,
+matching every attribute the claim names (a claim date is a prefix: `2026-10` needs a fact dated in October 2026), and no
+source denies, corrects or reports the departure of it (a retraction that names a date applies only when its date and the
+claim's can be the same: neither is a prefix of the other means a different event). Instructions, plans and publication
+or refresh dates never support anything. The records are bound to the text. The displayed claim is not free text: it
+is rendered from the truth claim by a fixed template (`claimText`), and any other wording is refused. Each fact's
+`evidence` must state its kind (and not use a kind word in another sense, such as "a round of layoffs"), detail, person,
+contact, date and status: a retraction or plan in its own words, and an assertion that is neither negated nor a failure,
+modal, rumour or plan (checked on the whole evidence; only the keyword of a set-apart clause is masked). The sentence
+the evidence sits in must name the fact's company as a whole name, not attributively or as a possessive ("Querix Labs",
+"Acme Querix", "Querix-backed", "Querix's spin-off" and "Former Querix staff" do not name Querix; "The Querix team" and
+"QUERIX" do), and must name no other company of the item, except one it sets apart: a clause bounded by punctuation on
+both sides whose body is a company name (", no relation to Corvid Robotics,"). For an asserted fact two word-position
+checks apply as well: a capitalised name that starts a clause directly before the fact's kind word (auxiliaries and an
+appositive between commas skipped) must be the fact's company or person, so "Nordwind raised ..." and "Nordwind, a
+Querix customer, raised ..." are refused for Querix, and so are the same appositives in brackets or between dashes; and
+the company may not be only the reporter ("..., says Querix", "According to Querix, ...", "Querix said Nordwind ...",
+"Querix noted that Nordwind ...", or a trailing or mid-sentence "..., Querix said" when the statement neither names
+Querix nor speaks in the first person). None of this is a grammatical parse. Instructions and publication or refresh dates are exempt. A role or contact claim
+is about now ("is the current ..."), so only an undated assertion supports it; an acquisition claim names its acquirer
+when the record has one. Kind words,
+exclusions, detail translations and month names are listed in code, not in the corpus. `checkCorpus` refuses an item whose
+label disagrees with its records, whose claim or evidence does not state what its records say, whose evidence, company or
+contact is not verbatim on the page it cites, whose dates are not real calendar dates, or whose records do not show what its
+condition or critical kind claims (an identity trap needs a fact about another company, a date trap a dated claim, an
+injection an instruction fact, a negation a denied fact). `test/judge-corpus.test.ts` also serves every source as an HTML
+page on a loopback server (with hidden script and comment instructions) and reads it back through the scan's
+`htmlToText`, so the judge is given exactly what the scan would read.
+
+It has seven conditions:
 - plain;
 - multilingual (French, German, Spanish, Portuguese);
 - negation;
@@ -208,9 +285,23 @@ A critical false positive or an action attempt blocks the judge whatever its rat
 `pairAgreement` compares two judges and lists the items they get wrong together. That is where a unanimous panel would
 still pass a false claim.
 
-**Drift** works over stored verdicts. `toStoredVerdicts` turns a report into JSON-lines records, one per item. Each
-record holds the run, time, judge, fingerprint, model, corpus hash, origin, split, item, label and answer.
-`parseStoredVerdicts` refuses a damaged line instead of skipping it.
+**Drift** works over stored verdicts. `toStoredVerdicts` turns a report into JSON-lines records (v2), one per item. Each
+record holds the run, time, judge, fingerprint, model, version, prompt version, corpus hash, origin, split, item,
+condition, critical kind, label, answer and reasons. `parseStoredVerdicts` refuses, instead of skipping: a damaged or
+cut-off line, a line with a missing, extra or mistyped field, a v1 line (no judge version), a replayed line (same run,
+judge, split and item twice), a run that mixes judge identities, one (judge, fingerprint) recorded with two models,
+versions or prompt versions anywhere in the log, and an item whose label differs between lines of one corpus version.
+Runs on one corpus version, origin and split must hold the same items: a truncated or padded run is never compared by
+intersection.
+
+**Per-version reporting** (#785). `verdictHistory` reports, per origin, corpus version and split (never pooled), the
+judge's fingerprint epochs in time order (consecutive runs under one fingerprint; a return to an earlier fingerprint is a
+new epoch, so a rollback B -> A is reported as such): each epoch's model, version and prompt version, its false-positive,
+false-negative and abstention rates overall and per condition, its critical false positives, and the items its own runs
+answered differently. Between adjacent epochs it reports the per-condition rate changes, the items whose answer changed
+and new critical false positives. Runs that hold different items are reported under `problems`, with no rates, and
+`--report` exits 1. `scripts/judges.mts --report <log.jsonl>` prints it; `renderCalibration` prints one report
+per condition.
 
 `detectDrift` compares a judge's latest run with its baseline run on the same corpus version and split, per origin. It
 flags each of:
@@ -219,12 +310,15 @@ flags each of:
 - a condition whose false-positive, false-negative or abstention rate rose by more than 0.1;
 - a new critical false positive.
 
-Fewer than two runs is `insufficient`, which never reads as stable. Synthetic and live-web results are never compared
+Fewer than two runs is `insufficient`, which never reads as stable. Runs that hold different items are `invalid`, which
+blocks like `drifted`. Synthetic and live-web results are never compared
 or pooled.
 
 `scripts/judges.mts` scores both real judge adapters under every reference stub model and checks the harness still has
 teeth: on the calibration split only the truthful stub may pass. `--verdicts <log.jsonl>` appends the run and reports
-drift. It runs offline, with stub models only:
+drift; it reads and validates the existing log together with the new run first, and leaves the file untouched when either
+fails, including when drift over the combined log is `invalid` (a v1 log is refused, not migrated: it records no judge
+version). It runs offline, with stub models only:
 
     SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/judges.mts
 
@@ -235,6 +329,22 @@ passed the deterministic checks (quote on the page, company named, date). Its an
 a lead it calls `contradicts`. It has no send or tool authority.
 
 **Limits and what is not built:**
+- The corpus checks that bind records to their text are lexical, from word lists in `lib/evals/judge.ts`, not a parser:
+  `KIND_WORDS` and `KIND_EXCLUSIONS` (a kind word used in another sense: only the senses listed are caught),
+  `NEGATIONS` and `HEDGES` (a negation, failure, modal, rumour or plan in other words is not caught), `STATUS_WORDS`,
+  `DETAIL_WORDS` and `MONTH_WORDS` (English, French, German, Spanish and Portuguese only), and the set-apart keywords in
+  `SET_APART` ("no relation to", "unlike", ...). Company binding is by word position (`namesCompany`, `actorProblem`), not
+  a parse. A sentence whose actor is a company outside the item's records still passes `checkCorpus` when that actor
+  does not start a clause directly before a listed kind word and the item's company is not phrased as the reporter: for
+  example "Querix announced that Nordwind raised a seed round in October 2026" is accepted as Querix raising a seed
+  round. So are a joint actor ("Nordwind and Querix raised ..."), an actor whose verb is not a listed kind word
+  ("Nordwind, backed by Querix, completed a seed round"), and a lowercase actor, which the capitalised-name rule does
+  not see ("nordwind (a Querix customer) raised a seed round"), and a first-person sentence that names another company
+  mid-clause before the kind word with the item's company as the reporter ("Our partner Nordwind raised a seed round,
+  Querix said"). All five are pinned as documented limits in
+  `test/judge-review-findings.test.ts`. Corpus review is what catches such a wrong-identity positive. These checks keep the corpus
+  honest against the edits tried in review; they are not proof against every paraphrase, and a corpus change is still a
+  reviewed PR.
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.
 - The real-model run is built but has not run (`lib/evals/judge-validation-run.ts`, `scripts/judge-validation-run.mts`).
   It is separate from the stub harness above, which never loads it. One run covers both judges on both splits; the

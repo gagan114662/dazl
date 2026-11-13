@@ -113,8 +113,14 @@ test('#1037 (replaces the earlier first5 no-people-search rule): FIRST5 makes th
     assert.ok(await run(JSON.stringify({ paid_fallback: false, credit_enrichment: false })) >= 1, 'control: without first5 the people search does run (so the zero above is the gate, not a broken probe)')
   } finally { if (prev === undefined) delete process.env.PEOPLE_SEARCH_ENABLED; else process.env.PEOPLE_SEARCH_ENABLED = prev }
 })
-test('first5 budget disclosure reports TinyFish search/fetch/people search as OFF, not not_covered, and does not call model calls free', () => {
+test('first5 budget disclosure: no TinyFish lead search or fetch, but the capped people searches are not_covered (#1037), and model calls are not called free', () => {
   const d = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false })
-  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'off'); assert.match(s.note, /not free/)
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'not_covered'); assert.match(s.note, /only when free news cannot serve the play, a TinyFish lead search runs instead, capped at 3 lead searches and 6 page reads/); assert.match(s.note, /not free/)
+  const off = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, { firstPlayLead: { searches: 0, fetches: 0 } }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.match(off.note, /no TinyFish lead search or page fetch/, '#1037 item 1: fallback off -> the old wording')
+  const none = describeRunBudget({ first5: true }, { firstPlayLead: { searches: 0, fetches: 0 }, firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(none.status, 'off')
+  const leadOnly = describeRunBudget({ first5: true }, { firstPlayLead: { searches: 2, fetches: 4 }, firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(leadOnly.status, 'not_covered'); assert.match(leadOnly.note, /capped at 2 lead searches and 4 page reads/); assert.match(leadOnly.note, /No post-scan people search/)
   assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'not_covered')
 })

@@ -63,15 +63,47 @@ test('Gmail that needs reconnecting and a half-filled sender are to-dos', () => 
 test('plays: own searches newest first with their outcome; imports and fixtures excluded', () => {
   const j = (id: string, created_at: number, o: object = {}) => ({ id, status: 'done', error: null, query: `q${id}`, csv_domain: null, created_at, lead_count: 3, verified: 3, needs_review: 0, ...o })
   const p = recentPlays([j('1', 1), j('2', 3, { status: 'failed' }), j('3', 2, { lead_count: 1, verified: 1 }), j('4', 4, { csv_domain: 'acme.com' }), j('5', 5, { test_only: true }), j('6', 6, { status: 'running', query: null })])
-  assert.deepEqual(p, [{ id: '2', query: 'q2', outcome: 'failed' }, { id: '3', query: 'q3', outcome: '1 source-checked, 0 need your review' }, { id: '1', query: 'q1', outcome: '3 source-checked, 0 need your review' }])
+  // No campaigns argument here: without a matching campaign row the job's own recorded counts are not shown (#683
+  // round 2 - they can be stale), only that the campaign has current counts.
+  assert.deepEqual(p, [{ id: '2', query: 'q2', outcome: 'failed' }, { id: '3', query: 'q3', outcome: 'counts unavailable' }, { id: '1', query: 'q1', outcome: 'counts unavailable' }])
+})
+
+// #683: a lead's review can be resolved or held after the scan finished, so a matching campaign row (already loaded
+// for this same Home read) is preferred over the job's own stale recorded counts, the same as Campaigns and the campaign page.
+test('plays: a matching campaign row overrides the job\'s stale counts and names research-only leads', () => {
+  const j = (o: object = {}) => ({ id: 'x', status: 'done', error: null, query: 'q', csv_domain: null, created_at: 1, lead_count: 2, verified: 0, needs_review: 2, ...o })
+  const camp = (q: object) => [{ id: 'x', qualification: { rejected: 0, ...q } }]
+  // The scan recorded 2 needing review; since then both were confirmed out of a hold no check can resolve (#683).
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, '0 source-checked, 0 need your review, 2 research-only')
+  assert.doesNotMatch(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2 }))[0].outcome, /2 need your review/)
+  // heldResearch (held by the time window, no check involved) counts the same as research - and heldResearchSourceChecked
+  // is the sourceChecked-only slice of it (#683 round 3), so the one lead that is both source-checked and held-research
+  // must not read as two leads: "1 source-checked ... 1 research-only" would be.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 1, confirmedByYou: 0, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 1 }))[0].outcome, '0 source-checked, 0 need your review, 1 research-only')
+  // A lead that is source-checked AND held for a reason a check cannot resolve, alongside one that is cleanly source-checked:
+  // only the held one is research-only, the clean one still counts as checked.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 2, confirmedByYou: 0, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 1 }))[0].outcome, '1 source-checked, 0 need your review, 1 research-only')
+  // #683 round 3 (council, all three reviewers independently): heldResearch can also be drawn from a CONFIRMED-BY-YOU
+  // lead, not a source-checked one. That must never reduce sourceChecked - the clean source-checked leads stay fully counted.
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 2, confirmedByYou: 1, needsReview: 0, heldResearch: 1, heldResearchSourceChecked: 0 }))[0].outcome, '2 source-checked, 0 need your review, 1 research-only')
+  // No matching campaign row (not loaded, or beyond its own cap): the job's own recorded counts are from scan time and can
+  // be stale for exactly the leads #683 is about (confirmed out of a hold since), so nothing current is claimed - never
+  // the job's stale needs_review, which would reproduce the original bug.
+  assert.equal(recentPlays([j({ candidates: 2 })], 5, [])[0].outcome, '2 found; open the campaign for current counts')
+  assert.doesNotMatch(recentPlays([j({ candidates: 2 })], 5, [])[0].outcome, /need your review/)
+  assert.equal(recentPlays([j()], 5, [])[0].outcome, 'counts unavailable')
+  // Opus round 3 nit: singular wording ("1 needs your review") for exactly one, never dropped when the stale-counts
+  // branches above moved from showing job counts to "counts unavailable" / "open the campaign".
+  assert.equal(recentPlays([j()], 5, camp({ sourceChecked: 0, confirmedByYou: 0, needsReview: 1, research: 0 }))[0].outcome, '0 source-checked, 1 needs your review')
 })
 
 // Instinct #234: a finished search whose leads are all research-only must not read as "5 leads" of yield.
 test('plays never present research-only leads as yield; old records and cancelled runs say what they are', () => {
   const j = (o: object) => recentPlays([{ id: 'x', status: 'done', error: null, query: 'q', csv_domain: null, created_at: 1, lead_count: 5, ...o }])[0].outcome
-  assert.equal(j({ verified: 0, needs_review: 5 }), '0 source-checked, 5 need your review', 'the real NYC shape: all five need review')
-  assert.equal(j({ verified: 2, needs_review: 3 }), '2 source-checked, 3 need your review')
-  assert.equal(j({ verified: 0, needs_review: 1, lead_count: 1 }), '0 source-checked, 1 needs your review')
+  // No campaigns argument here either: without a matching campaign row, nothing current is claimed (#683 round 2).
+  assert.equal(j({ verified: 0, needs_review: 5 }), 'counts unavailable', 'the real NYC shape: all five need review, but no campaign row to confirm it is current')
+  assert.equal(j({ verified: 2, needs_review: 3 }), 'counts unavailable')
+  assert.equal(j({ verified: 0, needs_review: 1, lead_count: 1 }), 'counts unavailable')
   assert.equal(j({ candidates: 4, verified: 0, needs_review: 0, dropped: 4, lead_count: 0 }), '4 found, all dropped by the checks', 'all-rejected is its own outcome')
   assert.equal(j({ candidates: 0, verified: 0, needs_review: 0, lead_count: 0 }), 'no candidates extracted')
   assert.equal(j({ verified: null, needs_review: null }), 'counts unavailable', 'old record: never a lead total')
@@ -176,7 +208,8 @@ test('first scan, leads reviewed and first approved email: done only on evidence
   assert.deepEqual([rows({ jobs: [] }).scan.state, rows({ jobs: [] }).scan.fix], ['todo', { kind: 'link', href: '/app/leads', label: 'Find leads' }])
   assert.deepEqual([rows({ jobs: [job({ status: 'running' })] }).scan.detail, rows({ jobs: [job({ status: 'running' })] }).scan.fix?.label], ['running now', 'See progress'])
   assert.equal(rows({ jobs: [job({ status: 'failed', error: 'no_candidates' })] }).scan.state, 'todo', 'a failed scan is not a finished one')
-  assert.deepEqual([rows({ jobs: [done] }).scan.state, rows({ jobs: [done] }).scan.detail], ['done', '1 finished; latest: 2 source-checked, 1 needs your review'])
+  // No campaigns loaded here: without a matching row, nothing current is claimed about the job's own recorded counts (#683 round 2).
+  assert.deepEqual([rows({ jobs: [done] }).scan.state, rows({ jobs: [done] }).scan.detail], ['done', '1 finished; latest: counts unavailable'])
   // Leads reviewed.
   assert.deepEqual([rows({ jobs: [done], messages: [], campaigns: [{ id: 'd1', qualification: { rejected: 0 } }] }).review.state, rows({ jobs: [done], messages: [], campaigns: [] }).review.fix], ['todo', { kind: 'link', href: '/app/leads?job_id=d1', label: 'Review leads' }])
   assert.equal(rows({ messages: [{ status: 'draft' }], campaigns: [] }).review.detail, 'leads approved into drafts')

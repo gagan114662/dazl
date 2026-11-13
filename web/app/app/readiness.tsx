@@ -24,7 +24,7 @@ export default function Readiness() {
     const { input: next, jobs } = await loadReadinessInput()
     const profile = next.profile
     setInput(next)
-    setPlays(jobs ? recentPlays(jobs) : null)
+    setPlays(jobs ? recentPlays(jobs, 5, next.campaigns) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
   useEffect(() => {

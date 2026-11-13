@@ -143,11 +143,62 @@ test('same-thread structured DSN naming a different recipient cannot suppress th
 
 test('control: same-thread structured DSN with aligned provenance suppresses, recorded as dsn, counted once', async () => {
   const db = await setup()
-  const { th } = bounceThread(db, 'b@three.example', sameThreadDsn('f4', { recipient: 'b@three.example', at: NOW - 3 * DAY }))
+  const b = sentLead(db, 'b@three.example')
+  const th = { [b.thread]: [sameThreadDsn('f4', { recipient: 'b@three.example', at: NOW - 3 * DAY, ref: `<dazl.${b.mid}@acme.example>` })] }
   const r = await syncReplies(db, 'A', opts(gmail(th)))
   assert.equal(r.bounces, 1)
   assert.equal(isSuppressed(db, 'A', 'b@three.example'), true)
   const again = await syncReplies(db, 'A', opts(gmail(th))); assert.equal(again.bounces, 0)
+})
+
+// #415 review (2026-11-06): thread membership is not correlation. A same-thread notice must reference THIS send by its
+// own structured fields (returned Message-ID / References), the same contract as the separate-thread branch, before a
+// correlated, authenticated 5.x.x can suppress. Everything else is one review item, never a suppression or a count.
+test('same-thread authenticated DSN WITHOUT an exact reference to this send: review only, nobody suppressed', async () => {
+  const cases: { name: string; o: (mid: string, other: string) => { ref?: string; refHeader?: string } }[] = [
+    { name: 'no reference at all', o: () => ({}) },
+    { name: 'references another real send to the same recipient', o: (_m, other) => ({ ref: `<dazl.${other}@acme.example>` }) },
+    { name: 'this send id on a foreign domain', o: m => ({ ref: `<dazl.${m}@evil.example>` }) },
+    { name: 'fabricated dazl id', o: () => ({ ref: '<dazl.deadbeef00@acme.example>' }) },
+    { name: 'ambiguous: this send and another', o: (m, other) => ({ ref: `<dazl.${m}@acme.example>`, refHeader: `<dazl.${other}@acme.example>` }) },
+    { name: 'non-dazl message id', o: () => ({ ref: '<CAF123@mail.gmail.com>' }) },
+  ]
+  for (const c of cases) {
+    const db = await setup()
+    const b = sentLead(db, 'b@three.example'), other = sentLead(db, 'b@three.example', NOW - 5 * DAY)
+    const th = { [b.thread]: [sameThreadDsn('f7', { recipient: 'b@three.example', at: NOW - 3 * DAY, ...c.o(b.mid, other.mid) })] }
+    const r = await syncReplies(db, 'A', opts(gmail(th)))
+    assert.deepEqual([r.bounces, r.reviews], [0, 1], c.name)
+    assert.equal(isSuppressed(db, 'A', 'b@three.example'), false, c.name)
+    assert.equal(count(db, "SELECT count(*) n FROM inbound_messages WHERE classification = 'bounce'"), 0, c.name)
+    assert.equal(count(db, "SELECT count(*) n FROM inbound_messages WHERE classification = 'bounce_review'"), 1, c.name)
+    assert.equal(count(db, "SELECT count(*) n FROM followup_threads WHERE stopped = 'bounce'"), 0, c.name)
+    const again = await syncReplies(db, 'A', opts(gmail(th))); assert.equal(again.reviews, 0, c.name) // once per send
+  }
+})
+
+// xhawk review (#1065): the row scanned first must not consume a notice that exactly references its sibling on the same thread.
+test('two sent rows share a thread: a DSN referencing the second suppresses via the second whichever row is scanned first', async () => {
+  for (const firstIsOther of [true, false]) {
+    const db = await setup()
+    const a = sentLead(db, 'b@three.example', NOW - 6 * DAY), b = sentLead(db, 'b@three.example', NOW - 5 * DAY)
+    db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(a.thread, b.mid)
+    // sent order is sent_at DESC (b first); flip by giving the referenced row the older send when firstIsOther is false
+    const ref = firstIsOther ? b.mid : a.mid
+    const r = await syncReplies(db, 'A', opts(gmail({ [a.thread]: [sameThreadDsn('f9', { recipient: 'b@three.example', at: NOW - 3 * DAY, threadId: a.thread, ref: `<dazl.${ref}@acme.example>` })] })))
+    assert.deepEqual([r.bounces, r.reviews], [1, 0], String(firstIsOther))
+    assert.equal(isSuppressed(db, 'A', 'b@three.example'), true)
+  }
+})
+
+test('control: same-thread reference via a follow-up step id or the References header still correlates to the original send', async () => {
+  for (const o of [(m: string) => ({ ref: `<dazl.f1.${m}@acme.example>` }), (m: string) => ({ refHeader: `<dazl.${m}@acme.example> <dazl.s2.${m}@ACME.example>` })]) {
+    const db = await setup()
+    const b = sentLead(db, 'b@three.example')
+    const r = await syncReplies(db, 'A', opts(gmail({ [b.thread]: [sameThreadDsn('f8', { recipient: 'b@three.example', at: NOW - 3 * DAY, ...o(b.mid) })] })))
+    assert.deepEqual([r.bounces, r.reviews], [1, 0])
+    assert.equal(isSuppressed(db, 'A', 'b@three.example'), true)
+  }
 })
 
 test('control: a daemon message without any 5.x.x stays a soft bounce', async () => {

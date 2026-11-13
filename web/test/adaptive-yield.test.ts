@@ -3,6 +3,9 @@
 // actionable leads: ONE more bounded round asks a genuinely different query (an unused profile signal, the profile's
 // geography kept), reads only pages round one never saw, and its candidate passes the same verifier. Skips are
 // recorded with their reason, and a query round one already asked is never sent (or billed) again.
+import { createMonitor, migrateMonitors, runDueMonitors } from '../lib/monitors.ts'
+import { runPlayNow } from '../lib/play-now.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -16,7 +19,7 @@ import { migrateFeedback } from '../lib/scan/feedback.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
-import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, claimKeyedJob, runJob, type RunDeps } from '../lib/scan/runner.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, MONITOR_RUN_SQL, claimKeyedJob, isMonitorRun, runJob, type RunDeps } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -27,14 +30,15 @@ const A = { url: 'https://jobs.example/a', company: 'Harbor Freight Supply', quo
 const B = { url: 'https://jobs.example/b', company: 'Lakeview Dental Group', quote: 'Lakeview Dental Group in Dayton Ohio is hiring an office manager to run the front desk and billing' }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
 
-type Opts = {
+type Opts = { recurring?: 'watch' | 'monitor' | 'monitor_tick' | 'monitor_now';
   fundedByTrial?: boolean
   seedReservedUsd?: number
   runBudget?: string
   adaptiveOff?: boolean
   adaptiveFlag?: string
   onAdaptiveSearch?: (db: Database.Database, jobId: string) => void
-  signals?: string[]; aVerifies?: boolean; rejectCompanyB?: boolean; deps?: Partial<RunDeps> }
+  signals?: string[]; aVerifies?: boolean; rejectCompanyB?: boolean; deps?: Partial<RunDeps>
+  prepare?: (db: Database.Database) => void; env?: Record<string, string> }
 async function scan(o: Opts = {}) {
   resetTinyfishState()
   const icp = { summary: 'Ohio SMBs hiring', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: o.signals ?? ['payroll job', 'new front desk coordinator position posted'], exclude: [] }
@@ -42,8 +46,24 @@ async function scan(o: Opts = {}) {
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateFeedback(db)
   if (o.rejectCompanyB) db.prepare("INSERT INTO lead_feedback (id, tenant_id, version, verdict, level, reason, company_key, created_at) VALUES ('fb-b', 'A', 1, 'reject', 'account', 'not_useful', ?, ?)").run(companyKey(B.company), Date.now())
   saveKey(db, 'A', 'anthropic', KEY, master)
-  const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp), ...(o.runBudget ? { runBudget: o.runBudget } : {}) })
+  o.prepare?.(db)
+  // a monitor's job queued by the production paths: the scheduled tick (runDueMonitors) or "Find leads now" (runPlayNow)
+  let jid: string
+  if (o.recurring === 'monitor_tick' || o.recurring === 'monitor_now') {
+    migrateMonitors(db)
+    const now = Math.floor(Date.now() / 1000), d = sqliteDb(db)
+    const m = await createMonitor(d, 'A', { query: REQUEST, icp: JSON.stringify(icp) }, now - 86_400)
+    assert.ok('id' in m, JSON.stringify(m))
+    if (o.recurring === 'monitor_tick') { const js = await runDueMonitors(d, { now }); assert.equal(js.length, 1); jid = js[0] }
+    else { db.prepare('UPDATE monitors SET next_run_at = ? WHERE id = ?').run(now + 7 * 86_400, m.id); const r = await runPlayNow(d, 'A', 'monitor', m.id, now); assert.ok('job_id' in r, JSON.stringify(r)); jid = r.job_id }
+  } else jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp), ...(o.runBudget ? { runBudget: o.runBudget } : {}) })
   if (o.fundedByTrial) db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(o.seedReservedUsd ?? 0, jid)
+  if (o.recurring === 'watch') db.prepare('UPDATE scan_jobs SET watch_id = ? WHERE id = ?').run('w'.repeat(24), jid)
+  if (o.recurring === 'monitor') {
+    migrateMonitors(db)
+    db.prepare("INSERT INTO monitors (id, user_id, query, interval_hours, next_run_at) VALUES (?, 'A', ?, 168, 0)").run('m'.repeat(24), REQUEST)
+    db.prepare('INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, missed_runs) VALUES (?, ?, ?, 0, 0)').run('r'.repeat(24), 'm'.repeat(24), jid)
+  }
   const job = claimKeyedJob(db)!
   const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = [], pageReads: string[] = []
   const fetchImpl = (async (u: string, init?: RequestInit) => {
@@ -65,15 +85,18 @@ async function scan(o: Opts = {}) {
     return new Response('{}', { status: 200 })
   }) as typeof fetch
   const draft = (h: typeof A) => ({ name: '', company: h.company, contact: null, signal: 'Hiring for the role', source_url: h.url, score: 80, excerpt: h.quote, event_date: recent })
+  const complete = async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
+    if (maxTokens === 300) return JSON.stringify(MODEL_Q)
+    extractions.push(prompt)
+    return JSON.stringify(prompt.includes(B.url) ? [draft(B)] : [draft(A)])
+  }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       configuredModel: () => 'claude-sonnet-4-5',
       research: async () => ({ text: '', citedUrls: [] }),
-      complete: async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
-        if (maxTokens === 300) return JSON.stringify(MODEL_Q)
-        extractions.push(prompt)
-        return JSON.stringify(prompt.includes(B.url) ? [draft(B)] : [draft(A)])
-      },
+      complete: async (k: string, prompt: string, f?: typeof fetch, maxTokens?: number) => complete(k, prompt, f, maxTokens),
+      // A real provider reports usage; a guarded run settles to it. Without usage the guard stops after one call (#850).
+      completeDetailed: async (k: string, prompt: string, f?: typeof fetch, maxTokens?: number) => ({ text: await complete(k, prompt, f, maxTokens), model: 'claude-sonnet-4-5', usage: { input_tokens: 1000, output_tokens: 100 } }),
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
@@ -83,13 +106,17 @@ async function scan(o: Opts = {}) {
   globalThis.fetch = fetchImpl
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
   if (o.adaptiveOff) delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED; else process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = o.adaptiveFlag ?? '1'
+  const envBefore = Object.fromEntries(Object.keys(o.env ?? {}).map(k => [k, process.env[k]])); Object.assign(process.env, o.env ?? {})
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page, fetchImpl, score: false, judge: null, ...o.deps })
     const runs = db.prepare('SELECT collector, status, candidate_count, verified_count FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string; candidate_count: number | null; verified_count: number | null }[]
     const leads = db.prepare("SELECT company, source_url, review_reason FROM leads WHERE scan_job_id = ? ORDER BY rowid").all(job.id) as { company: string; source_url: string; review_reason: string | null }[]
     const jobRow = db.prepare('SELECT status, error, verified FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; verified: number }
     return { db, jobId: job.id, r, searched, fetchBatches, extractions, pageReads, runs, leads, jobRow, adaptive: runs.find(x => x.collector === 'search:adaptive') }
-  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED }
+  } finally {
+    globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED
+    for (const [k, v] of Object.entries(envBefore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  }
 }
 
 test('#381 zero actionable after round one: one different, bounded round on unseen pages finds a lead the same verifier accepts', async () => {
@@ -173,6 +200,25 @@ test('#381 budget near-exhausted (non-trial, own max_usd): the adaptive round\'s
   } finally { process.env = saved }
 })
 
+test('#1082 the platform search budget exhausted by round one: the adaptive round stops as search_cap, never "found nothing"', async () => {
+  const saved = process.env.TINYFISH_GLOBAL_SEARCH_DAILY
+  process.env.TINYFISH_GLOBAL_SEARCH_DAILY = '8' // half (the fair-share room kept for one more tenant) is round one's four
+  try {
+    const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+    const s = await scan({ env: { DAZL_RUN_REPORT: '1' }, prepare: db => migrateAllSqlite(db) })
+    assert.equal(s.r, 'done')
+    assert.equal(s.searched.length, 4, `round one used this tenant's share: ${JSON.stringify(s.searched)}`)
+    assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), 'the refused search was never sent')
+    // the adaptive round's own capacity report (council on the f144ccf1 fixes): the run report and the status note say so
+    const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+    const { sqliteDb } = await import('../lib/db/client.ts')
+    const st = await readScanStatus(sqliteDb(s.db), 'A', s.jobId) as { run_report: { capacity: { searches: number } | null }[]; capacity_note: string | null }
+    assert.ok((st.run_report.at(-1)?.capacity?.searches ?? 0) > 0, JSON.stringify(st.run_report.at(-1)?.capacity))
+    assert.equal(st.capacity_note, 'Platform search capacity reached today: results are thinner.')
+  } finally { if (saved === undefined) delete process.env.TINYFISH_GLOBAL_SEARCH_DAILY; else process.env.TINYFISH_GLOBAL_SEARCH_DAILY = saved }
+})
+
 test('#381 tenant daily cap exhausted by round one: the adaptive round stops with a visible status and makes no provider call', async () => {
   const saved = process.env.TINYFISH_TENANT_DAILY
   process.env.TINYFISH_TENANT_DAILY = '4' // exactly round one's four searches
@@ -203,23 +249,61 @@ test('#381 cancellation inside the adaptive round: ScanStopped and ScanTimedOut 
   assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the timed-out round is kept')
 })
 
-test('#381 gate: the adaptive round is OFF by default - a zero-verified scan behaves exactly as without the feature (no round, no calls, no row)', async () => {
-  const s = await scan({ adaptiveOff: true })
-  assert.equal(s.r, 'done')
-  assert.equal(s.adaptive, undefined, `no search:adaptive row at all: ${JSON.stringify(s.runs)}`)
-  assert.ok(!s.searched.some(q => /front desk/i.test(q)), `no adaptive search: ${JSON.stringify(s.searched)}`)
-  assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch')
-  assert.equal(s.extractions.length, 1, 'no adaptive extraction')
-  assert.equal(s.jobRow.status, 'done')
+test('#381 gate: the adaptive round is ON by default (decision on #381) - a zero-verified scan with the variable unset runs it', async () => {
+  const s = await scan({ adaptiveOff: true }) // the variable unset
+  assert.ok(s.adaptive, `a search:adaptive row: ${JSON.stringify(s.runs)}`)
+  assert.ok(s.searched.some(q => /front desk/i.test(q)), `the adaptive search ran: ${JSON.stringify(s.searched)}`)
+  assert.equal(s.extractions.length, 2, 'one adaptive extraction')
 })
 
-test('#381 gate: only the literal "1" enables the round - "0", "true", "" and " 1" all stay off', async () => {
-  for (const v of ['0', 'true', '', ' 1']) {
+test('#381 gate: only "0" turns the round off (no round, no calls, no row); "1", "true" and "" leave it on', async () => {
+  for (const v of ['0', ' 0 ']) {
     const s = await scan({ adaptiveFlag: v })
-    assert.equal(s.adaptive, undefined, `flag ${JSON.stringify(v)} must stay off: ${JSON.stringify(s.runs)}`)
+    assert.equal(s.r, 'done')
+    assert.equal(s.adaptive, undefined, `flag ${JSON.stringify(v)} turns it off: ${JSON.stringify(s.runs)}`)
     assert.ok(!s.searched.some(q => /front desk/i.test(q)), `flag ${JSON.stringify(v)}: no adaptive search`)
+    assert.deepEqual(s.fetchBatches, [[A.url]], `flag ${JSON.stringify(v)}: no adaptive fetch`)
     assert.equal(s.extractions.length, 1, `flag ${JSON.stringify(v)}: no adaptive extraction`)
   }
+  for (const v of ['1', 'true', '']) {
+    const s = await scan({ adaptiveFlag: v })
+    assert.ok(s.adaptive, `flag ${JSON.stringify(v)} leaves it on`)
+  }
+})
+
+test('#381 decision: a scheduled play run (a watch\'s or a monitor\'s) never takes the round; it says so', async () => {
+  for (const recurring of ['watch', 'monitor'] as const) {
+    const s = await scan({ adaptiveOff: true, recurring })
+    assert.equal(s.adaptive?.status, 'skipped:recurring_run', `${recurring}: ${JSON.stringify(s.runs)}`)
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `${recurring}: no adaptive search`)
+    assert.equal(s.extractions.length, 1, `${recurring}: no adaptive extraction`)
+  }
+})
+
+test('#381 a monitor\'s job queued by the scheduled tick or by "Find leads now" skips the round as a recurring run (review at 42598918)', async () => {
+  for (const recurring of ['monitor_tick', 'monitor_now'] as const) {
+    const s = await scan({ adaptiveOff: true, recurring })
+    assert.equal(s.adaptive?.status, 'skipped:recurring_run', `${recurring}: ${JSON.stringify(s.runs)}`)
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `${recurring}: no adaptive search`)
+    assert.equal(s.extractions.length, 1, `${recurring}: no adaptive extraction`)
+  }
+})
+
+test('#381 the monitor-run lookup is an index seek on monitor_runs (job_id), scoped to the job\'s owner, and fails closed (review at 42598918)', () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateMonitors(db)
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN ${MONITOR_RUN_SQL}`).all('j', 'A') as { detail: string }[]).map(r => r.detail)
+  assert.ok(plan.some(d => /^SEARCH r USING (COVERING )?INDEX monitor_runs_job \(job_id=\?\)/.test(d)), JSON.stringify(plan))
+  assert.ok(!plan.some(d => /^SCAN/.test(d)), `no table scan: ${JSON.stringify(plan)}`)
+  db.prepare("INSERT INTO monitors (id, user_id, query, interval_hours, next_run_at) VALUES ('m1', 'A', 'Dentists in Leeds', 168, 0)").run()
+  db.prepare("INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at) VALUES ('r1', 'm1', 'j1', 0)").run()
+  assert.equal(isMonitorRun(db, { id: 'j1', user_id: 'A' }), true)
+  assert.equal(isMonitorRun(db, { id: 'j2', user_id: 'A' }), false, 'a job no monitor queued')
+  assert.equal(isMonitorRun(db, { id: 'j1', user_id: 'B' }), false, 'scoped to the owner of the monitor')
+  const bare = new Database(':memory:')
+  assert.equal(isMonitorRun(bare, { id: 'j1', user_id: 'A' }), false, 'no monitors table: no monitor runs')
+  bare.exec('CREATE TABLE monitors (id TEXT, user_id TEXT); CREATE TABLE monitor_runs (id TEXT, monitor_id TEXT)') // any other read error (no job_id column)
+  assert.equal(isMonitorRun(bare, { id: 'j1', user_id: 'A' }), true, 'a read error fails closed: treated as a monitor run, no extra round')
 })
 
 test('#381 D2 feedback before fetch: a company in feedback memory returned by round two costs no verification fetch and is dropped before verify', async () => {
@@ -275,4 +359,25 @@ test('#381 D3 provenance: round-two TinyFish text URLs reach the end-of-run veri
   const prov = lines.map(l => { try { return JSON.parse(l) as { verify_provenance?: { verifier_ok_tinyfish_had_text: number; candidates: number } } } catch { return null } }).find(x => x?.verify_provenance)?.verify_provenance
   assert.ok(prov, 'verify_provenance was emitted')
   assert.ok(prov.verifier_ok_tinyfish_had_text >= 1, `round two's page (B) counted as TinyFish-had-text: ${JSON.stringify(prov)}`)
+})
+
+// #1082 acceptance 3, end to end through the real runner (Hermes-PC review at f144ccf1, finding 2): when the platform's
+// daily TinyFish share trims a real scan's fetches, its run report records the capacity and the status read sends the
+// "results are thinner" note; the same scan with room to spare sends none.
+test('#1082 a scan the platform share trims reports capacity in its run report and the status read says results are thinner', async () => {
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const today = new Date().toISOString().slice(0, 10)
+  // another tenant already used the whole day's fetch allowance (4), so round one's fetch is refused for capacity
+  const trimmed = await scan({ aVerifies: true, env: { TINYFISH_GLOBAL_FETCH_DAILY: '4', DAZL_RUN_REPORT: '1' },
+    prepare: db => { migrateAllSqlite(db); db.prepare("INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, 'Z', 'fetch', 4)").run(today) } })
+  const st = await readScanStatus(sqliteDb(trimmed.db), 'A', trimmed.jobId) as { run_report: { capacity: { searches: number; fetches: number } | null }[]; capacity_note: string | null }
+  assert.ok((st.run_report.at(-1)?.capacity?.fetches ?? 0) > 0, `the run report counts the trimmed fetches: ${JSON.stringify(st.run_report.at(-1)?.capacity)}`)
+  assert.equal(st.capacity_note, 'Platform search capacity reached today: results are thinner.')
+  // control: no other tenant, room to spare -> no capacity, no note
+  const clear = await scan({ aVerifies: true, env: { TINYFISH_GLOBAL_FETCH_DAILY: '1000', DAZL_RUN_REPORT: '1' }, prepare: db => migrateAllSqlite(db) })
+  const st2 = await readScanStatus(sqliteDb(clear.db), 'A', clear.jobId) as { run_report: { capacity: unknown }[]; capacity_note: string | null }
+  assert.equal(st2.run_report.at(-1)?.capacity ?? null, null)
+  assert.equal(st2.capacity_note, null)
 })

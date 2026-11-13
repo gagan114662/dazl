@@ -2,7 +2,7 @@ import {contactContext} from '../outreach/contact-context.ts'
 import {randomBytes} from 'node:crypto'
 import type Database from 'better-sqlite3'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
-import {companyKey,hasPhrase,norm} from './evidence.ts'
+import {companyKey,hasPhrase,norm,pageHeadingNames} from './evidence.ts'
 import {PUBLISHED_EMAIL_RE} from '../outreach/published-email.ts'
 
 export interface SourceReviewInput {company:string;signal:string;source_url:string;excerpt:string;contact:string|null;event_date:string|null}
@@ -36,7 +36,7 @@ export async function createSourceReview(db:Database.Database,tenant:string,inpu
  const key=companyKey(input.company)
  const quoteMatch=ok&&page.text.includes(input.excerpt)
  const emailMatch=ok&&!!input.contact&&page.text.toLowerCase().split(/[^a-z0-9@._%+\-]+/).includes(input.contact.trim().toLowerCase())
- const check:SourceCheck={fetch_status:ok?'fetched':page.fail,quote_match:quoteMatch,company_named:quoteMatch&&ok&&key.length>=2&&(hasPhrase(norm(input.excerpt),key)||hasPhrase(norm(page.title),key)),contact_match:emailMatch,checked_at:ok?page.retrievedAt:now}
+ const check:SourceCheck={fetch_status:ok?'fetched':page.fail,quote_match:quoteMatch,company_named:quoteMatch&&ok&&key.length>=2&&(hasPhrase(norm(input.excerpt),key)||pageHeadingNames(page,key)),contact_match:emailMatch,checked_at:ok?page.retrievedAt:now}
  const jobId=randomBytes(12).toString('hex'),leadId=randomBytes(12).toString('hex'),id=randomBytes(12).toString('hex')
  db.transaction(()=>{
  db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Source review intake','manual','manual','running')").run(jobId,tenant)

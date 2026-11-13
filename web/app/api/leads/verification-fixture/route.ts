@@ -4,6 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { createVerificationFixture, deleteVerificationFixture, VERIFICATION_FIXTURE_JOB } from '@/lib/scan/verification-fixture'
 import { createReviewDraftFixture, deleteReviewDraftFixtures } from '@/lib/scan/review-draft-fixture'
+import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists } from '@/lib/scan/first-touch-fixture'
 import { fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
@@ -12,13 +13,38 @@ import { denied } from '@/lib/workspace-access'
 // populated rendering of right-people / source quality / warm paths can be checked
 // without a paid scan, real contacts, network calls or email. DELETE removes every
 // row the fixture created.
+//
+// action 'first_touch' (#411): ONE labelled test-only lead addressed to the allowlisted test inbox that the real
+// autopilot may draft to once the user confirms it. Lead only: the draft, hold, scheduler drain and send run through the
+// real code. DELETE with action 'first_touch' removes only that fixture; a DELETE with no action removes it with the
+// others; any other body (a misspelled or wrong-typed action or key, null, a non-object or invalid JSON) is a 400 on
+// POST and DELETE.
+
+// The body's action. Only an empty body or exactly {} is "no action" (the legacy whole-fixture request, which on DELETE
+// removes every fixture). An object carrying one of the method's known string actions is that action (other keys are
+// ignored, e.g. a forged tenant_id). Everything else is malformed and refused: a misspelled or wrong-typed action, a
+// misspelled key ({"acton": ...}), a JSON null, a non-object body, invalid JSON or a body that could not be read.
+const NO_ACTION = Symbol('no action')
+async function actionOf(req: NextRequest, known: readonly string[]): Promise<string | typeof NO_ACTION | null> {
+  let text: string
+  try { text = await req.text() } catch { return null }
+  if (text.trim() === '') return NO_ACTION
+  let body: unknown
+  try { body = JSON.parse(text) } catch { return null }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  if (!Object.prototype.hasOwnProperty.call(body, 'action')) return Object.keys(body).length === 0 ? NO_ACTION : null
+  const a = (body as { action?: unknown }).action
+  return typeof a === 'string' && known.includes(a) ? a : null
+}
+const badAction = () => NextResponse.json({ error: 'unknown_action' }, { status: 400 })
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   const exists = !!db.prepare('SELECT id FROM scan_jobs WHERE user_id = ? AND business_name = ? LIMIT 1').get(user.tenantId, VERIFICATION_FIXTURE_JOB)
-  return NextResponse.json({ available: fixtureAvailable(db, user.tenantId), exists })
+  const available = fixtureAvailable(db, user.tenantId)
+  return NextResponse.json({ available, exists, firstTouchExists: available && firstTouchFixtureExists(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -28,8 +54,10 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!(await rateLimit(`verification-fixture:${user.tenantId}`, 5, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   try {
-    const body=await req.json().catch(()=>null)
-    return NextResponse.json(body?.action==='review_draft' ? createReviewDraftFixture(getScanDb(),user.tenantId) : createVerificationFixture(getScanDb(), user.tenantId))
+    const action = await actionOf(req, ['first_touch', 'review_draft'])
+    if (action === null) return badAction()
+    if (action === 'first_touch') return NextResponse.json(createFirstTouchFixture(getScanDb(), user.tenantId))
+    return NextResponse.json(action==='review_draft' ? createReviewDraftFixture(getScanDb(),user.tenantId) : createVerificationFixture(getScanDb(), user.tenantId))
   } catch (e) {
     if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })
     throw e
@@ -43,6 +71,12 @@ export async function DELETE(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   try {
     if (!fixtureAvailable(getScanDb(),user.tenantId)) throw new FixtureError('test_tenant_only')
+    const action = await actionOf(req, ['first_touch'])
+    if (action === null) return badAction()
+    // First: a send to the first-touch fixture in flight, uncertain or sent in the last 24 h refuses the whole cleanup
+    // before anything is removed.
+    const firstTouch = deleteFirstTouchFixture(getScanDb(), user.tenantId)
+    if (action === 'first_touch') return NextResponse.json(firstTouch)
     deleteReviewDraftFixtures(getScanDb(),user.tenantId)
     return NextResponse.json(deleteVerificationFixture(getScanDb(), user.tenantId))
   } catch (e) {

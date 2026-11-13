@@ -119,7 +119,7 @@ test('gate: the case set itself is checked - a missing, unregistered or duplicat
 
 const runCli = (dir: string, adaptive: 'on' | 'off' = 'on') => { // default ON: the committed suite covers the adaptive round (#381)
   const env: NodeJS.ProcessEnv = { ...process.env, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0' }
-  if (adaptive === 'on') env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1'; else delete env.DAZL_ADAPTIVE_DISCOVERY_ENABLED // OFF = explicitly unset, never a shared process value
+  if (adaptive === 'on') env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1'; else env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '0' // OFF = explicitly '0' (#381: ON by default), never a shared process value
   return spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/evals.mts', '--dir', dir],
     { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', env })
 }
@@ -203,7 +203,7 @@ test('#381 gate OFF/ON whole flow: the committed suite is green with the flag ex
 test('world_closed: a page the World does not have is a recorded miss, answered as a failed fetch, never fetched', async () => {
   const { kase, world } = await base()
   delete world.pages['https://news.example/london/querix-seed']
-  delete process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED // the default: OFF. The pre-feature flow exactly - the missing page is the ONLY miss; no adaptive round runs, no search miss is recorded.
+  process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '0' // turned off (#381: on by default). The pre-feature flow exactly - the missing page is the ONLY miss; no adaptive round runs, no search miss is recorded.
   const r0 = await replayCase(kase, world)
   assert.deepEqual(r0.misses, [{ kind: 'page', key: 'https://news.example/london/querix-seed' }])
   process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED = '1' // gated on (#381)

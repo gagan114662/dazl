@@ -8,7 +8,8 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
+import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
@@ -36,7 +37,7 @@ export interface EstimateRow {
 // (pinned by test/trial-interrupted-attempt.test.ts): this module is imported by the browser, so it cannot import the server-side trial module.
 const TRIAL_BLOCKS = new Set(['attempts_cap', 'account_total_cap', 'global_daily_cap', 'domain_used', 'google_required'])
 export const FREE_TRIAL_SCANS = 3
-export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null }
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null; trial_refusal?: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
@@ -59,6 +60,16 @@ export interface EstimateInput {
   // Default: the shared table, exact id only.
   priceModel?: (model: string) => { in: number; out: number } | null
   enrichmentVendors?: string[]       // bring-your-own enrichment keys the account saved ('apollo', 'pdl')
+  // #1037: the post-scan people searches (who to contact) a first play (first5) or free-trial scan may make: the server passes
+  // firstPlayPeopleCap() when people search can run, else 0. Omitted: the code maximum (FIRST_PLAY_MAX), never understated.
+  firstPlayPeopleSearches?: number
+  // A free-trial scan pays each people search from its trial reserve at this price (DAZL_TRIAL_TINYFISH_SEARCH_USD, trialCaps()).
+  trialTinyfishSearchUsd?: number | null
+  // #1037 item 1: a trial pays the first-play lead fallback's page reads from its reserve at this price (runner.ts trialCharges).
+  trialTinyfishFetchUsd?: number | null
+  // #1037 item 1: the first-play lead fallback's caps as the server runs them (estimate-request passes effectiveFirstPlayLeadCaps);
+  // omitted (a browser preview): firstPlayLeadCaps(env), the code maximum, never understated.
+  firstPlayLead?: { searches: number; fetches: number }
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
@@ -109,9 +120,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const rows: EstimateRow[] = []
   const p = model === UNKNOWN_MODEL ? null : (i.priceModel ?? listedPrice)(model)
   const modelUnit = p ? `$${p.in.toFixed(2)} in / $${p.out.toFixed(2)} out per 1M tokens (${model})` : `${model}: no listed price`
+  // #381: the adaptive round (one more search round when round one verified nothing) can run on this scan: its searches,
+  // pages and extraction call are in the maxima (its verifier's judge calls are counted as the judge row counts round one's)
+  const adaptive = !b?.first5 && i.payer !== 'trial' && b?.paid_fallback !== false && adaptiveDiscoveryOn(env)
   for (const c of CALLS) {
     const off = (c.optional === 'judge' && b?.judge === false) || (c.optional === 'hiring' && !i.hiringRequest)
-    const calls = off ? { min: 0, max: 0 } : c.calls
+    const calls = off ? { min: 0, max: 0 } : c.id === 'extraction' && adaptive ? { min: c.calls.min, max: c.calls.max + 1 } : c.calls
     const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
@@ -120,11 +134,35 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   rows.push({ id: 'fallback_research', label: 'Web-search research fallback', provider: 'AI model web search', kind: 'unbounded', unit: 'research call', unit_usd: 'not priced: search-result tokens are not bounded', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false,
     note: 'Never run: its cost cannot be bounded or estimated, so every run refuses it' })
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
-  if (b?.first5) rows.push({ id: 'sources_free', label: 'Free sources only (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'No TinyFish search or fetch in this mode' })
-  else {
+  const fp = i.firstPlayPeopleSearches
+  const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
+  if (b?.first5) {
+    // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
+    rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
+    // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):
+    // at most this many searches and page reads, paid from the free-trial reserve at the trial price for a trial.
+    const lead = i.firstPlayLead ?? firstPlayLeadCaps(env)
+    if (lead.searches > 0) {
+      const trialS = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
+      const trialF = trialS !== null && typeof i.trialTinyfishFetchUsd === 'number' && Number.isFinite(i.trialTinyfishFetchUsd) && i.trialTinyfishFetchUsd >= 0 ? i.trialTinyfishFetchUsd : null
+      const su = trialS ?? tfSearch, fu = trialF ?? tfFetch
+      rows.push({ id: 'first_play_lead_search', label: 'Lead search fallback (only when free news cannot serve the play)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialS !== null ? `${money(trialS)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: lead.searches }, usd: { min: 0, max: (su ?? 0) * lead.searches + (fu ?? 0) * lead.fetches }, capped: false, note: `Only when free news cannot serve the play: at most ${lead.searches} TinyFish searches and ${lead.fetches} page reads (a count cap, not a dollar cap)${trialS !== null ? '; paid from the free-trial reserve and never from its last 25%, so fewer may run' : ''}` })
+    }
+    // A trial pays these from its own reserve at the trial price (runner.ts trialPeoplePrepaid), never into the reserve's last 25%.
+    const trialPrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
+    const unit = trialPrice ?? tfSearch
+    if (firstPlayPeople > 0) rows.push({ id: 'people_search', label: 'People search (who to contact)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialPrice !== null ? `${money(trialPrice)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: firstPlayPeople }, usd: { min: 0, max: unit === null ? 0 : unit * firstPlayPeople }, capped: false, note: `After the scan, at most ${firstPlayPeople} searches, one per ready lead that names nobody yet (a count cap, not a dollar cap)${trialPrice !== null ? '; paid from the free-trial reserve and never from its last 25%, so fewer may run' : ''}` })
+  } else {
+    // A free-trial scan's people step runs at the first-play cap, not the ordinary scan's (runner.ts firstPlay), and is paid from the
+    // trial reserve at the trial price (runner.ts trialPeoplePrepaid); the lead searches keep the operator's price.
+    const people = i.payer === 'trial' ? firstPlayPeople : PEOPLE_SEARCHES_MAX
+    const trialPeoplePrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
+    const searches = DEFAULT_TINYFISH.searchesPerScan + (adaptive ? ADAPTIVE_SEARCHES : 0), fetches = DEFAULT_TINYFISH.fetchesPerScan + (adaptive ? ADAPTIVE_FETCHES : 0)
+    const extra = adaptive ? `; plus at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages in one more round, only when the first round verifies no lead` : ''
+    const searchMax = (tfSearch ?? 0) * searches + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
-    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: DEFAULT_TINYFISH.searchesPerScan + PEOPLE_SEARCHES_MAX }, usd: price(tfSearch, DEFAULT_TINYFISH.searchesPerScan + PEOPLE_SEARCHES_MAX), capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${PEOPLE_SEARCHES_MAX} people searches per scan (a count cap, not a dollar cap)` })
-    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: DEFAULT_TINYFISH.fetchesPerScan }, usd: price(tfFetch, DEFAULT_TINYFISH.fetchesPerScan), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)` })
+    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
+    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {
@@ -145,13 +183,13 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
-  let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
+  let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
   const trialWhy = i.payer === 'trial' && typeof i.trialRefusal === 'string' && TRIAL_BLOCKS.has(i.trialRefusal) ? i.trialRefusal : null
   if (trialWhy) {
     // attempts_cap means all of them are used; any other reason states the account's real count (0 when unknown/fresh), never "3 of 3".
     const used = trialWhy === 'attempts_cap' ? FREE_TRIAL_SCANS : Math.min(FREE_TRIAL_SCANS, Math.max(0, Math.trunc(Number(i.trialUsed) || 0)))
     const c = trialCopy({ funded: false, remaining: FREE_TRIAL_SCANS - used, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
-    ok = false; reason = 'trial_unavailable'
+    ok = false; reason = 'trial_unavailable'; trialRefusalWhy = trialWhy
     message = `Blocked: ${c.text} Nothing was started or reserved.`
     change.push(c.next.label + '.')
   } else if (i.poolUnsettled) {
@@ -218,11 +256,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
     'The web-search research fallback and any provider retries cannot be bounded and are not in the total.',
     trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
-    ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
+    // #1095: a refused trial run is not paid by anyone: never claim the trial pays for it
+    ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
   const cap = { max_usd: Number.isFinite(limit) ? limit : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
-  const verdict = { ok, reason, message, change, warning }
+  const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
   // submitted - the payer switched, other runs reserved more of the limit, a new warning appeared - the old confirmation no longer matches and the person must confirm again.
@@ -291,4 +330,11 @@ export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
   const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding} limit binds)` : ''}`
   return `${parts.join('; ')}; ${left}. Model requests expected: ${capped.min === capped.max ? cur(capped.min) : `${cur(capped.min)} - ${cur(capped.max)}`}.`
+}
+
+// #1095: who pays, as the cost panel's first line. A run the free trial refused is paid by no one, so it claims no payer
+// (the refusal notice below it says why and what to do); otherwise the shared trial or the account's own keys.
+export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): string | null {
+  if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
+  return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
 }

@@ -22,6 +22,10 @@ export const setSessionCookie = (res: NextResponse, base: string, value: string,
 export const RETURN_COOKIE = 'dazl_return'
 export const setReturnCookie = (res: NextResponse, base: string, value: 'settings' | 'link' | 'preview' = 'settings') => res.cookies.set(RETURN_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
 export const clearReturnCookie = (res: NextResponse, base: string) => res.cookies.set(RETURN_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
+// #1095: the app page a Google link was started from (lib/google-link.ts safeNext validates it on write and on read).
+export const LINK_NEXT_COOKIE = 'dazl_link_next'
+export const setLinkNextCookie = (res: NextResponse, base: string, value: string) => res.cookies.set(LINK_NEXT_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
+export const clearLinkNextCookie = (res: NextResponse, base: string) => res.cookies.set(LINK_NEXT_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
 // The preview claim being continued through sign-in (#416): the claim token itself, host-only, short-lived. Path '/'
 // because both the Google callback and the claim route must read it; it carries no PII and is already a public-page URL.
 // Set only from a validated preview row (app/api/preview/[token]/google and /continue); every reader re-verifies it before any use.

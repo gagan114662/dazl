@@ -72,6 +72,8 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
   const anth: Provider = {
     research: async () => { c.research++; return { text: opts.leads ? JSON.stringify([LEAD]) : '[]', citedUrls: opts.leads ? [LEAD.source_url] : [] } },
     complete: async (_k, p, _f, maxTokens) => { c.complete++; if (c.complete === 1) opts.onFirstComplete?.(db, id); if (p.startsWith('You check one claim')) { c.judge++; return 'supports' } return maxTokens === 300 ? '["payroll specialist Ohio"]' : JSON.stringify([LEAD]) },
+    // A real provider reports usage; a guarded run settles to it. Without usage the guard stops after one call (#850).
+    completeDetailed: async (k, p, f, maxTokens) => ({ text: await anth.complete!(k, p, f, maxTokens), model: opts.model ?? null, usage: { input_tokens: 1000, output_tokens: 100 } }),
     ...(opts.model ? { configuredModel: () => opts.model! } : {}),
   }
   const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: anth, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
