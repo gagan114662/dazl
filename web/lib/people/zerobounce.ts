@@ -26,9 +26,9 @@ export class VerifierError extends Error {
   constructor(kind: 'stop' | 'failed', msg: string) { super(msg); this.kind = kind }
 }
 
-export function zeroBounceVerifier(apiKey: string, fetchImpl: typeof fetch = fetch): MailboxVerifier {
+export function zeroBounceVerifier(apiKey: string, fetchImpl: typeof fetch = fetch, name = 'zerobounce'): MailboxVerifier {
   return {
-    name: 'zerobounce',
+    name,
     async verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> {
       const q = new URLSearchParams({ api_key: apiKey, email: address, ip_address: '', timeout: String(ZEROBOUNCE_VALIDATE_TIMEOUT_S) })
       const ctrl = new AbortController()
@@ -55,3 +55,17 @@ export function zeroBounceVerifier(apiKey: string, fetchImpl: typeof fetch = fet
     },
   }
 }
+
+// TEST-ONLY staging fixture (Hermes 2026-11-12: live checks without signing up for any service). Active ONLY when DAZL_ENV=staging
+// AND DAZL_STAGING_FAKE_ZEROBOUNCE=1 (email-pattern.ts verifierFromEnv); inert everywhere else, so production can never use it. It
+// answers the real adapter's request shape with no network, deterministically from the address's local part: 'invalid' ->
+// invalid, 'catchall' -> catch-all, 'unknown' -> unknown, 'spamtrap' -> spamtrap, 'nocredits' -> the out-of-credits error body,
+// anything else -> valid. Its checks are recorded under the verifier name 'zerobounce-staging-fake', never as 'zerobounce'.
+export const ZEROBOUNCE_STAGING_FAKE = 'zerobounce-staging-fake'
+export const zeroBounceStagingFetch = (async (u: RequestInfo | URL) => {
+  const email = new URL(String(u)).searchParams.get('email') ?? ''
+  const local = email.split('@')[0].toLowerCase()
+  const body = local.includes('nocredits') ? { error: 'Invalid API key or your account ran out of credits' }
+    : { address: email, status: local.includes('invalid') ? 'invalid' : local.includes('catchall') ? 'catch-all' : local.includes('unknown') ? 'unknown' : local.includes('spamtrap') ? 'spamtrap' : 'valid', sub_status: '' }
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+}) as typeof fetch

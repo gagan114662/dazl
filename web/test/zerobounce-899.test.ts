@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL } from '../lib/people/zerobounce.ts'
+import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL, ZEROBOUNCE_STAGING_FAKE } from '../lib/people/zerobounce.ts'
 import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
 import { runPostFinishBounded, emailVerifyBudgetMs } from '../lib/scan/runner.ts'
 import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
@@ -282,4 +282,17 @@ test('#899 the US basis is restored only for guesses on the site this crawl read
   recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
   recordEmailGuesses(db, 'A', 'L1', 'other-site.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
   assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE address LIKE '%@acme.com' AND tier = 'guessed' AND country_basis IS NOT NULL").get() as { n: number }).n, 0)
+})
+
+test('#899 staging fake verifier: only with DAZL_ENV=staging AND DAZL_STAGING_FAKE_ZEROBOUNCE=1; never in production; deterministic, no network', async () => {
+  assert.equal(verifierFromEnv({ DAZL_STAGING_FAKE_ZEROBOUNCE: '1' }), null, 'not staging: the flag is inert')
+  assert.equal(verifierFromEnv({ DAZL_ENV: 'production', DAZL_STAGING_FAKE_ZEROBOUNCE: '1' }), null)
+  assert.equal(verifierFromEnv({ DAZL_ENV: 'production', DAZL_STAGING_FAKE_ZEROBOUNCE: '1', ZEROBOUNCE_API_KEY: 'k' })?.name, 'zerobounce', 'production uses only the real key')
+  const fake = verifierFromEnv({ DAZL_ENV: 'staging', DAZL_STAGING_FAKE_ZEROBOUNCE: '1' })!
+  assert.equal(fake.name, ZEROBOUNCE_STAGING_FAKE)
+  const out: Record<string, string> = {}
+  for (const a of ['dana.lee@acme.example', 'invalid.x@acme.example', 'catchall@acme.example', 'unknown.y@acme.example', 'spamtrap@acme.example']) out[a] = (await fake.verify(a)).outcome
+  assert.deepEqual(Object.values(out), ['deliverable', 'undeliverable', 'catch_all', 'unknown', 'refused'])
+  await assert.rejects(fake.verify('nocredits@acme.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'stop')
+  assert.equal(verifierFromEnv({ DAZL_ENV: 'staging' }), null, 'staging without the flag and without a key: no verifier')
 })

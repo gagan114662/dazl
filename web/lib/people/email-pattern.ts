@@ -12,7 +12,8 @@ import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
-import { VerifierError, zeroBounceVerifier, ZEROBOUNCE_FREE_MONTHLY } from './zerobounce.ts'
+import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
+import { isStaging } from '../staging.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -182,6 +183,8 @@ export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverab
 // behaviour: candidates stay 'guessed', unverified).
 export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
 export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): MailboxVerifier | null {
+  // TEST-ONLY: staging's fake verifier (lib/people/zerobounce.ts zeroBounceStagingFetch), never outside DAZL_ENV=staging.
+  if (isStaging(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1') return zeroBounceVerifier('staging-fake', zeroBounceStagingFetch, ZEROBOUNCE_STAGING_FAKE)
   const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
   return key ? zeroBounceVerifier(key, fetchImpl) : null
 }
