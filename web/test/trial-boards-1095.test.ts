@@ -46,6 +46,7 @@ function fx(sourceHttp: SafeGet): Fixture {
     hits: [{ url: LI, title: 'Account Executive - In-Territory (Austin, TX) at Justworks', snippet: 'Justworks Account Executive Austin, TX', date: daysAgo(9) }, { url: MEDIA, title: 'SaaS SMB Account Executive', snippet: 'OEC is seeking a SaaS SMB Account Executive', date: null as never }],
     // the verifier reads a Greenhouse posting through its board API record (lib/sources/ats-posting.ts): its title line, then its own text
     tfPages: {}, own: { [LI]: 'blocked', [MEDIA]: 'blocked', [GH_AUSTIN]: { title: 'Account Executive - In-Territory @ justworks', text: `Account Executive - In-Territory Austin, TX ${QUOTE}. You will run the full sales cycle from first call to signed contract with founders and finance leaders. Job posting on the Greenhouse job board.`, published: daysAgo(9).slice(0, 10) } },
+    extraction: fromSearch,
     extractionFn: p => p.includes('"source":"jobboards"') && p.includes(GH_AUSTIN)
       ? [...fromSearch, { company: 'Justworks', signal: 'hiring an Account Executive in Austin, TX', source_url: GH_AUSTIN, excerpt: QUOTE, event_date: daysAgo(9) }]
       : fromSearch,

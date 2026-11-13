@@ -252,7 +252,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const m = own ? matchedHiringRole(l.evidence_excerpt ?? '', roles) : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
-          addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date, retrieved_at: now })
+          addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
           passed++; passedIds.push(l.id); continue
         }
       }
