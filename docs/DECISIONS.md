@@ -27,8 +27,8 @@ Y Combinator batch right after it (for a lead found on its YC company page; the 
 the batch itself is not compared), or names the city the request names
 (`lib/people/company-tie.ts`); otherwise it is refused and counted. The city tie is the weakest (a same-name business
 in the same city would pass) and is kept because the place rule was already the product's answer to same-name
-businesses; a country, state, province or area is never a tie, and a city counts only when the request writes it as
-"City, Region" or it is on the place rule's own list of cities (so a bare "Sydney" or "Austin" does not tie). Reviewer sign-off on keeping the city tie is asked for in PR
+businesses; a country, state, province or area is never a tie, and a city counts only when it is on the place rule's own list of cities, written bare or with its
+region ("Toronto", "Chicago, Illinois"); a city that list does not carry ("Austin", "Sydney") does not tie. Reviewer sign-off on keeping the city tie is asked for in PR
 #1164. Results stored earlier by the name alone stay listed, labelled "matched by the company name only
 - this may be a different business with the same name", and are never the lead's person, the export's best person or
 a work-email target. This lowers how many leads name a person; a wrong person at another business is worse than none.

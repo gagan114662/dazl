@@ -6,8 +6,8 @@
 //   source   the lead was found on its Y Combinator company page, and the result's text gives a company of that name with a YC
 //            batch right after it ("Garage (YC W24)"). A mere mention of YC ("investor in YC companies", "YC alum") is not one.
 //            Known limit: the lead's own batch is not stored, so the batch is not compared;
-//   place    the request names a CITY (requestedCities) and the result's own text names that city as a place, outside the
-//            company's own name (and nothing in it disagrees: lib/scan/place-agreement.ts). The weakest tie: a same-name business
+//   place    the request names a CITY the place rule knows (requestedCities) and the result's own text names that city itself
+//            (not "Greater X Area") as a place, outside the company's own name (and nothing in it disagrees: lib/scan/place-agreement.ts). The weakest tie: a same-name business
 //            in the same city would pass. A country, a state, a province or an area is never enough ("United States", "Texas").
 // Anything else is a name-only match: not stored. Pure (no data layer).
 import { knownCity, regionNamed } from '../scan/place-agreement.ts'
@@ -16,20 +16,19 @@ export type CompanyTie = 'domain' | 'source' | 'place'
 export interface TieLead { company: string; confirmed_domain?: string | null; source_url?: string | null }
 const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const urlOf = (u: unknown): URL | null => { try { return typeof u === 'string' ? new URL(u) : null } catch { return null } }
-// The cities a request names. Positive evidence only (a list of regions can never be complete: "Japan", "Bavaria", "Midwest"):
-//   "City, Region" where the part after the comma is a region the place rule knows ("Toronto, Ontario", "Austin, TX", "Lyon, France"),
-//   or a bare name on the place rule's own list of cities ("Toronto", "London").
-// A region by itself, an area ("Bay Area", "Silicon Valley") and any name the place rule does not know is not a city here.
+// The cities a request names: only a name on the place rule's own list of cities (lib/scan/place-agreement.ts knownCity:
+// "Toronto", "London", "Chicago"), written bare or as "City, Region". Positive evidence only - no list of what is NOT a city can
+// be complete ("Japan", "Bavaria", "Texas, United States", "Bay Area, CA", "Remote, US" all name no city). A city that list does
+// not carry ("Austin", "Sydney") therefore never ties: fail closed.
 export function requestedCities(where: readonly unknown[]): string[] {
   const out: string[] = []
   for (const w of where) {
     if (typeof w !== 'string') continue
     const parts = w.split(',').map(x => x.replace(/\s+/g, ' ').trim())
     const city = parts[0]
-    if (city.length < 3 || city.length > 60 || !/^[\p{L}][\p{L} .'’-]*$/u.test(city)) continue
-    const withRegion = parts.length >= 2 && parts.slice(1).some(x => regionNamed(x) || /^d\.?\s?c\.?$/i.test(x))
-    // "New York, NY" is the city; "New York" alone is the state. A bare region is never a city.
-    if (withRegion ? true : knownCity(city) && !regionNamed(city)) out.push(city)
+    // "New York, NY" and "Washington, DC" are the cities; "New York" and "Washington" alone are the states.
+    const namedLikeState = (/^new york$/i.test(city) && /^(?:ny|new york)$/i.test(parts[1] ?? '')) || (/^washington$/i.test(city) && /^d\.?\s?c\.?$/i.test(parts[1] ?? ''))
+    if (namedLikeState || (knownCity(city) && !regionNamed(city))) out.push(city)
   }
   return out
 }
@@ -50,14 +49,16 @@ export function companyTie(resultText: string, lead: TieLead, where: readonly un
       // Part of a longer name: a letter, digit or joiner attached to it ("Super-Garage", "O'Garage", "Nautilus/Garage", "Nautilus.Garage"),
       // or "&", "/", "+" before it even with a space ("Smith & Garage"). A spaced " - " or " | " is a separator, not a joiner.
       if (/[\p{L}\p{N}\-&'’/.+]$/u.test(head) || /[&/+]\s+$/.test(head)) continue
-      const before = /([\p{L}][\p{L}'’&-]*)\s+$/u.exec(head)?.[1] ?? ''
-      if (/^the$/i.test(before)) continue   // "The Garage": another name
-      if (!before || !/^\p{Lu}/u.test(before) || /^(?:at|of|for|in|ceo|cto|coo|founder|co-?founder|cofounder)$/i.test(before)) return 'source'
+      // The word right before the name must be nothing (the start, or after a spaced separator) or a plain connector / role word.
+      // Any other word, in any letter case, makes it a longer name ("The Garage", "Mega Garage", "nautilus garage").
+      const before = (/([\p{L}][\p{L}'’&.-]*)\s+$/u.exec(head)?.[1] ?? '').replace(/\.$/, '')
+      if (!before || /^(?:at|of|for|in|with|by|from|and|ceo|cto|coo|founder|co-?founder|cofounder|owner)$/i.test(before)) return 'source'
     }
   }
   // The city must be named as a PLACE: not inside the company's own name ("Austin Logistics" names no place).
   const placeText = words.join('').length >= 3 ? text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${words.map(esc).join('\\s+')}(?![\\p{L}\\p{N}])`, 'giu'), ' ') : text
-  if (placeAgrees && requestedCities(where).some(c => new RegExp(`(?<![\\p{L}\\p{N}])${esc(c)}(?![\\p{L}\\p{N}])`, 'iu').test(placeText))) return 'place'
+  // ... and as the city itself, not a wider area around it ("Greater Toronto Area", "Toronto Metropolitan Area").
+  if (placeAgrees && requestedCities(where).some(c => new RegExp(`(?<![\\p{L}\\p{N}])(?<!greater\\s)${esc(c)}(?![\\p{L}\\p{N}])(?!\\s+(?:area|metro|metropolitan|region|bay)\\b)`, 'iu').test(placeText))) return 'place'
   return null
 }
 

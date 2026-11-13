@@ -95,10 +95,13 @@ test('#1037 real rows: the rows staging already holds (stored by the name alone)
 test('#1037 the tie: the lead\'s confirmed website, its Y Combinator batch next to its name, or the requested CITY - in the result itself', () => {
   const yc = { company: 'Garage', confirmed_domain: null, source_url: 'https://www.ycombinator.com/companies/garage-2/jobs/x' }
   assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24) · New York', yc), 'source')
-  assert.equal(companyTie('Co-Founder & CEO - Garage, YC W24', yc), 'source'); assert.equal(companyTie('Casey Flynn | Garage (YC W24)', yc), 'source'); assert.equal(companyTie('Co-Founder Garage (YC W24)', yc), 'source')
+  assert.equal(companyTie('Co-Founder & CEO - Garage, YC W24', yc), 'source'); assert.equal(companyTie('Casey Flynn | Garage (YC W24)', yc), 'source'); assert.equal(companyTie('Co-Founder Garage (YC W24)', yc), 'source'); assert.equal(companyTie('Founder with Garage (YC W24)', yc), 'source')
+  // Known limit, kept on purpose: after a spaced separator the name starts fresh (the usual "Title - Company (YC W24)" headline), so
+  // "... Nautilus Ventures - Garage (YC W24)" ties too. In the search the result line has already passed the profile parser's own employer check.
+  assert.equal(companyTie('Partner at Nautilus Ventures - Garage (YC W24)', yc), 'source')
   // A mention of YC is not the company's batch (council probes): a venture firm, an alum, another business with a longer name.
   for (const t of ['Managing Partner - Nautilus Venture Partners · Investor in YC companies', 'Founder & CEO - The Garage · Alumni of Y Combinator Startup School. Orlando', 'Founder at Garage, a Y Combinator company', 'Founder at Garage · Former YC Fellow',
-    'Founder & CEO at The Garage (YC S20) · Orlando', 'CEO at Mega Garage (YC W21)', 'Partner at Nautilus & Garage (YC S20)', 'Ventures-Garage (YC W24)', 'Nautilus/Garage (YC W24)', 'Nautilus.Garage (YC W24)', 'Super-Garage (YC W24)', "O'Garage (YC W24)", 'at the Garage (YC S20)', 'Founder at Garage · NYC', 'Founder & CEO · The Garage · healthcare software', 'Founder at Garage (YC 2024 fan)']) assert.equal(companyTie(t, yc), null, t)
+    'Founder & CEO at The Garage (YC S20) · Orlando', 'CEO at Mega Garage (YC W21)', 'Partner at Nautilus & Garage (YC S20)', 'Ventures-Garage (YC W24)', 'Nautilus/Garage (YC W24)', 'Nautilus.Garage (YC W24)', 'Super-Garage (YC W24)', "O'Garage (YC W24)", 'at the Garage (YC S20)', 'nautilus garage (YC W24)', 'Partner at nautilus garage (YC W24)', 'Mr. Garage (YC W24)', 'Founder at Garage · NYC', 'Founder & CEO · The Garage · healthcare software', 'Founder at Garage (YC 2024 fan)']) assert.equal(companyTie(t, yc), null, t)
   // Only the company's own YC page: not Hacker News, not another host, not a YC blog post.
   for (const src of ['https://news.ycombinator.com/item?id=1', 'https://news.example.test/garage-raises', 'https://notycombinator.com/companies/garage', 'https://www.ycombinator.com/blog/garage', 'https://www.ycombinator.com.evil.example/companies/garage', 'not a url', null])
     assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24)', { company: 'Garage', confirmed_domain: null, source_url: src }), null, String(src))
@@ -109,15 +112,20 @@ test('#1037 the tie: the lead\'s confirmed website, its Y Combinator batch next 
   assert.equal(companyTie('CEO at Garage', { company: 'Garage', confirmed_domain: 'com', source_url: null }), null, 'a bare TLD is not a domain')
   // The place: a CITY the request names, named in the result, and only when the place rule agreed. Never a country, state or province.
   const none = { company: 'Garage', confirmed_domain: null, source_url: null }
-  assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, ['Austin, Texas'], true), 'place')
-  assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, ['Austin, Texas'], false), null, 'the place rule did not agree')
-  for (const where of [['United States'], ['Texas'], ['TX'], ['USA'], ['Ontario'], ['Canada'], ['UK'], ['Europe'], ['New York'], ['Japan'], ['Bavaria'], ['Midwest'], ['Bay Area'], [], [5], ['Dallas, Texas']]) assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, where, true), null, JSON.stringify(where))
-  assert.deepEqual(requestedCities(['Toronto, Ontario', 'Texas', 'United States', 'London', 'New York, NY', 'New York', 'Washington, DC', 'Washington', 'Victoria, BC', 'Lyon, France', 'x', 7]), ['Toronto', 'London', 'New York', 'Washington', 'Victoria', 'Lyon'])
+  assert.equal(companyTie('Chicago, Illinois, United States · CEO · Garage', none, ['Chicago, Illinois'], true), 'place')
+  assert.equal(companyTie('Chicago, Illinois, United States · CEO · Garage', none, ['Chicago'], true), 'place')
+  assert.equal(companyTie('Chicago, Illinois, United States · CEO · Garage', none, ['Chicago, Illinois'], false), null, 'the place rule did not agree')
+  for (const t of ['Greater Chicago Area · CEO · Garage', 'Chicago Metropolitan Area · CEO · Garage', 'Chicagoland · CEO · Garage']) assert.equal(companyTie(t, none, ['Chicago, Illinois'], true), null, t)
+  for (const where of [['United States'], ['Illinois'], ['IL'], ['USA'], ['Illinois, United States'], ['Illinois, USA'], ['Midwest, USA'], ['Ontario'], ['Canada'], ['UK'], ['Europe'], ['New York'], ['Japan'], ['Bavaria'], ['Midwest'], ['Bay Area'], [], [5], ['Dallas, Texas']]) assert.equal(companyTie('Chicago, Illinois, United States · CEO · Garage', none, where, true), null, JSON.stringify(where))
+  assert.deepEqual(requestedCities(['Toronto, Ontario', 'Texas', 'United States', 'London', 'New York, NY', 'New York', 'Washington, DC', 'Washington', 'Lyon, France', 'x', 7]), ['Toronto', 'London', 'New York', 'Washington', 'Lyon'])
   // Regions and areas the place rule knows or does not know: none is a city (positive evidence only).
-  assert.deepEqual(requestedCities(['Japan', 'Brazil', 'Israel', 'Mexico', 'Puerto Rico', 'Bavaria', 'Midwest', 'West Coast', 'Bay Area', 'Silicon Valley', 'Washington State', 'Europe', 'Remote', 'Sydney', 'Austin', 'Springfield']), [], 'a bare name the place rule does not list as a city is not one here (write "Sydney, Australia")')
+  assert.deepEqual(requestedCities(['Japan', 'Brazil', 'Israel', 'Mexico', 'Puerto Rico', 'Bavaria', 'Midwest', 'West Coast', 'Bay Area', 'Silicon Valley', 'Washington State', 'Europe', 'Remote', 'Sydney', 'Austin', 'Springfield',
+    'California, USA', 'Ontario, Canada', 'Texas, United States', 'Georgia, USA', 'Bavaria, Germany', 'Quebec, Canada', 'Mexico, Mexico', 'Bay Area, California', 'Bay Area, CA', 'Silicon Valley, CA', 'Greater Boston Area, MA', 'Midwest, USA', 'Remote, US', 'Austin, Texas', 'Sydney, Australia', 'Victoria, BC', 'Alberta, Canada', 'Victoria, Australia', 'Washington, United States', 'Oregon, USA']), [], 'only a city on the place rule\'s own list, bare or with its region')
   // The city inside the company's own name is not a place (council probe): "Austin Logistics" names no place.
-  assert.equal(companyTie('Jo Lee - Head of Sales - Austin Logistics | LinkedIn', { company: 'Austin Logistics', confirmed_domain: null, source_url: null }, ['Austin, Texas'], true), null)
-  assert.equal(companyTie('Jo Lee - Head of Sales - Austin Logistics | LinkedIn · Austin, Texas', { company: 'Austin Logistics', confirmed_domain: null, source_url: null }, ['Austin, Texas'], true), 'place')
+  assert.equal(companyTie('Jo Lee - Head of Sales - Chicago Logistics | LinkedIn', { company: 'Chicago Logistics', confirmed_domain: null, source_url: null }, ['Chicago, Illinois'], true), null)
+  assert.equal(companyTie('Jo Lee - Head of Sales - Chicago Logistics | LinkedIn · Chicago, Illinois', { company: 'Chicago Logistics', confirmed_domain: null, source_url: null }, ['Chicago, Illinois'], true), 'place')
+  assert.equal(companyTie('Jo - Owner - Toronto Dental Studio · Toronto, Ontario', { company: 'Toronto Dental Studio', confirmed_domain: null, source_url: null }, ['Toronto, Ontario'], true), 'place')
+  assert.equal(companyTie('Jo - CEO - Garage · Texas, United States', none, ['Texas, United States'], true), null, 'a state written with its country is still a state')
   assert.equal(companyTie('Greater Austintown area · CEO · Garage', none, ['Austin, Texas'], true), null, 'the city as a whole word')
   assert.equal(companyTie(undefined as unknown as string, { company: 7 as unknown as string, confirmed_domain: 5 as unknown as string, source_url: 7 as unknown as string }, 'x' as unknown as string[], true), null)
 })
@@ -133,9 +141,13 @@ test('#1037 through the search: the website tie needs the lead\'s CONFIRMED doma
     addEnrichment(db, 'A', 'L-syncly', { connector: 'sitecrawl', kind: 'domain', value: 'syncly.app|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', confidence: null, source_url: 'https://syncly.app/', source_date: '2026-11-13', retrieved_at: 1 })
     await findPeople(db, 'A', job, { env, fetchImpl: stub({ ...RESULTS, Syncly: g }) })
     assert.deepEqual(stored(db).filter(r => r.company === 'Syncly').map(r => [r.value, r.label.split(': ').pop()]), [['Gray Lindqvist, Co-Founder', 'the result names its website']]) }
-  // A request that names a city keeps the result naming that city.
-  { const p = setup({ ...ICP, where: ['Sydney, Australia'] }); await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub() })
-    assert.deepEqual(stored(p.db).map(r => [r.company, r.value, r.label.split(': ').pop()]), [['Syncly', 'Emery Vale, Founder and CEO', 'the result names the requested city']]) }
+  // A request that names a city the place rule knows keeps the result naming that city.
+  { const p = setup({ ...ICP, where: ['Melbourne, Australia'] })
+    const melb = { ...RESULTS, Syncly: [{ url: 'https://au.linkedin.com/in/person-h-test', title: 'Harper Quill - Founder - Syncly | LinkedIn', snippet: 'Melbourne, Victoria, Australia · Founder · Syncly' }, ...RESULTS.Syncly] }
+    await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub(melb) })
+    assert.deepEqual(stored(p.db).filter(r => r.company === 'Syncly').map(r => [r.value, r.label.split(': ').pop()]), [['Harper Quill, Founder', 'the result names the requested city']]) }
+  // A city the place rule does not list never ties (fail closed): the Sydney founder on a "Sydney, Australia" request.
+  { const p = setup({ ...ICP, where: ['Sydney, Australia'] }); await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub() }); assert.deepEqual(stored(p.db).filter(r => r.company === 'Syncly'), []) }
   // A request that names only a country or a state: the place rule agrees, but that is not a tie (a same-name business in the same country).
   for (const where of [['Australia'], ['New South Wales'], ['United States'], ['California']]) {
     const p = setup({ ...ICP, where }); const stats = newPeopleStats(); await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub(), stats })

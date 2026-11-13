@@ -77,7 +77,7 @@ test('row: the best buyer-role match is named first; an off-role titled person i
 
 // ---- the first-play people pass (lib/people/people-search.ts) ----
 // The request names a city and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
-const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Columbus, Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
+const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Chicago, Illinois'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '500', TINYFISH_PER_MINUTE: '500' }
 function setup(n: number) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateTinyfish(db); resetTinyfishState()
@@ -93,7 +93,7 @@ function stub() {
   const f = (async (u: string) => {
     const q = new URL(u).searchParams.get('query') ?? ''; queries.push(q)
     const company = /"([^"]+)"/.exec(q)?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Columbus, Ohio, United States · Head of Sales' }] }))
+    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Chicago, Illinois, United States · Head of Sales' }] }))
   }) as unknown as typeof fetch
   return { f, queries }
 }
@@ -310,7 +310,7 @@ test('review: on the pass deadline the in-flight search is awaited (no paid call
   const { db, job } = setup(2); let settled = false
   const f = (async (u: string) => { await new Promise(r => setTimeout(r, 250)); settled = true
     const company = /"([^"]+)"/.exec(new URL(u).searchParams.get('query') ?? '')?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Columbus, Ohio, United States · Head of Sales' }] })) }) as unknown as typeof fetch
+    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Chicago, Illinois, United States · Head of Sales' }] })) }) as unknown as typeof fetch
   const why: string[] = []
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, deadlineMs: 30, onStop: w => why.push(w) })
   assert.equal(settled, true, 'findPeople returned only after the search it started had ended')

@@ -30,16 +30,16 @@ function setup(icp: unknown) {
     .run('L1', job, 'Acme Logistics', null, 'Acme Logistics is hiring', 'https://news.example.test/a', 'Acme Logistics is hiring', 90, 80)
   return { db, job }
 }
-const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Columbus, Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
+const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Chicago, Illinois'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 
 test('stores matching people as labelled person enrichments with the profile URL; sends the buyer market', async () => {
   const { db, job } = setup(ICP)
   const urls: string[] = []
   const f = (async (u: string) => { urls.push(u); return new Response(JSON.stringify({ results: [
-    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio, United States - Head of HR - Acme Logistics' },
-    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio' },
-    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: 'Columbus, Ohio' },
+    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: 'Chicago, Illinois, United States - Head of HR - Acme Logistics' },
+    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: 'Chicago, Illinois' },
+    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: 'Chicago, Illinois' },
     { url: 'https://www.linkedin.com/in/cal-same', title: 'Cal Same - Head of HR - Acme Logistics | LinkedIn', snippet: 'Pico Rivera, California, United States' },
     { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
   ] })) }) as unknown as typeof fetch
@@ -62,7 +62,7 @@ test('a same-name company in another place is not attached: a result naming anot
   // ... but each refusal is recorded on the lead with its marker, and the search went on to the other results
   const refused = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE kind = 'contact_rejected' ORDER BY value").all() as { value: string; label: string; source_url: string }[]
   assert.deepEqual(refused.map(r => r.label).sort(), ['contact_location_mismatch', 'contact_location_unconfirmed'])
-  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Columbus, Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
+  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Chicago, Illinois' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
   // No place in the request: the employer's NAME is then the only tie, and a name is not a company (5 of 9 stored people on staging
   // were at a same-name business). Nothing is stored, and the refusals are counted (lib/people/company-tie.ts).
   const g = setup({ ...ICP, where: [] }); const stats = newPeopleStats()

@@ -22,11 +22,11 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
   const s = stub({
     Pagewake: [
       ...RESULTS.Pagewake,
-      { url: 'https://www.linkedin.com/company/pagewake', title: 'Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                                       // not a profile
-      { url: 'https://www.linkedin.com/in/top-reps', title: 'Top 10 sales leaders to follow | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                       // unreadable
-      { url: 'https://www.linkedin.com/in/old-hand', title: 'Olga Hand - Former Sales Manager - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                          // past role
-      { url: 'https://www.linkedin.com/in/rival-rep', title: 'Rita Rival - Sales Manager - Alertbird | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                // other employer
-      { url: 'https://www.linkedin.com/in/sre-sam', title: 'Sam Reyes - Site Reliability Engineer - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                      // not a buyer role
+      { url: 'https://www.linkedin.com/company/pagewake', title: 'Pagewake | LinkedIn', snippet: 'Chicago, Illinois, United States' },                                                       // not a profile
+      { url: 'https://www.linkedin.com/in/top-reps', title: 'Top 10 sales leaders to follow | LinkedIn', snippet: 'Chicago, Illinois, United States' },                                       // unreadable
+      { url: 'https://www.linkedin.com/in/old-hand', title: 'Olga Hand - Former Sales Manager - Pagewake | LinkedIn', snippet: 'Chicago, Illinois, United States' },                          // past role
+      { url: 'https://www.linkedin.com/in/rival-rep', title: 'Rita Rival - Sales Manager - Alertbird | LinkedIn', snippet: 'Chicago, Illinois, United States' },                                // other employer
+      { url: 'https://www.linkedin.com/in/sre-sam', title: 'Sam Reyes - Site Reliability Engineer - Pagewake | LinkedIn', snippet: 'Chicago, Illinois, United States' },                      // not a buyer role
     ],
     Meshgate: [],
   })
@@ -40,7 +40,7 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
 })
 
 test('#1037 run report: a place refusal is counted (a profile result naming no place, when the request names one)', async () => {
-  const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]], { ...ICP, where: ['Columbus, Ohio'] })
+  const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]], { ...ICP, where: ['Chicago, Illinois'] })
   const stats = newPeopleStats()
   const noPlace = stub({ Meshgate: [{ url: 'https://www.linkedin.com/in/anders-smed-test', title: 'Anders Smed - VP of Sales Development & PG - Meshgate | LinkedIn', snippet: 'VP of Sales Development at Meshgate' }] })
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: noPlace.f, stats }), 0)
