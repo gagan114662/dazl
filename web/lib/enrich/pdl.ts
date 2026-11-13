@@ -26,7 +26,8 @@ function stagingPdlFetch(h: PdlStagingHints): typeof fetch {
   return (async (u: RequestInfo | URL) => {
     const url = String(u), domain = h.domain ? h.domain.toLowerCase() : null
     // No domain known for the caller's lead: no match (PDL's own 'not found' shapes), never an invented domain.
-    if (url.includes('/v5/person/search')) return new Response(JSON.stringify({ status: 200, data: domain ? [{ full_name: 'Staging Testperson', job_title: 'Head of Sales', job_company_website: domain, linkedin_url: null }] : [] }), { status: 200 })
+    // A lead domain containing 'wrongco' gets a person at ANOTHER company: the live check of the company-agreement rejection.
+    if (url.includes('/v5/person/search')) return new Response(JSON.stringify({ status: 200, data: domain ? [{ full_name: 'Staging Testperson', job_title: 'Head of Sales', job_company_website: domain.includes('wrongco') ? 'other-company.example' : domain, job_company_location_locality: domain.includes('wrongco') ? 'nowhere' : null, linkedin_url: null }] : [] }), { status: 200 })
     if (!domain) return new Response(JSON.stringify({ status: 404, error: { type: 'not_found' } }), { status: 404 })
     const first = (h.first ?? 'staging').toLowerCase(), last = (h.last ?? 'testperson').toLowerCase()
     // The address is self-evidently synthetic ('staging-' prefix): never a plausible real person's address at a real company.
