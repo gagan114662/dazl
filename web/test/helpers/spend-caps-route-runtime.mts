@@ -9,6 +9,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { GET } from '../../app/api/internal/spend-caps/route.ts'
+import type { SpendCapsReport } from '../../lib/ops/spend-caps-check.ts'
 
 test('#846 #847: the spend caps check needs the operator secret, spends nothing and writes nothing', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
@@ -35,7 +36,7 @@ test('#846 #847: the spend caps check needs the operator secret, spends nothing 
     const ok = await call('Bearer s3cret')
     assert.equal(ok.status, 200)
     assert.match(ok.headers.get('cache-control') ?? '', /no-store/)
-    const j = await ok.json() as Record<string, any>
+    const j = await ok.json() as SpendCapsReport
     assert.equal(j.ok, true, JSON.stringify(j.problems))
     assert.deepEqual([j.model_calls, j.app_store_opened], [0, false])
     assert.deepEqual([j.caps.scan.usd, j.caps.scan.source, j.caps.scan.simulation.next], [3.333333, 'default', 'refused:over_cap'])
@@ -45,7 +46,7 @@ test('#846 #847: the spend caps check needs the operator secret, spends nothing 
     assert.doesNotMatch(JSON.stringify(j), /real-tenant/, "never another account's data")
     // Settings: a deployment day cap, a 0 month (ignored: the default applies and it is reported), a named account.
     process.env.DAZL_OWNER_DAY_MAX_USD = '7.5'; process.env.DAZL_OWNER_MONTH_MAX_USD = '0'; process.env.DAZL_RUN_MAX_USD_USERS = 'acct_1:0.12'
-    const set = await (await call('Bearer s3cret', '?tenant=acct_1')).json() as Record<string, any>
+    const set = await (await call('Bearer s3cret', '?tenant=acct_1')).json() as SpendCapsReport
     assert.equal(set.ok, false, 'a malformed setting is reported')
     assert.deepEqual(set.problems, ['DAZL_OWNER_MONTH_MAX_USD is not a positive number: ignored, the next source applies'])
     assert.deepEqual([set.caps.day.usd, set.caps.day.source, set.caps.day.simulation.next], [7.5, 'env', 'refused:owner_pool_limit'])
@@ -55,7 +56,7 @@ test('#846 #847: the spend caps check needs the operator secret, spends nothing 
     assert.equal((await call('Bearer s3cret', "?tenant=x' OR 1=1")).status, 400, 'a malformed account id is refused')
     // A malformed scan cap: every paid scan call refused, reported.
     process.env.DAZL_SCAN_CAP_CAD = '0'
-    const bad = await (await call('Bearer s3cret')).json() as Record<string, any>
+    const bad = await (await call('Bearer s3cret')).json() as SpendCapsReport
     assert.deepEqual([bad.caps.scan.source, bad.caps.scan.simulation.next, bad.ok], ['invalid', 'refused:cap_config_invalid', false])
     // Zero spend and zero writes.
     assert.equal(fetches, 0, 'no model or network request')
