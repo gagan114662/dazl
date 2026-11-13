@@ -22,6 +22,11 @@
 // name (a different company with the same name and a website is then treated as already alerted); a monitor's later
 // "now reachable" alert for an event a play mailed is a state change, not a repeat, and still goes out; a run that is
 // not mailed keeps its own "N new" on the Plays page even when another play later mails the same company.
+// The claim and the send are not one step (the claim commits, then the mail is sent, at most once): a process that
+// dies between them, or a release that itself fails, leaves the companies held with no mail; a send that throws after
+// the server accepted the message gives the hold back and another play may mail the company again; and a run marked
+// while a hold stood that is then given back (failed send) was already judged not new. All need a failure at that
+// exact point; the mail pass runs under the scheduler's lease, one run after another.
 // Identity (found on production's own data, 2026-11-13: OpenRelay and Photon were stored without a website by one run
 // and with openrelay.com / photon.codes by the next, and were mailed twice): a lead is known by its confirmed domain
 // AND by its normalized name (lib/monitor-events.ts alertKeysOf), one row per key. A lead is held when its domain is

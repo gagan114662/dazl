@@ -259,14 +259,18 @@ bothEngines('#883 no lost alert: a run that is not mailed (play paused or delete
   assert.equal(await sendPlayRunMails(db, { now: NOW + 120 }), 0)
   assert.deepEqual(await alerts(db, B), [])
 
-  // a send that fails (SMTP configured, the transport throws): not retried, and the run gives back what it claimed
+  // a send that fails (SMTP configured, the transport throws): not retried, and the run gives back what IT claimed,
+  // nothing else: Ngenaire, mailed earlier by the other play, stays held, with the website this run learned for it
   await db.run('UPDATE users SET email_verified_at = 1 WHERE id = ?', [B])
+  await runJob(db, B, b1, Q_SDR, NOW + 1800, [NGENAIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 1860 }), 1)
   const b2 = await play(db, B, Q_AGENCIES, NOW - 3 * DAY)
-  await runJob(db, B, b2, Q_AGENCIES, NOW + 3600, [OPENRELAY_2])
+  await runJob(db, B, b2, Q_AGENCIES, NOW + 3600, [OPENRELAY_2, { ...NGENAIRE, domain: 'ngenaire.example' }], { mark: false })
+  await db.run('UPDATE leads SET watch_new = 1 WHERE company = ? AND scan_job_id IN (SELECT id FROM scan_jobs WHERE watch_id = ?)', ['OpenRelay', b2])
   const smtp = { PUBLIC_BASE_URL: 'https://dazl.ai', SYSTEM_MAIL_SMTP_URL: 'smtp://mail.invalid', SYSTEM_MAIL_FROM: 'dazl <no-reply@dazl.ai>' }
   setTransportForTests(async () => { throw new Error('connection refused') })
   try { assert.equal(await sendPlayRunMails(db, { now: NOW + 3660, env: smtp }), 0) } finally { setTransportForTests(null) }
-  assert.deepEqual(await alerts(db, B), [], 'the mail never left: OpenRelay is not held')
+  assert.deepEqual((await alerts(db, B)).map(a => [a.entity_key, a.play_id]), [['d:ngenaire.example', b1], ['n:ngenaire', b1]], 'the mail never left: OpenRelay is not held; Ngenaire still is')
   const sent: string[] = []
   setTransportForTests(async m => { sent.push(m.text) })
   try {
