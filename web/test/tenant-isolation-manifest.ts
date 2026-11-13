@@ -63,6 +63,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'health/live', method: 'GET', auth: 'public', note: 'liveness: no tenant data, touches no store' },
   { path: 'health/ready', method: 'GET', auth: 'public', note: 'readiness: check names and timings only, no tenant data' },
   { path: 'health/scheduler', method: 'GET', auth: 'public', note: 'scheduler freshness: run state and tenant counts only, no tenant id, name or error text; TinyFish budget platform totals only (#1082)' },
+  { path: 'home/results', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'ready', method: 'GET', auth: 'public', note: 'readiness (same as health/ready): check names and timings only, no tenant data' },
   { path: 'hooks/calcom', method: 'POST', auth: 'public', note: 'per-tenant HMAC signature' },
   { path: 'hooks/first-party', method: 'POST', auth: 'public', note: 'per-tenant HMAC over timestamp + body, replay window, recorded consent config (#390)' },

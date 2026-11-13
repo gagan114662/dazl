@@ -45,6 +45,8 @@ export function migrateReplies(db: Database.Database): void {
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
+  // #1040 Home's 30-day results: replies since a date, and a reply's sent message (PG 0067)
+  db.exec('CREATE INDEX IF NOT EXISTS inbound_messages_tenant_received ON inbound_messages (tenant_id, received_at); CREATE INDEX IF NOT EXISTS inbound_messages_outreach ON inbound_messages (tenant_id, outreach_message_id)')
   migrateBounceLedger(db) // both notice paths account through the one ledger (idempotent DDL, also run by the migration list)
 }
 
