@@ -240,7 +240,7 @@ const KIND_EXCLUSIONS: Partial<Record<FactKind, readonly string[]>> = {
 // negation or hedge) is set apart; "unlike what was reported did not ..." is not. Two uses:
 //  - the negation and hedge checks run on the whole text with only the set-apart keyword ("no relation to") masked, so
 //    the body is still checked and nothing else is hidden;
-//  - the subject and other-company checks drop the whole clause, so "Corvid Robotic Systems, no relation to Corvid
+//  - the company-name and other-company checks drop the whole clause, so "Corvid Robotic Systems, no relation to Corvid
 //    Robotics, opened a Leeds office" is about Corvid Robotic Systems only.
 const tidy = (s: string) => s.normalize('NFC').replace(/\s+/g, ' ').trim()
 const NAME_WORD = String.raw`\p{Lu}[\p{L}\p{N}&'.-]*`
@@ -249,11 +249,12 @@ const setApartWith = (text: string, keep: (lead: string, name: string) => string
   words(name).some(x => NEGATIONS.includes(x) || HEDGES.includes(x)) ? m : keep(lead, name))
 const maskSetApart = (text: string) => setApartWith(text, (lead, name) => `${lead}${name}`)
 const dropSetApart = (text: string) => setApartWith(text, lead => lead.trim().startsWith('(') ? '(' : ' ')
-// Whether `text` names `company` as the whole name of a subject: case aside (folded one code point at a time, so the
+// Whether `text` names `company` as a whole name, not attributively or as a possessive: case aside (folded one code point at a time, so the
 // compare never changes length and never falls back to a looser match), not inside a longer word, and not part of a
 // longer name or a modifier. Refused: a capitalised name word directly before it ("Acme Querix"), except a sentence-initial
 // article ("The Querix"); another capitalised name word after it ("Querix Labs"); a hyphen compound ("Querix-backed");
-// and a possessive ("Querix's spin-off"). So "Former Querix staff founded Norland" does not name Querix as a subject.
+// and a possessive ("Querix's spin-off"). So "Former Querix staff founded Norland" does not name Querix. Position only:
+// who did what is actorProblem's job.
 const ARTICLES = ['the', 'a', 'an', 'die', 'der', 'das', 'le', 'la', 'les', 'el', 'los', 'las', 'o', 'os', 'as']
 const fold = (s: string) => Array.from(tidy(s)).map(ch => { const l = ch.toLowerCase(); return Array.from(l).length === 1 ? l : ch })
 export function namesCompany(text: string, company: string): boolean {
@@ -305,8 +306,45 @@ export function unstatedAttrs(text: string, r: { kind?: unknown; status?: unknow
   if (isStr(r.date) && isPartialDate(r.date) && !statesDate(text, r.date)) out.push('date')
   return out
 }
+// Who did it, by word position (#783 review): for an asserted fact, the capitalised name that comes directly before the
+// fact's first kind word in its evidence (skipping auxiliaries such as "was" or "has", and an appositive between commas:
+// "Querix, a London startup, raised") and that starts a clause (the sentence start, or after a comma, colon, semicolon
+// or bracket) must be the fact's company or person: "Nordwind raised" and "Nordwind, a Querix customer, raised" are
+// refused for Querix. So is a sentence where the company is only the reporter: "..., says Querix", "According to Querix,
+// ...", "Querix said Nordwind ...". Not a parser: an actor that does not start a clause ("Querix announced that Nordwind
+// raised ...") or a verb that is not a listed kind word still passes, and corpus review is what catches those.
+const ACTOR_AUX = ['is', 'was', 'has', 'have', 'had', 'been', 'also', 'just', 'it', 'a', 'hat', 'ist', 'fue', 'foi']
+const ACTOR_NAME = /((?:\p{Lu}[\p{L}\p{N}&'’.-]*)(?:\s+(?:&\s+)?\p{Lu}[\p{L}\p{N}&'’.-]*)*)$/u
+const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function actorProblem(sentence: string, f: TruthFact): string | null {
+  const s = dropSetApart(sentence), co = reEsc(tidy(f.company))
+  if (new RegExp(String.raw`(?:^|[^\p{L}])(?:says|said|according to|told|reported by)\s+(?:the\s+)?${co}(?![\p{L}\p{N}])`, 'iu').test(s)) return `its company ${f.company} is only the reporter of the sentence ("says/said/according to ${f.company}")`
+  const said = new RegExp(String.raw`(?:^|[^\p{L}])${co}\s+(?:says|said|told|reports|reported|claims|claimed)\s+(?:that\s+)?(\S)`, 'iu').exec(s)
+  if (said && /\p{Lu}/u.test(said[1])) return `its company ${f.company} is only the reporter of the sentence ("${f.company} said <another name> ...")`
+  const kw = (FACT_KINDS.includes(f.kind) ? KIND_WORDS[f.kind] : []).filter(k => /^\p{L}/u.test(k))
+  if (!kw.length) return null
+  const ev = dropSetApart(f.evidence), evAt = Math.max(0, s.toLowerCase().indexOf(ev.toLowerCase()))
+  const re = new RegExp(String.raw`(?:^|[\s(])(${kw.map(reEsc).join('|')})`, 'giu')
+  let m: RegExpExecArray | null, hit: number | null = null
+  while ((m = re.exec(s))) { const at = m.index + m[0].length - m[1].length; if (at >= evAt) { hit = at; break } }
+  if (hit === null) return null
+  let pre = s.slice(0, hit).trimEnd()
+  for (;;) {
+    const tok = /(\S+)$/u.exec(pre)
+    if (tok && ACTOR_AUX.includes(tok[1])) { pre = pre.slice(0, tok.index).trimEnd(); continue }
+    if (pre.endsWith(',')) { const body = pre.slice(0, -1), j = body.lastIndexOf(','); pre = (j >= 0 ? body.slice(0, j) : body).trimEnd(); continue }
+    break
+  }
+  const name = ACTOR_NAME.exec(pre)
+  if (!name) return null
+  const before = pre.slice(0, name.index)
+  if (!(before.trim() === '' || /[,;:(]\s*$/u.test(before))) return null
+  const actor = name[1]
+  if (namesCompany(actor, f.company) || (isStr(f.person) && squash(actor) === squash(f.person))) return null
+  return `the evidence sentence names ${actor}, not ${f.company}, as the one who did it`
+}
 // The sentence(s) of `source` around `evidence` (from the sentence start before it to the sentence end after it, case
-// kept): where a fact's subject must be named, since evidence often starts after the name ("raised a seed round").
+// kept): where a fact's company must be named, since evidence often starts after the name ("raised a seed round").
 function sentenceOf(source: string, evidence: string): string {
   const s = tidy(source), e = tidy(evidence), at = s.toLowerCase().indexOf(e.toLowerCase())
   if (at < 0) return e
@@ -396,9 +434,12 @@ export function checkTruth(it: JudgeItem): string[] {
     if (f.date !== undefined && !isPartialDate(f.date)) p.push(`${at}: date ${String(f.date)} is not a real YYYY[-MM[-DD]] date`)
     if (isStr(f.contact) && !squash(src.text).includes(squash(f.contact))) p.push(`${at}: contact is not on the page`)
     if (nonEmpty(f.evidence)) { const miss = unstatedAttrs(f.evidence, f, false); if (miss.length) p.push(`${at}: its evidence does not state its ${miss.join(', ')}`) }
-    // the fact's company is the subject of the sentence its evidence sits in, and that sentence names no other company of
-    // this item except one it sets apart ("no relation to ..."). An instruction is about no company, and a publication or
-    // refresh date is about the page, so those are exempt.
+    // The sentence its evidence sits in names the fact's company as a whole name, not attributively or as a possessive
+    // (namesCompany), and names no other company of this item except one it sets apart ("no relation to ..."). For an
+    // asserted fact, the capitalised name directly before its kind word, if any, is its company (or its person), and its
+    // company is not only the reporter of the sentence (actorProblem). This is a check of word positions, not a parse: see
+    // actorProblem for what still passes. An instruction is about no company, and a publication or refresh date is about
+    // the page, so those are exempt.
     if (nonEmpty(f.evidence) && nonEmpty(f.company) && f.status !== 'instruction' && f.kind !== 'publication' && f.kind !== 'page_update') {
       const sent = dropSetApart(sentenceOf(src.text, f.evidence)), own = squash(f.company)
       if (!namesCompany(sent, f.company)) p.push(`${at}: the sentence of its evidence does not name its company ${f.company}`)
@@ -406,6 +447,7 @@ export function checkTruth(it: JudgeItem): string[] {
       const withoutOwn = sent.replace(new RegExp(tidy(f.company).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu'), ' ')
       const named = others.filter(o => namesCompany(withoutOwn, o))
       if (named.length) p.push(`${at}: the sentence of its evidence also names ${named.join(', ')}, another company of this item`)
+      if (f.status === 'asserted') { const a = actorProblem(sentenceOf(src.text, f.evidence), f as unknown as TruthFact); if (a) p.push(`${at}: ${a}`) }
     }
   })
   if (p.length) return p

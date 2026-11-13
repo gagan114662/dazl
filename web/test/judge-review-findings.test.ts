@@ -383,3 +383,29 @@ test('R11: the gate takes label and criticality from the corpus: a log line that
   const d = releaseGate({ lock, corpus: CORPUS, judges, verdicts: jsonl(toStoredVerdicts(bad, CORPUS, 'b1', AT).map(r => ({ ...r, critical: null }))) })
   assert.ok(d.blocks.some(b => /a stored run of its calibrated fingerprint has a critical false positive: .*cal-date-neg/.test(b)), d.blocks.join('; '))
 })
+
+// --- Hermes at 11927aaf: who did it --------------------------------------------------------------------------------
+
+test('Hermes 11927aaf: another company as the actor, or the fact\'s company only as the reporter, is refused', () => {
+  const asserted = (sentence: string) => withItem('cal-plain-pos', it => { it.sources[0].text = `${sentence}.`; it.truth!.facts[0].evidence = sentence; it.quote = 'raised a seed round' })
+  const cases: [string, RegExp][] = [
+    ['Nordwind raised a seed round in October 2026, says Querix', /cal-plain-pos: fact 1: its company Querix is only the reporter of the sentence/],
+    ['According to Querix, Nordwind raised a seed round in October 2026', /cal-plain-pos: fact 1: its company Querix is only the reporter of the sentence/],
+    ['Nordwind, a Querix customer, raised a seed round in October 2026', /cal-plain-pos: fact 1: the evidence sentence names Nordwind, not Querix, as the one who did it/],
+    ['Querix said Nordwind raised a seed round in October 2026', /cal-plain-pos: fact 1: its company Querix is only the reporter of the sentence \("Querix said <another name> \.\.\."\)/],
+  ]
+  for (const [sentence, re] of cases) refused(asserted(sentence), re, sentence)
+  // the actor rule on its own, with no reporter wording
+  refused(asserted('Querix news: Nordwind raised a seed round in October 2026'), /the evidence sentence names Nordwind, not Querix, as the one who did it/, 'Nordwind after a colon')
+  // still accepted: the company as actor after a fronted date, through an appositive, or reporting its own round
+  for (const sentence of ['In October 2026, Querix raised a seed round', 'Querix, a London startup, raised a seed round in October 2026', 'Querix said it raised a seed round in October 2026']) checkCorpus(asserted(sentence))
+  checkCorpus(CORPUS) // all 57 non-exempt committed facts still pass
+})
+
+test('documented limit (docs/design/agent-evals.md "Limits"): an actor that does not start a clause still passes checkCorpus', () => {
+  // Today's behaviour, pinned so the doc and the code cannot drift apart silently: Nordwind raised the round, but the
+  // word-position checks accept it as Querix's. Corpus review is what catches this. If a later change refuses it,
+  // update this test and the Limits bullet together.
+  const it = withItem('cal-plain-pos', x => { const s = 'Querix announced that Nordwind raised a seed round in October 2026'; x.sources[0].text = `${s}.`; x.truth!.facts[0].evidence = s; x.quote = 'raised a seed round' })
+  assert.doesNotThrow(() => checkCorpus(it))
+})
