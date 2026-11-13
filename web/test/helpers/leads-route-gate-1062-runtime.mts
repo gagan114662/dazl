@@ -9,6 +9,7 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { heldState } from '../../lib/lead-state.ts'
 import { previewSplit, type PreviewLead } from '../../lib/journey.ts'
+import { reviewAction } from '../../lib/scan/review-action.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
@@ -32,6 +33,8 @@ test('#1062 GET /api/leads: gate_held is the draft guard verdict, and Home/Leads
   assert.deepEqual([by.deny?.gate_held, by.reviewheld?.gate_held, by.review?.gate_held], [true, true, false], JSON.stringify(rows.map(r => [r.id, r.gate_held])))
   assert.deepEqual(heldState(by.reviewheld), { state: 'research', cause: 'unsupported' }, 'a reviewable reason does not outrank a failed required check')
   assert.deepEqual(heldState(by.review), { state: 'review', cause: null }, 'control')
+  assert.equal(reviewAction(by.reviewheld).label, 'Keep as research', 'the Leads review card offers research, never "use it"')
+  assert.equal(reviewAction(by.review).label, 'I checked the source - use it', 'control')
   const split = previewSplit(rows)
   assert.deepEqual(split.review.map(l => l.id), ['review'])
   assert.ok(!split.opportunities.some(l => l.id === 'deny'), 'the DEFAULT-DENY lead is never an opportunity')

@@ -18,13 +18,19 @@ const inProcess = new Set<string>()
 export function markHeldInProcess(tenantId: string, leadIds: string[]): void { for (const id of leadIds) { if (inProcess.size >= 10_000) inProcess.clear(); inProcess.add(`${tenantId}:${id}`) } }
 
 // The run report is a separate row, and the one place #282 itself writes the held leads: `held_lead_ids`. It survives a rejected review write AND a rejected marker write.
+// A missing table means nothing of that kind was ever written (an older or partial store). Any other read error is not that.
+const noTable = (e: unknown) => /no such table/i.test(String((e as { message?: unknown })?.message ?? e))
+
 function reportHolds(db: Database.Database, tenantId: string, leadId: string): boolean {
+  let r: { report: string } | undefined
   try {
-    const r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
-    if (!r) return false
+    r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
+  } catch (e) { return !noTable(e) }   // #1062: a report that cannot be READ fails closed; no report table holds nothing
+  if (!r) return false
+  try {
     const ids = (JSON.parse(r.report) as { held_lead_ids?: unknown }).held_lead_ids
     return Array.isArray(ids) && ids.includes(leadId)
-  } catch { return false }
+  } catch { return false }   // an unreadable report body holds nothing (the batch reader agrees)
 }
 
 // A gate that RAN AGAIN AND PASSED releases the lead: the marker, the report entry and the in-process entry all go.
@@ -68,7 +74,10 @@ export function requiredGateHeld(db: Database.Database, tenantId: string, leadId
   try {
     failedMarker = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)
     passes = new Set((db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed'").all(leadId, tenantId) as { value: string }[]).map(r => r.value))
-  } catch { /* no enrichments table: nothing was marked */ }
+  } catch (e) {
+    // No enrichments table: nothing was marked. Any OTHER read failure fails closed (#1062): an unreadable marker never reads as "not held".
+    if (!noTable(e)) return SALES_GATE_HELD
+  }
   return gateVerdict(row, { inProcess: false, failedMarker, passed: v => passes.has(v), reportHeld: reportHolds(db, tenantId, leadId) })
 }
 

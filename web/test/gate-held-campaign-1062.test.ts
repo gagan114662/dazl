@@ -18,6 +18,10 @@ import { currentQual, currentRun, runStatusOf } from '../lib/run-status.ts'
 import { requiredGateHeld, requiredGateHeldForJob, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
 import { salesHiringRequired } from '../lib/scan/sales-hiring-required.ts'
 import { requestedHiringRoles, roleNeedsSourceProof } from '../lib/scan/hiring-role-match.ts'
+import { previewSplit, heldReason, type PreviewLead } from '../lib/journey.ts'
+import { heldState, researchCause } from '../lib/lead-state.ts'
+import { reviewAction } from '../lib/scan/review-action.ts'
+import { approveState } from '../lib/scan/lead-card.ts'
 
 const SALES = 'Find London UK companies hiring sales account executives.'
 const SALES_ICP = JSON.stringify({ signals: ['hiring sales account executives'] })
@@ -161,3 +165,44 @@ test('#1062 route seam: GET /api/leads carries gate_held and Home / Leads count 
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
 })
+
+test('#1062 Home / onboarding: a lead that is otherwise READY (verified source, verified date, a fit) but gate-held is research, never an opportunity', () => {
+  const ready = (o: Partial<PreviewLead> = {}): PreviewLead => ({ id: 'r', company: 'Co r', signal: 's', source_url: 'https://n.example/a', evidence_excerpt: 'q', event_date: new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10), date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'w', icp_match: null, company_domain: 'r.example', contact: 'a@r.example', quarantined_at: null, confidence: 90, human_confirmed_at: null, ...o } as PreviewLead)
+  assert.equal(heldReason(ready()), null, 'control: without the gate the lead is ready')
+  assert.deepEqual(previewSplit([ready()]).opportunities.map(l => l.id), ['r'], 'control: an opportunity')
+  assert.equal(heldReason(ready({ gate_held: true })), 'a required check has not passed')
+  assert.deepEqual(heldState(ready({ gate_held: true })), { state: 'research', cause: 'unsupported' })
+  const split = previewSplit([ready({ gate_held: true })])
+  assert.deepEqual([split.opportunities.length, split.review.length, split.research.map(r => r.lead.id)], [0, 0, ['r']])
+  // The Leads card: Approve is refused for the gate, not for timing or review, and says why.
+  assert.equal(approveState(ready()).ok, true, 'control')
+  const a = approveState(ready({ gate_held: true, review_reason: 'quote_unconfirmed', currentness_held: true }))
+  assert.equal(a.ok, false); assert.match(a.ok ? '' : a.reason, /required check .* has not passed/)
+  // Home's research cause for a dated lead held by BOTH the window and the gate is the gate (a wider window cannot release it).
+  assert.equal(researchCause(ready({ gate_held: true, window_held: true })), 'unsupported')
+  assert.equal(researchCause(ready({ window_held: true })), 'older', 'control: the window alone')
+})
+
+test('#1062 Leads review copy: a reviewable reason with a failed required check offers "Keep as research", never "it can be drafted"', () => {
+  const ok = reviewAction({ review_reason: 'quote_unconfirmed' })
+  assert.equal(ok.label, 'I checked the source - use it', 'control')
+  const held = reviewAction({ review_reason: 'quote_unconfirmed', gate_held: true })
+  assert.equal(held.label, 'Keep as research')
+  assert.doesNotMatch(held.hint, /can be drafted/)
+  assert.match(held.hint, /required sales-hiring check/)
+})
+
+test('#1062 the draft guard fails CLOSED on a marker or report read error; a missing table still means nothing was marked', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
+  await job(db, 'A', 'jp', PLAIN, PLAIN_ICP)
+  await lead(db, 'jp', 'plain')                       // a plain request: not held when every read works
+  assert.equal(requiredGateHeld(raw, 'A', 'plain'), null, 'control')
+  const failing = (table: string) => new Proxy(raw, { get(t, k) {
+    if (k === 'prepare') return (sql: string) => { if (sql.includes(table)) throw new Error('SQLITE_IOERR: disk I/O error'); return t.prepare(sql) }
+    const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v } })
+  assert.equal(requiredGateHeld(failing('lead_enrichments'), 'A', 'plain'), 'sales_hiring_check_failed', 'an unreadable marker never reads as not held')
+  assert.equal(requiredGateHeld(failing('scan_run_report'), 'A', 'plain'), 'sales_hiring_check_failed', 'an unreadable run report never reads as not held')
+  raw.exec('DROP TABLE scan_run_report'); raw.exec('DROP TABLE lead_enrichments')
+  assert.equal(requiredGateHeld(raw, 'A', 'plain'), null, 'no table: nothing was marked (older stores, partial fixtures)')
+})
+

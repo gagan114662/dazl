@@ -45,8 +45,8 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   const date = l.event_date ?? ''
   // A date problem outranks any other reason: a blocked page with no usable date is still undated research.
   if (r === 'outside_window_undated' || (l.window_held && !date)) return 'undated'
-  if (Object.hasOwn(CAUSE, r)) return CAUSE[r]
-  if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
+  if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
+  if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries
   if (l.window_held) return 'older'
   if (l.currentness_held || !date || l.date_status !== 'verified') return 'undated'
   return 'unsupported'

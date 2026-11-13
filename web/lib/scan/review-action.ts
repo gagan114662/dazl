@@ -16,7 +16,7 @@ import { uncheckableCause, CAUSE_TEXT, REQUIRED_GATE_REASONS } from '../lead-sta
 const DATE = new Set(['event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date'])
 
 export interface ReviewAction { label: string; hint: string }
-export interface ReviewLead { review_reason?: string | null; window_held?: boolean; event_date?: string | null }
+export interface ReviewLead { review_reason?: string | null; window_held?: boolean; gate_held?: boolean; event_date?: string | null }
 
 type Held = 'no_date' | 'older' | 'unknown'
 function heldKind(l: ReviewLead, now: Date): Held | null {
@@ -40,7 +40,8 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   // Checked before uncheckableCause: a failed REQUIRED gate is now also in that set (#683 round 2, so Home and the
   // campaign views treat it as research too), but this specific cause gets its own, more actionable wording here -
   // only a fresh scan with the check passing clears it, which the generic text below does not say.
-  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
+  // gate_held (#1062): the same hold read from the draft guard's own verdict, whatever reviewable reason the row carries.
+  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '') || l.gate_held) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
   // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
