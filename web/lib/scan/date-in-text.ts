@@ -82,14 +82,17 @@ export function datePositions(text: string): { day: string; index: number; end: 
 // left out (#460 review). Words that also describe events ("formed", "established", "since") are NOT background: "a joint
 // venture formed in 2019" or "an office established in 2019" is the event's own year and stays stale. Used by the stale-year checks (event-date-binding.ts, page-timing.ts).
 const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)\s+(?:in\s+)?$/i
-// #1129: a four-digit number written right after an Australian state or territory code is a postcode, never a year
-// ("Sydney, NSW 2000 / Melbourne, VIC 3000" held a lead as stale for "the year 2000"). Case-sensitive: the codes are
-// written in capitals in addresses, so "sa 2000" or "act 2019" in running text stays a year.
-const POSTCODE_BEFORE = /\b(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\s*,?\s*$/
+// #1129: a four-digit number in an Australian ADDRESS is a postcode, never a year ("Sydney, NSW 2000 / Melbourne,
+// VIC 3000" held a lead as stale for "the year 2000"). Only in address form (review on #1137: a bare code is not enough,
+// "WA 2019 expansion", "the ACT 2021 budget" and "SA 2018 Series A" are years): a capitalised place name, then the state or
+// territory code in capitals, then the number, with no lower-case word right after it, in text that is not all capitals.
+const POSTCODE_BEFORE = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT),?\s*$/
+const isPostcode = (t: string, at: number, end: number): boolean =>
+  POSTCODE_BEFORE.test(t.slice(Math.max(0, at - 60), at)) && !/^\s+[a-z]/.test(t.slice(end, end + 20)) && /[a-z]/.test(t.slice(Math.max(0, at - 60), end + 20))
 export function eventYears(text: string): number[] {
   const t = text.replace(/\s+/g, ' ')
   return [...t.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => {
     const before = t.slice(Math.max(0, m.index! - 40), m.index!)
-    return !BACKGROUND.test(before) && !POSTCODE_BEFORE.test(before)
+    return !BACKGROUND.test(before) && !isPostcode(t, m.index!, m.index! + m[0].length)
   }).map(m => +m[1])
 }

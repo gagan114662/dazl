@@ -2,7 +2,7 @@
 
 Updated by the builder on every branch. Newest first.
 
-- #1129 c/1129-postcode-year: a four-digit number right after an Australian state or territory code ("Sydney, NSW 2000 / Melbourne, VIC 3000") is a postcode, never a year, so an undated lead quoting an address is no longer held as event_date_stale ("the quote names 2000"). Real years in the same quote, and company-background years, behave as before. Fixtures only.
+- #1129 c/1129-postcode-year: a four-digit number in an Australian address (a capitalised place name, the state or territory code, the number, no lower-case word after it: "Sydney, NSW 2000 / Melbourne, VIC 3000") is a postcode, never a year; a bare code is not enough ("WA 2019 expansion" stays a year); so an undated lead quoting an address is no longer held as event_date_stale ("the quote names 2000"). Real years in the same quote, and company-background years, behave as before. Fixtures only.
 
 - #1037 b/1037-staging-trial-no-google (item 3, stacked on #1120): TEST-ONLY - with DAZL_ENV=staging, DAZL_STAGING_TRIAL_NO_GOOGLE names exact test email addresses whose free trial skips ONLY the Google prerequisite (every other trial gate still applies), so a brand-new password account's first play can be live-checked on staging. Inert outside staging; the product truth record's google_account requirement stays true for real accounts.
 
