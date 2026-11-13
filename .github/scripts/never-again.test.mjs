@@ -12,7 +12,7 @@ const doc = read('docs/NEVER-AGAIN.md')
 const entries = doc.split(/^## /m).slice(1)
 
 test('every NEVER-AGAIN entry states mistake, date, rule and how it is enforced', () => {
-  assert.ok(entries.length >= 11, `found ${entries.length} entries`)
+  assert.ok(entries.length >= 12, `found ${entries.length} entries`)
   for (const e of entries) {
     const title = e.split('\n')[0]
     for (const f of ['**Mistake:**', '**Date:**', '**Rule:**', '**Enforced by ('])

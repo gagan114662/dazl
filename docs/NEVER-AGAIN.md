@@ -137,3 +137,28 @@ Times are US Eastern unless marked Z.
   passing C$10. A task that does not name its spend limit and the running total runs free checks only.
 - **Enforced by (note-only):** the coordinator's task files name the limit and the running total; the reviewer checks
   that each paid test posted its cost. Nothing in this repo meters spend on tests.
+
+## 12. A hand write to the production database
+
+- **Mistake:** to reach a spend cap during a live check, a verifier lane inserted one spend row for the dogfood tenant
+  into the production database with `sqlite3` over ssh, and deleted it afterwards. No other tenant was touched. The
+  method was never allowed: a hand statement skips every check the app makes, and a slip in it changes customer data.
+- **Date:** 2026-11-13, about 22:20Z.
+- **Rule:** production is read and exercised through the product only: the UI and the API, signed in as the dogfood
+  account. Nobody runs a write statement against the production database by hand, over ssh or any other way. If a
+  check cannot be reached through the product, stop and report it. Running one of the three owner tools that change a
+  live database through the app's own code (`web/scripts/purge-tenant-evidence.mts`,
+  `web/scripts/rewrap-master-key.mts`, `web/scripts/tenant-lifecycle.mts`) on production needs the owner's explicit order.
+- **Enforced by (partly automated):**
+  - In the repo: `ops/test_never_again.py` (`NoHandWritesToTheProdDatabase`) lists every script under `ops/` and
+    `web/scripts/` that opens a SQLite database for writing, with why it may: backup and rehearsal copies, files it
+    creates, staging-only scripts (which must refuse outside staging) and the three owner tools above. A new script
+    that opens a database for writing fails the test until it is classified, and no script may call the `sqlite3`
+    command line with a write statement. It runs on every pull request (`.github/workflows/never-again-gates.yml`).
+    The deploy's backup step (`ops/prod/deploy-prod.sh`) is on the list as a copy: it opens the live database read-only.
+  - On the coordinator's PC (outside this repo): a wrapper at `~/.local/bin/ssh` refuses an ssh command to the box that
+    names `sqlite3` together with a write statement, unless every database it names is a staging one, and logs the
+    refusal. **It only sees the command line.** A script piped on stdin, a write made from an interactive shell, or
+    another program that opens the database gets past it. It is a tripwire, not a lock.
+  - Nothing stops a person with shell access on the box. That part is the rule above.
+
