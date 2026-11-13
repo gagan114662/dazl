@@ -14,6 +14,8 @@ export type PreviewLead = CardLead & { id: string; seen_before?: number | boolea
 // Why a lead is not an opportunity (first failing check), or null when it is one.
 export function heldReason(l: PreviewLead): string | null {
   if (l.quarantined_at) return 'rejected'
+  // #1062: a REQUIRED check that has not passed (requiredGateHeld, the draft guard's own verdict) holds it whatever its review reason, evidence and date say.
+  if (l.gate_held) return 'a required check has not passed'
   if (l.review_reason) return 'needs your review'
   if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return 'source not verified'
   if (l.window_held) return 'outside your time window or undated'

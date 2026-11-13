@@ -32,7 +32,8 @@ export function leadWindowHeld(db: Database.Database, tenant: string, lead: stri
 // never a waiver of the user's window.
 const validStoredWindow = (w: unknown): w is number => typeof w === 'number' && Number.isInteger(w) && w >= 1 && w <= 365
 
-function windowHeld(row: { event_date: string | null; icp: string | null; query: string | null }, now: Date): boolean {
+// Exported (pure) for reads on the async Db layer, e.g. a campaign page (lib/outreach/campaign-detail.ts, #683): same verdict, no second copy.
+export function windowHeld(row: { event_date: string | null; icp: string | null; query: string | null }, now: Date): boolean {
  let days: number | null = null
  let corrupt = false
  if (row.icp) {

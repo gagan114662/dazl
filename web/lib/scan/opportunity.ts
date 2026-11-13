@@ -31,6 +31,8 @@ export interface CardLead {
   // reason 'out_of_window'). Distinct from an unresolved window - copy must not call a known miss "unresolved".
   window_missed?: boolean
   currentness_held?: boolean; window_held?: boolean
+  // A REQUIRED check that has not passed holds it (lib/scan/held-state.ts requiredGateHeld, #1062): no confirmation releases it.
+  gate_held?: boolean
   enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at?: number | null }[]
 }
 export interface OpportunityCard {
@@ -151,6 +153,8 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const identityOpen = !citedEmail && (review.state === 'required' || !ident || ident.state === 'unconfirmed' || ident.state === 'conflict')
   const next = l.quarantined_at ? 'None: quarantined.'
     : l.window_held ? 'None: outside the time window you asked for, or undated. Research only.'
+    // #1062: a required check that has not passed - checking the source cannot release it, so no step here asks for a check.
+    : l.gate_held ? 'None: a required check (the sales-hiring proof) has not passed. Research only - checking the source cannot change that.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
     : l.currentness_held ? (l.timing === 'proof_backed' || l.day_verified ? 'Review the source before any outreach.' : 'Review the source to confirm the timing before any outreach.')
     : !top ? 'Find the decision-maker before reaching out.'

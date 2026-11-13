@@ -5,7 +5,7 @@ import { journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib
 import { widenActions } from '../lib/play-card.ts'
 import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
-import { REVIEWABLE, RESEARCH_REASONS } from '../lib/lead-state.ts'
+import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
 
 // Synthetic leads shaped like the two reported failures: an undated customer-mention and a blocked, undated page.
 // No real company, run id or URL.
@@ -138,4 +138,12 @@ test('#352 recovery note: a malformed or prototype-named record never renders a 
   assert.equal(recoveryNote(rec('recovery:constructor', 'Recovery pass ran before this was held'))?.text, 'dazl already searched other press for another source; none verified.')
   assert.equal(recoveryNote(rec('recovery:x', 'Recovery pass did not run (constructor).'))?.text, 'dazl did not search other sources for it: the search was not available for this run.')
   assert.equal(recoveryNote(rec(null, 'Recovery pass did not run (toString).'))?.text, 'dazl did not search other sources for it: the search was not available for this run.')
+})
+
+test('#683 round 2: uncheckableCause covers a failed REQUIRED gate, not just the three original reasons', () => {
+  for (const r of ['counterparty_signal', 'location_mismatch', 'job_closed', 'sales_hiring_check_failed']) assert.ok(uncheckableCause(r), r)
+  assert.equal(uncheckableCause('sales_hiring_check_failed'), 'unsupported')
+  assert.equal(uncheckableCause('quote_unconfirmed'), null) // a reviewable reason is not uncheckable
+  assert.equal(uncheckableCause(null), null)
+  assert.equal(uncheckableCause(undefined), null)
 })

@@ -57,7 +57,9 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: st.jobStatus, error: null, query: 'Dental practice owners in Ohio', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 5, verified: 2, needs_review: 1, dropped: 2, lead_count: 3, test_only: false }] })
   if (p === '/api/outreach/settings') return json({ gmail: { email: 'dana@brightsmile.example', status: 'active' }, sender: { sender_name: 'Dana', postal_address: '1 Main St, Columbus, OH 43004, USA' }, daily_cap: 20, sent_24h: 0, account_sent_24h: 0 })
   if (p === '/api/outreach') return st.emailsFail ? json({ error: 'unavailable' }, 503) : json({ messages: st.messages })
-  if (p === '/api/campaigns') return st.campaignsFail ? json({ error: 'unavailable' }, 503) : json({ campaigns: [{ id: JOB, qualification: { rejected: 0 } }] })
+  // #683 round 3: the campaign row now wins over the job's own (possibly stale) counts, so this must carry the same
+  // counts the job record above does (verified:2, needs_review:1) or the readiness step would show 0s instead.
+  if (p === '/api/campaigns') return st.campaignsFail ? json({ error: 'unavailable' }, 503) : json({ campaigns: [{ id: JOB, qualification: { rejected: 0, sourceChecked: 2, confirmedByYou: 0, needsReview: 1, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0 } }] })
   return json({}, 404)
 })
 const page = await ctx.newPage()

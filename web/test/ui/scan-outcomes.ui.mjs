@@ -100,6 +100,9 @@ await ctx.route('**/*', async route => {
     if (id === ALL.poolStop.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'owner_pool_limit' })
     if (id === ALL.hardCap.id) return json({ status: 'failed', error: 'budget_stopped', provider_issues: [], stop_refusal_reason: 'over_cap' })
   }
+  // #683 round 3: Home now prefers this list's qualification over the job's own recorded verified/needs_review, so
+  // each row here must carry the job's current counts or the "N source-checked, N need your review" words below break.
+  if (u.pathname === '/api/campaigns') return json({ campaigns: JOBS.map(j => ({ id: j.id, qualification: { rejected: 0, sourceChecked: j.verified ?? 0, confirmedByYou: 0, needsReview: j.needs_review ?? 0, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0 } })) })
   const one = Object.values(ALL).find(j => u.pathname === `/api/campaigns/${j.id}`)
   // The campaign read: stored status (never 'enriching') plus the enrichment marks, and the server's empty_reason.
   if (one) return json({ job: { id: one.id, query: one.query, status: one.status === 'enriching' ? 'done' : one.status, error: one.error, funded_by: one.funded_by, created_at: one.created_at, candidates: one.candidates, verified: one.verified, needs_review: one.needs_review, dropped: one.dropped, enrich_started_at: one.status === 'enriching' ? Math.floor(Date.now() / 1000) - 20 : one.enrich_started_at, enrich_finished_at: null, empty_reason: one.empty_reason, failed_sources: one.failed_sources ?? null, stop_refusal_reason: one.stop_refusal_reason ?? null }, leads: [], messages: [] })
