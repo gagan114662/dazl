@@ -1,7 +1,8 @@
 // #1040: what the last 30 days produced, for Home - from stored rows only (no new tracking), one tenant, on the async Db
 // layer (SQLite and Postgres). Counts, with one rule each so the by-signal table adds up to the tiles:
 //  - new leads: leads found in the window (by the scan's own row, scan_jobs.user_id = tenant), not rejected;
-//  - contacted: first-touch emails SENT in the window (outreach_messages.status 'sent', never test sends);
+//  - contacted: first-touch emails SENT in the window (outreach_messages.status 'sent', never test sends, never to a test-fixture
+//    lead: the verification fixture records a 'sent' message without the test flag);
 //  - replied: of those sent messages, the ones with a person-written reply (a reply matched to the message,
 //    inbound_messages.outreach_message_id, classified positive / negative / other / opt_out / uncertain - never an
 //    auto-reply or any bounce notice);
@@ -56,7 +57,7 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
                       AND (SELECT d.classification FROM inbound_messages d WHERE d.tenant_id = p.tenant_id AND d.thread_id = p.thread_id AND d.classification NOT IN ${MACHINE}
                            ORDER BY d.received_at DESC, d.gmail_id DESC LIMIT 1) = 'positive') THEN 1 ELSE 0 END) AS interested
      FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
-     WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
+     WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0 AND (l.source_kind IS NULL OR l.source_kind <> 'test')
      GROUP BY l.signal_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
   const kind = (k: string | null) => k || 'unknown'
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
@@ -73,7 +74,7 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const latest_replies = (await db.all<{ thread_id: string; company: string | null; classification: string; received_at: number | string }>(
     `SELECT r.thread_id, l.company, r.classification, r.received_at FROM inbound_messages r
      JOIN outreach_messages m ON m.id = r.outreach_message_id AND m.tenant_id = r.tenant_id LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
-     WHERE r.tenant_id = ? AND r.classification IN (${marks}) AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
+     WHERE r.tenant_id = ? AND r.classification IN (${marks}) AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0 AND (l.source_kind IS NULL OR l.source_kind <> 'test')
      ORDER BY r.received_at DESC, r.gmail_id DESC LIMIT 5`, [tenantId, ...PERSON_REPLY, since]))
     .map(r => ({ thread_id: r.thread_id, company: r.company || 'Unknown company', classification: r.classification, received_at: Number(r.received_at) }))
   const tiles = { leads: sum('leads'), contacted: sum('contacted'), replied: sum('replied') as number | null, interested: interested as number | null }

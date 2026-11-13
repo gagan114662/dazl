@@ -104,7 +104,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
-      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply from a person is interested (all time, not only the last 30 days). <button type="button" className="underline" onClick={showAll}>Show all replies</button></p>}
+      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply is interested, not counting auto-replies (a later delivery notice in the thread counts; all time, not only the last 30 days). <button type="button" className="underline" onClick={showAll}>Show all replies</button></p>}
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}

@@ -68,18 +68,21 @@ bothEngines('#1040 round 2: Leads-page leads only (no poor fit, no test fixture)
   await add('a10', 'hiring', IN, 1, null)          // hidden on Leads as a poor fit
   await add('a11', 'hiring', IN, null, 'test')     // a test fixture
   await add('a14', 'hiring', IN, 2, 'news')        // shown: counted
+  await add('a18', 'fixture_kind', OLD, null, 'test')   // the verification fixture's lead: its 'sent' message (test flag 0) is not contacted
   await add('a12', 'hiring', OLD, null, null); await add('a13', 'hiring', OLD, null, null)
   const msg = (id: string, leadId: string) => db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, 'A', ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, 0)", [id, leadId, IN, IN])
   const reply = (gid: string, msgId: string, cls: string, at: number) => db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, 'A', ?, NULL, 'p@co.example', 'hi', ?, ?, ?)", [gid, `t-${msgId}`, cls, at, msgId])
   await msg('m12', 'a12'); await reply('g12a', 'm12', 'positive', IN + DAY); await reply('g12b', 'm12', 'opt_out', IN + 2 * DAY)   // yes, then opt out
   await msg('m13', 'a13'); await reply('g13a', 'm13', 'positive', IN + DAY); await reply('g13b', 'm13', 'auto', IN + 2 * DAY)      // yes, then an out-of-office
+  await msg('m18', 'a18'); await reply('g18', 'm18', 'positive', IN + DAY)
   await msg('m14', 'a14'); await reply('g14', 'm14', 'uncertain', IN + DAY)                                                       // "not really interested": a person, replied
   const r = await homeResults(db, 'A', NOW)
   assert.deepEqual(r.tiles, { leads: 5, contacted: 8, replied: 5, interested: 1 })
   assert.ok(!r.latest_leads.some(l => l.id === 'a10' || l.id === 'a11'), 'the latest leads are leads the Leads page shows')
+  assert.ok(!r.by_signal.some(s => s.signal === 'fixture_kind'), 'a test-fixture lead\'s send is never contacted'); assert.ok(!r.latest_replies.some(x => x.company === 'Co a18'))
   // the Interested tile opens /app/inbox?status=all&class=positive: the same deciding reply decides both
   const inbox = (await inboxPage(db, 'A', { status: 'all', classification: 'positive' })).threads.map(t => t.thread_id).sort()
-  assert.deepEqual(inbox, ['t-m13', 't-m5', 't-m8'], 'm13 (the yes stands over the out-of-office); m5 sent before the window and m8 a test send are Inbox-only')
+  assert.deepEqual(inbox, ['t-m13', 't-m18', 't-m5', 't-m8'], 'm13 (the yes stands over the out-of-office); m18 to a test-fixture lead, m5 sent before the window and m8 a test send are Inbox-only')
   assert.ok(!inbox.includes('t-m12') && !inbox.includes('t-m1'), 'm12 opted out after yes, m1 wrote again: neither is interested on either page')
 })
 
@@ -108,6 +111,7 @@ bothEngines('#1040 round 3: Interested decides per Gmail thread like the Inbox; 
   const off = await homeResults(db, 'A', NOW, false)
   assert.equal(off.reply_reading, false); assert.equal(off.tiles.replied, null); assert.equal(off.tiles.interested, null)
   assert.equal(off.tiles.contacted, r.tiles.contacted)
+  assert.ok(off.latest_replies.length > 0, 'the replies already stored stay listed as what was seen')
   assert.ok(off.by_signal.every(s => s.contacted > 0 ? s.replied === null : s.replied === 0))
   assert.deepEqual((await homeResults(db, 'nobody', NOW, false)).tiles, { leads: 0, contacted: 0, replied: 0, interested: 0 })
 })
