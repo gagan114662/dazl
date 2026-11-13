@@ -1090,3 +1090,11 @@ test('#878 review (Hermes-PC) at cc18ffd5: a business named as the opening\'s pl
   quoteShowsEvent(long, long, false, 'Metro City Dentistry')
   assert.ok(Date.now() - t0 < 3000, 'a 13 KB quote is read within 3 s')
 })
+
+// review round 10 (R19): a business named after "in" is a practice, not a place: same class as Hermes-PC's "at <business>" finding at cc18ffd5
+test('#878 round 10: "in <business with a practice word>" is not the opening\'s place (gate and C1 fail closed); real places still pass', () => {
+  for (const quote of ['New clinic now open in Sunrise Wellness', 'New clinic now open in Maple Medical in Parkdale', 'Our new clinic is now open in Queen West Dentists', 'New dental clinic now open in Parkdale Physio'])
+    assert.deepEqual([quoteShowsEvent(quote, quote, false, 'Metro City Dentistry'), truthOf(DENTAL, 'Metro City Dentistry', quote)], [false, 'unknown'], quote)
+  for (const quote of ['New dental clinic now open in Parkdale, Toronto', 'Our new clinic is now open at 123 Queen St W', 'New dental clinic now open in Parkdale'])
+    assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+})

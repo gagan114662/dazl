@@ -239,7 +239,8 @@ const OPENING_FRAME = new Set(('our its their the a an new brand grand opening o
   'now officially finally open opened opening opens location locations office offices clinic clinics store stores branch branches site sites ' +
   'restaurant restaurants studio studios practice practices warehouse warehouses showroom showrooms shop shops gym gyms salon salons ' +
   'factory factories hq headquarters').split(' '))
-const PRACTICE_WORD = /^(?:dental|dentistry|smiles?|orthodontics?|clinic|practice|studio|centre|center|group|health)$/i
+// a business word in the opening's place span ("in Sunrise Wellness", "in Maple Medical"; review round 10 R19): the span names a practice, not a place
+const PRACTICE_WORD = /^(?:dental|dentistry|dentists?|smiles?|orthodontics?|clinic|practice|studio|centre|center|group|health|wellness|medical|medicine|care|physio|chiro(?:practic)?)$/i
 // The lead named only to set it apart ("Not Metro City Dentistry", "the same space as Metro City Dentistry").
 const contrastsLead = (text: string, lead: string) => new RegExp(String.raw`\b(?:not|than|as|like|from|next\s+(?:door\s+)?to|instead\s+of|unlike)\s+(?:the\s+)?` + lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text)
 export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
