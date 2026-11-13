@@ -182,7 +182,7 @@ test('permanent bounce stops, auto replies do not, and no real sends occur in te
   const db=await setup(),s=add(db),m=mock();await start(db,s,m)
   const bounced={...mock(),now:NOW+3*DAY}
   const base=bounced.fetchImpl
-  bounced.fetchImpl=(async(u:unknown)=>String(u).includes('/threads/')?json({messages:[sameThreadDsn('bounce',{recipient:'lead@acme.example',at:NOW+1})]}):base(u as string)) as typeof fetch
+  bounced.fetchImpl=(async(u:unknown)=>String(u).includes('/threads/')?json({messages:[sameThreadDsn('bounce',{recipient:'lead@acme.example',at:NOW+1,ref:`<dazl.${s.mid}@acme.example>`})]}):base(u as string)) as typeof fetch
   assert.equal((await runSequences(db,'A','',bounced)).sent,0)
   assert.equal(sequenceStatusByLead(db,'A').get(s.lead)?.status,'stopped')
 })
