@@ -153,6 +153,8 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const identityOpen = !citedEmail && (review.state === 'required' || !ident || ident.state === 'unconfirmed' || ident.state === 'conflict')
   const next = l.quarantined_at ? 'None: quarantined.'
     : l.window_held ? 'None: outside the time window you asked for, or undated. Research only.'
+    // #1062: a required check that has not passed - checking the source cannot release it, so no step here asks for a check.
+    : l.gate_held ? 'None: a required check (the sales-hiring proof) has not passed. Research only - checking the source cannot change that.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
     : l.currentness_held ? (l.timing === 'proof_backed' || l.day_verified ? 'Review the source before any outreach.' : 'Review the source to confirm the timing before any outreach.')
     : !top ? 'Find the decision-maker before reaching out.'

@@ -22,6 +22,7 @@ import { previewSplit, heldReason, type PreviewLead } from '../lib/journey.ts'
 import { heldState, researchCause } from '../lib/lead-state.ts'
 import { reviewAction } from '../lib/scan/review-action.ts'
 import { approveState } from '../lib/scan/lead-card.ts'
+import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
 
 const SALES = 'Find London UK companies hiring sales account executives.'
 const SALES_ICP = JSON.stringify({ signals: ['hiring sales account executives'] })
@@ -189,7 +190,8 @@ test('#1062 Leads review copy: a reviewable reason with a failed required check 
   const held = reviewAction({ review_reason: 'quote_unconfirmed', gate_held: true })
   assert.equal(held.label, 'Keep as research')
   assert.doesNotMatch(held.hint, /can be drafted/)
-  assert.match(held.hint, /required sales-hiring check/)
+  assert.match(held.hint, /a required check \(the sales-hiring proof\) has not passed/)
+  assert.doesNotMatch(held.hint, /could not run/, 'the verdict alone does not say the check never ran')
 })
 
 test('#1062 the draft guard fails CLOSED on a marker or report read error; a missing table still means nothing was marked', async () => {
@@ -206,3 +208,43 @@ test('#1062 the draft guard fails CLOSED on a marker or report read error; a mis
   assert.equal(requiredGateHeld(raw, 'A', 'plain'), null, 'no table: nothing was marked (older stores, partial fixtures)')
 })
 
+
+test('#1062 Leads list card: the next step for a gate-held lead never asks to check or review the source; Home names the gate first', () => {
+  const base = { id: 'c'.repeat(24), company: 'Co c', signal: 'Hiring an account executive', source_url: 'https://jobs.example/c', evidence_excerpt: 'Co c is hiring an account executive', event_date: '2026-11-01', date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'w', confidence: 90, human_confirmed_at: null, icp_match: null, company_domain: 'c.example', contact: null, currentness_held: false, window_held: false, enrichments: [] } as CardLead
+  const now = new Date('2026-11-12T12:00:00Z')
+  assert.match(opportunityCard({ ...base, review_reason: 'quote_unconfirmed' }, 'Owner', now).next, /check the source/i, 'control: an ordinary review lead is asked to check')
+  for (const over of [{ review_reason: 'quote_unconfirmed' }, { currentness_held: true }, {}]) {
+    const next = opportunityCard({ ...base, ...over, gate_held: true }, 'Owner', now).next
+    assert.doesNotMatch(next, /check the source yourself|review the source/i, JSON.stringify(over))
+    assert.match(next, /^None: a required check .* has not passed/)
+  }
+  // Outcomes' exception label (heldReason) names the gate, not "needs your review", when the lead also carries a review reason.
+  assert.equal(heldReason({ ...base, review_reason: 'quote_unconfirmed', gate_held: true } as PreviewLead), 'a required check has not passed')
+})
+
+test('#1062 a run report body that cannot be parsed holds every lead of its scan, in the draft guard AND the campaign page (fail closed, agreeing)', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
+  await job(db, 'A', 'jp', PLAIN, PLAIN_ICP)
+  await lead(db, 'jp', 'plain'); await lead(db, 'jp', 'rev', { machine: false, review: 'quote_unconfirmed' })
+  assert.deepEqual([requiredGateHeld(raw, 'A', 'plain'), (await requiredGateHeldForJob(db, 'A', 'jp')).size], [null, 0], 'control')
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', ['jp', '{not json'])
+  assert.equal(requiredGateHeld(raw, 'A', 'plain'), 'sales_hiring_check_failed')
+  assert.equal(requiredGateHeld(raw, 'A', 'rev'), 'sales_hiring_check_failed')
+  assert.deepEqual([...await requiredGateHeldForJob(db, 'A', 'jp')].sort(), ['plain', 'rev'])
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 2, ?)', ['jp', JSON.stringify({ held_lead_ids: [] })])
+  assert.deepEqual([requiredGateHeld(raw, 'A', 'plain'), (await requiredGateHeldForJob(db, 'A', 'jp')).size], [null, 0], 'a newer readable report replaces it')
+})
+
+test('#1062 partial store: with the marker and report tables missing, the batch read and the draft guard still agree; a real read error makes the campaign page fail, never render', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
+  await seed(db)
+  const ids = ['deny', 'pass', 'wrongpass', 'failed', 'report', 'from', 'review', 'reviewheld', 'oldreport']
+  const failing = new Proxy(raw, { get(t, k) {
+    if (k === 'prepare') return (sql: string) => { if (sql.includes('lead_enrichments')) throw new Error('SQLITE_IOERR: disk I/O error'); return t.prepare(sql) }
+    const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v } })
+  await assert.rejects(campaignDetail(sqliteDb(failing), 'A', 'js'), /disk I\/O error/, 'the page answers an error, never a page calling a held lead ready')
+  raw.exec('DROP TABLE scan_run_report'); raw.exec('DROP TABLE lead_enrichments')
+  const batch = await requiredGateHeldForJob(db, 'A', 'js')
+  for (const id of ids) assert.equal(batch.has(id), requiredGateHeld(raw, 'A', id) !== null, id)
+  assert.ok(batch.has('deny') && batch.has('pass'), 'with no pass records left, DEFAULT-DENY holds every machine-verified lead of the sales request')
+})

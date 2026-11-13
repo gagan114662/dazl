@@ -41,7 +41,9 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   // campaign views treat it as research too), but this specific cause gets its own, more actionable wording here -
   // only a fresh scan with the check passing clears it, which the generic text below does not say.
   // gate_held (#1062): the same hold read from the draft guard's own verdict, whatever reviewable reason the row carries.
-  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '') || l.gate_held) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
+  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
+  // The draft guard's verdict alone (#1062): the check may have failed, never run, or have no pass record - say only that it has not passed.
+  if (l.gate_held) return { label: 'Keep as research', hint: `${RESEARCH}: a required check (the sales-hiring proof) has not passed, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
   // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and
