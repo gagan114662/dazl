@@ -3,6 +3,7 @@
 // actionable leads: ONE more bounded round asks a genuinely different query (an unused profile signal, the profile's
 // geography kept), reads only pages round one never saw, and its candidate passes the same verifier. Skips are
 // recorded with their reason, and a query round one already asked is never sent (or billed) again.
+import { migrateMonitors } from '../lib/monitors.ts'
 import { mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -27,7 +28,7 @@ const A = { url: 'https://jobs.example/a', company: 'Harbor Freight Supply', quo
 const B = { url: 'https://jobs.example/b', company: 'Lakeview Dental Group', quote: 'Lakeview Dental Group in Dayton Ohio is hiring an office manager to run the front desk and billing' }
 const MODEL_Q = ['small company hiring payroll specialist', 'complaints about payroll software small business']
 
-type Opts = {
+type Opts = { recurring?: 'watch' | 'monitor';
   fundedByTrial?: boolean
   seedReservedUsd?: number
   runBudget?: string
@@ -44,6 +45,12 @@ async function scan(o: Opts = {}) {
   saveKey(db, 'A', 'anthropic', KEY, master)
   const jid = createQueryJob(db, 'A', { query: REQUEST, icp: JSON.stringify(icp), ...(o.runBudget ? { runBudget: o.runBudget } : {}) })
   if (o.fundedByTrial) db.prepare("UPDATE scan_jobs SET funded_by = 'trial', spend_reserved_usd = ? WHERE id = ?").run(o.seedReservedUsd ?? 0, jid)
+  if (o.recurring === 'watch') db.prepare('UPDATE scan_jobs SET watch_id = ? WHERE id = ?').run('w'.repeat(24), jid)
+  if (o.recurring === 'monitor') {
+    migrateMonitors(db)
+    db.prepare("INSERT INTO monitors (id, user_id, query, interval_hours, next_run_at) VALUES (?, 'A', ?, 168, 0)").run('m'.repeat(24), REQUEST)
+    db.prepare('INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, missed_runs) VALUES (?, ?, ?, 0, 0)').run('r'.repeat(24), 'm'.repeat(24), jid)
+  }
   const job = claimKeyedJob(db)!
   const searched: string[] = [], fetchBatches: string[][] = [], extractions: string[] = [], pageReads: string[] = []
   const fetchImpl = (async (u: string, init?: RequestInit) => {
@@ -225,6 +232,15 @@ test('#381 gate: only "0" turns the round off (no round, no calls, no row); "1",
   for (const v of ['1', 'true', '']) {
     const s = await scan({ adaptiveFlag: v })
     assert.ok(s.adaptive, `flag ${JSON.stringify(v)} leaves it on`)
+  }
+})
+
+test('#381 decision: a scheduled play run (a watch\'s or a monitor\'s) never takes the round; it says so', async () => {
+  for (const recurring of ['watch', 'monitor'] as const) {
+    const s = await scan({ adaptiveOff: true, recurring })
+    assert.equal(s.adaptive?.status, 'skipped:recurring_run', `${recurring}: ${JSON.stringify(s.runs)}`)
+    assert.ok(!s.searched.some(q => /front desk/i.test(q)), `${recurring}: no adaptive search`)
+    assert.equal(s.extractions.length, 1, `${recurring}: no adaptive extraction`)
   }
 })
 

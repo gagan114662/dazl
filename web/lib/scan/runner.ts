@@ -1568,9 +1568,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // no ledger row). Trial scans skip the round on their own policy (paidFallback=false).
     if (adaptiveDiscoveryOn(process.env) && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
+      // a scheduled play run (a watch's or a monitor's) runs unattended under the caps it was confirmed with: no extra round
+      let recurring = !!job.watch_id
+      if (!recurring) { try { recurring = !!db.prepare('SELECT 1 AS x FROM monitor_runs WHERE job_id = ? LIMIT 1').get(job.id) } catch { recurring = false } } // no table: no monitors
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
-      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      if (recurring) stop('skipped:recurring_run')
+      else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
       else if (budgetRefused) stop('budget_stopped')
       else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
       else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)

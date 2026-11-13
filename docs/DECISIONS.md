@@ -3,6 +3,18 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
+
+Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner
+decisions yourself, sensibly, and note them in the PR"); reversible by the owner. The bounded adaptive round built in
+#655 (one more TinyFish round when round one verified no lead: at most 3 searches, 6 pages and 1 extraction, different
+queries on unseen pages, the same per-tenant daily caps, spend guards and verifier) runs by default for a scan a person
+starts. It never runs for a free-trial scan, a run with paid_fallback=false, or a scheduled play run (a watch or monitor
+runs unattended under the caps it was confirmed with). The price estimate's maxima and the budget disclosure state it.
+The operator turns it off with DAZL_ADAPTIVE_DISCOVERY_ENABLED=0. No new paid service: TinyFish is the existing operator
+source under its existing daily cap; the extraction runs on the account's own key. Why: the audit (2026-11-12) measured
+0.84 ready leads per scan; a scan that verified nothing gave up after one batch.
+
 ## 2026-11-09: LinkedIn is top priority; the session engagers ship under three rules
 
 Owner decision 2026-11-09 4:59pm via Quest: separate throwaway account, human pace, off by default (Refs #192,

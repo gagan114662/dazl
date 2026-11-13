@@ -116,7 +116,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const p = model === UNKNOWN_MODEL ? null : (i.priceModel ?? listedPrice)(model)
   const modelUnit = p ? `$${p.in.toFixed(2)} in / $${p.out.toFixed(2)} out per 1M tokens (${model})` : `${model}: no listed price`
   // #381: the adaptive round (one more search round when round one verified nothing) can run on this scan: its searches,
-  // pages and extraction call are in the maxima, so "about $X" never understates what the scan may do
+  // pages and extraction call are in the maxima (its verifier's judge calls are counted as the judge row counts round one's)
   const adaptive = !b?.first5 && i.payer !== 'trial' && b?.paid_fallback !== false && adaptiveDiscoveryOn(env)
   for (const c of CALLS) {
     const off = (c.optional === 'judge' && b?.judge === false) || (c.optional === 'hiring' && !i.hiringRequest)
