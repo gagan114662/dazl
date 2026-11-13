@@ -12,11 +12,13 @@ type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailbo
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
-export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[] }) {
+// lazy (#1036, the review lane): no request when the block mounts. A page can show many review rows; each would otherwise read
+// the same providers and its own lookups on load. The first click reads what it needs (a stored result is replayed by the POST, free).
+export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
   return <WorkEmailFor key={p.leadId} {...p} />
 }
 
-function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailTarget[] }) {
+function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
   const [lookups, setLookups] = useState<Record<string, Lookup>>({})
   const [providers, setProviders] = useState<Providers | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
@@ -37,9 +39,9 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
 
   useEffect(() => {
     mounted.current = true
-    load()
+    if (!lazy) load()
     return () => { mounted.current = false }
-  }, [load])
+  }, [load, lazy])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
   const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])

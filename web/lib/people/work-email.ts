@@ -193,7 +193,8 @@ export async function findWorkEmail(
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
   // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
-  // person's handle or the other side of a post: no company website to ground an address on (same rule as the Leads page).
+  // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
+  // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
   if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
   if (!workEmailLeadEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }

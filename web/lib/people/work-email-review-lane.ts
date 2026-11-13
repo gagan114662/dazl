@@ -6,7 +6,9 @@
 //
 // Who gets the block on a review-lane row: the same rule as a decided lead (not rejected, a company row, settled site, buyer-role
 // targets), plus: not a row held because the "company" is a person's handle or the other side of a post (NON_COMPANY_REVIEW as the
-// row's CURRENT review reason: there is no company website to ground an address on). Nothing here drafts or sends, and finding an
+// row's CURRENT review reason). That is the existing Find-contact rule (find-contact-eligible.ts), applied here to an unconfirmed row:
+// such a hold says the cited page is about someone else (a person's own post, or a customer the page merely mentions), so the row
+// is not established as this company's lead; it fails closed even when a website was recorded. Nothing here drafts or sends, and finding an
 // address never confirms the lead: it stays in review until the user decides.
 import { identityOf } from '../scan/opportunity.ts'
 import { companySearchEligible, NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
