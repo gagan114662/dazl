@@ -70,7 +70,8 @@ function Section({ s, data, onSaved, open, setOpen }: { s: BrainSection; data: L
   const unread = unreadList.length ? unreadList.join(' and ') : null
   // no editor at all while any source this section reads did not load: the Memory and Competitors editors fall back to
   // blank on a failed read, and saving that would wipe what is stored
-  const editable = unreadList.length === 0
+  const own = { profile: 'profile', memory: 'Memory', competitors: 'Competitors' }[s.edit]
+  const editable = !data.failed.includes(own)   // each editor writes only its own source
   return (
     <section className="card p-5 mb-4" aria-labelledby={`h-${s.id}`} data-testid={`section-${s.id}`}>
       <div className="flex items-start justify-between gap-3">
@@ -101,7 +102,7 @@ export default function BusinessClient() {
     const [p, m, c] = await Promise.all([
       getJson('/api/settings/profile').then(j => { if (!j || typeof j !== 'object' || Array.isArray(j) || !('business_name' in j) || !('buyer' in j)) throw new Error('shape'); return j }).catch(() => { failed.push('profile'); return null }),
       // memory: null = nothing saved yet (a new workspace), not a failure
-      getJson('/api/settings/memory').then(j => { if (!j || typeof j !== 'object' || !('memory' in j) || typeof j.memory !== 'object') throw new Error('shape'); return j.memory }).catch(() => { failed.push('Memory'); return null }),
+      getJson('/api/settings/memory').then(j => { if (!j || typeof j !== 'object' || !('memory' in j) || typeof j.memory !== 'object' || Array.isArray(j.memory)) throw new Error('shape'); return j.memory }).catch(() => { failed.push('Memory'); return null }),
       getJson('/api/settings/competitors').then(j => { if (!Array.isArray(j?.competitors)) throw new Error('shape'); return j.competitors }).catch(() => { failed.push('Competitors'); return null }),
     ])
     setData({ profile: p, memory: m, competitors: c, failed })

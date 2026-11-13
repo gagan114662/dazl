@@ -10,8 +10,15 @@ export default function MemoryPanel() {
   const [m, setM] = useState<Memory | null>(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  // A Memory that could not be read is never shown as a blank form (saving that would wipe what is stored, #1043
+  // council): only `memory: null` - nothing saved yet - starts blank.
+  const [failed, setFailed] = useState(false)
   useEffect(() => {
-    void fetch('/api/settings/memory').then(r => r.ok ? r.json() : null).then(j => setM(j?.memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [] })).catch(() => setM({ icp: '', positioning: '', tone: '', exclusions: [], objections: [] }))
+    const blank = { icp: '', positioning: '', tone: '', exclusions: [], objections: [] }
+    void fetch('/api/settings/memory').then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))).then(j => {
+      if (!j || typeof j !== 'object' || !('memory' in j) || Array.isArray(j.memory) || (j.memory !== null && typeof j.memory !== 'object')) throw new Error('shape')
+      setM(j.memory ?? blank)
+    }).catch(() => setFailed(true))
   }, [])
 
   async function save() {
@@ -25,6 +32,7 @@ export default function MemoryPanel() {
     setMsg('Saved.')
   }
 
+  if (failed) return <div className="card p-6 mb-4"><h2 className="font-semibold mb-1">Memory</h2><p className="text-sm" role="alert" data-testid="memory-unread">Could not load your Memory, so it cannot be edited right now. Refresh to retry.</p></div>
   if (!m) return null
   return (
     <div className="card p-6 mb-4">

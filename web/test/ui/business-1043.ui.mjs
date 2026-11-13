@@ -224,6 +224,35 @@ try {
     out.push('a new workspace (memory: null) reads as empty, editable')
     await ctx.close()
   }
+  {
+    // the page's own reads succeed; the editor's own read (a second request when Edit opens) fails: no blank form to save
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    const writes = []; const gets = { memory: 0, competitors: 0 }
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (req.method() !== 'GET') { writes.push(p); return json({ ok: true }) }
+      if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking', website: null, buyer: null, new_play_offer: null })
+      if (p === '/api/settings/memory') return ++gets.memory === 1 ? json({ memory: { icp: '', positioning: '', tone: 'Plain', exclusions: [], objections: [] } }) : json({ error: 'unavailable' }, 500)
+      if (p === '/api/settings/competitors') return ++gets.competitors === 1 ? json({ competitors: ['Zocdoc'] }) : json({ error: 'unavailable' }, 500)
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByTestId('section-voice').getByRole('button', { name: 'Edit Voice' }).click()
+    await page.getByTestId('memory-unread').waitFor({ timeout: 10000 })
+    assert.equal(await page.getByTestId('section-voice').getByRole('button', { name: /Save/ }).count(), 0, 'no Memory form to save after its own read failed')
+    // switching straight to another editor (one open at a time) - 'Done' would reload the page data, which this stub fails
+    await page.getByTestId('section-competitors').getByRole('button', { name: 'Edit Competitors' }).click()
+    await page.getByTestId('competitors-unread').waitFor({ timeout: 10000 })
+    assert.equal(await page.getByTestId('section-competitors').getByRole('button', { name: /Save/ }).count(), 0, 'no Competitors form to save after its own read failed')
+    assert.deepEqual(writes, [])
+    out.push("an editor whose own read fails offers no form")
+    await ctx.close()
+  }
   console.log(`business page UI check passed (real build): ${out.join('; ')}`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
