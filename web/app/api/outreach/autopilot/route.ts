@@ -5,7 +5,7 @@ import { OutreachError } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
-import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, launchPolicyView } from '@/lib/outreach/launch-policy'
+import { acceptLaunchPolicy, LAUNCH_POLICY_VERSION, launchPolicyView, reacceptCurrentTruth } from '@/lib/outreach/launch-policy'
 import { productTruth } from '@/lib/product-truth'
 import { runCalibration } from '@/lib/outreach/calibration'
 import { captureError } from '@/lib/ops/errors'
@@ -47,6 +47,17 @@ export async function POST(req: NextRequest) {
     else if (body?.action === 'accept_launch_policy') {
       const r = acceptLaunchPolicy(db, user.tenantId, body.policy, Math.floor(Date.now() / 1000))
       if (!r.ok) return NextResponse.json({ error: 'The launch policy is incomplete', problems: r.problems }, { status: 400 })
+    }
+    // #402: one click after a product truth change - re-accept the tenant's own policy on the current record, then run the same
+    // preflight as launch_calibrated; a passing run lifts the launch pause.
+    else if (body?.action === 'reaccept_product_truth') {
+      const a = reacceptCurrentTruth(db, user.tenantId, Math.floor(Date.now() / 1000))
+      if (!a.ok) return 'problems' in a ? NextResponse.json({ error: 'The launch policy is incomplete', problems: a.problems }, { status: 400 }) : NextResponse.json({ error: a.reason === 'no_launch_policy' ? 'No launch policy to re-accept' : 'Your launch policy already uses the current record', code: a.reason }, { status: a.reason === 'no_launch_policy' ? 404 : 409 })
+      let r: Awaited<ReturnType<typeof runCalibration>>
+      try { r = await runCalibration(db, user.tenantId, user.business_name) }
+      catch (e) { captureError(e, { source: 'route', where: '/api/outreach/autopilot', method: 'POST', tenantId: user.tenantId }); return NextResponse.json({ error: 'The calibration could not run', code: 'calibration_failed' }, { status: 409 }) }
+      await audit(user, req, { action: 'autopilot.reaccept_product_truth', resource: 'autopilot', summary: { ok: r.ok } })
+      return NextResponse.json({ ok: r.ok, preflight: r, state: getState(db, user.tenantId) }, { status: r.ok ? 200 : 409 })
     }
     else if (body?.action === 'launch_calibrated') {
       // a stored policy row that cannot be read, or a store fault while drafting a sample, is a failed calibration (the
