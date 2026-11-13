@@ -168,9 +168,17 @@ async function crawlOnce(db: Database.Database, tenantId: string, p: TechFixture
   const ledger = db.prepare('SELECT connector, status FROM connector_audit WHERE insert_seq > ? AND tenant_id = ? AND scan_job_id = ? AND lookup = ? AND connector IN (?, ?) ORDER BY insert_seq').all(mark, tenantId, ids.jobId, TECH_FIXTURE_SITE, 'sitecrawl', TECH_AUDIT) as { connector: string; status: string }[]
   // A crawl that was cut short or failed inside writes no ledger row for the site (crawlJob returns early on an abort and only logs its
   // own errors). That is not an outage the site served: refuse it, never report it as "nothing changed".
-  if (deps.signal?.aborted || !ledger.some(r => r.connector === 'sitecrawl')) throw new FixtureError('crawl_incomplete')
+  const incomplete = deps.signal?.aborted || !ledger.some(r => r.connector === 'sitecrawl')
   // The technology branch itself failed ('error: <name>' in its ledger): the crawl read the page but recorded nothing reliable.
-  if (ledger.some(r => r.connector === TECH_AUDIT && r.status.startsWith('error:'))) throw new FixtureError('crawl_incomplete')
+  if (incomplete || ledger.some(r => r.connector === TECH_AUDIT && r.status.startsWith('error:'))) {
+    // The attempt does not count, so nothing it wrote may shape a later crawl: its observation (dated to this crawl's second) and any
+    // change row that was not there before are removed. A step that failed half-way can have written the observation and not the change.
+    db.transaction(() => {
+      db.prepare("DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind = ? AND value = ?").run(tenantId, ids.leadId, TECH_SCAN_KIND, `${TECH_FIXTURE_SITE}|${Math.floor(nowMs / 1000)}`)
+      for (const c of changeRows(db, tenantId, ids.leadId)) if (!changesBefore.has(c.value)) db.prepare("DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind = ? AND value = ?").run(tenantId, ids.leadId, TECH_CHANGE_KIND, c.value)
+    }).immediate()
+    throw new FixtureError('crawl_incomplete')
+  }
   const observations = scans(db, tenantId, ids.leadId)
   const changes = changeRows(db, tenantId, ids.leadId)
   const newChanges = changes.map(c => c.value).filter(v => !changesBefore.has(v))

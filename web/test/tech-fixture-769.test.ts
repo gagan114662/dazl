@@ -18,6 +18,7 @@ function setup() {
   return { db, crawl, now }
 }
 const values = (r: { changes: { value: string }[] }) => r.changes.map(c => c.value)
+const deleteTechFixtureFresh = async (db: Database.Database) => { assert.deepEqual(deleteTechFixture(db, 'A', STAGING), { deleted: true }) }
 
 test('#769 fixture is staging-only: refused in production and without DAZL_ENV, and when the site crawl or its technology branch is off', async () => {
   const { db } = setup()
@@ -152,6 +153,18 @@ test('#769 a failed technology branch is refused as incomplete; a change the ser
   db.exec("CREATE TRIGGER fail_scan BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'tech_scan' BEGIN SELECT RAISE(ABORT, 'boom'); END")
   await assert.rejects(crawlTechFixture(db, 'A', 'hubspot', { env: STAGING, now }), /crawl_incomplete/)
   db.exec('DROP TRIGGER fail_scan')
+  // the step fails half-way: the observation is written, the change row is not. The refused attempt leaves neither behind, so the
+  // retry is the crawl that claims the adoption and is counted for it.
+  db.exec("CREATE TRIGGER fail_change BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'tech_change' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+  await assert.rejects(crawlTechFixture(db, 'A', 'hubspot', { env: STAGING, now }), /crawl_incomplete/)
+  db.exec('DROP TRIGGER fail_change')
+  assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE tenant_id = 'A' AND kind IN ('tech_scan', 'tech_change')").get() as { n: number }).n, 1)
+  const retry = await crawl('A', 'hubspot')
+  assert.deepEqual(retry.crawl.new_changes, ['HubSpot added'])
+  assert.deepEqual(retry.observations.map(o => o.technologies), [[], ['HubSpot']])
+  assert.deepEqual(retry.measured, { crawls: 2, unreadable_or_failed_crawls: 0, changes_claimed: 1, false_changes: 0, changes_claimed_on_unreadable_or_failed: 0 })
+  await deleteTechFixtureFresh(db)
+  await crawl('A', 'plain')
   assert.equal((await crawl('A', 'plain')).measured.crawls, 2)
   // The measure is not zero by construction: the caller says the page is `plain`, the crawl is handed a page WITH HubSpot, so the
   // detector's (correct) adoption is a change the declared page could not carry and is counted as false.
