@@ -1,7 +1,7 @@
 -- #367: Cal.com booking outcomes (lib/calcom/index.ts). Additive columns only: every existing booking row reads as
 -- 'scheduled' with unknown meeting time, which is what it was (only BOOKING_CREATED was recorded before). The row is
 -- the booking's history; events merge into it order-independently, and `held` comes only from the audited manual
--- reconciliation. Number claimed in the Mac migration_claims.txt queue: 0062 is #803 (PR #1073), so this is 0063.
+-- reconciliation. Number: main's highest + 1 (main ends at 0063_email_verify_caps.sql, PR #1119), per migration_claims.txt.
 ALTER TABLE calcom_bookings ADD COLUMN status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled'));
 ALTER TABLE calcom_bookings ADD COLUMN start_at BIGINT;
 ALTER TABLE calcom_bookings ADD COLUMN end_at BIGINT;
