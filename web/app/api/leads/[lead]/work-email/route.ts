@@ -21,9 +21,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   const db = getScanDb()
   const own = db.prepare('SELECT l.company, l.source_kind FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null } | undefined
   if (!own) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  // The test-only work-email fixture lead never calls Apollo (lib/people/work-email.ts), so the panel does not offer it.
+  // The test-only work-email fixture lead never calls Apollo and runs its saved PDL key regardless of the Apollo-gated opt-in
+  // (lib/people/work-email.ts), so the panel states exactly that.
   const providers = workEmailProviders(db, user.tenantId)
-  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead) })
+  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead) })
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {

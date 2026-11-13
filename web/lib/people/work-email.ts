@@ -40,6 +40,12 @@ import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, s
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
 
+// #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
+// DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
+// operator's real ZeroBounce allowance is ever spent on a synthetic person.
+export const workEmailFixtureFakesOn = (env: Record<string, string | undefined> = process.env): boolean =>
+  stagingFakePdl(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1'
+
 export const WORK_EMAIL_STATUSES = ['pending', 'verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected', 'error', 'uncertain'] as const
 export type WorkEmailStatus = typeof WORK_EMAIL_STATUSES[number]
 const FINAL_STATUSES: readonly string[] = ['verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected']
@@ -190,7 +196,7 @@ export async function findWorkEmail(
   // #1036: the test-only work-email fixture lead is looked up ONLY on the test tenant with the staging fake PDL on (never a real
   // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
   const fixture = isWorkEmailFixtureLead(lead)
-  if (fixture && !(fixtureAvailable(db, tenantId) && stagingFakePdl(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs' }
+  if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const site = identityOf({ id: lead.id, contact: lead.contact }, rows)
   if (!siteSettled(site)) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
@@ -237,12 +243,14 @@ export async function findWorkEmail(
   const notes: string[] = []
   let incomplete = false
   const allowed = workEmailProviders(db, tenantId)
-  const pdlOff = allowed.pdlNeedsOptIn
+  // The fixture never uses Apollo, so the opt-in that only gates PDL-after-Apollo does not apply to it: its saved PDL key runs.
+  const pdlAllowed = fixture ? allowed.pdl || allowed.pdlNeedsOptIn : allowed.pdl
+  const pdlOff = !fixture && allowed.pdlNeedsOptIn
   const loadKey = (c: string, P: string): string | null => {
     try { const k = getEnabledCredential(db, tenantId, c, deps.master); if (typeof k === 'string' && k) return k } catch { /* recorded below */ }
     notes.push(`${P} key could not be read`); incomplete = true; return null
   }
-  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture ? loadKey('enrich:apollo', 'Apollo') : null, pdl: allowed.pdl ? loadKey('enrich:pdl', 'People Data Labs') : null }
+  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }

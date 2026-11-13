@@ -1,10 +1,10 @@
 // What the test-account fixture controls (app/app/leads/verification-fixture.tsx) do with a route response. Pure, so it
 // is tested without a browser (test/fixture-action-result.test.ts).
 
-// After a successful first-touch create, open its play so the lead is on screen under "Needs your review" (the
+// After a successful first-touch or work-email (#1036) create, open its play so the lead is on screen under "Needs your review" (the
 // past-scans list is not refreshed in place). Any other action, a failure or a malformed id: stay.
 export function fixtureNextUrl(method: 'POST' | 'DELETE', action: string | undefined, ok: boolean, body: unknown): string | null {
-  if (!ok || method !== 'POST' || action !== 'first_touch' || !body || typeof body !== 'object') return null
+  if (!ok || method !== 'POST' || (action !== 'first_touch' && action !== 'work_email') || !body || typeof body !== 'object') return null
   const jobId = (body as { jobId?: unknown }).jobId
   return typeof jobId === 'string' && /^[a-f0-9]{24}$/.test(jobId) ? `/app/leads?job_id=${jobId}` : null
 }

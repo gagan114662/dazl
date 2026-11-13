@@ -44,7 +44,7 @@ test('work_email fixture: refused for other accounts and outside staging with th
   assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'test_tenant_only' })
   setEnv(false); setUser(A)
   const p = await call('POST', { action: 'work_email' })
-  assert.equal(p.status, 403); assert.deepEqual(await p.json(), { error: 'staging_fake_pdl_only' })
+  assert.equal(p.status, 403); assert.deepEqual(await p.json(), { error: 'staging_fakes_only' })
   const g = await (await GET()).json() as { workEmailAvailable: boolean; workEmailExists: boolean }
   assert.equal(g.workEmailAvailable, false); assert.equal(g.workEmailExists, false)
   assert.equal(leads(db).length, 0); assert.equal(fetches, 0)
@@ -55,7 +55,7 @@ test('work_email fixture on staging: one lead; the real Find work email route an
   const c = await call('POST', { action: 'work_email' })
   assert.equal(c.status, 200)
   const f = await c.json() as { leadId: string; created: boolean; people: { target: string; expect: string }[] }
-  assert.equal(f.created, true); assert.equal(f.people.length, 4); assert.deepEqual(leads(db).map(l => l.user_id), ['A'])
+  assert.equal(f.created, true); assert.equal(f.people.length, 5); assert.deepEqual(leads(db).map(l => l.user_id), ['A'])
   const g = await (await GET()).json() as { workEmailAvailable: boolean; workEmailExists: boolean }
   assert.equal(g.workEmailAvailable, true); assert.equal(g.workEmailExists, true)
 

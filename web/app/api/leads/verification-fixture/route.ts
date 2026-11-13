@@ -17,7 +17,7 @@ import { denied } from '@/lib/workspace-access'
 //
 // action 'work_email' (#1036): ONE labelled test-only lead on a settled site naming four buyer-role people, so Find work email can
 // be clicked through on staging against the staging fake People Data Labs and fake ZeroBounce. Created only on the test tenant
-// with DAZL_ENV=staging and DAZL_STAGING_FAKE_PDL=1 (403 staging_fake_pdl_only otherwise). DELETE with action 'work_email' removes it.
+// with DAZL_ENV=staging, DAZL_STAGING_FAKE_PDL=1 and DAZL_STAGING_FAKE_ZEROBOUNCE=1 (403 staging_fakes_only otherwise). DELETE with action 'work_email' removes it.
 //
 // action 'first_touch' (#411): ONE labelled test-only lead addressed to the allowlisted test inbox that the real
 // autopilot may draft to once the user confirms it. Lead only: the draft, hold, scheduler drain and send run through the

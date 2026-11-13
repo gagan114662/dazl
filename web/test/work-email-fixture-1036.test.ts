@@ -37,18 +37,20 @@ const target = (name: string) => { const p = WORK_EMAIL_FIXTURE_PEOPLE.find(x =>
 test('#1036 fixture: only the test tenant with the staging fake PDL may create it; it is idempotent and labelled test only', () => {
   const db = setup()
   assert.throws(() => createWorkEmailFixture(db, 'someone-else', STAGING), (e: unknown) => e instanceof FixtureError && e.code === 'test_tenant_only')
-  assert.throws(() => createWorkEmailFixture(db, T, PROD), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fake_pdl_only', 'production (no staging fake PDL) can never create it')
-  assert.throws(() => createWorkEmailFixture(db, T, { DAZL_STAGING_FAKE_PDL: '1' }), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fake_pdl_only', 'the flag alone, without DAZL_ENV=staging, is not enough')
-  assert.equal(workEmailFixtureAvailable(db, T, PROD), false); assert.equal(workEmailFixtureAvailable(db, T, STAGING), true)
+  assert.throws(() => createWorkEmailFixture(db, T, PROD), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'production (no staging fake PDL) can never create it')
+  assert.throws(() => createWorkEmailFixture(db, T, { DAZL_STAGING_FAKE_PDL: '1' }), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'the flag alone, without DAZL_ENV=staging, is not enough')
+  const { DAZL_STAGING_FAKE_ZEROBOUNCE: _zb, ...noFakeZb } = STAGING
+  assert.throws(() => createWorkEmailFixture(db, T, noFakeZb), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'the fake PDL without the fake ZeroBounce is not enough')
+  assert.equal(workEmailFixtureAvailable(db, T, PROD), false); assert.equal(workEmailFixtureAvailable(db, T, noFakeZb), false); assert.equal(workEmailFixtureAvailable(db, T, STAGING), true)
   const a = createWorkEmailFixture(db, T, STAGING), b = createWorkEmailFixture(db, T, STAGING)
-  assert.equal(a.created, true); assert.equal(b.created, false); assert.equal(a.leadId, b.leadId)
+  assert.equal(a.created, true); assert.equal(b.created, false); assert.equal(a.leadId, b.leadId); assert.equal(a.pdlKeySaved, true)
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n, 1)
   const lead = db.prepare('SELECT company, source_kind, contact FROM leads WHERE id = ?').get(a.leadId) as { company: string; source_kind: string; contact: string | null }
   assert.deepEqual(lead, { company: WORK_EMAIL_FIXTURE_COMPANY, source_kind: 'test', contact: null })
   assert.match(lead.company, /test only/)
 })
 
-test('#1036 fixture lead: the site is settled and all four buyer-role people are Find work email targets (what the Leads page renders)', () => {
+test('#1036 fixture lead: the site is settled and all five buyer-role people are Find work email targets (what the Leads page renders)', () => {
   const db = setup(); const f = createWorkEmailFixture(db, T, STAGING)
   const rows = enrichmentsForLeads(db, T, [f.leadId])[f.leadId]
   const site = identityOf({ id: f.leadId, contact: null }, rows)
@@ -83,7 +85,7 @@ test('#1036 fixture click-through on staging fakes: valid -> checked; catch-all 
     assert.equal(workEmailCopy(row(r)).headline, headline)
   }
   const shown = workEmailsFor(db, T, f.leadId)
-  assert.equal(shown.length, 4)
+  assert.equal(shown.length, 5, 'four looked up plus the stored check-later row')
   assert.deepEqual(shown.filter(r => r.address === null).map(r => r.target).sort(), [target('Invalid Testbuyer'), target('Spamtrap Testbuyer')].sort(), 'GET hides the same two')
   assert.deepEqual(calls, [], 'no network call at all: the fakes answered')
 })
@@ -115,4 +117,42 @@ test('#1036 fixture delete removes its job, lead, enrichments and the lookups st
   assert.deepEqual(deleteWorkEmailFixture(db, T), { deleted: false })
   delete process.env.OUTREACH_TEST_TENANT_ID
   assert.throws(() => deleteWorkEmailFixture(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'test_tenant_only')
+})
+
+test('#1036 fixture "Check mailbox": the stored found-not-checked row offers it, and the click runs the real check against the fake ZeroBounce with no provider lookup', async () => {
+  const db = setup(); const f = createWorkEmailFixture(db, T, STAGING); const calls: string[] = []
+  const before = workEmailsFor(db, T, f.leadId).find(r => r.target === target('Later Testbuyer'))!
+  assert.deepEqual([before.status, before.provider, before.mailbox_check ?? null], ['unverified', 'pdl', null])
+  assert.equal(workEmailCopy(before).headline, 'Found, not checked')
+  const r = await findWorkEmail(db, T, f.leadId, target('Later Testbuyer'), { fetchImpl: noNetwork(calls), master, env: STAGING })
+  const row = (r as { row: Parameters<typeof workEmailCopy>[0]; replayed: boolean })
+  assert.equal(row.replayed, true, 'no new provider lookup: the stored address is only mailbox-checked')
+  assert.deepEqual([row.row.mailbox_check, row.row.mailbox_verifier], ['valid', 'zerobounce-staging-fake'])
+  assert.equal(workEmailCopy(row.row).headline, 'Checked work email')
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE connector = 'workemail:pdl'").get() as { n: number }).n, 0, 'no PDL lookup was recorded')
+  assert.deepEqual(calls, [])
+})
+
+test('#1036 fixture with Apollo AND PDL saved and the PDL fallback opt-in OFF: the fixture still runs its PDL key (Apollo is never used for it)', async () => {
+  const db = setup({ apollo: true }); setEnrichFallback(db, T, false); const f = createWorkEmailFixture(db, T, STAGING); const calls: string[] = []
+  const r = await findWorkEmail(db, T, f.leadId, target('Valid Testbuyer'), { fetchImpl: noNetwork(calls), master, env: STAGING })
+  assert.equal(r.status, 'unverified', JSON.stringify(r)); assert.deepEqual(calls, [])
+})
+
+test('#1036 fixture never spends the real ZeroBounce: with a real key and no fake ZeroBounce flag, no lookup runs at all', async () => {
+  const db = setup(); const f = createWorkEmailFixture(db, T, STAGING); const calls: string[] = []
+  const { DAZL_STAGING_FAKE_ZEROBOUNCE: _zb, ...noFakeZb } = STAGING
+  const r = await findWorkEmail(db, T, f.leadId, target('Valid Testbuyer'), { fetchImpl: noNetwork(calls), master, env: { ...noFakeZb, ZEROBOUNCE_API_KEY: 'real-zb-key' } })
+  assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [], 'nothing sent to ZeroBounce or anyone else')
+  const later = await findWorkEmail(db, T, f.leadId, target('Later Testbuyer'), { fetchImpl: noNetwork(calls), master, env: { ...noFakeZb, ZEROBOUNCE_API_KEY: 'real-zb-key' } })
+  assert.equal(later.status, 'not_eligible', 'the Check mailbox replay is refused too'); assert.deepEqual(calls, [])
+})
+
+test('#1036 a non-test tenant row that copies the fixture company and source_kind is never looked up', async () => {
+  const db = setup(); const f = createWorkEmailFixture(db, T, STAGING); const calls: string[] = []
+  db.prepare("UPDATE scan_jobs SET user_id = 'real-tenant' WHERE id = ?").run(f.jobId)
+  db.prepare("UPDATE lead_enrichments SET tenant_id = 'real-tenant' WHERE lead_id = ?").run(f.leadId)
+  saveCredential(db, 'real-tenant', 'enrich:pdl', 'real-pdl-key', master)
+  const r = await findWorkEmail(db, 'real-tenant', f.leadId, target('Valid Testbuyer'), { fetchImpl: noNetwork(calls), master, env: STAGING })
+  assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [])
 })
