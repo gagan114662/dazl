@@ -5,13 +5,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { leadPerson, leadPersonLine, NO_BUYER } from '../lib/people/lead-person.ts'
-import { findPeople, firstPlayPeopleCap, peopleTraceMessage, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
+import { tiedLabel } from '../lib/people/company-tie.ts'
+import { LABEL, findPeople, firstPlayPeopleCap, peopleTraceMessage, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 
-const P = (value: string, source_url: string, connector = 'search:people', kind = 'person') => ({ kind, value, label: 'x', source_url, connector })
+// A search result row as the search stores it now: its label says what tied it to the company beyond the name.
+const P = (value: string, source_url: string, connector = 'search:people', kind = 'person') => ({ kind, value, label: connector === 'search:people' ? tiedLabel(LABEL, 'place') : 'x', source_url, connector })
 const LI = 'https://www.linkedin.com/in/jane-doe-1'
 
 // ---- the row rule (lib/people/lead-person.ts) ----
@@ -74,7 +76,8 @@ test('row: the best buyer-role match is named first; an off-role titled person i
 })
 
 // ---- the first-play people pass (lib/people/people-search.ts) ----
-const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: [], signals: [], exclude: [], country: 'US', language: 'en' }
+// The request names a place and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
+const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '500', TINYFISH_PER_MINUTE: '500' }
 function setup(n: number) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateTinyfish(db); resetTinyfishState()
@@ -90,7 +93,7 @@ function stub() {
   const f = (async (u: string) => {
     const q = new URL(u).searchParams.get('query') ?? ''; queries.push(q)
     const company = /"([^"]+)"/.exec(q)?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Head of Sales' }] }))
+    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Columbus, Ohio, United States · Head of Sales' }] }))
   }) as unknown as typeof fetch
   return { f, queries }
 }
@@ -307,7 +310,7 @@ test('review: on the pass deadline the in-flight search is awaited (no paid call
   const { db, job } = setup(2); let settled = false
   const f = (async (u: string) => { await new Promise(r => setTimeout(r, 250)); settled = true
     const company = /"([^"]+)"/.exec(new URL(u).searchParams.get('query') ?? '')?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Head of Sales' }] })) }) as unknown as typeof fetch
+    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Columbus, Ohio, United States · Head of Sales' }] })) }) as unknown as typeof fetch
   const why: string[] = []
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, deadlineMs: 30, onStop: w => why.push(w) })
   assert.equal(settled, true, 'findPeople returned only after the search it started had ended')

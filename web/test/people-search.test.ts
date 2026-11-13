@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
-import { findPeople, parseProfileHit, peopleQuery, LABEL } from '../lib/people/people-search.ts'
+import { findPeople, newPeopleStats, parseProfileHit, peopleQuery, LABEL } from '../lib/people/people-search.ts'
 
 // Person-first people search from public profile SEARCH RESULTS only. TEST-ONLY fixtures, TinyFish stubbed, no network.
 const hit = (url: string, title: string, snippet = '') => ({ url, title, snippet, date: null })
@@ -46,7 +46,7 @@ test('stores matching people as labelled person enrichments with the profile URL
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f })
   assert.equal(n, 1)
   const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'contact_rejected'").all()
-  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: LABEL, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
+  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: `${LABEL}; company confirmed beyond its name: the result names the requested place`, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
   const q = new URL(urls[0]).searchParams
   assert.ok(q.get('query')!.startsWith('site:linkedin.com/in "Acme Logistics"')); assert.equal(q.get('location'), 'US')
 })
@@ -63,8 +63,12 @@ test('a same-name company in another place is not attached: a result naming anot
   const refused = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE kind = 'contact_rejected' ORDER BY value").all() as { value: string; label: string; source_url: string }[]
   assert.deepEqual(refused.map(r => r.label).sort(), ['contact_location_mismatch', 'contact_location_unconfirmed'])
   assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
-  // no place in the request: no demand (global requests are unchanged)
-  const g = setup({ ...ICP, where: [] }); assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f }), 2)
+  // No place in the request: the employer's NAME is then the only tie, and a name is not a company (5 of 9 stored people on staging
+  // were at a same-name business). Nothing is stored, and the refusals are counted (lib/people/company-tie.ts).
+  const g = setup({ ...ICP, where: [] }); const stats = newPeopleStats()
+  assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f, stats }), 0)
+  assert.equal(stats.refused.company_unconfirmed, 2)
+  assert.equal((g.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind = 'person'").get() as { n: number }).n, 0)
 })
 
 test('off without TinyFish, with the kill switch, or with no buyer roles: no search at all', async () => {

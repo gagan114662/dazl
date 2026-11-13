@@ -20,6 +20,14 @@ candidates are held (the 2026-11-13 matrix: 18 of 18), so "who do I contact" wen
 saw. This replaces decision 3 of 2026-11-10 on #1037 only in "one search per ready lead": it is now one per lead that
 names nobody yet, ready leads first.
 
+Added the same day after Hermes-PC's review of PR #1164 (5 of 9 stored search people on staging were at a different
+business with the same name): **a company name alone never ties a search result to a lead.** A public profile search
+result is stored only when its own text also names the lead's confirmed website, the organisation the lead was found
+through (a Y Combinator company page), or the place the request names (`lib/people/company-tie.ts`); otherwise it is
+refused and counted. Results stored earlier by the name alone stay listed, labelled "matched by the company name only
+- this may be a different business with the same name", and are never the lead's person, the export's best person or
+a work-email target. This lowers how many leads name a person; a wrong person at another business is worse than none.
+
 ## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
 
 Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner

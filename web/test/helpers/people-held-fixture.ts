@@ -5,18 +5,19 @@ import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../../lib/search/tinyfish.ts'
 
-// That run's ICP roles (scan_jobs.icp.who) and no place (where: []).
+// That run's ICP roles (scan_jobs.icp.who). The run named no place; these fixtures name one (and every result names it), because a
+// company NAME alone no longer ties a search result to a lead (lib/people/company-tie.ts).
 export const HELD_WHO = ['Account Executive', 'Sales Manager', 'VP Sales', 'Head of Sales', 'Director of Sales', 'Chief Revenue Officer']
-export const HELD_ICP = { summary: 'Account executives being hired at B2B software companies.', who: HELD_WHO, industries: ['B2B Software'], sizes: [], where: [], signals: ['Hiring account executives'], exclude: [] }
+export const HELD_ICP = { summary: 'Account executives being hired at B2B software companies.', who: HELD_WHO, industries: ['B2B Software'], sizes: [], where: ['Ohio'], signals: ['Hiring account executives'], exclude: [] }
 export const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 // Search result lines in the shape the stored search:people rows came from (invented people).
-export const HELD_RESULTS: Record<string, { url: string; title: string }[]> = {
+export const HELD_RESULTS: Record<string, { url: string; title: string; snippet?: string }[]> = {
   Pagewake: [
-    { url: 'https://www.linkedin.com/in/marta-solberg-test', title: 'Marta Solberg - Regional Sales Director - Pagewake | LinkedIn' },
-    { url: 'https://www.linkedin.com/in/anya-braun-test', title: 'Anya Braun - Strategic Partner Sales Manager - Pagewake | LinkedIn' },
+    { url: 'https://www.linkedin.com/in/marta-solberg-test', title: 'Marta Solberg - Regional Sales Director - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },
+    { url: 'https://www.linkedin.com/in/anya-braun-test', title: 'Anya Braun - Strategic Partner Sales Manager - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },
   ],
-  Meshgate: [{ url: 'https://www.linkedin.com/in/anders-smed-test', title: 'Anders Smed - VP of Sales Development & PG - Meshgate | LinkedIn' }],
-  Surveyhive: [{ url: 'https://www.linkedin.com/in/ewan-c-tomas-test', title: 'Ewan C. Tomas - Enterprise Account Executive - Surveyhive | LinkedIn' }],
+  Meshgate: [{ url: 'https://www.linkedin.com/in/anders-smed-test', title: 'Anders Smed - VP of Sales Development & PG - Meshgate | LinkedIn', snippet: 'Columbus, Ohio, United States' }],
+  Surveyhive: [{ url: 'https://www.linkedin.com/in/ewan-c-tomas-test', title: 'Ewan C. Tomas - Enterprise Account Executive - Surveyhive | LinkedIn', snippet: 'Columbus, Ohio, United States' }],
 }
 export type Row = [id: string, company: string, review: string | null, score: number, quarantined?: boolean, fit?: number | null]
 export function setup(rows: Row[], icp: unknown = HELD_ICP) {

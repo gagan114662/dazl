@@ -44,7 +44,7 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
        ORDER BY e.insert_seq`, [r.lead_id, tenantId, tenantId])
     const contact = enr[0]?.contact ?? null
     const site = identityOf({ id: r.lead_id, contact }, enr.map(x => ({ ...x, retrieved_at: typeof x.retrieved_at === 'number' ? x.retrieved_at : typeof x.retrieved_at === 'string' && /^\d{1,12}$/.test(x.retrieved_at) ? Number(x.retrieved_at) : null })))
-    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!, Date.now(), site).find(c => !c.historical && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
+    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!, Date.now(), site).find(c => !c.historical && !c.nameOnly && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
     out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
   }
   return out

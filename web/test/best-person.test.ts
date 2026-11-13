@@ -1,4 +1,6 @@
 import { test } from 'node:test'
+import { tiedLabel } from '../lib/people/company-tie.ts'
+import { LABEL } from '../lib/people/people-search.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -14,7 +16,7 @@ function setup(icpWho: string[]) {
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', who: icpWho }), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,score,fit,why) VALUES (?,?,?,?,?,?,?,?)').run('L1', job, 'Acme Dental', 'Opening a second clinic', 'https://news.example/a', 80, 5, 'Opening a second clinic in Toronto next month.')
   db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,score,fit) VALUES (?,?,?,?,?,?,?)').run('L2', job, 'Beta', 'Raised a seed round', 'https://news.example/b', 70, 4)
-  const add = (connector: string, value: string, url: string) => addEnrichment(db, 'A', 'L1', { connector, kind: 'person', value, label: 'x', confidence: null, source_url: url, source_date: '2026-10-26', retrieved_at: 1 })
+  const add = (connector: string, value: string, url: string) => addEnrichment(db, 'A', 'L1', { connector, kind: 'person', value, label: connector === 'search:people' ? TIED : 'x', confidence: null, source_url: url, source_date: '2026-10-26', retrieved_at: 1 })
   add('sitecrawl', 'Dana Lee, CEO', 'https://acmedental.com/team')
   add('search:people', 'Jane Doe, Practice Manager', 'https://www.linkedin.com/in/jane-doe-1')
   return { db, job }
@@ -61,7 +63,7 @@ test('another tenant\'s enrichment row, or a lead it does not own, is never sele
 
 test('a quarantined lead and a former/previous role are never the best person', async () => {
   const { db } = setup(['Practice manager'])
-  addEnrichment(db, 'A', 'L1', { connector: 'search:people', kind: 'person', value: 'Old Timer, Former Practice Manager', label: 'x', confidence: null, source_url: 'https://www.linkedin.com/in/old', source_date: '2026-10-26', retrieved_at: 1 })
+  addEnrichment(db, 'A', 'L1', { connector: 'search:people', kind: 'person', value: 'Old Timer, Former Practice Manager', label: TIED, confidence: null, source_url: 'https://www.linkedin.com/in/old', source_date: '2026-10-26', retrieved_at: 1 })
   db.prepare("DELETE FROM lead_enrichments WHERE value LIKE 'Jane%'").run()
   const rows = [{ lead_id: 'L1', job_id: (db.prepare('SELECT scan_job_id j FROM leads WHERE id = ?').get('L1') as { j: string }).j }]
   assert.equal((await bestPeople(sqliteDb(db), 'A', rows)).get('L1')!.best_person, 'Dana Lee')
@@ -80,12 +82,14 @@ test('CSV neutralises formulas in every person/title/link/source/why field', asy
 // Instinct #196 review: the same STORED lead must give the same answer in the card and the CSV. A sole Former / Not /
 // Assistant-to row is not Best Person and not the card's who, for stored rows of every connector.
 import { recommendedPerson, contactsFromEnrichments } from '../lib/people/rank.ts'
+// A search result row as the search stores it now: its label says what tied it to the company beyond the name (company-tie.ts).
+const TIED = tiedLabel(LABEL, 'place')
 async function oneLead(who: string[], people: [string, string, string][]) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(who.length ? JSON.stringify({ summary: 's', who }) : null, job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,score,fit) VALUES (?,?,?,?,?,?,?)').run('L1', job, 'Acme', 's', 'https://n.example/a', 80, 5)
-  for (const [connector, value, url] of people) addEnrichment(db, 'A', 'L1', { connector, kind: 'person', value, label: 'x', confidence: null, source_url: url, source_date: '2026-10-26', retrieved_at: 1 })
+  for (const [connector, value, url] of people) addEnrichment(db, 'A', 'L1', { connector, kind: 'person', value, label: connector === 'search:people' ? TIED : 'x', confidence: null, source_url: url, source_date: '2026-10-26', retrieved_at: 1 })
   const rows = [{ lead_id: 'L1', job_id: job }]
   const enr = (db.prepare("SELECT kind, value, label, source_url, connector FROM lead_enrichments WHERE lead_id = 'L1'").all()) as Parameters<typeof contactsFromEnrichments>[0]
   const roles = who.join('; ')

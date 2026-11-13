@@ -3,7 +3,8 @@
 // TinyFish stubbed: no network, no paid call.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { findPeople, newPeopleStats, peopleSearchable, peopleStatsDetail, peopleTraceMessage, profileHit, SEARCHABLE_HOLDS } from '../lib/people/people-search.ts'
+import { tiedLabel } from '../lib/people/company-tie.ts'
+import { LABEL, findPeople, newPeopleStats, peopleSearchable, peopleStatsDetail, peopleTraceMessage, profileHit, SEARCHABLE_HOLDS } from '../lib/people/people-search.ts'
 import { searchableCompanyCount } from '../lib/people/searchable-holds.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
@@ -21,11 +22,11 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
   const s = stub({
     Pagewake: [
       ...RESULTS.Pagewake,
-      { url: 'https://www.linkedin.com/company/pagewake', title: 'Pagewake | LinkedIn' },                                                       // not a profile
-      { url: 'https://www.linkedin.com/in/top-reps', title: 'Top 10 sales leaders to follow | LinkedIn' },                                       // unreadable
-      { url: 'https://www.linkedin.com/in/old-hand', title: 'Olga Hand - Former Sales Manager - Pagewake | LinkedIn' },                          // past role
-      { url: 'https://www.linkedin.com/in/rival-rep', title: 'Rita Rival - Sales Manager - Alertbird | LinkedIn' },                                // other employer
-      { url: 'https://www.linkedin.com/in/sre-sam', title: 'Sam Reyes - Site Reliability Engineer - Pagewake | LinkedIn' },                      // not a buyer role
+      { url: 'https://www.linkedin.com/company/pagewake', title: 'Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                                       // not a profile
+      { url: 'https://www.linkedin.com/in/top-reps', title: 'Top 10 sales leaders to follow | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                       // unreadable
+      { url: 'https://www.linkedin.com/in/old-hand', title: 'Olga Hand - Former Sales Manager - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                          // past role
+      { url: 'https://www.linkedin.com/in/rival-rep', title: 'Rita Rival - Sales Manager - Alertbird | LinkedIn', snippet: 'Columbus, Ohio, United States' },                                // other employer
+      { url: 'https://www.linkedin.com/in/sre-sam', title: 'Sam Reyes - Site Reliability Engineer - Pagewake | LinkedIn', snippet: 'Columbus, Ohio, United States' },                      // not a buyer role
     ],
     Meshgate: [],
   })
@@ -41,7 +42,8 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
 test('#1037 run report: a place refusal is counted (a profile result naming no place, when the request names one)', async () => {
   const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]], { ...ICP, where: ['Ohio'] })
   const stats = newPeopleStats()
-  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: stub().f, stats }), 0)
+  const noPlace = stub({ Meshgate: [{ url: 'https://www.linkedin.com/in/anders-smed-test', title: 'Anders Smed - VP of Sales Development & PG - Meshgate | LinkedIn', snippet: 'VP of Sales Development at Meshgate' }] })
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: noPlace.f, stats }), 0)
   assert.deepEqual(stats.refused, { place: 1 }); assert.equal(peopleStatsDetail(stats).refused_place, 1)
 })
 
@@ -52,7 +54,7 @@ test('#1037 run report: a pass that sent no search never reads as "no profile re
     assert.equal(peopleTraceMessage(0, null, stats), 'no lead was eligible for a people search (0 searches run)') }
   // First play: every eligible lead already names its person.
   { const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]]); const stats = newPeopleStats()
-    addEnrichment(db, 'A', 'L-meshgate', { connector: 'search:people', kind: 'person', value: 'Anders Smed, VP of Sales Development & PG', label: 'x', confidence: null, source_url: 'https://www.linkedin.com/in/anders-smed-test', source_date: '2026-11-13', retrieved_at: 1 })
+    addEnrichment(db, 'A', 'L-meshgate', { connector: 'search:people', kind: 'person', value: 'Anders Smed, VP of Sales Development & PG', label: tiedLabel(LABEL, 'place'), confidence: null, source_url: 'https://www.linkedin.com/in/anders-smed-test', source_date: '2026-11-13', retrieved_at: 1 })
     const s = stub(); assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats, maxCompanies: 10, skipNamed: true }), 0)
     assert.deepEqual(s.companies, []); assert.equal(stats.already_named, 1)
     assert.equal(peopleTraceMessage(0, null, stats), 'every eligible lead already names its person (0 searches run)') }

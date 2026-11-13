@@ -144,6 +144,20 @@ async function withEnv<T>(e: Record<string, string>, fn: () => Promise<T>): Prom
   Object.assign(process.env, e)
   try { return await fn() } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
+test('#1037 THROUGH THE RUNNER (review finding 3): a people search that no longer fits the scan\'s spend cap is not sent, and the run report says so - not "stopped on an error"', async () => {
+  const queries: string[] = []
+  // A search priced at USD 3.20 against the scan cap of USD 3.33: the lead search fits, the people search does not.
+  // (No place in this request, as in the reviewer's run: with one, the candidate needs a second lead search, which is what would not fit.)
+  const r = await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '3.2' }, () => runFixture(fx(queries, { modelIcp: { ...RICP, where: [] } })))
+  assert.equal(queries.length, 0, 'nothing was sent')
+  const st = stage(r)
+  assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st))
+  assert.equal(st?.reason, "the people search stopped at this scan's spend cap (the next search did not fit, so it was not sent); 0 person(s) stored before it stopped")
+  assert.equal(st?.detail?.search_failed_spend_cap, 1); assert.equal(st?.detail?.stopped, 'spend_cap'); assert.equal(st?.detail?.results, 0)
+  const refused = r.db.prepare("SELECT kind, status, reason FROM scan_spend_calls WHERE status = 'refused'").all()
+  assert.deepEqual(refused, [{ kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }])
+})
+
 const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
 
 test('#1037 THROUGH THE RUNNER, free trial: the held lead\'s one search is reserved from the trial reserve before it runs (one search price, inside the reserve)', async () => {

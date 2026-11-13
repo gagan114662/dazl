@@ -10,9 +10,11 @@
 import type Database from 'better-sqlite3'
 import { tfSearch, tinyfishEnabled, limits, TINYFISH_TIMEOUT_MS, type SearchHit } from '../search/tinyfish.ts'
 import { addEnrichment } from '../connectors/store.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
 import { leadPerson } from './lead-person.ts'
+import { companyTie, tiedLabel, type CompanyTie } from './company-tie.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -82,11 +84,12 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 //   eligible        leads the pass could search (ready first, then held ones); held = how many of those are held for review
 //   already_named   leads skipped because the row already names its person (first play / trial only)
 //   searched        searches sent; results = results returned; profiles = results read as a person at the lead's company
-//   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word) and place
+//   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word), place, and
+//                   company_unconfirmed (the employer's NAME matches but nothing else ties the result to this lead's company)
 //   failed          searches sent (or stopped at our own gate) that got no answer, by cause (FAILED_SEARCH); searched counts them too
 //   no_roles        the request names no buyer role, so the pass had nothing to search for and read no lead
 export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; failed: Record<string, number>; no_roles?: boolean }
-const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled']
+const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled', 'spend_cap']
 const failedSearches = (s: PeopleStats): number => { let t = 0; for (const k of [...FAILED_SEARCH, 'other']) { const v = s.failed?.[k]; if (Number.isSafeInteger(v) && v > 0) t += v } return t }
 const failedCauses = (s: PeopleStats): string => [...FAILED_SEARCH, 'other'].filter(k => Number.isSafeInteger(s.failed?.[k]) && s.failed[k] > 0).map(k => `${k} x${s.failed[k]}`).join(', ')
 export const newPeopleStats = (): PeopleStats => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {}, failed: {} })
@@ -95,12 +98,12 @@ export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
   const n = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0 ? v as number : 0
   const out: Record<string, number> = { eligible: n(s.eligible), held_eligible: n(s.held), searched: n(s.searched), results: n(s.results), profile_results: n(s.profiles) }
   if (n(s.already_named) > 0) out.already_named = n(s.already_named)
-  for (const k of ['not_profile', 'unreadable', 'past_role', 'other_employer', 'role', 'place']) if (n(s.refused?.[k]) > 0) out[`refused_${k}`] = n(s.refused[k])
+  for (const k of ['not_profile', 'unreadable', 'past_role', 'other_employer', 'role', 'place', 'company_unconfirmed']) if (n(s.refused?.[k]) > 0) out[`refused_${k}`] = n(s.refused[k])
   for (const k of [...FAILED_SEARCH, 'other']) if (n(s.failed?.[k]) > 0) out[`search_failed_${k}`] = n(s.failed[k])
   return out
 }
 
-type Lead = { id: string; company: string; review_reason: string | null }
+type Lead = { id: string; company: string; review_reason: string | null; company_domain: string | null; source_url: string | null }
 // First-play options (#1037). maxCompanies: searches allowed in this pass (one per company), replacing MAX_COMPANIES.
 // skipNamed: leads that already have a titled person stored (e.g. listed on their own site) get no search.
 // charge: the free-trial scan's per-search charge (runner trialCharges); canSearch: checked before every search, false
@@ -145,6 +148,7 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
   if (failedStop(stopped)) return `${FAILED_STOPS[stopped]}; ${count}`
   if (stopped === 'deadline') return `the people search stopped at its time budget; ${count}`
   if (stopped === 'cap') return `the people search stopped at the search limit (per-scan or daily cap); ${count}`
+  if (stopped === 'spend_cap') return `the people search stopped at this scan's spend cap (the next search did not fit, so it was not sent); ${count}`
   if (stopped === 'budget_kept') return `the trial scan kept its remaining budget for the checks after this step; ${count}`
   if (stopped !== null && stopped !== undefined) return `the people search stopped early (${String(stopped).slice(0, 40)}); ${count}`
   if (n > 0) return null
@@ -177,7 +181,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     const geo = { ...(typeof who?.country === 'string' ? { location: who.country } : {}), ...(typeof who?.language === 'string' ? { language: who.language } : {}) }
     // Ready leads first (best fit first), then the held leads a search still makes sense for (SEARCHABLE_HOLDS), all inside the
     // one cap, and never a lead graded out of the list: a held lead never takes a search from a ready one. The job id is the tenant's own (checked above).
-    const leads = db.prepare(`SELECT id, company, review_reason FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
+    const leads = db.prepare(`SELECT id, company, review_reason, company_domain, source_url FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
     const stats = deps.stats
     if (stats) { stats.eligible = leads.length; stats.held = leads.filter(l => l.review_reason !== null).length }
     const refuse = (why: string) => { if (stats) stats.refused[why] = (stats.refused[why] ?? 0) + 1 }
@@ -208,7 +212,9 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       // so a reclaimed/cancelled job stops spending instead of waiting out the transport timeout.
       const ctl = new AbortController()
       const watch = deps.alive ? setInterval(() => { try { if (!deps.alive!()) ctl.abort() } catch { ctl.abort() } }, deps.aliveEveryMs ?? 500) : undefined
+      // A refusal by the scan's own spend cap (tfSearch throws SpendRefused before anything is sent) is this pass's planned stop, not an error.
       const pending = tfSearch(db, tenantId, q, geo, spent, { env: tfEnv, signal: ctl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.charge ? { charge: deps.charge } : {}) })
+        .catch((e: unknown) => { if (e instanceof SpendRefused) return { ok: false as const, reason: 'spend_cap' as const }; throw e })
       const r = await Promise.race([
         pending,
         new Promise<null>(res => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())) }),
@@ -220,9 +226,10 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       }
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
       // A search that got no answer (provider unavailable, our per-minute rate gate, a cap) is counted as failed, never as "searched, found nobody".
-      if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') { deps.onStop?.(r.reason); break } continue }
+      if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth' || r.reason === 'spend_cap') { deps.onStop?.(r.reason); break } continue }
       const refused = new Set<string>()
       if (stats) stats.results += r.hits.length
+      const ties = new Map<string, CompanyTie>()
       const people = r.hits.map(h => ({ h, p: profileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => {
           if (typeof x.p === 'string') { refuse(x.p); return false }
@@ -235,7 +242,9 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         // recorded on the lead (contact_location_mismatch / contact_location_unconfirmed) and the other results are still looked at.
         .filter(x => {
           const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
-          if (v === 'agrees' || v === 'no_geography') return true
+          // A company NAME is not a company (company-tie.ts): beyond the name, the result must name the lead's website, the organisation
+          // the lead was found through, or the requested place. A name-only match is refused and counted, never stored.
+          if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, l, v === 'agrees'); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
           const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
           refuse('place')
           if (!refused.has(reason) && !(deps.alive && !deps.alive())) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }
@@ -247,7 +256,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         if (seen.has(p.name.toLowerCase()) || seen.size >= MAX_PEOPLE) continue
         seen.add(p.name.toLowerCase())
         if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); return stored } // re-checked before EVERY write: another process may reclaim the job mid-loop
-        addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.title}`.slice(0, 120), label: LABEL, confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
+        addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.title}`.slice(0, 120), label: tiedLabel(LABEL, ties.get(h.url) ?? 'place'), confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
         stored++
       }
     }
