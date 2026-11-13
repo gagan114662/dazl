@@ -797,6 +797,8 @@ test('#1095 PASS: the lead\'s own board-dated Greenhouse posting naming the requ
 test('#1095 HELD: the own-posting path needs the board\'s date inside the clock, the board proof kind, a public job-board posting and the requested role in the verified quote', async () => {
   for (const [why, o] of [
     ['another role in the quote', { excerpt: 'Justworks is hiring a Senior Software Engineer to build payroll services in Austin, Texas' }],
+    ['the role named only in passing (report to the AE Lead)', { excerpt: 'In this role you will report to the Account Executive Lead for Austin and Central Texas' }],
+    ['a different role that starts with the requested title', { excerpt: 'Justworks is hiring an Account Executive Manager to lead the Austin sales team' }],
     ['posted outside the 30-day clock', { date: d(60).slice(0, 10) }],
     ['no board date (proof kind missing)', { proof: null }],
     ['a page-bound date, not the board\'s own', { proof: 'page_bound' }],

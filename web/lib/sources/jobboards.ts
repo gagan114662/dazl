@@ -98,8 +98,12 @@ export function usCityPlace(text: string): Place | null {
   const city = m[1].trim(), key = norm(city)
   if (key.length < 3 || STATES[abbr].toLowerCase() === key) return null
   const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
-  const otherState = (l: string) => Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(l) || new RegExp(`\\b${name}\\b`, 'i').test(l)))
-  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !otherState(l)) }
+  // another state is read from the location with the city itself removed ("Kansas City, MO" names no Kansas); a non-US country ("San Jose, Costa Rica")
+  // or a remote posting ("Remote - Austin, TX": not located in the city, the same rule as London/NYC) is never this city
+  const cityRe = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
+  const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l)) }
 }
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)

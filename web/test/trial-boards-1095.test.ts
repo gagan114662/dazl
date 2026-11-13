@@ -59,6 +59,12 @@ test('#1095: a US "<City>, <ST>" is a place for the job-board source; it never w
   assert.equal(p?.name, 'Austin, TX')
   assert.deepEqual([p!.ok('Austin, TX'), p!.ok('Hybrid - Austin, Texas'), p!.ok('Dallas, TX'), p!.ok('Austin, MN'), p!.ok('Remote')], [true, true, false, false, false])
   assert.equal(placeIn('Portland, Oregon')?.name, 'Portland, OR')
+  // a non-US country, another state (read without the city's own words: Kansas City, MO names no Kansas) and a remote posting are never the city
+  const sj = placeIn('in San Jose, CA')!
+  assert.deepEqual([sj.ok('San Jose, CA'), sj.ok('San Jose, California, United States'), sj.ok('San Jose, Costa Rica')], [true, true, false])
+  const kc = placeIn('in Kansas City, MO')!
+  assert.deepEqual([kc.ok('Kansas City, MO'), kc.ok('Kansas City, KS')], [true, false])
+  assert.deepEqual([p!.ok('Austin'), p!.ok('Austin, US'), p!.ok('Austin, TX HQ'), p!.ok('Remote - Austin, TX')], [true, true, true, false], 'the real board location shapes (Braze, Dialpad, AlertMedia) match; remote does not')
   assert.equal(placeIn(REQUEST), null, 'the request alone names no place the source knows: the profile supplies it')
 })
 

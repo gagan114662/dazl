@@ -21,6 +21,16 @@ import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
+// #1095: a verified posting quote that states the vacancy for the requested role: "is hiring an Account Executive", "looking for a new Account
+// Executive", "Join Justworks as an Account Executive". A role noun right after the title (Manager, Lead, Director ...) makes it another role.
+const HIRE_LEAD = String.raw`(?:hiring|looking\s+for|seeking|recruiting|looking\s+to\s+hire|join\s+(?:us|our\s+team|the\s+team|[A-Z][\w&.-]*(?:\s+[A-Z][\w&.-]*){0,3})\s+as)`
+const ROLE_TAIL = /^(?:\s*-\s*|\s+)(?:manager|lead|director|head|vp|assistant|associate|coordinator|trainer|recruiter|engineer)s?\b/i
+export function postingStatesRole(quote: string, term: string): boolean {
+  const t = term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  const re = new RegExp(`\\b${HIRE_LEAD}\\s+(?:(?:an?|our|the|new|first|two|three|several|multiple|experienced|senior|junior|sr\\.?|jr\\.?)\\s+){0,3}(${t})s?\\b`, 'gi')
+  for (const m of quote.matchAll(re)) if (!ROLE_TAIL.test(quote.slice(m.index! + m[0].length))) return true
+  return false
+}
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
@@ -249,7 +259,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const ats = atsPostingRef(l.source_url)
         const t = l.event_date ? Date.parse(l.event_date) : NaN
         const own = !!ats && l.event_date_proof === 'ats_structured' && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
-        const m = own ? matchedHiringRole(l.evidence_excerpt ?? '', roles) : null
+        // the quote must STATE this vacancy: hiring wording, then (within a few words) the requested role, and no other role noun right after it
+        // ("... report to the Account Executive Lead" or "an Account Executive Manager" is another role, not this vacancy)
+        const m = own ? roles.find(r => postingStatesRole(l.evidence_excerpt ?? '', r.term)) ?? null : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
           addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
