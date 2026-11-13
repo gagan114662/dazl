@@ -21,6 +21,8 @@ export class SearchTrace {
 
 export interface SourceStats {
   queries: string[]
+  // #1082: fetch units the platform's fair share left out today (not stored in scan_source_stats; read into the run report)
+  fetch_capacity_trimmed?: number
   query_source?: 'model' | 'fallback' | null
   searches_attempted: number
   searches_ok: number
@@ -64,6 +66,8 @@ export function summarizeTrace(t: SearchTrace): SourceStats {
       if (e.outcome === 'ok' && e.hits) { s.searches_ok++; raw += e.hits.length; const before = urls.size; for (const u of e.hits) urls.add(norm(u)); s.per_query!.push({ query: e.query, outcome: 'ok', hits: e.hits.length, new_urls: urls.size - before }) } else { bump(s.searches_failed, e.outcome); s.per_query!.push({ query: e.query, outcome: e.outcome, hits: null, new_urls: null }) }
     } else {
       s.fetch_requested = (s.fetch_requested ?? 0) + e.requested
+      // #1082: pages the platform's fair share left out (results are thinner), counted apart from any outcome
+      if (!e.attempted && e.outcome === 'capacity') s.fetch_capacity_trimmed = (s.fetch_capacity_trimmed ?? 0) + e.requested
       if (!e.attempted) { s.fetch_outcome = s.fetch_outcome ?? e.outcome; fetchBad = true; continue }
       s.fetch_outcome = e.outcome
       if (e.outcome === 'ok' && e.pages !== null) { s.fetch_pages_with_text = (s.fetch_pages_with_text ?? 0) + e.pages; fetchOk = true } else fetchBad = true
