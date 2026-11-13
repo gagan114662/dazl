@@ -126,7 +126,7 @@ function parties(text: string, company: string, places: ReadonlySet<string>): Pa
   if (UNNAMED.test(text)) out.push({ name: null })
   for (const m of text.matchAll(/\bthe\s+((?:[\w'’-]+\s+){1,3})team\b/gi)) if (!nameIsLead(m[1].trim(), company)) out.push({ name: null })
   for (const m of text.matchAll(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g)) {
-    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !MONTH_DAY.test(k) && !places.has(k) })
+    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !ALLOW.has(k.replace(/’/g, "'")) && !MONTH_DAY.test(k) && !places.has(k) })
     if (kept.length) out.push({ name: kept.join(' ') })
   }
   return out
@@ -159,7 +159,7 @@ function partyMarker(quote: string, lead: string, places: ReadonlySet<string> = 
   if (/\bwelcomes?\s+(?!to\b|you\b|all\b|everyone\b|new\s+patients\b|walk-?ins\b)[\w@#]/i.test(text)) return true
   if (/\b(?:says|said|reposted|shared|retweeted|regrammed)\b|\bwith\s+[\w@#]|\ba\s+new\s+neighbou?r|\bdown\s+the\s+street\b|\bnext\s+door\b/i.test(text)) return true
   for (const m of text.matchAll(/\b((?:[\w'’-]+\s+){1,3})(?:dental|location|team|family|practice|clinic)\b/gi)) {
-    const x = m[1].trim().split(/\s+/).filter(w => !CAP_STOP.has(w.toLowerCase().replace(/['’]s?$/, '')) && !DESCRIPTIVE.has(w.toLowerCase())).join(' ')
+    const x = m[1].trim().split(/\s+/).filter(w => !CAP_STOP.has(w.toLowerCase().replace(/['’]s?$/, '')) && !ALLOW.has(w.toLowerCase()) && !DESCRIPTIVE.has(w.toLowerCase())).join(' ')
     if (x !== '' && !(lead !== '' && nameIsLead(x, lead))) return true
   }
   // "<lead> and <x>": read on the quote itself, with the lead's name in place
@@ -185,18 +185,55 @@ const CTA = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi)|book\s+(?:now|tod
 //   (ii)  the lead named: the same, and a third-person pronoun only where the lead is the lead-in subject of the
 //         pronoun's own sentence or the one before ("Family Dental Care is growing. Their new clinic is now open").
 //   (iii) nobody named: the rest is empty, or only generic #tags, emoji, punctuation and a call to action ("Book now").
+// #878 (review on #1130 at e0eb5d61): for a first-person or lead-named opening, the rest of the quote may say ONLY
+// these: common function words and opening / celebration words, a call to action, thanks to patients or staff, the
+// request's places, street addresses, phone numbers and opening hours, emoji, punctuation and generic #tags. Any other
+// word ("bright smiles", "network", "owner", "competition", "told reporters") fails the opening closed.
+const ALLOW = new Set(('a an the and or but so to of in on at for with as is are was be been am it this that these those ' +
+  'we we\'re we\'ve we\'ll our ours us you your you\'re i i\'m me my all any some every more most very just now here there ' +
+  'what when where how not no yes can will do have has had get got go come see let make new great good best amazing awesome ' +
+  'wonderful beautiful lovely happy excited exciting thrilled proud pleased delighted grateful thankful thank thanks share ' +
+  'sharing announce announcing finally officially official big news update today day week month year time patients patient ' +
+  'staff team community neighbourhood neighborhood same address location locations clinic office space home doors door open ' +
+  'opened opening grand celebrate celebrating celebration growing grow accepting serving ready welcome welcoming love ' +
+  'congrats congratulations hello hi hey everyone soon visit book booking online call link bio by up business second third ' +
+  'fourth fifth another bigger larger brand st street ave avenue rd road blvd dr drive unit suite floor').split(' '))
+const CTA_PHRASES = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi|by)|stop\s+by|drop\s+by|say\s+hi|book\s+(?:now|today|online)|link\s+in\s+bio|see\s+you\s+soon|now\s+booking|walk-?ins\s+welcome)\b/gi
+const DOMAIN = /\b(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+)\.(?:com|ca|net|org|co|io|dental|dentist|clinic|health|info|biz|us|uk|care)\b(?:\/\S*)?/gi
+// The words of `rest` that are not on the allow-list (with the lead's own names, handles, tags and domains, generic
+// tags, places, addresses, phone numbers and hours removed first).
+function unlisted(rest: string, lead: string, places: ReadonlySet<string>, pronouns: boolean): string[] {
+  let t = rest.replace(DOMAIN, ' ')
+    .replace(/[@#][A-Za-z0-9_.]+/g, ' ')
+    .replace(new RegExp(lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
+    .replace(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g, m => (nameIsLead(m, lead) ? ' ' : m))
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, ' ')
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}\s*[-–]\s*\d{1,2}\b/gi, ' ')
+    .replace(CTA_PHRASES, ' ')
+  t = t.replace(/\bthanks?\s+(?:you\s+)?(?:to\s+)?(?:(?:all|our|my)\s+)*(?:(?:amazing|wonderful|loyal|great|lovely)\s+)*(?:patients|staff|team|community)(?:\s+and\s+(?:patients|staff|team|community))?\b/gi, ' ')
+  return t.toLowerCase().replace(/’/g, "'").split(/[^a-z0-9']+/).map(w => w.replace(/^'+|'+$/g, '')).filter(w => w !== '' &&
+    !ALLOW.has(w) && !CTA_WORDS.has(w) && !places.has(w) && !MONTH_DAY.test(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w) &&
+    !(pronouns && THIRD_PERSON.test(w)))
+}
+// A domain or URL host is a party unless its label is the lead's ("brightsmiles.com" is another practice).
+const domainsOther = (text: string, lead: string) => [...text.matchAll(DOMAIN)].some(m => !nameIsLead('@' + m[1], lead))
+const PRACTICE_WORD = /^(?:dental|dentistry|smiles?|orthodontics?|clinic|practice|studio|centre|center|group|health)$/i
 export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
   const lead = company ?? ''
   if (lead === '') return false
   const match = excerpt.slice(at, end), stop = placeEnd(excerpt, end)
   // the opening's own place words are places too ("#parkdale" after "now open in Parkdale")
-  const where = new Set([...places, ...wordsOf(excerpt.slice(end, stop))])
+  // R13: the opening's own place never hides a practice ("open at Bright Smiles Dental in Parkdale")
+  const placeWords = wordsOf(excerpt.slice(end, stop)), leadWords = new Set(wordsOf(lead))
+  if (placeWords.some(w => PRACTICE_WORD.test(w) && !leadWords.has(w))) return false
+  const where = new Set([...places, ...placeWords])
   const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
-  const ps = parties(rest, lead, where)
+  if (domainsOther(rest, lead)) return false
+  const ps = [...parties(rest, lead, where), ...[...rest.matchAll(DOMAIN)].map(m => ({ name: '@' + m[1] }))]
   const onlyLead = ps.every(p => p.name !== null && nameIsLead(p.name, lead)) && !partyMarker(rest, lead, where)
-  if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) return onlyLead
+  if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) return onlyLead && unlisted(rest, lead, where, false).length === 0
   if (ps.length > 0) {
-    if (!onlyLead) return false
+    if (!onlyLead || unlisted(rest, lead, where, true).length > 0) return false
     // every third-person pronoun (in the rest or the opening) must have the lead as its sentence's lead-in subject
     const blanked = excerpt.slice(0, stop).replace(/\b(?:its|their)\s+doors\b/gi, m => ' '.repeat(m.length)) + excerpt.slice(stop)
     const sentences: [number, string][] = []
@@ -251,7 +288,10 @@ export function newOpeningShown(excerpt: string, company: string | null | undefi
   if (closedBanner(excerpt)) return false
   return clauses(excerpt).some(c => {
     const span = match(c)
-    if (!span || (not && not.test(c)) || CLAUSE_CLOSED.test(c) || subjectIsOther(c.slice(0, span[0]), company)) return false
+    // the lead's own handle or tag in front of the opening is no other subject ("@metrocitydentistry new clinic now open")
+    if (!span) return false
+    const front = company ? c.slice(0, span[0]).replace(/[@#][A-Za-z0-9_.]+/g, h => (nameIsLead('@' + h.slice(1), company) ? ' ' : h)) : c.slice(0, span[0])
+    if ((not && not.test(c)) || CLAUSE_CLOSED.test(c) || subjectIsOther(front, company)) return false
     const base = Math.max(0, excerpt.indexOf(c))
     return openingAttributable(excerpt, base + span[0], base + span[1], c.slice(0, span[0]), company, places)
   })
