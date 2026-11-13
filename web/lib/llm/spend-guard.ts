@@ -71,8 +71,9 @@ export class SpendGuard {
   check(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.checkUsd(this.cost(model, promptBytes, maxOut))
   }
+  // A refused guard stays refused (no usage reported, an unrecorded cost, an overrun), even with room under its cap.
   checkUsd(usd: number): void {
-    if (!(this.reservedUsd + usd <= this.limitUsd)) { this.refused = true; throw new SpendRefused(this.label) }
+    if (this.refused || !(this.reservedUsd + usd <= this.limitUsd)) { this.refused = true; throw new SpendRefused(this.label) }
   }
   reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.reserveUsd(this.cost(model, promptBytes, maxOut))
