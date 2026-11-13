@@ -48,7 +48,7 @@ test('Cal.com: body HMAC only; refusals store nothing; a signed replay answers d
   assert.equal(first.status, 200); assert.notEqual((await first.json()).outcome, 'duplicate')
   for (const sig of [hmac(sa, body), hmac(sa, body).toUpperCase()]) {
     const again = await post(A, body, sig)
-    assert.equal(again.status, 200); assert.deepEqual(await again.json(), { ok: true, outcome: 'duplicate' })
+    assert.equal(again.status, 200); assert.deepEqual(await again.json(), { ok: true, outcome: 'duplicate', status: 'scheduled' })
   }
   assert.equal(rows(), 1, 'the replay recorded nothing new')
   const other = await post(B, body, hmac(sb, body)) // the same booking signed by B is B's own, never A's duplicate
