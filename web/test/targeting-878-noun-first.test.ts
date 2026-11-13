@@ -72,6 +72,8 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'New clinic now open - come say hi'],
     ['Kailash Dentistry', 'Our new clinic is officially open for business'],
     ['Kailash Dentistry', 'Grand opening of our new clinic at 1500 Queen St'],
+    ['Kailash Dentistry', 'NEW KAILASH DENTISTRY CLINIC NOW OPEN IN PARKDALE'],
+    ['Kailash Dentistry', 'new family dental clinic now open in parkdale'],
   ]
   const no: [string, string][] = [
     ['Kailash Dentistry', 'The clinic is open on Sundays'],
@@ -150,6 +152,14 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'New clinic is now open in Parkdale for Smile Co patients'],
     ['Kailash Dentistry', 'Our new clinic opened and serving patients since 2015'],
     ['Kailash Dentistry', 'Our new clinic opened in Parkdale years ago'],
+    // review round 5 on #1130 (fixed after the last round)
+    ['Kailash Dentistry', 'New Starbucks Location Now Open In Parkdale'],
+    ['Kailash Dentistry', 'NEW STARBUCKS LOCATION NOW OPEN IN PARKDALE'],
+    ['Kailash Dentistry', 'new starbucks location now open in parkdale'],
+    ['Kailash Dentistry', 'new clinic now open in parkdale from smile co'],
+    ['Kailash Dentistry', 'Our new clinic is open in Christmas'],
+    ['Kailash Dentistry', 'Our new clinic is open in Phase 2'],
+    ['Kailash Dentistry', 'Our new clinic is now open in Parkdale for new Smile Co patients'],
   ]
   const shows = (company: string, q: string) => quoteShowsEvent(q, q, false, company) && eventMatches('open', 'location', q)
   for (const [c, q] of yes) assert.equal(shows(c, q), true, q)

@@ -45,7 +45,10 @@ const PAST_YEAR = /\b(?:19|20)\d{2}\b(?!\s+[A-Za-z]+\s+(?:st|street|ave|avenue|r
 const SAID = /\b(?:said|says|according\s+to|per)\s+[A-Z]/
 const PREMISES = /^(?:locations?|offices?|clinics?|stores?|branch(?:es)?|restaurants?|studios?|practices?|warehouses?|showrooms?|shops?|gyms?|salons?)$/i
 const anyDayMonth = (t: string) => t.split(/[^A-Za-z]+/).some(w => DAY_MONTH.test(w))
-const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|couple|many|time|order|person|line|style|business|session|progress|stages?)$/i
+const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|couple|many|time|order|person|line|style|business|session|progress|stages?|phases?|christmas|easter|thanksgiving|halloween|hanukkah|diwali|ramadan|eid)$/i
+// The words a caption may put between "new" and the premises when it has no case to tell a name by (Title Case, ALL CAPS,
+// all lower case): the lead's own name, or one of these.
+const PREMISES_ADJ = /^(?:dental|dentistry|medical|family|pediatric|paediatric|orthodontic|cosmetic|veterinary|vet|physio|physiotherapy|chiropractic|wellness|health|beauty|hair|nail|fitness|flagship|downtown|uptown|larger|bigger|expanded|modern|beautiful|main|second|third|fourth|fifth|satellite|community|walk-in|urgent|care|retail|pop-up|popup)$/i
 const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
 // A place after in / at / on: a street address, "the heart of <Name>", or a proper name (capitalised in mixed-case text;
 // in all-lower or all-caps text, a word that is not an article, number or common noun).
@@ -78,17 +81,22 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   if (c.question) return false
   const body = m[0], rest = c.rest.trim()
   const clean = (t: string) => !TIME_WORDS.test(t) && !FUTURE.test(t) && !anyDayMonth(t) && !PAST_YEAR.test(t) && !SAID.test(t)
+  // case tells a name apart only in ordinary text: not in ALL CAPS, all lower case or a Title Case caption (every word of the match capitalised)
+  const mixed = /[a-z]/.test(text) && /[A-Z]/.test(text) && !m[0].split(/\s+/).every(w => /^[A-Z0-9]/.test(w))
   if (/\b(?:by|from|of)\s+[A-Z]/.test(body) || /\b(?:by|from)\s+[A-Z]/.test(rest)) return false
+  if (!mixed && (/\b(?:by|from)\s+[a-z]/i.test(body + ' ' + rest))) return false
   if (/^grand\s+opening/i.test(body)) return clean(rest) && !/\b(?:of|by)\s+[A-Z]/.test(rest)
   if (company) {
     const own = new Set(company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
     const words = body.split(/\s+/), noun = words.findIndex(w => PREMISES.test(w))
+    // no case to tell a name by: every word between the qualifier and the noun is the lead's own name or a premises adjective
+    if (!mixed && noun > 0 && words.slice(1, noun).some(w => !/^(?:new|our|brand)$/i.test(w) && !own.has(w.toLowerCase()) && !PREMISES_ADJ.test(w))) return false
     // the word right before the noun is a place ("Our new Woodbridge location") only after "our" or the lead's own name
     const ours = words.slice(0, Math.max(0, noun - 1)).some(w => /^our$/i.test(w) || own.has(w.toLowerCase()))
     if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && !(ours && k + 1 === noun - 1))) return false
   }
   if (rest === '' || /^(?:its|their)\s+doors\b/i.test(rest) || /^for\s+business\b/i.test(rest)) return clean(rest.replace(/^(?:its|their)\s+doors\b|^for\s+business\b/i, ''))
-  if (/\bfor\s+[A-Z][\w&'-]*(?:\s+[A-Z][\w&'-]*)*\s+(?:patients|clients|customers|members)\b/.test(rest)) return false
+  if (/\bfor\s+(?:[a-z]+\s+){0,2}[A-Z][\w&'-]*(?:\s+[A-Z][\w&'-]*)*\s+(?:patients|clients|customers|members)\b/.test(rest)) return false
   if (/^and\s+(?:accepting|welcoming|serving|ready)\b/i.test(rest)) return !FUTURE.test(rest) && !anyDayMonth(rest) && !SAID.test(rest) && !PAST_YEAR.test(rest) && !/\b(?:ago|since)\b/i.test(rest)
   if (/^[,:–-]/.test(rest)) return clean(rest)
   return /^(?:in|at|on)\s+/i.test(rest) && placeOk(rest, text) && clean(rest)
