@@ -85,7 +85,6 @@ test('#836 two worker processes on one store: every scan is claimed and run once
       assert.equal(settled.length, 1)
       assert.match(settled[0], new RegExp(`outcome=done applied=true instance=${q.claimed_by}$`))
     }
-    if (process.env.W_DEBUG) console.log('A:\n' + a.out() + '\nB:\n' + b.out())
     const by = new Set(ids.map(id => w.queueRow(id)!.claimed_by))
     assert.deepEqual([...by].sort(), ['worker-a', 'worker-b'], 'both workers took scans')
     assert.equal(new Set(ids.map(id => w.log(id)[0].token)).size, ids.length, 'every claim has its own fencing token')
