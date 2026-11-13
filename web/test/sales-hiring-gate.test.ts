@@ -810,3 +810,11 @@ test('#1095 HELD: the own-posting path needs the board\'s date inside the clock,
     db.close()
   }
 })
+
+test('#1095 XHawk: a posting already stored as hiring evidence for the lead is not written again by the own-posting path (one posting, one row)', async () => {
+  const { db, job } = seedOwnPosting({})
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E0', 'L1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - In-Territory - posted x', 'x', 70, 'https://job-boards.greenhouse.io/justworks/jobs/7301001', ?, 1)").run(d(9).slice(0, 10))
+  await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  assert.equal(lead(db).review_reason, null)
+  assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1)
+})

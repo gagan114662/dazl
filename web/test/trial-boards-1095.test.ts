@@ -74,6 +74,8 @@ test('#1095: a US "<City>, <ST>" is a place for the job-board source; it never w
   for (const q of ['Sales Manager, Texas', 'Account Executive, Texas', 'Founders, Texas']) assert.equal(placeIn(q)?.name, 'Texas', q)
   assert.equal(placeIn('SDR Team Lead, California')?.name, 'California')
   assert.equal(placeIn('in New Orleans, LA')?.name, 'New Orleans, LA')
+  // XHawk on #1155: an earlier "<Words>, <Word>" phrase never hides a later real city/state
+  assert.equal(placeIn('Find companies hiring Account Executives, Austin, TX')?.name, 'Austin, TX')
 })
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {
@@ -96,4 +98,13 @@ test('#1095 live trial request: the profile\'s "Austin, TX" runs the free job-bo
   const gh = ready.find(l => l.source_url === GH_AUSTIN)
   assert.ok(gh, `a ready lead cites the Austin posting: ${JSON.stringify(x.leads.map(l => [l.company, l.source_url, l.review_reason]))}`)
   assert.equal(gh!.event_date, daysAgo(9).slice(0, 10), 'dated by the board\'s own first-published day')
+})
+
+test('#1095 XHawk: when the user PICKED the job boards as a source, the profile place still drives them (same request, same Austin posting)', async () => {
+  const { http, seen } = boards()
+  const f = fx(http); f.sources = JSON.stringify({ adapters: ['jobboards'], feeds: [], pages: [] })
+  const x = await runFixture(f)
+  const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
+  assert.ok(run && ['ok', 'partial'].includes(run.status), `the picked board source ran with the profile place: ${run?.status}`)
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/justworks/jobs'), 'the board was read')
 })

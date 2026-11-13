@@ -92,8 +92,15 @@ export function genericPlace(query: string): Place | null {
 // The city never widens to its state (Dallas, TX is not Austin, TX).
 const CITY_LEAD_STOP = new Set(['account', 'accounts', 'executive', 'executives', 'manager', 'managers', 'sales', 'hiring', 'hire', 'hires', 'companies', 'company', 'startups', 'startup', 'find', 'b2b', 'saas', 'representative', 'representatives', 'director', 'directors', 'engineer', 'engineers', 'developer', 'developers', 'ae', 'aes', 'sdr', 'sdrs', 'bdr', 'bdrs', 'senior', 'junior', 'lead', 'head', 'vp', 'firms', 'agencies', 'dental', 'clinics', 'practices', 'in', 'near', 'at', 'the', 'and', 'or', 'for', 'of', 'from', 'tech', 'software', 'fintech', 'healthtech', 'marketing', 'operations', 'customer', 'success', 'growth', 'founder', 'founders', 'first', 'our', 'their', 'team', 'teams'])
 export function usCityPlace(text: string): Place | null {
-  const m = /(?:^|[\s(])((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?=$|[\s,.;)])/u.exec(text)
-  if (!m) return null
+  // every "<Capitalised words>, <Region>" candidate in order: the first whose region is a US state is the place (XHawk on #1155: "Account
+  // Executives, Austin, TX" must not stop at "Account Executives, Austin")
+  for (const m of text.matchAll(/(?:^|[\s(])((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})(?=\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?=$|[\s,.;)]))/gu)) {
+    const p = cityPlaceOf(m)
+    if (p) return p
+  }
+  return null
+}
+function cityPlaceOf(m: RegExpMatchArray): Place | null {
   // a role or request word right before the city is not part of it ("Account Executive Austin, TX" is Austin; review on #1155): leading
   // words are dropped while they are role / request words, so the city is what is left (multi-word cities such as San Jose or Kansas City stay whole)
   const words = m[1].split(/\s+/)

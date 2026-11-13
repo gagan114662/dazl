@@ -264,7 +264,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const m = own ? roles.find(r => postingStatesRole(l.evidence_excerpt ?? '', r.term)) ?? null : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
-          addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
+          // one posting, one hiring row: an enrichment for this posting already stored (signal enrichment runs first) is not written again (XHawk on #1155)
+          const already = db.prepare("SELECT 1 AS x FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role') AND source_url = ? LIMIT 1").get(l.id, l.source_url)
+          if (!already) addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
           passed++; passedIds.push(l.id); continue
         }
       }
