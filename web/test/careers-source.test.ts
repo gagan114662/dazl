@@ -216,3 +216,56 @@ test('review (Quest #1034): non-string input entries are skipped, never a crash;
   assert.deepEqual(q, [])
   for (const v of [null, undefined, 3, {}, []]) { assert.equal(siteOf(v as unknown as string), null) }
 })
+
+// ---- Hermes-PC review at f1ea51b5 (each failing before its fix) ----
+test('review (Hermes-PC 1): a direct job link on a sibling host is checked against THAT host\'s robots.txt; a disallowed path is never fetched', async () => {
+  const asked: string[] = []
+  const r = await run(site({ 'brightloop.io/careers': '<h2>Open roles</h2><ul><li><a href="https://jobs.brightloop.io/private/ae">Account Executive - London</a></li></ul>', 'jobs.brightloop.io/private/ae': JOB }, asked, {
+    'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private' },
+  }))
+  assert.deepEqual(r.items, [], 'no evidence from a path its own host disallows')
+  assert.ok(asked.includes('https://jobs.brightloop.io/robots.txt'), 'the sibling host\'s own robots.txt was read')
+  assert.ok(!asked.includes('https://jobs.brightloop.io/private/ae'), 'the disallowed job page was never requested')
+})
+
+test('review (Hermes-PC 2): a target host\'s robots.txt answering 400 or 451 is unreachable, not "no policy"; only 404 / 410 allow all', async () => {
+  for (const status of [400, 451]) {
+    const asked: string[] = []
+    const r = await run(site(OPEN, asked, {
+      'brightloop.io/careers/ae': { status: 301, body: '', location: 'https://jobs.brightloop.io/private/ae' },
+      'jobs.brightloop.io/robots.txt': { status, body: '' },
+    }))
+    assert.deepEqual(r.items, [], `robots ${status}`); assert.equal(r.notes.unreachable, 1, `robots ${status}: a partial read, not a healthy empty`)
+    assert.ok(!asked.includes('https://jobs.brightloop.io/private/ae'), `robots ${status}: the target was never fetched`)
+  }
+  for (const status of [404, 410]) {
+    const r = await run(site({ ...OPEN, 'jobs.brightloop.io/careers/ae': JOB }, [], {
+      'brightloop.io/careers/ae': { status: 301, body: '', location: 'https://jobs.brightloop.io/careers/ae' },
+      'jobs.brightloop.io/robots.txt': { status, body: '' },
+    }))
+    assert.equal(r.items.length, 1, `robots ${status}: no policy, the target is read`)
+  }
+})
+
+test('review (Hermes-PC 3): shared-host tenants are different companies: alice.github.io never cites bob.github.io\'s posting', async () => {
+  const asked: string[] = []
+  const r = await run(site({ 'alice.github.io/careers': '<h2>Open roles</h2><ul><li><a href="https://bob.github.io/jobs/ae">Account Executive - London</a></li></ul>', 'bob.github.io/jobs/ae': JOB }, asked), { pages: ['https://alice.github.io'] })
+  assert.deepEqual(r.items, [])
+  assert.ok(!asked.some(u => u.startsWith('https://bob.github.io/')), 'another tenant\'s page is not read as this company\'s')
+})
+
+test('review (Hermes-PC 4): no robots.txt request starts after the budget ran out while a page was loading', async () => {
+  let t = 0; const saved = careersLimits.now; careersLimits.now = () => t
+  const starts: { url: string; t: number }[] = []
+  try {
+    const inner = site(OPEN, [], { 'brightloop.io/careers': { status: 301, body: '', location: 'https://www.brightloop.io/careers' } })
+    const http: SafeGet = async (url, o) => {
+      starts.push({ url, t }); const r = await inner(url, o)
+      if (url === 'https://brightloop.io/careers') t = 20_000 // the clock when the /careers redirect comes back (budget 12 000 ms)
+      return r
+    }
+    const r = await run(http)
+    assert.deepEqual(starts.filter(s => s.t > careersLimits.budgetMs), [], 'late starts')
+    assert.ok(r.notes.budget >= 1); assert.equal(r.notes.unreachable, 1, 'a spent budget is partial')
+  } finally { careersLimits.now = saved }
+})

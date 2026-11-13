@@ -189,6 +189,13 @@ test('review: the quote keeps a passage that names the company when the default 
   const q = quoteFor(text, 'Account Executive', at, 'Brightloop')
   assert.match(q, /Brightloop/); assert.ok(q.length <= 300); assert.ok(text.includes(q), 'verbatim')
   const far = 'Brightloop. ' + 'z '.repeat(400) + 'Account Executive tail'
-  const q2 = quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'); assert.match(q2, /Brightloop/); assert.ok(far.includes(q2))
+  assert.equal(quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'), '', 'name and title too far apart for one quote: no quote')
   assert.equal(quoteFor('Join us as Account Executive now', 'Account Executive', 8), 'Join us as Account Executive now', 'no company: unchanged')
+})
+
+test('review (Hermes-PC 5): when the name is too far from the title for one quote there is no quote, never a passage about the company alone', () => {
+  const title = 'Account Executive - London'
+  const text = `${title} We are hiring an Account Executive to own the full sales cycle. ` + 'x '.repeat(300) + 'About Brightloop: we build tools for teams.'
+  const q = quoteFor(text, title, 0, 'Brightloop')
+  assert.ok(q === '' || (q.includes('Account Executive') && q.includes('Brightloop')), `the quote drops the vacancy: ${JSON.stringify(q.slice(0, 80))}`)
 })

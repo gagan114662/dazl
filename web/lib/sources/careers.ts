@@ -7,7 +7,7 @@
 //    otherwise: an own-domain job page does not date itself and the retrieval day is never used in its place.
 //  - Only sales / GTM roles are read (what the careers reader can prove). A request that names no sales role, or a scan with no company site, is reported as
 //    out of coverage - never as an empty market. An unreachable robots.txt / page / posting is a partial result, never "no vacancy".
-import { careersSalesVacancy } from '../signals/careers-page.ts'
+import { careersSalesVacancy, registrable } from '../signals/careers-page.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 import type { AdapterInput, Evidence, SafeGet, SourceAdapter } from './types.ts'
 
@@ -36,8 +36,17 @@ export function pathOf(raw: unknown): string | null {
 }
 // robots.txt rules are sent under a token parseRobots checks (dazl-contact-check), so the page is fetched under the same name its rules were read for.
 const UA = { 'user-agent': 'dazl-contact-check/1.0 (+https://dazl.ai)' }
-const bare = (h: string) => h.toLowerCase().replace(/^www\./, '')
-const sameSite = (a: string, b: string) => { const x = bare(a), y = bare(b); return x === y || x.endsWith(`.${y}`) || y.endsWith(`.${x}`) }
+// Same site = same registrable domain by the Public Suffix List with its private section: alice.github.io and bob.github.io are two sites.
+const sameSite = (a: string, b: string) => registrable(a) === registrable(b)
+// The public Greenhouse / Lever / Ashby JSON APIs a careers link is verified through are documented APIs, not crawled pages: they are not checked against a
+// robots.txt (api.ashbyhq.com answers its robots.txt with 401, which would otherwise make every Ashby posting unreadable).
+const ATS_API = /^(?:boards-api\.greenhouse\.io|api\.lever\.co|api\.ashbyhq\.com)$/
+const isRobotsUrl = (url: string) => /\/robots\.txt$/.test(new URL(url).pathname)
+type Policy = { allows: (p: string) => boolean } | null
+// A robots.txt answer -> the policy. Only a clean 404 / 410 means "no robots policy" (allow all), the same rule careers-page.ts applies to the site's own robots.txt.
+// Every other answer that is not a complete 2xx (400, 401, 403, 429, 451, 5xx, an unfollowed 3xx, a body cut at the byte cap, no answer) is unreachable: null.
+const policyOf = (x: { status: number; body: string; truncated?: boolean } | null | undefined, host: string): Policy =>
+  !x || x.truncated ? null : x.status === 404 || x.status === 410 ? { allows: () => true } : x.status >= 200 && x.status < 300 ? parseRobots(x.body, host) : null
 
 export const careersAdapter: SourceAdapter = {
   id: 'careers',
@@ -52,27 +61,38 @@ export const careersAdapter: SourceAdapter = {
     if (sites.size === 0) { note?.('out_of_coverage'); return [] }
     const t0 = careersLimits.now()
     let failed = false
-    // robots.txt per host, so a redirect hop is checked against the TARGET's rules (an allowed /careers must not lead into a disallowed /private/jobs).
-    const robotsCache = new Map<string, Promise<{ allows: (p: string) => boolean } | null>>()
+    // robots.txt per host, so EVERY request (the first one, a direct link to a sibling host such as jobs.<site>, and each redirect hop) is checked against the
+    // rules of the host it is sent to, never the origin's rules for another host.
+    const robotsCache = new Map<string, Promise<Policy>>()
+    // This fetch is raw: it does not follow redirects, so a 3xx is an UNRESOLVED robots.txt (unreachable), never "no rules".
     const robotsOf = (raw: SafeGet, host: string) => {
       let r = robotsCache.get(host)
-      // This fetch is raw: it does not follow redirects (unlike get()'s own robots.txt check, which does via the
-      // isRobots hop loop). A 3xx here is therefore an UNRESOLVED robots.txt, not an absent one - its body is empty
-      // or unrelated, and parsing it as rules would accidentally read as "no restrictions found" (allow all). Only a
-      // definite 4xx (minus the already-excluded blocked codes) means no robots policy exists; a redirect we never
-      // followed is unreachable, the same as a blocked or failing fetch.
-      if (!r) { r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => !x || x.status === 0 || x.truncated || x.status >= 500 || x.status === 401 || x.status === 403 || x.status === 429 || (x.status >= 300 && x.status < 400) ? null : x.status >= 400 ? { allows: () => true } : parseRobots(x.body, host)).catch(() => null); robotsCache.set(host, r) }
+      if (!r) { r = raw(`https://${host}/robots.txt`, { headers: UA }).then(x => policyOf(x, host)).catch(() => null); robotsCache.set(host, r) }
       return r
     }
     const get = (raw: SafeGet): Get => async (url, o) => {
+      const r = await read(raw, url, o)
+      // the site's own robots.txt read (redirects followed) is remembered for its host, so the pages after it are not checked against a second fetch of it
+      if (isRobotsUrl(url)) { const h = new URL(url).hostname; if (!robotsCache.has(h)) robotsCache.set(h, Promise.resolve(policyOf(r, h))) }
+      return r
+    }
+    const read = async (raw: SafeGet, url: string, o?: { signal?: AbortSignal }) => {
       const over = () => careersLimits.now() - t0 > careersLimits.budgetMs
       if (o?.signal?.aborted) { failed = true; return null }
       // The getter does not follow redirects, so a same-site https redirect (apex -> www, /careers -> /careers/) is followed here, at most twice. An off-site hop is
       // returned as that site's (empty) page so the careers reader reports wrong_domain; a failed request or an unfollowable redirect is unreadable, not "no vacancy".
       let at = url
-      const isRobots = /\/robots\.txt$/.test(new URL(url).pathname)
+      const isRobots = isRobotsUrl(url)
       for (let hop = 0; hop <= 2; hop++) {
-        if (over()) { note?.('budget'); failed = true; return null } // checked before EVERY request, so a slow redirect chain cannot run past the budget
+        // checked before EVERY request, robots.txt lookups included, so a slow page or redirect chain cannot start a request past the budget
+        if (over()) { note?.('budget'); failed = true; return null }
+        const target = new URL(at)
+        if (!isRobots && !ATS_API.test(target.hostname.toLowerCase())) { // the rules of the host this request goes to
+          const rb = await robotsOf(raw, target.hostname)
+          if (!rb) break
+          if (!rb.allows(target.pathname)) return { status: 404, body: '', finalUrl: at } // disallowed: never fetched, never evidence
+          if (over()) { note?.('budget'); failed = true; return null }
+        }
         const r = await raw(at, { accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5', headers: UA })
         if (!r || r.status === 0) break
         if (r.status < 300 || r.status >= 400) {
@@ -83,12 +103,7 @@ export const careersAdapter: SourceAdapter = {
         }
         let next: URL; try { next = new URL(r.location ?? '', at) } catch { break }
         if (next.protocol !== 'https:' || next.username || next.password) break
-        if (!sameSite(next.hostname, new URL(at).hostname)) return isRobots ? (failed = true, null) : { status: 200, body: '', finalUrl: next.toString() }
-        if (!isRobots) { // the redirect target's own robots rules apply to where we are about to go
-          const rb = await robotsOf(raw, next.hostname)
-          if (!rb) break
-          if (!rb.allows(next.pathname)) return { status: 404, body: '', finalUrl: at } // disallowed target: never fetched, never evidence
-        }
+        if (!sameSite(next.hostname, target.hostname)) return isRobots ? (failed = true, null) : { status: 200, body: '', finalUrl: next.toString() }
         at = next.toString()
       }
       failed = true
@@ -100,7 +115,7 @@ export const careersAdapter: SourceAdapter = {
       if (n++ >= careersLimits.maxSites) { note?.('site_cap'); break }
       failed = false
       let res: Awaited<ReturnType<typeof careersSalesVacancy>>
-      try { res = await careersSalesVacancy(site, get(http), { company, now: careersLimits.now(), firstPaths: given.get(site) }) } catch { note?.('site_error'); continue }
+      try { res = await careersSalesVacancy(site, get(http), { company, now: careersLimits.now(), firstPaths: given.get(site), namedQuote: true }) } catch { note?.('site_error'); continue }
       const v = res.vacancy
       if (v && res.reason === 'found') {
         if (v.quote.length < 20) { note?.('quote_too_short'); continue } // evidence needs a 20-300 character passage from the page; a bare title is not one

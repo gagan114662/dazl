@@ -6,6 +6,7 @@
 // Funding, engineering growth, generic "GTM plans" and another company's jobs are not a vacancy: only a role-shaped title that isGtmRole() accepts counts.
 import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
+import { getDomain } from 'tldts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
 // posted (#533 AC4): when the careers link IS a public Greenhouse / Lever / Ashby posting, the board's OWN first-published date read from that
@@ -20,7 +21,9 @@ const PATHS = ['/careers', '/jobs', '/join-us', '/join', '/about/careers', '/com
 const MAX_PAGES = 4
 const ROLE_NOUN = /\b(?:executive|manager|representative|rep|sdr|bdr|director|head|lead|specialist|associate|officer|vp|vice president|consultant|engineer|partner|advisor|owner)\b/i
 const CLOSED = /\b(?:no (?:current |open |active )?(?:openings|vacancies|positions|roles|jobs)|not (?:currently |actively )?(?:hiring|recruiting)|no longer (?:accepting|available|open|hiring)|(?:position|role|job|vacancy)s? (?:has been |have been |is |are |was )?(?:filled|closed|taken)|applications? (?:are |is )?closed|past (?:positions|roles|openings|jobs)|previous (?:positions|roles|openings)|currently closed|nothing (?:open|available)|check back (?:later|soon))\b/i
-const registrable = (h: string) => { const l = h.toLowerCase().replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
+// The registrable domain by the Public Suffix List INCLUDING its private section (as lib/evals/contract.ts does), so shared hosts are not one company:
+// alice.github.io and bob.github.io are different sites. A host with no listed suffix is itself.
+export const registrable = (h: string) => { const host = h.toLowerCase().replace(/^www\./, ''); return getDomain(host, { allowPrivateDomains: true }) ?? host }
 const visible = (html: string) => html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
 const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
 const flat = (html: string) => decode(visible(html).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
@@ -162,7 +165,8 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
 }
 
 // The quote is a verbatim passage of the posting. The default window (60 before the title, 160 after) can miss the company's name, and the source prompt needs a passage that
-// names it: when the name is outside the window, widen to one span holding the title and the name if that fits in 300 characters, else take the passage around the name.
+// names it: when the name is outside the window, widen to one span holding the title and the name if that fits in 300 characters. When it does not fit, there is
+// no quote (''): a passage around the name alone would drop the vacancy it is cited for, so the caller skips it (quote_too_short) instead.
 export function quoteFor(text: string, title: string, at: number, company?: string): string {
   const win = at >= 0 ? text.slice(Math.max(0, at - 60), at + title.length + 160) : title
   const name = company?.trim()
@@ -170,9 +174,10 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
   const ci = text.toLowerCase().indexOf(name.toLowerCase())
   if (ci < 0) return win.slice(0, 300)
   if (at >= 0) { const a = Math.max(0, Math.min(at, ci) - 20), b = Math.min(text.length, Math.max(at + title.length, ci + name.length) + 20); if (b - a <= 300) return text.slice(a, b) }
-  return text.slice(Math.max(0, ci - 60), ci + name.length + 160).slice(0, 300)
+  return ''
 }
-export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[] } = {}): Promise<CareersResult> {
+// opts.namedQuote: the quote must name opts.company (the careers source adapter's evidence); without it the quote is the title window (the sales-hiring gate).
+export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[]; namedQuote?: boolean } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(site)) return { vacancy: null, reason: 'no_careers_page', pages: 0 }
   const origin = `https://${site}`
@@ -209,7 +214,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
       const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: quoteFor(vt, shown, at, opts.company), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: quoteFor(vt, shown, at, opts.namedQuote ? opts.company : undefined), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
       if (!opts.roleMatch) return { vacancy, reason: 'found', pages, readPages }
       if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, readPages, matched: true }
       if (!generic) generic = vacancy
