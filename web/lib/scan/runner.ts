@@ -707,7 +707,10 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
   const notRun = (x: string | null) => !x || /^skipped/.test(x)
   if (first5 && notRun(news) && notRun(tf)) return 'no_lead_source'
-  if (clean(news) || (!news && clean(tf))) return 'no_discovery'
+  // A news stage that recorded skipped_* never ran: it neither concluded nor blocks TinyFish's clean result from concluding.
+  if (clean(news) || (notRun(news) && clean(tf))) return 'no_discovery'
+  // A first play's capped fallback that searched and got no hits at all ('unavailable') searched everything the play may use.
+  if (first5 && notRun(news) && tf === 'unavailable') return 'no_discovery'
   return 'unbounded_fallback_hold'
 }
 
@@ -974,15 +977,17 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   let q: string[]
   if (round) q = round.queries.slice(0, ADAPTIVE_SEARCHES)
   else {
-    const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
+    // The query plan is sized to the searches this run may really send: the capped first-play fallback plans only its own cap.
+    const budgetN = caps ? Math.min(caps.searches, tfLimits().searchesPerScan) : tfLimits().searchesPerScan
+    const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(budgetN / 2))
     // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
     // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
     // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
-    const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
-    const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
+    const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, budgetN - direct.length - 2))
+    const modelQueries = Math.min(6, Math.max(caps ? 1 : 2, budgetN - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
     const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
     if (diag) diag.info.query_source = plan.source
-    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, budgetN)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
@@ -1315,7 +1320,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
-        leads = await tinyfishLeads(db, job, icpForSources!, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
+        // The capped first-play fallback does not repeat the news search the play already ran (or had switched off).
+        leads = await tinyfishLeads(db, job, icpForSources!, providers_[vendor], key, deps.fetchImpl, diag, newsOn && !caps ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
         if (leads?.length) partial.candidates = leads
         tfCandidates = leads?.length ?? 0
         // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
@@ -1396,6 +1402,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (!leads && !budgetRefused && deps.first5 && job.query && icpForSources && complete && tinyfishEnabled() && playCaps.searches > 0) {
       await runTinyfishStage(playCaps)
       const st = { ...summarizeTrace(diag.trace), ...diag.info }
+      capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0 // #1082
+      if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null })
     }
     if (!leads) {

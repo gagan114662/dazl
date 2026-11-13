@@ -62,6 +62,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).
     firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
     trialTinyfishSearchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishSearchUsd ?? null,
+    trialTinyfishFetchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishFetchUsd ?? null,
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,

@@ -65,6 +65,8 @@ export interface EstimateInput {
   firstPlayPeopleSearches?: number
   // A free-trial scan pays each people search from its trial reserve at this price (DAZL_TRIAL_TINYFISH_SEARCH_USD, trialCaps()).
   trialTinyfishSearchUsd?: number | null
+  // #1037 item 1: a trial pays the first-play lead fallback's page reads from its reserve at this price (runner.ts trialCharges).
+  trialTinyfishFetchUsd?: number | null
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
@@ -139,7 +141,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const lead = firstPlayLeadCaps(env)
     if (lead.searches > 0) {
       const trialS = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
-      const su = trialS ?? tfSearch, fu = tfFetch
+      const trialF = trialS !== null && typeof i.trialTinyfishFetchUsd === 'number' && Number.isFinite(i.trialTinyfishFetchUsd) && i.trialTinyfishFetchUsd >= 0 ? i.trialTinyfishFetchUsd : null
+      const su = trialS ?? tfSearch, fu = trialF ?? tfFetch
       rows.push({ id: 'first_play_lead_search', label: 'Lead search fallback (only when free news cannot serve the play)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialS !== null ? `${money(trialS)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: lead.searches }, usd: { min: 0, max: (su ?? 0) * lead.searches + (fu ?? 0) * lead.fetches }, capped: false, note: `Only when free news cannot serve the play: at most ${lead.searches} TinyFish searches and ${lead.fetches} page reads (a count cap, not a dollar cap)${trialS !== null ? '; paid from the free-trial reserve' : ''}` })
     }
     // A trial pays these from its own reserve at the trial price (runner.ts trialPeoplePrepaid), never into the reserve's last 25%.

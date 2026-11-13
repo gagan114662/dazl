@@ -7,6 +7,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { firstPlayLeadCaps } from '../lib/people/first-play-cap.ts'
+import { fallbackStopCode } from '../lib/scan/runner.ts'
+import { SourceRunLedger } from '../lib/scan/source-runs.ts'
 
 const FIRST5 = JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false })
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
@@ -69,4 +71,69 @@ test('#1037 an ordinary (own-key, non-first5) scan is unchanged: TinyFish first,
   const r = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { runBudget: undefined })))
   assert.ok(r.calls.searches.length >= 1)
   assert.ok(r.leads.some(l => l.company === 'Brightloop'))
+  assert.equal(sourceStatus(r, 'search:tinyfish'), 'ok', 'the ordinary TinyFish stage served it')
+  assert.equal(sourceStatus(r, 'search:news'), null, 'leads already found: the news stage is not recorded as skipped')
+})
+
+test('#1037 first play: the page-read cap holds - DAZL_FIRST_PLAY_LEAD_FETCHES=2 reads at most 2 pages however many hits come back', async () => {
+  const many = Array.from({ length: 10 }, (_, i) => ({ url: `https://news${i}.example/story`, title: `Story ${i}`, snippet: QUOTE, date: daysAgo(12) }))
+  const r = await withEnv({ NEWS_SEARCH_ENABLED: '0', DAZL_FIRST_PLAY_LEAD_FETCHES: '2' }, () => runFixture(base(FUNDING, { hits: many, tfPages: Object.fromEntries(many.map(h => [h.url, page])) })))
+  const fetched = r.calls.tfFetchBatches.flat()
+  assert.ok(fetched.length >= 1 && fetched.length <= 2, `page reads: ${fetched.length}`)
+})
+
+// Council R1/R2: a news stage recorded as skipped_* never ran, so it must not block a clean TinyFish result from concluding.
+test('#1037 stop code: news skipped + TinyFish searched clean and found nothing -> no_discovery, for a first play and an ordinary scan alike', () => {
+  const at = (news: string | null, tf: string | null, first5: boolean) => { const l = new SourceRunLedger(); if (news) l.record('search:news', news); if (tf) l.record('search:tinyfish', tf); return fallbackStopCode(l, first5) }
+  for (const first5 of [true, false]) {
+    assert.equal(at('skipped_disabled', 'empty', first5), 'no_discovery')
+    assert.equal(at(null, 'empty', first5), 'no_discovery')
+    assert.equal(at('skipped_disabled', 'error', first5), 'source_error')
+  }
+  assert.equal(at('skipped_disabled', null, true), 'no_lead_source')
+  assert.equal(at('skipped_disabled', 'skipped_hold', true), 'no_lead_source')
+  assert.equal(at('skipped_disabled', null, false), 'unbounded_fallback_hold', 'an ordinary scan keeps its classification')
+  assert.equal(at('empty', null, true), 'no_discovery')
+})
+
+// Council round 1: the hiring shape with its own profile and job-page evidence, the stop code when the fallback searches and finds
+// nothing, and the free-trial path.
+const JOB = 'https://boards.greenhouse.io/brightloop/jobs/123'
+const JOB_QUOTE = 'Brightloop is hiring its first Sales Development Representative (SDR) to build pipeline'
+const HIRING_ICP = { ...ICP, signals: ['hiring first sales rep'], where: ['London, UK', 'Manchester, UK', 'Remote'], window_days: 30 }
+const hiringShape = (over: Partial<Fixture> = {}) => base(HIRING, {
+  modelIcp: HIRING_ICP, modelQueries: ['SaaS startup hiring first SDR', 'founding account executive SaaS', 'first sales hire B2B SaaS'],
+  hits: [{ url: JOB, title: 'SDR - Brightloop', snippet: JOB_QUOTE, date: daysAgo(5) }],
+  tfPages: { [JOB]: { title: 'SDR - Brightloop', text: `Posted ${daysAgo(5)}. ${JOB_QUOTE}. ${'About the role and the team. '.repeat(15)}` } },
+  own: { [JOB]: { title: 'SDR - Brightloop', text: `Posted ${daysAgo(5)}. ${JOB_QUOTE}. ${'About the role and the team. '.repeat(15)}` } },
+  extraction: [{ company: 'Brightloop', signal: 'hiring a first SDR', source_url: JOB, excerpt: JOB_QUOTE, event_date: daysAgo(5) }], ...over,
+})
+
+test('#1037 hiring shape (2934229e, hiring profile, three places): the capped plan keeps a model-planned query - board site: queries never take every capped search', async () => {
+  const r = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(hiringShape()))
+  assert.ok(r.calls.searches.length >= 1 && r.calls.searches.length <= 3, `capped: ${r.calls.searches.length}`)
+  assert.ok(r.calls.searches.filter(q => !/site:/.test(q)).length >= 2, `model-planned queries (not board site: queries) were sent that is not a board site: query was sent: ${JSON.stringify(r.calls.searches)}`)
+  assert.notEqual(r.job.error, 'unbounded_fallback_hold')
+})
+
+test('#1037 first play: the capped fallback searched and found nothing -> no_discovery (searched, nothing found), never a held fallback', async () => {
+  const none = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { hits: [] })))
+  assert.ok(none.calls.searches.length >= 1); assert.equal(none.job.error, 'no_discovery', String(none.job.error))
+  const empty = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { extraction: [] })))
+  assert.ok(empty.calls.searches.length >= 1); assert.equal(empty.job.error, 'no_discovery', String(empty.job.error))
+})
+
+test('#1037 ordinary scan, paid_fallback=false, news off, TinyFish searched clean and extracted nothing: still no_discovery (classification kept)', async () => {
+  const r = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { runBudget: JSON.stringify({ paid_fallback: false }), extraction: [] })))
+  assert.equal(r.job.error, 'no_discovery', String(r.job.error))
+})
+
+const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '5', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.01', DAZL_TRIAL_TINYFISH_FETCH_USD: '0', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: '0', NEWS_SEARCH_ENABLED: '0' }
+test('#1037 FREE TRIAL first play: the capped fallback is paid from the trial reserve and stays inside it; a reserve too small for one search sends none', async () => {
+  const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
+  const t = await withEnv(TRIAL_ENV, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5' })))
+  assert.ok(t.calls.searches.length >= 1 && t.calls.searches.length <= 3, String(t.calls.searches.length))
+  assert.ok(reserved(t) >= 0.01 * t.calls.searches.length - 1e-9 && reserved(t) <= 1, `each search reserved from the trial reserve: ${reserved(t)}`)
+  const poor = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '5' }, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5' })))
+  assert.equal(poor.calls.searches.length, 0, 'a search the reserve cannot pay is never sent')
 })

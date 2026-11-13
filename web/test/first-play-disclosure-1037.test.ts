@@ -130,6 +130,7 @@ test('#1037 trial (non-first5) search row: lead searches at the operator price, 
 test('#1037 item 1: the first-play estimate states the capped lead-search fallback, priced, and drops it when the operator turns it off', () => {
   const e = estimateRun({ budget: FIRST5, payer: 'trial', trialTinyfishSearchUsd: 0.02, env: { DAZL_PRICE_TINYFISH_FETCH_USD: '0.01' } })
   const l = row(e, 'first_play_lead_search')!
+  assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', trialTinyfishSearchUsd: 0.02, trialTinyfishFetchUsd: 0.005, env: { DAZL_PRICE_TINYFISH_FETCH_USD: '0.01' } }), 'first_play_lead_search')!.usd, { min: 0, max: 0.02 * 3 + 0.005 * 6 }, 'a trial pays page reads at the trial price')
   assert.equal(l.provider, 'TinyFish'); assert.deepEqual(l.units, { min: 0, max: 3 })
   assert.deepEqual(l.usd, { min: 0, max: 0.02 * 3 + 0.01 * 6 })
   assert.match(l.note ?? '', /Only when free news cannot serve the play: at most 3 TinyFish searches and 6 page reads/)
