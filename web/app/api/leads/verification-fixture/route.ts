@@ -6,7 +6,7 @@ import { createVerificationFixture, deleteVerificationFixture, VERIFICATION_FIXT
 import { createReviewDraftFixture, deleteReviewDraftFixtures } from '@/lib/scan/review-draft-fixture'
 import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists } from '@/lib/scan/first-touch-fixture'
 import { createWorkEmailFixture, deleteWorkEmailFixture, workEmailFixtureAvailable, workEmailFixtureExists } from '@/lib/scan/work-email-fixture'
-import { deleteRealCompanyChecks, parseRealCheckInput, realCheckAvailable, runRealCompanyCheck } from '@/lib/scan/real-company-check'
+import { deleteRealCompanyChecks, parseRealCheckInput, realCheckAvailable, RealCheckNotRead, runRealCompanyCheck } from '@/lib/scan/real-company-check'
 import { fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
@@ -67,10 +67,14 @@ export async function POST(req: NextRequest) {
     const action = await actionOf(req, ['first_touch', 'review_draft', 'work_email', 'work_email_real'])
     if (action === null) return badAction()
     if (action === 'work_email_real') {
+      // Gate first (test tenant on staging), then validate: nobody else learns what input would be accepted.
+      if (!fixtureAvailable(getScanDb(), user.tenantId)) throw new FixtureError('test_tenant_only')
+      if (!realCheckAvailable(getScanDb(), user.tenantId)) throw new FixtureError('staging_only')
       let body: unknown = null; try { body = JSON.parse(raw) } catch { body = null }
       const input = parseRealCheckInput(body)
       if (!input) return NextResponse.json({ error: 'bad_input' }, { status: 400 })
-      return NextResponse.json(await runRealCompanyCheck(getScanDb(), user.tenantId, input))
+      try { return NextResponse.json(await runRealCompanyCheck(getScanDb(), user.tenantId, input)) }
+      catch (e) { if (e instanceof RealCheckNotRead) return NextResponse.json({ error: 'site_not_read', reason: e.reason, jobId: e.jobId }, { status: 422 }); throw e }
     }
     if (action === 'first_touch') return NextResponse.json(createFirstTouchFixture(getScanDb(), user.tenantId))
     if (action === 'work_email') return NextResponse.json(createWorkEmailFixture(getScanDb(), user.tenantId))

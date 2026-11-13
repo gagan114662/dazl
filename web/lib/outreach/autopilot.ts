@@ -374,6 +374,7 @@ export function newLeadsSql(scope = ''): string {
      WHERE j.user_id = ? AND j.status = 'done' AND (j.enrich_started_at IS NULL OR j.enrich_finished_at IS NOT NULL OR j.enrich_started_at < ?)
        AND j.run_budget IS NULL AND j.funded_by <> 'trial'
        AND l.evidence_excerpt IS NOT NULL AND l.confidence >= ? AND l.quarantined_at IS NULL
+       AND COALESCE(l.source_kind, '') <> 'staging_check'
        AND ${PUBLISHED_RECIPIENT_CANDIDATE_SQL}
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)

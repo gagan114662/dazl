@@ -22,6 +22,8 @@ export function fixtureFailureMessage(status: number | null, body: unknown): str
   if (code === 'staging_fakes_only') return 'Only on staging with the fake People Data Labs and fake ZeroBounce turned on. Nothing was created.'
   if (code === 'bad_input') return 'Enter a company name, its website (https://...) and 1-4 buyer roles separated by ";".'
   if (code === 'staging_only') return 'Only on staging.'
+  if (code === 'site_not_read') { const why = (body as { reason?: unknown }).reason; return `The site crawl read nothing usable${typeof why === 'string' && why ? `: ${why.slice(0, 200)}` : ''}. Nothing to look up on this company.` }
+  if (code === 'check_in_flight') return 'Nothing was removed: a crawl or a Find work email lookup on a check is still running. Try again in a minute.'
   if (code === 'lookup_in_flight') return 'Nothing was removed: a Find work email lookup on the fixture lead is still running. Try again in a minute.'
   if (status === 429) return 'Too many requests. Wait a minute and try again.'
   return status ? `That did not work (error ${status}). Try again.` : 'That did not work: no response. Check your connection and try again.'

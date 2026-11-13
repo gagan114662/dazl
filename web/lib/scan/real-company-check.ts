@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
 import { isStaging } from '../staging.ts'
-import { createJob } from './store.ts'
 import { crawlJob, type Get } from '../connectors/sitecrawl.ts'
 import { migrateWorkEmail } from '../people/work-email.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
@@ -15,7 +14,8 @@ import { migrateEmailGuess } from '../people/email-pattern.ts'
 // company's real pages.
 //
 // Gated: the designated test tenant (fixtureAvailable) AND DAZL_ENV=staging; everything else is FixtureError. The play and lead say
-// what they are ("staging check", not a scan finding). Nothing is drafted or sent (no contact is stored on the lead).
+// what they are ("staging check", not a scan finding). Never drafted: autopilot and launch calibration skip source_kind 'staging_check'
+// (the crawl may record a role inbox on the real site). The crawl has a 60 s deadline; a crawl that read nothing is a reported failure.
 
 export const REAL_CHECK_JOB = 'dazl real-company Find work email check (staging test)'
 export const REAL_CHECK_SIGNAL = 'Staging check: a real company entered by the tester to check Find work email. Not a scan finding; dazl claims no buying signal.'
@@ -23,6 +23,8 @@ export const REAL_CHECK_SOURCE = 'staging_check'
 
 export interface RealCheckInput { company: string; url: string; who: string }
 export interface RealCheckResult { jobId: string; leadId: string; site: string | null; people: string[] }
+// The crawl read nothing usable: the site could not be settled or names nobody. `reason`: the crawler's own last audit status.
+export class RealCheckNotRead extends Error { readonly reason: string; readonly jobId: string; constructor(reason: string, jobId: string) { super('site_not_read'); this.reason = reason; this.jobId = jobId } }
 
 // Validated input or null: a company name, an http(s) website on a host name (never an IP or a port), and 1-4 buyer roles.
 export function parseRealCheckInput(raw: unknown): RealCheckInput | null {
@@ -33,7 +35,8 @@ export function parseRealCheckInput(raw: unknown): RealCheckInput | null {
   if (company.length < 2 || company.length > 80 || who.length < 1 || who.length > 4 || who.some(w => w.length > 40)) return null
   let u: URL
   try { u = new URL(typeof r.url === 'string' ? r.url.trim() : '') } catch { return null }
-  if ((u.protocol !== 'https:' && u.protocol !== 'http:') || u.port || u.username || u.password || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(u.hostname) || u.href.length > 300) return null
+  if (u.protocol === 'http:') u.protocol = 'https:' // the crawler reads https only (sitecrawl.ts rawGet)
+  if (u.protocol !== 'https:' || u.port || u.username || u.password || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(u.hostname) || u.href.length > 300) return null
   return { company, url: u.href, who: who.join('; ') }
 }
 
@@ -41,27 +44,37 @@ export function realCheckAvailable(db: Database.Database, tenantId: string, env:
   return typeof tenantId === 'string' && !!tenantId && isStaging(env) && fixtureAvailable(db, tenantId)
 }
 
-export async function runRealCompanyCheck(db: Database.Database, tenantId: string, input: RealCheckInput, deps: { env?: Record<string, string | undefined>; get?: Get; gapMs?: number; now?: number } = {}): Promise<RealCheckResult> {
+export async function runRealCompanyCheck(db: Database.Database, tenantId: string, input: RealCheckInput, deps: { env?: Record<string, string | undefined>; get?: Get; gapMs?: number; now?: number; timeoutMs?: number } = {}): Promise<RealCheckResult> {
   const env = deps.env ?? process.env
   if (!fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
   if (!isStaging(env)) throw new FixtureError('staging_only')
-  const jobId = createJob(db, tenantId, { business_name: REAL_CHECK_JOB, industry: 'staging check', location: 'staging check' })
+  // Inserted already 'running' in one statement: a scan worker never sees it 'pending' and so never claims it (no paid scan).
+  const jobId = randomBytes(12).toString('hex')
   const icp = { summary: `Find work email check for ${input.company}`, who: input.who.split('; '), industries: [], sizes: [], where: [], signals: [], exclude: [] }
-  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(icp), jobId)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, icp) VALUES (?, ?, ?, 'staging check', 'staging check', 'running', ?)").run(jobId, tenantId, REAL_CHECK_JOB, JSON.stringify(icp))
   const leadId = randomBytes(12).toString('hex')
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, evidence_excerpt, confidence, score, source_kind, created_at) VALUES (?, ?, '', ?, NULL, ?, ?, ?, 90, 80, ?, ?)")
     .run(leadId, jobId, input.company, REAL_CHECK_SIGNAL, input.url, input.company, REAL_CHECK_SOURCE, Math.floor((deps.now ?? Date.now()) / 1000))
-  try { await crawlJob(db, tenantId, jobId, { env, ...(deps.get ? { get: deps.get } : {}), ...(deps.gapMs !== undefined ? { gapMs: deps.gapMs } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}) }) }
+  try { await crawlJob(db, tenantId, jobId, { env, signal: AbortSignal.timeout(deps.timeoutMs ?? 60_000), ...(deps.get ? { get: deps.get } : {}), ...(deps.gapMs !== undefined ? { gapMs: deps.gapMs } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}) }) }
   finally { db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ? AND status = 'running'").run(jobId) }
   const rows = db.prepare("SELECT kind, value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind IN ('domain','person')").all(tenantId, leadId) as { kind: string; value: string }[]
-  return { jobId, leadId, site: rows.find(r => r.kind === 'domain')?.value.split('|')[0] ?? null, people: rows.filter(r => r.kind === 'person').map(r => r.value) }
+  const result = { jobId, leadId, site: rows.find(r => r.kind === 'domain')?.value.split('|')[0] ?? null, people: rows.filter(r => r.kind === 'person').map(r => r.value) }
+  if (!result.site || !result.people.length) {
+    let last = ''
+    try { last = (db.prepare("SELECT status FROM connector_audit WHERE tenant_id = ? AND job_id = ? AND connector = 'sitecrawl' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(tenantId, jobId) as { status: string } | undefined)?.status ?? '' } catch { last = '' }
+    throw new RealCheckNotRead((result.site ? `the site was read but names no one with these buyer roles` : last || 'the company website could not be read or settled').slice(0, 200), jobId)
+  }
+  return result
 }
 
 // Removes every staging check play of this tenant with its leads and the rows hung on them. Test tenant only.
 export function deleteRealCompanyChecks(db: Database.Database, tenantId: string): { deleted: number } {
   if (!fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
   migrateWorkEmail(db); migrateEmailGuess(db)
-  const jobs = db.prepare("SELECT id FROM scan_jobs WHERE user_id = ? AND business_name = ? AND industry = 'staging check'").all(tenantId, REAL_CHECK_JOB) as { id: string }[]
+  const jobs = db.prepare("SELECT id, status FROM scan_jobs WHERE user_id = ? AND business_name = ? AND industry = 'staging check'").all(tenantId, REAL_CHECK_JOB) as { id: string; status: string }[]
+  // A crawl still running, or a Find work email lookup in flight on one of these leads, would finish against deleted rows.
+  const fresh = Math.floor(Date.now() / 1000) - 120
+  if (jobs.some(j => j.status === 'running') || jobs.some(j => db.prepare("SELECT 1 FROM work_email_lookups w JOIN leads l ON l.id = w.lead_id WHERE l.scan_job_id = ? AND w.tenant_id = ? AND ((w.status = 'pending' AND w.updated_at >= ?) OR (w.mailbox_check = 'pending' AND COALESCE(w.mailbox_checked_at, 0) >= ?)) LIMIT 1").get(j.id, tenantId, fresh, fresh))) throw new FixtureError('check_in_flight')
   db.transaction(() => {
     for (const j of jobs) {
       const leads = db.prepare('SELECT id FROM leads WHERE scan_job_id = ? AND source_kind = ?').all(j.id, REAL_CHECK_SOURCE) as { id: string }[]

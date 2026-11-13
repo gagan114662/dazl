@@ -89,6 +89,10 @@ test('work_email_real (#1036 live check): staging test tenant only; malformed in
   assert.equal(bad.status, 400); assert.deepEqual(await bad.json(), { error: 'bad_input' })
   const g = await (await GET()).json() as { realCheckAvailable: boolean }
   assert.equal(g.realCheckAvailable, true)
+  setUser({ ...B })
+  const other = await call('POST', { action: 'work_email_real', company: 'x', url: 'nonsense', who: '' })
+  assert.equal(other.status, 403, 'review R7: the gate answers before input validation'); assert.deepEqual(await other.json(), { error: 'test_tenant_only' })
+  setUser(A)
   assert.equal((db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n, 0)
   assert.equal(fetches, 0)
   setEnv(false)

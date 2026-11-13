@@ -11,7 +11,9 @@ import { FixtureError } from '../lib/outreach/test-fixture.ts'
 import type { Get } from '../lib/connectors/sitecrawl.ts'
 import { findWorkEmail } from '../lib/people/work-email.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
-import { deleteRealCompanyChecks, parseRealCheckInput, realCheckAvailable, runRealCompanyCheck } from '../lib/scan/real-company-check.ts'
+import { deleteRealCompanyChecks, parseRealCheckInput, realCheckAvailable, RealCheckNotRead, runRealCompanyCheck } from '../lib/scan/real-company-check.ts'
+import { migrateAutopilot, newLeadsSql } from '../lib/outreach/autopilot.ts'
+import { CALIBRATION_CANDIDATES_SQL } from '../lib/outreach/calibration.ts'
 
 const T = 'real-check-tenant'
 const STAGING = { DAZL_ENV: 'staging' }
@@ -20,8 +22,9 @@ const card = (name: string, email: string, role: string) => `<div class="team-me
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PAGES: Record<string, string> = {
   '/robots.txt': 'User-agent: *\nAllow: /',
-  '/': html(`${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Cedar Park, TX 78613</p><a href="/team">Our Team</a>`),
+  '/': html(`${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Cedar Park, TX 78613</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`),
   '/team': html(`${PROSE}${card('Maya Thornton', 'maya@bluebonnetrealty.com', 'Real Estate Broker | Owner')}${card('Owen Pike', 'owen@bluebonnetrealty.com', 'Real Estate Agent')}`),
+  '/contact': html(`${PROSE}<a href="mailto:office@bluebonnetrealty.com">Email the office</a>`),
 }
 const get: Get = async url => { const p = PAGES[new URL(url).pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
 const INPUT = { company: 'Bluebonnet Realty', url: 'https://bluebonnetrealty.com/', who: 'Broker; Owner' }
@@ -34,6 +37,7 @@ test('#1036 real-company check: staging test tenant only; input validated (http(
   await assert.rejects(runRealCompanyCheck(db, 'other', INPUT, { env: STAGING, get, gapMs: 0 }), (e: unknown) => e instanceof FixtureError && e.code === 'test_tenant_only')
   assert.equal((db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n, 0, 'nothing created by a refusal')
   assert.deepEqual(parseRealCheckInput(INPUT), INPUT)
+  assert.equal(parseRealCheckInput({ ...INPUT, url: 'http://bluebonnetrealty.com/' })?.url, 'https://bluebonnetrealty.com/', 'http is read as https (the crawler reads https only)')
   for (const bad of [null, {}, { ...INPUT, url: 'ftp://x.com' }, { ...INPUT, url: 'http://10.0.0.1/' }, { ...INPUT, url: 'https://x.com:8080/' }, { ...INPUT, url: 'https://user:pw@x.com/' }, { ...INPUT, who: '' }, { ...INPUT, who: 'a;b;c;d;e' }, { ...INPUT, company: 'x' }])
     assert.equal(parseRealCheckInput(bad), null, JSON.stringify(bad))
 })
@@ -51,4 +55,40 @@ test('#1036 real-company check end to end: real crawl settles the site and names
   assert.deepEqual(calls, [])
   assert.deepEqual(deleteRealCompanyChecks(db, T), { deleted: 1 })
   for (const t of ['leads', 'work_email_lookups', 'email_candidates']) assert.equal((db.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n, 0, t)
+})
+
+const now = () => Math.floor(Date.now() / 1000)
+test('#1036 review R1: a real-company check lead is never an autopilot candidate, even when the crawl records the site\'s inbox', async () => {
+  const db = setup(); migrateAutopilot(db)
+  const r = await runRealCompanyCheck(db, T, INPUT, { env: STAGING, get, gapMs: 0 })
+  assert.ok(db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND connector = 'sitecrawl' AND kind = 'email'").get(r.leadId), 'precondition: the crawl recorded the office inbox')
+  const cands = () => (db.prepare(newLeadsSql()).all(T, now() - 1e9, 0, T, T, T, now(), now()) as { id: string }[]).map(x => x.id)
+  const calib = () => (db.prepare(CALIBRATION_CANDIDATES_SQL).all(T, 0, T) as { id: string }[]).map(x => x.id)
+  assert.ok(!cands().includes(r.leadId), 'never drafted by autopilot'); assert.ok(!calib().includes(r.leadId), 'never a launch-calibration sample')
+  db.prepare('UPDATE leads SET source_kind = NULL WHERE id = ?').run(r.leadId)
+  assert.ok(cands().includes(r.leadId), 'control: the same lead as an ordinary lead IS a candidate, so the exclusion is what keeps it out')
+  assert.ok(calib().includes(r.leadId), 'control (calibration)')
+})
+
+test('#1036 review R2: a crawl that reads nothing is a reported failure with the crawler\'s reason, not a silent success', async () => {
+  const db = setup()
+  const blocked: Get = async url => ({ status: 403, body: 'Forbidden', finalUrl: url })
+  await assert.rejects(runRealCompanyCheck(db, T, INPUT, { env: STAGING, get: blocked, gapMs: 0 }), (e: unknown) => e instanceof RealCheckNotRead && e.reason.length > 0)
+  const nobody: Get = async url => { const p = new URL(url).pathname; return p === '/team' ? { status: 200, body: html(PROSE), finalUrl: url } : get(url) }
+  await assert.rejects(runRealCompanyCheck(db, T, INPUT, { env: STAGING, get: nobody, gapMs: 0 }), (e: unknown) => e instanceof RealCheckNotRead && /names no one/.test(e.reason))
+})
+
+test('#1036 review R4: removing checks is refused while a crawl or a lookup runs, and touches only this tenant\'s checks', async () => {
+  const db = setup()
+  const r = await runRealCompanyCheck(db, T, INPUT, { env: STAGING, get, gapMs: 0 })
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('other-job', 'other-tenant', ?, 'staging check', 'staging check', 'done')").run('dazl real-company Find work email check (staging test)')
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('real-play', ?, 'Austin brokerages', 'real estate', 'Austin', 'done')").run(T)
+  db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, updated_at) VALUES (?, ?, 'Maya Thornton|Real Estate Broker | Owner', 'pending', ?)").run(T, r.leadId, now())
+  assert.throws(() => deleteRealCompanyChecks(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'check_in_flight')
+  db.prepare('DELETE FROM work_email_lookups').run()
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('crawling', ?, 'dazl real-company Find work email check (staging test)', 'staging check', 'staging check', 'running')").run(T)
+  assert.throws(() => deleteRealCompanyChecks(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'check_in_flight', 'a crawl still running')
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'crawling'").run()
+  assert.deepEqual(deleteRealCompanyChecks(db, T), { deleted: 2 })
+  assert.deepEqual((db.prepare('SELECT id FROM scan_jobs ORDER BY id').all() as { id: string }[]).map(x => x.id), ['other-job', 'real-play'], 'another tenant\'s check and a real play survive')
 })
