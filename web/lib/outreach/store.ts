@@ -115,6 +115,7 @@ export function migrateOutreach(db: Database.Database): void {
   addCol('gmail_accounts', 'read_granted', 'INTEGER NOT NULL DEFAULT 0')
   addCol('outreach_messages', 'thread_id', 'TEXT')
   addCol('outreach_messages', 'test', 'INTEGER NOT NULL DEFAULT 0') // 1 = addressed to a tenant-allowlisted test inbox
+  db.exec('CREATE INDEX IF NOT EXISTS outreach_messages_tenant_sent ON outreach_messages (tenant_id, sent_at)') // #1040 Home's 30-day results
   addCol('outreach_messages', 'hold_reason', 'TEXT') // why a first-touch draft is held; NULL = never held by the scheduler (legacy/manual)
   addCol('outreach_messages', 'hold_until', 'INTEGER') // earliest retry time (unix seconds); NULL = no scheduler retry
   addCol('outreach_messages', 'reply_checked_at', 'INTEGER') // #355: last time syncReplies read this thread without error (unix seconds); NULL = never

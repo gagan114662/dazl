@@ -1,5 +1,5 @@
 'use client'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import GmailGate from '../gmail-gate'
 import ConversionPanel from './conversion-panel'
@@ -12,8 +12,8 @@ interface Info { available: boolean; consent_accepted: boolean; read_granted: bo
 // changed: a response to an earlier query (a slow first filter, a load-more or a mark-read started before a switch)
 // is dropped, never merged into another filter's list or counts.
 type Listed = Info & { key: string }
-const queryKey = (status: Status, jobId: string | null) => `${status}|${jobId ?? ''}`
-const listUrl = (status: Status, jobId: string | null, cursor: string | null) => `/api/outreach/inbox?status=${status}${jobId ? `&job_id=${jobId}` : ''}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+const queryKey = (status: Status, jobId: string | null, cls: string | null = null) => `${status}|${jobId ?? ''}|${cls ?? ''}`
+const listUrl = (status: Status, jobId: string | null, cursor: string | null, cls: string | null = null) => `/api/outreach/inbox?status=${status}${jobId ? `&job_id=${jobId}` : ''}${cls ? `&class=${cls}` : ''}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
 type Status = 'all' | 'needs_owner' | 'unread'
 const FILTERS: [Status, string, keyof Counts][] = [['all', 'All', 'threads'], ['needs_owner', 'Needs you', 'needs_owner'], ['unread', 'Unread', 'unread']]
 interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
@@ -35,7 +35,12 @@ export default function InboxClient() {
   const asked = q?.get('status') as Status | null
   const [status, setStatus] = useState<Status>(asked && FILTERS.some(f => f[0] === asked) ? asked : 'all')
   const [jobId, setJobId] = useState<string | null>(/^[a-f0-9]{24}$/.test(q?.get('job_id') ?? '') ? q!.get('job_id') : null)
-  const key = queryKey(status, jobId)
+  // ?class=positive (Home's Interested tile, #1040): only threads whose deciding reply is interested; the API filters it.
+  // Read from the URL on every navigation (a plain Inbox link turns it off); Show all replies removes it from the URL.
+  const router = useRouter()
+  const cls = q?.get('class') === 'positive' ? 'positive' : null
+  const showAll = () => { const u = new URLSearchParams(q?.toString() ?? ''); u.delete('class'); const s = u.toString(); router.replace(`/app/inbox${s ? `?${s}` : ''}`, { scroll: false }) }
+  const key = queryKey(status, jobId, cls)
   const [list, setList] = useState<Listed | null>(null) // the newest page that arrived, for whichever query it answers
   const [failedKey, setFailedKey] = useState<string | null>(null)
   const [moreKey, setMoreKey] = useState<string | null>(null) // a load-more in flight, for that query
@@ -52,18 +57,18 @@ export default function InboxClient() {
   // load-more); a response that still lands after that is dropped by the aborted signal.
   useEffect(() => {
     const c = new AbortController()
-    fetch(listUrl(status, jobId, null), { signal: c.signal }).then(r => r.ok ? r.json() : Promise.reject(new Error('inbox_' + r.status)))
+    fetch(listUrl(status, jobId, null, cls), { signal: c.signal }).then(r => r.ok ? r.json() : Promise.reject(new Error('inbox_' + r.status)))
       .then((j: Info) => { if (!c.signal.aborted) setList({ ...j, key }) })
       .catch(() => { if (!c.signal.aborted) setFailedKey(key) })
     return () => { c.abort(); moreCtl.current?.abort() }
-  }, [status, jobId, key, retryTick]) // status and jobId are what key is made of; retryTick is the explicit Try again
+  }, [status, jobId, cls, key, retryTick]) // status, jobId and cls are what key is made of; retryTick is the explicit Try again
   const current = list && list.key === key ? list : null
   function loadMore() {
     if (!current?.next_cursor || moreKey === key) return
     const k = key, c = new AbortController()
     moreCtl.current = c
     setMoreKey(k); setMoreErr(null)
-    fetch(listUrl(status, jobId, current.next_cursor), { signal: c.signal }).then(r => r.ok ? r.json() : Promise.reject(new Error(`error ${r.status}`))).then((j: Info | null) => {
+    fetch(listUrl(status, jobId, current.next_cursor, cls), { signal: c.signal }).then(r => r.ok ? r.json() : Promise.reject(new Error(`error ${r.status}`))).then((j: Info | null) => {
       if (!j || !Array.isArray(j.threads)) throw new Error('unexpected response')
       // Appended only to the list it was asked for. Rows already shown are kept; a thread that moved since the first
       // page is not shown twice.
@@ -99,6 +104,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
+      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply is interested, not counting auto-replies (a later delivery notice in the thread counts; all time, not only the last 30 days). <button type="button" className="underline" onClick={showAll}>Show all replies</button></p>}
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}

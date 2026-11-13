@@ -200,6 +200,14 @@ jobs:
           mkdir -p preview/business
           SHOTS=preview/business node test/ui/business-1043.ui.mjs | tee /tmp/biz.out
           ! grep -q '^NOT RUN' /tmp/biz.out
+      # #1040: Home's "Last 30 days" tiles, latest lists and by-signal table on the real build (1280 and 390 px), the new
+      # workspace's zero state and the failed-read state. pipefail: a failure or a silent NOT RUN fails the job.
+      - name: Home last-30-days results (#1040)
+        run: |
+          set -o pipefail
+          mkdir -p preview/home-results
+          SHOTS=preview/home-results node test/ui/home-results-1040.ui.mjs | tee /tmp/hr.out
+          ! grep -q '^NOT RUN' /tmp/hr.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
