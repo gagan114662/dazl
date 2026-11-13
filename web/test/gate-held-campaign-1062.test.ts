@@ -295,6 +295,11 @@ test('#1062 Leads review button: a lead held by BOTH the time window and the req
     // the gate alone, no window hold, no usable date (haiku r2 R6): the date still has to be confirmed afterwards
     [{ review_reason: 'quote_unconfirmed', gate_held: true, event_date: null, window_held: false },
       `${R}${PASSED} Only running the scan again, with the check passing, can make it usable. Its event date still has to be confirmed after that.`],
+    // a date that looks like one but is impossible counts as no usable date (the window gate's rule) - haiku r3
+    [{ review_reason: 'quote_unconfirmed', gate_held: true, event_date: '2026-02-30', window_held: false },
+      `${R}${PASSED} Only running the scan again, with the check passing, can make it usable. Its event date still has to be confirmed after that.`],
+    [{ review_reason: 'quote_unconfirmed', gate_held: true, event_date: '2026-13-45', window_held: false },
+      `${R}${PASSED} Only running the scan again, with the check passing, can make it usable. Its event date still has to be confirmed after that.`],
   ]
   for (const [l, hint] of cases) assert.deepEqual(reviewAction(l, now), { label: 'Keep as research', hint }, JSON.stringify(l))
   // control: the window alone still gives the window advice
