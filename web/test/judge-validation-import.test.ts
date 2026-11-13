@@ -304,6 +304,9 @@ test('#784 after consumption: while the scoring code is the run\'s, the committe
   const drifted = { ...codeHashes(), 'lib/evals/judge.ts': 'f'.repeat(64) }
   const later = await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS, currentCode: drifted })
   assert.deepEqual(later.problems, [], 'the scoring code changed since the run: bound by the recorded sha256, not re-scored')
+  // a scoring file that cannot be read is not "changed code": refused, never a skipped re-score
+  const unreadable = await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS, currentCode: { ...codeHashes(), 'lib/scan/runner.ts': 'unreadable' } })
+  assert.match(unreadable.problems.join('\n'), /this checkout's lib\/scan\/runner\.ts cannot be read/); assert.equal(unreadable.lockText, undefined)
   // the same file while the code is still the run\'s is re-scored and refused; so is the unconsumed case, whatever the code
   assert.match((await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS })).problems.join('\n'), /these fields differ: limits/)
   assert.match((await importValidationArtifact({ artifactText: older, recordText: honest.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(older), currentCode: drifted })).problems.join('\n'), /these fields differ: limits/)

@@ -371,9 +371,12 @@ a lead it calls `contradicts`. It has no send or tool authority.
       identical. A report edited to `ok`, or answers edited without their rates, is refused. The recorded answers
       themselves are bound only by the printed sha256. The re-score is repeated on every later import, CI's included,
       for as long as the scoring code (`lib/evals/judge.ts`, `lib/evals/judge-validation-run.ts`, `lib/scan/runner.ts`)
-      hashes as the artifact recorded, so a claim consumed by hand around a forged report still fails CI. Once that
-      code has changed, the recorded `artifact_sha256` alone binds the bytes and the re-score is skipped, so a later
-      change to the scoring code cannot turn the paid result into an error.
+      hashes as the artifact recorded, so while that code is unchanged a claim consumed by hand around a forged report
+      fails CI. Once that code has changed, the recorded `artifact_sha256` alone binds the bytes and the re-score is
+      skipped, so a later change to the scoring code cannot turn the paid result into an error. The residual of that
+      choice: one PR that both edits the scoring code and replaces the committed artifact and its recorded sha256 is
+      not re-scored by CI, so any PR touching the artifact or the claim's record needs a reviewer. A scoring file that
+      cannot be read is refused, never treated as changed.
     - A failed or stopped run imports no verdict and no entry (the lock's entries are cleared); it only consumes the
       claim. The artifact must name which of the two key variables paid (`run_guard.key_env`).
     - The lock's calibration entries are exactly the run's (nothing else is carried over). The files are written to

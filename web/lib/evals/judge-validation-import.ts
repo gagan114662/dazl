@@ -18,9 +18,11 @@
 // stopped by that check and by nothing else, so the reviewer compares it with the run's console output.
 // The re-score is repeated on every later import (the CI consistency test) for as long as this checkout's scoring code
 // is the code the run used: SCORING_FILES hash the same as the artifact recorded. So an artifact committed with its
-// claim consumed by hand, without this importer, is still re-scored by CI. Only once that code has changed, and the
-// claim is consumed, is the re-score skipped: the recorded artifact_sha256 binds the bytes, and a later change to the
-// scoring code or its wording must not turn the one paid result into an error.
+// claim consumed by hand, without this importer, is still re-scored by CI while the code is unchanged. Only once that
+// code has changed, and the claim is consumed, is the re-score skipped: the recorded artifact_sha256 binds the bytes,
+// and a later change to the scoring code or its wording must not turn the one paid result into an error. Residual,
+// by that choice: a change that edits the scoring code AND replaces the committed artifact and its recorded sha256 in
+// one PR is not re-scored by CI; the review of any PR that touches the artifact or the claim's record is the gate.
 // A run that failed or stopped has no results: it consumes the claim and writes no verdict and no lock entry. The artifact is committed beside the log, and test/judge-validation-import.test.ts
 // re-derives the log and the lock entries from it on every CI run, so neither can be edited by hand.
 // What the entries mean is unchanged: an entry counts for the judge with that exact fingerprint (model included). The
@@ -118,6 +120,8 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
   if (typeof a.ended_at !== 'string' || Number.isNaN(Date.parse(a.ended_at))) problems.push('the artifact has no valid ended_at')
   // Re-score now? Always when this import consumes the claim; afterwards while the scoring code is still the run's.
   const current = i.currentCode ?? codeHashes()
+  // A scoring file that cannot be read is not "the code changed": refuse, never skip the re-score on it.
+  for (const f of SCORING_FILES) if (typeof current[f] !== 'string' || !HEX64.test(current[f])) problems.push(`this checkout's ${f} cannot be read, so whether the scoring code is the run's is unknown`)
   const sameScoringCode = SCORING_FILES.every(f => typeof code[f] === 'string' && current[f] === code[f])
   const rescoreNow = !hasA || sameScoringCode
   const keyEnv = isObj(a.run_guard) ? a.run_guard.key_env : undefined
