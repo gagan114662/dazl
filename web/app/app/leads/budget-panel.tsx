@@ -1,12 +1,12 @@
 'use client'
-import { budgetFromForm, type BudgetForm } from '@/lib/scan/run-budget-form'
-import { describeRunBudget } from '@/lib/scan/run-budget'
+import { budgetFromForm, panelDisclosure, type BudgetForm } from '@/lib/scan/run-budget-form'
 
 // Optional spend limit for one run. Everything the limit does NOT cover is shown BEFORE the user presses Run, from the same
 // describeRunBudget the server answers with. It is a partial reservation limit, never a whole-scan dollar ceiling.
-export default function BudgetPanel({ form, setForm }: { form: BudgetForm; setForm: (f: BudgetForm) => void }) {
+// hasKey: from /api/usage (null until it loads); a keyless account's scan is a free-trial scan.
+export default function BudgetPanel({ form, setForm, hasKey = null }: { form: BudgetForm; setForm: (f: BudgetForm) => void; hasKey?: boolean | null }) {
   const { budget, error } = budgetFromForm(form)
-  const d = budget ? describeRunBudget(budget) : null
+  const d = panelDisclosure(budget, hasKey)
   const set = (patch: Partial<BudgetForm>) => setForm({ ...form, ...patch })
   return (
     <div className="border border-black/20 p-3 mb-3 text-xs" data-testid="budget-panel">
