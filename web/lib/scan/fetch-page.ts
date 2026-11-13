@@ -266,7 +266,8 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
       if (signal?.aborted) return { fail: 'error' }
-      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : posting ? await withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup, signal), signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
+      // #1127: every request leg to a board API host takes a slot of this scan (a translated posting, a direct API URL, a redirect onto the API host)
+      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : isAtsRecordUrl(url.toString()) ? await withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup, signal), signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)

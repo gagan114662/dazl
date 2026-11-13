@@ -20,26 +20,29 @@ const { PG_URL, pgSkip, freshSchema } = await import('./helpers/pg-test.ts')
 type LeadDraft = import('../lib/scan/runner.ts').LeadDraft
 
 // ---- the fake socket: answers after `delay` ms, counts the requests in flight (started, not yet answered or destroyed)
-type Answer = { status: number; type: string; body: string } | 'error' | 'hang'
+type Answer = { status: number; type: string; body: string; location?: string } | 'error' | 'hang'
+const onApiHost = (u: string) => /^https:\/\/(?:api\.ashbyhq\.com|boards-api\.greenhouse\.io|api\.lever\.co)\//.test(u)
 function fakeHttps(serve: (url: string) => Answer, delay = 0) {
   const real = https.request
   resetBoardMemo()
   const seen: string[] = []
-  const stats = { inFlight: 0, max: 0 }
+  const stats = { inFlight: 0, max: 0, api: 0, apiMax: 0 }
   ;(https as { request: unknown }).request = (url: URL, _o: unknown, cb: (res: EventEmitter) => void) => {
     const req = new EventEmitter() as EventEmitter & { end(): void; destroy(e?: Error): void }
     let open = false
-    const done = () => { if (open) { open = false; stats.inFlight-- } }
+    let api = false
+    const done = () => { if (open) { open = false; stats.inFlight--; if (api) stats.api-- } }
     req.destroy = (e?: Error) => { done(); if (e) queueMicrotask(() => req.emit('error', e)) }
     req.end = () => {
       seen.push(String(url)); open = true; stats.inFlight++; stats.max = Math.max(stats.max, stats.inFlight)
+      if ((api = onApiHost(String(url)))) { stats.api++; stats.apiMax = Math.max(stats.apiMax, stats.api) }
       const r = serve(String(url))
       if (r === 'hang') return // only the request timeout ends it
       setTimeout(() => {
         if (!open) return
         if (r === 'error') { done(); req.emit('error', new Error('ECONNRESET')); return }
         done()
-        const res = Object.assign(new EventEmitter(), { statusCode: r.status, headers: { 'content-type': r.type }, resume() {}, destroy() {} })
+        const res = Object.assign(new EventEmitter(), { statusCode: r.status, headers: { 'content-type': r.type, ...(r.location ? { location: r.location } : {}) }, resume() {}, destroy() {} })
         cb(res); res.emit('data', Buffer.from(r.body)); res.emit('end')
       }, delay)
     }
@@ -248,4 +251,33 @@ test('#1127 R4 (review on #1144): a saved day equal to a FUTURE board day is not
     const o = await verifyLeads([{ name: '', company: 'Tekion', signal: HIRING, source_url: URL1, excerpt: QUOTE, event_date: '2026-12-20', contact: null, score: 80 } as LeadDraft], u => fetchPageDetailed(u, async () => null), NOW)
     assert.ok([...o.leads, ...o.review].every(l => l.event_date_proof !== 'ats_structured'), JSON.stringify(o))
   } finally { fake.restore() }
+})
+
+// ---- XHawk review on #1144 at 1c80464a: the slot is chosen per request leg by the URL actually read, not by the submitted URL
+const api = (n: number) => `https://boards-api.greenhouse.io/v1/boards/gh${n}/jobs/${100 + n}`
+const ghRecord = (u: string) => { const m = /jobs\/(\d+)/.exec(u); return m ? json({ id: Number(m[1]), title: 'Account Executive', first_published: '2026-11-01T00:00:00Z', content: 'x', location: { name: 'US' } }) : null }
+const redirecting = (u: string): Answer => { const m = /^https:\/\/news(\d)\.example\/post$/.exec(u); return m ? { status: 302, type: 'text/html', body: '', location: api(+m[1]) } : ghRecord(u) ?? { status: 404, type: 'text/html', body: '' } }
+
+test('#1127 XHawk (review on #1144): inside a scan, 6 direct board API URLs stay at most 2 in flight; outside a scan they are not bounded', async () => {
+  for (const [inScan, want] of [[true, ATS_RECORD_CONCURRENCY], [false, 6]] as const) {
+    const fake = fakeHttps(u => ghRecord(u)!, 40)
+    try {
+      const run = () => Promise.all([1, 2, 3, 4, 5, 6].map(n => fetchPageDetailed(api(n), async () => null)))
+      await (inScan ? scan(run) : run())
+      assert.equal(fake.seen.length, 6)
+      assert.equal(fake.stats.max, want, `${inScan ? 'in' : 'outside'} a scan: max in flight ${fake.stats.max}`)
+    } finally { fake.restore() }
+  }
+})
+
+test('#1127 XHawk (review on #1144): inside a scan, 6 ordinary URLs that redirect to a board API host stay at most 2 in flight on the API host', async () => {
+  for (const [inScan, want] of [[true, ATS_RECORD_CONCURRENCY], [false, 6]] as const) {
+    const fake = fakeHttps(redirecting, 40)
+    try {
+      const run = () => Promise.all([1, 2, 3, 4, 5, 6].map(n => fetchPageDetailed(`https://news${n}.example/post`, async () => null)))
+      await (inScan ? scan(run) : run())
+      assert.equal(fake.seen.filter(u => u.startsWith('https://boards-api.')).length, 6, 'every redirect reached the API host')
+      assert.equal(fake.stats.apiMax, want, `${inScan ? 'in' : 'outside'} a scan: max API reads in flight ${fake.stats.apiMax}`)
+    } finally { fake.restore() }
+  }
 })
