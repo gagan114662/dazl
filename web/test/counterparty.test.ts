@@ -33,3 +33,36 @@ test('end to end: counterparty lead goes to review, never lead list, no contact'
   assert.equal(result.review[0].review_reason, 'counterparty_signal')
   assert.equal(result.review[0].contact, null)
 })
+
+// #767: a public ATS posting belongs to the board's org, not to the board host ("jobs" of jobs.ashbyhq.com). A company's own posting that links
+// zapier.com/l/jobs/... next to "using AI tools" is its own vacancy, not a counterparty mention; another company's board still is one.
+test('hostBrand of a public ATS posting is the board org, so a company\'s own posting is never a counterparty', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  assert.equal(hostBrand(`https://jobs.ashbyhq.com/zapier/${id}`), 'zapier')
+  assert.equal(hostBrand(`https://jobs.lever.co/brightloop/${id}`), 'brightloop')
+  assert.equal(hostBrand('https://boards.greenhouse.io/brightloop/jobs/4012345'), 'brightloop')
+  assert.equal(hostBrand('https://jobs.ashbyhq.com/zapier'), 'jobs', 'not a posting shape: the host rule is unchanged')
+  const page = { title: 'Sales Assist Representative @ zapier', text: 'Sales Assist Representative (APAC). Job posting on the zapier Ashby job board. AI AT ZAPIER At Zapier https://zapier.com/about, we build and use automation every day. So if you’re using AI tools while applying here - that’s great! Check out How to Collaborate with AI During Zapier’s Hiring Process https://zapier.com/l/jobs/ai-at-zapier. We’re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Zapier.', retrievedAt: 0 }
+  const own = { name: '', company: 'Zapier', contact: null, signal: 'hiring a Sales Assist Representative', source_url: `https://jobs.ashbyhq.com/zapier/${id}`, score: 80, excerpt: 'We’re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Zapier.', event_date: null }
+  assert.equal(counterpartySignal(own as never, page as never, ''), null)
+  const other = { ...own, company: 'Brightloop', source_url: `https://jobs.ashbyhq.com/zapier/${id}` }
+  const named = { title: 'Sales Assist Representative @ zapier', text: 'Brightloop uses Zapier for its sales workflows, and we are hiring to support customers like it.', retrievedAt: 0 }
+  assert.equal(counterpartySignal(other as never, named as never, ''), 'source_owner:zapier', 'another company named on Zapier\'s own posting is still a counterparty mention')
+})
+// #767 review R4: an ATS org slug is compared with the WHOLE company key, never its first word
+test('an ATS org brand is matched on the whole company key: "AI Corp" on the retail board is a counterparty, "Brightloop" on brightloophq is its own', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  const page = { title: 'Account Executive @ retail', text: 'AI Corp uses Retail for its stores, and we are hiring an Account Executive to grow accounts like it.', retrievedAt: 0 }
+  const ai = { name: '', company: 'AI Corp', contact: null, signal: 'AI Corp uses Retail', source_url: `https://jobs.ashbyhq.com/retail/${id}`, score: 80, excerpt: 'AI Corp uses Retail for its stores', event_date: null }
+  assert.equal(counterpartySignal(ai as never, page as never, ''), 'source_owner:retail')
+  const own = { ...ai, company: 'Brightloop', source_url: `https://jobs.ashbyhq.com/brightloophq/${id}` }
+  assert.equal(counterpartySignal(own as never, { ...page, title: 'x @ brightloophq', text: 'Brightloop uses Brightloophq tooling; we are hiring an Account Executive.' } as never, ''), null)
+})
+// round 2 R4: a prefix is not enough ("Ramp" is not "rampart"); equality or the name plus a known board-slug suffix is
+test('an ATS org brand is the lead\'s own only when equal or the name plus a known suffix: "Ramp" on the rampart board is a counterparty', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  const page = { title: 'Account Executive @ rampart', text: 'Ramp uses Rampart for security reviews, and we are hiring an Account Executive.', retrievedAt: 0 }
+  const lead = (company: string, org: string) => ({ name: '', company, contact: null, signal: 'x', source_url: `https://jobs.ashbyhq.com/${org}/${id}`, score: 80, excerpt: 'Ramp uses Rampart for security reviews', event_date: null })
+  assert.equal(counterpartySignal(lead('Ramp', 'rampart') as never, page as never, ''), 'source_owner:rampart')
+  for (const org of ['ramp', 'ramphq', 'ramplabs', 'rampio', 'rampcareers']) assert.equal(counterpartySignal(lead('Ramp', org) as never, { ...page, text: `Ramp uses ${org} tooling.` } as never, ''), null, org)
+})
