@@ -293,7 +293,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
       const pdlGate = auditTryReserve(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 })
       if ('prior' in pdlGate) await quietly(() => refundCredits(db, hold)) // replayed: no call, the credits go back
       if (!('prior' in pdlGate)) try {
-        const found = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5)
+        const found = await pdlPeopleSearch(pdlKey, g.company, fetchImpl, 5, { env: deps.env, hints: { domain: g.domain } })
         await quietly(() => settleCredits(db, hold, found.length)) // charged per profile returned
         // PDL matches on the company NAME only. With no scan geography, only the company's DOMAIN can confirm it: the person's employer domain must equal the lead's.
         const people: typeof found = []
