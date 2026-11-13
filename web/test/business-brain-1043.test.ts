@@ -120,3 +120,16 @@ test('#1043 council: a signal that compiles only to a negated condition makes no
   const long = ['A', 'B', 'C', 'D', 'E'].map(c => c.repeat(60))
   assert.deepEqual(q([], long), [], 'five 60-character names do not fit: no play that leaves one out')
 })
+
+test('#1043 council r2: a hiring play only from a positive hiring condition, never from a negated or stopped one; the 300-character edge', () => {
+  const q = (signals: string[], comps: string[] = []) => businessPlays({ buyer: icp({ signals }) }, comps).map(p => p.query)
+  assert.ok(!q(['recently raised funding, not hiring a receptionist']).some(p => /hiring receptionist/.test(p)), 'the funding condition is positive, the hiring one is negated')
+  for (const s of ['stopped hiring SDRs', "isn't hiring a receptionist", 'no longer hiring SDRs', 'paused hiring SDRs', 'hiring freeze']) assert.ok(!q([s]).some(p => / hiring /.test(p)), s)
+  assert.deepEqual(q(['hiring their first sales rep']), ['Practice owner at companies in Ohio hiring sales rep'])
+  // exactly 300 characters: offered with every name; 301: not offered
+  const prefix = 'Practice owner in Ohio looking for an alternative to ', four = ['A', 'B', 'C', 'D'].map(c => c.repeat(50))
+  const fifth = (n: number) => 'E'.repeat(n - (prefix + four.join(', ') + ' or ').length)
+  const at = (n: number) => q([], [...four, fifth(n)])
+  assert.equal(at(300).length, 1); assert.equal(at(300)[0].length, 300); assert.ok(at(300)[0].endsWith('E'))
+  assert.deepEqual(at(301), [])
+})

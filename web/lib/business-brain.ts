@@ -89,13 +89,22 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // manager" would supply the condition itself; it must make at least one positive (not negated) condition
   const enforceable = (x: string) => planConditions(compileTargeting(x).root).some(c => !c.negated)
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
+  // The role of a hiring play comes from the compiled plan: a POSITIVE hiring condition with a role (council #1145: "raised
+  // funding, not hiring a receptionist" has a positive condition, but its hiring one is negated). Words the compiler still
+  // reads as positive ("stopped hiring", "isn't hiring", a "hiring freeze") never make one either.
+  const hiringRole = (x: string): string | null => {
+    if (/\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|no longer|isn['’]?t|is not|aren['’]?t|are not|not|never)\s+(?:\w+\s+)?hir/i.test(x) || /\bhiring\s+freeze\b/i.test(x)) return null
+    const c = planConditions(compileTargeting(x).root).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
+    const role = c?.cond.role?.replace(/^(?:a|an|their first|new)\s+/i, '').trim().slice(0, 80)
+    return role && role.length >= 2 ? role : null
+  }
   const hiringSig = (x: string) => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.test(x)   // only a signal that yields a hiring play
   const firstPlain = sig.find(x => !hiringSig(x) && enforceable(x))   // a hiring signal becomes the hiring play below, never also a plain one
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
   // ...and only from one that says hiring, not "not hiring a receptionist" (a negated signal is never a hiring play)
-  for (const h of sig.filter(enforceable).map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
+  for (const h of sig.map(hiringRole).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
   // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
   // lib/signals/competitor-reddit.ts; pinned by test), so the play never leaves out a competitor whose complaints it surfaces
