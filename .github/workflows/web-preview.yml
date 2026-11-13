@@ -184,6 +184,14 @@ jobs:
           ! grep -q '^NOT RUN' /tmp/rnr.out
           SHOTS=preview/readiness-steps node test/ui/readiness-steps.ui.mjs | tee /tmp/rds.out
           ! grep -q '^NOT RUN' /tmp/rds.out
+      # #917 follow-up: on the REAL build and CSS, the draft card's Run button stays inside the card at 390 px and the "left out"
+      # disclosure is not squeezed beside it. pipefail: a failure or a silent NOT RUN fails the job.
+      - name: Draft card Run button fits at 390 px with the left-out disclosure (#917)
+        run: |
+          set -o pipefail
+          mkdir -p preview/run-button-fit
+          SHOTS=preview/run-button-fit node test/ui/run-button-fit-917.ui.mjs | tee /tmp/rbf.out
+          ! grep -q '^NOT RUN' /tmp/rbf.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:

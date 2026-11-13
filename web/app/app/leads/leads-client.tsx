@@ -871,10 +871,14 @@ export default function LeadsClient() {
           {/* Above BOTH Run buttons: the spend limit and what it does not cover are read before anything starts. */}
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} hasKey={keyState ? keyState.has_key : null} />
           <PlanViewCard plan={draftPlan} />
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
-            {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          {/* #917: the note and the left-out text stack above the Run button on a phone or small tablet (side by side from lg up, where the card is wide enough), so the button never
+              leaves the card and the disclosure is never squeezed beside it (test/ui/run-button-fit-917.ui.mjs, real CSS). */}
+          <div className="flex flex-col gap-3 mb-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
+              {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
+            </div>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
