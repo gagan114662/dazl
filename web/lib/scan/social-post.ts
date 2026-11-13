@@ -47,7 +47,9 @@ export function socialPostRef(raw: string): SocialPostRef | null {
   }
   if (host === 'linkedin.com') {
     if ((m = /^\/posts\/[^/]*?-(?:activity|share|ugcpost)-(\d{15,22})-[A-Za-z0-9_-]{1,10}$/i.exec(path))) return { platform: 'linkedin', id: m[1] }
-    if ((m = /^\/feed\/update\/urn:li:(?:activity|share|ugcPost):(\d{15,22})$/i.exec(decodeURIComponent(path)))) return { platform: 'linkedin', id: m[1] }
+    // a malformed escape (%E0%A4%A) names no post; it never fails the page read (XHawk 4564421521)
+    let dec: string; try { dec = decodeURIComponent(path) } catch { return null }
+    if ((m = /^\/feed\/update\/urn:li:(?:activity|share|ugcPost):(\d{15,22})$/i.exec(dec))) return { platform: 'linkedin', id: m[1] }
     return null
   }
   if (host === 'x.com' || host === 'twitter.com') {
@@ -170,23 +172,35 @@ function fromTikTok(html: string, ref: SocialPostRef, now: number): Found[] {
   }
   return out
 }
-// X (a rendered page): the <time datetime> inside the permalink to exactly this status id, and the first tweetText of the
-// same <article> (the post's own text; a quoted post's text comes after it and has its own permalink and time).
+// X (a rendered page): the target status's OWN article (XHawk 4564421496). Quoted-post cards (a div role="link" inside an article) are
+// removed first, so a reply that quotes the target never lends its text to the target's id and time. The article must then carry
+// exactly one permalink <time> (the target's) and exactly one tweetText (its own text); anything else is not read (fail closed).
+function dropDivs(html: string, open: RegExp): string {
+  let out = html
+  for (;;) {
+    const o = open.exec(out); if (!o) return out
+    let depth = 1, end = -1
+    for (const d of out.slice(o.index + o[0].length).matchAll(/<(\/?)div\b[^>]*>/gi)) { depth += d[1] ? -1 : 1; if (depth === 0) { end = o.index + o[0].length + d.index! + d[0].length; break } }
+    if (end < 0) return ''   // unbalanced: nothing in this article can be tied to its own status
+    out = out.slice(0, o.index) + ' ' + out.slice(end)
+  }
+}
+const X_PERMALINK = /<a\b[^>]*\bhref\s*=\s*["'](?:https?:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com)?\/[A-Za-z0-9_]{1,15}\/status\/(\d{5,25})["'][^>]*>\s*<time\b[^>]*\bdatetime\s*=\s*["']([^"']{8,40})["']/gi
 function fromX(html: string, ref: SocialPostRef, now: number): Found[] {
   const out: Found[] = []
-  const re = new RegExp(`<a\\b[^>]*\\bhref\\s*=\\s*["'](?:https?://(?:www\\.|mobile\\.)?(?:x|twitter)\\.com)?/[A-Za-z0-9_]{1,15}/status/${esc(ref.id)}["'][^>]*>\\s*<time\\b[^>]*\\bdatetime\\s*=\\s*["']([^"']{8,40})["']`, 'gi')
-  for (const m of html.matchAll(re)) {
-    const day = postDay(m[1], now); if (!day) continue
-    const a = html.lastIndexOf('<article', m.index!), z = html.indexOf('</article>', m.index!)
+  for (const art of html.matchAll(/<article\b[\s\S]*?<\/article>/gi)) {
+    const own = dropDivs(art[0], /<div\b[^>]*\brole\s*=\s*["']link["'][^>]*>/i)
+    const links = [...own.matchAll(X_PERMALINK)]
+    if (links.length !== 1 || links[0][1] !== ref.id) continue
+    const day = postDay(links[0][2], now); if (!day) continue
+    const opens = [...own.matchAll(/<div\b[^>]*data-testid\s*=\s*["']tweetText["'][^>]*>/gi)]
     const texts: string[] = []
-    if (a >= 0 && z > m.index! && html.lastIndexOf('</article>', m.index!) < a) {
-      const body = html.slice(a, z), t = /<div\b[^>]*data-testid\s*=\s*["']tweetText["'][^>]*>/i.exec(body)
-      if (t) {
-        let depth = 1; const i = t.index + t[0].length
-        for (const d of body.slice(i).matchAll(/<(\/?)div\b[^>]*>/gi)) { depth += d[1] ? -1 : 1; if (depth === 0) { texts.push(str(toText(body.slice(i, i + d.index!)))); break } }
-      }
+    if (opens.length === 1) {
+      let depth = 1; const i = opens[0].index! + opens[0][0].length
+      for (const d of own.slice(i).matchAll(/<(\/?)div\b[^>]*>/gi)) { depth += d[1] ? -1 : 1; if (depth === 0) { texts.push(str(toText(own.slice(i, i + d.index!)))); break } }
     }
-    out.push({ day, texts: texts.filter(Boolean) })
+    if (texts.filter(Boolean).length !== 1) continue   // the post's own text cannot be isolated: no post from this article
+    out.push({ day, texts })
   }
   return out
 }

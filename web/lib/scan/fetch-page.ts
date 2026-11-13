@@ -312,10 +312,14 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       // a board API that refused the record is a refusal: never sent to the rendering service
       if (posting) return { fail: thin ?? 'error' }
       // blocked or JavaScript-only: try the rendering service if one is configured
+      // #878 (XHawk 4564421507): the render service returns HTML only, never the URL its browser ended on (a login page, a profile,
+      // another post), so a social post's record is never read from rendered HTML. It is read from this direct answer, whose final
+      // URL is known (the Instagram shell carries the post's record, live 2026-11-13), and attached to the rendered page.
+      const direct = r.status >= 200 && r.status < 300 && html ? postOf(rawUrl, url, html) : {}
       const rendered = await render(url.toString())
       if (rendered) {
         const t = htmlToText(rendered)
-        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000), ...postOf(rawUrl, url, rendered) }
+        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000), ...direct }
       }
       return { fail: thin }
     }

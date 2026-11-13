@@ -512,3 +512,58 @@ test('#878 review round 4: the positives still date (other-line opening hours, a
     assert.equal(r.bound, true, `${caption}: ${r.why}`)
   }
 })
+
+// ---- XHawk findings on #1150 (correctness, not new date rules)
+test('#878 XHawk 4564421484: an explicit or relative day in the quote\'s sentence is never overwritten by the post day (socialPostBound and the verifier)', async () => {
+  const cases: [string, string][] = [
+    ['Northwind Dental opened a new location in Leslieville on January 2.', 'Northwind Dental opened a new location in Leslieville on January 2'],
+    ['Yesterday, Northwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville'],   // the excerpt starts after "Yesterday"
+  ]
+  for (const [caption, quote] of cases) {
+    const post = socialPostOf(IG, IG, igPage({ caption, takenAt: at('2026-11-13T09:00:00Z') }), NOW)
+    assert.equal(post?.day, '2026-11-13')
+    assert.equal(socialPostBound(post, quote, 'Northwind Dental').bound, false, caption)
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption, takenAt: at('2026-11-13T09:00:00Z') }) }))
+    try {
+      const o = await verifyLeads([draft({ excerpt: quote })], read, new Date(NOW))
+      for (const l of [...o.leads, ...o.review]) assert.ok(l.event_date !== '2026-11-13' && l.event_date_proof !== 'page_bound', `${caption}: ${JSON.stringify([l.event_date, l.event_date_proof])}`)
+    } finally { restore() }
+  }
+})
+
+test('#878 XHawk 4564421496: a reply that quotes the target status never lends its text to the target', () => {
+  const XU = 'https://x.com/northwinddental/status/1849000000000000000'
+  const reply = shell('', `<main><article role="article" data-testid="tweet"><div data-testid="User-Name"><a href="/happyclient"><span>Happy Client</span></a></div><div lang="en" dir="auto" data-testid="tweetText"><span>${QUOTE}</span></div><div role="link" tabindex="0"><div data-testid="User-Name"><span>Northwind Dental</span></div><div data-testid="tweetText"><span>Our new clinic!</span></div><a href="/northwinddental/status/1849000000000000000"><time datetime="2026-10-20T15:30:00.000Z">Oct 20</time></a></div><div><a href="/happyclient/status/1849500000000000000"><time datetime="2026-10-22T09:00:00.000Z">Oct 22</time></a></div></article></main>`)
+  assert.equal(socialPostOf(XU, XU, reply, NOW), null, 'the only article is a reply; the target appears only as its quoted card')
+  // the target's own article beside the reply is read, with its own text only
+  const both = reply.replace('<main>', `<main><article role="article" data-testid="tweet"><div lang="en" data-testid="tweetText"><span>Our new clinic!</span></div><div><a href="/northwinddental/status/1849000000000000000"><time datetime="2026-10-20T15:30:00.000Z">Oct 20</time></a></div></article>`)
+  assert.deepEqual(socialPostOf(XU, XU, both, NOW)?.texts, ['Our new clinic!'])
+  // two tweetTexts of its own (not a card): the post's text cannot be isolated, no post
+  const two = shell('', '<article><div data-testid="tweetText">a</div><div data-testid="tweetText">b</div><a href="/northwinddental/status/1849000000000000000"><time datetime="2026-10-20T15:30:00.000Z">Oct 20</time></a></article>')
+  assert.equal(socialPostOf(XU, XU, two, NOW), null)
+})
+
+test('#878 XHawk 4564421507: a rendered page never carries a post read from its own HTML (its final URL is unknown); the direct answer\'s record is used', async () => {
+  const ig = igPage()
+  const scriptShell = (withRecord: boolean) => withRecord ? ig.replace(/<body>[\s\S]*<\/body>/, '<body><div id="mount_0_0_x"></div></body>') : '<!DOCTYPE html><html><head><title>Instagram</title><script>window.__x=1</script></head><body><div id="mount_0_0_x"></div></body></html>'
+  for (const withRecord of [false, true]) {
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: scriptShell(withRecord) }))
+    try {
+      // the renderer's HTML carries the target's record (it may have ended on a login page, a profile or another post that embeds it)
+      const page = await fetchPageDetailed(IG, async () => ig)
+      assert.ok(!isFail(page), JSON.stringify(page))
+      assert.equal((page as Page).post?.day ?? null, withRecord ? '2026-10-20' : null, withRecord ? 'the direct shell carries the record' : 'nothing read from rendered HTML')
+    } finally { restore() }
+  }
+})
+
+test('#878 XHawk 4564421521: a malformed escape in a LinkedIn URL names no post and never fails the page read', async () => {
+  const BAD = 'https://www.linkedin.com/feed/update/urn:li:activity:%E0%A4%A'
+  assert.equal(socialPostRef(BAD), null)
+  const restore = fakeHttps(() => ({ status: 200, type: 'text/html', body: shell(ld({ '@type': 'DiscussionForumPosting', '@id': BAD, datePublished: '2026-10-20' }), `<p>${QUOTE} ${'Northwind Dental serves Leslieville families. '.repeat(12)}</p>`) }))
+  try {
+    const page = await fetchPageDetailed(BAD, async () => null)
+    assert.ok(!isFail(page), JSON.stringify(page))
+    assert.equal((page as Page).post, undefined)
+  } finally { restore() }
+})
