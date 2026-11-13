@@ -15,7 +15,7 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
-import { NOUN_FIRST_OPEN_SRC } from '../search/page-class.ts'
+import { NOUN_FIRST_OPEN_SRC, nounFirstOk } from '../search/page-class.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -96,8 +96,10 @@ function techAtoms(q: string, add: (a: Atom) => void): void {
 // ("New dental clinic now open in Parkdale", "our 5th location is officially open", "Grand opening of our new clinic"),
 // as verb-first ("opened a new location"). The noun-first forms are the strict shared pattern in page-class.ts
 // (NOUN_FIRST_OPEN_SRC: never hours, availability, a future or someone else's opening).
-const EVENTS: { event: string; re: RegExp; object?: number | number[] }[] = [
-  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3] },
+// ok: an extra check a match must pass (the noun-first opening's allow-list, page-class.ts nounFirstOk); a verb-first
+// match (group 1) is not subject to it.
+const EVENTS: { event: string; re: RegExp; object?: number | number[]; ok?: (text: string, m: RegExpMatchArray) => boolean }[] = [
+  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3], ok: (text, m) => !!m[1] || nounFirstOk(text, m) },
   { event: 'launch', re: /\b(?:launched|launching|launches|released|unveiled)\s+(?:(?:a|an|its|their|new|first)\s+)*([a-z][\w-]*)/gi, object: 1 },
   { event: 'expand', re: /\b(?:expanded|expanding|expands|expansion)(?:\s+(?:into|to|in)\s+([a-z][\w-]*))?/gi, object: 1 },
   { event: 'acquire', re: /\b(?:acquired|acquires|acquisitions?|merged|merger)\b/gi },
@@ -170,7 +172,7 @@ function findAtoms(q: string): Atom[] {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
-  for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: objectOf(e, m) })
+  for (const e of EVENTS) for (const m of q.matchAll(e.re)) if (!e.ok || e.ok(q, m)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: objectOf(e, m) })
   return atoms.sort((a, b) => a.start - b.start)
 }
 
@@ -397,6 +399,7 @@ export function eventMatchIndex(event: string | undefined, object: string | unde
   const e = EVENTS.find(x => x.event === event)
   if (!e) return -1
   for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
+    if (e.ok && !e.ok(text, m)) continue
     if (!object || !e.object) return m.index ?? 0
     const got = objectOf(e, m)
     // a request for a new "location" is met by any new premises (a clinic, an office, a store ...); a named kind needs that kind
