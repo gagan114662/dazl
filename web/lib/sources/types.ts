@@ -15,7 +15,7 @@ export interface Evidence {
   origin?: 'owner_self_description' // text the item's owner wrote about their own project/product: evidence of what they build, not of a need
 }
 
-export interface HttpResult { status: number; body: string; truncated?: boolean } // truncated: the body hit the byte cap and was cut
+export interface HttpResult { status: number; body: string; truncated?: boolean; location?: string } // truncated: the body hit the byte cap and was cut; location: a 3xx answer's Location header (the getter never follows it)
 // #906: what a non-answer is. A 200 whose body is an HTML page (a bot challenge, a login wall, an error page) is not data;
 // 401/403/429 are auth or throttling, distinct from a generic HTTP error. Neither may ever read as a healthy empty.
 export const looksLikeHtml = (body: string): boolean => /^\s*(<!doctype html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(body)
