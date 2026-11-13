@@ -651,7 +651,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const localsBySite = new Map<string, Set<string>>()
-    const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
+    const seenBySite = new Map<string, Map<string, { address: string; url: string; near?: string }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
@@ -663,14 +663,23 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
+      const seen = new Map<string, { address: string; url: string; near?: string }>(); seenBySite.set(cand, seen)
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
       const onPage = (html: string, url: string, status: number) => {
         recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
         // #1036: printed personal addresses are always collected (the published tier is a fact, not a guess); only guessing is flagged.
-        for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) }
+        for (const a of personalAddresses(html, cand)) {
+          locals.add(a.local)
+          // The page text right around the address (whoever it is printed beside), for single-name addresses (email-pattern.ts publishedFor).
+          const lower = html.toLowerCase(), i = lower.indexOf(a.address)
+          // Markup is turned into spaces but attribute VALUES are kept: a team card often pairs the name and address in one attribute.
+          const near = i < 0 ? '' : html.slice(Math.max(0, i - 400), i + a.address.length + 400).replace(/[<>"'=]/g, ' ').replace(/\s+/g, ' ').slice(0, 900)
+          const had = seen.get(a.address)
+          if (had) { if (had.url === url && near && (had.near ?? '').length < 1800) had.near = `${had.near ?? ''} ${near}` }
+          else if (seen.size < 200) seen.set(a.address, { address: a.address, url, near })
+        }
       }
       const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
       siteRead.set(cand, r)

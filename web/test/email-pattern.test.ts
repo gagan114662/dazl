@@ -190,7 +190,9 @@ test('boundary: only the email finder module reads or writes the candidate table
     }
   }
   walk('lib'); walk('app')
-  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')), ['lib/people/email-pattern.ts'])
+  // #1036: the two lead-deletion paths also DELETE these rows with their leads (delete-only; they never read or write a candidate).
+  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-pattern.ts', 'lib/scan/commenter-import.ts', 'lib/signals/first-party.ts'])
+  for (const f of ['lib/scan/commenter-import.ts', 'lib/signals/first-party.ts']) for (const m of readFileSync(join(root, f), 'utf8').matchAll(/[^\n]*(?:email_candidates|email_patterns)[^\n]*/g)) assert.match(m[0], /DELETE FROM|'email_candidates', 'email_patterns'|no such table|\/\//, `${f}: delete-only: ${m[0].trim()}`)
 })
 
 // ---- free-first finder: published tier with provenance, pattern confidence, only high-confidence guesses checked ----

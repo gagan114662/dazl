@@ -114,12 +114,18 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 // the known formats of their name). Stored as printed (lower-cased), with the page it was printed on. Not a guess.
 // Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
 // the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
-export function publishedFor(name: Name, seen: { address: string; url: string }[], people: Name[] = [name]): { address: string; url: string } | null {
+// #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares it, and the crawl compares only the
+// few people it kept: such an address is attributed only when the page prints this person's full name right beside it (`near`:
+// the page text around the address, recorded by the crawl). Without that context it is nobody's published address.
+const nearHas = (near: string | undefined, n: Name) => { if (!near) return false; const w = ` ${near.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]+/g, ' ')} `; return w.includes(` ${n.first} `) && w.includes(` ${n.last} `) }
+export function publishedFor(name: Name, seen: { address: string; url: string; near?: string }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
+  const single = new Set([localFor('first', name), localFor('last', name)])
   const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
   return seen.find(s => {
     const local = s.address.split('@')[0]
     if (!mine.has(local)) return false
+    if (single.has(local) && !nearHas(s.near, name)) return false
     const owners = ownersOf(local, all)
     return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
   }) ?? null
@@ -335,23 +341,28 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
 // addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
 // #1036 (decision 2026-11-12: "checked" = Apollo verified OR an address published on the company's confirmed site; pattern
-// guessing stays off): the PUBLISHED tier is recorded whatever the flag says, anywhere (outside the US dazl uses published
-// addresses only); only pattern GUESSES need EMAIL_GUESS_ENABLED and US evidence. Before this, the flag being off (prod) also
+// guessing stays off): the PUBLISHED tier is recorded whatever the flag says (US evidence still required, as for every recorded
+// address); only pattern GUESSES also need EMAIL_GUESS_ENABLED. Before this, the flag being off (prod) also
 // dropped every printed address, so Find work email's free tier could never find one.
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; near?: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   const us = usEvidence(ctx.homeText, ctx.where)
   const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
   const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
-  if (!emailGuessEnabled(ctx.env ?? process.env)) {
-    if (!pubAll.length) return null
+  // The published tier first, flag on or off (one insert for both paths). US-only like every recorded address (DECISIONS 2026-10-26):
+  // a non-US site records nothing, so no non-US person's address is ever kept at rest.
+  let pubWritten = 0
+  if (pubAll.length && us.us) {
     migrateEmailGuess(db)
     const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
-    let n = 0
-    for (const x of pubAll) n += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.us ? us.basis : null, x.pub.url.slice(0, 500)).changes
+    for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+  }
+  if (!emailGuessEnabled(ctx.env ?? process.env)) {
+    if (!pubWritten && !(pubAll.length && us.us)) return null
+    const n = pubWritten
     const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
     return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
   }
@@ -376,9 +387,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const pattern = rankPattern(locals, allNames)
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
-  let pub = 0, n = 0
-  const insPub = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
-  for (const x of published) pub += insPub.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+  const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
   if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
   const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
   const evidence: { person: string; address: string; url: string | null }[] = []
