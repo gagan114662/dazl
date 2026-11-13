@@ -96,3 +96,19 @@ test('#1036 review R4: removing checks is refused while a crawl or a lookup runs
   assert.deepEqual(deleteRealCompanyChecks(db, T), { deleted: 2 })
   assert.deepEqual((db.prepare('SELECT id FROM scan_jobs ORDER BY id').all() as { id: string }[]).map(x => x.id), ['other-job', 'real-play'], 'another tenant\'s check and a real play survive')
 })
+
+// Hermes review at 989445c9, finding 2: a check whose process restarted mid-crawl stays 'running' with no claim.
+test('#1036 a check job left running by a restart is reaped: not an active scan, removable; a fresh running one still refuses', async () => {
+  const { reapStaleJobs, countActiveJobs } = await import('../lib/scan/store.ts')
+  const db = setup(); const ins = db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'dazl real-company Find work email check (staging test)', 'staging check', 'staging check', 'running', ?)")
+  ins.run('stale', T, now() - 3 * 86400)
+  assert.equal(countActiveJobs(db, T), 1, 'precondition: it counts as active until reaped')
+  reapStaleJobs(db)
+  assert.deepEqual(db.prepare("SELECT status, error FROM scan_jobs WHERE id = 'stale'").get(), { status: 'failed', error: 'staging_check_interrupted' })
+  assert.equal(countActiveJobs(db, T), 0, 'play-now / watches / monitors no longer see an active scan')
+  ins.run('stale2', T, now() - 600)
+  assert.deepEqual(deleteRealCompanyChecks(db, T), { deleted: 2 }, 'remove reaps and removes a dead check by itself')
+  ins.run('fresh', T, now() - 30)
+  assert.throws(() => deleteRealCompanyChecks(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'check_in_flight', 'a crawl inside its deadline still refuses')
+  reapStaleJobs(db); assert.equal((db.prepare("SELECT status FROM scan_jobs WHERE id = 'fresh'").get() as { status: string }).status, 'running', 'and is not reaped')
+})

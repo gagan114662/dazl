@@ -62,3 +62,53 @@ test('#1036 a first-name-only address printed away from the person (or beside an
   const { r } = await run({}, footer)
   assert.notEqual(r.status, 'published', JSON.stringify(r))
 })
+
+// Hermes review at 989445c9, finding 1: the address sits in ANOTHER person's card (same first name, or same last name). The crawl
+// keeps only the buyer, so only the page's own pairing can tell; a neighbouring card is not a pairing.
+const c3 = (n: string, e: string, r: string) => card(n, e, r, n.toLowerCase().replace(/ /g, '-'))
+const OWNER = 'Real Estate Broker | Owner', AGENT = 'Real Estate Agent'
+const filler = ['Ava Lindqvist', 'Ben Okafor', 'Cora Whitfield', 'Dev Ramaswamy'].map(n => c3(n, '', AGENT)).join('')
+for (const [label, team] of [
+  ['another Maya\'s card holds maya@', `${c3('Maya Thornton', '', OWNER)}${c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT)}`],
+  ['the same two cards inside a 6-person team', `${filler.slice(0, filler.length / 2)}${c3('Maya Thornton', '', OWNER)}${c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT)}${filler}`],
+  ['another Thornton\'s card holds thornton@', `${c3('Maya Thornton', '', OWNER)}${c3('Tom Thornton', 'thornton@bluebonnetrealty.com', AGENT)}`],
+] as const) {
+  test(`#1036 wrong-person guard: ${label} -> nobody's published address for the buyer`, async () => {
+    const { r, targets } = await run({}, team)
+    assert.deepEqual(targets, ['Maya Thornton|Real Estate Broker | Owner'], 'precondition: the buyer is the one target')
+    assert.notEqual(r.status, 'published', JSON.stringify(r))
+  })
+}
+test('#1036 wrong-person guard, legit case: the address is in the buyer\'s OWN card and another Maya is elsewhere on the page -> still published', async () => {
+  const { r } = await run({}, `${c3('Maya Thornton', 'maya@bluebonnetrealty.com', OWNER)}${c3('Maya Ortiz', '', AGENT)}${filler}`)
+  assert.equal(r.status, 'published', JSON.stringify(r))
+  assert.equal((r as { row: { address: string } }).row.address, 'maya@bluebonnetrealty.com')
+})
+test('#1036 wrong-person guard: visible text pairing ("Maya Thornton - maya@...") counts; the same text naming Maya Ortiz does not', async () => {
+  const own = await run({}, `${c3('Maya Thornton', '', OWNER)}<p>Maya Thornton - maya@bluebonnetrealty.com</p>`)
+  assert.equal(own.r.status, 'published', JSON.stringify(own.r))
+  const other = await run({}, `${c3('Maya Thornton', '', OWNER)}<p>Maya Ortiz - maya@bluebonnetrealty.com</p>`)
+  assert.notEqual(other.r.status, 'published')
+})
+
+// Finding 3: the context is built from the page lower-cased ONCE; a big staff directory must not cost a second of CPU per page.
+test('#1036 address contexts on a 760 KB directory page with 1,500 addresses stay cheap (positions from the one scan, nothing built past 200 kept)', async () => {
+  const { addressContexts } = await import('../lib/connectors/sitecrawl.ts')
+  const { personalAddresses } = await import('../lib/people/email-pattern.ts')
+  const cards = Array.from({ length: 1500 }, (_, i) => `<div class="card"><span>Person${i} Name${i}</span><a href="mailto:p${i}.name${i}@firm.com">p${i}.name${i}@firm.com</a>${'<p>bio text here</p>'.repeat(20)}</div>`).join('')
+  const big = `<html><body>${cards}</body></html>`
+  const src = (await import('node:fs')).readFileSync(new URL('../lib/connectors/sitecrawl.ts', import.meta.url), 'utf8')
+  const loop = src.slice(src.indexOf('const onPage = (html: string, url: string, status: number) => {'), src.indexOf('const r = await crawlSite(cand, get'))
+  assert.doesNotMatch(loop, /toLowerCase\(\)|indexOf\(/, 'the crawl loop never lower-cases or searches the page per address')
+  assert.match(loop, /seen\.size >= 200\) continue/)
+  // Relative to the existing address scan on the same machine at the same moment (robust under a loaded test run): the old
+  // per-address lower-casing cost about 60x that scan, and one indexOf per address about 35x; the contexts for all 1,500 must stay within 12x (the crawl builds at most 200).
+  const b0 = performance.now(); const found = personalAddresses(big, 'firm.com'); const base = Math.max(performance.now() - b0, 5)
+  const t0 = performance.now(); let n = 0
+  for (const a of found) n += addressContexts(big, a.at).length
+  const ms = performance.now() - t0
+  assert.ok(n >= 1500); assert.ok(ms < base * 12, `contexts for 1,500 addresses took ${Math.round(ms)} ms vs ${Math.round(base)} ms for the address scan`)
+  // control: the per-address search this replaces is far over that bound on the same page
+  const s0 = performance.now(); const lower = big.toLowerCase(); for (const a of found) lower.indexOf(a.address)
+  assert.ok(performance.now() - s0 > base * 12, 'control: one page search per address would fail this bound')
+})

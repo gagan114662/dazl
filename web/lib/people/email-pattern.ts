@@ -58,13 +58,18 @@ export function personalLocals(html: string, site: string): string[] {
 
 // The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
 // the site printed it, never rebuilt onto another domain.
-export function personalAddresses(html: string, site: string): { local: string; address: string }[] {
-  const out = new Map<string, { local: string; address: string }>()
+// at: where the address is printed on the page (its first 3 places, with the printed length), recorded in this ONE pass so nothing
+// ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
+export function personalAddresses(html: string, site: string): { local: string; address: string; at: { i: number; len: number }[] }[] {
+  const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[] }>()
   for (const m of html.matchAll(/([A-Z0-9._%+-]{2,64})@([A-Z0-9.-]+\.[A-Z]{2,})/gi)) {
     const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
     if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue
     const address = `${local}@${domain}`
-    if (address.length <= 254) out.set(address, { local, address })
+    if (address.length > 254) continue
+    const had = out.get(address)
+    if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }] })
+    else if (had.at.length < 3) had.at.push({ i: m.index, len: m[0].length })
   }
   return [...out.values()]
 }
@@ -114,18 +119,49 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 // the known formats of their name). Stored as printed (lower-cased), with the page it was printed on. Not a guess.
 // Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
 // the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
-// #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares it, and the crawl compares only the
-// few people it kept: such an address is attributed only when the page prints this person's full name right beside it (`near`:
-// the page text around the address, recorded by the crawl). Without that context it is nobody's published address.
-const nearHas = (near: string | undefined, n: Name) => { if (!near) return false; const w = ` ${near.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z]+/g, ' ')} `; return w.includes(` ${n.first} `) && w.includes(` ${n.last} `) }
-export function publishedFor(name: Name, seen: { address: string; url: string; near?: string }[], people: Name[] = [name]): { address: string; url: string } | null {
+// #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares that name, and the crawl keeps only
+// buyer-role people, so the real owner may not be among `people`. Such an address is attributed only on the page's own pairing
+// (`ctx`, recorded by the crawl for each place the address is printed):
+//   - the TIGHTEST context that names anyone decides: the attribute value or text node holding the address when it names a person
+//     (a team card's data attribute, "Maya Thornton maya@..."), otherwise the text around it;
+//   - that context must print THIS person's first and last name together, and no other person-shaped name sharing the token
+//     ("Maya Ortiz" for maya@, "Tom Thornton" for thornton@) - in ANY place the address is printed. Otherwise it is nobody's.
+export interface AddressContext { tight: string; wide: string }
+const plain = (s: string) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+// Person-shaped pairs: two neighbouring capitalised words (an optional middle initial between them), as [first, last] in ascii lower case.
+function namePairs(text: string): [string, string][] {
+  const words = plain(text).split(/[^A-Za-z'\u2019.-]+/).filter(Boolean)
+  const cap = (w: string) => /^[A-Z][A-Za-z'\u2019-]+$/.test(w)
+  const out: [string, string][] = []
+  for (let i = 0; i + 1 < words.length; i++) {
+    if (!cap(words[i])) continue
+    const k = /^[A-Z]\.?$/.test(words[i + 1]) && i + 2 < words.length ? i + 2 : i + 1
+    if (cap(words[k])) out.push([ascii(words[i]), ascii(words[k])])
+  }
+  return out
+}
+export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
+  if (!ctx?.length) return false
+  const isFirst = local === localFor('first', n), isLast = local === localFor('last', n)
+  let paired = false
+  for (const c of ctx) {
+    const tight = namePairs(c.tight)
+    const pairs = tight.length ? tight : namePairs(c.wide)
+    for (const [f, l] of pairs) {
+      if (f === n.first && l === n.last) { paired = true; continue }
+      if ((isFirst && f === local) || (isLast && l === local)) return false // someone else who shares the name is printed with it
+    }
+  }
+  return paired
+}
+export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
   const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
   return seen.find(s => {
     const local = s.address.split('@')[0]
     if (!mine.has(local)) return false
-    if (single.has(local) && !nearHas(s.near, name)) return false
+    if (single.has(local) && !singleNamePairing(local, name, s.ctx)) return false
     const owners = ownersOf(local, all)
     return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
   }) ?? null
@@ -347,7 +383,7 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; near?: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; ctx?: AddressContext[] }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   const us = usEvidence(ctx.homeText, ctx.where)
   const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)

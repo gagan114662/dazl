@@ -16,7 +16,7 @@ import { denied } from '@/lib/workspace-access'
 // without a paid scan, real contacts, network calls or email. DELETE removes every
 // row the fixture created.
 //
-// action 'work_email' (#1036): ONE labelled test-only lead on a settled site naming four buyer-role people, so Find work email can
+// action 'work_email' (#1036): ONE labelled test-only lead on a settled site naming five buyer-role people, so Find work email can
 // be clicked through on staging against the staging fake People Data Labs and fake ZeroBounce. Created only on the test tenant
 // with DAZL_ENV=staging, DAZL_STAGING_FAKE_PDL=1 and DAZL_STAGING_FAKE_ZEROBOUNCE=1 (403 staging_fakes_only otherwise). DELETE with action 'work_email' removes it.
 //

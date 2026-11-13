@@ -5,6 +5,10 @@ import { isStaging } from '../staging.ts'
 import { crawlJob, type Get } from '../connectors/sitecrawl.ts'
 import { migrateWorkEmail } from '../people/work-email.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
+import { REAP_STAGING_CHECKS_SQL, STAGING_CHECK_DEAD_S } from './store.ts'
+
+// A check still 'running' past the crawl deadline plus margin lost its process (a restart mid-crawl): failed, removable, not active.
+const reapDeadChecks = (db: Database.Database) => { const now = Math.floor(Date.now() / 1000); db.prepare(REAP_STAGING_CHECKS_SQL).run(now, now - STAGING_CHECK_DEAD_S) }
 
 // STAGING-ONLY live-check enabler for #1036 (LIVE-FIRST rule A2: make the criterion triggerable on staging with REAL input).
 // Find work email needs a lead on a settled company website that names a buyer; staging gets such a lead only from a paid scan whose
@@ -48,6 +52,7 @@ export async function runRealCompanyCheck(db: Database.Database, tenantId: strin
   const env = deps.env ?? process.env
   if (!fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
   if (!isStaging(env)) throw new FixtureError('staging_only')
+  reapDeadChecks(db)
   // Inserted already 'running' in one statement: a scan worker never sees it 'pending' and so never claims it (no paid scan).
   const jobId = randomBytes(12).toString('hex')
   const icp = { summary: `Find work email check for ${input.company}`, who: input.who.split('; '), industries: [], sizes: [], where: [], signals: [], exclude: [] }
@@ -70,7 +75,7 @@ export async function runRealCompanyCheck(db: Database.Database, tenantId: strin
 // Removes every staging check play of this tenant with its leads and the rows hung on them. Test tenant only.
 export function deleteRealCompanyChecks(db: Database.Database, tenantId: string): { deleted: number } {
   if (!fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
-  migrateWorkEmail(db); migrateEmailGuess(db)
+  migrateWorkEmail(db); migrateEmailGuess(db); reapDeadChecks(db)
   const jobs = db.prepare("SELECT id, status FROM scan_jobs WHERE user_id = ? AND business_name = ? AND industry = 'staging check'").all(tenantId, REAL_CHECK_JOB) as { id: string; status: string }[]
   // A crawl still running, or a Find work email lookup in flight on one of these leads, would finish against deleted rows.
   const fresh = Math.floor(Date.now() / 1000) - 120
