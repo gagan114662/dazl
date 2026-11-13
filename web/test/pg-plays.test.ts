@@ -3,6 +3,7 @@
 // queue each tenant's own scan with the play's own query, record it, and fold the results into that play only. A run
 // whose lease fence fails writes nothing.
 import test from 'node:test'
+import { LeaseLost } from '../lib/shared/lease.ts'
 import assert from 'node:assert/strict'
 import { pgDb, type Tx } from '../lib/db/client.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
@@ -37,20 +38,21 @@ test('[pg] watches and monitors: tenant-scoped reads and actions, scheduled runs
     assert.deepEqual(await db.get('SELECT enabled FROM monitors WHERE id = ?', [mid.B]), { enabled: 1 })
 
     // a run that lost its lease: the fence throws inside each transaction, so nothing is written
-    const lost: Fence = function* () { throw new Error('lease lost') }
+    // (the tick's fence throws LeaseLost; any other error is one account's failure, recorded while the pass goes on, #1042)
+    const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
     const due = now + 8 * 86400
-    await assert.rejects(runDueWatches(db, { now: due, fence: lost }), /lease lost/)
-    await assert.rejects(runDueMonitors(db, { now: due, fence: lost }), /lease lost/)
+    await assert.rejects(runDueWatches(db, { now: due, fence: lost }), LeaseLost)
+    await assert.rejects(runDueMonitors(db, { now: due, fence: lost }), LeaseLost)
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM scan_jobs'))!.n), 0)
     assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM monitor_runs'))!.n), 0)
 
     // scheduled runs: one job per play, for its owner, with the play's own query
     const ok = function* (t: Tx) { yield* t.get('SELECT 1') }
-    assert.deepEqual(await runDueWatches(db, { now: due, fence: ok }), { ran: 2, paused: 0 })
+    assert.deepEqual(await runDueWatches(db, { now: due, fence: ok }), { ran: 2, paused: 0, skipped: 0 })
     const wjobs = await db.all<{ user_id: string; query: string; watch_id: string }>('SELECT user_id, query, watch_id FROM scan_jobs WHERE watch_id IS NOT NULL ORDER BY user_id')
     assert.deepEqual(wjobs, [{ user_id: A, query: 'SECRET-a-WATCH', watch_id: w.A.id }, { user_id: B, query: 'SECRET-b-WATCH', watch_id: w.B.id }])
     // the same tick again: not due any more, nothing new
-    assert.deepEqual(await runDueWatches(db, { now: due }), { ran: 0, paused: 0 })
+    assert.deepEqual(await runDueWatches(db, { now: due }), { ran: 0, paused: 0, skipped: 0 })
     // monitors: each user has one active scan (the watch run); a monitor still runs beside one, never beside two
     const mjobs = await runDueMonitors(db, { now: due })
     assert.equal(mjobs.length, 2)

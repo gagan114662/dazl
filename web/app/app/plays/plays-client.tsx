@@ -136,7 +136,7 @@ export default function PlaysClient() {
         : plays.length === 0 && !partFailed ? (
           <div className="card p-6 text-sm" data-testid="plays-empty">
             <p className="font-semibold">No saved plays yet</p>
-            <p className="text-[var(--ink-2)] mt-1">Run your first search in Leads. When it finishes, dazl sets it to repeat once a week by itself and shows only companies you have not seen. You can also choose <b>Watch this weekly</b> on any search.</p>
+            <p className="text-[var(--ink-2)] mt-1">Run your first search in Leads. When it finishes, dazl sets it to search again every day by itself and shows only companies you have not seen. You can also choose <b>Watch this weekly</b> on any search.</p>
             <Link href="/app/leads" className="btn-ghost btn-sm mt-3 inline-flex">Start a play</Link>
           </div>
         ) : (
@@ -181,7 +181,7 @@ export default function PlaysClient() {
             })}
           </div>
         )}
-      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s weekly repeat can use your free searches while you have some left. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
+      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s daily repeat can use your free searches while you have some left. On the free plan that repeat runs at most 1 search a day (skipped on a day another search already ran), and its runs on your free searches are held to $0.30. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
     </div>
   )
 }
