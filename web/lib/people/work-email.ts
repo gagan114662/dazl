@@ -31,7 +31,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { emailGuessEnabled, publishedCandidateFor, reserveMailboxCheck, verifierFromEnv, verifyDailyCap, verifyMonthlyCap } from './email-pattern.ts'
+import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
@@ -72,10 +72,20 @@ export function migrateWorkEmail(db: Database.Database): void {
   if (!has('mailbox_check')) db.exec(`ALTER TABLE work_email_lookups ADD COLUMN mailbox_check TEXT CHECK (mailbox_check IS NULL OR mailbox_check IN (${MAILBOX_CHECKS.map(s => `'${s}'`).join(',')}))`)
   if (!has('mailbox_verifier')) db.exec('ALTER TABLE work_email_lookups ADD COLUMN mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR length(mailbox_verifier) <= 40)')
   if (!has('mailbox_checked_at')) db.exec('ALTER TABLE work_email_lookups ADD COLUMN mailbox_checked_at INTEGER')
+  // the tenant's daily mailbox-check count (email-pattern.ts reserveVerifySlot) reads this index
+  db.exec('CREATE INDEX IF NOT EXISTS work_email_lookups_mailbox_checked ON work_email_lookups (tenant_id, mailbox_checked_at)')
 }
 // pending: a slot was reserved and the call did not finish (never shown as checked). valid: the verifier's explicit "valid".
 export const MAILBOX_CHECKS = ['pending', 'valid', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 
+// The ONE shape every route returns (GET workEmailsFor, POST findWorkEmail): an address the mailbox check found does not exist
+// ('undeliverable') or flagged do-not-mail ('refused') is never sent to the client at all, not merely hidden by the panel. A
+// mailbox check still 'pending' past PENDING_STALE_S (its process died) reads as 'uncertain'. Kept rows are never changed.
+export function shownRow(r: WorkEmailRow, nowS: number): WorkEmailRow {
+  const hidden = r.mailbox_check === 'undeliverable' || r.mailbox_check === 'refused'
+  const stale = r.mailbox_check === 'pending' && (r.mailbox_checked_at ?? 0) < nowS - PENDING_STALE_S
+  return hidden || stale ? { ...r, ...(hidden ? { address: null } : {}), ...(stale ? { mailbox_check: 'uncertain' } : {}) } : r
+}
 export interface WorkEmailRow { target: string; status: WorkEmailStatus; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; updated_at: number; mailbox_check?: string | null; mailbox_verifier?: string | null; mailbox_checked_at?: number | null }
 const ROW_COLS = 'target, status, provider, address, detail, source_url, checked_at, updated_at, mailbox_check, mailbox_verifier, mailbox_checked_at'
 
@@ -83,7 +93,7 @@ const ROW_COLS = 'target, status, provider, address, detail, source_url, checked
 export function workEmailsFor(db: Database.Database, tenantId: string, leadId: string, nowS: number = Math.floor(Date.now() / 1000)): WorkEmailRow[] {
   migrateWorkEmail(db)
   const rows = db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? ORDER BY target`).all(tenantId, leadId) as WorkEmailRow[]
-  return rows.map(r => r.status === 'pending' && r.updated_at < nowS - PENDING_STALE_S ? { ...r, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : r)
+  return rows.map(r => shownRow(r, nowS)).map(r => r.status === 'pending' && r.updated_at < nowS - PENDING_STALE_S ? { ...r, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : r)
 }
 
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
@@ -192,8 +202,8 @@ export async function findWorkEmail(
   if (prior && isFinal(prior.status)) {
     // A found-but-unverified address whose mailbox check never ran (the caps were used up, or the key or flag came later) gets it
     // now: no provider credit is spent again, only one free-tier check under the same caps.
-    if (prior.status === 'unverified' && prior.address && (prior.mailbox_check ?? null) === null) { await checkMailbox(db, tenantId, lead.id, target, prior.address, deps); return { status: prior.status, row: read() ?? prior, replayed: true } }
-    return { status: prior.status, row: prior, replayed: true }
+    if (prior.status === 'unverified' && prior.address && (prior.mailbox_check ?? null) === null) { await checkMailbox(db, tenantId, lead.id, target, prior.address, deps); return { status: prior.status, row: shownRow(read() ?? prior, now), replayed: true } }
+    return { status: prior.status, row: shownRow(prior, now), replayed: true }
   }
   if (prior?.status === 'pending' && prior.updated_at >= now - PENDING_STALE_S) return { status: 'busy', detail: 'a lookup for this person is already running' }
 
@@ -205,7 +215,7 @@ export async function findWorkEmail(
     return db.prepare(`UPDATE work_email_lookups SET status = ?, provider = ?, address = ?, detail = ?, source_url = ?, checked_at = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND status = 'pending' AND updated_at = ?`)
       .run(...args, tenantId, lead.id, target, claimedAt).changes === 1
   }
-  const done = (replayed = false): FindWorkEmailResult => { const r = read()!; return { status: r.status, row: r, replayed } }
+  const done = (replayed = false): FindWorkEmailResult => { const r = read()!; return { status: r.status, row: shownRow(r, now), replayed } }
 
   // 1. Free: the person's own address printed on the confirmed site.
   const pub = publishedCandidateFor(db, tenantId, lead.id, person.name)
@@ -239,7 +249,7 @@ export async function findWorkEmail(
   const claimed = db.prepare(`INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, updated_at) VALUES (?, ?, ?, 'pending', ?)
     ON CONFLICT (tenant_id, lead_id, target) DO UPDATE SET status = 'pending', provider = NULL, address = NULL, detail = NULL, source_url = NULL, checked_at = NULL, updated_at = excluded.updated_at
     WHERE work_email_lookups.status IN ('error','uncertain') OR (work_email_lookups.status = 'pending' AND work_email_lookups.updated_at < ?)`).run(tenantId, lead.id, target, now, now - PENDING_STALE_S).changes === 1
-  if (!claimed) { const r = read(); return r && isFinal(r.status) ? { status: r.status, row: r, replayed: true } : { status: 'busy', detail: 'a lookup for this person is already running' } }
+  if (!claimed) { const r = read(); return r && isFinal(r.status) ? { status: r.status, row: shownRow(r, now), replayed: true } : { status: 'busy', detail: 'a lookup for this person is already running' } }
 
   const fetchImpl = deps.fetchImpl ?? fetch
   let best: Extract<Verdict, { kind: 'verified' | 'unverified' }> & { provider: CreditProvider } | null = null
@@ -293,18 +303,26 @@ export async function findWorkEmail(
 async function checkMailbox(db: Database.Database, tenantId: string, leadId: string, target: string, address: string, deps: { fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; now?: number }): Promise<void> {
   const env = deps.env ?? process.env
   const verifier = verifierFromEnv(env, deps.fetchImpl)
-  if (!verifier) return
+  const dailyCap = verifyDailyCap(env), monthCap = verifyMonthlyCap(env)
+  if (!verifier || !emailGuessEnabled(env) || dailyCap === 0 || monthCap === 0) return
+  const nowS = deps.now ?? Math.floor(Date.now() / 1000)
+  // The same reservation as the scan's guess checks (#849 inventory): refused (a cap, or another tab took it) = no call.
+  // The claim moves updated_at, so another open tab sees 'pending' (checking) rather than a finished row.
   try {
-    const slot = reserveMailboxCheck(db, tenantId, verifier.name, nowS => db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_verifier = ?, mailbox_checked_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND status = 'unverified' AND address = ? AND mailbox_check IS NULL").run(verifier.name.slice(0, 40), nowS, tenantId, leadId, target, address).changes === 1, { env, now: deps.now === undefined ? undefined : deps.now * 1000 })
-    if (slot !== 'ok') return
-    let out: (typeof MAILBOX_CHECKS)[number] = 'uncertain'
-    try {
-      const a = await verifier.verify(address)
-      out = a?.outcome === 'deliverable' ? 'valid' : a?.outcome === 'catch_all' ? 'catch_all' : a?.outcome === 'undeliverable' ? 'undeliverable' : a?.outcome === 'refused' ? 'refused' : 'uncertain'
-    } catch { out = 'uncertain' }
-    // updated_at moves so another open tab's merge (mergeLookups) takes the checked row
-    db.prepare("UPDATE work_email_lookups SET mailbox_check = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, Math.max(Math.floor(Date.now() / 1000), (deps.now ?? 0) + 1), tenantId, leadId, target)
-  } catch (e) { console.error('[work-email] mailbox check not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+    await reserveVerifySlot(db, { tenantId, verifier: verifier.name, nowS, dailyCap, monthCap },
+      () => db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_verifier = ?, mailbox_checked_at = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND status = 'unverified' AND address = ? AND mailbox_check IS NULL").run(verifier.name.slice(0, 40), nowS, Math.max(Math.floor(Date.now() / 1000), nowS), tenantId, leadId, target, address).changes === 1)
+  } catch (e) {
+    if (!(e instanceof VerifySlotRefused)) console.error('[work-email] mailbox check not reserved:', e instanceof Error ? e.message.slice(0, 120) : 'error')
+    return
+  }
+  let out: (typeof MAILBOX_CHECKS)[number] = 'uncertain'
+  try {
+    const a = await verifier.verify(address)
+    out = a?.outcome === 'deliverable' ? 'valid' : a?.outcome === 'catch_all' ? 'catch_all' : a?.outcome === 'undeliverable' ? 'undeliverable' : a?.outcome === 'refused' ? 'refused' : 'uncertain'
+  } catch { out = 'uncertain' }
+  // updated_at moves again so another open tab's merge (mergeLookups) takes the settled row
+  try { db.prepare("UPDATE work_email_lookups SET mailbox_check = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, Math.max(Math.floor(Date.now() / 1000), nowS) + 1, tenantId, leadId, target) }
+  catch (e) { console.error('[work-email] mailbox check not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
 }
 
 async function settle(db: Database.Database, h: CreditHold, charged: number): Promise<void> {

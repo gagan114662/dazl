@@ -1369,6 +1369,8 @@ CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);
 
 CREATE INDEX watches_due ON watches (active, next_run_at);
 
+CREATE INDEX work_email_lookups_mailbox_checked ON work_email_lookups (tenant_id, mailbox_checked_at);
+
 CREATE INDEX work_queue_claimable
         ON work_queue(status, not_before, created_at);
 

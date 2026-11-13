@@ -120,7 +120,10 @@ export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 // The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
 export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
 
-export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'attempts_cap' | 'account_total_cap' | 'global_daily_cap'
+// Every reason a free-trial scan can be refused. The copy for each (lib/trial-copy.ts TRIAL_REFUSAL_COPY) is checked
+// against this list, so a new reason cannot ship without words a customer can read (#1095).
+export const TRIAL_REFUSALS = ['not_configured', 'google_required', 'domain_used', 'attempts_cap', 'account_total_cap', 'global_daily_cap'] as const
+export type TrialRefusal = typeof TRIAL_REFUSALS[number]
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the

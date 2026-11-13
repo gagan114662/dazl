@@ -42,7 +42,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
   }, [load])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
-  const waiting = Object.values(lookups).some(l => l.status === 'pending' && !busy[l.target])
+  const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])
   useEffect(() => {
     if (!waiting || reads >= PENDING_POLL_MAX) return
     const t = setTimeout(() => { setReads(n => n + 1); load() }, PENDING_POLL_MS)

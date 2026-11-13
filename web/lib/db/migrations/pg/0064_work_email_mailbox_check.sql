@@ -6,3 +6,5 @@ ALTER TABLE work_email_lookups ADD COLUMN mailbox_check TEXT CHECK (mailbox_chec
 ALTER TABLE work_email_lookups ADD COLUMN mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR char_length(mailbox_verifier) <= 40);
 
 ALTER TABLE work_email_lookups ADD COLUMN mailbox_checked_at BIGINT;
+
+CREATE INDEX IF NOT EXISTS work_email_lookups_mailbox_checked ON work_email_lookups (tenant_id, mailbox_checked_at);

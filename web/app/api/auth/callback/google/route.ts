@@ -3,16 +3,29 @@ import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@
 import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
 import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
+import { safeNext } from '@/lib/google-link'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearClaimCookie, clearOauthCookie, clearReturnCookie, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearLinkNextCookie, clearOauthCookie, clearReturnCookie, LINK_NEXT_COOKIE, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
 
-const back = (base: string, err: string) => {
-  const res = redirectNoStore(new URL(`/sign-in?error=${err}`, base))
+// linkMode: this attempt was a Google link (return cookie 'link'). A failed link must not leave link mode behind, or the
+// next plain Google sign-in within 10 minutes would take the link branch and never sign in (#1095). Any other return
+// intent (a #416 preview claim, Settings re-auth) is kept, so a failed round trip can resume it.
+// The page a link returns to (#1095): the /app page that asked (re-validated here), otherwise Settings, with ?google=.
+function linkLanding(base: string, req: NextRequest, result: string): URL {
+  const next = safeNext(req.cookies.get(LINK_NEXT_COOKIE)?.value)
+  return new URL(next ? `${next}${next.includes('?') ? '&' : '?'}google=${result}` : `/app/settings?google=${result}#account`, base)
+}
+// A failed round trip. In link mode the signed-in user goes back to the page that asked, with the reason, never to the
+// sign-in page (whose Google button answers google_email_exists for a password account: the #1095 loop); both link
+// cookies are cleared. Otherwise sign-in with the error, and any other return intent (#416 preview claim) is kept.
+const back = (base: string, err: string, linkMode = false, req?: NextRequest) => {
+  const res = redirectNoStore(linkMode && req ? linkLanding(base, req, err === 'google_email_unverified' ? 'google_unverified' : 'failed') : new URL(`/sign-in?error=${err}`, base))
   clearOauthCookie(res, base)
+  if (linkMode) { clearReturnCookie(res, base); clearLinkNextCookie(res, base) }
   return res
 }
 
@@ -22,18 +35,19 @@ export async function GET(req: NextRequest) {
   const cfg = signInConfig()
   if (!cfg) return redirectNoStore(new URL('/sign-in?error=google_unavailable', process.env.PUBLIC_BASE_URL || req.url))
   const { base, clientId, clientSecret, redirectUri } = cfg
+  const linkMode = req.cookies.get(RETURN_COOKIE)?.value === 'link'
   const rl = await rateLimit(`google-cb:${clientIp(req)}`, 20, 10 * 60 * 1000)
-  if (!rl.ok) return back(base, rl.unavailable ? 'unavailable' : 'too_many')
+  if (!rl.ok) return back(base, rl.unavailable ? 'unavailable' : 'too_many', linkMode, req)
 
   const c = parseCookie(req.cookies.get(OAUTH_COOKIE)?.value)
   const q = req.nextUrl.searchParams
   const code = q.get('code') ?? '', state = q.get('state') ?? ''
-  if (!c || q.get('error') || !code || !state || !sameString(state, c.state)) return back(base, 'google_failed')
+  if (!c || q.get('error') || !code || !state || !sameString(state, c.state)) return back(base, 'google_failed', linkMode, req)
 
   const idToken = await exchangeCode(code, { clientId, clientSecret, redirectUri, verifier: c.verifier })
-  if (!idToken) return back(base, 'google_failed')
+  if (!idToken) return back(base, 'google_failed', linkMode, req)
   const id = await verifyIdToken(idToken, { clientId, nonce: c.nonce })
-  if (typeof id === 'string') return back(base, id === 'email_not_verified' ? 'google_email_unverified' : 'google_failed')
+  if (typeof id === 'string') return back(base, id === 'email_not_verified' ? 'google_email_unverified' : 'google_failed', linkMode, req)
 
   const db = await getDb()
   if (req.cookies.get(RETURN_COOKIE)?.value === 'link') {
@@ -42,13 +56,18 @@ export async function GET(req: NextRequest) {
     const me = await getSessionUser(req.cookies.get('dazl_session')?.value, db)
     const fresh = !!me && Math.floor(Date.now() / 1000) - me.authedAt <= FRESH_AUTH_S
     const result = !me ? 'signed_out' : !fresh ? 'reauth_required' : await linkGoogle(db, me.actorId, id, req.cookies.get('dazl_session')!.value)
-    const res = redirectNoStore(new URL(`/app/settings?google=${result}#account`, base))
+    // The link may have just confirmed the address (#1095): complete any pending conversion queued for it, as a Google
+    // sign-in does below. Best-effort: never blocks the link.
+    if (result === 'linked') { try { await activateLifecycleForDb(db, id.email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:link-lifecycle', method: 'GET' }) } }
+    // #1095: back to the page that asked (re-validated here), with the result; otherwise Settings as before
+    const res = redirectNoStore(linkLanding(base, req, result))
     clearOauthCookie(res, base)
     clearReturnCookie(res, base)
+    clearLinkNextCookie(res, base)
     return res
   }
   const r = await resolveUser(db, id)
-  if ('error' in r) return back(base, 'google_email_exists')
+  if ('error' in r) return back(base, 'google_email_exists', linkMode, req)
 
   // #417: a newly created account (not a re-sign-in) is a converted prospect; stop queued acquisition work
   // for its exact, Google-verified email. Best-effort: never blocks the sign-in, failures are surfaced.

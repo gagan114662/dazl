@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { saveCredential, setEnrichFallback } from '../lib/connectors/store.ts'
-import { findWorkEmail, workEmailProviders } from '../lib/people/work-email.ts'
+import { findWorkEmail, workEmailProviders, workEmailsFor, PENDING_STALE_S } from '../lib/people/work-email.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
 import { recordEmailGuesses, verifyCandidates } from '../lib/people/email-pattern.ts'
 
@@ -171,4 +171,41 @@ test('#1036 staging fake verifier: a check it answers is labelled as the staging
   assert.equal(calls.zb.length, 0)
   const c = copyOf(r)
   assert.equal(c.checked, true); assert.match(c.note, /STAGING TEST verifier \(not a real mailbox check\)/); assert.doesNotMatch(c.note, /ZeroBounce confirmed/)
+})
+
+test('#1036 ZeroBounce "valid" on a catch-all domain (accept_all) reads "Found, not checked ... catch-all", never checked (Hermes review at fa623be9)', async () => {
+  for (const body of [{ status: 'valid', sub_status: 'accept_all' }, { status: 'valid', sub_status: 'role_based_accept_all' }, { status: 'valid', sub_status: '', catchall_domain: true }]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const r = await run(s, stub(() => json(body), calls))
+    const c = copyOf(r)
+    assert.equal(c.checked, false, JSON.stringify(body)); assert.equal(c.headline, 'Found, not checked'); assert.match(c.note, /catch-all/)
+  }
+})
+
+test('#1036 an address the check found does not exist or flagged do-not-mail is never sent to the client: GET and POST rows have no address', async () => {
+  for (const zb of [{ status: 'invalid' }, { status: 'spamtrap' }, { status: 'do_not_mail' }]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const post = await run(s, stub(() => json(zb), calls))
+    assert.equal((post as { row: { address: string | null } }).row.address, null, `POST ${zb.status}`)
+    const get = workEmailsFor(s.db, s.tenant, s.lead, NOW)
+    assert.equal(get[0].address, null, `GET ${zb.status}`)
+    const again = await run(s, stub(() => json(zb), calls))
+    assert.equal((again as { row: { address: string | null } }).row.address, null, `replay ${zb.status}`)
+  }
+})
+
+test('#1036 a check in flight reads "Checking the mailbox..."; one whose process died reads as could-not-confirm', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  await run(s, stub(() => json({ status: 'valid' }), calls), { ...ON, ZEROBOUNCE_API_KEY: undefined })
+  s.db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_verifier = 'zerobounce', mailbox_checked_at = ?").run(NOW)
+  const live = workEmailsFor(s.db, s.tenant, s.lead, NOW + 5)[0]
+  assert.equal(workEmailCopy(live).headline, 'Checking the mailbox...')
+  const dead = workEmailsFor(s.db, s.tenant, s.lead, NOW + PENDING_STALE_S + 5)[0]
+  assert.equal(dead.mailbox_check, 'uncertain'); assert.match(workEmailCopy(dead).note, /could not confirm the mailbox/)
+})
+
+test('#1036 the daily count over Find work email checks reads an index', () => {
+  const s = seed()
+  const plan = (s.db.prepare('EXPLAIN QUERY PLAN SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').all('A', 0) as { detail: string }[]).map(r => r.detail).join(' ')
+  assert.match(plan, /work_email_lookups_mailbox_checked/)
 })

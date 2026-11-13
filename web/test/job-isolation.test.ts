@@ -143,7 +143,7 @@ test('watch job, two tenants: a due run spends only the owner key and quota; one
   await createWatch(D(db), 'B', 'payroll tools hiring', ICP)
   db.prepare('UPDATE watches SET next_run_at = 1 WHERE id = ?').run(wA.id) // only A's watch is due
   const r1 = await runDueWatches(D(db))
-  assert.deepEqual(r1, { ran: 1, paused: 0 })
+  assert.deepEqual(r1, { ran: 1, paused: 0, skipped: 0 })
   const jobA = db.prepare('SELECT user_id, watch_id, funded_by FROM scan_jobs').get() as { user_id: string; watch_id: string; funded_by: string }
   assert.deepEqual(jobA, { user_id: 'A', watch_id: wA.id, funded_by: 'user' }, 'the only job belongs to A')
   assert.equal((await listWatches(D(db), 'B'))[0].last_run_at, null, 'B\'s watch never ran')
@@ -151,7 +151,7 @@ test('watch job, two tenants: a due run spends only the owner key and quota; one
   for (let i = 0; i < 49; i++) db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, 'A', 'b', 'i', 'l', 'done')").run(`old${i}`)
   db.prepare('UPDATE watches SET next_run_at = 1').run()
   const r2 = await runDueWatches(D(db))
-  assert.deepEqual(r2, { ran: 1, paused: 1 })
+  assert.deepEqual(r2, { ran: 1, paused: 1, skipped: 0 })
   assert.equal((await listWatches(D(db), 'A'))[0].paused_reason, 'quota_exceeded', 'A pauses on A\'s own quota')
   const bJobs = db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = 'B'").get() as { n: number }
   assert.equal(bJobs.n, 1, 'B\'s watch ran on B\'s own quota')

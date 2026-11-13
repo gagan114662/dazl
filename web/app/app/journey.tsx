@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { editedBuyer, journey, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
 import { scanCounts } from '@/lib/outreach/scan-drafts'
-import { constraintPills, PILLS_SHOWN, playName, playPace, widenActions, type PlayWatch } from '@/lib/play-card'
+import { constraintPills, PILLS_SHOWN, playName, playPace, skipNoticeLine, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
 import { CAUSE_TEXT, recoveryNote } from '@/lib/lead-state'
@@ -102,6 +102,7 @@ export default function Journey() {
 
   const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
   const pace = j.play && watches !== 'loading' ? playPace(j.play, watches) : null
+  const skipLine = watches !== 'loading' ? skipNoticeLine(watches) : null
   const pills = icp ? constraintPills(icp) : []
   const opp = j.split?.opportunities.length ?? null, held = j.split?.review.length ?? null, researchN = j.split?.research.length ?? 0
   const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(v)
@@ -110,6 +111,7 @@ export default function Journey() {
   return (
     <div className="space-y-4" data-testid="journey" data-stage={j.stage}>
       {capped && <p role="status" data-testid="cap-notice" className="card p-4 text-sm">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
+      {skipLine && <p role="status" data-testid="play-skip-notice" className="card p-4 text-sm">{skipLine} <Link className="underline" href="/app/plays">Plays</Link></p>}
 
       {/* The play, as a card: short name, Who / Signal / Pace, status. The full request is behind its (i). */}
       {j.play ? <section className="card p-5 sm:p-6" aria-labelledby="play-name" data-testid="play-card">

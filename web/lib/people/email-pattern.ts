@@ -218,31 +218,20 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   const monthCap = verifyMonthlyCap(env)
   if (monthCap === 0) return { ...run, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
   migrateEmailGuess(db)
-  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
+  const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
-  // 'cap': a cap refused the slot (later addresses would be refused too); 'lost': another run already took this address.
-  const reserve = db.transaction((address: string): 'ok' | 'cap' | 'lost' => {
-    // The tenant's daily cap counts every mailbox check: the scan's guesses and Find work email's checks (#1036) alike.
-    let lookupChecks = 0
-    try { lookupChecks = (db.prepare('SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').get(tenantId, dayStart) as { n: number }).n }
-    catch (e) { if (!/no such (?:table|column)/i.test(String((e as Error)?.message))) throw e }
-    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n + lookupChecks
-    if (used >= cap) return 'cap'
-    // The verifier's monthly allowance across every tenant of THIS database: an operator ledger (email_verify_usage, no tenant
-    // data), so deleting a tenant's candidate rows never frees allowance already spent. Counted and written in this transaction.
-    // Per database: two deployments sharing one key each count their own; the provider's refusal (a 'stop') is the backstop.
-    const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
-    if (month >= monthCap) return 'cap'
-    const won = db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, vname, tenantId, leadId, address).changes === 1
-    if (won) db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = email_verify_usage.n + 1').run(vname, monthKey)
-    return won ? 'ok' : 'lost'
-  })
   for (const { address } of rows) {
     if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
-    const slot = reserve(address)
-    if (slot === 'lost') continue
-    if (slot === 'cap') { run.capped = rows.length - run.checked; break }
+    // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.
+    try {
+      await reserveVerifySlot(db, { tenantId, verifier: vname, nowS, dailyCap: cap, monthCap },
+        () => db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, vname, tenantId, leadId, address).changes === 1)
+    } catch (e) {
+      if (e instanceof VerifySlotRefused && e.reason === 'lost') continue // another run already took this address
+      run.capped = rows.length - run.checked
+      break
+    }
     let v: Verification = 'uncertain'
     let stop: string | null = null
     try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
@@ -259,6 +248,33 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
     if (stop) { run.stopped = stop; break }
   }
   return run
+}
+
+// THE reservation every mailbox check makes before its provider call (#899 free-tier caps; #849 inventory: a provider call is
+// never made without a reservation recorded before it). One transaction: the tenant's daily cap (checks already made today), the
+// verifier's monthly allowance in the operator ledger (email_verify_usage: no tenant data, so deleting a tenant never frees spent
+// allowance; per database - a second deployment on the same key counts its own, the provider's refusal is the backstop), then
+// mark() claims the caller's own row and the ledger is incremented. Refused = throws VerifySlotRefused, like reserveCredits.
+export class VerifySlotRefused extends Error {
+  readonly reason: 'cap' | 'lost'
+  constructor(reason: 'cap' | 'lost') { super(`mailbox check refused: ${reason}`); this.reason = reason }
+}
+export async function reserveVerifySlot(db: Database.Database, s: { tenantId: string; verifier: string; nowS: number; dailyCap: number; monthCap: number }, mark: () => boolean): Promise<void> {
+  const dayStart = s.nowS - (s.nowS % 86_400), monthKey = new Date(s.nowS * 1000).toISOString().slice(0, 7), vname = s.verifier.slice(0, 40)
+  const r = db.transaction((): 'ok' | 'cap' | 'lost' => {
+    // The tenant's daily cap counts every mailbox check: the scan's guesses and Find work email's checks (#1036) alike.
+    let lookupChecks = 0
+    try { lookupChecks = (db.prepare('SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').get(s.tenantId, dayStart) as { n: number }).n }
+    catch (e) { if (!/no such (?:table|column)/i.test(String((e as Error)?.message))) throw e }
+    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(s.tenantId, dayStart) as { n: number }).n + lookupChecks
+    if (used >= s.dailyCap) return 'cap'
+    const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
+    if (month >= s.monthCap) return 'cap'
+    if (!mark()) return 'lost'
+    db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = email_verify_usage.n + 1').run(vname, monthKey)
+    return 'ok'
+  })()
+  if (r !== 'ok') throw new VerifySlotRefused(r)
 }
 
 // #899: the mailbox check for one scan's leads, run by the scan runner as its LAST post-finish step (lib/scan/runner.ts
@@ -285,29 +301,6 @@ export async function verifyJobCandidates(db: Database.Database, tenantId: strin
     if (r.capped) break // a cap is reached: later leads would be refused the same way
   }
   return out
-}
-
-// #1036: one mailbox-check slot for a user-clicked Find work email, under the SAME caps as the scan's guesses: the per-tenant daily
-// cap counts both kinds of check (email_candidates.checked_at and work_email_lookups.mailbox_checked_at), and the verifier's monthly
-// allowance is the same operator ledger. Reserved and counted in one transaction before the call; a crash still counts.
-// mark: the caller's write that claims the slot on its own row (returns true when it claimed it).
-export function reserveMailboxCheck(db: Database.Database, tenantId: string, verifierName: string, mark: (nowS: number) => boolean, opts: { env?: Record<string, string | undefined>; now?: number } = {}): 'ok' | 'off' | 'cap' | 'lost' {
-  const env = opts.env ?? process.env
-  const cap = verifyDailyCap(env), monthCap = verifyMonthlyCap(env)
-  if (!emailGuessEnabled(env) || cap === 0 || monthCap === 0) return 'off'
-  migrateEmailGuess(db)
-  const nowS = Math.floor((opts.now ?? Date.now()) / 1000), dayStart = nowS - (nowS % 86_400), monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
-  const vname = verifierName.slice(0, 40)
-  return db.transaction((): 'ok' | 'cap' | 'lost' => {
-    const guesses = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
-    const lookups = (db.prepare('SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').get(tenantId, dayStart) as { n: number }).n
-    if (guesses + lookups >= cap) return 'cap'
-    const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
-    if (month >= monthCap) return 'cap'
-    if (!mark(nowS)) return 'lost'
-    db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = email_verify_usage.n + 1').run(vname, monthKey)
-    return 'ok'
-  })()
 }
 
 export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'guessed, catch-all' | 'guessed, undeliverable' | 'guessed, uncertain' | 'guessed, refused'

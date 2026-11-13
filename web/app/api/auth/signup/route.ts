@@ -6,6 +6,7 @@ import { sendSignupNotice, sendVerification } from '@/lib/email-ownership'
 import { getDb } from '@/lib/db/client'
 import { queuePendingLifecycleDb } from '@/lib/outreach/lifecycle'
 import { cleanText, validateEmail, validatePassword } from '@/lib/validate'
+import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { systemMailAvailable } from '@/lib/system-mail'
@@ -25,6 +26,8 @@ const SIGNUP_ACCEPTED = { ok: true, check_email: true, message: 'Check your emai
 const accepted = () => NextResponse.json(SIGNUP_ACCEPTED)
 
 export async function POST(req: NextRequest) {
+  // #1095: no cross-site sign-up that signs this browser in (login CSRF; see app/api/auth/signin/route.ts)
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const rl = (await rateLimit(`signup:${clientIp(req)}`, 5, 60 * 60 * 1000))
   if (rl.unavailable) return NextResponse.json({ error: 'Sign-up is briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(UNAVAILABLE_RETRY_S) } })
   if (!rl.ok) {
