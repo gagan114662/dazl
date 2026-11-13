@@ -248,23 +248,29 @@ export function dedupKey(c: { company: string; name: string }): string {
 }
 
 // #1126: does the board that published a posting name this company? The board's stated company name wins; its slug is
-// only the fallback. Either one names the company only as its WHOLE key: "acme-health" (or a stated "Acme Health") is
-// "Acme Health", never "Health" or "Acme" alone. A name glued together equals the key with its spaces removed
-// ("macquarietechnologygroup" is "Macquarie Technology Group"), the same whole-name identity companyOwnsDomain gives a
-// domain label, with the same 3-character floor; a slug that merely contains the name ("acmehealth" for "Acme") is not it.
+// only the fallback. Either names the company only as its WHOLE key, never one of its words: "acme-health" (or a stated
+// "Acme Health") is "Acme Health", never "Health" or "Acme" alone.
+//   stated name: its company key (legal suffixes aside, as for the lead's own name) equals the lead's key, or the two are
+//                equal with their spaces removed (3+ characters).
+//   slug:        the same rule as a domain label in companyOwnsDomain: the slug with its separators removed equals the
+//                lead's key with its spaces removed, 3+ characters, and NO legal-suffix stripping on the slug, so
+//                "acme-co" and "the-acme-company" are not "Acme" (a stated name could say so; a slug cannot), while
+//                "acme-health", "acme_health" and "macquarietechnologygroup" are their whole names.
 const compact = (k: string) => k.replace(/[^\p{L}\p{N}]+/gu, '')
 export function boardNamesCompany(board: { company: string | null; slug: string }, key: string): boolean {
+  const k = compact(key)
   if (key.length < 2) return false
-  const named = companyKey(board.company ? board.company : board.slug.replace(/[-_.]+/g, ' '))
-  return named === key || (compact(key).length >= 3 && compact(named) === compact(key))
+  if (board.company) { const named = companyKey(board.company); return named === key || (k.length >= 3 && compact(named) === k) }
+  return k.length >= 3 && compact(norm(board.slug)) === k
 }
-// The page's own heading names the company: the title as a phrase, except for a posting read through its board's record,
-// whose heading is the posting title plus the board's identity (boardNamesCompany). Shared by every check that accepts
-// "named in the quote or the page title" (verifyEvidence, the job-feed intake, the source review).
+// The page's own heading names the company. For a posting read through its board's record (#1126) that is the board's
+// identity alone (boardNamesCompany): the posting's job title is the role, not the employer, so "Salesforce
+// Administrator" or "Health and Safety Officer" names neither Salesforce nor Health. Any other page: its title as a phrase.
+// Shared by every check that accepts "named in the quote or the page title" (verifyEvidence, the job-feed intake, the
+// source review) and by the runner's quote_unconfirmed routing and the own-block place check.
 export function pageHeadingNames(page: Pick<Page, 'title' | 'board'>, key: string): boolean {
   if (key.length < 2) return false
-  if (page.board) return hasPhrase(norm(page.board.title), key) || boardNamesCompany(page.board, key)
-  return hasPhrase(norm(page.title), key)
+  return page.board ? boardNamesCompany(page.board, key) : hasPhrase(norm(page.title), key)
 }
 
 function parseDay(s: string | null): Date | null {

@@ -14,7 +14,7 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -440,8 +440,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       }
       if (v.reason === 'excerpt_not_on_page') {
         const key = companyKey(c.company)
-        const hay = `${norm(page.title)} ${norm(page.text).slice(0, 4000)}`
-        if (key.length >= 2 && hasPhrase(hay, key)) {
+        // a board record's heading is its board identity (#1126), never its job title or slug as a phrase
+        const named = page.board ? pageHeadingNames(page, key) || hasPhrase(norm(page.text).slice(0, 4000), key) : hasPhrase(`${norm(page.title)} ${norm(page.text).slice(0, 4000)}`, key)
+        if (key.length >= 2 && named) {
           toReview(c, 'quote_unconfirmed'); continue
         }
       }

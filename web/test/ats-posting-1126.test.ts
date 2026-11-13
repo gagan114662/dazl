@@ -14,13 +14,16 @@ import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createSourceReview, migrateSourceReview } from '../lib/scan/source-review.ts'
+import { createHiringFeedIntake } from '../lib/scan/job-feed.ts'
+import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
+import { ownPlaceAgreement } from '../lib/scan/own-block.ts'
 
 const NOW = new Date('2026-11-13T12:00:00Z')
 const AID = 'a1260000-0000-4000-8000-000000000001', LID = 'b1260000-0000-4000-8000-000000000002'
 // a quote from the posting's own text that never names the employer
 const QUOTE = 'You will run Salesforce, forecasting and pipeline reporting for the revenue team.'
 const DESC = `We are hiring a Sales Operations Manager. ${QUOTE}`
-const ashby = (desc = DESC) => ({ apiVersion: '1', jobs: [{ id: AID, title: 'Sales Operations Manager', location: 'Berlin', employmentType: 'FullTime', isListed: true, publishedAt: '2026-11-01T09:00:00.000+00:00', jobUrl: 'x', descriptionPlain: desc }] })
+const ashby = (desc = DESC, title = 'Sales Operations Manager') => ({ apiVersion: '1', jobs: [{ id: AID, title, location: 'Berlin', employmentType: 'FullTime', isListed: true, publishedAt: '2026-11-01T09:00:00.000+00:00', jobUrl: 'x', descriptionPlain: desc }] })
 const gh = (company_name?: string) => ({ id: 4012345, internal_job_id: 1, title: 'Sales Operations Manager', location: { name: 'Remote' }, first_published: '2026-11-01T09:00:00-04:00', updated_at: '2026-11-12T00:00:00-04:00', content: `&lt;p&gt;${DESC}&lt;/p&gt;`, ...(company_name === undefined ? {} : { company_name }) })
 const lever = { id: LID, text: 'Sales Operations Manager', createdAt: Date.parse('2026-11-01T09:00:00Z'), categories: { location: 'London' }, descriptionPlain: DESC }
 
@@ -72,6 +75,12 @@ test('#1126 (owner decision): a glued slug equal to the whole key without spaces
   // too short to be a name glued together: only the exact key
   const ab = await page('a-b')
   assert.equal(verdict('AB', ab, url('a-b')), 'entity_mismatch', '"a b" glued is 2 characters, below the 3-character floor')
+  // review R3 at 10fe3f7c: the slug follows companyOwnsDomain's domain-label rule, with no legal-suffix stripping on the
+  // slug: "acme-co" / "the-acme-company" are not "Acme" (only a stated name could say so); separators are spacing only
+  for (const slug of ['acme-co', 'the-acme-company', 'acme-inc']) assert.equal(verdict('Acme', await page(slug), url(slug)), 'entity_mismatch', slug)
+  assert.equal(verdict('Acme Co', await page('acme-co'), url('acme-co')), 'entity_mismatch', 'as companyOwnsDomain: the lead\'s key is "acme" (suffix set aside), the slug spells "acmeco"')
+  for (const slug of ['acme_health', 'acme.health', 'AcmeHealth']) assert.equal(verdict('Acme Health', await page(slug), url(slug)), 'ok', slug)
+  assert.equal(verdict('Go', await page('go'), url('go')), 'entity_mismatch', 'a 2-character name never comes from a slug (the domain-label floor)')
 })
 
 test('#1126: the board\'s stated company name is used when present, and the slug is then ignored (Greenhouse company_name)', async () => {
@@ -83,24 +92,70 @@ test('#1126: the board\'s stated company name is used when present, and the slug
   assert.equal(verdict('Acme', stated, url), 'entity_mismatch', 'the slug is only a fallback')
   assert.equal(verdict('Zeta', stated, url), 'entity_mismatch', 'a stated name names its whole key only')
   assert.equal(stated.title, 'Sales Operations Manager @ Zeta Labs', 'the display title shows the stated name')
+  const statedCo = await read(url, serve('Acme Co'))
+  assert.equal(verdict('Acme', statedCo, url), 'ok', 'a stated name is a company name: its legal suffix is set aside, as for the lead')
   const multi = await read(url, serve('Acme Health'))
   assert.equal(verdict('Health', multi, url), 'entity_mismatch')
   assert.equal(verdict('Acme Health', multi, url), 'ok')
   // no stated name (an older record, or a blank one): the slug is the fallback
   for (const name of [undefined, '   ']) {
     const fallback = await read(url, serve(name))
+    assert.equal(fallback.title, 'Sales Operations Manager', 'review R4: no stated name, the posting title alone; never the slug')
     assert.equal(verdict('Acme', fallback, url), 'ok', String(name))
     assert.equal(verdict('Zeta Labs', fallback, url), 'entity_mismatch', String(name))
   }
 })
 
-test('#1126: a quote that names the company still verifies; the posting title still counts as the page heading', async () => {
+test('#1126: a quote that names the company still verifies; the posting\'s job title never names the employer', async () => {
   const url = `https://jobs.ashbyhq.com/acme-health/${AID}`
   const named = 'Acme is hiring a Sales Operations Manager to own the CRM.'
   const page = await read(url, u => u.startsWith('https://api.ashbyhq.com/') ? ashby(`${named} ${QUOTE}`) : undefined)
   assert.equal(verdict('Acme', page, url, named), 'ok', 'named in the quote')
   assert.equal(verdict('Acme', page, url), 'entity_mismatch', 'the same company from a quote that never names it, on a slug that is only part of a name')
-  assert.equal(verdict('Sales Operations', page, url), 'ok', 'the posting title is the heading, as a page title is')
+  // review R1 at 10fe3f7c: the job title is the role, not the employer
+  assert.equal(verdict('Sales Operations', page, url), 'entity_mismatch')
+  for (const [company, title, slug] of [['Salesforce', 'Salesforce Administrator', 'acme-health'], ['Go', 'Senior Go Engineer', 'acme'], ['Health', 'Health and Safety Officer', 'acme-health']]) {
+    const u = `https://jobs.ashbyhq.com/${slug}/${AID}`
+    const p = await read(u, x => x.startsWith(`https://api.ashbyhq.com/posting-api/job-board/${slug}`) ? ashby(DESC, title) : undefined)
+    const q = 'forecasting and pipeline reporting for the revenue team.' // QUOTE without its "Salesforce"
+    assert.equal(verdict(company, p, u, q), 'entity_mismatch', `${company} on "${title}" @ ${slug}`)
+    assert.equal(verdict(slug === 'acme' ? 'Acme' : 'Acme Health', p, u, q), 'ok', `the board itself still names its company: ${slug}`)
+  }
+})
+
+test('#1126 review R4: the runner\'s quote_unconfirmed routing and the own-block place check read the board identity, not the slug', async () => {
+  const url = `https://jobs.ashbyhq.com/acme-health/${AID}`
+  const serve = (u: string) => u.startsWith('https://api.ashbyhq.com/posting-api/job-board/acme-health') ? ashby() : undefined
+  const restore = fakeHttps(serve)
+  try {
+    const draft = (company: string) => ({ name: '', contact: null, event_date: null, score: 80, company, signal: 'Posted a Sales Operations Manager role on Ashby', source_url: url, excerpt: 'A paraphrase of the posting that is not on the page at all.' }) as LeadDraft
+    const fetch = (u: string) => fetchPageDetailed(u, async () => null)
+    const health = await verifyLeads([draft('Health')], fetch, NOW)
+    assert.deepEqual([health.review.map(r => r.review_reason), health.dropped], [[], { excerpt_not_on_page: 1 }], 'a slug word does not make the page "about" Health')
+    resetBoardMemo()
+    const whole = await verifyLeads([draft('Acme Health')], fetch, NOW)
+    assert.deepEqual(whole.review.map(r => r.review_reason), ['quote_unconfirmed'])
+  } finally { restore() }
+  const page = await read(url, serve)
+  assert.equal(ownPlaceAgreement(page, ['Berlin'], 'Health', QUOTE), 'unconfirmed', 'the slug word does not make the whole page Health\'s own block')
+  assert.equal(ownPlaceAgreement(page, ['Berlin'], 'Acme Health', QUOTE), 'agrees')
+})
+
+test('#1126 review R2: the job-feed intake marks a board record "company named" only by the board\'s whole name', async () => {
+  const url = `https://jobs.ashbyhq.com/acme-health/${AID}`
+  const role = 'Sales Development Representative'
+  const intake = async (company: string) => {
+    const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db)
+    const xml = `<rss><channel><item><title>${company}: ${role}</title><pubDate>Fri, 23 Oct 2026 09:48:36 +0000</pubDate><guid>https://weworkremotely.com/remote-jobs/x-sdr</guid><description>x</description></item></channel></rss>`
+    // the posting page is the Ashby board's record (the feed item's page, read through the board API)
+    const page = await read(url, u => u.startsWith('https://api.ashbyhq.com/posting-api/job-board/acme-health') ? ashby(DESC, role) : undefined)
+    const r = await createHiringFeedIntake(db, 'T1', 'sales-and-marketing', 'sales development', { fetchFeed: async () => xml, fetchPage: async () => page, get: async u => ({ status: 404, body: '', finalUrl: u }), gapMs: 0, env: {}, now: 1800000000 })
+    await r.crawl
+    assert.equal(r.leads.length, 1, JSON.stringify(r))
+    return (db.prepare('SELECT company_named FROM source_reviews').get() as { company_named: number }).company_named
+  }
+  assert.equal(await intake('Health'), 0)
+  assert.equal(await intake('Acme Health'), 1)
 })
 
 test('#1126: the source review applies the same identity (company_named) to a board record', async () => {

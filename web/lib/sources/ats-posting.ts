@@ -132,15 +132,17 @@ function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, lo
 // naming the board. The first-published day is NOT written into the text: it travels only as the page's postedAt, so it
 // can date a hiring candidate for exactly this posting and can never be bound by the text rules to any other claim.
 // #1126: who posted it travels only as the page's structured board identity (the board's stated company name, else its
-// slug), matched by lib/scan/evidence.ts boardNamesCompany as a whole company key. It is never written into the text or
-// the phrase-matched title: a slug "acme-health" read as words would name "Health" and "Acme" alone, and the closing line
-// is dazl's own wording, so a quote cut to include it must not name the company through it.
+// slug), matched by lib/scan/evidence.ts boardNamesCompany as a whole company key. The slug is never written into the
+// text or the title: "acme-health" read as words would name "Health" and "Acme" alone, and the closing line is dazl's own
+// wording, so a quote cut to include it must not name the company through it. The title is "<posting title> @ <stated
+// name>" when the board states one, else the posting title alone; it is display only for every company check
+// (evidence.ts pageHeadingNames reads the board identity instead).
 export interface BoardIdentity { title: string; company: string | null; slug: string }
 export function atsPageText(rec: AtsRecord, descriptionText: string): { text: string; title: string; board: BoardIdentity } {
   const body = descriptionText.replace(/\s+/g, ' ').trim()
   return {
     text: [rec.header || rec.title, body, `Job posting on the ${rec.board} job board.`].filter(Boolean).join(' ').slice(0, 100_000),
-    title: `${rec.title} @ ${rec.company || rec.org}`.slice(0, 300), // display only (stored copies, research provenance); the verifier reads board
+    title: (rec.company ? `${rec.title} @ ${rec.company}` : rec.title).slice(0, 300),
     board: { title: rec.title, company: rec.company || null, slug: rec.org },
   }
 }
