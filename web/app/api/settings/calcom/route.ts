@@ -20,9 +20,12 @@ export async function GET(req: NextRequest) {
   const secret = await getSecret(db, user.tenantId)
   // The signing secret can sign forged booking webhooks: only a member who may configure the workspace (admin, owner)
   // sees it, to paste into Cal.com. Everyone else reads the status and the bookings.
+  // can_configure is the POST gate (denied(user, 'configure')): the panel shows set-up, rotate and reconcile controls
+  // only when it is true, never inferred from whether a secret exists.
   const reveal = can(user.role, 'configure')
   return NextResponse.json({
     configured: !!secret,
+    can_configure: reveal,
     secret: reveal ? secret : null,
     secret_hidden: !!secret && !reveal,
     webhook_url: `${(process.env.PUBLIC_BASE_URL || req.nextUrl.origin).replace(/\/$/, '')}/api/hooks/calcom?u=${encodeURIComponent(user.tenantId)}`,

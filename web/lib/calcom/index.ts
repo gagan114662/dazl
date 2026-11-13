@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { recordTx } from '../audit.ts'
+import { meetingOver, type BookingStatus } from './outcome-rules.ts'
 
 // Cal.com booking webhooks -> booking outcomes and the pipeline stage. A booking is matched to a lead by the attendee's
 // normalized email against the addresses that plausibly own it: leads we actually MAILED at that address (outreach
@@ -20,9 +21,13 @@ import { recordTx } from '../audit.ts'
 //   - ended: MEETING_ENDED, which Cal.com fires at the scheduled end time whether or not anyone joined - it proves the
 //     slot passed, NOT that the meeting was held
 //   - no-show: BOOKING_NO_SHOW_UPDATED marks per attendee, the latest event per attendee wins
+//   - lead link: recomputed from the winning attendee email whenever that email changes (an early no-show for a guest
+//     can seed the row with the guest's address; the booking event names the primary attendee), so the lead credited
+//     does not depend on delivery order
 // The status is a pure function of those fields (bookingStatus). A meeting counts as `held` only on an actual
 // completion signal: no Cal.com webhook proves one, so `held` comes only from an audited manual reconciliation
-// (setManualOutcome), which also overrides the webhook-derived status when a person knows better.
+// (setManualOutcome), which also overrides the webhook-derived status when a person knows better - except on a booking
+// that was rescheduled away: that one is no longer the meeting, whatever was marked on it before the reschedule arrived.
 
 export function migrateCalcom(db: Database.Database): void {
   db.exec(`
@@ -84,7 +89,8 @@ export function verifySignature(secret: string, rawBody: string, header: string 
 
 export const normalizeEmail = (s: string) => s.trim().toLowerCase()
 
-export type BookingStatus = 'scheduled' | 'ended' | 'held' | 'no_show' | 'cancelled' | 'rescheduled'
+export type { BookingStatus }
+export { meetingOver, reconcileActions } from './outcome-rules.ts'
 // A booking that still stands (counts as booked): not cancelled and not superseded by a reschedule.
 export const STANDING: readonly BookingStatus[] = ['scheduled', 'ended', 'held', 'no_show']
 export const STANDING_SQL = "('scheduled', 'ended', 'held', 'no_show')"
@@ -176,11 +182,13 @@ const maxStr = (a: string | null, b: string | null) => (a === null ? b : b === n
 const maxNum = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.max(a, b))
 const minNum = (a: number | null, b: number | null) => (a === null ? b : b === null ? a : Math.min(a, b))
 
-// The status a row's fields imply. A manual reconciliation wins; otherwise superseded > cancelled > the primary
-// attendee marked no-show > the slot ended (outcome unconfirmed) > scheduled.
+// The status a row's fields imply. Superseded by a reschedule wins over everything, a manual reconciliation included (a
+// reschedule notice that arrives after someone marked the old uid held still moves the meeting: the manual fields and
+// the audit stay on the row as history); then a manual reconciliation; then cancelled > the primary attendee marked
+// no-show > the slot ended (outcome unconfirmed) > scheduled.
 export function bookingStatus(r: Pick<BookingRow, 'manual_outcome' | 'rescheduled_to' | 'cancelled_ms' | 'ended_at' | 'no_show_marks' | 'attendee_email'>): BookingStatus {
-  if (r.manual_outcome) return r.manual_outcome
   if (r.rescheduled_to) return 'rescheduled'
+  if (r.manual_outcome) return r.manual_outcome
   if (r.cancelled_ms !== null) return 'cancelled'
   if (marksOf(r.no_show_marks)[r.attendee_email]?.noShow) return 'no_show'
   if (r.ended_at !== null) return 'ended'
@@ -192,6 +200,10 @@ export function mergeEvent(row: BookingRow, ev: CalEvent, superseded = false): B
   const r: BookingRow = { ...row }
   if (ev.kind === 'booking' && superseded) {
     r.rescheduled_to = maxStr(r.rescheduled_to, ev.uid)
+    // No booking event for this uid yet: its attendee email is only the guess of whichever event inserted the row (a
+    // no-show notice names the attendee it marks, maybe a guest). The reschedule names the meeting's attendees, primary
+    // first, the same address a reschedule-first insert takes, so the row (and its lead link) converges either way.
+    if (r.detail_ms === null) Object.assign(r, { attendee_email: ev.attendees[0].email, attendee_name: ev.attendees[0].name })
   } else if (ev.kind === 'booking') {
     const json = JSON.stringify(ev.attendees)
     const next = [ev.icalSeq ?? -1, ev.at ?? -1, `${ev.startAt}|${ev.endAt}|${ev.icalUid}|${json}`] as const
@@ -218,9 +230,23 @@ export function mergeEvent(row: BookingRow, ev: CalEvent, superseded = false): B
   return r
 }
 
-function* lockRow(t: Tx, tenantId: string, uid: string): TxBody<BookingRow | null> {
-  const r = yield* t.get<Record<string, unknown>>(`SELECT * FROM calcom_bookings WHERE tenant_id = ? AND booking_uid = ?${t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId, uid])
+function* lockRow(t: Tx, tenantId: string, uid: string, lock = true): TxBody<BookingRow | null> {
+  const r = yield* t.get<Record<string, unknown>>(`SELECT * FROM calcom_bookings WHERE tenant_id = ? AND booking_uid = ?${lock && t.kind === 'pg' ? ' FOR UPDATE' : ''}`, [tenantId, uid])
   return r ? normRow(r) : null
+}
+// The lead rows whose stage this transaction may move, locked in id order before any standing() read. A lead's stage
+// depends on ALL its bookings, and the booking row locks only cover the touched uids: without this, two concurrent
+// cancellations of two different bookings of one lead (Postgres, READ COMMITTED) each still see the other booking
+// standing, both read standing true -> true and neither restores the stage. Holding the lead lock through the writes
+// and syncStage serializes them: the second sees the first one's committed cancel. Every writer of calcom_bookings
+// takes lead locks before booking-row locks (recordEvent, setManualOutcome), so the clean-up writes syncStage makes to
+// other bookings of a locked lead never wait on a transaction that is itself waiting for that lead. SQLite: the
+// transaction is BEGIN IMMEDIATE (one writer for its whole length), so there is nothing to lock and FOR UPDATE, which
+// SQLite does not parse, is omitted - the same pattern as lockRow and lib/billing/stripe.ts.
+function* lockLeads(t: Tx, tenantId: string, ids: Iterable<string>): TxBody<void> {
+  for (const id of [...new Set(ids)].sort()) {
+    yield* t.get(`SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?${t.kind === 'pg' ? ' FOR UPDATE OF l' : ''}`, [id, tenantId])
+  }
 }
 function* writeRow(t: Tx, tenantId: string, r: BookingRow): TxBody<void> {
   yield* t.run(`UPDATE calcom_bookings SET ${FIELDS.map(f => `${f} = ?`).join(', ')} WHERE tenant_id = ? AND booking_uid = ?`, [...FIELDS.map(f => r[f]), tenantId, r.booking_uid])
@@ -245,10 +271,18 @@ function* matchLead(t: Tx, tenantId: string, email: string): TxBody<string | nul
 // The lead's stage follows whether it has a standing booking. Gaining one sets 'booked_call' and remembers the stage it
 // replaced on that booking row ('' = no stage); losing the last one (cancelled, rescheduled away) restores it, but only
 // while the stage is still 'booked_call' - a stage someone changed by hand since is left alone. Driven by the standing
-// state before and after, not by which event arrived, so the stage converges like the rows do.
-function* syncStage(t: Tx, tenantId: string, leadId: string, before: boolean, rows: BookingRow[]): TxBody<void> {
+// state before and after, not by which event arrived, so the stage converges like the rows do. `carried`: the stage a
+// booking remembered for this lead when the booking's link just moved to another lead (it no longer sits on a row of
+// this lead): used to restore, or parked on another standing booking of this lead if the lead still has one.
+function* syncStage(t: Tx, tenantId: string, leadId: string, before: boolean, rows: BookingRow[], carried?: string): TxBody<void> {
   const after = yield* standing(t, tenantId, leadId)
-  if (before === after) return
+  if (before === after) {
+    if (after && carried !== undefined && !(yield* t.get('SELECT 1 AS x FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL LIMIT 1', [tenantId, leadId]))) {
+      const keep = yield* t.get<{ booking_uid: string }>(`SELECT booking_uid FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND status IN ${STANDING_SQL} ORDER BY booking_uid LIMIT 1`, [tenantId, leadId])
+      if (keep) yield* t.run('UPDATE calcom_bookings SET lead_prev_stage = ? WHERE tenant_id = ? AND booking_uid = ?', [carried, tenantId, keep.booking_uid])
+    }
+    return
+  }
   const lead = yield* t.get<{ stage: string | null }>('SELECT l.stage FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, tenantId])
   if (!lead) return
   if (after) {
@@ -258,16 +292,37 @@ function* syncStage(t: Tx, tenantId: string, leadId: string, before: boolean, ro
     yield* t.run("UPDATE leads SET stage = 'booked_call' WHERE id = ?", [leadId])
     return
   }
-  const prev = yield* t.get<{ lead_prev_stage: string }>('SELECT lead_prev_stage FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL ORDER BY booking_uid LIMIT 1', [tenantId, leadId])
-  if (prev && lead.stage === 'booked_call') yield* t.run('UPDATE leads SET stage = ? WHERE id = ?', [prev.lead_prev_stage === '' ? null : prev.lead_prev_stage, leadId])
+  const row = yield* t.get<{ lead_prev_stage: string }>('SELECT lead_prev_stage FROM calcom_bookings WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL ORDER BY booking_uid LIMIT 1', [tenantId, leadId])
+  const prev = row?.lead_prev_stage ?? carried
+  if (prev !== undefined && lead.stage === 'booked_call') yield* t.run('UPDATE leads SET stage = ? WHERE id = ?', [prev === '' ? null : prev, leadId])
   yield* t.run('UPDATE calcom_bookings SET lead_prev_stage = NULL WHERE tenant_id = ? AND lead_id = ? AND lead_prev_stage IS NOT NULL', [tenantId, leadId])
 }
 
 export type EventOutcome = { outcome: 'duplicate' | 'matched' | 'unmatched'; status: BookingStatus }
 
-// One transaction per event: the touched booking rows (locked FOR UPDATE on Postgres, in uid order so two concurrent
-// events over the same pair cannot deadlock), the lead link and the lead's stage land together. 'duplicate' = the event
-// changed nothing (a Cal.com retry or a replay); otherwise matched/unmatched says whether the event's booking has a lead.
+// The event merged into the touched rows, and each row's lead link: recomputed when the row has none yet or its winning
+// attendee email changed. A row whose link moves leaves its remembered stage with the lead it came from (`carried`).
+function* plan(t: Tx, tenantId: string, ev: CalEvent, rows: BookingRow[]): TxBody<{ next: BookingRow[]; carried: Map<string, string> }> {
+  const next = rows.map(r => mergeEvent(r, ev, r.booking_uid !== ev.uid))
+  const carried = new Map<string, string>()
+  for (let i = 0; i < next.length; i++) {
+    const o = rows[i], n = next[i]
+    if (n.lead_id === null || n.attendee_email !== o.attendee_email) n.lead_id = yield* matchLead(t, tenantId, n.attendee_email)
+    if (o.lead_id !== null && n.lead_id !== o.lead_id) {
+      if (o.lead_prev_stage !== null && !carried.has(o.lead_id)) carried.set(o.lead_id, o.lead_prev_stage)
+      n.lead_prev_stage = null
+    }
+  }
+  return { next, carried }
+}
+const leadsOf = (...sets: BookingRow[][]) => [...new Set(sets.flat().map(r => r.lead_id).filter((l): l is string => l !== null))].sort()
+
+// One transaction per event: the touched booking rows, every lead link they had or get, and those leads' stages land
+// together. Lock order: the affected lead rows (id order, lockLeads), then the touched booking rows (uid order, FOR
+// UPDATE on Postgres), so two concurrent events cannot deadlock. Which leads are affected depends on the rows, so they
+// are first read unlocked to plan the lead locks; if a concurrent commit changed a row in between, the plan is redone
+// on the locked rows and any lead it adds is locked too. 'duplicate' = the event changed nothing (a Cal.com retry or a
+// replay); otherwise matched/unmatched says whether the event's booking has a lead.
 export function recordEvent(db: Db, tenantId: string, ev: CalEvent, nowS = Math.floor(Date.now() / 1000)): Promise<EventOutcome> {
   const first = ev.kind === 'no_show' ? { email: ev.marks[0].email, name: null } : ev.attendees[0]
   const uids = [...new Set([ev.uid, ...(ev.kind === 'booking' && ev.fromUid ? [ev.fromUid] : [])])].sort()
@@ -277,15 +332,20 @@ export function recordEvent(db: Db, tenantId: string, ev: CalEvent, nowS = Math.
       const ins = yield* t.run('INSERT INTO calcom_bookings (tenant_id, booking_uid, attendee_email, attendee_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, booking_uid) DO NOTHING', [tenantId, uid, first.email, first.name, nowS])
       if (ins.changes > 0) dirty = true
     }
+    const seen: BookingRow[] = []
+    for (const uid of uids) seen.push((yield* lockRow(t, tenantId, uid, false))!)
+    const guess = yield* plan(t, tenantId, ev, seen)
+    const locked = leadsOf(seen, guess.next)
+    yield* lockLeads(t, tenantId, locked)
     const old: BookingRow[] = []
     for (const uid of uids) old.push((yield* lockRow(t, tenantId, uid))!)
-    const next = old.map(r => mergeEvent(r, ev, r.booking_uid !== ev.uid))
-    for (const r of next) if (r.lead_id === null) r.lead_id = yield* matchLead(t, tenantId, r.attendee_email)
-    const leads = [...new Set(next.map(r => r.lead_id).filter((l): l is string => l !== null))]
+    const { next, carried } = old.some((r, i) => changed(r, seen[i])) ? yield* plan(t, tenantId, ev, old) : guess
+    const leads = leadsOf(old, next)
+    yield* lockLeads(t, tenantId, leads.filter(l => !locked.includes(l)))
     const before = new Map<string, boolean>()
     for (const l of leads) before.set(l, yield* standing(t, tenantId, l))
     for (let i = 0; i < next.length; i++) if (changed(old[i], next[i])) { dirty = true; yield* writeRow(t, tenantId, next[i]) }
-    for (const l of leads) yield* syncStage(t, tenantId, l, before.get(l)!, next)
+    for (const l of leads) yield* syncStage(t, tenantId, l, before.get(l)!, next, carried.get(l))
     const own = next.find(r => r.booking_uid === ev.uid)!
     return { outcome: dirty ? (own.lead_id ? 'matched' : 'unmatched') : 'duplicate', status: own.status }
   })
@@ -299,17 +359,21 @@ export async function recordBooking(db: Db, tenantId: string, b: { uid: string; 
 
 export type ManualResult = { ok: true; status: BookingStatus } | { ok: false; error: 'not_found' | 'superseded' | 'not_yet' }
 
-// Audited manual reconciliation, the only source of `held`. held / no_show need the meeting to be over: its start has
-// passed or Cal.com reported MEETING_ENDED; with neither known the claim is refused (fail closed). A booking that was
+// Audited manual reconciliation, the only source of `held`. held / no_show need the meeting to be over (meetingOver: its
+// scheduled end has passed or Cal.com reported MEETING_ENDED); with neither known the claim is refused (fail closed),
+// and the settings panel offers the buttons by the same predicate. The lead is locked before the booking row, the
+// recordEvent lock order (lockLeads explains why the lead lock is needed at all). A booking that was
 // rescheduled away is not the meeting any more: reconcile the uid it moved to. outcome null clears the override and the
 // webhook-derived status applies again. The audit event commits in the same transaction as the change.
 export function setManualOutcome(db: Db, tenantId: string, actorId: string, uid: string, outcome: ManualOutcome | null, ctx: { correlationId?: string | null } = {}, nowS = Math.floor(Date.now() / 1000)): Promise<ManualResult> {
   return db.tx(function* (t: Tx): TxBody<ManualResult> {
-    const row = yield* lockRow(t, tenantId, uid)
-    if (!row) return { ok: false, error: 'not_found' }
+    const seen = yield* lockRow(t, tenantId, uid, false)
+    if (!seen) return { ok: false, error: 'not_found' }
+    if (seen.lead_id) yield* lockLeads(t, tenantId, [seen.lead_id])
+    const row = (yield* lockRow(t, tenantId, uid))! // booking rows are never deleted
+    if (row.lead_id && row.lead_id !== seen.lead_id) yield* lockLeads(t, tenantId, [row.lead_id]) // relinked by a commit in between
     if (row.rescheduled_to) return { ok: false, error: 'superseded' }
-    const over = (row.start_at !== null && row.start_at <= nowS) || row.ended_at !== null
-    if ((outcome === 'held' || outcome === 'no_show') && !over) return { ok: false, error: 'not_yet' }
+    if ((outcome === 'held' || outcome === 'no_show') && !meetingOver(row, nowS)) return { ok: false, error: 'not_yet' }
     const next: BookingRow = { ...row, manual_outcome: outcome, manual_at: outcome ? nowS : null, manual_by: outcome ? actorId.slice(0, 80) : null }
     next.status = bookingStatus(next)
     const before = row.lead_id ? yield* standing(t, tenantId, row.lead_id) : false
@@ -324,7 +388,7 @@ export function setManualOutcome(db: Db, tenantId: string, actorId: string, uid:
 export function listBookings(db: Db, tenantId: string, limit = 50) {
   return db.all(`
     SELECT b.booking_uid, b.attendee_email, b.attendee_name, b.created_at, b.lead_id, l.company, l.name AS lead_name,
-           b.status, b.start_at, b.end_at, b.rescheduled_to, b.rescheduled_from, b.manual_outcome, b.manual_at
+           b.status, b.start_at, b.end_at, b.ended_at, b.rescheduled_to, b.rescheduled_from, b.manual_outcome, b.manual_at
     FROM calcom_bookings b LEFT JOIN leads l ON l.id = b.lead_id
     WHERE b.tenant_id = ? ORDER BY b.created_at DESC, b.booking_uid LIMIT ?`, [tenantId, limit])
 }
