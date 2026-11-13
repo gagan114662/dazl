@@ -2,19 +2,33 @@ import { isGtmRole } from '../signals/ats-gtm.ts'
 // Requested POSTING titles, never the buyer personas in ICP.who. Deliberately bounded synonyms:
 // sales ops <-> sales operations, revops <-> revenue operations, admin <-> administrator, SDR / BDR / AE <-> the full title.
 // CRM administrator is NOT business systems administrator, Salesforce developer or AE.
-// #879: both sides read "reps" as representative(s) and "VP of Sales" / "Vice President, Sales" / "VP, Sales" as one title. The sales
-// titles a REQUEST abbreviates (production's own play asks for "their first SDR"; boards post "Sales Development Representative") read
-// as the full title: SDR(s), BDR(s), AE(s). In a posting TITLE only SDR / BDR do, and only when the title is not another trade's
-// ("RF Engineer, SDR (Software Defined Radio)"); "AE" in a title is never expanded ("Motion Designer (After Effects / AE)",
-// "Customer Success Manager - Dubai, AE", "AES Encryption Engineer").
+// #879. Nothing main matched is lost: a title that carries the term as the request wrote it still matches. Added, on both sides:
+// "sales rep(s)" reads as sales representative, and "VP of Sales" / "VP, Sales" / "Vice President, Sales" as one title. Added for the
+// sales titles requests and boards abbreviate (production's own play asks for "their first SDR"; boards post "Sales Development
+// Representative"): a REQUEST's SDR(s) / BDR(s) / AE(s) also read as the full title, and a posting TITLE's SDR / BDR too.
+// The letters in another trade's title are not the sales role ("RF Engineer, SDR (Software Defined Radio)", "Motion Designer (After
+// Effects / AE)"): after another trade's name they are ignored, unless the title is a sales one ("Sales Engineer / SDR").
 const base = (s: string): string => s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator')
-  .replace(/\breps?\b/g, 'representative').replace(/\bvice[ -]+president\b/g, 'vp').replace(/\bvp\s*(?:,|of|-)\s*/g, 'vp ')
+  .replace(/\bsales\s+reps?\b/g, 'sales representative').replace(/\bvice[ -]+president\b/g, 'vp').replace(/\bvp\s*(?:,|of|-)\s*/g, 'vp ')
   .replace(/\b(?:managers|administrators|executives|engineers|directors|representatives)\b/g, w => w.slice(0, -1))
 const squeeze = (s: string): string => s.replace(/[^a-z0-9]+/g, ' ').trim()
+// The reading main had before #879, kept beside the new ones so a pair it matched still matches.
+const plain = (s: string): string => squeeze(s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)))
 const OTHER_TRADE = /\b(?:engineer|developer|technician|scientist|designer|radio)\b/
-const normal = (s: string): string => squeeze(base(s).replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative').replace(/\baes?\b/g, 'account executive'))
-const normalTitle = (s: string): string => { const b = base(s); return squeeze(OTHER_TRADE.test(b) ? b : b.replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative')) }
-export interface RequestedHiringRole { term: string; normalized: string }
+const expandSdrBdr = (s: string): string => s.replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative')
+const normal = (s: string): string => squeeze(expandSdrBdr(base(s)).replace(/\baes?\b/g, 'account executive'))
+// The readings of a posting title: as written, and with SDR / BDR spelled out. When another trade is named BEFORE the letters and the
+// title is not a sales one ("RF Engineer, SDR (Software Defined Radio)", "Motion Designer (After Effects / AE)"), the letters are dropped;
+// a sales title that names what it sells to ("SDR - Developer Platform") keeps them.
+const ABBR = /\b(?:sdrs?|bdrs?|ae)\b/
+const titleForms = (title: string): string[] => {
+  const b = base(title), at = b.search(ABBR)
+  if (at >= 0 && OTHER_TRADE.test(b.slice(0, at)) && !/\bsales\b/.test(b)) return [` ${squeeze(b.replace(new RegExp(ABBR.source, 'g'), ' '))} `]
+  return [` ${squeeze(b)} `, ` ${squeeze(expandSdrBdr(b))} `, ` ${plain(title)} `]
+}
+// literal: the term as written (no abbreviation expanded), kept when it differs, so a title that carries the same letters the
+// request used ("Senior AE" for a request for "an AE") still matches as it did before #879.
+export interface RequestedHiringRole { term: string; normalized: string; literal?: string }
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
 const LEAD_QUALIFIER = /^(?:within|in|at|on|from|with|during|over|across|now|currently|recently|soon|asap|immediately)\b/i
@@ -43,15 +57,16 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
         if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions)$/.test(n)) continue
         // Do not infer a role from free prose. An unparseable explicit request is not a verified match.
         // Unsupported/long explicit terms stay required and unmatched, never silently generic.
-        roles.set(n, { term, normalized: n })
+        const lit = plain(term)
+        roles.set(n, { term, normalized: n, ...(lit && lit !== n ? { literal: lit } : {}) })
       }
     }
   }
   return [...roles.values()]
 }
 export function matchedHiringRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
-  const n = ` ${normalTitle(title)} `
-  return roles.find(r => n.includes(` ${r.normalized} `)) ?? null
+  const forms = titleForms(title)
+  return roles.find(r => forms.some(f => f.includes(` ${r.normalized} `) || (!!r.literal && f.includes(` ${r.literal} `)))) ?? null
 }
 // Only sales/GTM-family requested titles gate drafting: the required proof is the SALES-hiring check. A requested
 // non-GTM title (receptionist, payroll, front-desk) is a buying signal - recorded as evidence, never a drafting hold.
