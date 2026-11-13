@@ -8,6 +8,7 @@
 //    the flat profile fields keep no per-item source.
 // A section with nothing in it says so ("dazl did not find this"); nothing is invented to fill it.
 import type { Icp, ResearchedHyp } from './scan/icp.ts'
+import { compileTargeting, planConditions } from './scan/targeting.ts'
 
 export interface BrainProfile { business_name?: string | null; sells?: string | null; website?: string | null; buyer?: Icp | null }
 export interface BrainMemory { icp?: string; positioning?: string; tone?: string; exclusions?: string[]; objections?: { q: string; a: string }[] }
@@ -80,17 +81,23 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const place = where ? ` in ${where}` : ''
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
+  // xhawk #1145: a free-form signal ("attended a trade show") the targeting compiler cannot turn into a condition would make a play
+  // that reads as signal-targeted but returns ordinary ICP matches; such a signal is not offered as a play
+  const enforceable = (x: string) => planConditions(compileTargeting(`${who[0] || ind[0] || 'companies'} - ${x}`).root).length > 0
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
   const hiringSig = (x: string) => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.test(x)   // only a signal that yields a hiring play
-  const firstPlain = sig.find(x => !hiringSig(x))   // a hiring signal becomes the hiring play below, never also a plain one
+  const firstPlain = sig.find(x => !hiringSig(x) && enforceable(x))   // a hiring signal becomes the hiring play below, never also a plain one
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
   for (const h of sig.map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
-  for (const c of list(competitors).slice(0, 2)) add(`Looking for an alternative to ${c}`, `${buyer || 'Companies'}${place} looking for an alternative to ${c}`)
+  // one play naming every competitor it covers (max 2): the scan's complaint collector reads the whole saved competitor list, so a
+  // play for "one" competitor would still surface the others' complaints (xhawk #1145)
+  const comps = list(competitors).slice(0, 2)
+  if (comps.length) add(`Looking for an alternative to ${comps.join(' or ')}`, `${buyer || 'Companies'}${place} looking for an alternative to ${comps.join(' or ')}`)
   // a second plain-signal play (hiring signals are already the hiring plays above)
-  const secondPlain = sig.filter(x => !hiringSig(x))[1]
+  const secondPlain = sig.filter(x => !hiringSig(x) && enforceable(x))[1]
   if (buyer && secondPlain) add(`${buyer}${place}: ${secondPlain}`, `${buyer}${place} - ${secondPlain}`)
   return out
 }

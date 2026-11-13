@@ -88,6 +88,14 @@ test('#1043 council: "from your site" needs the quote found on the page and rese
   assert.ok(!moved.some(i => i.text === 'Office manager'), 'research about another site is not shown as known')
 })
 
-test('#1043 council r2: a signal mentioning hiring with no role to hire still makes a plain play (it is not lost)', () => {
+test('#1043 council r2: a signal mentioning hiring with no role to hire still makes a plain play (the compiler reads it as hiring)', () => {
   assert.deepEqual(businessPlays({ buyer: icp({ signals: ['Expanding team, hiring'] }) }, []).map(p => p.query), ['Practice owner in Ohio - Expanding team, hiring'])
+})
+
+test('#1043 xhawk: a saved signal the targeting compiler cannot enforce is not offered as a play; one competitor play names all competitors', () => {
+  const q = (signals: string[]) => businessPlays({ buyer: icp({ signals }) }, []).map(p => p.query)
+  assert.deepEqual(q(['attended a trade show']), [], 'no positive condition: no play')
+  assert.deepEqual(q(['attended a trade show', 'opened a new location']), ['Practice owner in Ohio - opened a new location'], 'the enforceable one is offered')
+  const c = businessPlays({ buyer: icp({ signals: [] }) }, ['Zocdoc', 'Dentrix']).map(p => p.query)
+  assert.deepEqual(c, ['Practice owner in Ohio looking for an alternative to Zocdoc or Dentrix'], 'one play covering every competitor the scan reads')
 })
