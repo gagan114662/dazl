@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { homeResults, signalLabel } from '../lib/outreach/home-results.ts'
+import { inboxPage } from '../lib/outreach/inbox.ts'
 import { test } from 'node:test'
 
 const NOW = 1_800_000_000, DAY = 86400
@@ -45,7 +46,8 @@ async function seed(db: Db) {
 bothEngines('#1040: the last 30 days - new leads, contacted, replied, interested - from stored rows, tenant-scoped; by signal adds up', async ({ db }) => {
   await seed(db)
   const r = await homeResults(db, 'A', NOW)
-  assert.deepEqual(r.tiles, { leads: 4, contacted: 5, replied: 2, interested: 1 })
+  // m1 said yes, then wrote again ('other'): its deciding reply is not positive, so it is not interested (the Inbox agrees)
+  assert.deepEqual(r.tiles, { leads: 4, contacted: 5, replied: 2, interested: 0 })
   assert.deepEqual(r.by_signal.map(s => [s.signal, s.leads, s.contacted, s.replied]),
     [['hiring', 2, 3, 1], ['raised_funding', 1, 2, 1], ['unknown', 1, 0, 0]])
   for (const k of ['leads', 'contacted', 'replied'] as const) assert.equal(r.by_signal.reduce((n, s) => n + s[k], 0), r.tiles[k], `by signal adds up to the ${k} tile`)
@@ -58,11 +60,34 @@ bothEngines('#1040: the last 30 days - new leads, contacted, replied, interested
   assert.deepEqual(z.tiles, { leads: 0, contacted: 0, replied: 0, interested: 0 }); assert.deepEqual([z.by_signal, z.latest_leads, z.latest_replies], [[], [], []])
 })
 
+bothEngines('#1040 round 2: Leads-page leads only (no poor fit, no test fixture); Interested is the Inbox deciding-reply rule', async ({ db }) => {
+  await seed(db)
+  const J = 'j'.repeat(24)
+  const add = (id: string, kind: string, created: number, fit: number | null, source: string | null) => db.run(
+    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, signal_kind, created_at, fit, source_kind) VALUES (?, ?, ?, 'x', 'https://news.example/a', ?, ?, ?, ?)", [id, J, `Co ${id}`, kind, created, fit, source])
+  await add('a10', 'hiring', IN, 1, null)          // hidden on Leads as a poor fit
+  await add('a11', 'hiring', IN, null, 'test')     // a test fixture
+  await add('a14', 'hiring', IN, 2, 'news')        // shown: counted
+  await add('a12', 'hiring', OLD, null, null); await add('a13', 'hiring', OLD, null, null)
+  const msg = (id: string, leadId: string) => db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, 'A', ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, 0)", [id, leadId, IN, IN])
+  const reply = (gid: string, msgId: string, cls: string, at: number) => db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, 'A', ?, NULL, 'p@co.example', 'hi', ?, ?, ?)", [gid, `t-${msgId}`, cls, at, msgId])
+  await msg('m12', 'a12'); await reply('g12a', 'm12', 'positive', IN + DAY); await reply('g12b', 'm12', 'opt_out', IN + 2 * DAY)   // yes, then opt out
+  await msg('m13', 'a13'); await reply('g13a', 'm13', 'positive', IN + DAY); await reply('g13b', 'm13', 'auto', IN + 2 * DAY)      // yes, then an out-of-office
+  await msg('m14', 'a14'); await reply('g14', 'm14', 'uncertain', IN + DAY)                                                       // "not really interested": a person, replied
+  const r = await homeResults(db, 'A', NOW)
+  assert.deepEqual(r.tiles, { leads: 5, contacted: 8, replied: 5, interested: 1 })
+  assert.ok(!r.latest_leads.some(l => l.id === 'a10' || l.id === 'a11'), 'the latest leads are leads the Leads page shows')
+  // the Interested tile opens /app/inbox?status=all&class=positive: the same deciding reply decides both
+  const inbox = (await inboxPage(db, 'A', { status: 'all', classification: 'positive' })).threads.map(t => t.thread_id).sort()
+  assert.deepEqual(inbox, ['t-m13', 't-m5', 't-m8'], 'm13 (the yes stands over the out-of-office); m5 sent before the window and m8 a test send are Inbox-only')
+  assert.ok(!inbox.includes('t-m12') && !inbox.includes('t-m1'), 'm12 opted out after yes, m1 wrote again: neither is interested on either page')
+})
+
 test('#1040: signal types read as words', () => {
   assert.equal(signalLabel('raised_funding'), 'Raised funding'); assert.equal(signalLabel('unknown'), 'No signal type')
 })
 
-test('#1040: the 30-day reads use indexes (no full scan of messages, replies or leads)', async () => {
+test('#1040: the 30-day reads use indexes (messages and replies by tenant and date; leads through their scans)', async () => {
   const Database = (await import('better-sqlite3')).default
   const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
   const raw = new Database(':memory:'); migrateAllSqlite(raw)

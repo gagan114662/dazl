@@ -87,7 +87,14 @@ try {
       await page.getByTestId('tile-interested').click()
       await page.getByTestId('class-filter').waitFor({ timeout: 20000 })
       assert.ok(inboxUrls.some(q => /class=positive/.test(q)), `Inbox asked for interested replies only: ${JSON.stringify(inboxUrls)}`)
-      out.push('Interested opens Inbox filtered')
+      assert.match(await page.getByTestId('class-filter').textContent(), /all time, not only the last 30 days/, 'the Inbox says how its list differs from the 30-day tile')
+      const before = inboxUrls.length
+      await page.getByRole('button', { name: 'Show all replies' }).click()
+      await page.getByTestId('class-filter').waitFor({ state: 'detached', timeout: 20000 })
+      assert.ok(!new URL(page.url()).searchParams.has('class'), `Show all replies drops ?class from the URL: ${page.url()}`)
+      for (let i = 0; i < 100 && !inboxUrls.slice(before).some(q => !/class=/.test(q)); i++) await page.waitForTimeout(100)
+      assert.ok(inboxUrls.slice(before).some(q => !/class=/.test(q)), `Inbox asked again without the filter: ${JSON.stringify(inboxUrls.slice(before))}`)
+      out.push('Interested opens Inbox filtered; Show all replies clears the filter and the URL')
     }
     await ctx.close()
   }

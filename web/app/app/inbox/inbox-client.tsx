@@ -58,7 +58,7 @@ export default function InboxClient() {
       .then((j: Info) => { if (!c.signal.aborted) setList({ ...j, key }) })
       .catch(() => { if (!c.signal.aborted) setFailedKey(key) })
     return () => { c.abort(); moreCtl.current?.abort() }
-  }, [status, jobId, key, retryTick]) // status and jobId are what key is made of; retryTick is the explicit Try again
+  }, [status, jobId, cls, key, retryTick]) // status, jobId and cls are what key is made of; retryTick is the explicit Try again
   const current = list && list.key === key ? list : null
   function loadMore() {
     if (!current?.next_cursor || moreKey === key) return
@@ -101,7 +101,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
-      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing interested replies only. <button type="button" className="underline" onClick={() => setCls(null)}>Show all replies</button></p>}
+      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply is interested (all time, not only the last 30 days). <button type="button" className="underline" onClick={() => { setCls(null); const u = new URL(window.location.href); u.searchParams.delete('class'); window.history.replaceState(null, '', u) }}>Show all replies</button></p>}
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}
