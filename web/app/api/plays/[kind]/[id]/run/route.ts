@@ -16,7 +16,7 @@ import { runPlayNow, type RunNowRefusal } from '@/lib/play-now'
 // whether or not the page stays open. The scan runner reads only that SQLite store: with DATABASE_URL set (Postgres,
 // not authorized for production, docs/PLATFORM.md) a job written there would never be claimed, so the route refuses
 // (503 runner_unavailable) before writing anything rather than queue a run that cannot start.
-const STATUS: Record<RunNowRefusal, number> = { not_found: 404, paused: 409, no_api_key: 400, quota_exceeded: 402, scan_active: 409, too_soon: 429, trial_used: 402, trial_busy: 503 }
+const STATUS: Record<RunNowRefusal, number> = { not_found: 404, paused: 409, no_api_key: 400, quota_exceeded: 402, scan_active: 409, too_soon: 429, trial_used: 402, trial_busy: 503, daily_cap: 429 }
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ kind: string; id: string }> }) {
   const user = await requireUser()

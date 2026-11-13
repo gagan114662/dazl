@@ -37,7 +37,7 @@ export interface EstimateRow {
 // (pinned by test/trial-interrupted-attempt.test.ts): this module is imported by the browser, so it cannot import the server-side trial module.
 const TRIAL_BLOCKS = new Set(['attempts_cap', 'account_total_cap', 'global_daily_cap', 'domain_used', 'google_required'])
 export const FREE_TRIAL_SCANS = 3
-export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null }
+export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null; trial_refusal?: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
   payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
@@ -169,13 +169,13 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
-  let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null
+  let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
   const trialWhy = i.payer === 'trial' && typeof i.trialRefusal === 'string' && TRIAL_BLOCKS.has(i.trialRefusal) ? i.trialRefusal : null
   if (trialWhy) {
     // attempts_cap means all of them are used; any other reason states the account's real count (0 when unknown/fresh), never "3 of 3".
     const used = trialWhy === 'attempts_cap' ? FREE_TRIAL_SCANS : Math.min(FREE_TRIAL_SCANS, Math.max(0, Math.trunc(Number(i.trialUsed) || 0)))
     const c = trialCopy({ funded: false, remaining: FREE_TRIAL_SCANS - used, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
-    ok = false; reason = 'trial_unavailable'
+    ok = false; reason = 'trial_unavailable'; trialRefusalWhy = trialWhy
     message = `Blocked: ${c.text} Nothing was started or reserved.`
     change.push(c.next.label + '.')
   } else if (i.poolUnsettled) {
@@ -242,11 +242,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
     'The web-search research fallback and any provider retries cannot be bounded and are not in the total.',
     trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
-    ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
+    // #1095: a refused trial run is not paid by anyone: never claim the trial pays for it
+    ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
   const cap = { max_usd: Number.isFinite(limit) ? limit : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
-  const verdict = { ok, reason, message, change, warning }
+  const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
   // submitted - the payer switched, other runs reserved more of the limit, a new warning appeared - the old confirmation no longer matches and the person must confirm again.
@@ -315,4 +316,11 @@ export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
   const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding} limit binds)` : ''}`
   return `${parts.join('; ')}; ${left}. Model requests expected: ${capped.min === capped.max ? cur(capped.min) : `${cur(capped.min)} - ${cur(capped.max)}`}.`
+}
+
+// #1095: who pays, as the cost panel's first line. A run the free trial refused is paid by no one, so it claims no payer
+// (the refusal notice below it says why and what to do); otherwise the shared trial or the account's own keys.
+export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): string | null {
+  if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
+  return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
 }
