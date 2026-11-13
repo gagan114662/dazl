@@ -112,7 +112,7 @@ const hiringShape = (over: Partial<Fixture> = {}) => base(HIRING, {
 test('#1037 hiring shape (2934229e, hiring profile, three places): the capped plan keeps a model-planned query - board site: queries never take every capped search', async () => {
   const r = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(hiringShape()))
   assert.ok(r.calls.searches.length >= 1 && r.calls.searches.length <= 3, `capped: ${r.calls.searches.length}`)
-  assert.ok(r.calls.searches.filter(q => !/site:/.test(q)).length >= 2, `at least 2 model-planned (non site:) queries sent that is not a board site: query was sent: ${JSON.stringify(r.calls.searches)}`)
+  assert.ok(r.calls.searches.filter(q => !/site:/.test(q)).length >= 2, `at least 2 model-planned (non site:) queries sent: ${JSON.stringify(r.calls.searches)}`)
   assert.notEqual(r.job.error, 'unbounded_fallback_hold')
 })
 
