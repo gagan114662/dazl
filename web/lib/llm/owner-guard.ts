@@ -22,23 +22,26 @@ import type { DbLike } from '../db/client.ts'
 import type { Provider } from './provider.ts'
 import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'
 import { accountLimits, ownerLimits, sharedPool } from './spend-pool.ts'
-import { runWithAccountSpend } from '../scan/spend-cap.ts'
+import { runWithAccountSpend, type AccountSpendCtx } from '../scan/spend-cap.ts'
 
 export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Record<string, string | undefined> = process.env): Provider {
   const limits = ownerLimits(ownerId, env)
-  if (!limits) {
-    const ctx = { db: d, tenantId: ownerId, limits: accountLimits(ownerId, env) }
-    return {
-      ...p,
-      research: (k, prompt, f) => runWithAccountSpend(ctx, () => p.research(k, prompt, f)),
-      ...(p.complete ? { complete: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.complete!(k, prompt, f, max)) } : {}),
-      ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.completeDetailed!(k, prompt, f, max)) } : {}),
-    }
-  }
+  if (!limits) return inAccount({ db: d, tenantId: ownerId, limits: accountLimits(ownerId, env) }, p)
   // DAZL_SPEND_BUSY_WAIT_MS: how long a call waits for another call of the same owner to settle (default 10 s).
   const wait = Number(env.DAZL_SPEND_BUSY_WAIT_MS)
   const pool = sharedPool(d, ownerId, limits, undefined, Number.isFinite(wait) && wait >= 0 ? wait : undefined)
-  return guardProvider(p, new PooledGuard(pool, { trackPending: true }), undefined, undefined, true)
+  // The PooledGuard reserves; the call still runs in this account's context (limits null: the transport adds nothing),
+  // because a model call with no context at all is refused (lib/scan/spend-cap.ts, no_spend_context).
+  return inAccount({ db: d, tenantId: ownerId, limits: null }, guardProvider(p, new PooledGuard(pool, { trackPending: true }), undefined, undefined, true))
+}
+// Every call of p runs in the account's spend context (lib/scan/spend-cap.ts runWithAccountSpend).
+export function inAccount(ctx: AccountSpendCtx, p: Provider): Provider {
+  return {
+    ...p,
+    research: (k, prompt, f) => runWithAccountSpend(ctx, () => p.research(k, prompt, f)),
+    ...(p.complete ? { complete: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.complete!(k, prompt, f, max)) } : {}),
+    ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.completeDetailed!(k, prompt, f, max)) } : {}),
+  }
 }
 export const spendRefused = (e: unknown): e is SpendRefused => e instanceof SpendRefused
 export const spendAccountingFailed = (e: unknown): e is SpendAccountingFailed => e instanceof SpendAccountingFailed

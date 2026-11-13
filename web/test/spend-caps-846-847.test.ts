@@ -10,7 +10,7 @@ import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import {
   accountLimits, OWNER_DAY_CEILING_USD, OWNER_DAY_DEFAULT_USD, OWNER_MONTH_CEILING_USD, OWNER_MONTH_DEFAULT_USD, ownerLimits, poolRows, windowCap,
 } from '../lib/llm/spend-pool.ts'
-import { reserveScanSpend, runWithAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
+import { reserveScanSpend, runWithAccountSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
@@ -35,7 +35,7 @@ test('#846 #847 caps from env: missing -> built-in default; 0, negative, Infinit
     }
   }
   // Above the ceiling: clamped, so no setting can mean "unlimited".
-  assert.deepEqual(windowCap('day', A, { DAZL_OWNER_DAY_MAX_USD: '1e9' }), { usd: 100, source: 'env', env: 'DAZL_OWNER_DAY_MAX_USD', clamped: true, ignored: [] })
+  assert.deepEqual(windowCap('day', A, { DAZL_OWNER_DAY_MAX_USD: '1000000' }), { usd: 100, source: 'env', env: 'DAZL_OWNER_DAY_MAX_USD', clamped: true, ignored: [] })
   assert.deepEqual(windowCap('month', A, { DAZL_OWNER_MONTH_MAX_USD: '5000' }), { usd: 1000, source: 'env', env: 'DAZL_OWNER_MONTH_MAX_USD', clamped: true, ignored: [] })
   // The account's own entry wins (exact id), clamped too; a malformed entry falls to the deployment setting, then the default.
   const env = { DAZL_RUN_MAX_USD_USERS: `${A}:0.5,${B}:0`, DAZL_OWNER_MONTH_MAX_USD_USERS: `${A}:99999`, DAZL_OWNER_DAY_MAX_USD: '3' }
@@ -47,6 +47,16 @@ test('#846 #847 caps from env: missing -> built-in default; 0, negative, Infinit
   assert.deepEqual(ownerLimits(A, { DAZL_RUN_MAX_USD_USERS: `${A}:2` }), { day: 2, month: 100 })
   assert.equal(ownerLimits(B, env), null, 'a 0 entry is not an entry: the default path (and default number) applies')
   assert.deepEqual(accountLimits(B, env), { day: 3, month: 100 })
+})
+
+test('#846 review R7: only plain decimals count (0x10, 1e2, +5 are not limits: the default applies); in an account list the first VALID entry wins', () => {
+  for (const bad of ['0x10', '1e2', '+5', '5e-1', '٥', '1_000']) {
+    assert.deepEqual([windowCap('day', A, { DAZL_OWNER_DAY_MAX_USD: bad }).usd, windowCap('day', A, { DAZL_OWNER_DAY_MAX_USD: bad }).source], [10, 'default'], bad)
+    assert.equal(windowCap('month', A, { DAZL_OWNER_MONTH_MAX_USD_USERS: `${A}:${bad}` }).source, 'default', `entry ${bad}`)
+  }
+  assert.deepEqual(windowCap('day', A, { DAZL_RUN_MAX_USD_USERS: `${A}:0,${A}:5` }), { usd: 5, source: 'account', env: 'DAZL_RUN_MAX_USD_USERS', clamped: false, ignored: [] })
+  assert.deepEqual(windowCap('day', A, { DAZL_RUN_MAX_USD_USERS: `${A}:0x10,${A}:2.5` }).usd, 2.5)
+  assert.deepEqual(ownerLimits(A, { DAZL_RUN_MAX_USD_USERS: `${A}:abc,${A}:1` }), { day: 1, month: 100 })
 })
 
 test('#846 the per-scan cap: missing -> CAD 5 default; 0 or malformed -> every paid scan call refused (fails closed, never unlimited); higher -> clamped', () => {
@@ -106,8 +116,15 @@ bothEngines('#847 outside a scan: the month cap refuses across days while each d
   assert.deepEqual((await rows(db, A)).filter(x => String(x[0]).startsWith('m:')), [['m:2026-11', 0.94, 0.04, 3]])
   // A new month starts from zero.
   await runWithAccountSpend({ db, tenantId: A, limits: { day: 0.5, month: 1 }, clock: () => Date.UTC(2026, 11, 1, 12) / 1000 }, () => reserveScanSpend('llm.anthropic', () => 0.5))
-  // Outside both contexts: no pool, as before (a test double, an eval).
-  assert.equal(await reserveScanSpend('llm.anthropic', () => 0.5), null)
+  // #846 review R2: outside a scan and an account, a model call is refused (fails closed); only the named escape hatch
+  // (offline evals, test doubles) passes, and a non-model kind outside a scan is ungated as before.
+  await assert.rejects(reserveScanSpend('llm.anthropic', () => 0.5), refusedWith('no_spend_context'))
+  await assert.rejects(reserveScanSpend('llm.openai', () => 0.5), refusedWith('no_spend_context'))
+  assert.equal(await runWithoutAccountSpend('test', () => reserveScanSpend('llm.anthropic', () => 0.5)), null)
+  assert.equal(await reserveScanSpend('render', () => 0.5), null)
+  // An operator-named account (limits null: its PooledGuard reserved): the transport adds nothing.
+  assert.equal(await runWithAccountSpend({ db, tenantId: B, limits: null }, () => reserveScanSpend('llm.anthropic', () => 0.5)), null)
+  assert.deepEqual(await rows(db, B), [])
 })
 
 bothEngines('#846 a store that does not answer refuses the call (reservation_not_saved), on the account path too', async ({ db }) => {
@@ -115,4 +132,50 @@ bothEngines('#846 a store that does not answer refuses the call (reservation_not
   try {
     await assert.rejects(runWithAccountSpend({ db, tenantId: A, limits: { day: 1, month: 2 } }, () => reserveScanSpend('llm.anthropic', () => 0.1)), refusedWith('reservation_not_saved'))
   } finally { await db.run('ALTER TABLE tenant_spend_pools_gone RENAME TO tenant_spend_pools') }
+})
+
+// #846 review R4: concurrent reservations of one account on the transport path never pass its cap together: N racing
+// reservations of 0.3 against a day cap of 1 admit at most 3, and the stored total stays <= 1. Both engines (Postgres
+// in CI), plus two SQLite connections to one file as two instances.
+bothEngines('#846 review R4: racing reservations of one account admit at most the cap', async ({ db }) => {
+  const one = () => runWithAccountSpend({ db, tenantId: A, limits: { day: 1, month: 10 }, clock: () => T0 }, () => reserveScanSpend('llm.anthropic', () => 0.3))
+  const out = await Promise.allSettled(Array.from({ length: 12 }, one))
+  assert.equal(out.filter(o => o.status === 'fulfilled').length, 3)
+  for (const o of out) if (o.status === 'rejected') assert.ok(refusedWith('owner_pool_limit')(o.reason), String(o.reason))
+  const [d] = await rows(db, A)
+  assert.ok((d[1] as number) <= 1 + 1e-9 && d[3] === 3, JSON.stringify(d))
+})
+test('#846 review R4: two SQLite connections to one file (two instances) racing one account admit at most the cap', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path')
+  const Database = (await import('better-sqlite3')).default
+  const { migrateSpendPools } = await import('../lib/llm/spend-pool.ts'); const { sqliteDb } = await import('../lib/db/client.ts')
+  const dir = mkdtempSync(join(tmpdir(), 'caps-r4-'))
+  try {
+    const h1 = new Database(join(dir, 'a.db')); h1.pragma('journal_mode = WAL'); h1.pragma('busy_timeout = 5000'); migrateSpendPools(h1)
+    const h2 = new Database(join(dir, 'a.db')); h2.pragma('busy_timeout = 5000')
+    const [d1, d2] = [sqliteDb(h1), sqliteDb(h2)]
+    const out = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => runWithAccountSpend({ db: i % 2 ? d1 : d2, tenantId: A, limits: { day: 1, month: 10 }, clock: () => T0 }, () => reserveScanSpend('llm.anthropic', () => 0.3))))
+    assert.equal(out.filter(o => o.status === 'fulfilled').length, 3)
+    const [d] = await rows(d2, A)
+    assert.ok((d[1] as number) <= 1 + 1e-9 && d[3] === 3, JSON.stringify(d))
+    h1.close(); h2.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// #846 review R3: a reservation and a settle of the same scan take their row locks in ONE order - the account's pool
+// rows before the scan_jobs row - so a parallel settle and reservation can never deadlock on Postgres.
+bothEngines('#846 review R3: reserve and settle both lock tenant_spend_pools before scan_jobs', async ({ db }) => {
+  await job(db, 'j9', A)
+  const order: string[][] = []
+  const rec: Db = { ...db, kind: db.kind, all: db.all.bind(db), get: db.get.bind(db), run: db.run.bind(db), close: db.close.bind(db),
+    tx: (body, iso) => db.tx(function* (t) {
+      const seen: string[] = []; order.push(seen)
+      const g = body(t); let r = g.next()
+      while (!r.done) { const m = /^\s*(?:UPDATE|INSERT INTO|DELETE FROM)\s+(tenant_spend_pools|scan_jobs)\b/i.exec(r.value.sql); if (m && !seen.includes(m[1])) seen.push(m[1]); r = g.next(yield r.value) }
+      return r.value
+    }, iso) }
+  const ctx = scanCtx(rec, 'j9', A, { accountLimits: { day: 5, month: 10 } })
+  const h = await runWithScanSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.3))
+  await h!.settle(0.1)
+  assert.deepEqual(order, [['tenant_spend_pools', 'scan_jobs'], ['tenant_spend_pools', 'scan_jobs']], 'reserve, then settle: pool rows first in both')
 })

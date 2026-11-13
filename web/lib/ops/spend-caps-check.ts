@@ -9,7 +9,7 @@ import { migrateAllSqlite } from '../db/sqlite-migrations.ts'
 import { sqliteDb } from '../db/client.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, CAP_ENV, OWNER_POOL_LIMIT_REASON, ownerLimits, sharedPool, windowCap, type CapValue, type PoolLimits } from '../llm/spend-pool.ts'
-import { HARD_CAP_CAD, MIN_FX_CAD_PER_USD, reserveScanSpend, runWithAccountSpend, runWithScanSpend, scanCapConfig } from '../scan/spend-cap.ts'
+import { HARD_CAP_CAD, MIN_FX_CAD_PER_USD, modelCostUsd, reserveScanSpend, runWithAccountSpend, runWithScanSpend, scanCapConfig } from '../scan/spend-cap.ts'
 import { trialFundable } from '../billing/trial-budget.ts'
 
 type Env = Record<string, string | undefined>
@@ -36,6 +36,10 @@ export interface SpendCapsReport {
     day: CapValue & { ceiling_usd: number; simulation: WindowSim }
     month: CapValue & { ceiling_usd: number; simulation: WindowSim }
   }
+  // #846 review R5: every vendor's configured model must have a listed price, or every call of it is refused.
+  models: Record<'anthropic' | 'openai', { model: string; env: string; priced: boolean }>
+  // What this check proves and what it does not.
+  scope: string
   trial_funded: boolean
 }
 
@@ -111,14 +115,22 @@ export async function spendCapsCheck(env: Env = process.env, opts: { tenant?: st
       ...(cfg.ok ? [] : ['DAZL_SCAN_CAP_CAD / DAZL_SCAN_CAP_FX_CAD_PER_USD is malformed: every paid scan call is refused']),
       ...[day, month, account.day, account.month].flatMap(c => c.ignored.map(k => `${k} is not a positive number: ignored, the next source applies`)),
     ])]
+    const priced = (m: string) => { try { modelCostUsd(m, '', 1); return true } catch { return false } }
+    const models = {
+      anthropic: { model: env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5', env: 'DAZL_ANTHROPIC_MODEL', priced: false },
+      openai: { model: env.DAZL_OPENAI_MODEL || 'gpt-4.1', env: 'DAZL_OPENAI_MODEL', priced: false },
+    }
+    for (const m of Object.values(models)) { m.priced = priced(m.model); if (!m.priced) problems.push(`${m.env} (${m.model}) has no listed price: every call of that vendor is refused`) }
     const refused = (o: string) => o.startsWith('refused:')
     return {
-      ok: problems.length === 0 && refused(scanSim.next) && refused(day.simulation.next) && refused(month.simulation.next)
+      ok: problems.length === 0 && models.anthropic.priced && models.openai.priced && refused(scanSim.next) && refused(day.simulation.next) && refused(month.simulation.next)
         && refused(account.simulation.next_same_account) && account.simulation.other_account === 'admitted',
       problems,
       model_calls: 0, app_store_opened: false, simulated_in: 'a throwaway in-memory SQLite store with the app migrations (discarded after the check)',
       checked_at: new Date(now * 1000).toISOString(),
       caps: { scan, account, day, month },
+      models,
+      scope: 'Proves the effective numbers, their sources, the configured models being priced, and the reservation arithmetic of the deployed code at each cap. It does not prove that a given call path is wired to the caps: that is the test suite (test/spend-caps-846-847.test.ts, scan-spend-cap-runner, owner-spend-paths).',
       trial_funded: trialFundable(env as NodeJS.ProcessEnv),
     }
   } finally { raw.close() }

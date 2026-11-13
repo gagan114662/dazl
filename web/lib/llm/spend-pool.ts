@@ -198,7 +198,7 @@ export async function poolRows(d: DbLike, owner: string): Promise<PoolRow[]> {
 //        DAZL_OWNER_DAY_MAX_USD   (built-in default OWNER_DAY_DEFAULT_USD)
 //        DAZL_OWNER_MONTH_MAX_USD (built-in default OWNER_MONTH_DEFAULT_USD)
 //   3. the built-in default.
-// A value must be a finite number above 0. Anything else (missing, empty, "0", negative, "Infinity", text) is not a
+// A value must be a plain decimal above 0. Anything else (missing, empty, "0", negative, "Infinity", 1e2, 0x10, text) is not a
 // limit: the next source applies, so a typo or a 0 can never mean "unlimited", and a missing setting is never zero
 // either. A value above the hard ceiling (OWNER_DAY_CEILING_USD / OWNER_MONTH_CEILING_USD) is clamped to it.
 // Accounts with their own entry keep the guard path they had before (PooledGuard in the runner and ownerGuarded);
@@ -212,24 +212,31 @@ export const CAP_ENV = {
   month: { account: 'DAZL_OWNER_MONTH_MAX_USD_USERS', deployment: 'DAZL_OWNER_MONTH_MAX_USD', dflt: OWNER_MONTH_DEFAULT_USD, ceiling: OWNER_MONTH_CEILING_USD },
 } as const
 type Env = Record<string, string | undefined>
-// A positive finite number, or null (not a limit).
+// A plain decimal (digits, an optional fraction; surrounding spaces allowed) above 0, or null (not a limit): no sign,
+// exponent, hex, "Infinity" or unicode digits (#846 review R7), as the scan cap reads its settings.
+const DECIMAL = /^\d{1,9}(?:\.\d{1,9})?$/
 function positiveUsd(raw: string | undefined): number | null {
-  if (typeof raw !== 'string' || raw.trim() === '') return null
+  if (typeof raw !== 'string' || !DECIMAL.test(raw.trim())) return null
   const n = Number(raw.trim())
   return Number.isFinite(n) && n > 0 ? n : null
 }
-// The raw text of this owner's entry in a "<owner id>:<usd>,..." list (the first exact id match), or null.
-function ownerEntry(name: string, userId: string, env: Env): string | null {
+// This owner's entries in a "<owner id>:<usd>,..." list (exact id match): the first VALID one (#846 review R7: "A:0,A:5"
+// is 5), and whether any entry for the owner was present at all.
+function ownerEntry(name: string, userId: string, env: Env): { usd: number | null; present: boolean } {
+  let present = false
   for (const part of (env[name] ?? '').split(',')) {
     const i = part.lastIndexOf(':'); if (i < 0) continue
-    if (part.slice(0, i).trim() === userId) return part.slice(i + 1)
+    if (part.slice(0, i).trim() !== userId) continue
+    present = true
+    const n = positiveUsd(part.slice(i + 1))
+    if (n !== null) return { usd: n, present }
   }
-  return null
+  return { usd: null, present }
 }
 // One owner's valid entry in an operator list, clamped to its window's ceiling; null when the owner has none or it is
 // not a positive number (then the deployment default applies, see windowCap).
 export function ownerSetting(name: string, userId: string, env: Env): number | null {
-  const n = positiveUsd(ownerEntry(name, userId, env) ?? undefined)
+  const n = ownerEntry(name, userId, env).usd
   if (n === null) return null
   const w = name === CAP_ENV.month.account ? CAP_ENV.month : name === CAP_ENV.day.account ? CAP_ENV.day : null
   return w ? Math.min(n, w.ceiling) : n
@@ -245,12 +252,9 @@ export interface CapValue {
 export function windowCap(w: PoolWindow, userId: string | null, env: Env = process.env): CapValue {
   const c = CAP_ENV[w], ignored: string[] = []
   if (userId !== null) {
-    const raw = ownerEntry(c.account, userId, env)
-    if (raw !== null) {
-      const n = positiveUsd(raw)
-      if (n !== null) return { usd: Math.min(n, c.ceiling), source: 'account', env: c.account, clamped: n > c.ceiling, ignored }
-      ignored.push(c.account)
-    }
+    const e = ownerEntry(c.account, userId, env)
+    if (e.usd !== null) return { usd: Math.min(e.usd, c.ceiling), source: 'account', env: c.account, clamped: e.usd > c.ceiling, ignored }
+    if (e.present) ignored.push(c.account)
   }
   const raw = env[c.deployment]
   const n = positiveUsd(raw)

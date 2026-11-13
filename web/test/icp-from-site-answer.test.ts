@@ -1,5 +1,6 @@
 // "Fill my profile from my website" with the model's answer at the real 1,200-token output cap: a valid answer passes; a cut-off,
 // malformed or invalid answer gets a truthful error, never "AI key rejected" (only an authentication refusal is that); nothing retries a paid call.
+import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -95,10 +96,10 @@ test('readProfileAnswer: braces and escaped quotes inside strings do not end a r
   assert.deepEqual(readProfileAnswer(text.slice(0, text.indexOf('"offers"') - 12), 'max_tokens', 1200), { ok: false, reason: 'truncated' })
   assert.deepEqual(readProfileAnswer(text, 'end_turn', 800), { ok: false, reason: 'not_json' }, 'a finished answer is never "recovered"')
 })
-test('the Anthropic provider reports why it stopped (stop_reason), without changing the usage or text', async () => {
+test('the Anthropic provider reports why it stopped (stop_reason), without changing the usage or text', () => runWithoutAccountSpend('test', async () => {
   const f = (async () => new Response(JSON.stringify({ id: 'msg_1', model: 'claude-sonnet-4-5', stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"a":' }], usage: { input_tokens: 10, output_tokens: 1200 } }), { status: 200 })) as unknown as typeof fetch
   const d = await anthropicProvider.completeDetailed!('k', 'p', f, 1200); assert.deepEqual([d.stop, d.text, d.usage?.output_tokens], ['max_tokens', '{"a":', 1200])
-})
+}))
 test('the copy for these errors is truthful: an unreadable answer is not a key problem and a provider failure is not a rejection', () => {
   for (const c of ['draft_unreadable', 'provider_failed']) { const m = knownErrorCopy(c); assert.ok(m, c); assert.doesNotMatch(m!, /was rejected|key is invalid|bad key/i, c) }
   assert.match(knownErrorCopy('draft_unreadable')!, /key worked|key is fine/i); assert.match(knownErrorCopy('provider_failed')!, /not rejected/i)

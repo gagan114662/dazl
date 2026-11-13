@@ -32,6 +32,12 @@ own transaction (`ScanSpendCtx.accountLimits`, set by the runner), outside one t
 on both windows before the request; past either limit the call is refused `owner_pool_limit` and nothing is sent or
 written; after it the windows settle to the vendor-reported cost (a failed or unreported call keeps its worst case). That
 path writes no pending marker: a crash keeps the worst case counted. A model with no listed price is refused on it.
+A model call with neither a scan nor an account context is refused (`no_spend_context`, review R2): every real path opens
+one (the runner's scan context; `ownerGuarded`, for a named account too with `limits: null`; the free-trial website read
+through `inAccount` with the account's caps, review R1). The only way past is the named escape hatch
+`runWithoutAccountSpend('offline_eval' | 'test', ...)`. Lock order: a reservation and a settle both take the account's
+pool rows before the scan_jobs row (review R3). Settings are plain decimals only (`1e2`, `0x10`, `+5` are ignored); in an
+account list the first valid entry for the id wins (review R7).
 
 **Proving the caps on a deployment** with zero spend: `GET /api/internal/spend-caps` with the operator secret
 (`Authorization: Bearer $AUTOPILOT_TICK_SECRET`; 404 otherwise). It reports, for the per-scan, per-account, per-day and

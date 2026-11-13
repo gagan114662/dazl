@@ -20,7 +20,7 @@ test('#846 #847: the spend caps check needs the operator secret, spends nothing 
   let fetches = 0
   const realFetch = globalThis.fetch
   globalThis.fetch = (async () => { fetches++; throw new Error('no network in the spend caps check') }) as typeof fetch
-  const keys = ['AUTOPILOT_TICK_SECRET', 'DAZL_RUN_MAX_USD_USERS', 'DAZL_OWNER_MONTH_MAX_USD_USERS', 'DAZL_OWNER_DAY_MAX_USD', 'DAZL_OWNER_MONTH_MAX_USD', 'DAZL_SCAN_CAP_CAD', 'DAZL_SCAN_CAP_FX_CAD_PER_USD']
+  const keys = ['AUTOPILOT_TICK_SECRET', 'DAZL_RUN_MAX_USD_USERS', 'DAZL_OWNER_MONTH_MAX_USD_USERS', 'DAZL_OWNER_DAY_MAX_USD', 'DAZL_OWNER_MONTH_MAX_USD', 'DAZL_SCAN_CAP_CAD', 'DAZL_SCAN_CAP_FX_CAD_PER_USD', 'DAZL_ANTHROPIC_MODEL', 'DAZL_OPENAI_MODEL']
   const saved = Object.fromEntries(keys.map(k => [k, process.env[k]]))
   for (const k of keys) delete process.env[k]
   try {
@@ -44,6 +44,14 @@ test('#846 #847: the spend caps check needs the operator secret, spends nothing 
     assert.deepEqual([j.caps.month.usd, j.caps.month.source, j.caps.month.simulation.admitted_usd, j.caps.month.simulation.next], [100, 'default', 100, 'refused:owner_pool_limit'])
     assert.deepEqual([j.caps.account.path, j.caps.account.simulation.next_same_account, j.caps.account.simulation.other_account], ['transport', 'refused:owner_pool_limit', 'admitted'])
     assert.doesNotMatch(JSON.stringify(j), /real-tenant/, "never another account's data")
+    // #846 review R5: each vendor's configured model is priced, and the report says what it proves.
+    assert.deepEqual(j.models, { anthropic: { model: 'claude-sonnet-4-5', env: 'DAZL_ANTHROPIC_MODEL', priced: true }, openai: { model: 'gpt-4.1', env: 'DAZL_OPENAI_MODEL', priced: true } })
+    assert.match(j.scope, /does not prove that a given call path is wired/)
+    process.env.DAZL_ANTHROPIC_MODEL = 'claude-unlisted-model'; process.env.DAZL_OPENAI_MODEL = 'gpt-4.1-2025-04-14'
+    const um = await (await call('Bearer s3cret')).json() as SpendCapsReport
+    assert.deepEqual([um.ok, um.models.anthropic.priced, um.models.openai.priced], [false, false, true], 'an unpriced configured model fails the check; a dated id of a listed one is priced')
+    assert.deepEqual(um.problems, ['DAZL_ANTHROPIC_MODEL (claude-unlisted-model) has no listed price: every call of that vendor is refused'])
+    delete process.env.DAZL_ANTHROPIC_MODEL; delete process.env.DAZL_OPENAI_MODEL
     // Settings: a deployment day cap, a 0 month (ignored: the default applies and it is reported), a named account.
     process.env.DAZL_OWNER_DAY_MAX_USD = '7.5'; process.env.DAZL_OWNER_MONTH_MAX_USD = '0'; process.env.DAZL_RUN_MAX_USD_USERS = 'acct_1:0.12'
     const set = await (await call('Bearer s3cret', '?tenant=acct_1')).json() as SpendCapsReport

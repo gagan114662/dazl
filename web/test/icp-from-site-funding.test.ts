@@ -92,7 +92,9 @@ test('own key: the pool refuses (over the limit -> spend_limit; another call of 
   })
 })
 
-test('trial: a keyless account reads on the trial key under the read\'s own guard and settles into the trial wallet; the owner\'s pool is never touched, even one that would refuse', async () => {
+// (A provider double here: it never reaches the model transport, where the account's day/month caps apply to the trial
+// read since #846 review R1 - proven with the real provider in the next test.)
+test('trial: a keyless account reads on the trial key under the read\'s own guard and settles into the trial wallet; the read\'s own guard never reserves in the owner\'s pool, even one that would refuse', async () => {
   const db = store(false), seen: string[] = [], calls = { n: 0 }, settled: (number | null)[] = []
   // An owner limit that refuses every own-key call, and an unsettled marker: neither applies to dazl's trial money.
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:0.000001', DAZL_SPEND_BUSY_WAIT_MS: '0' }, async () => {
@@ -209,4 +211,19 @@ test('trial: a cut answer is NOT recovered when a prior research block or saved 
       assert.deepEqual([seen, calls.n, settled, released.n], [[OP], 1, [(2000 * 3 + 700 * 15) / 1e6], 0], `${c.name}: one admission, one call, settled to the reported usage, no retry, nothing released`)
     } finally { restore() }
   }
+})
+
+// #846/#847 review R1 (#1095: the free trial behind the prod caps): the trial-funded website read runs on the REAL provider
+// transport inside the account's spend context, so the account's day/month caps apply to it too. Past the deployment day
+// cap no model request is sent, the admission is released and the free read comes back with spend_unavailable.
+test('#846 review R1: a trial website read past the account day cap sends no model request and returns the free read with spend_unavailable', async () => {
+  const { anthropicProvider } = await import('../lib/llm/provider.ts')
+  const db = store(false), calls = { n: 0 }, settled: (number | null)[] = [], released = { n: 0 }, model: string[] = []
+  const f = (async (u: string | URL, init?: RequestInit) => { if (String(u).startsWith('https://api.anthropic.com')) { model.push(String(u)); throw new Error('no model request may be sent') } return page(u, init) }) as unknown as typeof fetch
+  await withEnv({ ...NONE, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, async () => {
+    const out = await icpFromWebsite(db, 'A', 'https://acme.example', { master, lookup: pubLookup, fetchImpl: f, providers: { anthropic: anthropicProvider }, trial: admitted(calls, settled, released) })
+    assert.equal((out as { trial?: string }).trial, 'spend_unavailable', JSON.stringify(out))
+    assert.deepEqual([model.length, calls.n, released.n, settled], [0, 1, 1, []], 'no model request; the admission was given back, nothing settled')
+    assert.deepEqual(await pool(db), [], 'a refused reservation writes nothing')
+  })
 })
