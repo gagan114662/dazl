@@ -95,9 +95,14 @@ export function genericPlace(query: string): Place | null {
 // ("account executives in Austin, TX"; a profile place is read as "in <place>" by the runner). Anything else falls through to the state.
 const CITY = String.raw`((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)`
 const CITY_AFTER = new RegExp(`\\b(?:in|near|around)\\s+${CITY}(?=$|[\\s,.;)])`, 'gu')
+const CITY_MORE = new RegExp(`(?:\\band|\\bor|&)\\s+${CITY}(?=$|[\\s,.;)])`, 'gu')
 export function usCityPlace(text: string): Place | null {
-  for (const m of text.matchAll(CITY_AFTER)) { const p = cityPlaceOf(m[1], m[2]); if (p) return p }
-  return null
+  // a request naming two different cities is never narrowed to its first one (the same rule the runner applies to a profile)
+  const found = new Map<string, Place>()
+  for (const m of text.matchAll(CITY_AFTER)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  // "in Austin, TX and Dallas, TX": a city joined on with and / or / & is a second city of the same request
+  if (found.size) for (const m of text.matchAll(CITY_MORE)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  return found.size === 1 ? [...found.values()][0] : null
 }
 function cityPlaceOf(cityIn: string, region: string): Place | null {
   const abbr = STATES[region] ? region : Object.keys(STATES).find(k => STATES[k].toLowerCase() === region.toLowerCase())

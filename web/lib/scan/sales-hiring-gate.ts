@@ -23,16 +23,25 @@ import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
 // posting body says: a real posting's quotable sentences are company boilerplate, and a Sales Engineer posting can mention Account Executives.
-// The requested title must be the vacancy itself, not a mention: another role noun before it ("Sales Engineer for Account Executives",
-// "Team Lead, Account Executive") or after it ("Account Executive Manager", "Account Executive Operations Analyst") makes it another role.
-// A segment or level around it is fine ("SLED Senior Account Executive, Mid Market", "Enterprise Account Executive- TX").
-const OTHER_ROLE = /\b(?:managers?|leads?|directors?|head|vp|assistants?|coordinators?|trainers?|recruiters?|engineers?|analysts?|specialists?|enablement|operations|ops|support|team|interns?)\b/i
+// The requested title must be the vacancy itself, decided by the title's SHAPE (review at 910ebe60: no list of "other role" words):
+//   - the role heads the title: before it only level or segment words ("Senior", "Enterprise", "SLED Senior", "Mid-Market") - anything
+//     else before it ("Chief of Staff to the", "Sales Engineer for", "Team Lead,", "Future Opportunities -") makes the role a mention;
+//   - after it: the end, a separator (, - ( / | :) or a level (I, II, III) - a word straight after it ("Account Executive Manager",
+//     "... Talent Community", "... Internship", "... Program") is another title.
+// It fails closed: a real variant outside this shape ("Enterprise Account Executive MSP, DACH") is held, never passed on a guess.
+const LEVEL = /^(?:senior|sr\.?|junior|jr\.?|principal|staff|lead|founding|first|associate|enterprise|strategic|commercial|corporate|mid[-\s]?market|midmarket|smb|sme|named|major|key|global|regional|field|inside|outside|growth|new|business|[A-Z]{2,6})$/
+const AFTER_ROLE = /^\s*(?:$|[,\-–—(/|:]|(?:I{1,3}|IV|V|[1-5])\s*(?:$|[,\-–—(/|:]))/
+const SEGMENT_ROLE = /^\s*[,\-–—(/|:]\s*(?:team\s+)?(?:manager|lead|director|head|vp|recruiter|engineer|trainer|coordinator|assistant)s?\b/i
 export function titleIsRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
   const m = matchedHiringRole(title, roles); if (!m) return null
   const t = m.term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
   const hit = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
   if (!hit) return null
-  return OTHER_ROLE.test(title.slice(0, hit.index)) || OTHER_ROLE.test(title.slice(hit.index + hit[0].length)) ? null : m
+  const before = title.slice(0, hit.index).trim(), after = title.slice(hit.index + hit[0].length)
+  // level words are matched whatever their case; a segment code (SLED, MSP, EMEA) only as written in capitals
+  if (before && !before.split(/\s+/).every(w => LEVEL.test(w) || LEVEL.test(w.toLowerCase()))) return null
+  if (!AFTER_ROLE.test(after) || SEGMENT_ROLE.test(after)) return null
+  return m
 }
 // one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
 export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }

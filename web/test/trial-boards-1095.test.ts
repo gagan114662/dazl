@@ -104,6 +104,10 @@ test('#1095 review at 54953a0a: a capitalised phrase before ", <State>" is not a
     assert.equal(pl!.ok(`Somewhere, ${state}`), true, `${q} reads the state's postings`)
   }
   assert.equal(placeIn('SDRs in Remote, CA'), null, 'Remote is never a city')
+  // review at 910ebe60: a request naming two cities is not narrowed to the first (main: no place)
+  assert.equal(placeIn('account executives in Austin, TX and in Dallas, TX'), null)
+  assert.equal(placeIn('in Austin, TX and Dallas, TX'), null)
+  assert.equal(placeIn('in Austin, TX or near Austin, TX')?.name, 'Austin, TX', 'the same city twice is one place')
 })
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {
