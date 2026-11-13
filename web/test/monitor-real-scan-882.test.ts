@@ -7,6 +7,9 @@
 // real run passed through the website crawl and a board lookup this harness does not run. The request here asks for a posted job without
 // naming a sales role, so the scan's own verdict stands. The real rows of that staging scan, gate verdicts included, are replayed
 // through the detector in test/monitor-events.test.ts ("#882 real staging scan").
+// The harness runs the scan WITHOUT the grading stage (score: false), so the lead has no fit grade and no graded signal kind: an
+// ungraded lead is one the Leads list shows, which is why it alerts here. The real staging scan graded this same lead fit 0 (hidden in
+// Leads), and the replay shows that it then raises no alert. The fit and kind rules are covered there, not here.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'

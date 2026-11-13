@@ -13,7 +13,7 @@ const hex = () => randomBytes(12).toString('hex')
 // proof: how the scan established the event day (leads.event_date_proof). Default 'page_bound', what the scanner writes for a day the
 // cited page ties to the event. date_status is stored the way the scanner stores it today ('unverified' with a day, else 'undated');
 // legacyStatus overrides it for rows written before 2026-10-23.
-interface L { company?: string; domain?: string | null; date?: string | null; proof?: string | null; legacyStatus?: string; signal?: string; fit?: number | null; kind?: string | null; url?: string; review?: string | null; conf?: number | null; quarantined?: boolean; reachable?: boolean; held?: boolean }
+interface L { signals?: string[]; company?: string; domain?: string | null; date?: string | null; proof?: string | null; legacyStatus?: string; signal?: string; fit?: number | null; kind?: string | null; url?: string; review?: string | null; conf?: number | null; quarantined?: boolean; reachable?: boolean; held?: boolean }
 
 async function play(db: Db, user: string, o: { query?: string; policy?: AlertPolicy } = {}): Promise<string> {
   // a monitor run is a scan on the account's own AI key (#759): every play here belongs to an account that has one
@@ -33,10 +33,10 @@ async function run(db: Db, user: string, mon: string, at: number, leads: L[]) {
   for (const l of leads) {
     const id = hex()
     const date = l.date === undefined ? '2026-10-20' : l.date
-    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, event_date_proof, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key, fit)
-      VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, event_date_proof, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key, fit, signals)
+      VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, job, l.company ?? 'Harbor Dental', l.signal ?? 'opened a second location', l.url ?? 'https://news.example/harbor-opens', date, l.legacyStatus ?? (date ? 'unverified' : 'undated'), l.proof === undefined ? 'page_bound' : l.proof,
-        l.conf === undefined ? 80 : l.conf, l.review ?? null, l.domain === undefined ? 'harbordental.example' : l.domain, l.kind === undefined ? 'expansion' : l.kind, l.quarantined ? at : null, id, l.fit ?? null])
+        l.conf === undefined ? 80 : l.conf, l.review ?? null, l.domain === undefined ? 'harbordental.example' : l.domain, l.kind === undefined ? 'expansion' : l.kind, l.quarantined ? at : null, id, l.fit ?? null, l.signals ? JSON.stringify(l.signals) : null])
     const enr = (connector: string, kind: string, value: string) => db.run('INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [hex(), id, user, connector, kind, value, 'https://invalid.example/', '2026-10-30', at])
     if (l.reachable) await enr('scan:actionable', 'actionability', 'Actionable: domain, person and published contact confirmed')
@@ -213,21 +213,25 @@ bothEngines('#882 real staging scan: its board-dated ready lead (Flexport) becom
   assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 21 * DAY + 300, at + 14 * DAY + 300, null]])
 })
 
-bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown one (fit 2+, or ungraded) does; a stored non-hiring kind is never dated by a job board day', async ({ db }) => {
+bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown one (fit 2+, or ungraded) does; a stored kind naming another event is never dated by a job board day', async ({ db }) => {
   const mon = await play(db, 'u1')
   assert.deepEqual(await run(db, 'u1', mon, NOW, [
     { company: 'Zero Dental', domain: 'zero.example', fit: 0 },
     { company: 'One Dental', domain: 'one.example', fit: 1 },
     // hiring wording in the signal, but the stored kind says funding: the posting's day is not the funding round's day
-    { company: 'Series Dental', domain: 'series.example', proof: 'ats_structured', kind: 'funding', signal: 'Series Dental raised a Series B and is hiring 40 hygienists' },
+    { company: 'Series Dental', domain: 'series.example', proof: 'ats_structured', kind: 'raised_funding', signals: ['raised_funding', 'press_mention'], signal: 'Series Dental raised a Series B and is hiring 40 hygienists' },
   ]), { newCount: 0, kinds: [] })
   assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_events WHERE entity_key = 'd:series.example'"))!.n), 0)
   assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_events WHERE actionable_at IS NULL"))!.n), 2, 'the hidden leads are seen, not actionable')
   assert.deepEqual(await run(db, 'u1', mon, NOW + 7 * DAY, [
     { company: 'Two Dental', domain: 'two.example', fit: 2 },
     { company: 'Ungraded Dental', domain: 'ungraded.example', fit: null },
+    // a graded hiring lead whose first graded signal is a hiring-type kind other than 'hiring': still dated by the board
+    { company: 'Roles Dental', domain: 'roles.example', fit: 3, proof: 'ats_structured', kind: 'open_role_language', signals: ['open_role_language', 'hiring_relevant_role'], signal: 'Roles Dental is hiring a practice manager' },
+    // the grader listed an expansion first and the hiring after it: still a hiring posting, dated by the board
+    { company: 'Mixed Dental', domain: 'mixed.example', fit: 3, proof: 'ats_structured', kind: 'expansion', signals: ['expansion', 'hiring'], signal: 'Mixed Dental is hiring a hygienist' },
     { company: 'Zero Dental', domain: 'zero.example', fit: 4 },   // graded again, now shown: its first alert
-  ]), { newCount: 3, kinds: ['new_company', 'new_company', 'new_company'] })
+  ]), { newCount: 5, kinds: ['new_company', 'new_company', 'new_company', 'new_company', 'new_company'] })
 })
 
 bothEngines('#882 a row from before 2026-10-23 with date_status verified and no proof never alerts; a board day dates a hiring trigger only', async ({ db }) => {
@@ -257,7 +261,7 @@ bothEngines('#759 a monitor on an account with no AI key of its own pauses with 
 })
 
 test('pure rules: keys are spelling-independent; undated, out-of-window and unverified leads never alert', () => {
-  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: '2026-10-20', event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
+  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: '2026-10-20', event_date_proof: 'page_bound', signal: 'opened a second location', signals: null, signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
   assert.equal(entityKeyOf({ company: 'HARBOR Dental, Inc', company_domain: null }), entityKeyOf({ company: 'harbor dental', company_domain: null }))
   assert.equal(entityKeyOf({ company: 'x', company_domain: 'https://www.Harbor.example/about' }), 'd:harbor.example')
   assert.equal(eventKeyOf(l), eventKeyOf({ ...l, source_url: 'https://b.example/y' }))
@@ -271,7 +275,14 @@ test('pure rules: keys are spelling-independent; undated, out-of-window and unve
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'hiring' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'hiring_relevant_role' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   // a stored non-hiring kind wins over hiring wording in the text (the shared rule would let these through)
-  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'funding', signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { suppress: 'undated' })
+  for (const kind of ['raised_funding', 'funding', 'product_launch', 'leadership_change', 'partnership', 'layoffs']) assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: kind, signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { suppress: 'undated' }, kind)
+  // the grader's list has no order: another event first and a hiring signal after it is still a hiring posting
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","hiring_relevant_role"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","press_mention"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: 'not json', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
+  // ...but a graded hiring lead keeps its board day whatever hiring-type or ambient kind the grader put first (the card's rule decides)
+  for (const kind of ['open_role_language', 'growing_team', 'job_board_presence', 'press_mention', 'accelerator']) assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: kind, signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true }, kind)
+  assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'open_role_language', signal: 'Acme opened a second office' }, null, false, 'all', W, NOW), { suppress: 'undated' }, 'no hiring wording and no hiring kind: the card rule already refuses it')
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signal: 'Harbor Dental expands its hiring team' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   // the page itself tying the day to the event is not a board day: the kind does not matter
   assert.deepEqual(decide({ ...l, event_date_proof: 'page_bound', signal_kind: 'funding', signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
@@ -299,7 +310,7 @@ test('missed-run arithmetic', () => {
 })
 
 test('window boundary: 90 days back is inside, 91 is out_of_window; a play\'s own window beats the default', () => {
-  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: null, event_date_proof: 'page_bound', signal: 'opened a second location', signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
+  const l: RunLead = { company: 'Harbor Dental', company_domain: null, event_date: null, event_date_proof: 'page_bound', signal: 'opened a second location', signals: null, signal_kind: 'expansion', source_url: 'https://a.example/x', review_reason: null, confidence: 80, quarantined_at: null, fit: null, held: false, reachable: false }
   const back = (days: number) => new Date((NOW - days * DAY) * 1000).toISOString().slice(0, 10)
   const W = DEFAULT_EVENT_WINDOW_DAYS
   assert.equal(W, 90)

@@ -74,6 +74,7 @@ export interface RunLead {
   company: string; company_domain: string | null; event_date: string | null; signal_kind: string | null
   event_date_proof: string | null   // how the scan established event_date ('page_bound' | 'ats_structured'); null: unproven, never an event
   signal: string | null             // the lead's stated trigger: a job board's publish day dates a hiring trigger only
+  signals: string | null            // the grader's signal ids for the lead (JSON array), when it was graded
   source_url: string; review_reason: string | null; confidence: number | null; quarantined_at: number | null
   fit: number | null  // the scan's own fit grade; the Leads list hides the low-fit tier (fit <= 1) by default
   held: boolean       // a required gate failed and its review write was rejected (the scan:gate marker): never verified
@@ -98,12 +99,22 @@ const dayStartS = (d: string) => Math.floor(Date.parse(`${d}T00:00:00Z`) / 1000)
 export const verified = (l: RunLead): boolean => l.review_reason == null && l.confidence != null && l.quarantined_at == null && !l.held && !!l.company.trim() && (l.fit == null || l.fit > 1)
 
 // The event day is proven by the cited source (the same verdict the lead card shows as "verified on the cited source").
-// One rule is stricter here than on the card: a job board's publish day dates a HIRING event only, and a stored signal kind that is
-// not hiring wins over hiring wording in the signal text ("Raised a Series B and is hiring 40 engineers", kind funding, would otherwise
-// alert as a funding event dated by the posting). The shared predicate (isHiringTrigger) lets the wording through; the monitor does not.
-const HIRING_KINDS = new Set(['hiring', 'hiring_relevant_role'])
-export const dated = (l: Pick<RunLead, 'event_date' | 'event_date_proof' | 'signal' | 'signal_kind'>, now: number): boolean =>
-  eventDayVerified(l, { now: new Date(now * 1000) }) && !(l.event_date_proof === 'ats_structured' && !!l.signal_kind && !HIRING_KINDS.has(l.signal_kind))
+// One rule is stricter here than on the card: a job board's publish day dates a HIRING event only. When the lead's stored signal
+// kind (the first of the grader's signals, lib/scan/score.ts) names a DIFFERENT dated event - a funding round, a launch, an expansion,
+// a leadership change ... - and the grader listed NO hiring-type signal for the lead at all, the kind wins over hiring wording in the
+// signal text: "Raised a Series B and is hiring 40 engineers", graded raised_funding only, would otherwise alert as a funding event
+// dated by the posting. The shared predicate (isHiringTrigger) lets the wording through; the monitor does not. A lead with any
+// hiring-type signal, an ambient kind or none follows the card's rule unchanged, so a graded hiring posting is never lost here
+// (the grader's list has no order: a posting graded ["expansion", "hiring"] is still a hiring lead).
+export const OTHER_EVENT_KINDS: ReadonlySet<string> = new Set(['raised_funding', 'funding', 'leadership_change', 'product_launch', 'expansion', 'tech_stack_change', 'partnership',
+  'rebranding', 'layoffs', 'new_website', 'event_presence', 'customer_win', 'pricing_change', 'integration_launch'])
+export const HIRING_SIGNALS: ReadonlySet<string> = new Set(['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence'])
+const gradedHiring = (signals: string | null | undefined): boolean => {
+  if (!signals) return false
+  try { const a: unknown = JSON.parse(signals); return Array.isArray(a) && a.some(x => typeof x === 'string' && HIRING_SIGNALS.has(x)) } catch { return false }
+}
+export const dated = (l: Pick<RunLead, 'event_date' | 'event_date_proof' | 'signal' | 'signal_kind' | 'signals'>, now: number): boolean =>
+  eventDayVerified(l, { now: new Date(now * 1000) }) && !(l.event_date_proof === 'ats_structured' && !!l.signal_kind && OTHER_EVENT_KINDS.has(l.signal_kind) && !gradedHiring(l.signals))
 
 export type Suppress = 'undated' | 'out_of_window' | 'not_actionable' | 'already_seen' | 'policy'
 export interface PriorEvent { actionable_at: number | null; reachable_at: number | null }

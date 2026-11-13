@@ -177,7 +177,7 @@ export async function collectMonitorResults(db: Db, o: { fence?: Fence; now?: nu
       // held: the scan:gate marker (a required gate failed and its review write was rejected), read the same way as every
       // user-facing lead read (scan/store-db.ts); reachable: the scan's own end-to-end actionability verdict for this tenant
       const leads = (yield* t.all<Omit<RunLead, 'held' | 'reachable'> & { held: number; reachable: number }>(
-        `SELECT l.company, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signal_kind, l.source_url, l.review_reason, l.confidence, l.quarantined_at, l.fit,
+        `SELECT l.company, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signals, l.signal_kind, l.source_url, l.review_reason, l.confidence, l.quarantined_at, l.fit,
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed') THEN 1 ELSE 0 END AS held,
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments a WHERE a.lead_id = l.id AND a.tenant_id = ? AND a.connector = 'scan:actionable' AND a.kind = 'actionability' AND a.value LIKE 'Actionable:%') THEN 1 ELSE 0 END AS reachable
          FROM leads l WHERE l.scan_job_id = ? ORDER BY l.score DESC, l.id`, [r.user_id, r.job_id]))
