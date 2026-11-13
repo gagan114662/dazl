@@ -15,18 +15,20 @@ export default function CheckedClient() {
     void fetch('/api/home/ready').then(x => x.ok ? x.json() : Promise.reject(new Error(String(x.status))))
       .then(j => setR(j && Array.isArray(j.companies) ? j as HomeReady : 'failed')).catch(() => setR('failed'))
   }, [])
-  if (r === null) return <div className="p-4 sm:p-8 max-w-3xl"><p className="text-sm text-[var(--ink-3)]">Checking your leads from the last 30 days...</p></div>
+  if (r === null) return <div className="p-4 sm:p-8 max-w-3xl"><p className="text-sm text-[var(--ink-3)]" role="status">Checking your leads from the last 30 days...</p></div>
   if (r === 'failed') return <div className="p-4 sm:p-8 max-w-3xl"><p className="text-sm" role="alert" data-testid="checked-failed">Your leads could not be checked right now. Refresh to retry.</p></div>
+  const known = why === '' || why === 'ready' || r.held.some(h => h.reason === why)
   const rows = r.companies.filter(c => why === 'ready' ? c.ready : why ? !c.ready && c.reason === why : true)
   const title = why === 'ready' ? `${rows.length} ready lead${rows.length === 1 ? '' : 's'}`
-    : why ? `${rows.length} lead${rows.length === 1 ? '' : 's'}: ${holdWords(why, rows.length)}`
+    : why && known ? `${rows.length} lead${rows.length === 1 ? '' : 's'}: ${holdWords(why, rows.length)}`
+    : why ? 'No leads under that heading'
     : `${rows.length} lead${rows.length === 1 ? '' : 's'} checked`
   return (
     <div className="p-4 sm:p-8 max-w-3xl">
       <p className="text-sm mb-2"><Link className="underline" href="/app">Home</Link></p>
       <h1 className="text-2xl font-semibold mb-1" data-testid="checked-title">{title}</h1>
       <p className="text-sm text-[var(--ink-2)] mb-4">Companies found in the last {r.window_days} days, one row each. Open a row to see the lead in its scan.{' '}
-        {r.capped && <span data-testid="checked-capped">Only the first {r.leads_checked} of your {r.leads_in_window} new leads were checked, newest first.</span>}</p>
+        {r.capped && <span data-testid="checked-capped">Only the first {r.leads_checked} of your {r.leads_in_window} leads were checked, newest scans first.</span>}</p>
       {rows.length === 0 ? <p className="text-sm" data-testid="checked-empty">{why === 'ready' ? 'No lead from the last 30 days is ready yet.' : 'No leads here.'} <Link className="underline" href="/app/leads/checked">See every lead that was checked</Link>.</p>
         : <ul className="card divide-y divide-black/5" data-testid="checked-list">
           {rows.map(c => (

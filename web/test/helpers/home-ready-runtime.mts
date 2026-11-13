@@ -169,6 +169,18 @@ test('#1040 Ready tile: past the lead limit the answer says it stopped, and neve
     assert.deepEqual([r.ready, r.capped, r.scans_checked, r.scans_in_window, r.leads_checked, r.leads_in_window], [3, true, 0, 1, 3, 5]) }
 })
 
+// independent review of 0287f5ff, R2: under the limit a held count is NOT a lower bound (ready wins once the older scan is
+// read), which is why Home says "so far" for held counts and "or more" only for ready
+test('#1040 Ready tile: under the limit a held company may still turn out ready, so held counts are "so far"', async () => {
+  const { job, lead, done } = seed()
+  const NEW = 'b'.repeat(24), OLD = 'a'.repeat(24)
+  job(OLD, 'A', 'Dental practices in Ohio that opened a new location', NOW - 20 * DAY); lead('x-ready', OLD, { machine: true, confirmed: true, date: recent, company: 'X Co', at: NOW - 20 * DAY }); done(OLD)
+  job(NEW, 'A', 'Dental practices in Ohio that opened a new location', NOW - 2 * DAY); lead('x-held', NEW, { review: 'quote_unconfirmed', date: recent, company: 'X Co' }); lead('y-held', NEW, { review: 'quote_unconfirmed', date: recent, company: 'Y Co' }); done(NEW)
+  const cut = await homeReady('A', NOW, { maxLeads: 2 }), all = await homeReady('A', NOW)
+  assert.deepEqual([cut.capped, cut.ready, cut.held[0].count], [true, 0, 2]); assert.deepEqual([all.capped, all.ready, all.held[0].count], [false, 1, 1])
+  assert.ok(cut.ready <= all.ready, 'ready under a limit is a lower bound'); assert.ok(cut.held[0].count > all.held[0].count, 'a held count under a limit is not')
+})
+
 // finding 4: the required-check hold and fixture leads
 test('#1040 Ready tile: a lead held by a required check is counted under that reason; a fixture lead in a real scan is never counted', async () => {
   const { db, job, lead, done } = seed()

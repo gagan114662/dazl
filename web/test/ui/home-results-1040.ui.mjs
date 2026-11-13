@@ -88,8 +88,8 @@ try {
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
     // the hold breakdown under the tiles: counts in plain words, adding up, each line opening where its leads are
     assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready yet (22 of 25 companies checked): 12 need your review (in 2 scans), 9 held by a required check, 1 no verified date')
-    assert.deepEqual(await page.getByTestId('held-line').evaluateAll(a => a.map(x => x.getAttribute('href'))), ['/app/leads/checked?why=needs%20your%20review', `/app/leads?job_id=${JB}`, `/app/leads?job_id=${JB}`])
-    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), `/app/leads?job_id=${'a'.repeat(24)}`, 'the tile opens the scan its 3 ready leads are in')
+    assert.deepEqual(await page.getByTestId('held-line').evaluateAll(a => a.map(x => x.getAttribute('href'))), ['/app/leads/checked?why=needs%20your%20review', '/app/leads/checked?why=a%20required%20check%20has%20not%20passed', '/app/leads/checked?why=no%20verified%20date'], 'every line opens the list of the leads it counts')
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads/checked?why=ready', 'the tile opens the list of its 3 ready leads')
     assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), `/app/inbox?status=all&class=positive&sent_since=${FULL.since}`)
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
@@ -141,6 +141,10 @@ try {
   // Review (Hermes-PC) at 14037ed4, finding 1: a line whose leads are in several scans opens a LIST of exactly those leads
   for (const width of [1280, 390]) { const { ctx, page } = await open(width, FULL)
     await page.getByTestId('ready-held').waitFor({ timeout: 20000 })
+    // a line whose leads are all in ONE scan opens the list too: 9 rows for "9", not that scan's 10 leads
+    await page.getByTestId('held-line').nth(1).click(); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-title').textContent(), '9 leads: held by a required check'); assert.equal(await page.getByTestId('checked-row').count(), 9)
+    await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.getByTestId('ready-held').waitFor({ timeout: 20000 })
     await page.getByTestId('held-line').first().click()
     await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
     assert.equal(await page.getByTestId('checked-title').textContent(), '12 leads: need your review')
@@ -163,9 +167,9 @@ try {
   { const cut = mk({ capped: true, leads_checked: 600, leads_in_window: 1000, scans_checked: 3, scans_in_window: 5, scans: [{ job_id: JA, ready: 2 }], held: [{ reason: 'needs your review', count: 3, job_id: JB, scans: 1 }], companies: [...co(2, JA, ''), ...co(3, JB, 'needs your review')] })
     const { ctx, page } = await open(1280, FULL, cut)
     await page.getByTestId('ready-partial').waitFor({ timeout: 20000 })
-    assert.equal((await page.getByTestId('tile-ready').textContent()).replace(/\s+/g, ' '), '2 or moreReady leadsFirst 600 of 1000 new leads checked')
-    assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready yet (3 or more of 5 or more companies checked, from the first 600 of 1000 new leads): 3 or more need your review')
-    out.push('limit reached: "or more" and "First 600 of 1000 new leads checked"'); await ctx.close() }
+    assert.equal((await page.getByTestId('tile-ready').textContent()).replace(/\s+/g, ' '), '2 or moreReady leadsFirst 600 of 1000 leads checked, newest scans first')
+    assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready so far (3 of the 5 companies in the first 600 of 1000 leads checked): 3 need your review', 'held counts under a limit are never called "or more": one may still turn out ready')
+    out.push('limit reached: ready "or more", held "so far", "First 600 of 1000 leads checked"'); await ctx.close() }
   // the real state on prod today: 0 ready, and the breakdown says why; the tile opens every checked lead
   { const zero = mk({ scans_checked: 3, scans_in_window: 3, scans: [], held: [{ reason: 'needs your review', count: 12, job_id: null, scans: 3 }, { reason: 'a required check has not passed', count: 1, job_id: JC, scans: 1 }], companies: [...co(6, JA, 'needs your review'), ...co(6, JB, 'needs your review'), ...co(1, JC, 'a required check has not passed')] })
     const { ctx, page } = await open(390, FULL, zero)

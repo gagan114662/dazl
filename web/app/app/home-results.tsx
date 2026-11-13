@@ -28,14 +28,13 @@ export default function HomeResultsPanel() {
   if (r === 'failed') return <p className="text-sm text-[var(--ink-3)] mb-4" role="status" data-testid="results-unread">Your last 30 days could not be loaded. Refresh to retry.</p>
   const t = r.tiles
   const readyScans = ready && ready !== 'failed' ? ready.scans ?? [] : []
-  // One scan holds every ready lead: open that scan. Otherwise (several scans, or none ready) the list of checked leads,
-  // which shows exactly the rows the number counts (/app/leads/checked).
-  const readyHref = readyScans.length === 1 ? `/app/leads?job_id=${readyScans[0].job_id}` : readyScans.length > 1 ? '/app/leads/checked?why=ready' : '/app/leads/checked'
+  // The tile and every line open the list of checked leads (/app/leads/checked), which shows exactly the rows the number
+  // counts, one company each, whether they sit in one scan or several. Each row there opens its own scan.
+  const readyHref = readyScans.length > 0 ? '/app/leads/checked?why=ready' : '/app/leads/checked'
   // why the other leads the tile looked at are not ready, in the words the Leads page uses for the same holds
   const heldRows = ready && ready !== 'failed' ? ready.held ?? [] : []
-  // a lower bound when a limit cut the count: "600 or more", never a total that is not one
-  const more = ready && ready !== 'failed' && ready.capped ? ' or more' : ''
-  const heldText = (h: { reason: string; count: number }) => `${h.count}${more} ${holdWords(h.reason, more ? 2 : h.count)}`
+  const cut = ready && ready !== 'failed' && ready.capped ? ready : null   // a limit stopped the check early
+  const heldText = (h: { reason: string; count: number }) => `${h.count} ${holdWords(h.reason, h.count)}`
   // nothing at all in the window: no counts AND nothing to list (a stored reply is never hidden behind the empty state)
   const empty = t.leads === 0 && t.contacted === 0 && !t.replied && r.latest_leads.length === 0 && r.latest_replies.length === 0
   // null = unknown (reply reading is off): a dash read out as "unknown", never a 0 nobody observed
@@ -51,11 +50,11 @@ export default function HomeResultsPanel() {
             shows fewer rows than the tile says). */}
         <Link href={readyHref} className="card p-4 block hover:border-black/30" data-testid="tile-ready">
           {/* Home's "Leads ready" rule, every hold clear (lib/outreach/home-ready.ts); a read that fails says so, never a 0 */}
-          <div className="text-2xl font-semibold tabular-nums">{ready === null ? <><span aria-hidden="true">...</span><span className="sr-only">checking</span></> : ready === 'failed' ? <><span aria-hidden="true">-</span><span className="sr-only">could not be checked</span></> : <>{ready.ready}{ready.capped && <span className="text-base font-normal"> or more</span>}</>}</div>
+          <div className="text-2xl font-semibold tabular-nums">{ready === null ? <><span aria-hidden="true">...</span><span className="sr-only">checking</span></> : ready === 'failed' ? <><span aria-hidden="true">-</span><span className="sr-only">could not be checked</span></> : <>{ready.ready}{/* ready only grows as more leads are checked, so under a limit it is a true "or more" */}{ready.capped && <span className="text-base font-normal"> or more</span>}</>}</div>
           <div className="text-xs text-[var(--ink-2)]">Ready leads</div>
           {ready === 'failed' && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-unread">Could not check. Refresh to retry.</div>}
           {readyScans.length > 1 && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-scans">In {readyScans.length} scans</div>}
-          {ready && ready !== 'failed' && ready.capped && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">First {ready.leads_checked} of {ready.leads_in_window} new leads checked</div>}
+          {ready && ready !== 'failed' && ready.capped && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">First {ready.leads_checked} of {ready.leads_in_window} leads checked, newest scans first</div>}
         </Link>
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
         {tile('Replied', t.replied, `/app/inbox?status=all&sent_since=${r.since}`, 'replied')}
@@ -64,8 +63,10 @@ export default function HomeResultsPanel() {
       {/* Under the tiles: the leads that are not ready, by the hold. Each opens where they are: the one scan holding them, else
           the list of scans (said in the link). The numbers add up: ready + these = the leads the tile looked at. */}
       {heldRows.length > 0 && ready && ready !== 'failed' && <p className="text-sm mt-3" data-testid="ready-held">
-        <span className="text-[var(--ink-2)]">Not ready yet ({ready.judged - ready.ready}{more} of {ready.judged}{more} companies checked{ready.capped ? `, from the first ${ready.leads_checked} of ${ready.leads_in_window} new leads` : ''}): </span>
-        {heldRows.map((h, i) => <span key={h.reason}>{i > 0 && ', '}<Link className="underline" data-testid="held-line" href={h.job_id ? `/app/leads?job_id=${h.job_id}` : `/app/leads/checked?why=${encodeURIComponent(h.reason)}`}>{heldText(h)}{h.job_id ? '' : ` (in ${h.scans} scans)`}</Link></span>)}
+        {/* Under a limit the held counts are what the leads checked SO FAR say: a company held here may still turn out ready in
+            a scan not reached, so they are never called "or more". */}
+        <span className="text-[var(--ink-2)]">{cut ? `Not ready so far (${ready.judged - ready.ready} of the ${ready.judged} companies in the first ${cut.leads_checked} of ${cut.leads_in_window} leads checked): ` : `Not ready yet (${ready.judged - ready.ready} of ${ready.judged} companies checked): `}</span>
+        {heldRows.map((h, i) => <span key={h.reason}>{i > 0 && ', '}<Link className="underline" data-testid="held-line" href={`/app/leads/checked?why=${encodeURIComponent(h.reason)}`}>{heldText(h)}{h.scans > 1 ? ` (in ${h.scans} scans)` : ''}</Link></span>)}
       </p>}
       {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
