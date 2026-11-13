@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { sqliteDb, type Db, type Tx, type TxOp } from '../lib/db/client.ts'
+import { sqliteDb, type Db, type Tx, type TxOp, type TxBody } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { parseEvent, recordEvent, setManualOutcome, listBookings, type CalEvent } from '../lib/calcom/index.ts'
@@ -299,9 +299,9 @@ function pgShaped(raw: Database.Database): { db: Db; log: string[] } {
   const log: string[] = []
   const t: Tx = {
     kind: 'pg',
-    *all<X>(sql: string, params: TxOp['params'] = []) { return (yield { op: 'all', sql, params }) as X[] },
-    *get<X>(sql: string, params: TxOp['params'] = []) { return (yield { op: 'get', sql, params }) as X | undefined },
-    *run(sql: string, params: TxOp['params'] = []) { return (yield { op: 'run', sql, params }) as { changes: number } },
+    *all<X>(sql: string, params: TxOp['params'] = []): TxBody<X[]> { return (yield { op: 'all', sql, params }) as X[] },
+    *get<X>(sql: string, params: TxOp['params'] = []): TxBody<X | undefined> { return (yield { op: 'get', sql, params }) as X | undefined },
+    *run(sql: string, params: TxOp['params'] = []): TxBody<{ changes: number }> { return (yield { op: 'run', sql, params }) as { changes: number } },
   }
   const db = {
     kind: 'pg',
