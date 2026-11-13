@@ -34,7 +34,7 @@ import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import WorkEmail from './work-email'
-import { siteSettled, targetKey, workEmailTargets } from '@/lib/people/work-email-eligible'
+import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
@@ -1241,7 +1241,7 @@ export default function LeadsClient() {
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
-                  {!l.quarantined_at && companySearchEligible(l) && (() => {
+                  {!l.quarantined_at && workEmailLeadEligible(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
                     if (!siteSettled(site)) return null
                     const who = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
