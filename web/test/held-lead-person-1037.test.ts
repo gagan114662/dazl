@@ -12,7 +12,7 @@ import { HELD_ICP as ICP, HELD_WHO as WHO, HELD_RESULTS as RESULTS, env, setup, 
 import { runFixture, type Fixture } from './helpers/acceptance-harness.ts'
 
 // The counts object the pass fills (people-search.ts PeopleStats), written out so this file needs nothing the fix added.
-const newPeopleStats = () => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} as Record<string, number> })
+const newPeopleStats = () => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} as Record<string, number>, failed: {} as Record<string, number> })
 const people = (db: Database.Database) => db.prepare("SELECT l.company, l.review_reason, e.value, e.source_url FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE e.connector = 'search:people' AND e.kind = 'person' ORDER BY e.insert_seq").all() as { company: string; review_reason: string | null; value: string; source_url: string }[]
 
 // 2 ready, the rest held BEFORE the search, by reasons real scans produce most: quote_unconfirmed, blocked_by_site, needs_javascript.

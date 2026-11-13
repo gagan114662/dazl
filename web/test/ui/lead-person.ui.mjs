@@ -53,6 +53,10 @@ const HELD = [
   lead('6'.repeat(24), 'Corvane', [], { review_reason: 'blocked_by_site' }),
   // someone else's customer: the company itself is in doubt, so its row names nobody (no line at all), even with a person stored
   lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'counterparty_signal' }),
+  // no company (a person row, e.g. an imported commenter): no line either
+  lead('8'.repeat(24), '', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'quote_unconfirmed', name: 'Nobody Corp Person' }),
+  // rejected by the user: no line
+  lead('9'.repeat(24), 'Tracewell', [], { review_reason: 'quote_unconfirmed', quarantined_at: 1 }),
 ]
 const f5lead = l => ({ id: l.id, company: l.company, name: null, signal: l.signal, source_url: l.source_url, event_date: l.event_date, published_at: null, fit_pct: 100, provisional: false })
 const F5 = { target: 5, found: 4, verified: 4, enriching: false, next: { action: 'wider_search', label: 'Search wider' }, state: 'partial', finding_more: false, reason: null, message: '4 of 5 verified from the free sources. You can search wider.', leads: LEADS.map(f5lead), sources: [{ source: 'search:news', state: 'done', status: 'ok', note: null, candidates: 6, accepted: 4, review: 0, rejected: 2 }], failed_sources: [], can_continue: true }
@@ -104,7 +108,10 @@ async function leadsPage(width, height, tag) {
   }
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
   // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
-  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 3)
+  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 5)
+  assert.equal(await held.getByTestId('lead-person').count(), 2, 'only the two searchable held company rows carry a line')
+  assert.equal(await held.filter({ hasText: 'Nobody Corp Person' }).getByTestId('lead-person').count(), 0, 'a row with no company shows no person line')
+  assert.equal(await held.filter({ hasText: 'Tracewell' }).getByTestId('lead-person').count(), 0, 'a rejected lead shows no person line')
   assert.equal(await held.filter({ hasText: 'Meshgate' }).getByTestId('lead-person').count(), 0, 'a hold that puts the company in doubt shows no person line')
   assert.doesNotMatch(await held.filter({ hasText: 'Meshgate' }).innerText(), /Anders Smed|No buyer named yet/)
   const pd = held.filter({ hasText: 'Pagewake' }).getByTestId('lead-person'); assert.equal(await pd.count(), 1)

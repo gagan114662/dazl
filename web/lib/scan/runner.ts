@@ -1817,7 +1817,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let trialPeoplePrepaid = 0
     if (trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
       // One search per distinct company (the pass searches each company once), at most the cap.
-      // The same leads the pass will read (searchable-holds.ts searchableCompanyCount): a row it never reads reserves nothing.
+      // The leads the pass can search (searchable-holds.ts searchableCompanyCount): a row it can never search reserves nothing. It may still
+      // search fewer (a lead the crawl names first, a request with no buyer role): the reserve over-counts then, never under.
       const want = Math.min(firstPlayPeopleCap(), searchableCompanyCount([...outcome.leads, ...outcome.review], companyKey)), price = trial.tinyfishSearchUsd
       // An unusable price (not a finite number >= 0) makes no search at all: never an unpriced trial search.
       const room = !(Number.isFinite(price) && price >= 0) ? 0 : price > 0 ? Math.floor((trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd) / price + 1e-9) : want

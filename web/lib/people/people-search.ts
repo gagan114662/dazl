@@ -83,15 +83,19 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 //   already_named   leads skipped because the row already names its person (first play / trial only)
 //   searched        searches sent; results = results returned; profiles = results read as a person at the lead's company
 //   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word) and place
+//   failed          searches sent (or stopped at our own gate) that got no answer, by cause (FAILED_SEARCH); searched counts them too
 //   no_roles        the request names no buyer role, so the pass had nothing to search for and read no lead
-export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; no_roles?: boolean }
-export const newPeopleStats = (): PeopleStats => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} })
+export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; failed: Record<string, number>; no_roles?: boolean }
+const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled']
+const failedSearches = (s: PeopleStats): number => { let t = 0; for (const k of [...FAILED_SEARCH, 'other']) { const v = s.failed?.[k]; if (Number.isSafeInteger(v) && v > 0) t += v } return t }
+export const newPeopleStats = (): PeopleStats => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {}, failed: {} })
 // The flat detail the trace stores (numbers only; a cause with no refusal is left out).
 export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
   const n = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0 ? v as number : 0
   const out: Record<string, number> = { eligible: n(s.eligible), held_eligible: n(s.held), searched: n(s.searched), results: n(s.results), profile_results: n(s.profiles) }
   if (n(s.already_named) > 0) out.already_named = n(s.already_named)
   for (const k of ['not_profile', 'unreadable', 'past_role', 'other_employer', 'role', 'place']) if (n(s.refused?.[k]) > 0) out[`refused_${k}`] = n(s.refused[k])
+  for (const k of [...FAILED_SEARCH, 'other']) if (n(s.failed?.[k]) > 0) out[`search_failed_${k}`] = n(s.failed[k])
   return out
 }
 
@@ -143,7 +147,10 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
   if (stopped === 'budget_kept') return `the trial scan kept its remaining budget for the checks after this step; ${count}`
   if (stopped !== null && stopped !== undefined) return `the people search stopped early (${String(stopped).slice(0, 40)}); ${count}`
   if (n > 0) return null
-  return stats && stats.searched > 0 ? `${stats.searched} search(es) run, ${stats.results > 0 ? stats.results : 0} result(s): none named a role-matching person at the lead's company` : 'no profile results named a role-matching person at a verified company'
+  if (!(stats && stats.searched > 0)) return 'no profile results named a role-matching person at a verified company'
+  const failed = failedSearches(stats)
+  if (failed >= stats.searched) return `${stats.searched} search(es) sent, none answered (the search provider was unavailable or rate-limited): nothing was learned about who to contact`
+  return `${stats.searched} search(es) run${failed > 0 ? ` (${failed} got no answer)` : ''}, ${stats.results > 0 ? stats.results : 0} result(s): none named a role-matching person at the lead's company`
 }
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
 // search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
@@ -211,7 +218,8 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         deps.onStop?.('deadline'); break
       }
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
-      if (!r.ok) { if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') { deps.onStop?.(r.reason); break } continue }
+      // A search that got no answer (provider unavailable, our per-minute rate gate, a cap) is counted as failed, never as "searched, found nobody".
+      if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') { deps.onStop?.(r.reason); break } continue }
       const refused = new Set<string>()
       if (stats) stats.results += r.hits.length
       const people = r.hits.map(h => ({ h, p: profileHit(h, l.company) }))

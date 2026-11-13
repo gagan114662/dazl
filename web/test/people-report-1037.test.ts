@@ -10,8 +10,8 @@ import { addEnrichment } from '../lib/connectors/store.ts'
 import { HELD_ICP as ICP, HELD_RESULTS as RESULTS, env, setup, stub } from './helpers/people-held-fixture.ts'
 
 test('#1037 run report: which holds the pass may search is one fail-closed list', () => {
-  for (const r of ['counterparty_signal', 'location_mismatch', 'location_unconfirmed', 'self_description', 'first_party_signal', 'trial_budget_reached', 'some_future_reason', '']) assert.equal(peopleSearchable(r), false, r)
-  for (const r of [null, undefined, 'quote_unconfirmed', 'blocked_by_site', 'outside_window_undated', 'needs_javascript', 'no_sales_hiring_evidence']) assert.equal(peopleSearchable(r), true, String(r))
+  for (const r of ['counterparty_signal', 'location_mismatch', 'location_unconfirmed', 'self_description', 'first_party_signal', 'some_future_reason', '']) assert.equal(peopleSearchable(r), false, r)
+  for (const r of [null, undefined, 'trial_budget_reached', 'quote_unconfirmed', 'blocked_by_site', 'outside_window_undated', 'needs_javascript', 'no_sales_hiring_evidence']) assert.equal(peopleSearchable(r), true, String(r))
   for (const r of SEARCHABLE_HOLDS) assert.match(r, /^[a-z_]+$/, 'reasons are inlined into SQL: plain identifiers only')
 })
 
@@ -32,7 +32,7 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
   const stats = newPeopleStats()
   const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats })
   assert.equal(n, 2)
-  assert.deepEqual(stats, { eligible: 2, held: 1, already_named: 0, searched: 2, results: 7, profiles: 3, refused: { not_profile: 1, unreadable: 1, past_role: 1, other_employer: 1, role: 1 } })
+  assert.deepEqual(stats, { eligible: 2, held: 1, already_named: 0, searched: 2, results: 7, profiles: 3, refused: { not_profile: 1, unreadable: 1, past_role: 1, other_employer: 1, role: 1 }, failed: {} })
   assert.deepEqual(peopleStatsDetail(stats), { eligible: 2, held_eligible: 1, searched: 2, results: 7, profile_results: 3, refused_not_profile: 1, refused_unreadable: 1, refused_past_role: 1, refused_other_employer: 1, refused_role: 1 })
   assert.equal(profileHit({ url: 'https://www.linkedin.com/in/rival-rep', title: 'Rita Rival - Sales Manager - Alertbird | LinkedIn', snippet: '', date: null }, 'Pagewake'), 'other_employer')
   assert.deepEqual(profileHit({ url: 'https://www.linkedin.com/in/marta-solberg-test', title: RESULTS.Pagewake[0].title, snippet: '', date: null }, 'Pagewake'), { name: 'Marta Solberg', title: 'Regional Sales Director' })
@@ -79,7 +79,7 @@ test('#1037 free trial: the searches reserved before finish count only the rows 
     { company: 'Freightwise', review_reason: null, fit: 0 },                   // graded out of the list: reserves nothing
     { company: 'Surveyhive', review_reason: null, fit: 1 },                    // graded out
     { company: 'Meshgate', review_reason: 'counterparty_signal' },            // company in doubt
-    { company: 'Tracewell', review_reason: 'trial_budget_reached' },          // checks never ran
+    { company: 'Tracewell', review_reason: 'legacy_currentness_review' },     // not on the list
     { company: '', review_reason: null, fit: 5 },                              // no company to search for
     { company: 'Corvane', fit: 2 },                                            // ready (no reason), fit 2 is on the list: 2
     { company: 'Helpwell', review_reason: 'some_future_reason' },             // unknown hold: fail closed
@@ -87,4 +87,21 @@ test('#1037 free trial: the searches reserved before finish count only the rows 
   ]
   assert.equal(searchableCompanyCount(rows, companyKey), 2)
   assert.equal(searchableCompanyCount([], companyKey), 0)
+})
+
+test('#1037 run report: a search that got no answer is counted as failed, never as "searched, found nobody"', async () => {
+  // The provider answers 503 for every search: nothing was learned.
+  { const { db, job } = setup([['L-corvane', 'Corvane', 'quote_unconfirmed', 50], ['L-helpwell', 'Helpwell', null, 40]]); const stats = newPeopleStats()
+    const f = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch
+    assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f, stats }), 0)
+    assert.equal(stats.searched, 2); assert.deepEqual(stats.failed, { unavailable: 2 }); assert.equal(stats.results, 0)
+    assert.equal(peopleStatsDetail(stats).search_failed_unavailable, 2)
+    const msg = String(peopleTraceMessage(0, null, stats))
+    assert.equal(msg, '2 search(es) sent, none answered (the search provider was unavailable or rate-limited): nothing was learned about who to contact')
+    assert.doesNotMatch(msg, /none named a role-matching person/) }
+  // One of two answered, with nobody: the sentence says how many got no answer.
+  { const { db, job } = setup([['L-corvane', 'Corvane', 'quote_unconfirmed', 50], ['L-helpwell', 'Helpwell', null, 40]]); const stats = newPeopleStats(); let n = 0
+    const f = (async () => ++n === 1 ? new Response('{}', { status: 503 }) : new Response(JSON.stringify({ results: [] }))) as unknown as typeof fetch
+    assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f, stats }), 0)
+    assert.equal(peopleTraceMessage(0, null, stats), "2 search(es) run (1 got no answer), 0 result(s): none named a role-matching person at the lead's company") }
 })

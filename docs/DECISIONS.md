@@ -11,8 +11,8 @@ profile search results, `lib/people/people-search.ts`) also covers leads held fo
 inside the same cap (5 per scan, 10 on a first play / free-trial scan; no new spend ceiling, the trial's 25% keep
 unchanged). No scan spends a search on a lead graded out of the list (fit 0-1). Not searched, and shown no person
 line: a hold that puts the company itself in doubt (a place that disagrees or is unconfirmed, someone else's customer,
-an owner's self-description, the tenant's own form signal), a lead whose checks never ran (`trial_budget_reached`) and
-any reason not on the list (`lib/people/searchable-holds.ts`); a rejected lead is not searched either. A person shown
+an owner's self-description, the tenant's own form signal), any reason not on the list
+(`lib/people/searchable-holds.ts`), a rejected lead and a row with no company. A person shown
 on a held row carries the same basis label as on a ready card (a search result is "not verified as current"; a dated
 first-party listing is "verified current") and never makes the lead ready or sendable. Why: on real scans most
 candidates are held (the 2026-11-13 matrix: 18 of 18), so "who do I contact" went unanswered on every row the user

@@ -1382,8 +1382,8 @@ export default function LeadsClient() {
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <div className="font-medium">{l.company || l.name}</div>
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
-                    hold puts the company itself in doubt (lib/people/searchable-holds.ts) or the row has no company: nobody is named for a company that may be the wrong one. */}
-                {!!l.company && peopleSearchable(l.review_reason) && <PersonLine p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
+                    hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
+                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
