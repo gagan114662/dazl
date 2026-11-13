@@ -330,6 +330,9 @@ function* eraseLeads(t: Tx, tenantId: string, where: string, params: (string | n
   for (const id of ids) {
     yield* t.run('DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ?', [tenantId, id])
     yield* t.run('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ?', [tenantId, id]) // #1036: a found address goes with its lead
+    // #1036: published / guessed addresses the crawl recorded for this lead's people (now recorded in prod too) go with it
+    yield* t.run('DELETE FROM email_candidates WHERE tenant_id = ? AND lead_id = ?', [tenantId, id])
+    yield* t.run('DELETE FROM email_patterns WHERE tenant_id = ? AND lead_id = ?', [tenantId, id])
     yield* t.run('DELETE FROM leads WHERE id = ?', [id])
   }
   // First-party holder jobs left with no leads go too (they only ever held first-party leads).
