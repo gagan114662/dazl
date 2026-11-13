@@ -135,7 +135,7 @@ test('#1082: /api/health/scheduler shows today\'s TinyFish platform totals only 
   const { tinyfishToday } = await import('../lib/search/tinyfish.ts')
   const { sqliteDb } = await import('../lib/db/client.ts')
   const ops = await tinyfishToday(sqliteDb(raw), NOON)
-  assert.deepEqual(ops.per_tenant, [25, 7]); assert.doesNotMatch(JSON.stringify(ops), /tenant-secret/)
+  assert.deepEqual(ops.per_tenant, [25, 7]); assert.equal(ops.active_tenants, 2); assert.doesNotMatch(JSON.stringify(ops), /tenant-secret/)
   // the operator route's auth is tested through its real handler: test/tinyfish-today-route-1082.test.ts
   // the usage table missing (an unmigrated store): the field is null, the health answer is the same as without it
   const bare = new Database(':memory:')
@@ -180,4 +180,55 @@ bothEngines('#1082: a blank TINYFISH_GROWTH_RESERVE_PCT keeps the default 20% re
   for (const t of ['A', 'A', 'A', 'A', 'A', 'A', 'B', 'B', 'B']) await fetchUnits(db, t, 10, env)
   assert.ok(await total(db) <= 24, 'others stop at the pool: the 6-unit reserve is kept')
   assert.ok((await fetchUnits(db, 'G', 10, env)) >= 6, 'the growth tenant still gets its reserve')
+})
+
+// Hermes-PC review at f144ccf1, finding 1: a share refusal records the units the share removed - what this scan's own
+// caps would still allow (2 left of 10 per scan) - never every URL it asked for (10).
+bothEngines('#1082: a share-refused fetch with 2 fetches left on the scan records 2 as capacity, not the 10 URLs asked for', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '15' }
+  assert.equal(await fetchUnits(db, 'A', 10, env), 7, 'A uses its whole share (room kept for one more tenant)')
+  const trace = new SearchTrace()
+  const r = await tfFetch(db, 'A', urls(10, 'A2'), { fetches: 8 }, { env, now: NOON, fetchImpl: okFetch, trace })   // 8 of 10 per scan spent: 2 left
+  assert.deepEqual(r, { ok: false, reason: 'cap' })
+  assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 2)
+})
+
+// finding 3: the public health route's cost never grows with the number of active tenants, and the operator detail is bounded
+test('#1082: the public totals are summed in SQL (no per-tenant rows read) and the operator view is bounded to the top 10 tenants plus a count', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { schedulerHealthResponse } = await import('../lib/ops/scheduler-runs.ts')
+  const { tinyfishToday, TINYFISH_TOP_TENANTS } = await import('../lib/search/tinyfish.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const day = new Date(NOON * 1000).toISOString().slice(0, 10)
+  const ins = raw.prepare('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?)')
+  for (let i = 1; i <= 25; i++) { ins.run(day, `t${i}`, 'fetch', i); ins.run(day, `t${i}`, 'search', 1) }
+  ins.run(day, 'idle', 'fetch', 0)   // a zero row is not an active tenant
+  const ops = await tinyfishToday(sqliteDb(raw), NOON)
+  assert.equal(TINYFISH_TOP_TENANTS, 10)
+  assert.deepEqual(ops.per_tenant, [26, 25, 24, 23, 22, 21, 20, 19, 18, 17], 'the 10 largest (fetch + search), largest first')
+  assert.equal(ops.active_tenants, 25)
+  assert.deepEqual([ops.fetch.used, ops.search.used], [325, 25])
+  // every statement the public route runs against tinyfish_usage is an aggregate grouped by kind: no per-tenant rows
+  const seen: string[] = []
+  const spy = new Proxy(raw, { get(t, k) { if (k === 'prepare') return (sql: string) => { seen.push(sql); return t.prepare(sql) }; const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v } })
+  const body = await (await schedulerHealthResponse(spy as never, NOON)).json() as { tinyfish_today: { fetch: { used: number } } }
+  assert.equal(body.tinyfish_today.fetch.used, 325)
+  const usage = seen.filter(q => /tinyfish_usage/.test(q))
+  assert.ok(usage.length > 0, 'the route read the usage table')
+  for (const q of usage) { assert.match(q, /SUM\(n\)/); assert.match(q, /GROUP BY kind/); assert.doesNotMatch(q, /tenant_id/) }
+})
+
+// minor: an explicit 0% reserve really is 0, and an unset value is the 20% default
+bothEngines('#1082: TINYFISH_GROWTH_RESERVE_PCT=0 keeps no reserve; unset keeps the 20% default', async ({ db }) => {
+  await resetTinyfishState(db)
+  const zero = { ...ENV, DAZL_GROWTH_TENANT_ID: 'G', TINYFISH_GROWTH_RESERVE_PCT: '0' }
+  for (const t of ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B', 'C', 'C', 'C', 'C']) await fetchUnits(db, t, 10, zero)
+  assert.equal(await total(db), 30, 'with no reserve the others can use the whole day')
+  await db.run('DELETE FROM tinyfish_usage'); await resetTinyfishState(db)
+  const unset = { ...ENV, DAZL_GROWTH_TENANT_ID: 'G' }
+  for (const t of ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B', 'C', 'C', 'C', 'C']) await fetchUnits(db, t, 10, unset)
+  assert.ok(await total(db) <= 24, 'unset: the 6-unit (20%) reserve is kept')
 })

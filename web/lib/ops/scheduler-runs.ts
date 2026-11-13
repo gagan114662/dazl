@@ -26,7 +26,7 @@
 // work overdue (the oldest due sequence step more than OVERDUE_ALERT_S past its due time). The operator view
 // is counts only; a tenant sees only its own rows.
 // Queries are on the Db layer (SQLite today, Postgres after the cutover: lib/db/migrations/pg/0019_scheduler_runs.sql).
-import { tinyfishToday } from '../search/tinyfish.ts'
+import { tinyfishTotals } from '../search/tinyfish.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike } from '../db/client.ts'
@@ -311,6 +311,6 @@ export async function schedulerHealthResponse(d: DbLike, now = nowS()): Promise<
   // tenants are active and how much each uses) is served only to the operator (app/api/internal/tinyfish-today).
   // Never affects ok/status.
   let tinyfish_today: { search: { used: number; cap: number }; fetch: { used: number; cap: number } } | null = null
-  try { const t = await tinyfishToday(d, now); tinyfish_today = { search: t.search, fetch: t.fetch } } catch { tinyfish_today = null }
+  try { tinyfish_today = await tinyfishTotals(d, now) } catch { tinyfish_today = null }
   return Response.json({ ...h, tinyfish_today }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

@@ -83,14 +83,23 @@ export function* fairRoom(t: Tx, day: string, tenant: string, kind: 'search' | '
   }
   return Math.max(0, Math.min(share - mine, pool - poolUsed, global - total))
 }
-// #1082: today's operator budget for the ops status (counts only: no tenant ids, queries or URLs). per_tenant is each
-// active tenant's units today, largest first.
-export async function tinyfishToday(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number }; per_tenant: number[] }> {
+// #1082: today's platform totals, summed in SQL (one row per kind): the public /api/health/scheduler reads this, so its
+// cost never grows with the number of active tenants (Hermes-PC review at f144ccf1, finding 3).
+export async function tinyfishTotals(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number } }> {
   const L = limits(env), day = dayOf(now)
-  const rows = await asDb(db).all<{ kind: string; tenant_id: string; n: number }>('SELECT kind, tenant_id, n FROM tinyfish_usage WHERE day = ?', [day])
-  const sum = (k: string) => rows.filter(r => r.kind === k).reduce((a, r) => a + Number(r.n), 0)
-  const per = new Map<string, number>(); for (const r of rows) per.set(r.tenant_id, (per.get(r.tenant_id) ?? 0) + Number(r.n))
-  return { search: { used: sum('search'), cap: L.globalSearchDaily }, fetch: { used: sum('fetch'), cap: L.globalFetchDaily }, per_tenant: [...per.values()].sort((a, b) => b - a) }
+  const rows = await asDb(db).all<{ kind: string; n: number }>('SELECT kind, COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? GROUP BY kind', [day])
+  const sum = (k: string) => Number(rows.find(r => r.kind === k)?.n ?? 0)
+  return { search: { used: sum('search'), cap: L.globalSearchDaily }, fetch: { used: sum('fetch'), cap: L.globalFetchDaily } }
+}
+// The operator's view (app/api/internal/tinyfish-today): the totals plus the largest TINYFISH_TOP_TENANTS (10) tenants'
+// units today, largest first, and how many tenants are active - all bounded in SQL. Counts only: no tenant ids.
+export const TINYFISH_TOP_TENANTS = 10
+export async function tinyfishToday(db: DbLike, now: number, env: Env = process.env): Promise<{ search: { used: number; cap: number }; fetch: { used: number; cap: number }; per_tenant: number[]; active_tenants: number }> {
+  const day = dayOf(now)
+  const totals = await tinyfishTotals(db, now, env)
+  const top = await asDb(db).all<{ n: number }>('SELECT SUM(n) AS n FROM tinyfish_usage WHERE day = ? GROUP BY tenant_id HAVING SUM(n) > 0 ORDER BY SUM(n) DESC LIMIT ?', [day, TINYFISH_TOP_TENANTS])
+  const active = await asDb(db).get<{ n: number }>('SELECT COUNT(DISTINCT tenant_id) AS n FROM tinyfish_usage WHERE day = ? AND n > 0', [day])
+  return { ...totals, per_tenant: top.map(r => Number(r.n)), active_tenants: Number(active?.n ?? 0) }
 }
 
 // #1082: one operator alert per UTC day when the platform has used over 80% of a daily cap before 18:00 UTC (the error
