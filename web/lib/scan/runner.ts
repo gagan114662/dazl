@@ -1476,7 +1476,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const hiringRequest = !!(job.query && icpForSources && hasHiringSignal(job.query, icpForSources.signals))
     // #1095: the place may come from the profile when the request's own words name none the board source knows ("Austin B2B SaaS ..."
     // whose profile resolved "Austin, TX"): the board source then reads the request with that place appended, never every place.
-    const profilePlace = job.query && !placeIn(job.query) ? (icpForSources?.where ?? []).find(w => typeof w === 'string' && placeIn(w)) ?? null : null
+    // only a profile that names exactly ONE place the board source knows: a multi-place profile is never narrowed to its first place
+    const profilePlaces = job.query && !placeIn(job.query) ? (icpForSources?.where ?? []).filter(w => typeof w === 'string' && placeIn(w)) : []
+    const profilePlace = profilePlaces.length === 1 ? profilePlaces[0] : null
     const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
