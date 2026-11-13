@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
-import { migrateWorkEmail, workEmailFixtureFakesOn } from '../people/work-email.ts'
+import { migrateWorkEmail, PENDING_STALE_S, workEmailFixtureFakesOn, workEmailProviders } from '../people/work-email.ts'
 import { migrateWarm } from '../warm/connections.ts'
 import { WORK_EMAIL_FIXTURE_COMPANY } from '../people/work-email-eligible.ts'
 
@@ -53,21 +53,30 @@ function fixtureLead(db: Database.Database, tenantId: string): { jobId: string; 
   return r ? { jobId: r.job_id, leadId: r.lead_id } : null
 }
 
-export function workEmailFixtureAvailable(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
-  return typeof tenantId === 'string' && !!tenantId && fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(env)
-}
-
 const pdlKeySaved = (db: Database.Database, tenantId: string): boolean =>
   !!db.prepare("SELECT 1 FROM tenant_connectors WHERE tenant_id = ? AND connector = 'enrich:pdl' AND enabled = 1 AND ciphertext <> ''").get(tenantId)
+// Why the fixture cannot show its advertised outcomes here, or null when it can (xhawk review): a saved People Data Labs key (any
+// string: the fake answers) and a mailbox check that can run now (EMAIL_GUESS_ENABLED, both caps above 0, the month's allowance left).
+export function workEmailFixtureBlocker(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): 'test_tenant_only' | 'staging_fakes_only' | 'needs_pdl_key' | 'needs_mailbox_check' | null {
+  if (typeof tenantId !== 'string' || !tenantId || !fixtureAvailable(db, tenantId)) return 'test_tenant_only'
+  if (!workEmailFixtureFakesOn(env)) return 'staging_fakes_only'
+  if (!pdlKeySaved(db, tenantId)) return 'needs_pdl_key'
+  if (!workEmailProviders(db, tenantId, env).mailboxCheck) return 'needs_mailbox_check'
+  return null
+}
+export function workEmailFixtureAvailable(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
+  return workEmailFixtureBlocker(db, tenantId, env) === null
+}
+
 const describe = (db: Database.Database, tenantId: string, ids: { jobId: string; leadId: string }, created: boolean): WorkEmailFixture => ({
   ...ids, created, site: WORK_EMAIL_FIXTURE_SITE, pdlKeySaved: pdlKeySaved(db, tenantId),
   people: WORK_EMAIL_FIXTURE_PEOPLE.map(p => ({ name: p.name, title: p.title, target: `${p.name}|${p.title}`, expect: p.expect })),
 })
 
 export function createWorkEmailFixture(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env, now = Math.floor(Date.now() / 1000)): WorkEmailFixture {
-  if (!fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
-  if (!workEmailFixtureFakesOn(env)) throw new FixtureError('staging_fakes_only')
   migrateWorkEmail(db)
+  const blocker = workEmailFixtureBlocker(db, tenantId, env)
+  if (blocker) throw new FixtureError(blocker)
   return db.transaction((): WorkEmailFixture => {
     const existing = fixtureLead(db, tenantId)
     if (existing) return describe(db, tenantId, existing, false)
@@ -99,6 +108,12 @@ export function deleteWorkEmailFixture(db: Database.Database, tenantId: string):
   const ids = fixtureLead(db, tenantId)
   if (!ids) return { deleted: false }
   migrateWorkEmail(db); migrateWarm(db)
+  // A lookup still running on this lead (a fresh 'pending' row, or a mailbox check in flight) would finish against deleted rows:
+  // refuse until it ends (xhawk review). A stale pending row (past PENDING_STALE_S) belongs to a lookup that died.
+  const now = Math.floor(Date.now() / 1000)
+  const inFlight = db.prepare("SELECT 1 FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND ((status = 'pending' AND updated_at >= ?) OR (mailbox_check = 'pending' AND COALESCE(mailbox_checked_at, 0) >= ?)) LIMIT 1")
+    .get(tenantId, ids.leadId, now - PENDING_STALE_S, now - PENDING_STALE_S)
+  if (inFlight) throw new FixtureError('lookup_in_flight')
   db.transaction(() => {
     db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     // Rows the real panels next to it may have attached to this lead (warm paths, source credits).

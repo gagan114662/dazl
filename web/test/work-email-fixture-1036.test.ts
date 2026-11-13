@@ -32,6 +32,7 @@ function setup(opts: { apollo?: boolean } = {}) {
   if (opts.apollo) { saveCredential(db, T, 'enrich:apollo', 'real-looking-apollo-key-9999', master); setEnrichFallback(db, T, true) }
   return db
 }
+const without = (o: Record<string, string>, k: string) => Object.fromEntries(Object.entries(o).filter(([x]) => x !== k))
 const target = (name: string) => { const p = WORK_EMAIL_FIXTURE_PEOPLE.find(x => x.name === name)!; return `${p.name}|${p.title}` }
 
 test('#1036 fixture: only the test tenant with the staging fake PDL may create it; it is idempotent and labelled test only', () => {
@@ -39,7 +40,7 @@ test('#1036 fixture: only the test tenant with the staging fake PDL may create i
   assert.throws(() => createWorkEmailFixture(db, 'someone-else', STAGING), (e: unknown) => e instanceof FixtureError && e.code === 'test_tenant_only')
   assert.throws(() => createWorkEmailFixture(db, T, PROD), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'production (no staging fake PDL) can never create it')
   assert.throws(() => createWorkEmailFixture(db, T, { DAZL_STAGING_FAKE_PDL: '1' }), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'the flag alone, without DAZL_ENV=staging, is not enough')
-  const { DAZL_STAGING_FAKE_ZEROBOUNCE: _zb, ...noFakeZb } = STAGING
+  const noFakeZb = without(STAGING, 'DAZL_STAGING_FAKE_ZEROBOUNCE')
   assert.throws(() => createWorkEmailFixture(db, T, noFakeZb), (e: unknown) => e instanceof FixtureError && e.code === 'staging_fakes_only', 'the fake PDL without the fake ZeroBounce is not enough')
   assert.equal(workEmailFixtureAvailable(db, T, PROD), false); assert.equal(workEmailFixtureAvailable(db, T, noFakeZb), false); assert.equal(workEmailFixtureAvailable(db, T, STAGING), true)
   const a = createWorkEmailFixture(db, T, STAGING), b = createWorkEmailFixture(db, T, STAGING)
@@ -141,7 +142,7 @@ test('#1036 fixture with Apollo AND PDL saved and the PDL fallback opt-in OFF: t
 
 test('#1036 fixture never spends the real ZeroBounce: with a real key and no fake ZeroBounce flag, no lookup runs at all', async () => {
   const db = setup(); const f = createWorkEmailFixture(db, T, STAGING); const calls: string[] = []
-  const { DAZL_STAGING_FAKE_ZEROBOUNCE: _zb, ...noFakeZb } = STAGING
+  const noFakeZb = without(STAGING, 'DAZL_STAGING_FAKE_ZEROBOUNCE')
   const r = await findWorkEmail(db, T, f.leadId, target('Valid Testbuyer'), { fetchImpl: noNetwork(calls), master, env: { ...noFakeZb, ZEROBOUNCE_API_KEY: 'real-zb-key' } })
   assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [], 'nothing sent to ZeroBounce or anyone else')
   const later = await findWorkEmail(db, T, f.leadId, target('Later Testbuyer'), { fetchImpl: noNetwork(calls), master, env: { ...noFakeZb, ZEROBOUNCE_API_KEY: 'real-zb-key' } })
@@ -155,4 +156,30 @@ test('#1036 a non-test tenant row that copies the fixture company and source_kin
   saveCredential(db, 'real-tenant', 'enrich:pdl', 'real-pdl-key', master)
   const r = await findWorkEmail(db, 'real-tenant', f.leadId, target('Valid Testbuyer'), { fetchImpl: noNetwork(calls), master, env: STAGING })
   assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [])
+})
+
+test('#1036 xhawk: the fixture is offered and created only when it can show its outcomes (a saved PDL key and a mailbox check that can run)', () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); migrateScan(db)
+  process.env.OUTREACH_TEST_TENANT_ID = T; setTestAddresses(db, T, [TEST_INBOX])
+  assert.throws(() => createWorkEmailFixture(db, T, STAGING), (e: unknown) => e instanceof FixtureError && e.code === 'needs_pdl_key')
+  assert.equal(workEmailFixtureAvailable(db, T, STAGING), false)
+  saveCredential(db, T, 'enrich:pdl', 'staging-fake-pdl-any-string-1036', master)
+  for (const env of [without(STAGING, 'EMAIL_GUESS_ENABLED'), without(STAGING, 'EMAIL_VERIFY_DAILY_CAP'), { ...STAGING, EMAIL_VERIFY_MONTHLY_CAP: '0' }]) {
+    assert.throws(() => createWorkEmailFixture(db, T, env), (e: unknown) => e instanceof FixtureError && e.code === 'needs_mailbox_check', JSON.stringify(env))
+    assert.equal(workEmailFixtureAvailable(db, T, env), false)
+  }
+  assert.equal(workEmailFixtureAvailable(db, T, STAGING), true)
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM leads').get() as { n: number }).n, 0, 'nothing was created by the refusals')
+})
+
+test('#1036 xhawk: removing the fixture while a lookup on it is still running is refused; a stale pending row does not block', () => {
+  const db = setup(); const f = createWorkEmailFixture(db, T, STAGING)
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, updated_at) VALUES (?, ?, ?, 'pending', ?)").run(T, f.leadId, target('Valid Testbuyer'), now)
+  assert.throws(() => deleteWorkEmailFixture(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'lookup_in_flight')
+  assert.equal(workEmailFixtureExists(db, T), true, 'nothing was removed')
+  db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_checked_at = ?, status = 'unverified', provider = 'pdl', address = 'staging-valid.testbuyer@x.test' WHERE lead_id = ? AND target = ?").run(now, f.leadId, target('Valid Testbuyer'))
+  assert.throws(() => deleteWorkEmailFixture(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'lookup_in_flight', 'a mailbox check in flight blocks too')
+  db.prepare('UPDATE work_email_lookups SET mailbox_checked_at = ? WHERE lead_id = ?').run(now - 10_000, f.leadId)
+  assert.deepEqual(deleteWorkEmailFixture(db, T), { deleted: true }, 'a stale in-flight row belongs to a lookup that died')
 })
