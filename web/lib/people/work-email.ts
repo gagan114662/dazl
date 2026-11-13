@@ -26,6 +26,7 @@
 // ('pending' row) BEFORE any paid call, so a double click, a second tab or a retry while it runs pays once.
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
+import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
@@ -34,7 +35,7 @@ import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
-import { companySearchEligible, NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
+import { companySearchEligible } from '../scan/find-contact-eligible.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailTargets } from './work-email-eligible.ts'
