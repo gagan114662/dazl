@@ -43,12 +43,22 @@ export const isAtsRecordUrl = (raw: string): boolean => { try { const u = new UR
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const str = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '')
-// A real calendar day from an ISO timestamp, or null.
-function isoDay(v: unknown): string | null {
-  const s = typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? new Date(v).toISOString() : ''
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s); if (!m) return null
-  const t = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]))
-  return t.getUTCFullYear() === +m[1] && t.getUTCMonth() === +m[2] - 1 && t.getUTCDate() === +m[3] && +m[1] >= 2000 ? t.toISOString().slice(0, 10) : null
+// A posting's day: the UTC calendar day of the instant the board states (an ISO timestamp, offsets honoured, or Lever's
+// epoch milliseconds). ONE rule for every path that dates a posting, the job-board source (lib/sources/jobboards.ts) and
+// the board record read here, so the same posting gets the same day whichever path found it. Null for anything that is
+// not a real date (the text must start with a valid calendar day) or is before 2000.
+export function postingDay(v: unknown): string | null {
+  let t: number
+  if (typeof v === 'number') t = Number.isFinite(v) ? v : NaN
+  else if (typeof v === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim()); if (!m) return null
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]))
+    if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null
+    t = Date.parse(v.trim())
+  } else return null
+  if (!Number.isFinite(t)) return null
+  const day = new Date(t).toISOString().slice(0, 10)
+  return +day.slice(0, 4) >= 2000 ? day : null
 }
 const BOARD: Record<AtsKind, string> = { ashby: 'Ashby', greenhouse: 'Greenhouse', lever: 'Lever' }
 
@@ -65,13 +75,15 @@ export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing
     const jobs = body.jobs.filter(isObj)
     job = jobs.find(j => str(j.id).toLowerCase() === r.id) ?? jobs.find(j => str(j.jobUrl).toLowerCase().split(/[?#]/)[0].replace(/\/+$/, '').endsWith(`/${r.id}`)) ?? null
     if (!job || job.isListed === false) return 'missing'
+    // listed only when the board says so (true), as the job-board source reads it; any other value proves nothing
+    if (job.isListed !== true) return null
   } else if (isObj(body)) job = body
   if (!job) return null
   if (r.kind === 'greenhouse' && String(job.id ?? '') !== r.id) return null
   if (r.kind === 'lever' && str(job.id).toLowerCase() !== r.id) return null
   const title = str(r.kind === 'lever' ? job.text : job.title)
   // the documented first-published fields only; updated_at is never a posting date
-  const posted = isoDay(r.kind === 'ashby' ? job.publishedAt : r.kind === 'greenhouse' ? job.first_published : job.createdAt)
+  const posted = postingDay(r.kind === 'ashby' ? job.publishedAt : r.kind === 'greenhouse' ? job.first_published : job.createdAt)
   if (!title) return null
   const location = r.kind === 'greenhouse' ? str(isObj(job.location) ? job.location.name : '') : r.kind === 'lever' ? str(isObj(job.categories) ? job.categories.location : '') : str(job.location)
   // Lever keeps the responsibilities / requirements bullets in lists[] and the closing text in additionalPlain: all of

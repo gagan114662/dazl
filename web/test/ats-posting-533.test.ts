@@ -7,7 +7,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import https from 'node:https'
-import { atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl } from '../lib/sources/ats-posting.ts'
+import { collectEvidence } from '../lib/sources/index.ts'
+import type { SafeGet } from '../lib/sources/types.ts'
+import { atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, postingDay } from '../lib/sources/ats-posting.ts'
 import { fetchPageDetailed, isFail, resetBoardMemo, type Page } from '../lib/scan/fetch-page.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
 
@@ -223,4 +225,51 @@ test('#533 Greenhouse and Lever postings through the real fetcher: exactly this 
     restore = fakeHttps(serve(over))
     try { const r = await fetchPageDetailed(GH, async () => null); assert.ok(isFail(r), name); assert.equal(r.fail, fail, name) } finally { restore() }
   }
+})
+
+test('#533 review 1: an Ashby posting is live only when the board says isListed: true; missing, null or a non-boolean is a failed read', async () => {
+  const ref = { kind: 'ashby' as const, org: 'acmeco', id: ID }
+  for (const isListed of [undefined, null, 'false', 'true', 1]) {
+    const job: Record<string, unknown> = { ...ASHBY_BOARD.jobs[1] }
+    if (isListed === undefined) delete job.isListed; else job.isListed = isListed
+    assert.equal(atsRecord({ jobs: [job] }, ref), null, `isListed ${JSON.stringify(isListed)}`)
+    const restore = fakeHttps(live({ 'https://api.ashbyhq.com/': { body: JSON.stringify({ jobs: [job] }) } }))
+    try {
+      const r = await fetchPageDetailed(ASHBY_URL, async () => null)
+      assert.ok(isFail(r), `isListed ${JSON.stringify(isListed)}`); assert.equal(r.fail, 'error')
+    } finally { restore() }
+  }
+  assert.equal(atsRecord({ jobs: [{ ...ASHBY_BOARD.jobs[1], isListed: false }] }, ref), 'missing', 'false: closed')
+  assert.ok(atsRecord({ jobs: [ASHBY_BOARD.jobs[1]] }, ref), 'true: live')
+})
+
+test('#533 review 2: one posting-day rule on every path: the UTC day of the instant, offsets honoured', () => {
+  // Greenhouse sends offset timestamps: 22:30 at -04:00 is 02:30 UTC the next day
+  assert.equal(postingDay('2026-10-15T22:30:00-04:00'), '2026-10-16')
+  assert.equal(postingDay('2026-10-15T01:30:00+05:00'), '2026-10-14')
+  assert.equal(postingDay('2026-10-15T14:33:00.000+00:00'), '2026-10-15')
+  assert.equal(postingDay(Date.parse('2026-10-25T23:59:59Z')), '2026-10-25', "Lever's epoch milliseconds")
+  for (const bad of ['2026-02-30T00:00:00Z', '1999-12-31T00:00:00Z', 'yesterday', '', null, NaN, {}]) assert.equal(postingDay(bad), null, String(bad))
+  const gh = atsRecord({ id: 4012345, title: 'Sales Operations Manager', first_published: '2026-10-15T22:30:00-04:00' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
+  assert.ok(gh && gh !== 'missing'); assert.equal(gh.posted, '2026-10-16', 'the record read gives the day the job-board source gives')
+})
+
+test('#533 review 2: the job-board source and the record read give the SAME day for one posting whose offset timestamp crosses UTC midnight', async () => {
+  // five days ago at 22:30 New York time, which is the next day in UTC
+  const d = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10)
+  const published = `${d}T22:30:00-04:00`
+  const detail = { id: 1, title: 'Sales Account Executive', first_published: published, updated_at: new Date().toISOString(), content: '&lt;p&gt;Nimbus Analytics is hiring an Account Executive to build its UK sales team in London.&lt;/p&gt;', location: { name: 'London, UK' }, absolute_url: 'https://boards.greenhouse.io/nimbus/jobs/1' }
+  const http: SafeGet = async url => {
+    if (new URL(url).hostname === 'hn.algolia.com') return null
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs') return { status: 200, body: JSON.stringify({ jobs: [{ id: 1, title: 'Sales Account Executive', location: { name: 'London, UK' }, absolute_url: detail.absolute_url }] }) }
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/nimbus/jobs/1') return { status: 200, body: JSON.stringify(detail) }
+    return null
+  }
+  const ev = await collectEvidence({ adapters: ['jobboards'], feeds: ['https://boards.greenhouse.io/nimbus'], pages: [] }, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
+  const viaSource = ev.find(e => e.url === detail.absolute_url)?.date
+  const viaRecord = atsRecord(detail, { kind: 'greenhouse', org: 'nimbus', id: '1' })
+  assert.ok(viaRecord && viaRecord !== 'missing')
+  const utcDay = new Date(Date.parse(published)).toISOString().slice(0, 10)
+  assert.notEqual(utcDay, d, 'the fixture really crosses midnight')
+  assert.deepEqual([viaSource, viaRecord.posted], [utcDay, utcDay])
 })
