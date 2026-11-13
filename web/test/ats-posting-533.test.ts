@@ -249,7 +249,9 @@ test('#533 review 2: one posting-day rule on every path: the UTC day of the inst
   assert.equal(postingDay('2026-10-15T01:30:00+05:00'), '2026-10-14')
   assert.equal(postingDay('2026-10-15T14:33:00.000+00:00'), '2026-10-15')
   assert.equal(postingDay(Date.parse('2026-10-25T23:59:59Z')), '2026-10-25', "Lever's epoch milliseconds")
-  for (const bad of ['2026-02-30T00:00:00Z', '1999-12-31T00:00:00Z', 'yesterday', '', null, NaN, {}]) assert.equal(postingDay(bad), null, String(bad))
+  for (const bad of ['2026-02-30T00:00:00Z', '1999-12-31T00:00:00Z', 'Oct 15 2026', 'yesterday', '', null, NaN, 1e16, 9e11, {}]) assert.equal(postingDay(bad), null, String(bad))
+  // a time with no zone is UTC whatever the server's zone (the day never depends on TZ)
+  assert.equal(postingDay('2026-10-15T23:30:00'), '2026-10-15')
   const gh = atsRecord({ id: 4012345, title: 'Sales Operations Manager', first_published: '2026-10-15T22:30:00-04:00' }, { kind: 'greenhouse', org: 'acmeco', id: '4012345' })
   assert.ok(gh && gh !== 'missing'); assert.equal(gh.posted, '2026-10-16', 'the record read gives the day the job-board source gives')
 })
@@ -272,4 +274,25 @@ test('#533 review 2: the job-board source and the record read give the SAME day 
   const utcDay = new Date(Date.parse(published)).toISOString().slice(0, 10)
   assert.notEqual(utcDay, d, 'the fixture really crosses midnight')
   assert.deepEqual([viaSource, viaRecord.posted], [utcDay, utcDay])
+})
+
+test('#533 review 2: the job-board source uses the same rule: a day the board never stated (an impossible calendar day) gives no evidence', async () => {
+  // an impossible day ("<a 30-day month>-31") inside the 90-day window: Date.parse rolls it to the 1st of the next month, a day the board never stated
+  const now = new Date()
+  let bad = ''
+  for (let back = 15; back <= 80 && !bad; back++) {
+    const d = new Date(now.getTime() - back * 86_400_000), y = d.getUTCFullYear(), m = d.getUTCMonth()
+    if (new Date(Date.UTC(y, m + 1, 0)).getUTCDate() === 30 && Date.UTC(y, m + 1, 1) < now.getTime() - 86_400_000) bad = `${y}-${String(m + 1).padStart(2, '0')}-31T10:00:00Z`
+  }
+  assert.ok(bad, 'a 30-day month in the window')
+  const job = (publishedAt: string) => ({ ...ASHBY_BOARD.jobs[1], location: 'London, UK', title: 'Sales Account Executive', publishedAt, jobUrl: `https://jobs.ashbyhq.com/acmeco/${ID}`, descriptionPlain: 'Acmeco is hiring an Account Executive to build its UK sales team in London.' })
+  const run = async (publishedAt: string) => {
+    const http: SafeGet = async url => url === 'https://api.ashbyhq.com/posting-api/job-board/acmeco' ? { status: 200, body: JSON.stringify({ jobs: [job(publishedAt)] }) } : null
+    return collectEvidence({ adapters: ['jobboards'], feeds: ['https://jobs.ashbyhq.com/acmeco'], pages: [] }, 'London UK B2B SaaS startups hiring sales account executive', http, 5000)
+  }
+  const fresh = new Date(now.getTime() - 5 * 86_400_000).toISOString()
+  assert.equal((await run(fresh)).length, 1, 'a real fresh day is evidence')
+  assert.deepEqual(await run(bad), [], bad)
+  assert.equal(postingDay(bad), null)
+  assert.equal(postingDay(1e16), null, 'out of the Date range: null, never a throw')
 })

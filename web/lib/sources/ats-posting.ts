@@ -54,10 +54,13 @@ export function postingDay(v: unknown): string | null {
     const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.trim()); if (!m) return null
     const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]))
     if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null
-    t = Date.parse(v.trim())
+    // a time without a zone is read as UTC, never as this server's local time
+    const iso = v.trim(), zoned = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) || !/T\d/.test(iso)
+    t = Date.parse(zoned ? iso : `${iso}Z`)
   } else return null
-  if (!Number.isFinite(t)) return null
-  const day = new Date(t).toISOString().slice(0, 10)
+  const at = new Date(t) // out of the Date range (e.g. 1e16 ms) is not a date, never a throw
+  if (!Number.isFinite(t) || Number.isNaN(at.getTime())) return null
+  const day = at.toISOString().slice(0, 10)
   return +day.slice(0, 4) >= 2000 ? day : null
 }
 const BOARD: Record<AtsKind, string> = { ashby: 'Ashby', greenhouse: 'Greenhouse', lever: 'Lever' }
