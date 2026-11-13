@@ -69,6 +69,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'hooks/first-party', method: 'POST', auth: 'public', note: 'per-tenant HMAC over timestamp + body, replay window, recorded consent config (#390)' },
   { path: 'internal/tick', method: 'POST', auth: 'public', note: 'shared secret, timing-safe compare' },
   { path: 'internal/tinyfish-today', method: 'GET', auth: 'public', note: 'shared secret (as internal/tick), timing-safe compare; per-tenant unit counts, never a tenant id' },
+  { path: 'internal/spend-caps', method: 'GET', auth: 'public', note: 'shared secret (as internal/tick), timing-safe compare; #846/#847 spend caps from the environment, simulated in a throwaway in-memory store: no tenant data read, no write, no model call' },
   { path: 'leads/[lead]/confirm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/confirm', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/domain-review', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
