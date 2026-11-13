@@ -9,11 +9,11 @@
 // Which leads: the run's leads this play had never surfaced before (leads.watch_new, lib/watch.ts), visible the way
 // the Leads list shows them (not quarantined, not the low-fit tier: lib/scan/store-db.ts), best first; at most
 // MAIL_LIST_MAX are listed, with the count of the rest and a link to the run in Leads.
-// #883, once per company across plays: before the list is read, the run claims each of those leads in the tenant's
-// alert record (lib/watch.ts claimWatchAlertsStep, the step the scan runner already took when the run's results became
-// final; repeated here so a run whose worker died before that step is still claimed). A company another play's run
+// #883, once per company across plays: in the same transaction that claims the run for mailing, the run claims each
+// of those leads in the tenant's alert record (lib/watch.ts claimWatchAlertsStep). A company another play's run
 // already alerted is not new, so it is not listed and not counted; a run left with nothing new mails nothing. A run
-// that will never be mailed (paused play, no confirmed address) releases what it holds.
+// that is not mailed (paused or deleted play, no confirmed address, outside MAIL_WINDOW_S) claims nothing, so another
+// play that finds its companies still mails them; a send that fails gives back what the run claimed.
 // To whom: the account's own verified address (the founder of the workspace; never an unverified address).
 // Once only, across ticks, instances and crashes: the run is claimed in the same transaction that reads it, by a
 // reserved row in the play's own memory (watch_seen 'mail:<job id>'; a company key is a domain or [a-z0-9] name and
@@ -84,18 +84,17 @@ export function composePlayRunMail(o: { userId: string; to: string; jobId: strin
 
 function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBody<PlayRunMail | null> {
   yield* fence(t)
+  // #883: the tenant's claim lock first, before any row of this play is touched (one order for every pass)
+  yield* lockAlertsStep(t, d.user_id)
   const claim = yield* t.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING', [d.watch_id, mailClaimKey(d.job_id)])
   if (claim.changes !== 1) return null // another tick or instance has it
   // read under the claim: a play paused or deleted since the list was read mails nothing (the claim stays: once only)
   const w = yield* t.get<{ query: string; icp: string | null; active: number }>('SELECT query, icp, active FROM watches WHERE id = ? AND user_id = ?', [d.watch_id, d.user_id])
+  if (!w || Number(w.active) !== 1) return null
   const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
-  if (!w || Number(w.active) !== 1 || typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) {
-    // #883: this run will never be mailed, so it gives up the companies it holds: another play still mails them
-    yield* lockAlertsStep(t, d.user_id)
-    yield* releaseRunAlertsStep(t, d.user_id, d.job_id)
-    return null
-  }
-  yield* claimWatchAlertsStep(t, d.watch_id, d.job_id, now) // #883: a company another play already alerted leaves the list
+  if (typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) return null
+  // #883: only a run that is about to be mailed claims its companies; one another play already alerted leaves the list
+  yield* claimWatchAlertsStep(t, d.watch_id, d.job_id, now)
   const total = Number((yield* t.get<{ n: number }>(NEW_COUNT_SQL, [d.job_id]))?.n ?? 0)
   if (!(total > 0)) return null
   const leads = yield* t.all<{ company: unknown; signal: unknown }>(NEW_LEADS_SQL, [d.job_id, MAIL_LIST_MAX])
@@ -117,7 +116,15 @@ export async function sendPlayRunMails(db: Db, o: { now?: number; fence?: Fence;
       captureError(e, { source: 'worker', where: 'play-mail:claim', tenantId: d.user_id }); continue
     }
     if (!mail) continue
-    try { await sendSystemMail(db, mail, env); sent++ } catch (e) { captureError(e, { source: 'worker', where: 'play-mail:send', tenantId: d.user_id }) }
+    try { await sendSystemMail(db, mail, env); sent++ } catch (e) {
+      captureError(e, { source: 'worker', where: 'play-mail:send', tenantId: d.user_id })
+      // #883: the mail did not go out (and is not retried: once only), so the run gives back the companies it claimed
+      // and another play that finds them still mails them. Best effort: a failed release is recorded, never thrown.
+      try { await db.tx(function* (t) { yield* fence(t); yield* lockAlertsStep(t, d.user_id); yield* releaseRunAlertsStep(t, d.user_id, d.job_id) }) } catch (e2) {
+        if (e2 instanceof LeaseLost || e2 instanceof StaleLeaseWrite) throw e2
+        captureError(e2, { source: 'worker', where: 'play-mail:release', tenantId: d.user_id })
+      }
+    }
   }
   return sent
 }

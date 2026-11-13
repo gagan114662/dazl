@@ -9,17 +9,19 @@
 // play_alerts is the tenant's record of "this company was already alerted": one row per (tenant, company key), written
 // when a play alerts it, naming the play and run that did. It is not tied to the play's row, so deleting a play does
 // not forget what it alerted; it is erased with the tenant (lib/tenant/scope.ts: its own tenant column).
-//   - A weekly / daily play's run claims each new, visible lead here when its results are final (the scan runner, at
-//     the end of enrichment; the mail pass repeats the same idempotent step before it reads the list). A lead whose
-//     company another run already holds is not new: leads.watch_new is cleared, so it is not mailed and not counted.
+//   - A weekly / daily play's run claims each new, visible lead here in the transaction that sends its mail
+//     (lib/play-mail.ts), so a company is held exactly when a mail naming or counting it goes out. A lead whose company
+//     another run already holds is not new: leads.watch_new is cleared, so it is not mailed and not counted.
 //   - A monitor's alert claims the company the same way, and a monitor does not alert an event for a company a
 //     weekly / daily play already alerted when that play's lead carried the same event (same day and kind) or no date
 //     at all; a different dated event still alerts once, as a new signal (lib/monitor-events.ts foldRunEvents).
-// What "alerted" means: the run's mail went out, or (the first play only) the leads were that play's own results on
-// screen. A run whose mail will never be sent releases its hold (releaseRunAlertsStep): a lost alert is as bad as a
-// repeated one. Known limits: a run that holds a company by name only takes the first website any later lead gives
-// that name (a different company with the same name and a website is then treated as already alerted); a monitor's
-// later "now reachable" alert for an event a play mailed is a state change, not a repeat, and still goes out.
+// What "alerted" means: the run's mail went out, or (the first play only, lib/play-repeat.ts) the leads were that
+// play's own results on screen. A run that is not mailed (paused or deleted play, no confirmed address, outside the
+// mail window) claims nothing, and a send that fails gives its claim back (releaseRunAlertsStep): a lost alert is as
+// bad as a repeated one. Known limits: a company held by name only takes the first website any later lead gives that
+// name (a different company with the same name and a website is then treated as already alerted); a monitor's later
+// "now reachable" alert for an event a play mailed is a state change, not a repeat, and still goes out; a run that is
+// not mailed keeps its own "N new" on the Plays page even when another play later mails the same company.
 // Identity (found on production's own data, 2026-11-13: OpenRelay and Photon were stored without a website by one run
 // and with openrelay.com / photon.codes by the next, and were mailed twice): a lead is known by its confirmed domain
 // AND by its normalized name (lib/monitor-events.ts alertKeysOf), one row per key. A lead is held when its domain is
@@ -69,8 +71,8 @@ const BIND_DOMAIN_SQL = 'UPDATE play_alerts SET domain_key = ? WHERE tenant_id =
 export function* lockAlertsStep(t: Tx, tenantId: string): TxBody<void> {
   if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('play_alerts:' || ?, 0)) AS x", [tenantId])
 }
-// A play's run that will never be mailed (the play was paused or deleted before the mail pass, or the account has no
-// confirmed address) gives up what it holds, so another play that finds those companies still mails them.
+// A play's run whose mail failed to send gives back what it claimed, so another play that finds those companies
+// still mails them.
 export function* releaseRunAlertsStep(t: Tx, tenantId: string, jobId: string): TxBody<number> {
   return (yield* t.run("DELETE FROM play_alerts WHERE tenant_id = ? AND job_id = ? AND play_kind = 'watch'", [tenantId, jobId])).changes
 }

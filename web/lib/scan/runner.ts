@@ -20,7 +20,7 @@ import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, 
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
-import { claimWatchAlerts, markWatchLeads } from '../watch.ts'
+import { markWatchLeads } from '../watch.ts'
 import type { AdvPlatform } from '../advanced/config.ts'
 import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
@@ -1945,10 +1945,6 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const completion = completeLeads(db, job, completionBefore, { windowed: !!icpForSources?.window_days, resolution, datesFilled: datesFinished.map(d => d.company) })
       mergeIntoRunReport(db, job.id, job.attempts, { enrichment: trace.stages, yield: y, completion, ...(need ? { need } : {}), ...(resolution ? { resolution } : {}), held_lead_ids: [...heldByGate.keys(), ...extra.map(h => h.id)] })
     } catch (e) { console.error('actionable yield failed', e instanceof Error ? e.message : 'error') }
-    // #883: the run's results are final (fit and quarantine decide what the Leads list shows), so a play's run now claims
-    // its new leads in the tenant's alert record; a company another play already alerted stops being new here, before the
-    // stage ends and the mail pass (lib/play-mail.ts, which repeats this step) reads the list. Never affects the scan.
-    if (job.watch_id) { try { await claimWatchAlerts(sqliteDb(db), job.watch_id, job.id) } catch (e) { console.error('play alert claim failed', e instanceof Error ? e.message : 'error') } }
     // Contacts, people, fit and the sales-hiring check are final: the stage ends before autopilot, whose drafting/sending is separate work, not enrichment.
     endEnrichment(db, job.id, job.attempts)
     // Autopilot (off unless the user turned it on and the operator allows it). Never affects the scan result.

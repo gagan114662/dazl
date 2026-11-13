@@ -25,6 +25,7 @@ import { runDueWatches } from '../lib/watch.ts'
 import type { Db } from '../lib/db/client.ts'
 import { createWatch, listWatches, watchAction, writeWatchLeads } from '../lib/watch.ts'
 import { sendPlayRunMails } from '../lib/play-mail.ts'
+import { setTransportForTests } from '../lib/system-mail.ts'
 import { playRuns } from '../lib/play-runs.ts'
 import { playNew } from '../lib/play-now.ts'
 import { repeatFirstPlays } from '../lib/play-repeat.ts'
@@ -152,17 +153,17 @@ bothEngines('#883 a company one play has mailed is not mailed, or counted as new
   assert.deepEqual(await alerts(db, B), [{ entity_key: 'n:campfire', play_kind: 'watch', play_id: other }])
 })
 
-bothEngines('#883 the scan runner\'s step: two runs marked before either is claimed still alert a company once; the claim is idempotent', async ({ db }) => {
+bothEngines('#883 the claim step: two runs marked before either is claimed still alert a company once; the claim is idempotent', async ({ db }) => {
   const { claimWatchAlerts } = await import('../lib/watch.ts') as unknown as { claimWatchAlerts?: (db: Db, watchId: string, jobId: string, now?: number) => Promise<number> }
-  assert.equal(typeof claimWatchAlerts, 'function', 'lib/watch.ts claimWatchAlerts: the claim the runner makes at the end of enrichment')
+  assert.equal(typeof claimWatchAlerts, 'function', 'lib/watch.ts claimWatchAlerts: the claim the mail pass makes')
   await account(db, A, 'founder@a.example')
   const sdr = await play(db, A, Q_SDR, NOW - 3 * DAY)
   const agencies = await play(db, A, Q_AGENCIES, NOW - 3 * DAY)
-  // both runs are marked (the runner's post-finish step) while neither has claimed anything: both see Campfire as new
+  // both runs are marked (the runner's post-finish step) before either is mailed: both see Campfire as new
   const j1 = await runJob(db, A, sdr, Q_SDR, NOW, [CAMPFIRE, NGENAIRE, MERCURY])
   const j2 = await runJob(db, A, agencies, Q_AGENCIES, NOW, [CAMPFIRE, SMILE])
   assert.deepEqual(await newFlags(db, j2), { Campfire: 1, 'Smile Avenue Dental': 1 })
-  // the end of each run's enrichment: the first claim holds the company, the second run's lead stops being new
+  // the claim each run's mail transaction makes: the first holds the company, the second run's lead stops being new
   assert.equal(await claimWatchAlerts!(db, sdr, j1, NOW + 10), 2, 'Campfire and Ngenaire (Mercury is in the hidden tier: no claim)')
   assert.equal(await claimWatchAlerts!(db, agencies, j2, NOW + 11), 1)
   assert.deepEqual(await newFlags(db, j2), { Campfire: 0, 'Smile Avenue Dental': 1 })
@@ -221,15 +222,12 @@ bothEngines('#883 a company first stored without its website and then with it is
   assert.deepEqual((await alerts(db, A)).filter(a => /photon/.test(a.entity_key)).map(a => [a.entity_key, a.play_id]), [['d:photon.codes', seed], ['d:photon.io', sdr], ['n:photon', seed]])
 })
 
-bothEngines('#883 no lost alert: a run that will never be mailed (play paused or deleted before the mail pass, no confirmed address) gives up what it holds', async ({ db }) => {
-  const { claimWatchAlerts } = await import('../lib/watch.ts') as unknown as { claimWatchAlerts: (db: Db, watchId: string, jobId: string, now?: number) => Promise<number> }
+bothEngines('#883 no lost alert: a run that is not mailed (play paused or deleted before the mail pass, no confirmed address, outside the mail window, failed send) holds nothing', async ({ db }) => {
   await account(db, A, 'founder@a.example')
   const sdr = await play(db, A, Q_SDR, NOW - 3 * DAY)
   const agencies = await play(db, A, Q_AGENCIES, NOW - 3 * DAY)
-  // play 1's run ends (the runner's claim), then the person pauses it before the next tick: its mail is never sent
-  const j1 = await runJob(db, A, sdr, Q_SDR, NOW, PROD_RUN)
-  assert.equal(await claimWatchAlerts(db, sdr, j1, NOW + 5), 3)
-  assert.equal((await alerts(db, A)).length, 3)
+  // play 1's run ends, then the person pauses it before the next tick: its mail is never sent
+  await runJob(db, A, sdr, Q_SDR, NOW, PROD_RUN)
   assert.equal(await watchAction(db, A, sdr, 'pause'), true)
   assert.equal(await sendPlayRunMails(db, { now: NOW + 60 }), 0)
   assert.deepEqual(await alerts(db, A), [], 'nothing was mailed, so nothing is held')
@@ -240,23 +238,43 @@ bothEngines('#883 no lost alert: a run that will never be mailed (play paused or
 
   // deleted before the mail pass: the same
   const london = await play(db, A, Q_LONDON, NOW + 2 * 3600)
-  const j3 = await runJob(db, A, london, Q_LONDON, NOW + 3 * 3600, [SMILE])
-  assert.equal(await claimWatchAlerts(db, london, j3, NOW + 3 * 3600 + 5), 1)
+  await runJob(db, A, london, Q_LONDON, NOW + 3 * 3600, [SMILE])
   assert.equal(await watchAction(db, A, london, 'delete'), true)
   assert.equal(await sendPlayRunMails(db, { now: NOW + 3 * 3600 + 60 }), 0)
-  assert.deepEqual((await alerts(db, A)).map(a => a.entity_key), ['n:campfire'], 'Smile Avenue Dental is free again; Campfire, which WAS mailed, stays held')
-  await runJob(db, A, agencies, Q_AGENCIES, NOW + 5 * 3600, [SMILE, CAMPFIRE])
-  assert.equal(await sendPlayRunMails(db, { now: NOW + 5 * 3600 + 60 }), 1)
-  assert.deepEqual((await outbox(db, A)).map(m => listed(m.body)), [['Campfire'], ['Smile Avenue Dental']])
+  assert.deepEqual((await alerts(db, A)).map(a => a.entity_key), ['n:campfire'], 'only Campfire, which WAS mailed, is held')
+  // a run the mail pass never reached inside its window (finished two days before the tick): nothing held either
+  const late = await play(db, A, Q_SEED, NOW + 3 * 3600)
+  await runJob(db, A, late, Q_SEED, NOW + 4 * 3600, [ZENITHON])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 4 * 3600 + 2 * DAY }), 0)
+  assert.deepEqual((await alerts(db, A)).map(a => a.entity_key), ['n:campfire'])
+  await runJob(db, A, agencies, Q_AGENCIES, NOW + 2 * DAY + 5 * 3600, [SMILE, ZENITHON, CAMPFIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 2 * DAY + 5 * 3600 + 60 }), 1)
+  assert.deepEqual((await outbox(db, A)).map(m => listed(m.body)), [['Campfire'], ['Smile Avenue Dental', 'Zenithon']])
 
   // an account with no confirmed address is never mailed: its runs hold nothing
   await account(db, B, 'founder@b.example')
   await db.run('UPDATE users SET email_verified_at = NULL WHERE id = ?', [B])
   const b1 = await play(db, B, Q_SDR, NOW - 3 * DAY)
-  const jb = await runJob(db, B, b1, Q_SDR, NOW, [CAMPFIRE])
-  assert.equal(await claimWatchAlerts(db, b1, jb, NOW + 5), 1)
-  assert.equal(await sendPlayRunMails(db, { now: NOW + 5 * 3600 + 120 }), 0)
+  await runJob(db, B, b1, Q_SDR, NOW, [CAMPFIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 120 }), 0)
   assert.deepEqual(await alerts(db, B), [])
+
+  // a send that fails (SMTP configured, the transport throws): not retried, and the run gives back what it claimed
+  await db.run('UPDATE users SET email_verified_at = 1 WHERE id = ?', [B])
+  const b2 = await play(db, B, Q_AGENCIES, NOW - 3 * DAY)
+  await runJob(db, B, b2, Q_AGENCIES, NOW + 3600, [OPENRELAY_2])
+  const smtp = { PUBLIC_BASE_URL: 'https://dazl.ai', SYSTEM_MAIL_SMTP_URL: 'smtp://mail.invalid', SYSTEM_MAIL_FROM: 'dazl <no-reply@dazl.ai>' }
+  setTransportForTests(async () => { throw new Error('connection refused') })
+  try { assert.equal(await sendPlayRunMails(db, { now: NOW + 3660, env: smtp }), 0) } finally { setTransportForTests(null) }
+  assert.deepEqual(await alerts(db, B), [], 'the mail never left: OpenRelay is not held')
+  const sent: string[] = []
+  setTransportForTests(async m => { sent.push(m.text) })
+  try {
+    assert.equal(await sendPlayRunMails(db, { now: NOW + 3720, env: smtp }), 0, 'once only: the failed run is not mailed late')
+    await runJob(db, B, b1, Q_SDR, NOW + 2 * 3600, [OPENRELAY_2])
+    assert.equal(await sendPlayRunMails(db, { now: NOW + 2 * 3600 + 60, env: smtp }), 1)
+  } finally { setTransportForTests(null) }
+  assert.deepEqual(sent.map(listed), [['OpenRelay']])
 })
 
 bothEngines('#883 two claim passes at the same moment over the same companies in opposite orders: each company is held by exactly one run', async ({ db }) => {
@@ -341,7 +359,7 @@ bothEngines('#883 the first play\'s own leads are held by its automatic repeat: 
 
 // The wiring, through the real scan runner (in-memory SQLite, stub provider, stub TinyFish, stub page read; the fixture
 // of test/adaptive-yield.test.ts): two plays of one account are run by the scheduler one after the other and both scans
-// verify the same company. The second run's lead must not be new when the runner finishes, before any mail pass.
+// verify the same company. The first run is mailed; the second run's lead must not be new when the runner finishes.
 test('#883 real runner: the second play\'s scan of a company the first play alerted ends with that lead not new', async () => {
   const master = randomBytes(32)
   const envBefore = { DAZL_MASTER_KEY: process.env.DAZL_MASTER_KEY, TINYFISH_API_KEY: process.env.TINYFISH_API_KEY }
@@ -391,14 +409,16 @@ test('#883 real runner: the second play\'s scan of a company the first play aler
       assert.ok(job?.watch_id)
       assert.equal(await runScan(raw, job, { providers, master, fetchPage: page, fetchImpl: globalThis.fetch, score: false, judge: null }), 'done')
       runs.push({ watch: job.watch_id!, job: job.id })
+      // the tick's mail pass after the first run only: the second run is judged as the runner left it
+      if (i === 0) assert.equal(await sendPlayRunMails(db, { now: Math.floor(Date.now() / 1000) + 60 }), 1)
     }
     assert.deepEqual(runs.map(r => r.watch).sort(), [w1.id, w2.id].sort())
     const lead = (job: string) => raw.prepare('SELECT company, watch_new, review_reason, fit, quarantined_at FROM leads WHERE scan_job_id = ?').all(job) as { company: string; watch_new: number; review_reason: string | null; fit: number | null; quarantined_at: number | null }[]
     assert.deepEqual(lead(runs[0].job).map(l => [l.company, l.watch_new]), [[HIT.company, 1]], JSON.stringify(lead(runs[0].job)))
     assert.deepEqual(lead(runs[1].job).map(l => [l.company, l.watch_new]), [[HIT.company, 0]], 'the second play found a company the first play had already alerted: not new')
     assert.deepEqual(await alerts(db, A), [{ entity_key: 'n:harbor freight supply', play_kind: 'watch', play_id: runs[0].watch }])
-    // and the mail pass sends one mail, for the first run only
-    assert.equal(await sendPlayRunMails(db, { now: Math.floor(Date.now() / 1000) + 60 }), 1)
+    // and the next mail pass sends nothing for the second run
+    assert.equal(await sendPlayRunMails(db, { now: Math.floor(Date.now() / 1000) + 120 }), 0)
     assert.deepEqual((await outbox(db, A)).map(m => listed(m.body)), [[HIT.company]])
   } finally {
     globalThis.fetch = realFetch

@@ -101,16 +101,7 @@ export async function listWatches(db: Db, userId: string) {
 // duplicate an active query. A refused resume leaves the watch paused with its reason and schedule untouched; resuming
 // an already-active watch is a no-op that keeps its next_run_at.
 export async function watchAction(db: Db, userId: string, id: string, action: 'pause' | 'resume' | 'delete', now = nowS()): Promise<boolean | WatchRefusal> {
-  if (action === 'delete') return db.tx(function* (t): TxBody<boolean> {
-    // #883: a run of this play that was never picked up by the mail pass (no 'mail:' marker; the first play's own run,
-    // older than the play, is not such a run) will now never be mailed: it gives up the companies it holds, so another
-    // play that finds them still mails them. What its sent mails alerted stays held.
-    yield* lockAlertsStep(t, userId)
-    yield* t.run(`DELETE FROM play_alerts WHERE tenant_id = ? AND play_kind = 'watch' AND play_id = ? AND job_id IN (
-      SELECT j.id FROM scan_jobs j JOIN watches w ON w.id = j.watch_id WHERE w.id = ? AND w.user_id = ? AND j.created_at >= w.created_at
-        AND NOT EXISTS (SELECT 1 FROM watch_seen s WHERE s.watch_id = w.id AND s.seen_key = 'mail:' || j.id))`, [userId, id, id, userId])
-    return (yield* t.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
-  })
+  if (action === 'delete') return (await db.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
   if (action === 'pause') return (await db.run('UPDATE watches SET active = 0 WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
   return db.tx(function* (t): TxBody<boolean | WatchRefusal> {
     // lock first, then read the watch, so a concurrent resume of the same or a sibling watch is seen
@@ -137,7 +128,7 @@ export function seenKey(company: string, domain: string | null): string {
 // seen before this run, so two leads of one company in one run are both new, in either version.
 // #883: a company another run of the tenant has already alerted (play_alerts: another play's run, or an earlier run of
 // this play under another spelling) is not new either. This is only the early read; the claim itself is
-// claimWatchAlertsStep, once the run's results are final.
+// claimWatchAlertsStep, in the transaction that sends the run's mail.
 const WATCH_LEADS_SQL = 'SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?'
 const WATCH_SEEN_SQL = 'SELECT seen_key FROM watch_seen WHERE watch_id = ?'
 const WATCH_TENANT_SQL = 'SELECT user_id FROM watches WHERE id = ?'
@@ -178,14 +169,17 @@ export function writeWatchLeads(db: Db, watchId: string, jobId: string): Promise
   return db.tx(t => watchLeadsStep(t, watchId, jobId))
 }
 
-// #883: the claim. Each lead this run marked new and the Leads list shows (VISIBLE_LEAD) claims its company in the
-// tenant's alert record (lib/play-alerts.ts); a lead whose company another run already holds stops being new
-// (watch_new = 0), so the mail pass and the Plays page's "N new", which both read watch_new, leave it out. A hidden
-// (low-fit or quarantined) lead claims nothing: another play that finds the company as a real lead may still alert it.
-// A shown lead that is not new claims nothing either, but what it adds to a company already held (its website, another
-// spelling) is recorded under the holder, so the next play to find it under that website recognises it.
+// #883: the claim, made in the transaction that sends the run's mail (lib/play-mail.ts) and nowhere else for a run
+// that mails, so a company is held exactly when its mail goes out; the first play's repeat makes it once for that
+// play's own results (lib/play-repeat.ts). Each lead this run marked new and the Leads list shows (VISIBLE_LEAD) claims
+// its company in the tenant's alert record (lib/play-alerts.ts); a lead whose company another run already holds stops
+// being new (watch_new = 0), so the mail and the Plays page's "N new", which both read watch_new, leave it out. A
+// hidden (low-fit or quarantined) lead claims nothing: another play that finds the company as a real lead may still
+// alert it. A shown lead that is not new claims nothing either, but what it adds to a company already held (its
+// website, another spelling) is recorded under the holder, so the next play to find it under that website recognises it.
 // Idempotent: a second pass over the same run keeps what the run holds and clears nothing more. Returns the number of
-// leads that stay new. The watch is read through its tenant, so a job of another tenant claims nothing.
+// leads that stay new. The watch is read through its tenant, under the tenant's claim lock, so a job of another tenant
+// or of a play deleted meanwhile claims nothing.
 const SHOWN_SQL = `SELECT l.id, l.company, l.company_domain, l.event_date, l.signal_kind, l.watch_new FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
   WHERE l.scan_job_id = ? AND j.watch_id = ? AND j.user_id = ? AND ${VISIBLE_LEAD} ORDER BY l.score DESC, l.id`
 const CLEAR_NEW_SQL = 'UPDATE leads SET watch_new = 0 WHERE id = ?'
@@ -194,6 +188,7 @@ export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now
   const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
   if (!tenant) return 0 // the play was deleted: nothing of it is mailed or listed any more
   yield* lockAlertsStep(t, tenant)
+  if (!(yield* t.get('SELECT 1 AS x FROM watches WHERE id = ? AND user_id = ?', [watchId, tenant]))) return 0 // deleted while this waited
   let kept = 0
   for (const l of yield* t.all<AlertLead>(SHOWN_SQL, [jobId, watchId, tenant])) {
     const keys = alertKeysOf(l)
