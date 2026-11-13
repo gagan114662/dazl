@@ -88,6 +88,19 @@ function placeEnd(text: string, end: number): number {
   for (let m = STEP.exec(text.slice(end)); m && m[0].length; m = STEP.exec(text.slice(end))) end += m[0].length
   return end
 }
+// The @handles in a text, and the #tags that may be a business name. A #tag that splits wholly into generic words
+// (#newclinic, #grandopening, #dentist, #toronto, the request's own places) is no name; any other tag (#brightsmiles)
+// is, and fails a new-form opening closed unless it is the lead's.
+const TAG_WORDS = ['new', 'grand', 'opening', 'open', 'now', 'official', 'officially', 'clinic', 'clinics', 'dental', 'dentist', 'dentists', 'dentistry', 'office', 'location', 'store', 'shop', 'studio', 'practice', 'local', 'community', 'support', 'small', 'business', 'shoplocal', 'toronto', 'gta', 'canada', 'ontario', 'the', 'and', 'in', 'our', 'my', 'day', 'week', 'ortho', 'orthodontics', 'invisalign', 'hygiene', 'patients', 'hiring', 'jobs', 'growing', 'expansion', 'celebrate', 'celebrating', 'ribbon', 'cutting', 'neighbourhood', 'neighborhood']   // never words practice names are made of (family, care, smile ...)
+function genericTag(tag: string, places: ReadonlySet<string>): boolean {
+  const t = tag.toLowerCase().replace(/[^a-z]/g, ''), words = [...TAG_WORDS, ...places]
+  const ok: boolean[] = [true]   // ok[i]: t.slice(0, i) splits into generic words
+  for (let i = 1; i <= t.length; i++) ok[i] = words.some(w => w.length <= i && ok[i - w.length] && t.slice(i - w.length, i) === w)
+  return t !== '' && ok[t.length]
+}
+function handlesIn(text: string, places: ReadonlySet<string>): string[] {
+  return [...text.matchAll(/[@#][A-Za-z0-9_.]+/g)].filter(m => m[0][0] === '@' || !genericTag(m[0].slice(1), places)).map(m => '@' + m[0].slice(1).replace(/\.+$/, ''))
+}
 type Party = { name: string | null }   // null: a party the quote refers to but does not name ("our neighbours", "them")
 function congratsTargets(text: string): string[] {
   const out: string[] = []
@@ -101,7 +114,7 @@ const SELF = /^(?:us|me|ourselves|everyone|all|you(?:\s+all)?|(?:our|the)\s+(?:w
 // Every party the text names or refers to, other than through the poster's own "we / our".
 function parties(text: string, company: string, places: ReadonlySet<string>): Party[] {
   const out: Party[] = []
-  for (const m of text.matchAll(/[@#][A-Za-z0-9_.]+/g)) out.push({ name: '@' + m[0].slice(1).replace(/\.+$/, '') })
+  for (const h of handlesIn(text, places)) out.push({ name: h })
   for (const t of congratsTargets(text)) {
     const bare = t.replace(/[@#][A-Za-z0-9_.]+/g, '').trim()
     if (SELF.test(bare)) continue
@@ -126,17 +139,18 @@ export function openingAttributable(excerpt: string, at: number, end: number, pr
   const isLead = (p: Party) => p.name !== null && lead !== '' && nameIsLead(p.name, lead)
   // (i) the poster's own opening
   if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) {
-    const handles = [...rest.matchAll(/[@#][A-Za-z0-9_.]+/g)].map(m => '@' + m[0].slice(1).replace(/\.+$/, ''))
+    const handles = handlesIn(rest, places)
     if (handles.some(h => !lead || !nameIsLead(h, lead))) return false
     return congratsTargets(rest).every(t => { const bare = t.replace(/[@#][A-Za-z0-9_.]+/g, '').trim(); return SELF.test(bare) || (lead !== '' && nameIsLead(bare, lead)) })
   }
   // a possessive right after the verb names the clause's own subject when that subject is the lead ("Acme opened its 5th
   // location"); anywhere else a third-person pronoun is someone else ("Grand opening of their new clinic")
   const own = lead !== '' && prefix.trim() !== '' && nameIsLead(prefix.trim(), lead) ? match.replace(/^((?:opened|opening|opens|open)\s+)(?:its|their)\b/i, '$1') : match
-  const pronoun = THIRD_PERSON.test(rest.replace(/\b(?:its|their)\s+doors\b/gi, '') + ' ' + own)
-  if (pronoun) return false
-  // (ii) the lead named, and no one else / (iii) no one named at all
+  // (ii) the lead named, and no one else anywhere: a pronoun then refers to the lead ("Family Dental Care is growing.
+  // Their new clinic is now open"); an unnamed party or a congrats target that is not the lead is someone else
   if (ps.some(isLead)) return ps.every(isLead)
+  // (iii) no one named at all, and no pronoun ("Their new clinic is now open", "Grand opening of their new clinic")
+  if (THIRD_PERSON.test(rest.replace(/\b(?:its|their)\s+doors\b/gi, '') + ' ' + own)) return false
   return ps.length === 0 && !new RegExp(CONGRATS.source, 'i').test(rest)
 }
 // Corporate and descriptive words a name may carry around the lead's own words ("Acme Software", "Acme HQ", "Metro City

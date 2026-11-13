@@ -200,9 +200,8 @@ test('#878 review (Hermes-PC) at 942c1a71: a pronoun names whoever the quote nam
   ]) assert.notEqual(c1(other), 'pass', other)
   // the lead named before the pronoun: the lead's own opening. A pronoun with no one named fails closed (reversed at
   // 77e509ac: "Big news! Their new clinic ..." is not attributable to the lead)
-  // review at 89e021f3: a third-person pronoun anywhere fails a new-form opening closed, even after the lead's name; the
-  // lead named with no pronoun is the lead's
-  assert.notEqual(c1('Metro City Dentistry is growing. Their new clinic is now open in Parkdale'), 'pass')
+  // the lead the only name in the quote: the pronoun refers to the lead (decision after the review at 89e021f3)
+  assert.equal(c1('Metro City Dentistry is growing. Their new clinic is now open in Parkdale'), 'pass')
   assert.equal(c1('Metro City Dentistry is growing! New clinic now open in Parkdale'), 'pass')
   assert.notEqual(c1('Big news! Their new clinic is now open in Parkdale'), 'pass')
   // finding 3: reported closed, shut or moved, in brackets, after a dash, in any form
@@ -276,8 +275,8 @@ test('#878 review at 57008172 finding 4: an earlier name is the lead only when i
   const no = 'Bright Family Dentistry is growing. Their new clinic is now open in Parkdale'
   assert.notEqual(truthOf(DENTAL, 'Family Dental Care', no), 'pass', no)
   assert.equal(quoteShowsEvent(no, no, false, 'Family Dental Care'), false, no)
-  // review at 89e021f3: with "Their" the opening now fails closed even after the lead's name; the lead named alone passes
-  assert.notEqual(truthOf(DENTAL, 'Family Dental Care', 'Family Dental Care is growing. Their new clinic is now open'), 'pass')
+  // finding 4's positive, with the pronoun: the lead is the only name in the quote, so "Their" is the lead's
+  assert.equal(truthOf(DENTAL, 'Family Dental Care', 'Family Dental Care is growing. Their new clinic is now open'), 'pass')
   const yes = 'Family Dental Care is growing! New clinic now open'
   assert.equal(truthOf(DENTAL, 'Family Dental Care', yes), 'pass', yes)
   assert.equal(quoteShowsEvent(yes, yes, false, 'Family Dental Care'), true, yes)
@@ -390,7 +389,7 @@ test('#878 review at 519f060c R5: a handle is the lead only when it equals the l
     ['Metro City Dentistry', 'Metro Dental is growing. Their new clinic is now open in Parkdale'],
     ['Smile Dental', 'Smile Dental Studio Brampton is growing. Their new clinic is now open in Parkdale'],
   ]) assert.deepEqual(both(DENTAL, company, quote), [false, 'unknown'], quote)
-  for (const quote of ['Congrats @metrocitydentistry! New clinic now open in Parkdale', 'Congrats @metro_city_dental! New clinic now open in Parkdale']) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [true, 'pass'], quote)
+  for (const quote of ['Congrats @metrocitydentistry! New clinic now open in Parkdale', 'Congrats @metro_city_dental! New clinic now open in Parkdale', 'Congrats @metrocitydentistry! Their new clinic is now open in Parkdale']) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [true, 'pass'], quote)
 })
 
 // review (independent) at 77e509ac and 89e021f3, design by the author: openings main already read (verb-first, main's regex
@@ -420,7 +419,7 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Bright Smiles is growing. Brand new clinic now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Bright Smiles is growing. Our friends' new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Welcome to the neighbourhood, Bright Smiles! New clinic now open in Parkdale", false, "unknown", false, "unknown"],
-    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Congrats @metrocity! Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Congrats @metrocity! Their new clinic is now open in Parkdale", false, "unknown", true, "pass"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Congrats @metrocitydentistrynorth! Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Congrats @notmetrocitydentistry! Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Congrats Metro City Dentistry North! Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
@@ -428,7 +427,7 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro Dental is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "City Dental is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Smile Dental", "Smile Dental Studio Brampton is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
-    ["Dental clinics in Toronto opening a new location or expanding", "Bright Smiles Dental Studio", "Bright Smiles is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Bright Smiles Dental Studio", "Bright Smiles is growing. Their new clinic is now open in Parkdale", false, "unknown", true, "pass"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Bright Smiles is growing. They have opened a new clinic in Parkdale", true, "unknown", true, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Bright Smiles is growing - their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Bright Smiles is growing, and their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
@@ -476,7 +475,7 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Welcome Dr. Patel to the team! New clinic now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Happy Holidays from Toronto! New clinic now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Thank you Parkdale! The new clinic is now open", false, "unknown", false, "unknown"],
-    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dentistry is growing. They opened a new clinic in Parkdale", true, "unknown", true, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dentistry is growing. They opened a new clinic in Parkdale", true, "unknown", true, "pass"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dental opened a new clinic in Parkdale. Visit us at 12 Queen St", true, "unknown", true, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Thanks to Invisalign for the support. We opened a new clinic in Parkdale", true, "unknown", true, "pass"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Thanks to Invisalign for the support. Opened a new clinic in Parkdale", true, "unknown", true, "unknown"],
@@ -558,8 +557,8 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
     ["SaaS companies opening a new office", "Acme", "Shoutout to Stripe for the support. Opened a new office in Austin", true, "pass", true, "pass"],
     ["SaaS companies opening a new office", "Acme", "Live from Austin! We just opened a new office", true, "pass", true, "pass"],
     ["SaaS companies opening a new office", "Acme", "Stripe is our payments partner. They opened a new office in Austin", true, "pass", true, "pass"],
-    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dental Centre is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
-    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City is growing. Their new clinic is now open in Parkdale", false, "unknown", false, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dental Centre is growing. Their new clinic is now open in Parkdale", false, "unknown", true, "pass"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City is growing. Their new clinic is now open in Parkdale", false, "unknown", true, "pass"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Dr. Patel is joining us! New clinic now open in Parkdale", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Parkdale has a new dentist! New clinic now open on Queen St W", false, "unknown", false, "unknown"],
     ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Invisalign is now available. New clinic now open in Parkdale", false, "unknown", false, "unknown"],
@@ -608,14 +607,18 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
   ]
   // the only quotes whose result differs from main: each is an opening this lead made
   const LEAD_OWN = new Set([
+    "Congrats @metrocity! Their new clinic is now open in Parkdale",
+    "Bright Smiles is growing. Their new clinic is now open in Parkdale",
     "Metro City Dentistry opened a new clinic in Parkdale",
     "Our new clinic is now open in Parkdale",
     "Welcome Dr. Patel to the team! Our new clinic is now open in Parkdale",
+    "Metro City Dentistry is growing. They opened a new clinic in Parkdale",
     "Thanks to Invisalign for the support. We opened a new clinic in Parkdale",
     "Metro City Dentistry has moved to a bigger space and opened a new clinic in Parkdale",
+    "Metro City Dental Centre is growing. Their new clinic is now open in Parkdale",
+    "Metro City is growing. Their new clinic is now open in Parkdale",
     "Hello Toronto! New clinic now open in Parkdale",
     "Happy Monday Parkdale! Our new clinic is now open",
-    "Welcome Dr. Patel to the team! Our new clinic is now open in Parkdale",
     "New dental clinic now open in Parkdale",
     "Our 5th location is now open",
     "Metro City Dentistry: our 5th location is now open!",
@@ -634,7 +637,7 @@ test('#878 review at 89e021f3: the c1-c5 corpus against main; every flip is the 
       assert.ok(c1 === 'pass' && mainC1 !== 'fail', `${quote}: a flip only ever makes the lead's own opening pass`)
     }
   }
-  assert.equal(LEAD_OWN.size, 16)   // 17 flipped rows; "Welcome Dr. Patel ..." is in both c2 and c5
+  assert.equal(LEAD_OWN.size, 21)   // 22 flipped rows; "Welcome Dr. Patel ..." is in both c2 and c5
 })
 
 test('#878 review at 77e509ac R1 / R8 / R9: no context fails closed, the new banners close, the lead with descriptive words is the lead', () => {
@@ -643,7 +646,7 @@ test('#878 review at 77e509ac R1 / R8 / R9: no context fails closed, the new ban
   // R8: "·", "|", a bare CLOSED, "It closed in March", "we have closed it"
   for (const quote of ['Our new clinic is now open in Parkdale · Permanently closed · Dentist', 'Our new clinic is now open in Parkdale | Permanently closed', 'Our new clinic is now open in Parkdale. CLOSED', 'We opened a new clinic in Parkdale. It closed in March', 'We opened a new clinic in Parkdale. Sadly, we have closed it']) assert.notEqual(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
   // R9: the lead's own words with only descriptive words after them are the lead; a place word after them is not
-  for (const quote of ['Metro City Dental Centre is growing! New clinic now open in Parkdale', 'Metro City is growing! New clinic now open in Parkdale']) assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+  for (const quote of ['Metro City Dental Centre is growing! New clinic now open in Parkdale', 'Metro City is growing! New clinic now open in Parkdale', 'Metro City Dental Centre is growing. Their new clinic is now open in Parkdale']) assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
   assert.notEqual(truthOf(DENTAL, 'Metro City Dentistry', 'Metro City North is growing! New clinic now open in Parkdale'), 'pass')
   // the bare noun-first opening, and the poster's own, still pass
   for (const quote of ['New dental clinic now open in Parkdale', 'Our new clinic is now open in Parkdale']) assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
@@ -674,4 +677,28 @@ test('#878 review at 89e021f3 R1: a new-form opening is attributed from the whol
   ]) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [true, 'pass'], quote)
   // the poster's own opening still fails with another practice's handle, or congrats aimed at someone else
   for (const quote of ['Our new clinic is now open in Parkdale @brightsmiles', 'Congrats to Bright Smiles! Our new clinic is now open in Parkdale']) assert.notEqual(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+})
+
+test('#878 decision after the review at 89e021f3: a pronoun is the lead\'s when the lead is the only name in the quote; generic #tags are no name', () => {
+  for (const [company, quote] of [
+    ['Family Dental Care', 'Family Dental Care is growing. Their new clinic is now open'],
+    ['Metro City Dentistry', 'Metro City Dentistry is growing. Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Congrats @metrocitydentistry! Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'New dental clinic now open in Parkdale #newclinic #grandopening #dentist #toronto'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale #newclinic #dentist'],
+  ]) assert.deepEqual(both(DENTAL, company, quote), [true, 'pass'], quote)
+  for (const [company, quote] of [
+    ['Metro City Dentistry', 'Grand opening of their new clinic in Parkdale'],
+    ['Metro City Dentistry', 'Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Bright Smiles is growing. Their new clinic is now open in Parkdale'],
+    ['Family Dental Care', 'Bright Family Dentistry is growing. Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Excited for them! New clinic now open in Parkdale'],
+    // the lead named, but someone else (unnamed, or a congrats target) is in the quote too
+    ['Metro City Dentistry', 'Metro City Dentistry is growing. Excited for them! Their new clinic is now open'],
+    ['Metro City Dentistry', 'Metro City Dentistry is growing. Our neighbours did it! Their new clinic is now open'],
+    // a #tag that is a business name is a name
+    ['Metro City Dentistry', '#brightsmiles new clinic now open in Parkdale'],
+    ['Metro City Dentistry', '#familydentalcare new clinic now open in Parkdale'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale #brightsmiles'],
+  ]) assert.deepEqual(both(DENTAL, company, quote), [false, 'unknown'], quote)
 })
