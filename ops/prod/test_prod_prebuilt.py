@@ -83,6 +83,13 @@ if [ -f "$FAKE_T/df-base" ]; then
 fi
 exec /usr/bin/df "$@"
 ''',
+    # a directory owned by another account (FAKE_FOREIGN, as `stat -c %U` reports it) and a sudo that, like that account on
+    # the box (it cannot reach the app user's home), cannot remove it; every sudo call is recorded
+    'stat': r'''#!/usr/bin/env bash
+if [ "${1:-}" = -c ] && [ "${2:-}" = %U ] && [ -n "${FAKE_FOREIGN:-}" ] && [ "${!#}" = "$FAKE_FOREIGN" ]; then echo dazl-staging; exit 0; fi
+exec /usr/bin/stat "$@"
+''',
+    'sudo': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/sudo.log"\necho "rm: cannot remove: Permission denied" >&2\nexit 1\n',
     'caddy': '#!/usr/bin/env bash\nexit 0\n',
     'systemctl': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/systemctl.log"\n',
     'npm': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/npm.log"\n[ ! -e "$FAKE_T/migrate-fail" ] || exit 1\n',
@@ -515,7 +522,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = r.stdout
         self.assertIn('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), out)
-        self.assertLess(out.index('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod')), out.index('verified the prebuilt build'), 'removed BEFORE the disk check and download')
+        self.assertLess(out.index('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod')), out.index('not counted'), 'removed BEFORE fetch reads the manifest and checks the disk')
         self.assertIn('not counted', out, 'node_modules hard-linked: not counted')
         self.assertEqual(self.live_port(), '3105')
         # live (B) and previous (A, the rollback target) are kept; the old previous and the unused one are gone
@@ -533,6 +540,60 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue(target.exists(), 'the recorded rollback target is kept'); self.assertTrue(other.exists(), 'a running release is kept')
         self.assertTrue(self.live.exists()); self.assertFalse((self.t / 'rel/dazl-0ld0ld00-prod').exists(), 'the unused one is removed')
+
+    def test_an_unreadable_live_directory_removes_nothing_and_refuses(self):
+        # "could not read" is never "nothing runs": a live pid whose directory cannot be read stops the deploy first
+        self.publish(); (self.t / 'listen/3104').write_text('4194000')  # no such process: /proc/<pid>/cwd unreadable
+        r = self.deploy(B)
+        self.assertNotEqual(r.returncode, 0); self.assertIn("directory could not be read", r.stdout + r.stderr)
+        self.assertTrue((self.t / 'rel/dazl-0ld0ld00-prod').exists()); self.assertTrue(self.live.exists())
+
+    def test_a_trailing_slash_on_the_release_root_still_keeps_the_live_release(self):
+        self.publish()
+        r = self.deploy(B, PROD_RELEASE_ROOT=str(self.t / 'rel') + '/')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(self.live.exists(), 'the previous (live before) release is kept'); self.assertFalse((self.t / 'rel/dazl-0ld0ld00-prod').exists())
+
+    def test_a_live_release_running_from_outside_a_release_directory_removes_nothing(self):
+        # the live process's directory is not a release directory: no release is provably unused, none is removed
+        self.proc.kill(); self.proc.wait()
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.t, env={'PATH': f"{self.t / 'bin'}:{os.environ['PATH']}", 'FAKE_T': str(self.t), 'DB_PATH': str(self.db)})
+        (self.t / 'listen/3104').write_text(str(self.proc.pid))
+        self.publish()
+        r = self.deploy(B)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('not removing any release: the live release does not run from a release directory', r.stdout)
+        self.assertIn('not removing old releases: the previous release ran from', r.stdout)
+        self.assertTrue(self.live.exists()); self.assertTrue((self.t / 'rel/dazl-0ld0ld00-prod').exists())
+
+    def test_a_running_release_with_pattern_characters_in_its_name_is_kept(self):
+        odd = self.t / 'rel/dazl-a+b[x]-prod/web'; odd.mkdir(parents=True)
+        op = subprocess.Popen(['sleep', '600'], cwd=odd); (self.t / 'listen/4001').write_text(str(op.pid))
+        self.publish()
+        try: r = self.deploy(B)
+        finally: op.kill()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(odd.exists(), 'compared as text, never as a pattern')
+
+    def test_a_foreign_owned_unused_release_is_removed_as_its_owner_or_named_for_a_manual_step(self):
+        stale = str(self.t / 'rel/dazl-0ld0ld00-prod')
+        self.box(self.BOX_FREE - self.BOX_DOWNLOADS, {'dazl-0ld0ld00-prod': 918 * 2 ** 20})
+        r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR, FAKE_FOREIGN=stale)
+        self.assertIn(f'-u dazl-staging -- rm -rf -- {stale}', self.log('sudo.log'), 'removed as its owner, never as root')
+        self.assert_untouched(r, 'remove it by hand')
+        self.assertIn(f'sudo rm -rf -- {stale}', r.stdout)
+        self.assertTrue(Path(stale).exists())
+
+    def test_unpacking_node_modules_counts_the_backup_still_to_be_written(self):
+        # fetch did not count node_modules (same lockfile); the hard link then fails: extract's re-check must leave room
+        # for the database backup step 3 writes afterwards on the same filesystem
+        with open(self.db, 'ab') as f: f.truncate(600 * 10 ** 6)
+        self.box(self.FLOOR + self.BOX_MODS_UNP + 300 * 10 ** 6)
+        (self.live / 'node_modules/next').chmod(0o000)
+        try: r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
+        finally: (self.live / 'node_modules/next').chmod(0o755)
+        self.assertNotEqual(r.returncode, 0); self.assertIn('and the database backup', r.stdout + r.stderr)
+        self.assertEqual(self.live_port(), '3104')
 
     def test_hard_linked_node_modules_is_not_counted_unpacked_ones_are(self):
         # Finding 1(b): room for the build and the backup, not for 624 MB of node_modules

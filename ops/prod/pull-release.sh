@@ -10,7 +10,7 @@
 #       names exactly <sha>, this box's CPU architecture and Node ABI; refuses when the downloads plus the unpacked build
 #       would leave less than PROD_MIN_FREE_BYTES (3 GiB) free; downloads both archives within one time budget, checks
 #       size, sha256 and the commit inside the build (.build-commit), and records each verified file's sha256 beside it.
-#   pull-release.sh extract <sha> <web-dir> [<live-web-dir>]
+#   pull-release.sh extract <sha> <web-dir> [<live-web-dir> [<floor-bytes> [<reserve-bytes>]]]
 #       (the app user) in a source checkout of <sha> (<web-dir> = its web/): checks its package-lock.json is the one the
 #       build was made from, unpacks .next and .build-commit, and node_modules: hard-linked from <live-web-dir> when
 #       that release has the same lockfile, else unpacked from the verified archive. Refuses unless everything verifies.
@@ -142,7 +142,9 @@ fetch() {
 }
 
 extract() {
-  local sha=$1 web=$2 live=${3:-} next mods lock want
+  local sha=$1 web=$2 live=${3:-} floor=${4:-$MIN_FREE_BYTES} reserve=${5:-0} next mods lock want
+  # the floor and the backup still to be written on this filesystem come as arguments: sudo drops the environment
+  [[ $floor =~ ^[0-9]+$ ]] && [[ $reserve =~ ^[0-9]+$ ]] || fail "extract: the floor and reserve must be whole numbers; nothing extracted"
   is_sha "$sha" || fail "extract: '$sha' is not a full commit; nothing extracted"
   [ -d "$web" ] && [ ! -L "$web" ] || fail "extract: $web is not a directory; nothing extracted"
   next="$DL/prod-next-$sha.tgz"; mods="$DL/prod-modules-$sha.tgz"; lock="$DL/prod-lock-$sha.sha256"
@@ -156,7 +158,7 @@ extract() {
   # unpacking node_modules (when it cannot be hard-linked) must still leave the floor: fetch may not have counted it
   unpack_mods() {
     local avail; avail=$(df -B1 --output=avail "$web" | tail -n 1 | tr -d ' ')
-    [ $(( avail - mods_unp )) -ge "$MIN_FREE_BYTES" ] || { rm -rf -- "$web/.next" "$web/node_modules"; fail "ALERT low_disk: unpacking node_modules ($mods_unp bytes) would leave less than $MIN_FREE_BYTES free on $web ($avail free); removed the partial release"; }
+    [ $(( avail - mods_unp - reserve )) -ge "$floor" ] || { rm -rf -- "$web/.next" "$web/node_modules"; fail "ALERT low_disk: unpacking node_modules ($mods_unp bytes) and the database backup ($reserve) would leave less than $floor free on $web ($avail free); removed the partial release"; }
     tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
   }
   rm -rf -- "$web/.next" "$web/node_modules"
@@ -176,6 +178,6 @@ extract() {
 
 case "${1:-}" in
   fetch) fetch "${2:-}" ;;
-  extract) extract "${2:-}" "${3:-}" "${4:-}" ;;
-  *) fail "usage: pull-release.sh fetch <sha> | extract <sha> <web-dir> [<live-web-dir>]" ;;
+  extract) extract "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+  *) fail "usage: pull-release.sh fetch <sha> | extract <sha> <web-dir> [<live-web-dir> [<floor-bytes> [<reserve-bytes>]]]" ;;
 esac

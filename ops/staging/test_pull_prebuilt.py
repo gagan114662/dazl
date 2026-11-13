@@ -88,6 +88,7 @@ live=; [ -L "$T/root/current" ] && live=$(readlink -f "$T/root/current")
 if [ -n "$live" ] && [ -d "$live/web/node_modules" ] && cmp -s "$live/web/package-lock.json" "$T/lockfile"; then cp -al "$live/web/node_modules" "$rel/web/node_modules"; fi
 if ! bash -c "cd '$rel/web' && echo '$new' > .build-commit && $STAGING_BUILD"; then rm -rf "$rel"; echo "fake deploy: build of $new failed" >&2; exit 1; fi
 ln -sfn "$rel" "$T/root/current"; mkdir -p "$STATE"; echo "$new" > "$STATE/current-sha"
+[ ! -e "$T/deploy-hang-after" ] || sleep 600
 echo "fake deploy: live: $new"
 '''
 
@@ -404,6 +405,14 @@ class PullPrebuiltTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0); self.assertLess(took, 30, f'took {took:.0f}s')
         self.assertIn('ran past its 2s allowance', r.stdout + r.stderr)
         self.assertNotEqual(self.run_pull(STAGING_DEPLOY_ALLOWANCE_S='0').returncode, 0, 'a zero allowance is refused')
+        r = self.run_pull(STAGING_DEPLOY_ALLOWANCE_S=4000)
+        self.assertNotEqual(r.returncode, 0); self.assertIn("inside the unit's timeout", r.stdout + r.stderr)
+
+    def test_deploy_sh_stopped_after_the_switch_reports_the_commit_live(self):
+        (self.t / 'deploy-hang-after').write_text(''); self.publish()
+        r = self.run_pull(STAGING_DEPLOY_ALLOWANCE_S=2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('stopped by its allowance after', r.stdout + r.stderr); self.assertEqual(self.live(), B)
 
     def assert_refused_at(self, r, why, live):
         self.assertNotEqual(r.returncode, 0, r.stdout)

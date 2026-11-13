@@ -109,6 +109,9 @@ esac
 [[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] || fail "STAGING_KEEP_BACKUPS must be a whole number of at least 1 (got '$KEEP_BACKUPS'); nothing done"
 [[ $DOWNLOAD_BUDGET_S =~ ^[0-9]+$ ]] || fail "STAGING_DOWNLOAD_BUDGET_S must be a whole number of seconds; nothing done"
 [[ $DEPLOY_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_DEPLOY_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
+# downloads + deploy.sh (+ its 60 s kill grace) must end before the unit's TimeoutStartSec (80 min), with room to spare
+UNIT_LIMIT_S=4500
+[ $(( DOWNLOAD_BUDGET_S + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 60 ))s together); nothing done"
 # finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
 # and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
 # owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
@@ -289,9 +292,11 @@ else log "no staging database at $db yet; nothing to back up"; fi
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 build="bash '$self' --extract '$DL'"
 st=0; STAGING_BUILD=$build timeout --kill-after=60 "$DEPLOY_ALLOWANCE_S" bash "$DEPLOY" 8>&- || st=$?
-[ $st != 124 ] && [ $st != 137 ] || fail "deploy.sh ran past its ${DEPLOY_ALLOWANCE_S}s allowance for $main_sha and was stopped; retrying after ${RETRY_AFTER_S}s"
 now=
 [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE" 2>/dev/null)" = "$main_sha" ] && now=1
+# stopped by the allowance AFTER it recorded the switch: the commit is live, so the run reports that, not a failure
+if { [ $st = 124 ] || [ $st = 137 ]; } && [ -n "$now" ]; then log "deploy.sh was stopped by its allowance after $main_sha went live"; st=0; fi
+[ $st != 124 ] && [ $st != 137 ] || fail "deploy.sh was stopped (exit $st: ran past its ${DEPLOY_ALLOWANCE_S}s allowance, or was killed) for $main_sha and was stopped; retrying after ${RETRY_AFTER_S}s"
 [ $st = 0 ] || fail "deploy.sh failed for $main_sha (exit $st); retrying after ${RETRY_AFTER_S}s; the downloaded build is kept"
 if [ -n "$now" ]; then
   rm -f -- "$PSTATE"/failed-* "$DL"/staging-*

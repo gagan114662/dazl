@@ -20,6 +20,7 @@ OPS=${PROD_OPS_DIR:-/etc/dazl-ops}
 STATE=$OPS/prod-state
 DB=${PROD_DB:-/home/ubuntu/dazl-data/dazl-pr16.db}
 RELEASE_ROOT=${PROD_RELEASE_ROOT:-/home/ubuntu}
+RELEASE_ROOT=${RELEASE_ROOT%/}   # no trailing slash: release paths are compared as text (prune_unused)
 BACKUPS=${PROD_BACKUP_DIR:-/var/lib/dazl-prod-backups}
 KEEP_BACKUPS=${PROD_KEEP_BACKUPS-10}
 APP_USER=${PROD_APP_USER:-ubuntu}
@@ -35,6 +36,7 @@ as_user() { local u=$1; shift; if [ "$(id -un)" = "$u" ]; then "$@"; else sudo -
 as_app() { as_user "$APP_USER" "$@"; }
 # Every health read is bounded (#1061 review): a listener that accepts and never answers must not hang the deploy while it
 # holds the lock (the public read runs after Caddy has switched). A stalled read is "no answer".
+[[ ${PROD_HEALTH_MAX_TIME:-10} =~ ^[1-9][0-9]?$ ]] || { echo "PROD_HEALTH_MAX_TIME must be 1-99 seconds; nothing done" >&2; exit 1; }
 health_sha() { curl -s --connect-timeout 5 --max-time "${PROD_HEALTH_MAX_TIME:-10}" "$1/api/health" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true; }
 
 # A file root runs (this script, pull-release.sh) must be a regular file owned by root and writable by root only, in
@@ -88,19 +90,26 @@ port_pid() { ss -ltnpH "sport = :$1" | grep -oP 'pid=\K[0-9]+' | head -1 || true
 # Release directories nothing needs: not the live release, not the recorded rollback target, not one any listener runs
 # from (the previous release, a staging service, ...), not one passed in. Each is removed as ITS OWNER (never root; a
 # root-owned one is left and logged), so nothing is removed that its owner could not remove itself.
+release_web() { [[ $1 == "$RELEASE_ROOT"/* ]] && [[ ${1#"$RELEASE_ROOT"/} =~ ^dazl-[0-9a-f]{8}-prod/web$ ]]; }
 prune_unused() {
-  local keep=" ${LIVE_WEB%/web} $* " d owner cwds prev
+  local keep=" ${LIVE_WEB%/web} $* " d owner cwds prev c used
   prev=$( [ -f "$STATE" ] && grep -oP '^PREV_SHA=\K[0-9a-f]{40}$' "$STATE" || true)
   [ -z "$prev" ] || keep="$keep $RELEASE_ROOT/dazl-${prev:0:8}-prod "
+  # "could not read" is never "nothing runs": unless the live release runs from a release directory and that directory
+  # is among the listeners' working directories, nothing is removed (the disk check then refuses: fail closed)
+  release_web "$LIVE_WEB" || { log "not removing any release: the live release does not run from a release directory ($LIVE_WEB)"; return 0; }
   cwds=$(listener_cwds)
+  printf '%s\n' "$cwds" | grep -qxF -- "$LIVE_WEB" || { log "not removing any release: the live release's directory is not among the listeners' working directories"; return 0; }
   for d in "$RELEASE_ROOT"/dazl-*-prod; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     case "$keep" in *" $d "*) continue ;; esac
-    printf '%s\n' "$cwds" | grep -qE "^$d(/|\$)" && continue
+    used=0
+    while IFS= read -r c; do [[ $c == "$d" || $c == "$d"/* ]] && { used=1; break; }; done <<< "$cwds"
+    [ $used = 0 ] || continue
     owner=$(stat -c %U -- "$d")
-    [ "$owner" != root ] || { log "not removing $d: it is owned by root"; continue; }
+    [ "$owner" != root ] || { log "not removing $d: it is owned by root; remove it by hand once if it is not needed: rm -rf -- $d"; continue; }
     log "removing unused release $d (owner $owner)"
-    as_user "$owner" rm -rf -- "$d" || log "could not remove all of $d (files owned by another user? chown -R $APP_USER it)"
+    as_user "$owner" rm -rf -- "$d" 2>/dev/null || log "could not remove all of $d as $owner (another user's files, or $owner cannot reach it); if it is not needed, remove it by hand once: sudo rm -rf -- $d"
   done
 }
 write_state() { printf 'PREV_PORT=%s\nPREV_SHA=%s\nNEW_SHA=%s\n' "$1" "$2" "$3" > "$STATE.tmp"; mv -f "$STATE.tmp" "$STATE"; }
@@ -136,6 +145,7 @@ NEW=$([ "$LIVE" = 3104 ] && echo 3105 || echo 3104)
 LIVE_PID=$(port_pid "$LIVE")
 LIVE_WEB=$(readlink "/proc/$LIVE_PID/cwd" 2>/dev/null || true)
 [[ $LIVE_PID =~ ^[0-9]+$ ]] || die "no process is listening on the live port $LIVE (the Caddyfile points there); nothing done"
+[ -n "$LIVE_WEB" ] || die "the live process $LIVE_PID's directory could not be read; nothing done"
 log "live port $LIVE (pid $LIVE_PID, ${LIVE_WEB:-unknown dir}), new port $NEW, sha $SHA"
 
 # the database migrate will change: the env's DB_PATH must be exactly $DB, a regular file (no symlink, one link)
@@ -187,7 +197,7 @@ PY
 prune_unused
 db_bytes=$(stat -c %s -- "$DB")
 for fs in "$RELEASE_ROOT" "$(dirname "$BACKUPS")"; do
-  [ "$(df --output=avail -B1 "$fs" | tail -1)" -gt $(( PROD_MIN_FREE_BYTES + db_bytes )) ] || die "less than $PROD_MIN_FREE_BYTES bytes plus the backup ($db_bytes) free on $fs after removing unused releases; refusing"
+  [ "$(df --output=avail -B1 "$fs" | tail -1)" -gt $(( PROD_MIN_FREE_BYTES + db_bytes )) ] || die "less than $PROD_MIN_FREE_BYTES bytes plus the backup ($db_bytes) free on $fs after removing unused releases (see any 'remove it by hand' line above); refusing"
 done
 # node_modules is hard-linked from the live release when the lockfiles match (no new bytes): the live lockfile's sha256,
 # read as the app user, lets fetch leave it out of the disk count
@@ -208,7 +218,8 @@ if [ $reuse = 0 ]; then
   as_app rm -rf -- "$DIR"
   as_app git clone -q --filter=blob:none "$REPO_URL" "$DIR"
   as_app git -C "$DIR" checkout -q "$SHA"
-  as_app bash "$PULL" extract "$SHA" "$DIR/web" "$LIVE_WEB" || { as_app rm -rf -- "$DIR"; die "the prebuilt build of $SHA did not unpack; prod untouched"; }
+  bk_same=0; [ "$(stat -c %d -- "$RELEASE_ROOT")" != "$(stat -c %d -- "$(dirname -- "$BACKUPS")")" ] || bk_same=$db_bytes
+  as_app bash "$PULL" extract "$SHA" "$DIR/web" "$LIVE_WEB" "$PROD_MIN_FREE_BYTES" "$bk_same" || { as_app rm -rf -- "$DIR"; die "the prebuilt build of $SHA did not unpack; prod untouched"; }
 fi
 # the app user's copy of the release env (it is the app's own runtime environment), written by the app user
 as_app bash -c 'umask 077; cat > "$1"' _ "$DIR/.release.env" < "$OPS/prod.env.next"
@@ -255,5 +266,6 @@ mv -f "$OPS/prod.env.next" "$OPS/prod.env"
 write_state "$LIVE" "$OLD_SHA" "$SHA"
 
 # 6. disk: keep the live release and the previous one (the instant rollback target); remove the rest nothing runs from
-LIVE_WEB=$DIR/web; prune_unused "$DIR" "${OLD_WEB%/web}"
+# (only when the previous release runs from its own release directory: one running from elsewhere may use any of them)
+if release_web "$OLD_WEB"; then LIVE_WEB=$DIR/web; prune_unused "$DIR" "${OLD_WEB%/web}"; else log "not removing old releases: the previous release ran from $OLD_WEB"; fi
 log "DONE: dazl.ai now $SHA on :$NEW. Previous $OLD_SHA still running on :$LIVE (deploy-prod.sh --rollback to switch back)."

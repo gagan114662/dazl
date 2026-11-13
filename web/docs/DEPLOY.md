@@ -38,7 +38,7 @@ instead, and the box only downloads, verifies and unpacks it.
   It first removes release directories nothing needs (see Disk), checks free disk, copies the live process's
   environment for the new release, then `ops/prod/pull-release.sh fetch <sha>` (as root: the manifest must name exactly
   that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads, the unpacked
-  build and the database backup** (`node_modules` is not counted when it will be hard-linked from the live release);
+  build and the database backup** (`node_modules` is not counted when it will be hard-linked from the live release: hard links add only directory entries);
   both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
   source as `ubuntu` in a new `/home/ubuntu/dazl-<sha8>-prod` and runs `pull-release.sh extract` there: the checkout's
   `package-lock.json` must be the one the build was made from; it unpacks `.next`, and hard-links `node_modules` from the
@@ -56,7 +56,9 @@ instead, and the box only downloads, verifies and unpacks it.
 - **Disk:** everything (the download cache, `/home/ubuntu`, `/var/lib`) is on `/`. Before its disk check the deploy removes
   each `/home/ubuntu/dazl-*-prod` that is not the live release, not the recorded rollback target and not the working
   directory of any listener (the previous release, a staging service), as that directory's owner (never as root; a
-  root-owned one is left and logged). It then refuses with less than 3 GiB plus the backup free, and `pull-release.sh
+  root-owned one is left and logged). This removal happens even when the deploy is then refused (only directories that
+  nothing runs from and that are not the live release or the rollback target), and nothing is removed at all when the
+  live release's directory cannot be read. It then refuses with less than 3 GiB plus the backup free, and `pull-release.sh
   fetch` refuses (`ALERT low_disk`) when the downloads, the unpacked `.next`, the unpacked `node_modules` (only when it
   cannot be hard-linked: a changed lockfile) and the backup would leave less than 3 GiB; `extract` re-checks before it
   ever unpacks `node_modules`. Measured on 2026-11-13: 3,437,387,776 bytes free with three ~0.9 GB releases; a release
