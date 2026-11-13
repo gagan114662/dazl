@@ -113,8 +113,8 @@ test('#1037 (replaces the earlier first5 no-people-search rule): FIRST5 makes th
     assert.ok(await run(JSON.stringify({ paid_fallback: false, credit_enrichment: false })) >= 1, 'control: without first5 the people search does run (so the zero above is the gate, not a broken probe)')
   } finally { if (prev === undefined) delete process.env.PEOPLE_SEARCH_ENABLED; else process.env.PEOPLE_SEARCH_ENABLED = prev }
 })
-test('first5 budget disclosure reports TinyFish search/fetch/people search as OFF, not not_covered, and does not call model calls free', () => {
+test('first5 budget disclosure: no TinyFish lead search or fetch, but the capped people searches are not_covered (#1037), and model calls are not called free', () => {
   const d = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false })
-  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'off'); assert.match(s.note, /not free/)
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'not_covered'); assert.match(s.note, /no TinyFish lead search or page fetch/); assert.match(s.note, /not free/)
   assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'not_covered')
 })

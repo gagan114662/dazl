@@ -11,7 +11,7 @@ import type { Trace } from './trace.ts'
 
 export const WORLD_VERSION = 1
 export interface WorldHit { url: string; title: string; snippet: string; date?: string | null }
-export type WorldPage = { title: string; text: string; published?: string | null; structured?: string[] } | { fail: FetchFail['fail'] } | { unreachable: true } | { threw: string }
+export type WorldPage = { title: string; text: string; published?: string | null; structured?: string[]; postedAt?: string | null } | { fail: FetchFail['fail'] } | { unreachable: true } | { threw: string }
 export interface WorldReply { method: 'complete' | 'completeDetailed' | 'research'; text: string; model?: string | null; usage?: { input_tokens?: number; output_tokens?: number } | null; cited_urls?: string[]; error?: string }
 export interface World {
   v: typeof WORLD_VERSION; kind: 'dazl.world'; id: string
@@ -91,7 +91,7 @@ export function worldFromTrace(t: Trace, id = `world-${t.id}`): World {
     } else if (s.kind === 'page') {
       const url = String(inp.url)
       const o = s.output as Record<string, unknown> | null
-      w.pages[url] = s.error ? { threw: s.error } : !o ? { unreachable: true } : 'fail' in o ? { fail: o.fail as FetchFail['fail'] } : { title: String(o.title ?? ''), text: String(o.text ?? ''), ...(o.published ? { published: String(o.published) } : {}), ...(Array.isArray(o.structured) ? { structured: o.structured as string[] } : {}) }
+      w.pages[url] = s.error ? { threw: s.error } : !o ? { unreachable: true } : 'fail' in o ? { fail: o.fail as FetchFail['fail'] } : { title: String(o.title ?? ''), text: String(o.text ?? ''), ...(o.published ? { published: String(o.published) } : {}), ...(Array.isArray(o.structured) ? { structured: o.structured as string[] } : {}), ...(o.postedAt ? { postedAt: String(o.postedAt) } : {}) }
     } else if (s.kind === 'source_http') {
       w.http[String(inp.url)] = (s.output as HttpResult | null) ?? null
     } else if (s.kind === 'model') {
