@@ -19,5 +19,6 @@ const db = { kind: 'sqlite', all: q, get: async (s: string, p?: unknown[]) => (a
 const tenant = process.argv[2]
 const reading = await replyReadingOn(db, tenant)
 const r = await homeResults(db, tenant, Math.floor(Date.now() / 1000), reading)
+if (process.env.FULL_JSON) { console.log(JSON.stringify({ ...r, latest_leads: r.latest_leads.map((l, i) => ({ ...l, id: `x${i}`, company: `Company ${i + 1} (redacted)` })), latest_replies: r.latest_replies.map((x, i) => ({ ...x, company: `Company ${i + 1} (redacted)` })) })); process.exit(0) }
 console.log(JSON.stringify({ tenant: tenant.slice(0, 8), reply_reading: r.reply_reading, tiles: r.tiles,
   by_signal: r.by_signal, latest_leads: r.latest_leads.length, latest_replies: r.latest_replies.map(x => x.classification), queries }, null, 1))
