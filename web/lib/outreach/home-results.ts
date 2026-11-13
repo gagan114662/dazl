@@ -47,25 +47,28 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const since = now - RESULTS_WINDOW_DAYS * 86400
   const marks = PERSON_REPLY.map(() => '?').join(', ')
   // leads found in the window, by type (the tenant's own scans only)
-  const leadRows = await db.all<{ kind: string | null; n: number | string }>(
-    `SELECT l.signal_kind AS kind, COUNT(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') GROUP BY l.signal_kind`, [tenantId, since])
+  const leadRows = await db.all<{ kind: string | null; src: string | null; n: number | string }>(
+    `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') GROUP BY l.signal_kind, l.source_kind`, [tenantId, since])
   // first-touch emails sent in the window, each with whether it got a person-written / positive reply, by the lead's type
-  const sentRows = await db.all<{ kind: string | null; sent: number | string; replied: number | string; interested: number | string }>(
-    `SELECT l.signal_kind AS kind, COUNT(*) AS sent,
+  const sentRows = await db.all<{ kind: string | null; src: string | null; sent: number | string; replied: number | string; interested: number | string }>(
+    `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS sent,
        SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification IN (${marks})) THEN 1 ELSE 0 END) AS replied,
        SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages p WHERE p.tenant_id = m.tenant_id AND p.outreach_message_id = m.id AND p.classification IN (${marks})
                       AND (SELECT d.classification FROM inbound_messages d WHERE d.tenant_id = p.tenant_id AND d.thread_id = p.thread_id AND d.classification NOT IN ${MACHINE}
                            ORDER BY d.received_at DESC, d.gmail_id DESC LIMIT 1) = 'positive') THEN 1 ELSE 0 END) AS interested
      FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
      WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0 AND (l.source_kind IS NULL OR l.source_kind <> 'test')
-     GROUP BY l.signal_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
-  const kind = (k: string | null) => k || 'unknown'
+     GROUP BY l.signal_kind, l.source_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
+  // A lead's row: its graded signal type; a lead never graded (no stored type: most search leads made without a scoring
+  // model, every hiring-feed / CSV / manual lead) is counted under the channel that produced it ("source:<kind>"), never under a
+  // type it was not given. A message whose lead is gone (or another tenant's) has neither: 'unknown'.
+  const kind = (k: string | null, src: string | null) => k || (src ? `source:${src}` : 'unknown')
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
-  for (const r of leadRows) row(kind(r.kind)).leads += Number(r.n)
+  for (const r of leadRows) row(kind(r.kind, r.src)).leads += Number(r.n)
   let interested = 0
-  for (const r of sentRows) { const x = row(kind(r.kind)); x.contacted += Number(r.sent); x.replied += Number(r.replied); interested += Number(r.interested) }
+  for (const r of sentRows) { const x = row(kind(r.kind, r.src)); x.contacted += Number(r.sent); x.replied += Number(r.replied); interested += Number(r.interested) }
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = (await db.all<{ id: string; company: string | null; signal: string | null; job_id: string; created_at: number | string }>(
@@ -89,8 +92,13 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
 }
 
 // The signal ids (lib/scan/score.ts SIGNALS, plus commenter imports' competitor_complaint) in plain words.
+const SOURCE_LABEL: Record<string, string> = {
+  query: 'Search (signal type not graded)', hiring_feed: 'Hiring feed', csv: 'CSV import', manual_source: 'Added by you',
+  watch: 'Watched search', monitor: 'Monitor', commenter: 'Commenters on a post', first_party: 'Your site visitors',
+}
 export function signalLabel(id: string): string {
   if (id === 'unknown') return 'No signal type'
+  if (id.startsWith('source:')) { const s = id.slice(7); return SOURCE_LABEL[s] ?? `${s.charAt(0).toUpperCase()}${s.slice(1).replace(/_/g, ' ')} (signal type not graded)` }
   const s = id.replace(/_/g, ' ')
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
