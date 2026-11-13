@@ -59,6 +59,19 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'Grand opening of our new dental clinic in Parkdale'],
     ['Kailash Dentistry', 'Kailash Dentistry: New dental clinic now open in Parkdale'],
     ['Eleven Dental', 'Our second clinic has officially opened in Yorkville'],
+    // review round 3 on #1130: real captions the allow-list must keep
+    ['Kailash Dentistry', 'New Dental Clinic Now Open In Parkdale'],
+    ['Kailash Dentistry', 'NEW DENTAL CLINIC NOW OPEN IN PARKDALE'],
+    ['Metro City Dentistry', 'Our new Woodbridge location is now open!'],
+    ['Kailash Dentistry', 'Our new Parkdale clinic is now open'],
+    ['Kailash Dentistry', 'New Kailash Dentistry clinic now open in Parkdale'],
+    ['Kailash Dentistry', 'Our new clinic is now open at 2150 Yonge St'],
+    ['Kailash Dentistry', 'New clinic now open in Parkdale at 1500 Queen St W'],
+    ['Kailash Dentistry', 'new dental clinic now open in parkdale'],
+    ['Kailash Dentistry', 'Our new clinic is now open and accepting new patients'],
+    ['Kailash Dentistry', 'New clinic now open - come say hi'],
+    ['Kailash Dentistry', 'Our new clinic is officially open for business'],
+    ['Kailash Dentistry', 'Grand opening of our new clinic at 1500 Queen St'],
   ]
   const no: [string, string][] = [
     ['Kailash Dentistry', 'The clinic is open on Sundays'],
@@ -108,6 +121,17 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'Our new clinic is open to new patients'],
     ['Kailash Dentistry', 'Our new clinic is open for walk-ins'],
     ['Kailash Dentistry', 'Our new clinic is open again after renovations'],
+    // review round 3 on #1130
+    ['Kailash Dentistry', 'Our new clinic is now open: 9am-5pm daily'],
+    ['Kailash Dentistry', 'Our new clinic open: Mon-Fri 9-5'],
+    ['Kailash Dentistry', 'Our new clinic is now open: weekends only'],
+    ['Kailash Dentistry', 'Our new clinic is now open, said Smile Co CEO Jane Doe'],
+    ['Kailash Dentistry', 'Our new clinic is now open in Parkdale starting Monday'],
+    ['Kailash Dentistry', 'Our new clinic is open in Parkdale beginning June'],
+    ['Kailash Dentistry', 'Our new clinic is open in Toronto in December'],
+    ['Kailash Dentistry', 'Our new clinic is open in Parkdale Mon to Fri'],
+    ['Kailash Dentistry', 'Grand opening of our new clinic tonight'],
+    ['Kailash Dentistry', 'New clinic opened in 2015 in Parkdale'],
   ]
   const shows = (company: string, q: string) => quoteShowsEvent(q, q, false, company) && eventMatches('open', 'location', q)
   for (const [c, q] of yes) assert.equal(shows(c, q), true, q)

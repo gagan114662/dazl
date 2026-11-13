@@ -38,39 +38,50 @@ const NF_PLACE = String.raw`(?:\s+(?:in|at|on)\s+(?:(?!\b(?:by|from|of)\b)[^.!?;
 const NF_VERB = String.raw`\s+(?:is\s+|are\s+|has\s+|have\s+)?(?:now\s+|officially\s+|finally\s+)*(?:open|opened)\b`
 // The candidate shapes; every match is then checked by nounFirstOk (an allow-list on what follows, in code, case-aware).
 export const NOUN_FIRST_OPEN_SRC = String.raw`\b${NF_LEAD}\s+${NF_FILL}${NF_NOUN}\b${NF_PLACE}${NF_VERB}|\bgrand\s+opening\s+of\s+(?:our|its|their)\s+(?:new\s+)?${NF_FILL}${NF_NOUN}\b`
-const TIME_WORDS = /\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d+\s*[-–]\s*\d+|\d+\s*\/\s*7|hours?|days?|week|weekends?|weekdays?|daily|nightly|tonight|today|tomorrow|soon|next|until|till|again|re-?open\w*|year-?round|around\s+the\s+clock|summer|winter|spring|autumn|fall|every|all|patients?|walk-?ins?|bookings?|appointments?|registration|enrol\w*|business|house|late|early|evenings?|mornings?)\b/i
-const DAY_MONTH = /^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*$|^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*$/i
-const FUTURE = /\b(?:will|would|coming|upcoming|join\s+us|is\s+on|on\s+(?:mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|this\s+(?:mon|tue|wed|thu|fri|sat|sun|week|month|coming)\w*|tomorrow|soon|next|later)\b/i
+const TIME_WORDS = /\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}\s*[-–]\s*\d{1,2}\b|\d+\s*\/\s*7|hours?|days?|week|weekends?|weekdays?|daily|nightly|tonight|today|tomorrow|soon|next|until|till|again|re-?open\w*|year-?round|around\s+the\s+clock|summer|winter|spring|autumn|every|all\s+(?:day|week|year|summer|winter)|walk-?ins?|bookings?|appointments?|registration|enrol\w*|house|late|early|evenings?|mornings?|only)\b/i
+const DAY_MONTH = /^(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?$|^(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*$|^may$/i
+const FUTURE = /\b(?:will|would|coming|upcoming|join\s+us|is\s+on|starting|beginning|from\s+(?:mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|this\s+(?:mon|tue|wed|thu|fri|sat|sun|week|month|coming)\w*|tomorrow|tonight|soon|next|later)\b/i
+const PAST_YEAR = /\b(?:19|20)\d{2}\b(?!\s+[A-Za-z]+\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy)\b)/i
+const SAID = /\b(?:said|says|according\s+to|per)\s+[A-Z]/
+const PREMISES = /^(?:locations?|offices?|clinics?|stores?|branch(?:es)?|restaurants?|studios?|practices?|warehouses?|showrooms?|shops?|gyms?|salons?)$/i
+const anyDayMonth = (t: string) => t.split(/[^A-Za-z]+/).some(w => DAY_MONTH.test(w))
 // The clause a match sits in (to the next . ! ? ; or the end), and whether it is a question.
-function clauseAt(text: string, from: number): { rest: string; question: boolean; start: string } {
-  const head = text.slice(0, from), lastStop = Math.max(head.lastIndexOf('.'), head.lastIndexOf('!'), head.lastIndexOf('?'), head.lastIndexOf(';'))
+function clauseAt(text: string, from: number): { rest: string; question: boolean } {
   const tail = text.slice(from), stop = tail.search(/[.!?;]/)
-  return { rest: stop < 0 ? tail : tail.slice(0, stop), question: stop >= 0 && tail[stop] === '?', start: text.slice(lastStop + 1, from) }
+  return { rest: stop < 0 ? tail : tail.slice(0, stop), question: stop >= 0 && tail[stop] === '?' }
 }
-// #878 allow-list (review on #1130): a noun-first match is an opening only when what follows the open verb is nothing more
-// (end of clause, "its doors"), or a place: "in / at / on <Capitalised name>" with no time, availability, future or
-// reopening word in it. A question never is. Another company's name in the match ("New Smile Co clinic is now open":
-// a capitalised filler word while the premises noun is lower case) or after "from / of / by" is not this company's.
-// A grand opening counts only with no future marker, day, month or number in its clause.
-export function nounFirstOk(text: string, m: RegExpMatchArray): boolean {
+// #878 allow-list (reviews on #1130). A noun-first match is an opening only when what follows the open verb is:
+//   - nothing more (end of clause), "its/their doors", "for business", "and accepting / welcoming / serving ...", or
+//     "- <words>" / ", <words>" / ": <words>" with no hours, availability, future, day, month or "said <Name>";
+//   - a place: "in / at / on <name or street number>" (any case) with no hours, availability, future word, day or month
+//     name anywhere in it, and no past year (19xx / 20xx that is not a street number).
+// Never a question. A grand opening only with none of those hours / future / day / month / year marks in its clause.
+// With the lead's company known, a capitalised word between the qualifier and a lower-case premises noun is another
+// company's name ("New Smile Co clinic"), unless it is a word of the lead's own name or sits right before the noun
+// ("Our new Woodbridge location", a place); without it (request compilation, page classification) that check is left to
+// the company-aware reader (sales-hiring-gate.ts quoteShowsEvent).
+export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string | null): boolean {
   const at = m.index ?? 0, end = at + m[0].length
   const c = clauseAt(text, end)
   if (c.question) return false
-  const body = m[0]
-  if (/^grand\s+opening/i.test(body)) return !FUTURE.test(c.rest) && !/\d/.test(c.rest) && !c.rest.split(/\W+/).some(w => DAY_MONTH.test(w)) && !/\b(?:of|by|from)\s+[A-Z]/.test(c.rest)
-  // a capitalised word between the qualifier and a lower-case premises noun is a name ("New Smile Co clinic")
-  const words = body.split(/\s+/), noun = words.findIndex(w => /^(?:locations?|offices?|clinics?|stores?|branch(?:es)?|restaurants?|studios?|practices?|warehouses?|showrooms?|shops?|gyms?|salons?)$/i.test(w))
-  if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some(w => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w))) return false
-  if (/\b(?:by|from|of)\s+[A-Z]/.test(body) || /\b(?:by|from)\s+[A-Z]/.test(c.rest)) return false
-  const rest = c.rest.trim()
-  if (rest === '' || /^[,:]/.test(rest) || /^(?:its|their)\s+doors\b/i.test(rest)) return !(rest.startsWith(',') && TIME_WORDS.test(rest)) && !FUTURE.test(rest)
-  const place = /^(?:in|at|on)\s+([A-Z][\w'-]*)/.exec(rest)
-  return !!place && !DAY_MONTH.test(place[1]) && !TIME_WORDS.test(rest) && !FUTURE.test(rest) && !/\d{4}/.test(rest)
+  const body = m[0], rest = c.rest.trim()
+  const clean = (t: string) => !TIME_WORDS.test(t) && !FUTURE.test(t) && !anyDayMonth(t) && !PAST_YEAR.test(t) && !SAID.test(t)
+  if (/\b(?:by|from|of)\s+[A-Z]/.test(body) || /\b(?:by|from)\s+[A-Z]/.test(rest)) return false
+  if (/^grand\s+opening/i.test(body)) return clean(rest) && !/\b(?:of|by)\s+[A-Z]/.test(rest)
+  if (company) {
+    const own = new Set(company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+    const words = body.split(/\s+/), noun = words.findIndex(w => PREMISES.test(w))
+    if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && k + 1 !== noun - 1)) return false
+  }
+  if (rest === '' || /^(?:its|their)\s+doors\b/i.test(rest) || /^for\s+business\b/i.test(rest)) return clean(rest.replace(/^(?:its|their)\s+doors\b|^for\s+business\b/i, ''))
+  if (/^and\s+(?:accepting|welcoming|serving|ready)\b/i.test(rest)) return !FUTURE.test(rest) && !anyDayMonth(rest) && !SAID.test(rest)
+  if (/^[,:–-]/.test(rest)) return clean(rest)
+  return /^(?:in|at|on)\s+(?:\d+\s+[A-Za-z]|[A-Za-z])/i.test(rest) && !DAY_MONTH.test(rest.split(/\s+/)[1] ?? '') && clean(rest)
 }
 const NOUN_FIRST_OPEN_G = new RegExp(NOUN_FIRST_OPEN_SRC, 'gi')
 // Where the first accepted noun-first opening starts in the text, or -1.
-export function nounFirstOpenAt(text: string): number {
-  for (const m of text.matchAll(NOUN_FIRST_OPEN_G)) if (nounFirstOk(text, m)) return m.index ?? 0
+export function nounFirstOpenAt(text: string, company?: string | null): number {
+  for (const m of text.matchAll(NOUN_FIRST_OPEN_G)) if (nounFirstOk(text, m, company)) return m.index ?? 0
   return -1
 }
 export const NOUN_FIRST_OPEN = { test: (text: string): boolean => nounFirstOpenAt(text) >= 0 }

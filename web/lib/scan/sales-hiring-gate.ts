@@ -55,7 +55,7 @@ export function stageOk(clause: string, stage: Stage): boolean {
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
   return clauses(excerpt ?? '').some(c => {
     // a noun-first opening's subject is in front of the opening phrase itself (#878): "Our 5th location is now open" names no other company
-    if (!fundingAsked) { const nf = nounFirstOpenAt(c); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+    if (!fundingAsked) { const nf = nounFirstOpenAt(c, company); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
