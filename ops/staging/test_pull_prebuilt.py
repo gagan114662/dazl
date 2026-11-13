@@ -395,7 +395,9 @@ class PullPrebuiltTest(unittest.TestCase):
         budget = int(re.search(r'DOWNLOAD_BUDGET_S=\$\{STAGING_DOWNLOAD_BUDGET_S:-(\d+)\}', src).group(1))
         backup_allow = int(re.search(r'BACKUP_ALLOWANCE_S=\$\{STAGING_BACKUP_ALLOWANCE_S:-(\d+)\}', src).group(1))
         deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=\$\{STAGING_DEPLOY_ALLOWANCE_S:-(\d+)\}', src).group(1))
-        self.assertLess(60 + budget + backup_allow + deploy_allow + 60, tmo, 'reading main, the downloads, the backup and deploy.sh (with its kill grace) fit inside the unit timeout')
+        self.assertIn('--max-time 60', src, 'the manifest read is bounded at 60 s')
+        self.assertLess(60 + 60 + budget + backup_allow + 10 + deploy_allow + 60, tmo, 'reading main, the downloads, the backup and deploy.sh (with their kill graces) fit inside the unit timeout')
+        self.assertEqual(int(re.search(r'^UNIT_LIMIT_S=(\d+)', src, re.M).group(1)), tmo - 60, "the script's limit follows the unit's TimeoutStartSec")
         self.assertIn('timeout 60 git ls-remote', src, 'reading main is bounded too')
 
     def test_deploy_sh_is_stopped_inside_its_allowance(self):
@@ -427,7 +429,7 @@ class PullPrebuiltTest(unittest.TestCase):
             t0 = time.monotonic(); r = self.run_pull(STAGING_BACKUP_ALLOWANCE_S=2); took = time.monotonic() - t0
         finally: holder.kill(); holder.wait()
         self.assertLess(took, 30, f'took {took:.0f}s')
-        self.assert_refused(r, 'backup ran past its 2s allowance')
+        self.assert_refused(r, 'backup was stopped \\(exit 124: ran past its 2s allowance')
 
     def assert_refused_at(self, r, why, live):
         self.assertNotEqual(r.returncode, 0, r.stdout)

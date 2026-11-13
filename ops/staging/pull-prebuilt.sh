@@ -112,9 +112,10 @@ esac
 BACKUP_ALLOWANCE_S=${STAGING_BACKUP_ALLOWANCE_S:-300}
 [[ $BACKUP_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_BACKUP_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
 # Every step is bounded, and together they end before the unit's TimeoutStartSec (80 min = 4800 s) with a minute to spare:
-# reading main (60 s), the downloads, the database backup, deploy.sh and its 60 s kill grace.
-UNIT_LIMIT_S=4740
-[ $(( 60 + DOWNLOAD_BUDGET_S + BACKUP_ALLOWANCE_S + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_BACKUP_ALLOWANCE_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 120 ))s together); nothing done"
+# reading main (60 s), the manifest (60 s), the downloads, the database backup and its 10 s kill grace, deploy.sh and its
+# 60 s kill grace.
+UNIT_LIMIT_S=4740   # TimeoutStartSec (80min, dazl-staging-prebuilt.service) minus a minute; the test keeps the two in step
+[ $(( 60 + 60 + DOWNLOAD_BUDGET_S + BACKUP_ALLOWANCE_S + 10 + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_BACKUP_ALLOWANCE_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 190 ))s together); nothing done"
 # finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
 # and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
 # owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
@@ -286,7 +287,7 @@ src.backup(dst); dst.close(); src.close()
 r = sqlite3.connect(sys.argv[2]).execute('pragma integrity_check').fetchone()[0]
 if r != 'ok': sys.exit('integrity_check: %s' % r)
 PY
-  if [ $bst = 124 ] || [ $bst = 137 ]; then rm -f -- "$out.tmp"; fail "the staging database backup ran past its ${BACKUP_ALLOWANCE_S}s allowance; nothing deployed"; fi
+  if [ $bst = 124 ] || [ $bst = 137 ]; then rm -f -- "$out.tmp"; fail "the staging database backup was stopped (exit $bst: ran past its ${BACKUP_ALLOWANCE_S}s allowance, or was killed); nothing deployed"; fi
   [ $bst = 0 ] || { rm -f -- "$out.tmp"; fail "the staging database backup failed; nothing deployed"; }
   chmod 600 "$out.tmp"; mv -f -- "$out.tmp" "$out"
   ls -1t "$BACKUPS"/app-pre-*.db 2>/dev/null | tail -n +$(( KEEP_BACKUPS + 1 )) | xargs -r rm -f --

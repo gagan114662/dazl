@@ -89,10 +89,12 @@ PY
 # (a reader must treat "?" as "could be anywhere", never as "runs nothing")
 listener_cwds() { ss -ltnpH | grep -oP 'pid=\K[0-9]+' | sort -u | while read -r p; do readlink "/proc/$p/cwd" 2>/dev/null || { [ ! -e "/proc/$p" ] || echo '?'; }; done; }
 in_use() { local c; while IFS= read -r c; do [[ $c == "$1" || $c == "$1"/* ]] && return 0; done <<< "$2"; return 1; }
-manual_prune_hint() { local d; for d in "$RELEASE_ROOT"/dazl-*-prod; do [ -d "$d" ] && [ ! -L "$d" ] && log "  release directory $d: if nothing runs from it, remove it by hand once: sudo rm -rf -- $d"; done; return 0; }
+# $1 = the directories kept (live, rollback target, ...): never offered for removal by hand
+manual_prune_hint() { local d; for d in "$RELEASE_ROOT"/dazl-*-prod; do [ -d "$d" ] && [ ! -L "$d" ] || continue; case "$1" in *" $d "*) continue ;; esac; log "  release directory $d: if nothing runs from it, remove it by hand once: sudo rm -rf -- $d"; done; return 0; }
 port_pid() { ss -ltnpH "sport = :$1" | grep -oP 'pid=\K[0-9]+' | head -1 || true; }
 # Release directories nothing needs: not the live release, not the recorded rollback target, not one any listener runs
-# from (the previous release, a staging service, ...), not one passed in. Each is removed as ITS OWNER (never root; a
+# from (the previous release, a staging service, ...), not one passed in. Only LISTENING processes are seen: a release
+# dir used only by a non-listening process (a one-off script started from it) is not detected - none runs on the box. Each is removed as ITS OWNER (never root; a
 # root-owned one is left and logged), so nothing is removed that its owner could not remove itself.
 release_web() { [[ $1 == "$RELEASE_ROOT"/* ]] && [[ ${1#"$RELEASE_ROOT"/} =~ ^dazl-[0-9a-f]{8}-prod/web$ ]]; }
 prune_unused() {
@@ -101,10 +103,10 @@ prune_unused() {
   [ -z "$prev" ] || keep="$keep $RELEASE_ROOT/dazl-${prev:0:8}-prod "
   # "could not read" is never "nothing runs": unless the live release runs from a release directory and that directory
   # is among the listeners' working directories, nothing is removed (the disk check then refuses: fail closed)
-  release_web "$LIVE_WEB" || { log "not removing any release: the live release does not run from a release directory ($LIVE_WEB)"; manual_prune_hint; return 0; }
+  release_web "$LIVE_WEB" || { log "not removing any release: the live release does not run from a release directory ($LIVE_WEB)"; manual_prune_hint "$keep"; return 0; }
   cwds=$(listener_cwds)
-  printf '%s\n' "$cwds" | grep -qxF -- "$LIVE_WEB" || { log "not removing any release: the live release's directory is not among the listeners' working directories"; manual_prune_hint; return 0; }
-  ! printf '%s\n' "$cwds" | grep -qxF '?' || { log "not removing any release: a listening process's directory cannot be read"; manual_prune_hint; return 0; }
+  printf '%s\n' "$cwds" | grep -qxF -- "$LIVE_WEB" || { log "not removing any release: the live release's directory is not among the listeners' working directories"; manual_prune_hint "$keep"; return 0; }
+  ! printf '%s\n' "$cwds" | grep -qxF '?' || { log "not removing any release: a listening process's directory cannot be read"; manual_prune_hint "$keep"; return 0; }
   for d in "$RELEASE_ROOT"/dazl-*-prod; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     case "$keep" in *" $d "*) continue ;; esac
@@ -149,6 +151,11 @@ LIVE_PID=$(port_pid "$LIVE")
 LIVE_WEB=$(readlink "/proc/$LIVE_PID/cwd" 2>/dev/null || true)
 [[ $LIVE_PID =~ ^[0-9]+$ ]] || die "no process is listening on the live port $LIVE (the Caddyfile points there); nothing done"
 [ -n "$LIVE_WEB" ] || die "the live process $LIVE_PID's directory could not be read; nothing done"
+# The rollback target, read BEFORE anything changes. A live release that does not report its commit (hung, or 'unknown')
+# is no rollback target, but it never blocks the deploy that replaces it: the new release still has to prove itself on
+# /api/health before the switch, and the state then records no target (--rollback refuses; deploy a commit instead).
+OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE")
+[[ $OLD_SHA =~ ^[0-9a-f]{40}$ ]] || { log "WARNING: the live release on :$LIVE did not report its commit (got '${OLD_SHA:-nothing}'): after this deploy there is no rollback target"; OLD_SHA=; }
 log "live port $LIVE (pid $LIVE_PID, ${LIVE_WEB:-unknown dir}), new port $NEW, sha $SHA"
 
 # the database migrate will change: the env's DB_PATH must be exactly $DB, a regular file (no symlink, one link)
@@ -210,7 +217,7 @@ if [ -n "$LIVE_WEB" ] && as_app test -d "$LIVE_WEB/node_modules"; then live_lock
 # 2. the release, as the app user: source checked out, the build PREBUILT on GitHub (never built here)
 reuse=0
 cwds_now=$(listener_cwds)
-! printf '%s\n' "$cwds_now" | grep -qxF '?' || die "a listening process's directory cannot be read, so $DIR may be in use; nothing done"
+if [ -d "$DIR" ] && printf '%s\n' "$cwds_now" | grep -qxF '?'; then die "a listening process's directory cannot be read, so $DIR may be in use; nothing done"; fi
 if [ -d "$DIR" ] && in_use "$DIR" "$cwds_now"; then
   [ "$(as_app cat "$DIR/web/.build-commit" 2>/dev/null)" = "$SHA" ] && [ -n "$(as_app cat "$DIR/web/.next/BUILD_ID" 2>/dev/null)" ] \
     || die "$DIR is in use by a live process and is not a complete build of $SHA; refusing"
@@ -262,15 +269,13 @@ for _ in $(seq 1 "${PROD_HEALTH_TRIES:-90}"); do c=$(health_sha "http://127.0.0.
 [ "$c" = "$SHA" ] || { as_app tail -30 "$DIR/next-start.log" || true; stop_new; die "new release did not report $SHA on :$NEW; NOT switching (dazl.ai still on :$LIVE); stopped it"; }
 
 # 5. switch, verify publicly, record rollback state
-OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE"); OLD_WEB=$LIVE_WEB
-# the rollback target must be known before the switch: a live release that does not say its commit is not switched away from
-[[ $OLD_SHA =~ ^[0-9a-f]{40}$ ]] || { stop_new; die "the live release on :$LIVE did not report its commit (got '${OLD_SHA:-nothing}'), so there would be no rollback target; NOT switching, stopped the new release"; }
+OLD_WEB=$LIVE_WEB
 switch_caddy "$NEW"
 sleep "${PROD_SWITCH_SLEEP:-3}"
 pub=$(health_sha "$PUBLIC_URL")
 if [ "$pub" != "$SHA" ]; then switch_caddy "$LIVE"; stop_new; die "public health shows '$pub', not $SHA: switched back to :$LIVE, stopped the new release"; fi
 mv -f "$OPS/prod.env.next" "$OPS/prod.env"
-write_state "$LIVE" "$OLD_SHA" "$SHA"
+if [ -n "$OLD_SHA" ]; then write_state "$LIVE" "$OLD_SHA" "$SHA"; else write_state none "" "$SHA"; log "no rollback target recorded: the previous release did not report its commit"; fi
 
 # 6. disk: keep the live release and the previous one (the instant rollback target); remove the rest nothing runs from
 # (only when the previous release runs from its own release directory: one running from elsewhere may use any of them)

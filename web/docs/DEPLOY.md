@@ -38,8 +38,8 @@ instead, and the box only downloads, verifies and unpacks it.
   It first removes release directories nothing needs (see Disk), checks free disk, copies the live process's
   environment for the new release, then `ops/prod/pull-release.sh fetch <sha>` (as root: the manifest must name exactly
   that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads, the unpacked
-  build and the database backup** (`node_modules` is not counted when it will be hard-linked from the live release: hard links copy no file data, only the
-directory tree, which `extract`'s own re-check and the floor's margin absorb);
+  build and the database backup** (`node_modules` is not counted when it will be hard-linked from the live release: hard links copy no file
+  data, only the directory tree, which is not counted);
   both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
   source as `ubuntu` in a new `/home/ubuntu/dazl-<sha8>-prod` and runs `pull-release.sh extract` there: the checkout's
   `package-lock.json` must be the one the build was made from; it unpacks `.next`, and hard-links `node_modules` from the

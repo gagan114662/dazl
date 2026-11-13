@@ -89,6 +89,12 @@ exec /usr/bin/df "$@"
 if [ "${1:-}" = -c ] && [ "${2:-}" = %U ] && [ -n "${FAKE_FOREIGN:-}" ] && [ "${!#}" = "$FAKE_FOREIGN" ]; then echo dazl-staging; exit 0; fi
 exec /usr/bin/stat "$@"
 ''',
+    # readlink: the real one, except for the cwd of the pid named in FAKE_T/unreadable-pid (as if it were another user's
+    # process seen by a non-root reader), so the test does not depend on who runs it
+    'readlink': r'''#!/usr/bin/env bash
+if [ -f "$FAKE_T/unreadable-pid" ] && [ "${!#}" = "/proc/$(cat "$FAKE_T/unreadable-pid")/cwd" ]; then exit 1; fi
+exec /usr/bin/readlink "$@"
+''',
     'sudo': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/sudo.log"\necho "rm: cannot remove: Permission denied" >&2\nexit 1\n',
     'caddy': '#!/usr/bin/env bash\nexit 0\n',
     'systemctl': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/systemctl.log"\n',
@@ -595,25 +601,40 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0); self.assertIn('and the database backup', r.stdout + r.stderr)
         self.assertEqual(self.live_port(), '3104')
 
-    def test_a_listener_whose_directory_cannot_be_read_stops_the_prune_and_the_deploy(self):
-        # "could not read" is never "runs nothing": a listening process whose cwd cannot be read (here pid 1, another
-        # user's process) could run from any release, so nothing is removed and the deploy refuses
-        self.publish(); (self.t / 'listen/4002').write_text('1')
-        r = self.deploy(B)
-        self.assert_untouched(r, "directory cannot be read")
+    def test_a_listener_whose_directory_cannot_be_read_stops_the_prune(self):
+        # "could not read" is never "runs nothing": a listening process whose cwd cannot be read could run from any
+        # release, so nothing is removed (each release is listed with its manual step); the deploy itself goes on
+        self.publish()
+        other = subprocess.Popen(['sleep', '600']); (self.t / 'listen/4002').write_text(str(other.pid)); (self.t / 'unreadable-pid').write_text(str(other.pid))
+        try: r = self.deploy(B)
+        finally: other.kill()
         self.assertIn('not removing any release: a listening process', r.stdout)
         self.assertIn('remove it by hand once: sudo rm -rf -- ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), r.stdout)
+        self.assertNotIn('sudo rm -rf -- ' + str(self.live.parent) + '\n', r.stdout + '\n', 'the live release is never offered for removal')
         self.assertTrue((self.t / 'rel/dazl-0ld0ld00-prod').exists())
 
-    def test_a_live_release_that_does_not_report_its_commit_is_not_switched_away_from(self):
-        # the rollback target is recorded from the live release's /api/health: without it, no switch (and no empty PREV_SHA)
+    def test_an_unreadable_listener_refuses_reusing_an_existing_release_directory(self):
         self.publish()
-        (self.t / 'health/3104').unlink()   # the live release stops answering /api/health (it still listens)
-        r = self.deploy(B)
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn('did not report its commit', r.stdout)
-        self.assertEqual(self.live_port(), '3104'); self.assertFalse((self.t / 'ops/prod-state').exists(), 'no rollback state written')
-        self.assertFalse((self.t / 'health/3105').exists() and (self.t / 'listen/3105').exists() and os.path.exists('/proc/' + (self.t / 'listen/3105').read_text()), 'the new release was stopped')
+        (self.t / 'rel' / f'dazl-{B[:8]}-prod' / 'web').mkdir(parents=True)
+        other = subprocess.Popen(['sleep', '600']); (self.t / 'listen/4002').write_text(str(other.pid)); (self.t / 'unreadable-pid').write_text(str(other.pid))
+        try: r = self.deploy(B)
+        finally: other.kill()
+        self.assert_untouched(r, f'directory cannot be read, so .*dazl-{B[:8]}-prod may be in use')
+
+    def test_a_live_release_that_does_not_report_its_commit_is_replaced_with_no_rollback_target(self):
+        # the live release hangs on /api/health: it does not block the deploy that replaces it (the new release proves
+        # itself first); the state records no rollback target and --rollback refuses
+        self.publish()
+        (self.t / 'stall/3104').write_text('')
+        r = self.deploy(B, PROD_HEALTH_MAX_TIME=2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn('did not report its commit', out)
+        self.assertLess(out.index('did not report its commit'), out.index('verified the prebuilt build'), 'read before anything changed')
+        self.assertEqual(self.live_port(), '3105')
+        self.assertEqual((self.t / 'ops/prod-state').read_text(), f'PREV_PORT=none\nPREV_SHA=\nNEW_SHA={B}\n')
+        rb = self.deploy('--rollback')
+        self.assertNotEqual(rb.returncode, 0); self.assertIn('no rollback target recorded', rb.stdout)
 
     def test_hard_linked_node_modules_is_not_counted_unpacked_ones_are(self):
         # Finding 1(b): room for the build and the backup, not for 624 MB of node_modules
