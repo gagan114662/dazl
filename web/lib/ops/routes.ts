@@ -33,6 +33,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/hooks/calcom',
   '/api/hooks/first-party',
   '/api/internal/tick',
+  '/api/internal/tinyfish-today',
   '/api/leads',
   '/api/leads/[lead]/confirm',
   '/api/leads/[lead]/domain-review',
