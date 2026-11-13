@@ -2,7 +2,10 @@
 // the scan cap is a no-op (lib/scan/spend-cap.ts), so the workspace credit pool (lib/enrich/credit-pool.ts) is the only
 // limit: every credit-charging Apollo / People Data Labs call must reserve credits first, in the same flow, before the
 // request. Checked on the TypeScript syntax tree: which modules call the provider functions, and, per paid call, that
-// a reservation comes before it. The inventory checks that a reservation exists before the call, not its units or tenant.
+// a reservation comes before it. Each reservation (of at least 1 unit, when the units are a literal) pays for exactly ONE
+// paid call: a second call that can run under the same hold, or a call in a loop that does not also hold the
+// reservation, needs its own; the same holds for a CreditHold handed to a helper (one paid call per hold received).
+// Not checked: whether a non-literal unit count covers what the call charges, and the tenant.
 // Behavioral refusals per entry point already exist (enrich-credit-pool: scan waterfall
 // and commenter import; work-email-1036: the work-email lookup).
 // Not caught: `Reflect.get(A, name)` and computed or concatenated keys (`A['apollo' + 'OrgEnrich']`, `A[key]`).
@@ -142,9 +145,37 @@ function reservers(sf: ts.SourceFile, rel: string): Reservers {
 //  - a nullable result (holdCredits, or the `cond ? null :` shape) is bound to a const that the call is dominated by a
 //    truthiness check of: inside `if (hold ...) { }` (hold alone or in an && chain), or after `if (!hold) return /
 //    continue / break / throw` in a block holding the call.
-// Returns the variable each guarding reservation is bound to (null: not bound).
+//  - its units argument (4th), when a numeric literal, is at least 1;
+//  - every loop (for / for…of / for…in / while / do) whose repeated part holds the call also holds the reservation in
+//    its repeated part, so one reservation is never spent on each iteration.
+// Returns each guarding reservation and the variable it is bound to (null: not bound).
 const EXITS = (s: ts.Statement | undefined) => !!s && (ts.isReturnStatement(s) || ts.isContinueStatement(s) || ts.isBreakStatement(s) || ts.isThrowStatement(s))
 const exitsAlways = (s: ts.Statement) => EXITS(s) || (ts.isBlock(s) && EXITS(s.statements[s.statements.length - 1]))
+const within = (n: ts.Node, outer: ts.Node) => n.getStart() >= outer.getStart() && n.getEnd() <= outer.getEnd()
+// The loops, up to `stop`, whose repeated part holds n (a for…of / for…in iterable or a for initializer runs once).
+function loopsAround(n: ts.Node, stop: ts.Node): ts.Node[] {
+  const out: ts.Node[] = []
+  for (let child = n, p = n.parent; p && p !== stop; child = p, p = p.parent) {
+    if (ts.isForOfStatement(p) || ts.isForInStatement(p) ? child !== p.expression && child !== p.initializer : ts.isForStatement(p) ? child !== p.initializer : ts.isWhileStatement(p) || ts.isDoStatement(p)) out.push(p)
+  }
+  return out
+}
+// a and b are in opposite arms of one if/else or ?: (at most one of them runs).
+function exclusive(a: ts.Node, b: ts.Node): boolean {
+  for (let child = a, p = a.parent; p && !ts.isFunctionLike(child); child = p, p = p.parent) {
+    const other = ts.isIfStatement(p) ? (child === p.thenStatement ? p.elseStatement : child === p.elseStatement ? p.thenStatement : undefined)
+      : ts.isConditionalExpression(p) ? (child === p.whenTrue ? p.whenFalse : child === p.whenFalse ? p.whenTrue : undefined) : undefined
+    if (other && within(b, other)) return true
+  }
+  return false
+}
+const lessThanOne = (e: ts.Expression | undefined): boolean => {
+  if (!e) return false
+  e = bare(e)
+  if (ts.isNumericLiteral(e)) return Number(e.text) < 1
+  return ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(bare(e.operand))
+}
+type Guard = { bound: string | null; node: ts.CallExpression }
 function requiresTruthy(e: ts.Expression, v: string): boolean {
   e = bare(e)
   if (ts.isIdentifier(e)) return e.text === v
@@ -162,13 +193,17 @@ function checkedTruthy(v: string, target: ts.Node, top: ts.Block, after: number)
     if (a === top || ts.isFunctionLike(a)) return false
   }
 }
-function guards(fn: ts.FunctionLikeDeclaration, target: ts.Node, vendor: 'apollo' | 'pdl' | null, rs: Reservers): (string | null)[] {
+function guards(fn: ts.FunctionLikeDeclaration, target: ts.Node, vendor: 'apollo' | 'pdl' | null, rs: Reservers): Guard[] {
   const isReserve = (n: ts.Node): n is ts.CallExpression => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (rs.reserve.has(n.expression.text) || rs.hold.has(n.expression.text))
-  const out: (string | null)[] = []
+  const out: Guard[] = []
+  const targetLoops = loopsAround(target, fn)
   for (const r of all(fn, isReserve) as ts.CallExpression[]) {
     if (enclosingFn(r) !== fn || r.getStart() >= target.getStart()) continue
     const lit = r.arguments[2]
     if (vendor && lit && ts.isStringLiteralLike(lit) && lit.text !== vendor) continue
+    if (lessThanOne(r.arguments[3])) continue
+    const rLoops = loopsAround(r, fn)
+    if (!targetLoops.every(l => rLoops.includes(l))) continue
     let nullable = rs.hold.has((r.expression as ts.Identifier).text)
     let n: ts.Node = r, awaited = false, bound: string | null = null, isConst = false, ok = true
     for (;;) {
@@ -196,32 +231,49 @@ function guards(fn: ts.FunctionLikeDeclaration, target: ts.Node, vendor: 'apollo
       if (!ts.isBlock(block) || !after(stmt, block)) continue
     }
     if (nullable && !(bound && isConst && checkedTruthy(bound, target, block as ts.Block, stmt.getEnd()))) continue
-    out.push(bound)
+    out.push({ bound, node: r })
   }
   return out
 }
+const nearest = (gs: Guard[]) => gs.reduce((a, b) => b.node.getStart() > a.node.getStart() ? b : a).node
 function unreservedPaidCalls(rel: string, text: string): string[] {
   const sf = parse(rel, text)
   const alias = importAliases(sf)
   const rs = reservers(sf, rel)
   const paidName = (c: ts.CallExpression): string | null => { const n = calleeName(c); const o = n ? alias.get(n) ?? n : null; return o && PAID.has(o) ? o : null }
   const out: string[] = []
+  // What each reservation (or each CreditHold parameter) is spent on: one paid call, or one call that hands the hold on.
+  const spentOn = new Map<ts.Node, Set<ts.CallExpression>>()
+  const spend = (hold: ts.Node, site: ts.CallExpression) => { if (!spentOn.has(hold)) spentOn.set(hold, new Set()); spentOn.get(hold)!.add(site) }
   for (const call of all(sf, n => ts.isCallExpression(n) && paidName(n) !== null) as ts.CallExpression[]) {
     const name0 = paidName(call)!
     const vendor = VENDOR[name0]
     const fn = enclosingFn(call)
     if (!fn) { out.push(`${rel}:${lineOf(sf, call)} ${name0}`); continue }
-    if (guards(fn, call, vendor, rs).length > 0) continue
+    const own = guards(fn, call, vendor, rs)
+    if (own.length > 0) { spend(nearest(own), call); continue }
     // The CreditHold-parameter shape (index.ts runPdl): every call of this function must pass, at the CreditHold
-    // position, exactly the variable a guarding reservation was stored in.
+    // position, exactly the variable a guarding reservation was stored in; the paid call is in no loop of its own
+    // function, and the hold received pays for one paid call only.
     const idx = fn.parameters.findIndex(p => p.type && /\bCreditHold\b/.test(p.type.getText(sf)))
     const name = fnName(fn)
     const uses = idx >= 0 && name ? all(sf, n => ts.isCallExpression(n) && calleeName(n) === name) as ts.CallExpression[] : []
-    const passedReserved = uses.length > 0 && uses.every(u => {
+    const holds = uses.map(u => {
       const f = enclosingFn(u); const arg = u.arguments[idx]
-      return !!f && !!arg && ts.isIdentifier(arg) && guards(f, u, vendor, rs).includes(arg.text)
+      const gs = f && arg && ts.isIdentifier(arg) ? guards(f, u, vendor, rs).filter(g => g.bound === arg.text) : []
+      return gs.length > 0 ? nearest(gs) : null
     })
-    if (!passedReserved) out.push(`${rel}:${lineOf(sf, call)} ${name0}`)
+    if (uses.length === 0 || holds.includes(null) || loopsAround(call, fn).length > 0) { out.push(`${rel}:${lineOf(sf, call)} ${name0}`); continue }
+    spend(fn, call)
+    uses.forEach((u, i) => spend(holds[i]!, u))
+  }
+  // A reservation spent on two paid calls that can both run (not opposite arms of one if/else or ?:) under-reserves:
+  // the later one needs its own reservation.
+  for (const sites of spentOn.values()) {
+    const ordered = [...sites].sort((a, b) => a.getStart() - b.getStart())
+    for (const [j, b] of ordered.entries()) {
+      if (ordered.slice(0, j).some(a => !exclusive(a, b))) out.push(`${rel}:${lineOf(sf, b)} ${paidName(b) ?? calleeName(b)} (a second paid call under one reservation)`)
+    }
   }
   // Any other reference to a paid function (an alias, `.call`/`.apply`, a callback argument, a destructured dynamic
   // import, a bracket access that is not called) hands it somewhere the check above cannot follow: rejected. Allowed:
@@ -418,4 +470,46 @@ test('#849 inventory: a nullable hold guards only behind a truthiness check of i
   assert.equal(at(`let hold = ${H}; if (!hold) return; hold = null; ${C}`), 1, 'not a const')
   assert.equal(at(`${C}; const hold = ${H}; if (!hold) return`), 1, 'check after the call')
   assert.equal(caughtIn('lib/x.ts', HOLD + `async function p() { const hold = await holdCredits(db, t, "apollo", 1, j); if (!hold) return; ${C} }`), 1, 'holdCredits outside commenter-import is not a reservation')
+})
+
+// Hermes review of #1079, round 3: a reservation covers ONE paid call. Each of these was accepted before.
+test('#849 inventory: one reservation guards exactly one paid call, never a loop of them, and reserves at least 1 unit', () => {
+  const HOLD = `async function holdCredits(db: D, t: string, p: 'apollo' | 'pdl', u: number, j: string) { try { return await reserveCredits(db, t, p, u) } catch { return null } }\n`
+  const viaParam = (body: string) => `async function run(k: string, hold: CreditHold) { ${body} }\n`
+  const PDL = 'await pdlPeopleSearch(k, c, f, 5)', RP = 'reserveCredits(db, t, "pdl", 5)'
+  const reported: Record<string, [string, string]> = {
+    loopUnderOneHold: ['lib/x.ts', `async function p(xs: string[]) { const h = await ${R}; for (const x of xs) { ${C} } }`],
+    twoCallsOneHold: ['lib/x.ts', `async function p() { const h = await ${R}; ${C}; ${C} }`],
+    zeroUnits: ['lib/x.ts', `async function p() { await reserveCredits(db, t, "apollo", 0); ${C} }`],
+    negativeUnits: ['lib/x.ts', `async function p() { const h = await reserveCredits(db, t, "apollo", -1); ${C} }`],
+    forLoop: ['lib/x.ts', `async function p() { const h = await ${R}; for (let i = 0; i < 2; i++) ${C} }`],
+    forInLoop: ['lib/x.ts', `async function p(o: object) { const h = await ${R}; for (const x in o) ${C} }`],
+    whileLoop: ['lib/x.ts', `async function p(x: boolean) { const h = await ${R}; while (x) { ${C} } }`],
+    doLoop: ['lib/x.ts', `async function p(x: boolean) { const h = await ${R}; do { ${C} } while (x) }`],
+    callInTryAndCatch: ['lib/x.ts', `async function p() { const h = await ${R}; try { ${C} } catch { ${C} } }`],
+    paramTwoCalls: ['lib/x.ts', viaParam(`${PDL}; return ${PDL}`) + `async function go() { const hold = await ${RP}; await run(k, hold) }`],
+    paramLoop: ['lib/x.ts', viaParam(`for (const q of qs) ${PDL}`) + `async function go() { const hold = await ${RP}; await run(k, hold) }`],
+    paramCalledTwice: ['lib/x.ts', viaParam(`return ${PDL}`) + `async function go() { const hold = await ${RP}; await run(k, hold); await run(k, hold) }`],
+    paramCalledInLoop: ['lib/x.ts', viaParam(`return ${PDL}`) + `async function go(xs: string[]) { const hold = await ${RP}; for (const x of xs) await run(k, hold) }`],
+    paramPlusDirect: ['lib/x.ts', viaParam(`return ${PDL}`) + `async function go() { const hold = await ${RP}; await run(k, hold); ${PDL} }`],
+    // the two real-code shapes from the review, on their own files
+    workEmailRetry: ['lib/people/work-email.ts', `async function find(xs: CreditProvider[], key: string) { for (const prov of xs) { let hold: CreditHold
+      try { hold = await reserveCredits(db, tenantId, prov, 1, { env, now }) } catch { continue }
+      try { if (prov === 'apollo') { const m = await apolloPersonMatch(key, want, fetchImpl); const retry = m ? null : await apolloPersonMatch(key, want, fetchImpl); await settle(db, hold, 1); use(m, retry) }
+      else { const r = await pdlPersonEnrich(key, want, fetchImpl); await settle(db, hold, r.billed ? 1 : 0) } } catch { continue } } }`],
+    commenterImportLoop: ['lib/scan/commenter-import.ts', HOLD + `async function imp(gs: G[]) { for (const g of gs) { if (pdlKey) {
+      const hold = await holdCredits(db, tenantId, 'pdl', 5, batch.job_id); if (!hold) return
+      try { const found: P[] = []; for (const q of [g.company, g.domain]) found.push(...await pdlPeopleSearch(pdlKey, q, fetchImpl, 5)); await quietly(() => settleCredits(db, hold, found.length)) } catch { return } } } }`],
+  }
+  assert.deepEqual(Object.entries(reported).filter(([, [rel, text]]) => unreservedPaidCalls(rel, IMP + text).length === 0).map(([k]) => k), [], 'accepted, must be reported')
+  const accepted: Record<string, [string, string]> = {
+    newHoldBetween: ['lib/x.ts', `async function p() { const h = await ${R}; ${C}; await settleCredits(db, h, 1); const h2 = await ${R}; ${C} }`],
+    exclusiveBranches: ['lib/x.ts', `async function p(x: boolean) { const h = await ${R}; if (x) { ${C} } else { await apolloPersonMatch(k, w, f) } }`],
+    exclusiveTernary: ['lib/x.ts', `async function p(x: boolean) { const h = await ${R}; const o = x ? ${C} : await apolloPersonMatch(k, w, f) }`],
+    holdInsideLoop: ['lib/x.ts', `async function p(xs: string[]) { for (const x of xs) { const h = await ${R}; ${C} } }`],
+    loopOverArgsOnce: ['lib/x.ts', `async function p() { const h = await ${R}; for (const x of [${C}]) use(x) }`],
+    variableUnits: ['lib/x.ts', `async function p(n: number) { const h = await reserveCredits(db, t, "apollo", n); ${C} }`],
+    paramOnce: ['lib/x.ts', viaParam(`return ${PDL}`) + `async function go(xs: string[]) { for (const x of xs) { const hold = await ${RP}; await run(k, hold) } }`],
+  }
+  assert.deepEqual(Object.entries(accepted).filter(([, [rel, text]]) => unreservedPaidCalls(rel, IMP + text).length !== 0).map(([k]) => k), [], 'one call per reservation: accepted')
 })
