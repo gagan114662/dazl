@@ -247,7 +247,10 @@ bothEngines('#1042 a trial reservation for a run that did not happen is given ba
 
 bothEngines('#1042 Find leads now on the keyless first-play repeat uses the same trial admission; a hand-made keyless watch is refused', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example')
-  const r = await runPlayNow(db, A, 'watch', w, NOW + 2 * 3600, TRIAL_ENV)
+  // the click is on the next UTC day after the first play (NOW - 1 h): the same day, the free plan's daily cap answers first
+  // (lib/play-cadence.ts); before this fix the test passed only when NOW + 2 h happened to cross UTC midnight
+  const CLICK = Math.floor((NOW - 3600) / DAY) * DAY + DAY + 2 * 3600
+  const r = await runPlayNow(db, A, 'watch', w, CLICK, TRIAL_ENV)
   assert.ok('job_id' in r, JSON.stringify(r))
   assert.equal(r.funded_by, 'trial')
   assert.deepEqual((await reservations(db, A)).map(x => x.job_id), [r.job_id])
@@ -257,11 +260,11 @@ bothEngines('#1042 Find leads now on the keyless first-play repeat uses the same
   assert.deepEqual(await runPlayNow(db, B, 'watch', hand.id, NOW, TRIAL_ENV), { error: 'no_api_key' })
   // trial off: refused, nothing reserved
   await account(db, C, 'c@c.example'); await scan(db, C, NOW - 3600); const [wc] = await repeatFirstPlays(db, { now: NOW })
-  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, NOW + 2 * 3600, NO_TRIAL), { error: 'no_api_key' })
+  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, NO_TRIAL), { error: 'no_api_key' })
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations WHERE tenant_id IN (?, ?)', [B, C]), 0)
   // free searches used up: refused with its own answer
   for (let i = 0; i < 3; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), C, Math.floor(NOW / 86400), NOW])
-  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, NOW + 2 * 3600, TRIAL_ENV), { error: 'trial_used' })
+  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, TRIAL_ENV), { error: 'trial_used' })
   assert.match(runNowMessage(402, { error: 'trial_used' }).text, /free searches are used up/)
 })
 
