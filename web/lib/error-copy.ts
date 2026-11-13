@@ -60,3 +60,28 @@ export function lossyProfileCopy(j: { message?: unknown; loss?: unknown }): stri
   const head = typeof j.message === 'string' && j.message ? j.message : 'Part of this profile would be cut or ignored.'
   return lines.length ? `${head} ${lines.join(' ')}` : head
 }
+
+// #917: the note above a profile preview. A fallback profile (dazl could not infer one) holds only the first part of a
+// long request (fallbackCoverage in lib/scan/icp.ts, sent as `coverage` by POST /api/scan/icp): then it must say so,
+// show what was left out, and never claim the request's words are all used. Client-safe; the coverage is untrusted JSON.
+export type PreviewNote = { text: string; dropped: string | null }
+export function profilePreviewNote(inferred: unknown, coverage: unknown): PreviewNote {
+  const c = coverage && typeof coverage === 'object' ? coverage as { complete?: unknown; kept_chars?: unknown; request_chars?: unknown; dropped?: unknown } : null
+  // a cut request is disclosed whatever made the profile (the funding-stage guard can fall back to the request's words
+  // under an inferred profile, lib/scan/icp.ts previewCoverage)
+  if (c && c.complete === false && typeof c.dropped === 'string' && c.dropped.trim()) {
+    // counts only when both are whole, safe, non-negative character counts with something left out (Number(null) is 0:
+    // 'the first 0 of your 388' would contradict the text; -1, 1.5 or 1e21 would be made up)
+    const kept = typeof c.kept_chars === 'number' ? c.kept_chars : NaN, total = typeof c.request_chars === 'number' ? c.request_chars : NaN
+    const counts = Number.isSafeInteger(kept) && Number.isSafeInteger(total) && kept >= 0 && total > kept ? `Only the first ${kept} of your ${total} characters are in this profile; the last ${total - kept} are not. ` : 'Only the first part of your request is in this profile. '
+    const why = inferred === true ? "dazl used your request's own words for this profile, so it uses its first part only." : 'dazl could not infer more from your request, so this profile uses its first part only.'
+    return { text: `${why} ${counts}Add what was left out to the fields below (or shorten the request) before you run the scan.`, dropped: c.dropped.trim() }
+  }
+  // coverage on an inferred profile means its words are the request's own (the funding-stage guard's fallback,
+  // lib/scan/icp.ts previewCoverage): never "worked this out" for that
+  if (inferred === true && c && c.complete === true) return { text: "dazl used your request's own words for this profile. Add detail below if you like, then run the scan.", dropped: null }
+  if (inferred === true) return { text: 'dazl worked this out from your request. Edit anything that is off, then run the scan.', dropped: null }
+  // "as they are" only when the coverage says the whole request is in; anything unreadable never claims it (fails closed)
+  if (c && c.complete === true) return { text: 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.', dropped: null }
+  return { text: 'dazl could not infer more; this profile is built from your request. Check that it covers everything before you run the scan.', dropped: null }
+}

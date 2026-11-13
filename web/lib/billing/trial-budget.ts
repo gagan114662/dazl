@@ -36,6 +36,7 @@
 // every later day's global ceiling. A read that never settles at all (the process died between admission and settle)
 // is treated as ended READ_GRACE_S after it was admitted for the day ceiling, and keeps its reserve for the account.
 // It is not one of the scan attempts.
+import { isStaging } from '../staging.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { captureError } from '../ops/errors.ts'
@@ -127,6 +128,15 @@ export type TrialRefusal = typeof TRIAL_REFUSALS[number]
 // #402: the account setup every free-trial run (scan or website read) needs before admission, as the product truth record's
 // `requires` tokens (lib/product-truth.ts). refusal() below enforces exactly this list, so the record and the gate cannot drift.
 export const TRIAL_REQUIRES = ['google_account'] as const
+// TEST-ONLY (#1037 item 3: check a brand-new account's first play on staging without a Google sign-in). Active ONLY when
+// DAZL_ENV=staging; DAZL_STAGING_TRIAL_NO_GOOGLE names exact test addresses (comma-separated, no wildcards) that skip ONLY the Google
+// prerequisite - every other trial gate (domain, attempts, account total, global daily) still applies. Inert everywhere else, so the
+// product truth record's requirement stays true for every real account.
+export function stagingTrialWithoutGoogle(email: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (!isStaging(env)) return false
+  const list = (env.DAZL_STAGING_TRIAL_NO_GOOGLE ?? '').split(',').map(x => x.trim().toLowerCase()).filter(x => x && !x.includes('*'))
+  return list.includes(email.trim().toLowerCase())
+}
 // One check per listed prerequisite: a token added to TRIAL_REQUIRES without its check here does not typecheck, so the record can
 // never advertise a prerequisite the gate does not enforce.
 const TRIAL_REQUIREMENT_CHECKS: { [K in typeof TRIAL_REQUIRES[number]]: { refusal: TrialRefusal; sql: string } } = {
@@ -194,8 +204,9 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // The attempts counter is the account's trial SCANS only (ledger: a website read is money in the wallet, not an
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
-function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number): TxBody<TrialRefusal | null> {
+function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env): TxBody<TrialRefusal | null> {
   for (const req of TRIAL_REQUIRES) {
+    if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
     const check = TRIAL_REQUIREMENT_CHECKS[req]
     if (!(yield* t.get(check.sql, [user.id]))) return check.refusal
   }
@@ -226,7 +237,7 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day, caps.reserveUsd)
+    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [id, user.id, caps.reserveUsd, day, now])
@@ -243,7 +254,7 @@ export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email
   const now = o.now ?? Math.floor(Date.now() / 1000), day = utcDay(now)
   return db.tx(function* (t: Tx): TxBody<Admission> {
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day, TRIAL_SITE_READ_RESERVE_USD)
+    const why = yield* refusal(t, user, caps, day, TRIAL_SITE_READ_RESERVE_USD, o.env ?? process.env)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run("INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at, kind) VALUES (?, ?, NULL, ?, ?, ?, 'site_read')", [id, user.id, TRIAL_SITE_READ_RESERVE_USD, day, now])
@@ -270,7 +281,7 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   if (!caps) return 'not_configured'
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
-  return db.tx(t => refusal(t, user, caps, day, reserveUsd))
+  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env))
 }
 
 // What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total
