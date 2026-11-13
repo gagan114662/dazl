@@ -1474,7 +1474,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // using board links this scan's own searches returned; free, no key. A job's explicit sources win. The postings still go through
     // the same extraction and verifier as every other candidate.
     const hiringRequest = !!(job.query && icpForSources && hasHiringSignal(job.query, icpForSources.signals))
-    const autoBoards = !!(job.query && !job.sources && hiringRequest && placeIn(job.query))
+    // #1095: the place may come from the profile when the request's own words name none the board source knows ("Austin B2B SaaS ..."
+    // whose profile resolved "Austin, TX"): the board source then reads the request with that place appended, never every place.
+    const profilePlace = job.query && !placeIn(job.query) ? (icpForSources?.where ?? []).find(w => typeof w === 'string' && placeIn(w)) ?? null : null
+    const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
+    const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
@@ -1485,7 +1489,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
+        const collected = await collectEvidenceReport(sel, (autoBoards ? boardsQuery : job.query)!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
         for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length

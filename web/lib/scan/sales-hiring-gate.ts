@@ -21,6 +21,7 @@ import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
@@ -183,9 +184,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const where = whereOf(job.icp)
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
   const leads = db.prepare(
-    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url, event_date FROM leads
+    `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url, event_date, event_date_proof FROM leads
      WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND human_confirmed_at IS NULL AND company <> '' ORDER BY score DESC`,
-  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null; source_url: string; event_date: string | null }[]
+  ).all(job.id) as { id: string; company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string; why: string | null; dedup_key: string | null; source_url: string; event_date: string | null; event_date_proof: string | null }[]
   const setWhy = db.prepare('UPDATE leads SET why = ? WHERE id = ?')
   const demote = db.prepare('UPDATE leads SET review_reason = ?, confidence = NULL, why = ? WHERE id = ? AND review_reason IS NULL')
   const counts = db.prepare('UPDATE scan_jobs SET verified = MAX(COALESCE(verified, 0) - 1, 0), needs_review = COALESCE(needs_review, 0) + 1 WHERE id = ?')
@@ -238,6 +239,22 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
           setWhy.run((`Hiring sales: named in a verified source${host ? ` (${host})` : ''}${o.date ? `, dated ${o.date}` : ''}. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id)
         }
         passed++; passedIds.push(l.id); continue
+      }
+      // #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board (Greenhouse / Lever / Ashby).
+      // The verifier already read that posting through the board's API record, bound it to this company (#1126: the board's stated name or its
+      // whole slug) and dated it by the board's own first-published day (ats_structured). When that day is inside the hiring clock and the
+      // verified quote from the posting names the requested role, the posting IS the role evidence: no website domain is needed to find the
+      // board again (the trial's own-board leads had none and were held as no_sales_hiring_evidence).
+      if (roles.length && !or) {
+        const ats = atsPostingRef(l.source_url)
+        const t = l.event_date ? Date.parse(l.event_date) : NaN
+        const own = !!ats && l.event_date_proof === 'ats_structured' && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
+        const m = own ? matchedHiringRole(l.evidence_excerpt ?? '', roles) : null
+        if (ats && m) {
+          const board = BOARD_LABEL[ats.kind]
+          addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date, retrieved_at: now })
+          passed++; passedIds.push(l.id); continue
+        }
       }
       if (l.company_domain && lookups >= MAX_BOARD_LOOKUPS) {
         // A processing limit never lets a lead through unproven: it is held, and the card says it was not checked (unknown, not absent).

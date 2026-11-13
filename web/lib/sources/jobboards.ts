@@ -85,8 +85,25 @@ export function genericPlace(query: string): Place | null {
   }
   return null
 }
+// #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
+// to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
+// job-board source never ran and the trial's only readable, dated hiring evidence was never read. A US "<City>, <ST>" or
+// "<City>, <State name>" is that CITY: a posting is in it when its location names the city as a whole word and names no other US state.
+// The city never widens to its state (Dallas, TX is not Austin, TX).
+export function usCityPlace(text: string): Place | null {
+  const m = /(?:^|[\s(])((?:[A-Z][\p{L}'.-]+)(?:\s+[A-Z][\p{L}'.-]+){0,2})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?=$|[\s,.;)])/u.exec(text)
+  if (!m) return null
+  const abbr = STATES[m[2]] ? m[2] : Object.keys(STATES).find(k => STATES[k].toLowerCase() === m[2].toLowerCase())
+  if (!abbr) return null
+  const city = m[1].trim(), key = norm(city)
+  if (key.length < 3 || STATES[abbr].toLowerCase() === key) return null
+  const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+  const otherState = (l: string) => Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(l) || new RegExp(`\\b${name}\\b`, 'i').test(l)))
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !otherState(l)) }
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  const us = usCityPlace(query); if (us) return us
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
   // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.

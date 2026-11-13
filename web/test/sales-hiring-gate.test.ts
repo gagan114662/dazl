@@ -772,3 +772,39 @@ test('#533 AC4 dedupe: a careers link to an ATS posting already stored from the 
   assert.equal((s.db.prepare("SELECT value FROM lead_enrichments WHERE id = 'G1'").get() as { value: string }).value, `CRM Administrator - posted ${posted}`, 'the stored board row is never rewritten')
   s.db.close()
 })
+
+// #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board, with no website domain to find the board.
+// The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the verified quote must name the role.
+function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | null; proof?: string | null }) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
+  const icp = JSON.stringify({ signals: ['hiring their first account executive'], where: ['Austin, TX'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', 'Justworks', NULL, 'hiring an Account Executive', ?, ?, 80, 80, '', ?, ?, 'verified')")
+    .run(jobId, o.url ?? 'https://job-boards.greenhouse.io/justworks/jobs/7301001', o.excerpt ?? 'Justworks is hiring an Account Executive to own new business for small companies across Austin and Central Texas', o.date === undefined ? d(9).slice(0, 10) : o.date, o.proof === undefined ? 'ats_structured' : o.proof)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+test('#1095 PASS: the lead\'s own board-dated Greenhouse posting naming the requested role is the role evidence (no website domain needed); evidence row written', async () => {
+  const { db, job } = seedOwnPosting({})
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
+  assert.equal(lead(db).review_reason, null)
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring')
+  assert.equal(e.length, 1); assert.equal(e[0].source_date, d(9).slice(0, 10)); assert.match(e[0].value, /^Open role on its Greenhouse job board: account executive - posted /)
+})
+test('#1095 HELD: the own-posting path needs the board\'s date inside the clock, the board proof kind, a public job-board posting and the requested role in the verified quote', async () => {
+  for (const [why, o] of [
+    ['another role in the quote', { excerpt: 'Justworks is hiring a Senior Software Engineer to build payroll services in Austin, Texas' }],
+    ['posted outside the 30-day clock', { date: d(60).slice(0, 10) }],
+    ['no board date (proof kind missing)', { proof: null }],
+    ['a page-bound date, not the board\'s own', { proof: 'page_bound' }],
+    ['not a public job-board posting', { url: 'https://www.linkedin.com/jobs/view/account-executive-in-territory-austin-tx-at-justworks-4485363528' }],
+  ] as const) {
+    const { db, job } = seedOwnPosting(o)
+    await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
+    db.close()
+  }
+})
