@@ -181,3 +181,45 @@ test('#533 direct-career roleMatch: the requested role wins over an earlier gene
   assert.equal(later.reason, 'found'); assert.equal(later.matched, true); assert.equal(later.vacancy!.title, 'Sales Operations Manager')
   assert.equal(later.pages, 2, 'both careers paths were sampled before the match settled')
 })
+
+import { quoteFor } from '../lib/signals/careers-page.ts'
+test('review: the quote keeps a passage that names the company when the default window misses it', () => {
+  const text = 'Brightloop is hiring. ' + 'x '.repeat(100) + 'Account Executive ' + 'y '.repeat(30)
+  const at = text.indexOf('Account Executive')
+  const q = quoteFor(text, 'Account Executive', at, 'Brightloop')
+  assert.match(q, /Brightloop/); assert.ok(q.length <= 300); assert.ok(text.includes(q), 'verbatim')
+  const far = 'Brightloop. ' + 'z '.repeat(400) + 'Account Executive tail'
+  assert.equal(quoteFor(far, 'Account Executive', far.indexOf('Account Executive'), 'Brightloop'), '', 'name and title too far apart for one quote: no quote')
+  assert.equal(quoteFor('Join us as Account Executive now', 'Account Executive', 8), 'Join us as Account Executive now', 'no company: unchanged')
+})
+
+test('review (Hermes-PC 5): when the name is too far from the title for one quote there is no quote, never a passage about the company alone', () => {
+  const title = 'Account Executive - London'
+  const text = `${title} We are hiring an Account Executive to own the full sales cycle. ` + 'x '.repeat(300) + 'About Brightloop: we build tools for teams.'
+  const q = quoteFor(text, title, 0, 'Brightloop')
+  assert.ok(q === '' || (q.includes('Account Executive') && q.includes('Brightloop')), `the quote drops the vacancy: ${JSON.stringify(q.slice(0, 80))}`)
+})
+
+test('review R3: the quote uses the mention of the company nearest the title, not only the first one on the page', () => {
+  const title = 'Account Executive - London'
+  const head = 'Brightloop careers. '
+  const text = head + 'h'.repeat(335 - head.length) + title + ' ' + 'y'.repeat(199) + 'About Brightloop: we build tools for teams.'
+  const at = text.indexOf(title); assert.equal(at, 335)
+  const q = quoteFor(text, title, at, 'Brightloop')
+  assert.ok(q.includes(title) && q.includes('About Brightloop'), `a quote naming both: ${JSON.stringify(q.slice(0, 60))}`); assert.ok(q.length <= 300 && text.includes(q))
+})
+
+test('review (Hermes-PC 1 at 41a445fa): the site\'s own robots.txt answering 401 / 403 / 429 / 400 is robots_unreachable and no page is read; 404 / 410 still read the page', async () => {
+  const pages = { '/careers': '<h2>Open roles</h2><ul><li><a href="/careers/ae">Account Executive - London</a> <a href="/careers/ae">Apply</a></li></ul>', '/careers/ae': JOB() }
+  for (const status of [401, 403, 429, 400]) {
+    const asked: string[] = []
+    const get = site(pages, { '/robots.txt': { status, body: 'Forbidden' } })
+    const r = await careersSalesVacancy('brightloop.io', async url => { asked.push(url); return get(url) }, { now: NOW, company: 'Brightloop' })
+    assert.equal(r.reason, 'robots_unreachable', `robots ${status}`); assert.equal(r.vacancy, null, `robots ${status}`)
+    assert.deepEqual(asked, ['https://brightloop.io/robots.txt'], `robots ${status}: nothing is read around it`)
+  }
+  for (const status of [404, 410]) {
+    const r = await careersSalesVacancy('brightloop.io', site(pages, { '/robots.txt': { status, body: '' } }), { now: NOW, company: 'Brightloop' })
+    assert.equal(r.reason, 'found', `robots ${status}: no policy, the page is read`); assert.equal(r.vacancy!.url, 'https://brightloop.io/careers/ae')
+  }
+})

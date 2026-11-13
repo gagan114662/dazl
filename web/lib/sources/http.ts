@@ -19,7 +19,7 @@ export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup
       { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-sources/1.0 (+https://dazl.ai)', accept: opts.accept ?? '*/*', 'accept-encoding': 'identity', ...opts.headers } },
       res => {
         const status = res.statusCode ?? 0
-        if (status >= 300 && status < 400) { res.resume(); return resolve({ status, body: '' }) }
+        if (status >= 300 && status < 400) { res.resume(); const loc = res.headers.location; return resolve(typeof loc === 'string' && loc ? { status, body: '', location: loc } : { status, body: '' }) }
         const chunks: Buffer[] = []
         let n = 0
         res.on('data', (c: Buffer) => {

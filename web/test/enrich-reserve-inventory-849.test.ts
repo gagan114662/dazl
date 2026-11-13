@@ -26,7 +26,9 @@ const FREE = new Set(['apolloPeopleSearch'])
 // The only modules allowed to call them.
 const CALLERS = ['lib/enrich/index.ts', 'lib/people/work-email.ts', 'lib/scan/commenter-import.ts']
 // The only modules allowed to hold a paid vendor's API origin.
-const VENDOR_MODULES = ['lib/enrich/apollo.ts', 'lib/enrich/pdl.ts']
+// lib/people/zerobounce.ts (#899): the free-tier mailbox verifier's adapter, wired through verifierFromEnv and reserved by
+// reserveVerifySlot (below) before every .verify call.
+const VENDOR_MODULES = ['lib/enrich/apollo.ts', 'lib/enrich/pdl.ts', 'lib/people/zerobounce.ts']
 // Paid API hosts: the two enrichment vendors, and the mailbox-verification APIs a verifierFromEnv adapter would call
 // (none is wired today: no verifier host appears anywhere in the source).
 const VENDOR_HOSTS = ['api.apollo.io', 'api.peopledatalabs.com', 'api.zerobounce.net', 'api.zerobounce.in', 'api.neverbounce.com', 'api.hunter.io',
@@ -125,6 +127,14 @@ function reservers(sf: ts.SourceFile, rel: string): Reservers {
     const decl = s.parent.parent.parent
     if (s.isTypeOnly || decl.importClause?.isTypeOnly || !ts.isStringLiteral(decl.moduleSpecifier)) continue
     if ((s.propertyName ?? s.name).text === 'reserveCredits' && resolveSpec(rel, decl.moduleSpecifier.text) === 'lib/enrich/credit-pool') reserve.add(s.name.text)
+    // #1036: Find work email's mailbox check reserves through the verifier module's own reserveVerifySlot (checked below to be one)
+    if ((s.propertyName ?? s.name).text === 'reserveVerifySlot' && resolveSpec(rel, decl.moduleSpecifier.text) === 'lib/people/email-pattern') reserve.add(s.name.text)
+  }
+  // #899: the mailbox verifier's reservation is the operator free-tier ledger, not the workspace credit pool (dazl's own free account,
+  // no tenant credits). It counts as a reservation only as the module's own reserveVerifySlot, and only while that function still
+  // writes the email_verify_usage ledger and throws on refusal (like reserveCredits).
+  if (rel === VERIFIER_MODULE) for (const st of sf.statements) {
+    if (ts.isFunctionDeclaration(st) && st.name?.text === 'reserveVerifySlot' && st.body && /email_verify_usage/.test(st.body.getText(sf)) && /throw new VerifySlotRefused/.test(st.body.getText(sf))) reserve.add('reserveVerifySlot')
   }
   if (rel === 'lib/scan/commenter-import.ts') for (const st of sf.statements) {
     if (ts.isFunctionDeclaration(st) && st.name?.text === 'holdCredits' && st.body && all(st.body, n => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && reserve.has(n.expression.text)).length > 0) hold.add('holdCredits')
@@ -314,7 +324,17 @@ function unreservedVerifier(rel: string, text: string): string[] {
   return calls.filter(c => { const f = enclosingFn(c); return !f || guards(f, c, null, rs).length === 0 }).map(c => `${rel}:${lineOf(sf, c)} verify`)
 }
 const VERIFIER_NAMES = /\b(MailboxVerifier|verifierFromEnv|verifyCandidates)\b/
-const verifierUsers = (srcs: Src[]) => srcs.filter(s => s.rel !== VERIFIER_MODULE && VERIFIER_NAMES.test(s.text)).map(s => s.rel)
+// Inventoried users (#899): the adapter (implements MailboxVerifier, makes no reservation-free call of its own: verifierFromEnv
+// is the only constructor), and the scan runner (calls verifyJobCandidates, which reserves inside the verifier module).
+const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts']
+// Modules besides the verifier module that call .verify themselves: every such call must be reserved (the same guard rules).
+const VERIFY_CALLERS = ['lib/people/work-email.ts']
+function unreservedVerifyCalls(rel: string, text: string): string[] {
+  const sf = parse(rel, text), rs = reservers(sf, rel)
+  const calls = all(sf, n => ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'verify') as ts.CallExpression[]
+  return calls.filter(c => { const f = enclosingFn(c); return !f || guards(f, c, null, rs).length === 0 }).map(c => `${rel}:${lineOf(sf, c)} verify`)
+}
+const verifierUsers = (srcs: Src[]) => srcs.filter(s => s.rel !== VERIFIER_MODULE && !VERIFIER_USERS.includes(s.rel) && VERIFIER_NAMES.test(s.text)).map(s => s.rel)
 
 test('#849 inventory: only the known enrichment entry points call the Apollo / People Data Labs functions', () => {
   assert.deepEqual(unexpectedCallers(SOURCES), [], 'a new caller of a paid enrichment function must reserve workspace credits first and be listed here')
@@ -336,7 +356,7 @@ test('#849 inventory: a new caller is caught, however it reaches the function (t
 
 test('#849 inventory: no paid vendor API origin is hard-coded outside the Apollo / PDL modules', () => {
   assert.deepEqual(hardCodedOrigins(SOURCES), [], 'a paid vendor API called outside lib/enrich/apollo.ts / pdl.ts must go through a reserved provider function')
-  assert.ok(VENDOR_MODULES.every(rel => SOURCES.some(s => s.rel === rel && /\/\/api\.(apollo\.io|peopledatalabs\.com)/.test(s.text))), 'the vendor modules still hold their origins (else the list is stale)')
+  assert.ok(VENDOR_MODULES.every(rel => SOURCES.some(s => s.rel === rel && /\/\/api\.(apollo\.io|peopledatalabs\.com|zerobounce\.net)/.test(s.text))), 'the vendor modules still hold their origins (else the list is stale)')
 })
 
 test('#849 inventory: a hard-coded vendor or mailbox-verifier origin is caught (the check is not vacuous)', () => {
@@ -354,6 +374,19 @@ test('#849 inventory: mailbox verification cannot run a provider call without a 
   assert.deepEqual(verifierUsers(SOURCES), [], 'a new verifier caller must be inventoried here')
 })
 
+test('#1036 inventory: Find work email\'s mailbox check is reserved before its .verify call', () => {
+  for (const rel of VERIFY_CALLERS) {
+    const src = SOURCES.find(s => s.rel === rel)?.text
+    assert.ok(src && /\.verify\(/.test(src), `${rel} still calls .verify (else the list is stale)`)
+    assert.deepEqual(unreservedVerifyCalls(rel, src!), [], `${rel}: a .verify call needs an awaited reserveVerifySlot before it`)
+  }
+  const imp = "import { reserveVerifySlot } from './email-pattern.ts'\n"
+  const fn = (body: string) => `async function checkMailbox(db: D, v: V, a: string) { ${body} }`
+  assert.equal(unreservedVerifyCalls('lib/people/work-email.ts', imp + fn('await v.verify(a)')).length, 1, 'unreserved is caught')
+  assert.equal(unreservedVerifyCalls('lib/people/work-email.ts', fn('await reserveVerifySlot(db, s, m); await v.verify(a)')).length, 1, 'not the verifier module import')
+  assert.deepEqual(unreservedVerifyCalls('lib/people/work-email.ts', imp + fn('try { await reserveVerifySlot(db, s, m) } catch (e) { return }\n  await v.verify(a)')), [], 'reserved (try / exiting catch)')
+})
+
 test('#849 inventory: a wired verifier with no reservation is caught (the check is not vacuous)', () => {
   const imp = "import { reserveCredits } from '../enrich/credit-pool.ts'\n"
   const wired = "export function verifierFromEnv(env: E): MailboxVerifier | null { return env.ZB_KEY ? zeroBounce(env.ZB_KEY) : null }\n"
@@ -364,6 +397,12 @@ test('#849 inventory: a wired verifier with no reservation is caught (the check 
   assert.equal(unreservedVerifier(VERIFIER_MODULE, wired + run('await reserveCredits(db, t, "zb", 1); await verifier.verify(a)')).length, 1, 'wired, reserveCredits not the credit-pool import')
   assert.deepEqual(unreservedVerifier(VERIFIER_MODULE, imp + wired + run('const h = await reserveCredits(db, t, "zb", 1); await verifier.verify(a)')), [], 'wired, reserved')
   assert.equal(unreservedVerifier(VERIFIER_MODULE, imp + 'export const verifierFromEnv = () => null\n').length, 1, 'reshaped: inventory again')
+  // #899: the free-tier ledger reservation counts only as the module's own reserveVerifySlot that writes the ledger and throws.
+  const slot = "export async function reserveVerifySlot(db: D) { db.prepare('INSERT INTO email_verify_usage (v) VALUES (1)'); throw new VerifySlotRefused('cap') }\n"
+  assert.deepEqual(unreservedVerifier(VERIFIER_MODULE, slot + wired + run('await reserveVerifySlot(db, s, m); await verifier.verify(a)')), [], 'wired, reserved by the ledger slot')
+  assert.equal(unreservedVerifier(VERIFIER_MODULE, wired + run('await reserveVerifySlot(db, s, m); await verifier.verify(a)')).length, 1, 'a reserveVerifySlot not declared in the module is no reservation')
+  assert.equal(unreservedVerifier(VERIFIER_MODULE, "export async function reserveVerifySlot(db: D) { return }\n" + wired + run('await reserveVerifySlot(db, s, m); await verifier.verify(a)')).length, 1, 'a reserveVerifySlot that writes no ledger is no reservation')
+  assert.equal(unreservedVerifier(VERIFIER_MODULE, slot + wired + run('await verifier.verify(a)')).length, 1, 'declared but not called before the check')
   assert.deepEqual(verifierUsers([{ rel: 'app/api/leads/x/route.ts', text: "import { verifyCandidates } from '@/lib/people/email-pattern'" }]), ['app/api/leads/x/route.ts'])
 })
 
