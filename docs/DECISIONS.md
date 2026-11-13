@@ -3,6 +3,20 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-13: held leads get a people search inside the existing cap (Refs #1037)
+
+Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner
+decisions yourself, sensibly, and note them in the PR"); reversible by the owner. The post-scan people search (public
+profile search results, `lib/people/people-search.ts`) also covers leads held for review, after every ready lead and
+inside the same cap (5 per scan, 10 on a first play / free-trial scan; no new spend ceiling, the trial's 25% keep
+unchanged). It runs after the buyer-fit and sales-hiring checks and skips leads graded out of the list (fit 0-1). Not
+searched: a rejected lead, and a hold that puts the company itself in doubt (a place that disagrees or is unconfirmed,
+someone else's customer, an owner's self-description, the tenant's own form signal, any reason not on the list). A
+person found for a held lead is shown on its row as "search result, not verified as current" and never makes the lead
+ready or sendable. Why: on real scans most candidates are held (the 2026-11-13 matrix: 18 of 18), so "who do I
+contact" went unanswered on every row the user saw. This replaces decision 3 of 2026-11-10 on #1037 only in "one
+search per ready lead": it is now one per lead that names nobody yet, ready leads first.
+
 ## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
 
 Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner

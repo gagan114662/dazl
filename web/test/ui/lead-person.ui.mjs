@@ -7,6 +7,7 @@
 //      the "search result, not verified as current" label; a site-listed person with a source link; "No buyer named
 //      yet" for a lead with nobody and for a lead whose only person has a former title (never shown);
 //   2. the first play (mode first5): once the play is done, each first-play card shows the same line;
+//   1b. held leads ("Needs your review" rows) show the same line: the stored person with the LinkedIn link, or "No buyer named yet";
 //   3. the lines fit at 390px (no element past the screen edge).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -45,6 +46,12 @@ const LEADS = [
   lead('3'.repeat(24), 'Harbor Analytics', []),
   lead('4'.repeat(24), 'Gramercy Cloud', [ppl('search:people', 'Pat Lee, Former Head of Sales', 'https://www.linkedin.com/in/pat-lee-gc')]),
 ]
+// Held for review (not cards): the same line on the "Needs your review" rows. Real staging rows (job 13808d9c, read 2026-11-13):
+// PagerDuty's stored search:people person, and Cisco with nobody stored.
+const HELD = [
+  lead('5'.repeat(24), 'PagerDuty', [ppl('search:people', 'Mark Sarman, Regional Sales Director', 'https://www.linkedin.com/in/marksarman')], { review_reason: 'quote_unconfirmed' }),
+  lead('6'.repeat(24), 'Cisco', [], { review_reason: 'blocked_by_site' }),
+]
 const f5lead = l => ({ id: l.id, company: l.company, name: null, signal: l.signal, source_url: l.source_url, event_date: l.event_date, published_at: null, fit_pct: 100, provisional: false })
 const F5 = { target: 5, found: 4, verified: 4, enriching: false, next: { action: 'wider_search', label: 'Search wider' }, state: 'partial', finding_more: false, reason: null, message: '4 of 5 verified from the free sources. You can search wider.', leads: LEADS.map(f5lead), sources: [{ source: 'search:news', state: 'done', status: 'ok', note: null, candidates: 6, accepted: 4, review: 0, rejected: 2 }], failed_sources: [], can_continue: true }
 const EXPECT = [
@@ -71,7 +78,7 @@ async function context(width, height) {
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/scan' && m === 'POST') return json({ job_id: J })
     if (p === '/api/scan/status') { st.polls++; const done = st.polls >= 2; return json({ job_id: J, status: done ? 'done' : 'running', lead_count: 4, icp: READ.icp, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'B2B SaaS teams hiring their first SDR', first5: done ? F5 : { ...F5, state: 'finding', finding_more: true, verified: 0, leads: [] } }) }
-    if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: LEADS })
+    if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: [...LEADS, ...HELD] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/enrich/held') return json({ held: [] })
@@ -94,7 +101,16 @@ async function leadsPage(width, height, tag) {
     else assert.equal(await line.getAttribute('data-empty'), 'true')
   }
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
+  // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
+  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 2)
+  const pd = held.filter({ hasText: 'PagerDuty' }).getByTestId('lead-person'); assert.equal(await pd.count(), 1)
+  assert.equal((await pd.innerText()).replace(/\s+/g, ' ').trim(), 'Mark Sarman · Regional Sales Director · LinkedIn (search result, not verified as current)')
+  assert.equal(await pd.getByTestId('lead-person-linkedin').getAttribute('href'), 'https://www.linkedin.com/in/marksarman')
+  const cs = held.filter({ hasText: 'Cisco' }).getByTestId('lead-person'); assert.equal(await cs.count(), 1)
+  assert.equal((await cs.innerText()).trim(), 'No buyer named yet'); assert.equal(await cs.getAttribute('data-empty'), 'true')
+  assert.equal(await held.getByTestId('lead-person-find').count(), 0, 'a held row offers no Find contact (it is not confirmed)')
   assert.equal(await fitsAt(page, '[data-testid=lead-person], [data-testid=lead-person] *'), 0, `person lines fit at ${width}px`)
+  if (shotDir) await held.first().screenshot({ path: path.join(shotDir, `leads-held-named-${tag}.png`) })
   if (shotDir) { await cards.first().screenshot({ path: path.join(shotDir, `leads-card-named-${tag}.png`) }); await cards.nth(2).screenshot({ path: path.join(shotDir, `leads-card-none-${tag}.png`) }); await page.screenshot({ path: path.join(shotDir, `leads-page-${tag}.png`) }) }
   assert.deepEqual(st.writes, [], 'viewing the leads writes nothing')
   await ctx.close()
