@@ -10,7 +10,8 @@ import type { Db } from '../lib/db/client.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
-import { leadStatus } from '../lib/outreach/campaign-view.ts'
+import { listCampaigns } from '../lib/outreach/campaigns.ts'
+import { leadStatus, qualificationLines } from '../lib/outreach/campaign-view.ts'
 import { currentQual, currentRun, runStatusOf } from '../lib/run-status.ts'
 import { requiredGateHeld, requiredGateHeldForJob, markHeldInProcess, releaseHeld } from '../lib/scan/held-state.ts'
 import { salesHiringRequired } from '../lib/scan/sales-hiring-required.ts'
@@ -45,7 +46,9 @@ async function seed(db: Db) {
   await lead(db, 'js', 'report'); await gateMark(db, 'A', 'report', 'gate_passed')  // held only by the run report below
   await lead(db, 'js', 'from', { machine: false, confirmedFrom: 'sales_hiring_check_failed' })  // confirmed OUT of the failed check
   await lead(db, 'js', 'review', { machine: false, review: 'quote_unconfirmed' })     // ordinary review: not a gate hold
-  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', ['js', JSON.stringify({ held_lead_ids: ['deny'] })])
+  await lead(db, 'js', 'reviewheld', { machine: false, review: 'quote_unconfirmed' }); await gateMark(db, 'A', 'reviewheld', 'gate_failed')  // reviewable reason, but the gate failed
+  await lead(db, 'js', 'oldreport'); await gateMark(db, 'A', 'oldreport', 'gate_passed')  // held only by an OLDER run attempt: not held
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', ['js', JSON.stringify({ held_lead_ids: ['oldreport'] })])
   await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 2, ?)', ['js', JSON.stringify({ held_lead_ids: ['report'] })])
   await job(db, 'A', 'jp', PLAIN, PLAIN_ICP)
   await lead(db, 'jp', 'plain')                                             // a request that needs no sales-hiring proof: never default-denied
@@ -63,18 +66,20 @@ bothEngines('#1062 campaign page: a DEFAULT-DENY gate-held lead reads research o
   await seed(db)
   const d = (await campaignDetail(db, 'A', 'js'))!
   const by = Object.fromEntries(d.leads.map(l => [l.id, l]))
-  assert.deepEqual(d.leads.filter(l => l.gate_held).map(l => l.id).sort(), ['deny', 'failed', 'from', 'report', 'wrongpass'])
+  assert.deepEqual(d.leads.filter(l => l.gate_held).map(l => l.id).sort(), ['deny', 'failed', 'from', 'report', 'reviewheld', 'wrongpass'])
   assert.equal(by.deny.review_reason, null, 'the DEFAULT-DENY lead has no review_reason: only the gate verdict can hold it')
   const research = { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
   assert.deepEqual(leadStatus(by.deny, []), research)
   assert.deepEqual(leadStatus(by.report, []), research)
   assert.deepEqual(leadStatus(by.pass, []), { stage: 'qualified', text: 'Source-checked, not drafted' }, 'control: a recorded pass is not held')
   assert.deepEqual(leadStatus(by.review, []), { stage: 'review', text: 'Needs your review' }, 'control: ordinary review is unchanged')
+  assert.deepEqual(leadStatus(by.reviewheld, []), research, 'a reviewable reason does not outrank a failed required check')
+  assert.deepEqual(leadStatus(by.oldreport, []), { stage: 'qualified', text: 'Source-checked, not drafted' }, 'only the LATEST run attempt holds')
   const q = currentQual(d.leads)
-  assert.equal(q.sourceChecked, 1, 'only the lead with a recorded pass counts as source-checked')
-  assert.equal(q.research, 5)
-  const run = currentRun(runStatusOf({ id: 'js', status: 'done', error: null, candidates: 9, verified: 5, needs_review: 2, dropped: 2, lead_count: 7 } as never), q, SALES)
-  assert.equal(run.label, '7 leads found: 1 source-checked, 0 confirmed by you, 1 needs your review, 5 research only, 0 rejected')
+  assert.equal(q.sourceChecked, 2, 'only the leads with a recorded pass (and no hold) count as source-checked')
+  assert.equal(q.research, 6); assert.equal(q.needsReview, 1)
+  const run = currentRun(runStatusOf({ id: 'js', status: 'done', error: null, candidates: 9, verified: 7, needs_review: 2, dropped: 0, lead_count: 9 } as never), q, SALES)
+  assert.equal(run.label, '9 leads found: 2 source-checked, 0 confirmed by you, 1 needs your review, 6 research only, 0 rejected')
   // A plain request is never default-denied; another tenant's scan is not readable at all.
   assert.deepEqual((await campaignDetail(db, 'A', 'jp'))!.leads.map(l => l.gate_held), [false])
   assert.equal(await campaignDetail(db, 'A', 'jb'), null)
@@ -90,12 +95,20 @@ bothEngines('#1062 requiredGateHeldForJob is tenant-scoped: another tenant readi
 test('#1062 parity: the campaign page batch read and the draft guard (requiredGateHeld) agree on every lead, including in-process holds and a release', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
   await seed(db)
-  const ids = ['deny', 'pass', 'wrongpass', 'failed', 'report', 'from', 'review']
+  const ids = ['deny', 'pass', 'wrongpass', 'failed', 'report', 'from', 'review', 'reviewheld', 'oldreport']
   const agree = async (why: string) => {
     const batch = await requiredGateHeldForJob(db, 'A', 'js')
     for (const id of ids) assert.equal(batch.has(id), requiredGateHeld(raw, 'A', id) !== null, `${why}: ${id}`)
   }
   await agree('seeded')
+  // The Campaigns list counts the same way as the campaign page: the review lead held by the failed check is research, not review.
+  const c = listCampaigns(raw, 'A').find(x => x.id === 'js')!
+  assert.equal(c.qualification.needsReview, 1); assert.equal(c.qualification.research, 1, 'reviewheld (from is confirmedByYou, counted in heldResearch)')
+  // ...and its Qualification stage says the same split as the page's run label: gate-held leads are research only, never also source-checked.
+  const page = currentQual((await campaignDetail(db, 'A', 'js'))!.leads)
+  const [value, detail] = qualificationLines(c.qualification, c.discovery.leads)
+  assert.equal(value, `${page.sourceChecked} source-checked, ${page.confirmedByYou} confirmed by you, ${page.needsReview} to review`)
+  assert.match(detail ?? '', new RegExp(`, ${page.research} research only, `))
   markHeldInProcess('A', ['pass']); await agree('held in this process')
   assert.equal((await requiredGateHeldForJob(db, 'A', 'js')).has('pass'), true)
   releaseHeld(raw, 'A', 'js', ['pass', 'report']); await agree('after a gate pass released them')

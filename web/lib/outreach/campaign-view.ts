@@ -23,7 +23,8 @@ export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
   const m = msgs.find(x => x.lead_id === l.id)
   if (m) { const [stage, text] = MSG[m.status] ?? ['other', `Email ${m.status}`]; return { stage, text } }
   // A review-list lead no check can make usable is research, never a review item (#683; the same verdict as Home, lib/lead-state.ts).
-  if (l.review_reason) return reviewIsActionable(l) ? { stage: 'review', text: 'Needs your review' } : { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
+  // A required check that has not passed also outranks a reviewable reason: confirming the source cannot release it (#1062).
+  if (l.review_reason) return reviewIsActionable(l) && !l.gate_held ? { stage: 'review', text: 'Needs your review' } : { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
   const ev = evidenceStateOf(l)
   if (ev === 'unverified') return { stage: 'unverified', text: 'Not verified - check the source' }
   // A source-checked or confirmed lead can still be held by the time window, or be confirmed OUT of a hold a check cannot
@@ -37,4 +38,16 @@ export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
 export function scanMessages(msgs: ViewMsg[], leads: { id: string }[]): ViewMsg[] {
   const ids = new Set(leads.map(l => l.id))
   return msgs.filter(m => ids.has(m.lead_id))
+}
+
+// The Campaigns list's Qualification stage: [value, detail], counted the way the campaign page counts (lib/run-status.ts currentQual). A held lead
+// no check can release (heldResearch: the time window, an uncheckable hold, a required check that has not passed - #1062) is research only, never
+// also "source-checked" or "confirmed by you": heldResearchSourceChecked is the source-checked slice of it, the rest was confirmed by you.
+export interface QualCounts { sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; held: number; heldResearch?: number; heldResearchSourceChecked?: number; rejected: number }
+export function qualificationLines(q: QualCounts, leads: number): [string, string?] {
+  if (leads > 0 && q.rejected >= leads) return [`None passed: ${q.rejected} rejected`]
+  const heldResearch = q.heldResearch ?? 0, heldSc = Math.min(q.heldResearchSourceChecked ?? 0, heldResearch)
+  const sourceChecked = Math.max(0, q.sourceChecked - heldSc), confirmed = Math.max(0, q.confirmedByYou - (heldResearch - heldSc))
+  return [`${sourceChecked} source-checked, ${confirmed} confirmed by you, ${q.needsReview} to review`,
+    `${q.held - heldResearch} timing not confirmed, ${(q.research ?? 0) + heldResearch} research only, ${q.unverified} unverified, ${q.rejected} rejected`]
 }

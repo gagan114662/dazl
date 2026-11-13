@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import type { Campaign } from '@/lib/outreach/campaigns'
 import type { RunStatus } from '@/lib/run-status'
+import { qualificationLines } from '@/lib/outreach/campaign-view'
 
 // One view per search, from discovery to the next action. The steps themselves (review, draft, approve, send, reply)
 // stay on their pages with their checks; this page only counts and links.
@@ -38,7 +39,7 @@ export default function CampaignsClient() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 border-t border-black/10 pt-3">
               {/* Found = extracted and saved by the scan; what is still in play after your review is under Qualification. */}
               {stage('Discovery', `${c.discovery.leads} found`, c.discovery.candidates == null ? 'candidates not recorded' : `from ${c.discovery.candidates} candidates`)}
-              {stage('Qualification', c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads ? `None passed: ${c.qualification.rejected} rejected` : `${c.qualification.sourceChecked} source-checked, ${c.qualification.confirmedByYou} confirmed by you, ${c.qualification.needsReview} to review`, `${c.qualification.held - (c.qualification.heldResearch ?? 0)} timing not confirmed, ${(c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)} research only, ${c.qualification.unverified} unverified, ${c.qualification.rejected} rejected`)}
+              {stage('Qualification', ...qualificationLines(c.qualification, c.discovery.leads))}
               {stage('Contact', `${c.contact.withContact} with a contact`)}
               {stage('Outreach', `${c.outreach.drafts} draft, ${c.outreach.approved} approved, ${c.outreach.sent} sent`, `${c.outreach.draftsHeld + c.outreach.approvedHeld} held, ${c.outreach.draftsSetup + c.outreach.approvedSetup} waiting on setup`)}
               {stage('Sequence', `${c.sequence.active} running`, `${c.sequence.stopped} finished or stopped`)}

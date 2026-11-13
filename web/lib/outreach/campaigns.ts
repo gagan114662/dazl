@@ -53,7 +53,10 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       const st = evidenceStateOf(r)
       if (st === 'machine') sourceChecked++
       else if (st === 'human') confirmedByYou++
-      else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id) })) needsReview++; else research++ }
+      else if (r.review_reason) {
+        // A required check that has not passed outranks a reviewable reason: confirming the source cannot release it (#1062, the campaign page's verdict).
+        if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id) }) && requiredGateHeld(db, tenantId, r.id) === null) needsReview++; else research++
+      }
       else unverified++
     }
     // The real gates, not a re-derivation: currentnessHeld is what holds drafting until timing is confirmed, and
