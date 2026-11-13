@@ -413,7 +413,7 @@ if ! $STOP 9>&-; then
   [ -n "$prev" ] || fail "could not stop the service for a recovery point; nothing migrated, release removed (first deployment: NO LIVE STAGING SERVICE)"
   # The stop can fail before the app was touched (#836: the scan worker is stopped first, and it would not stop). Say what
   # is true: when the previous release still answers healthy it is live, not gone.
-  healthy "$(basename "$prev")" && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") is still live (it was not restarted)"
+  healthy "$(basename "$prev")" && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") is still live"
   fail "could not stop the service for a recovery point; nothing migrated, release removed, and $(basename "$prev") did not come back healthy: NO LIVE STAGING SERVICE"
 fi
 mh=

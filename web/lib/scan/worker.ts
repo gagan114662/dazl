@@ -116,7 +116,7 @@ export function scanWorkerMain(o: { deps?: RunDeps; log?: (line: string) => void
   log(`[scan-worker] started instance=${instanceId()} shared_queue=${on ? 'on' : 'off'} concurrency=${workerConcurrency()} interval_ms=${workerIntervalMs()}`)
   if (split) log('[scan-worker] DATABASE_URL is set: this worker is for the one-file store only: idle, no scan is claimed by this process')
   else if (!on) log('[scan-worker] DAZL_SCAN_SHARED_QUEUE is not 1: idle, no scan is claimed by this process')
-  const worker = startScanWorker({ db, kick: kickRunner, deps: o.deps, log, env: split ? {} : undefined })
+  const worker = startScanWorker({ db, kick: kickRunner, deps: o.deps, log, env: split ? { SCAN_WORKER_INTERVAL_MS: process.env.SCAN_WORKER_INTERVAL_MS } : undefined })
   for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     process.once(sig, () => { log(`[scan-worker] ${sig}: stopping instance=${instanceId()}`); worker.stop(); process.exit(sig === 'SIGTERM' ? 143 : 130) })
   }

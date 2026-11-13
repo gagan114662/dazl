@@ -192,11 +192,12 @@ test('#836 the worker script: with the flag off, or with DATABASE_URL set, it id
   try {
     const id = w.scan('t1')
     // pgUrl: started without the test fence (which removes DATABASE_URL); the worker must stay idle, so nothing connects
-    const run = (flag: string | undefined, pgUrl?: string) => new Promise<string>((res, rej) => {
+    const run = (flag: string | undefined, pgUrl?: string, workerId?: string) => new Promise<string>((res, rej) => {
       const e: NodeJS.ProcessEnv = { ...process.env, DB_PATH: w.db.name, SCAN_WORKER_INTERVAL_MS: '250', NODE_ENV: 'test', DAZL_INSTANCE_ID: 'the-app' }
       delete e.NODE_TEST_CONTEXT; delete e.DATABASE_URL; delete e.SCAN_WORKER_ID; delete e.DAZL_SCAN_SHARED_QUEUE
       if (flag !== undefined) e.DAZL_SCAN_SHARED_QUEUE = flag
       if (pgUrl) e.DATABASE_URL = pgUrl
+      if (workerId !== undefined) e.SCAN_WORKER_ID = workerId
       const p = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', ...(pgUrl ? [] : ['--import', './test/helpers/net-fence.ts']), 'scripts/scan-worker.mts'], { cwd: web, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''; p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d })
       p.once('error', rej)
@@ -211,6 +212,9 @@ test('#836 the worker script: with the flag off, or with DATABASE_URL set, it id
       assert.deepEqual(w.job(id), { status: 'pending', attempts: 0 }, 'flag off: the scan is left to the app')
       assert.equal((w.db.prepare('SELECT count(*) AS n FROM work_queue').get() as { n: number }).n, 0)
     }
+    // SCAN_WORKER_ID names the worker; a malformed one (a space, 49 characters) falls back to 8 random hex
+    assert.match(await run(undefined, undefined, 'box-2'), /started instance=worker-box-2 shared_queue=off/)
+    for (const bad of ['a b', 'x'.repeat(49)]) assert.match(await run(undefined, undefined, bad), /started instance=worker-[0-9a-f]{8} shared_queue=off/, bad.slice(0, 8))
     // DATABASE_URL set (the queue would be on Postgres, the scan rows in this file): idle even with the flag on
     const split = await run('1', 'postgres://127.0.0.1:1/none')
     assert.match(split, /\[scan-worker\] started instance=worker-[0-9a-f]{8} shared_queue=off/, 'and an instance id set for the app in the shared env file is never the worker\'s')
