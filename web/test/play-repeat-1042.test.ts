@@ -1,5 +1,5 @@
-// #1042 (owner scope, Gagan via Quest 2026-11-11 11:48): a new account's first play repeats by itself, weekly on the
-// free plan, every run under the EXISTING caps, and an email lists the new leads after each run. Plus the review
+// #1042 (owner scope, Gagan via Quest 2026-11-11 11:48): a new account's first play repeats by itself (daily since
+// the 2026-11-12 decision, test/play-daily-1042.test.ts), every run under the EXISTING caps, and an email lists the new leads after each run. Plus the review
 // findings on PR #1050: one admission rule for the click and the scheduler, and "Mark as seen" never hides unseen leads.
 // Both engines; synthetic accounts and rows only. No network, no provider, no paid call: runs only QUEUE jobs (nothing
 // runs the scan pipeline) and mail goes to the outbox or a stubbed transport.
@@ -16,6 +16,7 @@ import { NEW_LIMIT, playNew, runPlayNow, seenThrough } from '../lib/play-now.ts'
 import { runEnded, runNowMessage } from '../lib/play-new-view.ts'
 import { noteOf, savedPlays } from '../lib/saved-plays.ts'
 import { setTransportForTests } from '../lib/system-mail.ts'
+import { LeaseLost } from '../lib/shared/lease.ts'
 
 const DAY = 86400
 const NOW = Math.floor(Date.now() / 1000)
@@ -60,17 +61,17 @@ const num = async (db: Db, sql: string, p: unknown[] = []) => Number((await db.g
 // (a) the first play repeats by itself; (b) weekly
 // ---------------------------------------------------------------------------------------------------------------------
 
-bothEngines('#1042 (a) a new account\'s first finished play gets ONE weekly repeat, without anyone clicking anything', async ({ db }) => {
+bothEngines('#1042 (a) a new account\'s first finished play gets ONE daily repeat, without anyone clicking anything', async ({ db }) => {
   await account(db, A, 'owner@acme-dental.example')
   const first = await scan(db, A, NOW - 3600, { leads: [{ company: 'Smile Leeds', domain: 'smile.example' }, { company: 'Bright Teeth' }] })
   // the gap on main: a first play is a one-off, nothing repeats it (no watch, no monitor), and the scheduler has nothing to run
   assert.deepEqual(await listWatches(db, A), [])
-  assert.deepEqual(await runDueWatches(db, { now: NOW + 8 * DAY, env: NO_TRIAL }), { ran: 0, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: NOW + 8 * DAY, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 })
   // the scheduler tick's first step
   const made = await repeatFirstPlays(db, { now: NOW })
   assert.equal(made.length, 1)
   const [w] = await watchesOf(db, A)
-  assert.deepEqual([w.id, w.query, Number(w.active), Number(w.next_run_at), Number(w.last_run_at), Number(w.created_at)], [made[0], Q, 1, NOW - 3600 + 300 + REPEAT_INTERVAL_S, NOW - 3600, NOW], 'weekly: first scheduled run one week after the play finished')
+  assert.deepEqual([w.id, w.query, Number(w.active), Number(w.next_run_at), Number(w.last_run_at), Number(w.created_at)], [made[0], Q, 1, NOW - 3600 + 300 + REPEAT_INTERVAL_S, NOW - 3600, NOW], 'daily: first scheduled run one day after the play finished ("next search tomorrow")')
   assert.deepEqual(JSON.parse(w.icp).summary, 'Dental practices', 'the profile the run used')
   assert.equal((await db.get<{ watch_id: string }>('SELECT watch_id FROM scan_jobs WHERE id = ?', [first]))!.watch_id, w.id, 'the first play\'s job is linked: the once-only marker')
   // the first play's companies are remembered, so the next run marks only companies not shown before
@@ -79,8 +80,9 @@ bothEngines('#1042 (a) a new account\'s first finished play gets ONE weekly repe
   const listed = await listWatches(db, A)
   assert.deepEqual(listed.map(x => [x.active, x.next_run_at, x.auto]), [[true, Number(w.next_run_at), true]])
   const [p] = savedPlays(listed as never, null, 'UTC', NOW, true)
-  assert.equal(p.schedule, 'Weekly'); assert.equal(p.status.label, 'Live'); assert.match(p.nextRun, /\d{4}, \d\d:\d\d$/)
-  assert.match(p.note ?? '', /repeat every week/); assert.match(p.note ?? '', /email/)
+  assert.equal(REPEAT_INTERVAL_S, DAY)
+  assert.equal(p.schedule, 'Daily'); assert.equal(p.status.label, 'Live'); assert.match(p.nextRun, /\d{4}, \d\d:\d\d$/)
+  assert.match(p.note ?? '', /search again every day/); assert.match(p.note ?? '', /email/)
   // idempotent across ticks and instances
   assert.deepEqual(await repeatFirstPlays(db, { now: NOW + 60 }), [])
   assert.equal((await watchesOf(db, A)).length, 1)
@@ -170,22 +172,23 @@ const reservations = (db: Db, t: string) => db.all<{ job_id: string | null; rese
 bothEngines('#1042 keyless first-play repeat: its scheduled run is admitted by the EXISTING trial admission and marked as a trial scan', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a-dental.example')
   const r = await runDueWatches(db, { now: due, env: TRIAL_ENV })
-  assert.deepEqual(r, { ran: 1, paused: 0 })
+  assert.deepEqual(r, { ran: 1, paused: 0, skipped: 0 })
   const job = (await jobsOf(db, A)).find(j => j.watch_id === w && j.created_at === due)!
   assert.equal(job.funded_by, 'trial', 'trial-marked, so the runner holds it to the per-scan reserve')
   assert.deepEqual((await reservations(db, A)).map(x => [x.job_id, Number(x.reserve_usd)]), [[job.id, 0.3]], 'one $0.30 reservation, linked to this job')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_scans WHERE tenant_id = ? AND job_id = ?', [A, job.id]), 1, 'counts as one of the free searches')
-  assert.equal(Number((await watchesOf(db, A))[0].next_run_at), due + 7 * DAY)
+  assert.equal(Number((await watchesOf(db, A))[0].next_run_at), due + DAY, 'the repeat runs again a day later')
+  assert.equal(JSON.parse((await db.get<{ run_budget: string }>('SELECT run_budget FROM scan_jobs WHERE id = ?', [job.id]))!.run_budget).max_usd, 0.3, 'free plan: held to $0.30')
 })
 
 bothEngines('#1042 with the trial off, or for a hand-made watch, a keyless run pauses exactly as before (never trial-funded)', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example')
-  assert.deepEqual(await runDueWatches(db, { now: due, env: NO_TRIAL }), { ran: 0, paused: 1 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: NO_TRIAL }), { ran: 0, paused: 1, skipped: 0 })
   assert.deepEqual((await watchesOf(db, A)).map(x => [x.id, Number(x.active)]), [[w, 0]])
   assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [w]))!.paused_reason, 'no_api_key')
   await account(db, B, 'b@b.example')
   const hand = (await createWatch(db, B, 'Bakeries in Paris', '{"summary":"Bakeries"}', null, NOW - 8 * DAY)).watch!
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 1 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 1, skipped: 0 })
   assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [hand.id]))!.paused_reason, 'no_api_key')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations'), 0, 'nothing reserved')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM scan_jobs WHERE created_at = ?', [due]), 0)
@@ -198,11 +201,11 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
   const w = await autoRepeat(db, A, 'a@a.example')
   // two earlier trial searches of the account (the first play's own and one more): this run is the third and last
   for (let i = 0; i < 2; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), A, Math.floor((NOW - 2 * DAY) / 86400), NOW - 2 * DAY])
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 1, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 1, paused: 0, skipped: 0 })
   // the next week: the account's 3 free searches are spent; the run pauses with a reason, nothing reserved, no job
   for (const j of (await jobsOf(db, A)).filter(x => x.status !== 'done')) { await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [j.id]); await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [due + 600, j.id]) }
   const before = await num(db, 'SELECT count(*) AS n FROM trial_reservations')
-  assert.deepEqual(await runDueWatches(db, { now: due + 8 * DAY, env: TRIAL_ENV }), { ran: 0, paused: 1 })
+  assert.deepEqual(await runDueWatches(db, { now: due + 8 * DAY, env: TRIAL_ENV }), { ran: 0, paused: 1, skipped: 0 })
   assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [w]))!.paused_reason, 'trial_used')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations'), before)
   const [p] = savedPlays((await listWatches(db, A)) as never, null, 'UTC', due + 8 * DAY)
@@ -210,7 +213,7 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
   // B: the global daily ceiling is full: no run, no pause, the play stays due for a later tick
   const wb = await autoRepeat(db, B, 'b@b.example')
   for (let i = 0; i < 34; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), uid(String.fromCharCode(100 + (i % 5))) + i, Math.floor(due / 86400), due])
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 0, skipped: 0 })
   const rb = (await watchesOf(db, B))[0]
   assert.deepEqual([rb.id, Number(rb.active)], [wb, 1])
   assert.equal((await reservations(db, B)).length, 0)
@@ -220,7 +223,7 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
 
 bothEngines('#1042 no Google sign-in (the trial needs one): the keyless repeat pauses; nothing is reserved', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example', { google: false })
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 1 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 1, skipped: 0 })
   assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [w]))!.paused_reason, 'no_api_key')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations'), 0)
 })
@@ -229,22 +232,25 @@ bothEngines('#1042 a trial reservation for a run that did not happen is given ba
   const w = await autoRepeat(db, A, 'a@a.example')
   // the watch is run by someone else between the read and the write (its next_run_at moves inside the transaction)
   const race: Fence = function* (t: Tx) { yield* t.run('UPDATE watches SET next_run_at = next_run_at + 1 WHERE id = ?', [w]) }
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV, fence: race }), { ran: 0, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV, fence: race }), { ran: 0, paused: 0, skipped: 0 })
   assert.deepEqual(await reservations(db, A), [], 'released: no attempt or money held for a run that never existed')
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_scans'), 0)
   // the fence throws (lease lost): the error propagates and the reservation is still released
-  const lost: Fence = function* () { throw new Error('lease lost') }
-  await assert.rejects(runDueWatches(db, { now: due, env: TRIAL_ENV, fence: lost }), /lease lost/)
+  const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
+  await assert.rejects(runDueWatches(db, { now: due, env: TRIAL_ENV, fence: lost }), LeaseLost)
   assert.deepEqual(await reservations(db, A), [])
   // a scan of the account is running: skipped before any reservation
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '-', '-', 'q', 'running', ?)", [id24(), A, NOW])
-  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 0, skipped: 0 })
   assert.deepEqual(await reservations(db, A), [])
 })
 
 bothEngines('#1042 Find leads now on the keyless first-play repeat uses the same trial admission; a hand-made keyless watch is refused', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example')
-  const r = await runPlayNow(db, A, 'watch', w, NOW + 2 * 3600, TRIAL_ENV)
+  // the click is on the next UTC day after the first play (NOW - 1 h): the same day, the free plan's daily cap answers first
+  // (lib/play-cadence.ts); before this fix the test passed only when NOW + 2 h happened to cross UTC midnight
+  const CLICK = Math.floor((NOW - 3600) / DAY) * DAY + DAY + 2 * 3600
+  const r = await runPlayNow(db, A, 'watch', w, CLICK, TRIAL_ENV)
   assert.ok('job_id' in r, JSON.stringify(r))
   assert.equal(r.funded_by, 'trial')
   assert.deepEqual((await reservations(db, A)).map(x => x.job_id), [r.job_id])
@@ -254,11 +260,11 @@ bothEngines('#1042 Find leads now on the keyless first-play repeat uses the same
   assert.deepEqual(await runPlayNow(db, B, 'watch', hand.id, NOW, TRIAL_ENV), { error: 'no_api_key' })
   // trial off: refused, nothing reserved
   await account(db, C, 'c@c.example'); await scan(db, C, NOW - 3600); const [wc] = await repeatFirstPlays(db, { now: NOW })
-  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, NOW + 2 * 3600, NO_TRIAL), { error: 'no_api_key' })
+  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, NO_TRIAL), { error: 'no_api_key' })
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations WHERE tenant_id IN (?, ?)', [B, C]), 0)
   // free searches used up: refused with its own answer
   for (let i = 0; i < 3; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), C, Math.floor(NOW / 86400), NOW])
-  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, NOW + 2 * 3600, TRIAL_ENV), { error: 'trial_used' })
+  assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, TRIAL_ENV), { error: 'trial_used' })
   assert.match(runNowMessage(402, { error: 'trial_used' }).text, /free searches are used up/)
 })
 
@@ -287,7 +293,7 @@ bothEngines('#1042 the scheduler re-checks active scans INSIDE its write: a scan
   // fence, which runs first inside the tick's transaction)
   const clicked = id24()
   const click: Fence = function* (t: Tx) { yield* t.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '-', '-', 'q', 'pending', ?)", [clicked, A, NOW]) }
-  assert.deepEqual(await runDueWatches(db, { now: NOW, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0 })
+  assert.deepEqual(await runDueWatches(db, { now: NOW, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0, skipped: 0 })
   assert.deepEqual((await jobsOf(db, A)).map(j => j.id), [clicked], 'one scan for the account, never two')
   assert.equal(Number((await watchesOf(db, A))[0].next_run_at), Number(w.next_run_at), 'still due: the next tick runs it')
 })
@@ -491,7 +497,7 @@ test('#1042 following a started run: ends on done, failed or gone; anything else
 
 test('#1042 the play note never promises an email the host cannot send', () => {
   assert.equal(noteOf(false, false), null)
-  assert.match(noteOf(true, false)!, /repeat every week/); assert.doesNotMatch(noteOf(true, false)!, /email/)
+  assert.match(noteOf(true, false)!, /search again every day/); assert.doesNotMatch(noteOf(true, false)!, /email/)
   assert.match(noteOf(false, true)!, /email/)
   assert.equal(savedPlays([{ id: 'x', query: 'q', icp: null, active: true, next_run_at: NOW + DAY, last_run_at: null, paused_reason: null, last_job_id: null, last_status: null, new_leads: 0 }], null, 'UTC', NOW)[0].note, null)
 })

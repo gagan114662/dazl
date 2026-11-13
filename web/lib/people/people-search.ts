@@ -22,17 +22,8 @@ export const MAX_PEOPLE = 3    // kept per company
 export const DEADLINE_MS = 30_000 // whole people pass; the awaited searches run after bounded post-processing, so they get their own wall
 export const CONNECTOR = 'search:people'
 export const LABEL = 'public search result (profile title), not verified as current staff'
-// #1037: the first play (first5) and free-trial scans also look up who to contact, one search per ready lead that names
-// nobody yet, at most this many per scan (DAZL_FIRST_PLAY_PEOPLE_SEARCHES can lower it; 0 turns it off). A count cap on
-// TinyFish searches, which also count against the tenant / global daily caps inside tfSearch.
-export const FIRST_PLAY_MAX = 10
-export function firstPlayPeopleCap(env: Record<string, string | undefined> = process.env): number {
-  const raw = env.DAZL_FIRST_PLAY_PEOPLE_SEARCHES
-  if (typeof raw !== 'string' || raw.trim() === '') return FIRST_PLAY_MAX
-  // Anything that is not a plain non-negative integer fails closed to 0 (off), never to a larger number.
-  if (!/^\d{1,3}$/.test(raw.trim())) return 0
-  return Math.min(FIRST_PLAY_MAX, Number(raw.trim()))
-}
+export { FIRST_PLAY_MAX, firstPlayPeopleCap } from './first-play-cap.ts'
+import { FIRST_PLAY_MAX } from './first-play-cap.ts'
 
 const PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]{3,100}\/?$/
 // A role the result itself marks as past, in any of the title line's languages we search. Such a person is not a buyer now.

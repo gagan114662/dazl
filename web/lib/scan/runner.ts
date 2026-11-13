@@ -361,8 +361,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
     // exactly as before. Unbinding it first would launder it into a verified undated lead.
     const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
-    if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
-      if (isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
+    // #533: the board's own first-published day for exactly this posting URL, from the job-board source or from the board's API record the page was read from
+    // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
+    const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
+    const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
+    if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
+      // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
+      // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A
+      // claimed day the date rules reject (stale, future, malformed) is never replaced: it keeps the hold, as on any page
+      c0 = { ...cIn, event_date: boardDay, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
+    } else if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
+      if (hiringCand && boardDay === cIn.event_date) {
         // A job board's own structured publish date for exactly this posting URL: proves THIS hiring posting's day only, never funding or another event.
         c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
       } else {
