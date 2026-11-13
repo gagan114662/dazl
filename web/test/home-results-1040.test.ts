@@ -216,3 +216,25 @@ test('#1040: ?sent_since must be a whole number of seconds, or the Inbox refuses
   assert.equal(parseInboxQuery(new URLSearchParams('')).sentSince, null)
   for (const bad of ['x', '-5', '1.5', '']) assert.throws(() => parseInboxQuery(new URLSearchParams(`sent_since=${bad}`)), InboxQueryError, bad)
 })
+
+bothEngines('#1040 review: Interested = the filtered positive list; the window edge, a fixture lead, another tenant\'s lead and the totals agree too', async ({ db }) => {
+  await seed(db)
+  const J = 'j'.repeat(24), K = 'k'.repeat(24)
+  const addLead = (id: string, job: string, src: string | null) => db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, signal_kind, source_kind, created_at) VALUES (?, ?, ?, 'x', 'https://news.example/a', 'hiring', ?, ?)", [id, job, `Co ${id}`, src, OLD])
+  const msg = (id: string, leadId: string, at: number) => db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, 'A', ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, 0)", [id, leadId, at, at])
+  const reply = (gid: string, msgId: string, cls: string, at = IN + DAY) => db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, 'A', ?, NULL, 'p@co.example', 'hi', ?, ?, ?)", [gid, `t-${msgId}`, cls, at, msgId])
+  // the window edge (m10 sent exactly 30 days ago, m11 one second earlier: seeded without replies) gets replies
+  await reply('g10', 'm10', 'other'); await reply('g11', 'm11', 'other')
+  // a positive reply to a send whose lead is a test fixture: neither the tile nor the list
+  await addLead('a20', J, 'test'); await msg('m20', 'a20', IN); await reply('g20', 'm20', 'positive')
+  // a send whose lead_id points at ANOTHER tenant's test-fixture lead: that lead never decides anything for tenant A
+  await addLead('b20', K, 'test'); await msg('m21', 'b20', IN); await reply('g21', 'm21', 'positive')
+  const r = await homeResults(db, 'A', NOW)
+  const page = (q: Record<string, unknown>) => inboxPage(db, 'A', { status: 'all', sentSince: r.since, ...q })
+  const ids = async (q: Record<string, unknown>) => (await page(q)).threads.map(t => t.thread_id).sort()
+  assert.deepEqual(await ids({}), ['t-m1', 't-m10', 't-m21', 't-m3'], 'the edge is inside, one second earlier is not; the fixture-lead send is out; the other tenant\'s lead does not hide m21')
+  assert.equal(r.tiles.replied, 4); assert.equal((await ids({})).length, r.tiles.replied)
+  assert.deepEqual(await ids({ classification: 'positive' }), ['t-m21']); assert.equal(r.tiles.interested, 1)
+  // the totals the tabs show count the same threads as the list
+  assert.equal((await page({})).counts.threads, 4)
+})

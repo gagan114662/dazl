@@ -40,7 +40,8 @@ export default function InboxClient() {
   const router = useRouter()
   const cls = q?.get('class') === 'positive' ? 'positive' : null
   // ?sent_since=<epoch> (Home's Replied / Interested tiles): only threads replying to emails sent since then, as the tiles count
-  const sinceRaw = q?.get('sent_since'), since = sinceRaw && /^\d{1,12}$/.test(sinceRaw) ? Number(sinceRaw) : null
+  const sinceRaw = q?.get('sent_since') ?? null, since = sinceRaw !== null && /^\d{1,12}$/.test(sinceRaw) ? Number(sinceRaw) : null
+  const sinceBad = sinceRaw !== null && since === null   // a hand-edited link: said, never silently widened to every thread
   const showAll = () => { const u = new URLSearchParams(q?.toString() ?? ''); u.delete('class'); u.delete('sent_since'); const s = u.toString(); router.replace(`/app/inbox${s ? `?${s}` : ''}`, { scroll: false }) }
   const key = queryKey(status, jobId, cls, since)
   const [list, setList] = useState<Listed | null>(null) // the newest page that arrived, for whichever query it answers
@@ -106,6 +107,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
+      {sinceBad && <p className="text-sm mb-4" role="alert" data-testid="since-bad">This link&apos;s date filter is not valid, so every thread is shown. <button type="button" className="underline" onClick={showAll}>Clear it</button></p>}
       {(cls === 'positive' || since !== null) && <p className="text-sm mb-4" data-testid="class-filter">{since !== null
         ? `Showing threads with a reply from a person to an email sent since ${new Date(since * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}${cls === 'positive' ? ' whose latest reply is interested' : ''}, as counted on Home. `
         : 'Showing threads whose latest reply is interested, not counting auto-replies (a later delivery notice in the thread counts; all time, not only the last 30 days). '}

@@ -75,13 +75,18 @@ export async function inboxPage(d: DbLike, tenantId: string, q: InboxQuery = {})
   if (q.status === 'needs_owner') where.push('needs_owner = 1')
   if (q.status === 'unread') where.push('unread = 1')
   if (q.classification) { where.push('classification = ?'); params.push(q.classification) }
+  // sentSince narrows the totals too (the tabs then count what the list shows: what Home's tile counted)
+  const scope: string[] = [], scopeParams: Param[] = []
   if (q.sentSince !== null && q.sentSince !== undefined) {
-    where.push(`thread_id IN (SELECT r2.thread_id FROM inbound_messages r2
-      JOIN outreach_messages om ON om.id = r2.outreach_message_id AND om.tenant_id = r2.tenant_id LEFT JOIN leads ol ON ol.id = om.lead_id
+    // the send's lead is read only when it is this tenant's own (as Home's tiles do): another tenant's lead never filters a row
+    scope.push(`thread_id IN (SELECT r2.thread_id FROM inbound_messages r2
+      JOIN outreach_messages om ON om.id = r2.outreach_message_id AND om.tenant_id = r2.tenant_id
+      LEFT JOIN leads ol ON ol.id = om.lead_id AND EXISTS (SELECT 1 FROM scan_jobs lj WHERE lj.id = ol.scan_job_id AND lj.user_id = om.tenant_id)
       WHERE r2.tenant_id = ? AND r2.classification IN ${sqlList(PERSON_REPLY)} AND om.status = 'sent' AND om.sent_at >= ? AND COALESCE(om.test, 0) = 0
         AND (ol.source_kind IS NULL OR ol.source_kind <> 'test'))`)
-    params.push(tenantId, q.sentSince)
+    scopeParams.push(tenantId, q.sentSince)
   }
+  where.push(...scope); params.push(...scopeParams)
   if (q.cursor) {
     const c = decodeCursor(q.cursor)
     if (!c) throw new InboxQueryError('bad_cursor')
@@ -93,7 +98,7 @@ export async function inboxPage(d: DbLike, tenantId: string, q: InboxQuery = {})
   const page = rows.slice(0, limit).map(r => ({ ...r, stopped: displayStopReason(r.stopped), unread: r.unread === 1, needs_owner: r.needs_owner === 1 }))
   const last = page[page.length - 1]
   const c = await db.get<{ threads: number | null; needs_owner: number | null; unread: number | null; unread_needs_owner: number | null }>(
-    `SELECT COUNT(*) AS threads, SUM(needs_owner) AS needs_owner, SUM(unread) AS unread, SUM(unread * needs_owner) AS unread_needs_owner FROM (${sql}) x`, base)
+    `SELECT COUNT(*) AS threads, SUM(needs_owner) AS needs_owner, SUM(unread) AS unread, SUM(unread * needs_owner) AS unread_needs_owner FROM (${sql}) x${scope.length ? ' WHERE ' + scope.join(' AND ') : ''}`, [...base, ...scopeParams])
   return {
     threads: page,
     next_cursor: rows.length > limit && last ? encodeCursor(last.received_at, last.thread_id) : null,

@@ -97,6 +97,11 @@ try {
       for (let i = 0; i < 100 && !inboxUrls.slice(before).some(q => !/class=|sent_since=/.test(q)); i++) await page.waitForTimeout(100)
       assert.ok(inboxUrls.slice(before).some(q => !/class=|sent_since=/.test(q)), `Inbox asked again without either filter: ${JSON.stringify(inboxUrls.slice(before))}`)
       out.push('Interested opens Inbox filtered; Show all replies clears the filter and the URL')
+      // a hand-edited date filter is said, never silently widened
+      await page.goto(base + '/app/inbox?status=all&sent_since=yesterday', { waitUntil: 'networkidle' })
+      await page.getByTestId('since-bad').waitFor({ timeout: 20000 })
+      assert.match(await page.getByTestId('since-bad').textContent(), /date filter is not valid, so every thread is shown/)
+      out.push('a malformed sent_since is said')
     }
     await ctx.close()
   }
