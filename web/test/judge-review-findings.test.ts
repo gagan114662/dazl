@@ -417,7 +417,7 @@ test('documented limit (docs/design/agent-evals.md "Limits"): an actor that does
   // Today's behaviour, pinned so the doc and the code cannot drift apart silently: Nordwind raised the round, but the
   // word-position checks accept it as Querix's. Corpus review is what catches this. If a later change refuses it,
   // update this test and the Limits bullet together.
-  for (const s of ['Querix announced that Nordwind raised a seed round in October 2026', 'Nordwind and Querix raised a seed round in October 2026', 'Nordwind, backed by Querix, completed a seed round in October 2026', 'nordwind (a Querix customer) raised a seed round in October 2026']) {
+  for (const s of ['Querix announced that Nordwind raised a seed round in October 2026', 'Nordwind and Querix raised a seed round in October 2026', 'Nordwind, backed by Querix, completed a seed round in October 2026', 'nordwind (a Querix customer) raised a seed round in October 2026', 'Our partner Nordwind raised a seed round in October 2026, Querix said']) {
     const it = withItem('cal-plain-pos', x => { x.sources[0].text = `${s}.`; x.truth!.facts[0].evidence = s; x.quote = s })
     assert.doesNotThrow(() => checkCorpus(it), s)
   }

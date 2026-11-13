@@ -339,7 +339,9 @@ a lead it calls `contradicts`. It has no send or tool authority.
   example "Querix announced that Nordwind raised a seed round in October 2026" is accepted as Querix raising a seed
   round. So are a joint actor ("Nordwind and Querix raised ..."), an actor whose verb is not a listed kind word
   ("Nordwind, backed by Querix, completed a seed round"), and a lowercase actor, which the capitalised-name rule does
-  not see ("nordwind (a Querix customer) raised a seed round"). All four are pinned as documented limits in
+  not see ("nordwind (a Querix customer) raised a seed round"), and a first-person sentence that names another company
+  mid-clause before the kind word with the item's company as the reporter ("Our partner Nordwind raised a seed round,
+  Querix said"). All five are pinned as documented limits in
   `test/judge-review-findings.test.ts`. Corpus review is what catches such a wrong-identity positive. These checks keep the corpus
   honest against the edits tried in review; they are not proof against every paraphrase, and a corpus change is still a
   reviewed PR.
