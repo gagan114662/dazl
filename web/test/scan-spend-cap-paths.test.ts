@@ -55,6 +55,7 @@ const FREE: Record<string, string> = {
   'https://api.anthropic.com/v1/models': 'key check (model list): free',
   'https://api.openai.com/v1/models': 'key check (model list): free',
   'https://api.gdeltproject.org/api/v2/doc/doc': 'GDELT news search: free public API',
+  'https://api.zerobounce.net/v2/validate': 'ZeroBounce free tier only (#899 decision): a card-less free account, capped by dazl at the free monthly allowance (email_verify_usage ledger, lib/people/email-pattern.ts verifyMonthlyCap) and the per-tenant daily cap; never upgraded',
   'https://api.github.com/search/repositories': 'GitHub search: free, rate-limited',
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',

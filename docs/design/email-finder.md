@@ -13,13 +13,21 @@ Rule: `docs/DECISIONS.md` 2026-10-26 "guessed email addresses (US only, verified
    no Canadian postal address. Unknown country = not US: nothing is written. The address that qualified the lead
    is kept on each row as `country_basis`. This establishes company-site evidence only: a named employee may
    work elsewhere. No person-level recipient-country verification or activation approval follows from it.
-3. **Mailbox verification (built, unwired).** `verifyCandidates` runs a pluggable `MailboxVerifier`:
+3. **Mailbox verification (built; ZeroBounce free tier wired, #899).** `verifyCandidates` runs a pluggable `MailboxVerifier`. The
+   scan runner calls it (`verifyJobCandidates`) as the LAST post-finish step, on whatever time is left, traced as `email_verify`. Production verifier: ZeroBounce (`lib/people/zerobounce.ts`), used only when
+   **all three** are set: `EMAIL_GUESS_ENABLED=1`, `ZEROBOUNCE_API_KEY` (a free account; never upgraded) and
+   `EMAIL_VERIFY_DAILY_CAP` > 0. `EMAIL_VERIFY_MONTHLY_CAP` (optional) can only lower the monthly allowance below the free 100.
+   A bad key, no credits or a rate limit stops every further check of that scan. The check has its own time budget
+   (`EMAIL_VERIFY_BUDGET_MS`, default 20 s, 1-60 s) and stops before the next address when the scan is cancelled or taken over (or its state cannot be read). A later crawl that no
+   longer shows a US address clears the unchecked guesses' US basis, so they are not checked.
    - fails closed: only an explicit `deliverable` answer sets `verification = 'verified'`; `catch_all`,
      `undeliverable`, `unknown`, `refused`, a thrown error, or a malformed answer are stored as their own
      non-verified state and surfaced, never zero-filled;
    - spend cap in code: `EMAIL_VERIFY_DAILY_CAP` checks per tenant per UTC day (default 0 = no check). Each slot
      is reserved (`verification = 'pending'`, `checked_at`, `verifier`) inside a transaction before the
      provider call, so a crash or hang still counts and a pending row is never verified;
+   - monthly cap: at most the free allowance (100) per verifier per UTC month across every tenant of the database, counted in
+     the operator ledger `email_verify_usage` (no tenant data, kept when a tenant is deleted) in the same transaction;
    - only candidates with US provenance (`country_basis`) are checked.
    - `candidateLabel` gives the only labels a guessed address may carry ("guessed", "guessed, verified", ...);
      "verified" also needs `checked_at`, `verifier` and `country_basis`. Never "published".
