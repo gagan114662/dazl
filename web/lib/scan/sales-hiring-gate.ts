@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenSpan, PREMISES_ADJ, closedBanner, CLAUSE_CLOSED } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenSpan, PREMISES_ADJ, STREET, closedBanner, CLAUSE_CLOSED } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 
@@ -254,6 +254,15 @@ export function openingAttributable(excerpt: string, at: number, end: number, pr
   const inner = /^(.*?)\b(?:in|at|on|near)\s+(.+)$/i.exec(match)
   const placeWords = [...wordsOf(excerpt.slice(end, stop)), ...(inner ? wordsOf(inner[2]) : [])], leadWords = new Set(wordsOf(lead))
   if (placeWords.some(w => PRACTICE_WORD.test(w) && !leadWords.has(w))) return false
+  // Hermes at cc18ffd5: "at / inside <Name>" names a venue or business, not a place ("now open at Dr Lee's", "at Sunrise
+  // Wellness", "at Dentalcorp Parkdale"). After at / inside the opening may only name a street address, the request's
+  // own place, or the lead itself; "in / on <Name>" stay place readings
+  for (const m of excerpt.slice(at, stop).matchAll(/\b(?:at|inside)\s+/gi)) {
+    const phrase = excerpt.slice(at + (m.index ?? 0) + m[0].length, stop).split(/\s+(?:in|on|near|at|inside)\s+|[,.;:!?\n()]/i)[0].trim()
+    const words = wordsOf(phrase).filter(w => w !== 'the')
+    if (phrase === '' || STREET.test(phrase) || (words.length > 0 && words.every(w => places.has(w))) || nameIsLead(phrase, lead)) continue
+    return false
+  }
   for (const m of (inner ? inner[2] : '').matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
   const fillPlaces = new Set([...places, ...placeWords])
   const fill = wordsOf(inner ? inner[1] : match)
@@ -332,7 +341,9 @@ export const quoteShowsEventMain = (excerpt: string | null, company?: string | n
 // A new-form opening (found by `match` in a clause, as [start, end]) the quote shows as the lead's: its clause subject is
 // not another company, the place is not reported closed (a banner anywhere, or a closure in its own clause), and the
 // whole quote attributes it to the lead (openingAttributable).
-export function newOpeningShown(excerpt: string, company: string | null | undefined, match: (clause: string) => [number, number] | null, places: ReadonlySet<string> = new Set(), not?: RegExp): boolean {
+export function newOpeningShown(quote: string, company: string | null | undefined, match: (clause: string) => [number, number] | null, places: ReadonlySet<string> = new Set(), not?: RegExp): boolean {
+  // the attribution reads grow faster than the text: read at most the first 2,000 characters (a stored quote is 400)
+  const excerpt = quote.slice(0, 2000)
   if (closedBanner(excerpt)) return false
   return clauses(excerpt).some(c => {
     const span = match(c)

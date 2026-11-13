@@ -1063,3 +1063,30 @@ test('#878 review at 9e928898: the opening\'s own words name no other practice; 
   assert.equal(truthOf('Dental clinics in Woodbridge opening a new location', 'Metro City Dentistry', 'Our new Woodbridge location is now open!'), 'pass')
   assert.equal(truthOf('Dental clinics in Parkdale opening a new location', 'Metro City Dentistry', 'Our new Parkdale clinic is now open'), 'pass')
 })
+
+// Hermes-PC at cc18ffd5: "at <Name>" names a venue or business; after at / inside an opening may only name a street
+// address, the request's own place, or the lead itself
+test('#878 review (Hermes-PC) at cc18ffd5: a business named as the opening\'s place is another practice\'s opening', () => {
+  const both3 = (company: string, quote: string) => [quoteShowsEvent(quote, quote, false, company), truthOf(DENTAL, company, quote)]
+  for (const [company, quote] of [
+    ['Metro City Dentistry', "New clinic now open at Dr Lee's in Parkdale"],
+    ['Metro City Dentistry', 'New dental clinic now open at Queen West Dentists'],
+    ['Metro City Dentistry', 'New clinic now open at Sunrise Wellness in Parkdale'],
+    ['Metro City Dentistry', 'New clinic now open at Maple Medical in Parkdale'],
+    ['Metro City Dentistry', 'New clinic now open at Dentalcorp Parkdale'],
+    ['Family Dental Care', "Our new clinic is now open at Dr Lee's in Parkdale"],
+    ['Metro City Dentistry', 'New clinic at Sunrise Wellness is now open'],
+  ]) assert.deepEqual(both3(company, quote), [false, 'unknown'], quote)
+  for (const quote of [
+    'Our new clinic is now open at 123 Queen St W',
+    'New dental clinic opened in Yorkville at 11 Yorkville Ave in Toronto',
+    'Opened a new 5th location in Woodbridge on Hwy 27 in the GTA',
+    'New dental clinic now open in Parkdale, Toronto',
+    'Our new clinic is now open at Metro City Dentistry in Parkdale',
+  ]) assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+  // the read is bounded: a very long quote is clipped, not read whole
+  const long = 'New clinic now open in Parkdale. '.repeat(400)
+  const t0 = Date.now()
+  quoteShowsEvent(long, long, false, 'Metro City Dentistry')
+  assert.ok(Date.now() - t0 < 3000, 'a 13 KB quote is read within 3 s')
+})

@@ -51,7 +51,7 @@ const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|cou
 // generic words a lead's name may carry (they never tell two practices apart)
 const LEAD_GENERIC = new Set(['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group', 'and', 'of', 'dental', 'dentistry', 'clinic', 'clinics', 'dds', 'dmd', 'centre', 'center', 'studio', 'studios'])
 export const PREMISES_ADJ = /^(?:dental|dentistry|medical|family|pediatric|paediatric|orthodontic|cosmetic|veterinary|vet|physio|physiotherapy|chiropractic|wellness|health|beauty|hair|nail|fitness|flagship|downtown|uptown|larger|bigger|expanded|modern|beautiful|main|second|third|fourth|fifth|satellite|community|walk-in|urgent|care|retail|pop-up|popup)$/i
-const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
+export const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
 // A place after in / at / on: a street address, "the heart of <Name>", or a proper name (capitalised in mixed-case text;
 // in all-lower or all-caps text, a word that is not an article, number or common noun).
 function placeOk(rest: string, text: string): boolean {
