@@ -34,6 +34,12 @@ export interface Campaign {
   next: { label: string; href: string | null }
 }
 
+// GET /api/campaigns?limit: 1-20, else the default 10. 20 = the Leads history's own size (lib/scan/store-db.ts listJobs), so the
+// history (#1136) gets the current status of every scan it lists; never more (each row reads its leads' holds).
+export function campaignsLimit(v: string | null): number {
+  const n = Number(v ?? '')
+  return v !== null && v.trim() !== '' && Number.isInteger(n) && n >= 1 ? Math.min(n, 20) : 10
+}
 export function listCampaigns(db: Database.Database, tenantId: string, limit = 10): Campaign[] {
   const jobs = db.prepare(`SELECT id, query, status, error, created_at, candidates FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')

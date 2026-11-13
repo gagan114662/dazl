@@ -117,3 +117,23 @@ export function campaignStatus<C extends CampaignLike>(c: C, job: ScanRecord | n
   if (run.group === 'results') return { ...c, run }
   return { ...c, run, next: run.next ? { label: run.next.text, href: run.next.href } : c.next }
 }
+
+// The Leads history card of a past scan (#1136): the same status, label and next action as that scan's Campaigns card
+// (campaignStatus over the leads as they stand now: a research-only run never says "need your review"). A scan with no
+// campaign row (a test-only run or a CSV import - Campaigns lists neither) or one read while the campaigns read failed
+// keeps its recorded outcome, and says so (current: false).
+export type CampaignRun = { id: string; run: RunStatus | null; next: { label: string; href: string | null } }
+export interface HistoryStatus { run: RunStatus; next: { text: string; href: string | null } | null; current: boolean }
+export function historyStatus(j: ScanRecord, campaign: CampaignRun | undefined): HistoryStatus {
+  if (campaign?.run) return { run: campaign.run, next: { text: campaign.next.label, href: campaign.next.href }, current: true }
+  const run = runStatusOf(j)
+  return { run, next: run.next, current: false }
+}
+// The pill colour for a run, one rule for every list: results that passed = mint, review a check can resolve = lavender.
+export type RunTone = 'mint' | 'lav' | 'peach' | 'pink' | 'grey'
+export function runTone(r: RunStatus): RunTone {
+  if (r.group === 'running') return 'peach'
+  if (r.group === 'technical') return 'pink'
+  if (r.group !== 'results') return 'grey'
+  return r.tag.startsWith('Leads found') ? 'mint' : r.tag === 'Needs your review' ? 'lav' : 'grey'
+}

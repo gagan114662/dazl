@@ -192,6 +192,14 @@ jobs:
           mkdir -p preview/run-button-fit
           SHOTS=preview/run-button-fit node test/ui/run-button-fit-917.ui.mjs | tee /tmp/rbf.out
           ! grep -q '^NOT RUN' /tmp/rbf.out
+      # #1136: on the REAL build with the REAL history and campaigns routes, a past scan's Leads history card says what its
+      # Campaigns card says (research-only runs never "need your review"). pipefail: a failure or a silent NOT RUN fails the job.
+      - name: Leads history cards match their Campaigns cards (#1136)
+        run: |
+          set -o pipefail
+          mkdir -p preview/leads-history
+          SHOTS=preview/leads-history node test/ui/leads-history-1136.ui.mjs | tee /tmp/lh.out
+          ! grep -q '^NOT RUN' /tmp/lh.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
