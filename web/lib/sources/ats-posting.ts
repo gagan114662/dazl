@@ -137,7 +137,21 @@ function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, lo
 // wording, so a quote cut to include it must not name the company through it. The title is "<posting title> @ <stated
 // name>" when the board states one, else the posting title alone; it is display only for every company check
 // (evidence.ts pageHeadingNames reads the board identity instead).
-export interface BoardIdentity { title: string; company: string | null; slug: string }
+// slug null: no slug identity at all (a held copy of a Greenhouse posting, below): only a quote naming the company binds it.
+export interface BoardIdentity { title: string; company: string | null; slug: string | null }
+
+// #1126 (XHawk on #1143): a TinyFish copy held for a posting URL whose board API read was blocked is still a board
+// posting, never an ordinary page whose title is phrase-matched (that title is the board page's own, e.g. "<title> @
+// acme-health"). Its identity comes from the posting URL, not the copy:
+//   Ashby / Lever: the URL's board slug, matched as a whole name (evidence.ts boardNamesCompany);
+//   Greenhouse:   none: the slug is not trusted for Greenhouse (its record states company_name, which a copy does not
+//                 carry), so only a quote that names the company binds it.
+// Undefined for any URL that is not a board posting (the copy is an ordinary page).
+export function heldCopyBoard(sourceUrl: string, title: string): BoardIdentity | undefined {
+  const r = atsPostingRef(sourceUrl)
+  if (!r) return undefined
+  return { title: title.slice(0, 300), company: null, slug: r.kind === 'greenhouse' ? null : r.org }
+}
 export function atsPageText(rec: AtsRecord, descriptionText: string): { text: string; title: string; board: BoardIdentity } {
   const body = descriptionText.replace(/\s+/g, ' ').trim()
   return {

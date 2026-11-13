@@ -172,3 +172,31 @@ test('#1126: the source review applies the same identity (company_named) to a bo
     assert.deepEqual([whole.check.quote_match, whole.check.company_named], [true, true])
   } finally { restore() }
 })
+
+test('#1126 (XHawk on #1143): a TinyFish copy held for a blocked board read is still a board posting, never title-matched', async () => {
+  const { HeldText } = await import('../lib/scan/held-text.ts')
+  const named = 'Acme Health is hiring a Sales Operations Manager to own the CRM.'
+  const filler = ' The role partners with sales leadership on territory planning, quota setting and the weekly forecast call.'.repeat(5)
+  const body = `Sales Operations Manager Location Berlin ${QUOTE} ${named}${filler} Apply for this job.`
+  const blocked = async () => ({ fail: 'blocked' as const })
+  const run = async (company: string, url: string, title: string, excerpt = QUOTE) => {
+    const text = HeldText.seal('job1:1', [url], [{ url, title, text: body }])
+    const draft = { name: '', contact: null, event_date: null, score: 80, company, signal: 'Posted a Sales Operations Manager role', source_url: url, excerpt } as LeadDraft
+    const o = await verifyLeads([draft], blocked, NOW, undefined, null, { text, attempt: 'job1:1' })
+    return o.leads.length ? `ok:${o.leads[0].evidence_origin}` : o.review.length ? `review:${o.review[0].review_reason}` : Object.keys(o.dropped).join(',')
+  }
+  // Ashby / Lever: the URL's slug, as a whole name; the copy's page title ("... @ acme-health") is never phrase-matched
+  for (const url of [`https://jobs.ashbyhq.com/acme-health/${AID}`, `https://jobs.lever.co/acme-health/${LID}`]) {
+    const title = 'Sales Operations Manager @ acme-health'
+    assert.equal(await run('Health', url, title), 'review:blocked_by_site', `${url}: "Health" is not bound by the copy, so the block stands`)
+    assert.equal(await run('Acme', url, title), 'review:blocked_by_site', url)
+    assert.equal(await run('Acme Health', url, title), 'ok:tinyfish_copy', url)
+  }
+  // Greenhouse: no slug identity from a copy; only a quote naming the company binds it
+  const gh = 'https://boards.greenhouse.io/acme-health/jobs/4012345', ghTitle = 'Job Application for Sales Operations Manager at Acme Health'
+  assert.equal(await run('Health', gh, ghTitle), 'review:blocked_by_site')
+  assert.equal(await run('Acme Health', gh, ghTitle), 'review:blocked_by_site', 'neither the slug nor the copy title binds a Greenhouse copy')
+  assert.equal(await run('Acme Health', gh, ghTitle, named), 'ok:tinyfish_copy', 'a quote naming the company still verifies')
+  // an ordinary (non-board) page keeps the title rule
+  assert.equal(await run('Acme Health', 'https://acmehealth.example/careers/sales-ops', 'Careers at Acme Health'), 'ok:tinyfish_copy')
+})

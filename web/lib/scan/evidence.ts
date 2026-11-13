@@ -257,11 +257,11 @@ export function dedupKey(c: { company: string; name: string }): string {
 //                "acme-co" and "the-acme-company" are not "Acme" (a stated name could say so; a slug cannot), while
 //                "acme-health", "acme_health" and "macquarietechnologygroup" are their whole names.
 const compact = (k: string) => k.replace(/[^\p{L}\p{N}]+/gu, '')
-export function boardNamesCompany(board: { company: string | null; slug: string }, key: string): boolean {
+export function boardNamesCompany(board: { company: string | null; slug: string | null }, key: string): boolean {
   const k = compact(key)
   if (key.length < 2) return false
   if (board.company) { const named = companyKey(board.company); return named === key || (k.length >= 3 && compact(named) === k) }
-  return k.length >= 3 && compact(norm(board.slug)) === k
+  return !!board.slug && k.length >= 3 && compact(norm(board.slug)) === k // no slug: nothing but a quote names the company
 }
 // The page's own heading names the company. For a posting read through its board's record (#1126) that is the board's
 // identity alone (boardNamesCompany): the posting's job title is the role, not the employer, so "Salesforce

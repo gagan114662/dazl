@@ -14,6 +14,7 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
+import { heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
@@ -404,7 +405,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // A copy can only promote the candidate to `passed`; any miss leaves it exactly where the real failure put it.
       const copy = why && held ? held.text.copyFor(held.attempt, c.source_url, why) : null
       if (copy?.ok) {
-        const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt }
+        // a copy of a board posting keeps the board identity the posting URL gives (#1126): never title-matched as an ordinary page
+        const board = heldCopyBoard(c.source_url, copy.page.title)
+        const cp: Page = { text: copy.page.text, title: copy.page.title, retrievedAt: copy.page.heldAt, ...(board ? { board } : {}) }
         // The same date binding as a fetched page (#460 review): the held copy must tie the claimed day to this company and event, or the candidate is undated.
         let cc = c
         const claimed = verifyEvidence(c, cp, now)          // a claimed day the date rules reject (stale, future, malformed) keeps the hold: unbinding it must not launder it
