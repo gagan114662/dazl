@@ -622,12 +622,12 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-// #1036: where a printed address sits on the page, for single-name addresses (email-pattern.ts singleNamePairing). Up to 6 places per
-// page. tight: the attribute value holding the address, or its own text node; wide: the text around it (markup turned into spaces,
-// attribute values kept). `at`: the places personalAddresses recorded in its single pass; the page is never searched again here.
+// #1036: where a printed address sits on the page, for single-name addresses (email-pattern.ts singleNamePairing). Up to 12 places per
+// page (#1173). tight: the attribute value holding the address, or its own text node; wide: the text around it (markup characters turned into
+// spaces, attribute values kept; a mailto href is never a pairing). `at`: the places personalAddresses recorded in its single pass; the page is never searched again here.
 export function addressContexts(html: string, at: { i: number; len: number }[]): AddressContext[] {
   const out: AddressContext[] = []
-  for (const { i, len } of at.slice(0, 6)) {
+  for (const { i, len } of at.slice(0, 12)) {
     const end = i + len
     const back = html.slice(Math.max(0, i - 300), i), fwd = html.slice(end, end + 300)
     let tight = ''
@@ -639,8 +639,14 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
       const gt = back.lastIndexOf('>'), lt = fwd.indexOf('<')
       if (gt >= 0 && lt >= 0 && !back.slice(gt).includes('<')) tight = back.slice(gt + 1) + html.slice(i, end) + fwd.slice(0, lt)
     }
-    const wide = html.slice(Math.max(0, i - 400), end + 400).replace(/<[^>]*>/g, ' ').replace(/[<>"'=]/g, ' ').replace(/\s+/g, ' ').slice(0, 900)
-    out.push({ tight: tight.replace(/\s+/g, ' ').slice(0, 400), wide, attr: inAttr })
+    // #1173: attribute VALUES stay in `wide` (only the markup characters go), so another person named only in an alt or aria-label
+    // beside the address is seen; spaces are collapsed, newlines and tabs kept.
+    const wide = html.slice(Math.max(0, i - 400), end + 400).replace(/[<>"'=]/g, ' ').replace(/ {2,}/g, ' ').slice(0, 900)
+    // #1173: `tight` is not cut (it is bounded by the two 300-character windows): a cut could hide a second person named later in
+    // the same attribute. Only runs of spaces are collapsed: a newline or tab between two words is kept, so it never reads as one name.
+    // A mailto href is not a pairing: its subject line can name anyone ("?subject=Question for Maya Thornton's team").
+    const mailto = inAttr && /^\s*mailto:/i.test(tight)
+    out.push({ tight: mailto ? '' : tight.replace(/ {2,}/g, ' '), wide, attr: inAttr && !mailto })
   }
   return out
 }
@@ -699,9 +705,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!had && seen.size >= 200) continue // full: no context is built for an address that will not be kept
           // Every page's places are kept (6 per page x every page a crawl reads): a later page printing the address beside someone
           // else must be able to refuse it.
-          if (had && (had.ctx?.length ?? 0) >= 36) continue
+          if (had && (had.ctx?.length ?? 0) >= 72) continue
           const ctx = addressContexts(html, a.at)
-          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 36)
+          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 72)
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
