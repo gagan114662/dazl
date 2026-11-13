@@ -229,8 +229,10 @@ the evidence sits in must name the fact's company as a whole name, not attributi
 both sides whose body is a company name (", no relation to Corvid Robotics,"). For an asserted fact two word-position
 checks apply as well: a capitalised name that starts a clause directly before the fact's kind word (auxiliaries and an
 appositive between commas skipped) must be the fact's company or person, so "Nordwind raised ..." and "Nordwind, a
-Querix customer, raised ..." are refused for Querix; and the company may not be only the reporter ("..., says Querix",
-"According to Querix, ...", "Querix said Nordwind ..."). None of this is a grammatical parse. Instructions and publication or refresh dates are exempt. A role or contact claim
+Querix customer, raised ..." are refused for Querix, and so are the same appositives in brackets or between dashes; and
+the company may not be only the reporter ("..., says Querix", "According to Querix, ...", "Querix said Nordwind ...",
+"Querix noted that Nordwind ...", or a trailing or mid-sentence "..., Querix said" when the statement neither names
+Querix nor speaks in the first person). None of this is a grammatical parse. Instructions and publication or refresh dates are exempt. A role or contact claim
 is about now ("is the current ..."), so only an undated assertion supports it; an acquisition claim names its acquirer
 when the record has one. Kind words,
 exclusions, detail translations and month names are listed in code, not in the corpus. `checkCorpus` refuses an item whose
@@ -335,8 +337,10 @@ a lead it calls `contradicts`. It has no send or tool authority.
   a parse. A sentence whose actor is a company outside the item's records still passes `checkCorpus` when that actor
   does not start a clause directly before a listed kind word and the item's company is not phrased as the reporter: for
   example "Querix announced that Nordwind raised a seed round in October 2026" is accepted as Querix raising a seed
-  round (pinned as a documented limit in `test/judge-review-findings.test.ts`). The same holds when the actor's verb is
-  not a listed kind word. Corpus review is what catches such a wrong-identity positive. These checks keep the corpus
+  round. So are a joint actor ("Nordwind and Querix raised ..."), an actor whose verb is not a listed kind word
+  ("Nordwind, backed by Querix, completed a seed round"), and a lowercase actor, which the capitalised-name rule does
+  not see ("nordwind (a Querix customer) raised a seed round"). All four are pinned as documented limits in
+  `test/judge-review-findings.test.ts`. Corpus review is what catches such a wrong-identity positive. These checks keep the corpus
   honest against the edits tried in review; they are not proof against every paraphrase, and a corpus change is still a
   reviewed PR.
 - No real model has been calibrated. That needs a provider adapter, a key and a paid budget, so it is the owner's call.

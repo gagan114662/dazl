@@ -319,8 +319,16 @@ const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 function actorProblem(sentence: string, f: TruthFact): string | null {
   const s = dropSetApart(sentence), co = reEsc(tidy(f.company))
   if (new RegExp(String.raw`(?:^|[^\p{L}])(?:says|said|according to|told|reported by)\s+(?:the\s+)?${co}(?![\p{L}\p{N}])`, 'iu').test(s)) return `its company ${f.company} is only the reporter of the sentence ("says/said/according to ${f.company}")`
-  const said = new RegExp(String.raw`(?:^|[^\p{L}])${co}\s+(?:says|said|told|reports|reported|claims|claimed)\s+(?:that\s+)?(\S)`, 'iu').exec(s)
+  const said = new RegExp(String.raw`(?:^|[^\p{L}])${co}\s+(?:says|said|told|reports|reported|claims|claimed|noted|notes)\s+(?:that\s+)?(\S)`, 'iu').exec(s)
   if (said && /\p{Lu}/u.test(said[1])) return `its company ${f.company} is only the reporter of the sentence ("${f.company} said <another name> ...")`
+  // a reporter clause after the statement (", Querix said." at the end, or ", Querix reported," in the middle): refused
+  // unless the statement itself names the company or speaks in the first person ("Our new Leeds office opening drew 40
+  // guests, Pebblebrook said." is Pebblebrook speaking about itself)
+  const tail = new RegExp(String.raw`,\s*${co}\s+(?:said|says|reported|reports|noted|notes|added|adds)\s*(?:[.,]\s*|$)`, 'iu').exec(s)
+  if (tail) {
+    const rest = (s.slice(0, tail.index) + ' ' + s.slice(tail.index + tail[0].length)).trim()
+    if (!namesCompany(rest, f.company) && !/^(?:our|we|we're|we've|us)\b/iu.test(rest)) return `its company ${f.company} is only the reporter of the sentence ("..., ${f.company} said")`
+  }
   const kw = (FACT_KINDS.includes(f.kind) ? KIND_WORDS[f.kind] : []).filter(k => /^\p{L}/u.test(k))
   if (!kw.length) return null
   const ev = dropSetApart(f.evidence), evAt = Math.max(0, s.toLowerCase().indexOf(ev.toLowerCase()))
@@ -333,6 +341,11 @@ function actorProblem(sentence: string, f: TruthFact): string | null {
     const tok = /(\S+)$/u.exec(pre)
     if (tok && ACTOR_AUX.includes(tok[1])) { pre = pre.slice(0, tok.index).trimEnd(); continue }
     if (pre.endsWith(',')) { const body = pre.slice(0, -1), j = body.lastIndexOf(','); pre = (j >= 0 ? body.slice(0, j) : body).trimEnd(); continue }
+    // the same for an appositive in brackets or between dashes: "Nordwind (a Querix customer) raised", "Nordwind — a
+    // Querix customer — raised", "Nordwind - a Querix customer - raised"
+    if (pre.endsWith(')')) { const j = pre.lastIndexOf('('); if (j >= 0) { pre = pre.slice(0, j).trimEnd(); continue } }
+    const dash = /\s*([—–]|\s-)$/u.exec(pre)
+    if (dash) { const body = pre.slice(0, dash.index), j = Math.max(body.lastIndexOf('—'), body.lastIndexOf('–'), body.lastIndexOf(' - ')); if (j >= 0) { pre = body.slice(0, j).trimEnd(); continue } }
     break
   }
   const name = ACTOR_NAME.exec(pre)

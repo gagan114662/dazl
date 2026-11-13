@@ -395,10 +395,21 @@ test('Hermes 11927aaf: another company as the actor, or the fact\'s company only
     ['Querix said Nordwind raised a seed round in October 2026', /cal-plain-pos: fact 1: its company Querix is only the reporter of the sentence \("Querix said <another name> \.\.\."\)/],
   ]
   for (const [sentence, re] of cases) refused(asserted(sentence), re, sentence)
+  // R19: an appositive in brackets or between dashes is skipped like one between commas, with the full sentence or only
+  // "raised a seed round" as the evidence
+  for (const sentence of ['Nordwind (a Querix customer) raised a seed round', 'Nordwind — a Querix customer — raised a seed round', 'Nordwind - a Querix customer - raised a seed round']) {
+    refused(asserted(sentence), /cal-plain-pos: fact 1: the evidence sentence names Nordwind, not Querix, as the one who did it/, sentence)
+    refused(withItem('cal-plain-pos', it => { it.sources[0].text = `${sentence}.`; it.truth!.facts[0].evidence = 'raised a seed round'; delete it.truth!.facts[0].date; it.quote = 'raised a seed round' }), /the evidence sentence names Nordwind, not Querix/, `${sentence} [evidence: raised a seed round]`)
+  }
+  // R20: a reporter clause after the statement, at the end or in the middle
+  for (const sentence of ['nordwind raised a seed round in October 2026, Querix said', 'In October 2026 Nordwind raised a seed round, Querix noted', "Nordwind's seed round, Querix reported, closed in October 2026"]) {
+    refused(asserted(sentence), /cal-plain-pos: fact 1: its company Querix is only the reporter of the sentence/, sentence)
+  }
   // the actor rule on its own, with no reporter wording
   refused(asserted('Querix news: Nordwind raised a seed round in October 2026'), /the evidence sentence names Nordwind, not Querix, as the one who did it/, 'Nordwind after a colon')
   // still accepted: the company as actor after a fronted date, through an appositive, or reporting its own round
-  for (const sentence of ['In October 2026, Querix raised a seed round', 'Querix, a London startup, raised a seed round in October 2026', 'Querix said it raised a seed round in October 2026']) checkCorpus(asserted(sentence))
+  for (const sentence of ['In October 2026, Querix raised a seed round', 'Querix, a London startup, raised a seed round in October 2026', 'Querix said it raised a seed round in October 2026',
+    'Querix (a London startup) raised a seed round in October 2026', 'Querix raised a seed round in October 2026, Querix said', 'Our team raised a seed round in October 2026, Querix said']) checkCorpus(asserted(sentence))
   checkCorpus(CORPUS) // all 57 non-exempt committed facts still pass
 })
 
@@ -406,6 +417,8 @@ test('documented limit (docs/design/agent-evals.md "Limits"): an actor that does
   // Today's behaviour, pinned so the doc and the code cannot drift apart silently: Nordwind raised the round, but the
   // word-position checks accept it as Querix's. Corpus review is what catches this. If a later change refuses it,
   // update this test and the Limits bullet together.
-  const it = withItem('cal-plain-pos', x => { const s = 'Querix announced that Nordwind raised a seed round in October 2026'; x.sources[0].text = `${s}.`; x.truth!.facts[0].evidence = s; x.quote = 'raised a seed round' })
-  assert.doesNotThrow(() => checkCorpus(it))
+  for (const s of ['Querix announced that Nordwind raised a seed round in October 2026', 'Nordwind and Querix raised a seed round in October 2026', 'Nordwind, backed by Querix, completed a seed round in October 2026', 'nordwind (a Querix customer) raised a seed round in October 2026']) {
+    const it = withItem('cal-plain-pos', x => { x.sources[0].text = `${s}.`; x.truth!.facts[0].evidence = s; x.quote = s })
+    assert.doesNotThrow(() => checkCorpus(it), s)
+  }
 })
