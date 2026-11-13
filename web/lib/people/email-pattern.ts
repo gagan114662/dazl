@@ -302,7 +302,7 @@ export function reserveMailboxCheck(db: Database.Database, tenantId: string, ver
     const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
     if (month >= monthCap) return 'cap'
     if (!mark(nowS)) return 'lost'
-    db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = n + 1').run(vname, monthKey)
+    db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = email_verify_usage.n + 1').run(vname, monthKey)
     return 'ok'
   })()
 }

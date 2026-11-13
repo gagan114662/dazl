@@ -93,7 +93,15 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
   const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
   const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
   const optIn = apollo && pdlSaved ? enrichFallbackEnabled(db, tenantId) : true
-  const mailboxCheck = !!verifierFromEnv(env) && emailGuessEnabled(env) && verifyDailyCap(env) > 0 && verifyMonthlyCap(env) > 0
+  const verifier = verifierFromEnv(env)
+  let mailboxCheck = !!verifier && emailGuessEnabled(env) && verifyDailyCap(env) > 0 && verifyMonthlyCap(env) > 0
+  // A spent monthly allowance (the operator ledger) also means no check can run this month: no button that does nothing.
+  if (mailboxCheck && verifier) {
+    try {
+      const used = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(verifier.name.slice(0, 40), new Date().toISOString().slice(0, 7)) as { n: number } | undefined)?.n ?? 0
+      if (used >= verifyMonthlyCap(env)) mailboxCheck = false
+    } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
+  }
   return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
 }
 

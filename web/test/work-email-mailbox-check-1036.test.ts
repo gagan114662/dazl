@@ -157,3 +157,9 @@ test('#1036 the UI is told whether the mailbox check can run (no button that doe
   for (const env of [{}, { ...ON, ZEROBOUNCE_API_KEY: undefined }, { ...ON, EMAIL_VERIFY_DAILY_CAP: undefined }, { ...ON, EMAIL_GUESS_ENABLED: undefined }, { ...ON, EMAIL_VERIFY_MONTHLY_CAP: '0' }])
     assert.equal(workEmailProviders(s.db, 'A', env).mailboxCheck, false, JSON.stringify(env))
 })
+
+test('#1036 a spent monthly allowance also hides the check', () => {
+  const s = seed()
+  s.db.prepare("INSERT INTO email_verify_usage (verifier, month, n) VALUES ('zerobounce', ?, 100)").run(new Date().toISOString().slice(0, 7))
+  assert.equal(workEmailProviders(s.db, 'A', ON).mailboxCheck, false)
+})
