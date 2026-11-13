@@ -258,7 +258,7 @@ try {
     // which mounts the same editors, shows "cannot be edited" instead of blank forms
     const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-    const writes = []
+    const writes = []; let memShape = 0
     await ctx.route('**/*', async route => {
       const req = route.request(); const u = new URL(req.url()); const p = u.pathname
       if (u.origin !== base) return route.abort()
@@ -266,7 +266,7 @@ try {
       const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
       if (req.method() !== 'GET') { writes.push(p); return json({ ok: true }) }
       if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: '', website: null, buyer: null, new_play_offer: null })
-      if (p === '/api/settings/memory') return json({ memory: [] })
+      if (p === '/api/settings/memory') return json(u.searchParams.has('x') ? {} : (memShape++ === 0 ? { memory: [] } : { memory: { icp: 'x', positioning: 'y', tone: 'z' } }))   // an array, then an object without its lists
       if (p === '/api/settings/competitors') return json({})
       return json({}, 404)
     })

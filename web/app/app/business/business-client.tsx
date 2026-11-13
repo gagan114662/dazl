@@ -102,7 +102,7 @@ export default function BusinessClient() {
     const [p, m, c] = await Promise.all([
       getJson('/api/settings/profile').then(j => { if (!j || typeof j !== 'object' || Array.isArray(j) || !('business_name' in j) || !('buyer' in j)) throw new Error('shape'); return j }).catch(() => { failed.push('profile'); return null }),
       // memory: null = nothing saved yet (a new workspace), not a failure
-      getJson('/api/settings/memory').then(j => { if (!j || typeof j !== 'object' || !('memory' in j) || typeof j.memory !== 'object' || Array.isArray(j.memory)) throw new Error('shape'); return j.memory }).catch(() => { failed.push('Memory'); return null }),
+      getJson('/api/settings/memory').then(j => { if (!j || typeof j !== 'object' || !('memory' in j) || typeof j.memory !== 'object' || Array.isArray(j.memory) || (j.memory !== null && (!Array.isArray(j.memory.exclusions) || !Array.isArray(j.memory.objections)))) throw new Error('shape'); return j.memory }).catch(() => { failed.push('Memory'); return null }),
       getJson('/api/settings/competitors').then(j => { if (!Array.isArray(j?.competitors)) throw new Error('shape'); return j.competitors }).catch(() => { failed.push('Competitors'); return null }),
     ])
     setData({ profile: p, memory: m, competitors: c, failed })
