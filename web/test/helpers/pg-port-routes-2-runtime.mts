@@ -86,7 +86,8 @@ function normalizer() {
     if (Array.isArray(v)) return v.map(x => walk(x, k))
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([kk, x]) => [kk, walk(x, kk)]))
     if (typeof v === 'string' && random(k, v)) { if (!seen.has(v)) seen.set(v, `rand#${seen.size}`); return seen.get(v) }
-    if (typeof v === 'number' && /_at$/.test(k) && v >= STARTED) return 'now'
+    // the Cal.com settings GET also reports the server clock itself as `now`
+    if (typeof v === 'number' && (/_at$/.test(k) || k === 'now') && v >= STARTED) return 'now'
     return v
   }
   return walk
