@@ -16,6 +16,7 @@ import { ATTESTATIONS, CONSENT_VERSION, drainFirstTouch, enable, migrateAutopilo
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists, FIRST_TOUCH_FIXTURE_COMPANY } from '../lib/scan/first-touch-fixture.ts'
 import { createVerificationFixture } from '../lib/scan/verification-fixture.ts'
+import { accountSendCount, anyUncertainSend } from '../lib/outreach/send-budget.ts'
 
 const T = 'first-touch-fixture-tenant'
 const master = randomBytes(32)
@@ -162,3 +163,71 @@ test('cleanup: removes the fixture and what the real paths attached to its lead,
   // re-creatable after cleanup
   assert.equal(createFirstTouchFixture(db, T, NOW).created, true)
 })
+
+// Synthetic delivery rows attached to the fixture lead by the real later paths (a cold sequence and a warm follow-up thread).
+const hex = () => randomBytes(12).toString('hex')
+function attachSequence(db: Database.Database, leadId: string, step2: { status: string; at: number }) {
+  const msgId = hex(), seqId = hex()
+  db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES (?, ?, ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(msgId, T, leadId, TEST_INBOX, NOW - 9e5, NOW - 9e5)
+  db.prepare("INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, ?, ?, ?, ?, 'active')").run(seqId, T, leadId, msgId, TEST_INBOX)
+  db.prepare("INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, status, claimed_at, sent_at, created_at) VALUES (?, ?, 1, 's', 'b', 'sent', ?, ?, ?)").run(T, seqId, NOW - 9e5, NOW - 9e5, NOW - 9e5)
+  db.prepare('INSERT INTO sequence_steps (tenant_id, sequence_id, step, subject, body, status, claimed_at, sent_at, created_at) VALUES (?, ?, 2, \'s2\', \'b2\', ?, ?, ?, ?)').run(T, seqId, step2.status, step2.at, step2.status === 'sent' ? step2.at : null, step2.at)
+  return seqId
+}
+function attachFollowup(db: Database.Database, leadId: string, step1: { status: string; at: number }) {
+  const threadId = 't-' + hex()
+  db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at) VALUES (?, ?, ?, ?, 'root', ?)").run(T, threadId, leadId, TEST_INBOX, NOW - 9e5)
+  db.prepare('INSERT INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, 1, ?, ?)').run(T, threadId, step1.status, step1.at)
+  return threadId
+}
+
+for (const table of ['sequence_steps', 'followup_messages'] as const) for (const status of ['sending', 'uncertain']) {
+  test(`cleanup refuses while a ${table} row to the fixture lead is ${status}, so the tenant-wide uncertain stop is never erased`, async () => {
+    const db = await setup()
+    const f = createFirstTouchFixture(db, T, NOW)
+    const id = table === 'sequence_steps' ? attachSequence(db, f.leadId, { status, at: NOW - 60 }) : attachFollowup(db, f.leadId, { status, at: NOW - 60 })
+    const rows = () => table === 'sequence_steps'
+      ? (db.prepare('SELECT count(*) n FROM sequence_steps WHERE sequence_id = ?').get(id) as { n: number }).n
+      : (db.prepare('SELECT count(*) n FROM followup_messages WHERE thread_id = ?').get(id) as { n: number }).n
+    const before = rows(), uncertainBefore = anyUncertainSend(db, T)
+    assert.equal(uncertainBefore, status === 'uncertain')
+    assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /send_in_flight/, `${table} ${status}`)
+    assert.equal(rows(), before, `${table} ${status}: nothing removed on refusal`)
+    assert.ok(db.prepare('SELECT 1 FROM leads WHERE id = ?').get(f.leadId), `${table} ${status}: lead kept`)
+    assert.equal(anyUncertainSend(db, T), uncertainBefore, `${table} ${status}: the uncertain stop stays`)
+  })
+}
+
+test('cleanup removes the fixture follow-up thread together with its messages: no orphaned followup_messages', async () => {
+  const db = await setup()
+  const f = createFirstTouchFixture(db, T, NOW)
+  const threadId = attachFollowup(db, f.leadId, { status: 'sent', at: NOW - 3 * 86400 })
+  const seqId = attachSequence(db, f.leadId, { status: 'sent', at: NOW - 3 * 86400 })
+  assert.deepEqual(deleteFirstTouchFixture(db, T, NOW), { deleted: true })
+  assert.equal(db.prepare('SELECT 1 FROM followup_threads WHERE thread_id = ?').get(threadId), undefined)
+  assert.equal((db.prepare('SELECT count(*) n FROM followup_messages WHERE thread_id = ?').get(threadId) as { n: number }).n, 0, 'no orphaned follow-up message')
+  assert.equal((db.prepare('SELECT count(*) n FROM sequence_steps WHERE sequence_id = ?').get(seqId) as { n: number }).n, 0)
+})
+
+const sentCases: [string, (db: Database.Database, leadId: string, at: number) => void][] = [
+  ['first touch', (db, leadId, at) => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES (?, ?, ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(hex(), T, leadId, TEST_INBOX, at, at)],
+  ['sequence step', (db, leadId, at) => { attachSequence(db, leadId, { status: 'sent', at }) }],
+  ['follow-up', (db, leadId, at) => { attachFollowup(db, leadId, { status: 'sent', at }) }],
+]
+for (const [name, attach] of sentCases) {
+  test(`cleanup never lowers the account-wide rolling send count (${name}): refused while it was sent inside the 24 h window, allowed once it ages out`, async () => {
+    const db = await setup()
+    const f = createFirstTouchFixture(db, T, NOW)
+    attach(db, f.leadId, NOW - 60)
+    const before = accountSendCount(db, T, NOW)
+    assert.ok(before >= 1, name)
+    assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /recent_send/, name)
+    assert.equal(accountSendCount(db, T, NOW), before, `${name}: accountSendCount unchanged across the refused cleanup`)
+    assert.ok(db.prepare('SELECT 1 FROM leads WHERE id = ?').get(f.leadId), `${name}: lead kept`)
+    // once the send has left the window, cleanup goes ahead and the count it reads is still unchanged
+    const later = NOW - 60 + 86401
+    const beforeLater = accountSendCount(db, T, later)
+    assert.deepEqual(deleteFirstTouchFixture(db, T, later), { deleted: true }, name)
+    assert.equal(accountSendCount(db, T, later), beforeLater, `${name}: accountSendCount unchanged across cleanup`)
+  })
+}

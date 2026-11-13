@@ -20,7 +20,8 @@ import { tableExists } from '../outreach/send-budget.ts'
 // Every row is visibly test-only: the company, play, signal, excerpt and source URL say so. The lead is held in review
 // (quote_unconfirmed) until the user confirms it, so it is never drafted, by hand or by autopilot, before a person has
 // looked at it. Idempotent: one fixture lead per tenant. DELETE removes the rows this fixture created plus the outreach
-// rows the real paths later attached to its lead, and refuses while a send to it is in flight or uncertain.
+// rows the real paths later attached to its lead, and refuses while a send to it is in flight or uncertain or was sent
+// within the last 24 h (see deleteFirstTouchFixture).
 
 export const FIRST_TOUCH_FIXTURE_JOB = 'dazl first-touch fixture (test only)'
 export const FIRST_TOUCH_FIXTURE_COMPANY = 'dazl first-touch fixture company (test only)'
@@ -62,19 +63,37 @@ export function createFirstTouchFixture(db: Database.Database, tenantId: string,
 }
 
 // Removes the fixture play and lead, and the outreach rows the real paths attached to that lead (draft, held work,
-// sequence). The autopilot audit is kept: it is the record of what was sent, and the caps keep counting it. Refuses
-// (FixtureError 'send_in_flight') while a message to the fixture lead is being sent or its outcome is uncertain, so a
-// cleanup never erases the row that pauses autopilot until the user resolves it.
-export function deleteFirstTouchFixture(db: Database.Database, tenantId: string): { deleted: boolean } {
+// sequence and its steps, follow-up thread and its messages). The autopilot audit is kept: autopilot's own daily and
+// domain caps read it. The account-wide rolling cap (accountSendCount, send-budget.ts) reads the delivery rows
+// themselves, so cleanup refuses (FixtureError 'recent_send') while any message to the fixture lead was sent inside
+// that 24 h window, and never gives the test account a send slot back early. It also refuses (FixtureError
+// 'send_in_flight') while any message to the fixture lead (first touch, sequence step or follow-up) is being sent or its
+// outcome is uncertain, so a cleanup never erases the row that pauses the tenant's sends (anyUncertainSend) until the
+// user resolves it. Both checks and every delete run in one immediate transaction.
+export function deleteFirstTouchFixture(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): { deleted: boolean } {
   if (typeof tenantId !== 'string' || !tenantId || !fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
   return db.transaction((): { deleted: boolean } => {
     const ids = fixtureLead(db, tenantId)
     if (!ids) return { deleted: false }
     const has = (t: string) => tableExists(db, t)
-    if (has('outreach_messages') && db.prepare("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status IN ('sending','uncertain')").get(tenantId, ids.leadId)) throw new FixtureError('send_in_flight')
+    const seq = has('sequence_steps') && has('sequences'), fup = has('followup_messages') && has('followup_threads')
+    const SEQ_OF_LEAD = 'sequence_id IN (SELECT id FROM sequences WHERE tenant_id = ? AND lead_id = ?)'
+    const THREAD_OF_LEAD = 'thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND lead_id = ?)'
+    const any = (sql: string, ...args: unknown[]) => !!db.prepare(sql).get(...args)
+    const inFlight = (has('outreach_messages') && any("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status IN ('sending','uncertain')", tenantId, ids.leadId))
+      || (seq && any(`SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND status IN ('sending','uncertain') AND ${SEQ_OF_LEAD}`, tenantId, tenantId, ids.leadId))
+      || (fup && any(`SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND ${THREAD_OF_LEAD}`, tenantId, tenantId, ids.leadId))
+    if (inFlight) throw new FixtureError('send_in_flight')
+    // The same time columns accountSendCount reads, so no row it still counts is removed.
+    const since = now - 86400
+    const recent = (has('outreach_messages') && any("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'sent' AND COALESCE(claimed_at,sent_at,created_at) >= ?", tenantId, ids.leadId, since))
+      || (seq && any(`SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND status = 'sent' AND COALESCE(claimed_at,sent_at,created_at) >= ? AND ${SEQ_OF_LEAD}`, tenantId, since, tenantId, ids.leadId))
+      || (fup && any(`SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status = 'sent' AND created_at >= ? AND ${THREAD_OF_LEAD}`, tenantId, since, tenantId, ids.leadId))
+    if (recent) throw new FixtureError('recent_send')
     if (has('autopilot_work')) db.prepare('DELETE FROM autopilot_work WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
-    if (has('sequence_steps') && has('sequences')) db.prepare('DELETE FROM sequence_steps WHERE tenant_id = ? AND sequence_id IN (SELECT id FROM sequences WHERE tenant_id = ? AND lead_id = ?)').run(tenantId, tenantId, ids.leadId)
+    if (seq) db.prepare(`DELETE FROM sequence_steps WHERE tenant_id = ? AND ${SEQ_OF_LEAD}`).run(tenantId, tenantId, ids.leadId)
     if (has('sequences')) db.prepare('DELETE FROM sequences WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
+    if (fup) db.prepare(`DELETE FROM followup_messages WHERE tenant_id = ? AND ${THREAD_OF_LEAD}`).run(tenantId, tenantId, ids.leadId)
     if (has('followup_threads')) db.prepare('DELETE FROM followup_threads WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (has('outreach_messages')) db.prepare('DELETE FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (has('lead_enrichments')) db.prepare('DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)

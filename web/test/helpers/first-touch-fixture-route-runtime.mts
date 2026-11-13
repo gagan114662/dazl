@@ -44,13 +44,14 @@ test('first_touch: refused for every other account and malformed actions never c
   setUser({ ...A, role: 'viewer' })
   assert.equal((await call('POST', { action: 'first_touch' })).status, 403)
   assert.equal(fixtureLeads(db).length, 0)
-  // a wrong-typed action is no action at all (the verification fixture), never the first-touch lead
+  // a misspelled or wrong-typed action, or a body that is not an object, is refused (400) and creates nothing at all
   setUser(A)
-  for (const body of [{ action: ['first_touch'] }, { action: { first_touch: true } }, ['first_touch'], 'first_touch']) {
+  for (const body of [{ action: ['first_touch'] }, { action: { first_touch: true } }, { action: null }, { action: 'first-touch' }, { action: 'firsttouch' }, ['first_touch'], 'first_touch']) {
     const fresh = build(); process.env.OUTREACH_TEST_TENANT_ID = 'A'
     const res = await call('POST', body)
-    assert.equal(res.status, 200)
+    assert.equal(res.status, 400, JSON.stringify(body)); assert.deepEqual(await res.json(), { error: 'unknown_action' })
     assert.equal(fixtureLeads(fresh).length, 0, JSON.stringify(body))
+    assert.equal((fresh.prepare("SELECT count(*) n FROM scan_jobs WHERE user_id = 'A'").get() as { n: number }).n, 0, `nothing created: ${JSON.stringify(body)}`)
   }
   assert.equal(fetches, 0)
 })
@@ -75,5 +76,23 @@ test('first_touch: the test tenant gets one lead to its own inbox, held until co
   assert.equal(del.status, 200); assert.deepEqual(await del.json(), { deleted: true })
   assert.equal(fixtureLeads(db).length, 0)
   assert.ok(db.prepare("SELECT 1 FROM scan_jobs WHERE user_id = 'A' AND business_name = 'dazl verification fixture (test only)'").get(), 'only the first-touch fixture removed')
+  assert.equal(fetches, 0)
+})
+
+test('DELETE: a misspelled or wrong-typed action is a 400 and removes nothing; only a DELETE with no action removes every fixture', async () => {
+  const fixtureJobs = (db: Database.Database) => (db.prepare("SELECT count(*) n FROM scan_jobs WHERE user_id = 'A' AND business_name LIKE 'dazl %fixture%'").get() as { n: number }).n
+  process.env.OUTREACH_TEST_TENANT_ID = 'A'
+  setUser(A)
+  const db = build()
+  assert.equal((await call('POST', {})).status, 200)
+  assert.equal((await call('POST', { action: 'first_touch' })).status, 200)
+  assert.equal(fixtureJobs(db), 2)
+  for (const body of [{ action: 'first-touch' }, { action: ['first_touch'] }, { action: 'firsttouch' }, { action: 'review_draft' }, { action: null }, { action: 1 }, ['first_touch'], 'first_touch']) {
+    const res = await call('DELETE', body)
+    assert.equal(res.status, 400, JSON.stringify(body)); assert.deepEqual(await res.json(), { error: 'unknown_action' })
+    assert.equal(fixtureJobs(db), 2, `nothing removed: ${JSON.stringify(body)}`)
+  }
+  assert.equal((await call('DELETE', {})).status, 200)
+  assert.equal(fixtureJobs(db), 0, 'a DELETE with no action still removes every fixture')
   assert.equal(fetches, 0)
 })

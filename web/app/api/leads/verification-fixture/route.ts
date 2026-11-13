@@ -16,14 +16,25 @@ import { denied } from '@/lib/workspace-access'
 //
 // action 'first_touch' (#411): ONE labelled test-only lead addressed to the allowlisted test inbox that the real
 // autopilot may draft to once the user confirms it. Lead only: the draft, hold, scheduler drain and send run through the
-// real code. DELETE with action 'first_touch' removes only that fixture; a plain DELETE removes it with the others.
+// real code. DELETE with action 'first_touch' removes only that fixture; a DELETE with no action removes it with the
+// others; any other action (misspelled, wrong-typed, or a body that is not an object) is a 400 on POST and DELETE.
 
-// The body's action, only when the body is a plain object carrying a string action; anything else is no action.
-const actionOf = (body: unknown): string | undefined => {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined
+// The body's action. No body, an empty body or an object without an action is no action (the legacy whole-fixture
+// request). Anything else that is not a plain object with one of the method's known string actions is malformed: a
+// misspelled or wrong-typed action is refused, never read as "no action" (on DELETE that would remove every fixture).
+const NO_ACTION = Symbol('no action')
+async function actionOf(req: NextRequest, known: readonly string[]): Promise<string | typeof NO_ACTION | null> {
+  const text = await req.text().catch(() => null)
+  if (text === null || text.trim() === '') return NO_ACTION
+  let body: unknown
+  try { body = JSON.parse(text) } catch { return null }
+  if (body === null) return NO_ACTION
+  if (typeof body !== 'object' || Array.isArray(body)) return null
+  if (!Object.prototype.hasOwnProperty.call(body, 'action') || (body as { action?: unknown }).action === undefined) return NO_ACTION
   const a = (body as { action?: unknown }).action
-  return typeof a === 'string' ? a : undefined
+  return typeof a === 'string' && known.includes(a) ? a : null
 }
+const badAction = () => NextResponse.json({ error: 'unknown_action' }, { status: 400 })
 
 export async function GET() {
   const user = await requireUser()
@@ -41,7 +52,8 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!(await rateLimit(`verification-fixture:${user.tenantId}`, 5, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   try {
-    const action = actionOf(await req.json().catch(()=>null))
+    const action = await actionOf(req, ['first_touch', 'review_draft'])
+    if (action === null) return badAction()
     if (action === 'first_touch') return NextResponse.json(createFirstTouchFixture(getScanDb(), user.tenantId))
     return NextResponse.json(action==='review_draft' ? createReviewDraftFixture(getScanDb(),user.tenantId) : createVerificationFixture(getScanDb(), user.tenantId))
   } catch (e) {
@@ -57,8 +69,10 @@ export async function DELETE(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   try {
     if (!fixtureAvailable(getScanDb(),user.tenantId)) throw new FixtureError('test_tenant_only')
-    const action = actionOf(await req.json().catch(()=>null))
-    // First: a send to the first-touch fixture in flight refuses the whole cleanup before anything is removed.
+    const action = await actionOf(req, ['first_touch'])
+    if (action === null) return badAction()
+    // First: a send to the first-touch fixture in flight, uncertain or sent in the last 24 h refuses the whole cleanup
+    // before anything is removed.
     const firstTouch = deleteFirstTouchFixture(getScanDb(), user.tenantId)
     if (action === 'first_touch') return NextResponse.json(firstTouch)
     deleteReviewDraftFixtures(getScanDb(),user.tenantId)
