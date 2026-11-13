@@ -61,6 +61,7 @@ try {
     assert.ok(r.x + r.width <= width + 0.5, `${label}: the Run button is on screen`)
     assert.equal(await page.getByRole('button', { name: 'Run scan with this profile' }).count(), 2, `${label}: the card has its two Run buttons`)
     const r2 = await page.getByRole('button', { name: 'Run scan with this profile' }).last().boundingBox()   // the card's second Run button, at its foot
+    assert.ok(r2, `${label}: the second Run button is rendered`)
     assert.ok(r2.x >= c.x - 0.5 && r2.x + r2.width <= c.x + c.width + 0.5, `${label}: the second Run button stays inside the card too`)
     assert.ok(await run.isVisible(), `${label}: the Run button is visible`)
     assert.ok(d.width >= inner * 0.6 && n.width >= inner * 0.6, `${label}: the note and the disclosure get at least 60% of the card's width, never squeezed beside the button (${results.at(-1)})`)
