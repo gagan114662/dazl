@@ -175,7 +175,8 @@ export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline
   }
 }
 export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }): string {
-  if (!p.apollo && !p.pdl) return 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment to look up work emails.'
+  // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
+  if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'
   const parts = [p.apollo ? 'up to 1 credit on your Apollo key' : null, p.pdl ? `${p.apollo ? 'then, only if Apollo has none, ' : ''}1 People Data Labs credit, only on a match` : null].filter(Boolean)
   return `Free if the company website prints it; otherwise ${parts.join(', ')}. US contacts only.${p.pdlNeedsOptIn ? ' People Data Labs fallback is off (Settings > Enrichment).' : ''}`
 }

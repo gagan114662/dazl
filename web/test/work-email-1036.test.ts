@@ -145,7 +145,8 @@ test('PDL only (no Apollo key): PDL is the provider; no keys at all: no_key, not
   const n = seed({ keys: 'none' })
   const r = await run(n, DANA, stub(never, never))
   assert.equal(r.status, 'no_key'); assert.equal(workEmailsFor(n.db, 'A', n.lead, NOW).length, 0)
-  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key is set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /^Free: checks whether the company website prints this person's own address/, '#1036: the free website step runs with no key')
 })
 
 // ---- identity, role and US gates: fail closed, address not kept ----
