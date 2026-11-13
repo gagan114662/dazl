@@ -134,7 +134,7 @@ const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normal
 // This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
 // "Maya Ortiz Thornton Realty" must not read as Maya [Ortiz] Thornton), no punctuation between them ("Maya, Thornton Realty" is a
 // first-name-only staffer at a firm named after the owner), and not followed by a company word ("Maya Thornton Realty").
-const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|&|and'
+const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|&|and'
 function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
   const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   const own = new RegExp(`(?<![A-Za-z])${n.first}(?:[ \\t]+[A-Za-z]\\.?)?[ \\t]+${n.last}(?:['\u2019]s)?(?![A-Za-z])(?![ \\t]+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
@@ -148,7 +148,9 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
   for (const c of ctx) {
     const tight = withoutOwnName(c.tight, n)
     if (tight.rest.includes(local)) return false                                         // someone else sharing the name, in the same attribute / text
-    if (!c.attr && withoutOwnName(c.wide, n).rest.includes(local)) return false // or right around a text-node place
+    // ... or in the text around the place. Only an attribute that ITSELF pairs the address with this person (a card's own data
+    // attribute) stands on its own; a bare mailto in someone else's card is judged by the text around it.
+    if (!(c.attr && tight.found) && withoutOwnName(c.wide, n).rest.includes(local)) return false
     if (tight.found) paired = true
   }
   return paired

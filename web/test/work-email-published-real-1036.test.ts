@@ -169,3 +169,10 @@ test('#1036 guard: a header that prints the address 3 times on every page cannot
   assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(...pagesHtml)), null)
   assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`${header}${pair}`, header, header, header, header, header))?.address, 'maya@x.com', 'control: without the other card it is hers')
 })
+
+test('#1036 guard: the site pairs maya@ with the buyer in her card but links it from another Maya\'s card too -> ambiguous, nobody\'s', () => {
+  const other = '<div class="c"><span>Ben Okafor</span></div>'.repeat(3)
+  const h = `<div class="c" data-search-string="Maya Thornton maya@x.com"><span>Maya Thornton</span></div>${other}<div class="c"><h3>Maya Ortiz</h3><a href="mailto:maya@x.com" aria-label="Email"><svg></svg></a></div>`
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(h)), null)
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom('<p>Maya Thornton Roofing: maya@x.com</p>')), null, 'a first name before a firm named after the owner')
+})
