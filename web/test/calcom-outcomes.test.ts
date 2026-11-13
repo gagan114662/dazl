@@ -433,3 +433,37 @@ test('F3: recordEvent and setManualOutcome lock the affected lead rows (id order
     assert.deepEqual(stages(raw), { 'lead-1': 'booked_call', 'lead-2': 'contacted' })
   }
 })
+
+// Hermes at 0ae92af5: every lead-keyed read of the outcome logic must search calcom_bookings (tenant_id, lead_id), not
+// scan the tenant's bookings. The statements are captured from a real run (recordEvent through the pg-shaped log, and
+// conversionBySignal through better-sqlite3's prepare), then explained on SQLite: the exact SQL the code issues.
+test('query plans: standing(), syncStage\'s lookup and clearing UPDATE, and conversion\'s EXISTS search calcom_bookings by (tenant_id, lead_id)', async () => {
+  const raw = setup()
+  const { db, log } = pgShaped(raw)
+  await recordEvent(db, T, created)
+  await recordEvent(db, T, ev({ triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-10-05T00:00:00.000Z', payload: { uid: 'A', iCalSequence: 1, attendees: jane } }))
+  assert.equal(state(raw).stage, 'replied', 'the restore path ran')
+  const sqlOf = (re: RegExp) => { const l = log.find(x => re.test(x)); assert.ok(l, String(re)); return l.slice(0, l.lastIndexOf(' [')).replace(/ FOR UPDATE( OF \w+)?/g, '') }
+  const plan = (sql: string) => (raw.prepare('EXPLAIN QUERY PLAN ' + sql).all(...Array((sql.match(/\?/g) ?? []).length).fill(null)) as { detail: string }[]).map(r => r.detail)
+  const BY_LEAD = /^SEARCH (calcom_bookings|b) USING (COVERING )?INDEX calcom_bookings_tenant_lead \(tenant_id=\? AND lead_id=\?\)/
+  const statements = {
+    standing: sqlOf(STANDING_READ),
+    prevLookup: sqlOf(/SELECT lead_prev_stage FROM calcom_bookings WHERE tenant_id = \? AND lead_id = \?/),
+    clear: sqlOf(/UPDATE calcom_bookings SET lead_prev_stage = NULL WHERE tenant_id = \? AND lead_id = \?/),
+  }
+  const seen: string[] = []
+  const prepare = raw.prepare.bind(raw)
+  ;(raw as { prepare: unknown }).prepare = (sql: string) => { seen.push(sql); return prepare(sql) }
+  try { conversionBySignal(raw, T) } finally { (raw as { prepare: unknown }).prepare = prepare }
+  const conversion = seen.find(s => s.includes('FROM calcom_bookings b'))
+  assert.ok(conversion, 'conversionBySignal reads bookings')
+  const plans: Record<keyof typeof statements | 'conversion', string[]> = { standing: plan(statements.standing), prevLookup: plan(statements.prevLookup), clear: plan(statements.clear), conversion: plan(conversion) }
+  console.log('CALCOM PLANS', JSON.stringify(plans))
+  for (const k of ['standing', 'prevLookup', 'clear'] as const) assert.match(plans[k][0], BY_LEAD, `${k}: ${plans[k].join(' | ')}`)
+  const bookingReads = plans.conversion.filter(d => / (calcom_bookings|b) /.test(d) && /^(SEARCH|SCAN)/.test(d))
+  assert.ok(bookingReads.length >= 5, `booked, held, no_show and cancelled (x2): ${plans.conversion.join(' | ')}`)
+  for (const d of bookingReads) assert.match(d, BY_LEAD, plans.conversion.join(' | '))
+  // and it is the index that does it: without it the same statements fall back to the primary key's tenant prefix
+  raw.exec('DROP INDEX calcom_bookings_tenant_lead')
+  assert.doesNotMatch(plan(statements.standing).join(' | '), /lead_id=\?/)
+})

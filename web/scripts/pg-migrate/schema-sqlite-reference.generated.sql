@@ -1229,6 +1229,8 @@ CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
 
+CREATE INDEX calcom_bookings_tenant_lead ON calcom_bookings (tenant_id, lead_id, booking_uid);
+
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 
 CREATE INDEX commenter_rows_batch ON commenter_rows (batch_id);

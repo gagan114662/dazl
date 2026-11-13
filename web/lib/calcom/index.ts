@@ -9,7 +9,7 @@ import { meetingOver, type BookingStatus } from './outcome-rules.ts'
 // recipients with a sent/sending/uncertain row - an unsent draft or skipped row proves no contact ever happened and must
 // not associate a booking) plus leads storing it as their contact. Exactly one candidate lead across both -> linked;
 // zero or several stay "unmatched" - a booking is never guessed onto a lead. Reads and writes run on the Db layer
-// (SQLite or Postgres); migrateCalcom is the SQLite schema (PG: 0001 baseline + 0065_booking_outcomes.sql).
+// (SQLite or Postgres); migrateCalcom is the SQLite schema (PG: 0001 baseline + 0066_booking_outcomes.sql).
 //
 // Outcomes (#367). One row per Cal.com booking uid keeps the booking's history: no event deletes it. Each webhook is
 // merged into the row field by field with order-independent rules, so any delivery order, retry or replay of the same
@@ -67,6 +67,9 @@ export function migrateCalcom(db: Database.Database): void {
   if (!cols.has('manual_by')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN manual_by TEXT')
   if (!cols.has('last_event_ms')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN last_event_ms INTEGER')
   if (!cols.has('lead_prev_stage')) db.exec('ALTER TABLE calcom_bookings ADD COLUMN lead_prev_stage TEXT')
+  // Every lead-keyed read (standing(), syncStage, conversion.ts's EXISTS per sent message) searches this index instead of
+  // scanning the tenant's bookings; booking_uid last serves the remembered-stage lookup's ORDER BY. PG: 0066_booking_outcomes.sql.
+  db.exec('CREATE INDEX IF NOT EXISTS calcom_bookings_tenant_lead ON calcom_bookings (tenant_id, lead_id, booking_uid)')
 }
 
 export async function getSecret(db: Db, tenantId: string): Promise<string | null> {
