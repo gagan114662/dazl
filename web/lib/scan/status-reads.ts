@@ -26,10 +26,11 @@ export async function readModelUsage(db: Db, tenantId: string, jobId: string) {
     return modelUsageOf(rows.map(r => numbers(r, ['attempt', 'seq', 'input_tokens', 'output_tokens', 'max_tokens', 'prompt_chars', 'recorded_at'])))
   } catch { return modelUsageOf([]) }
 }
-// #1168: model calls of this scan that a spending limit refused before they were sent (null: the ledger could not be read)
+// #1168: model calls of this scan that a spending LIMIT refused before they were sent (null: the ledger could not be read). Only the
+// numeric-limit reasons: a config or accounting refusal is not a spending limit, and the cost line must not call it one.
 export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: string): Promise<number | null> {
   try {
-    const r = await db.get<{ n: number | string }>("SELECT COUNT(*) AS n FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND status = 'refused' AND kind LIKE 'llm.%'", [tenantId, jobId])
+    const r = await db.get<{ n: number | string }>("SELECT COUNT(*) AS n FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND status = 'refused' AND kind LIKE 'llm.%' AND reason IN ('over_limit', 'over_cap', 'owner_pool_limit')", [tenantId, jobId])
     return r ? Number(r.n) : null
   } catch { return null }
 }

@@ -253,6 +253,7 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
   const out: Provider = {
     research: research
       ? async (k, prompt, f) => {
+        // a research call the layer below refuses keeps this reservation (an over-count only; the raw providers refuse research before sending)
         const held = await reserveAllUsd(g, research.reserveUsd)
         const r = await p.research(k, prompt, f)
         const actual = researchCostUsd(r.usage, model())

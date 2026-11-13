@@ -719,11 +719,12 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
 // #1168: a numeric limit that refused a paid step EARLIER in this attempt (the profile or query-writing model call, whose refusal the
 // run survives by falling back to the request's own words) is still why the run could not search properly. When the run then ends
 // with nothing, that limit stop is what the user is told, never a later source failure or "nothing found". Read from the ledger
-// (scan_spend_calls): the first refused row of this attempt whose reason is a numeric limit.
-const LIMIT_REASONS = ['over_limit', 'over_cap', OWNER_POOL_LIMIT_REASON, TRIAL_BUDGET_REASON]
+// (scan_spend_calls): the first refused MODEL call of this attempt whose reason is a numeric limit. A refused render or TinyFish call
+// is not one: the run's own stages already account for those, and it would relabel a genuine source failure as a budget stop.
+const LIMIT_REASONS = ['over_limit', 'over_cap', OWNER_POOL_LIMIT_REASON]
 export function earlierLimitRefusal(db: Database.Database, job: { id: string; attempts: number }): string | null {
   try {
-    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'refused' AND reason IN (${LIMIT_REASONS.map(() => '?').join(',')}) ORDER BY created_at, rowid LIMIT 1`).get(job.id, job.attempts, ...LIMIT_REASONS) as { reason: string } | undefined
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'refused' AND kind LIKE 'llm.%' AND reason IN (${LIMIT_REASONS.map(() => '?').join(',')}) ORDER BY created_at, rowid LIMIT 1`).get(job.id, job.attempts, ...LIMIT_REASONS) as { reason: string } | undefined
     return r?.reason ?? null
   } catch { return null }
 }
