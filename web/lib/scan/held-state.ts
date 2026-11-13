@@ -7,6 +7,7 @@ import { requestedHiringRoles, roleNeedsSourceProof } from './hiring-role-match.
 //   - this process's memory (when nothing at all could be persisted).
 // It clears only when the gate runs again and passes (applySalesHiringGate removes the marker for a lead it passes).
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 
 export const SALES_GATE_HELD = 'sales_hiring_check_failed'
@@ -17,13 +18,26 @@ const inProcess = new Set<string>()
 export function markHeldInProcess(tenantId: string, leadIds: string[]): void { for (const id of leadIds) { if (inProcess.size >= 10_000) inProcess.clear(); inProcess.add(`${tenantId}:${id}`) } }
 
 // The run report is a separate row, and the one place #282 itself writes the held leads: `held_lead_ids`. It survives a rejected review write AND a rejected marker write.
+// A missing table means nothing of that kind was ever written (an older or partial store). Any other read error is not that.
+const noTable = (e: unknown) => /no such table|relation "[^"]*" does not exist/i.test(String((e as { message?: unknown })?.message ?? e))
+
+// The run report's held lead ids, or 'unreadable' when its body is not the JSON the run wrote. A report without the field holds nothing.
+function reportHeldIds(report: string): Set<unknown> | 'unreadable' {
+  let j: unknown
+  try { j = JSON.parse(report) } catch { return 'unreadable' }
+  const ids = j && typeof j === 'object' ? (j as { held_lead_ids?: unknown }).held_lead_ids : undefined
+  if (ids !== undefined && !Array.isArray(ids)) return 'unreadable'   // present but not the list the run writes: fail closed, never "holds nothing"
+  return new Set(Array.isArray(ids) ? ids : [])
+}
+
 function reportHolds(db: Database.Database, tenantId: string, leadId: string): boolean {
+  let r: { report: string } | undefined
   try {
-    const r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
-    if (!r) return false
-    const ids = (JSON.parse(r.report) as { held_lead_ids?: unknown }).held_lead_ids
-    return Array.isArray(ids) && ids.includes(leadId)
-  } catch { return false }
+    r = db.prepare('SELECT r.report FROM scan_run_report r JOIN leads l ON l.scan_job_id = r.job_id JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1').get(leadId, tenantId) as { report: string } | undefined
+  } catch (e) { return !noTable(e) }   // #1062: a report that cannot be READ fails closed; no report table holds nothing
+  if (!r) return false
+  const ids = reportHeldIds(r.report)
+  return ids === 'unreadable' || ids.has(leadId)   // #1062: a report body that cannot be parsed holds every lead of its scan (fail closed; the batch reader agrees)
 }
 
 // A gate that RAN AGAIN AND PASSED releases the lead: the marker, the report entry and the in-process entry all go.
@@ -33,29 +47,71 @@ export function releaseHeld(db: Database.Database, tenantId: string, jobId: stri
   try {
     const rows = db.prepare('SELECT attempt, report FROM scan_run_report WHERE job_id = ?').all(jobId) as { attempt: number; report: string }[]
     for (const row of rows) {
-      const rep = JSON.parse(row.report) as { held_lead_ids?: unknown }
-      if (!Array.isArray(rep.held_lead_ids)) continue
+      // One unreadable attempt never stops the others being released (#1062): it is skipped, and it no longer holds once a newer readable attempt exists.
+      let rep: { held_lead_ids?: unknown }
+      try { rep = JSON.parse(row.report) as { held_lead_ids?: unknown } } catch { continue }
+      if (!rep || typeof rep !== 'object' || !Array.isArray(rep.held_lead_ids)) continue
       const keep = rep.held_lead_ids.filter(x => !leadIds.includes(String(x)))
       if (keep.length !== rep.held_lead_ids.length) { rep.held_lead_ids = keep; db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(JSON.stringify(rep), jobId, row.attempt) }
     }
   } catch { /* no report table */ }
 }
 
-export function requiredGateHeld(db: Database.Database, tenantId: string, leadId: string): string | null {
-  if (inProcess.has(`${tenantId}:${leadId}`)) return SALES_GATE_HELD
-  const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; created_at: number | null; query: string | null; icp: string | null } | undefined
-  if (!row) return null
+type GateRow = { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; query: string | null; icp: string | null }
+type GateFacts = { inProcess: boolean; failedMarker: boolean; passed: (value: string) => boolean; reportHeld: boolean }
+
+// The ONE verdict, over facts read by either reader below (the draft guard's sync read, and the campaign page's read on the Db layer, #1062).
+function gateVerdict(row: GateRow, f: GateFacts): string | null {
+  if (f.inProcess) return SALES_GATE_HELD
   if (row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD) return SALES_GATE_HELD
-  let passed = false
-  try {
-    if (db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)) return SALES_GATE_HELD
-    const passValue = requestedHiringRoles(row.query, row.icp).some(roleNeedsSourceProof) ? 'requested_role_v1' : 'sales_hiring'
-    passed = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed' AND value = ? LIMIT 1").get(leadId, tenantId, passValue)
-  } catch { /* no enrichments table: nothing was marked */ }
-  if (reportHolds(db, tenantId, leadId)) return SALES_GATE_HELD
+  if (f.failedMarker || f.reportHeld) return SALES_GATE_HELD
   // DEFAULT-DENY, durable across processes, whatever the lead's age: when the request needs the sales-hiring proof, a machine-verified lead is usable only with a recorded PASS.
   // A lead with no pass record (the gate failed, was cut off, or every write of its failure was rejected, and the process was restarted) is held, whatever human confirmation
   // was given. There is no creation-date exemption and no dependency on any marker the gate writes before judging: nothing but a durable pass makes the lead draftable.
-  if (!passed && row.review_reason === null && row.confidence !== null && !!row.company && salesHiringRequired(row.query, row.icp)) return SALES_GATE_HELD
+  const passValue = requestedHiringRoles(row.query, row.icp).some(roleNeedsSourceProof) ? 'requested_role_v1' : 'sales_hiring'
+  if (!f.passed(passValue) && row.review_reason === null && row.confidence !== null && !!row.company && salesHiringRequired(row.query, row.icp)) return SALES_GATE_HELD
   return null
+}
+
+export function requiredGateHeld(db: Database.Database, tenantId: string, leadId: string): string | null {
+  const inProc = inProcess.has(`${tenantId}:${leadId}`)
+  if (inProc) return SALES_GATE_HELD
+  const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as GateRow | undefined
+  if (!row) return null
+  let failedMarker = false
+  let passes: Set<string> = new Set()
+  try {
+    failedMarker = !!db.prepare("SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_failed' LIMIT 1").get(leadId, tenantId)
+    passes = new Set((db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'scan:gate' AND kind = 'gate_passed'").all(leadId, tenantId) as { value: string }[]).map(r => r.value))
+  } catch (e) {
+    // No enrichments table: nothing was marked. Any OTHER read failure fails closed (#1062): an unreadable marker never reads as "not held".
+    if (!noTable(e)) return SALES_GATE_HELD
+  }
+  return gateVerdict(row, { inProcess: false, failedMarker, passed: v => passes.has(v), reportHeld: reportHolds(db, tenantId, leadId) })
+}
+
+// requiredGateHeld for every lead of ONE scan of ONE tenant, on the Db layer (SQLite or Postgres) - for reads that cannot reach the scan store's
+// sync handle (the campaign page, lib/outreach/campaign-detail.ts, #1062). Three tenant-scoped reads, whatever the lead count: the leads, their
+// gate markers (lead_enrichments_lead index) and the scan's latest run report. Returns the held lead ids. A read that fails (other than a missing
+// table) throws: the caller answers an error, never a page that calls a held lead ready.
+export async function requiredGateHeldForJob(db: Db, tenantId: string, jobId: string): Promise<Set<string>> {
+  const rows = await db.all<GateRow & { id: string }>('SELECT l.id, l.review_reason, l.human_confirmed_from, l.confidence, l.company, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?', [jobId, tenantId])
+  const held = new Set<string>()
+  if (!rows.length) return held
+  // A missing table means nothing of that kind was written (the sync reader agrees); any other read error throws to the caller.
+  const orNone = async <T,>(read: () => Promise<T>, none: T): Promise<T> => { try { return await read() } catch (e) { if (noTable(e)) return none; throw e } }
+  const marks = await orNone(() => db.all<{ lead_id: string; kind: string; value: string }>("SELECT e.lead_id, e.kind, e.value FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.scan_job_id = ? AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind IN ('gate_failed', 'gate_passed')", [jobId, tenantId]), [])
+  const rep = await orNone(() => db.get<{ report: string }>('SELECT r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id WHERE r.job_id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1', [jobId, tenantId]), undefined)
+  const reportIds = rep ? reportHeldIds(rep.report) : new Set<unknown>()
+  const failed = new Set<string>(), passes = new Map<string, Set<string>>()
+  for (const m of marks) {
+    if (m.kind === 'gate_failed') failed.add(m.lead_id)
+    else { const p = passes.get(m.lead_id) ?? new Set<string>(); p.add(m.value); passes.set(m.lead_id, p) }
+  }
+  for (const r of rows) {
+    const v = gateVerdict(r, { inProcess: inProcess.has(`${tenantId}:${r.id}`), failedMarker: failed.has(r.id),
+      passed: value => passes.get(r.id)?.has(value) ?? false, reportHeld: reportIds === 'unreadable' || reportIds.has(r.id) })
+    if (v) held.add(r.id)
+  }
+  return held
 }

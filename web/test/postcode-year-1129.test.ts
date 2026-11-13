@@ -1,0 +1,39 @@
+// #1129 (from the #533 live check, comment 6841835996): an undated candidate whose quote carries an Australian address
+// ("Sydney, NSW 2000 / Melbourne, VIC 3000") was held as event_date_stale with the note "the quote names 2000": the
+// postcode was read as a year. A NSW postcode 2000-2099 in address form is not a year; nothing else is excluded.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { eventYears } from '../lib/scan/date-in-text.ts'
+import { resolveTiming } from '../lib/scan/page-timing.ts'
+
+const LIVE = 'Sales Operations Manager Sydney, NSW 2000 / Melbourne, VIC 3000 Government – Sales / Hybrid Apply for this job'
+
+test('#1129 an address postcode is not a year (NSW 20xx; other codes never collide with the year range)', () => {
+  assert.deepEqual(eventYears(LIVE), [])
+  for (const q of ['Office at 1 Martin Place, Sydney NSW 2000', 'Parramatta, NSW, 2150 and Canberra ACT 2601', 'Perth WA 6000', 'Brisbane QLD 4000', 'Adelaide SA 5000', 'Darwin NT 0800', 'Hobart TAS 7000', 'Surry Hills NSW 2010.', 'Botany NSW 2019, Australia', 'Botany NSW 2019 Australia', 'Botany, NSW 2019 – Head office', '(Botany NSW 2019)', 'Sydney NSW 2000 Apply for this job', 'Sydney NSW 2000 Government – Sales', 'Sydney NSW 2000 Hybrid', 'Sydney NSW 2000 and Melbourne VIC 3000', 'Level 3, 1 Martin Place Sydney NSW 2000 Phone 02 9000 0000', 'Sydney NSW 2000?', 'Botany NSW 2019 Full time']) assert.deepEqual(eventYears(q), [], q)
+  // a postcode that looks like a recent year is still a postcode
+  assert.deepEqual(eventYears('Botany NSW 2019'), [])
+})
+
+test('#1129 real years are still read: in the same quote, in running text, and with lower-case words that are not state codes', () => {
+  assert.deepEqual(eventYears(`${LIVE}. The team opened in 2019.`), [2019])
+  assert.deepEqual(eventYears('We opened our Sydney office in 2018'), [2018])
+  assert.deepEqual(eventYears('an act 2019 of parliament'), [2019], 'lower case is running text, not an address')
+  assert.deepEqual(eventYears('founded in 2015, opened a clinic in 2017'), [2017], 'company background stays excluded')
+  // review on #1137: a bare state code is not an address; these are years
+  for (const [q, y] of [['WA 2019 expansion announced', 2019], ['ACT 2021 BUDGET', 2021], ['THE NT 2020 RULES', 2020], ['Raised SA 2018 round', 2018], ['NSW 2019 CONFERENCE', 2019], ['the ACT 2019 amendments', 2019], ['the NT 2020 grant', 2020], ['SYDNEY NSW 2019 EXPANSION', 2019], ['Botany NSW 2019 opening of a new clinic', 2019], ['Raised SA 2018 Expansion', 2018], ['Hello The ACT 2019 Amendments were passed', 2019], ['the ACT 2019 Amendments', 2019], ['Sydney NSW 2019 Expansion of the clinic', 2019], ['The NSW 2019 budget.', 2019], ['Raised SA 2018.', 2018], ['In WA 2019, sales grew', 2019], ['Botany NSW 2019 and expanded', 2019], ['Botany NSW 2019 Expansion', 2019]] as const) assert.deepEqual(eventYears(q), [y], q)
+})
+
+test('#1129 review (Hermes-PC) at 431c8e87: only NSW has postcodes that look like a year (2000-2099); after any other code, or a NSW 19xx, the number is a year', () => {
+  for (const [q, y] of [['Opened Seattle, WA 2019.', 2019], ['Spokane, WA 2021 - new office', 2021], ['Adelaide SA 2018.', 2018], ['Brisbane QLD 2020, expanded', 2020], ['Melbourne VIC 2019 Hybrid', 2019], ['Darwin NT 2022.', 2022], ['Hobart TAS 2019 Full time', 2019], ['Perth WA 2019 Apply for this job', 2019], ['Sydney NSW 1999.', 1999]] as const) assert.deepEqual(eventYears(q), [y], q)
+  assert.deepEqual(eventYears('Canberra ACT 2021 and Sydney NSW 2000'), [2021], 'the ACT year stays, the NSW postcode goes')
+  // real postcodes outside the year range were never years, at any code
+  for (const q of ['Melbourne VIC 3000', 'Canberra ACT 2601', 'Darwin NT 0800', 'Perth WA 6000']) assert.deepEqual(eventYears(q), [], q)
+})
+
+test('#1129 the live quote no longer holds an undated lead as stale', () => {
+  const t = resolveTiming(`${LIVE}. We are hiring a Sales Operations Manager.`, LIVE, null, 2026)
+  assert.equal(t.olderYear, null)
+  // and a quote that does name an old year still does
+  assert.equal(resolveTiming('We opened in 2019 in Sydney NSW 2000.', 'We opened in 2019 in Sydney NSW 2000', null, 2026).olderYear, 2019)
+})

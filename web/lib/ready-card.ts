@@ -77,13 +77,26 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const draftAtLeast = !msgsComplete
   const campGap = !camps ? 'could not check - your searches\' results did not load' : `could not check - only your latest ${CAMPAIGNS_CAP} searches could be checked`
   const noSearchYet = finishedN === 0
-  // Qualified: point at held or to-review leads first (something to act on), else the newest finished search.
-  const reviewCamp = first(c => (c.qualification.held ?? 0) + (c.qualification.needsReview ?? 0) > 0) ?? first(c => c.status === 'done')
-  // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens, held plus awaiting review.
-  const reviewN = reviewCamp ? (reviewCamp.qualification.held ?? 0) + (reviewCamp.qualification.needsReview ?? 0) : 0
+  // Qualified: point at held or to-review leads a check can still release first (something to act on), else the newest finished search.
+  // Research-only leads (no check can make them ready: lib/lead-state.ts) are never counted as review (#683).
+  const reviewable = (c: Camp) => Math.max(0, (c.qualification.held ?? 0) - (c.qualification.heldResearch ?? 0)) + (c.qualification.needsReview ?? 0)
+  const researchOf = (c: Camp) => (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)
+  const reviewCamp = first(c => reviewable(c) > 0)
+  // Nothing to review anywhere: the newest search whose leads are research only, with a step that can change the result - a new search.
+  // Only when that search has no unverified lead either (#683 round 3): an unverified lead is still actionable by
+  // checking its source, so "search again" would be the wrong advice while one is sitting right there.
+  const researchCamp = reviewCamp ? null : first(c => researchOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
+  const linkCamp = reviewCamp ?? researchCamp ?? first(c => c.status === 'done')
+  // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens.
+  const reviewN = reviewCamp ? reviewable(reviewCamp) : 0
+  const researchN = researchCamp ? researchOf(researchCamp) : 0
+  const researchQ = researchCamp?.query?.trim()
   const qualified: ReadyItem = qualifiedN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'done', detail: `${qualifiedN} source-checked or confirmed by you`, fix: null }
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
-    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: noSearchYet ? 'comes from your first search' : reviewN > 0 ? `${reviewN} lead${reviewN === 1 ? '' : 's'} in this search ${reviewN === 1 ? 'needs' : 'need'} your review - open the list to see why each was held` : 'no lead has passed the source check yet', fix: noSearchYet || !reviewCamp ? null : { href: href(reviewCamp)!, label: 'Review leads' } }
+    : noSearchYet ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'comes from your first search', fix: null }
+    : reviewN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${reviewN} lead${reviewN === 1 ? '' : 's'} in this search ${reviewN === 1 ? 'needs' : 'need'} your review - open the list to see why each was held`, fix: { href: href(reviewCamp)!, label: 'Review leads' } }
+    : researchN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${researchN} lead${researchN === 1 ? '' : 's'} in this search ${researchN === 1 ? 'is' : 'are'} research only - checking ${researchN === 1 ? 'it' : 'them'} cannot make ${researchN === 1 ? 'it' : 'them'} ready. Search again with a different signal or source`, fix: { href: researchQ ? `/app/leads?q=${encodeURIComponent(researchQ)}` : '/app/leads', label: 'Change the search' } }
+    : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'no lead has passed the source check yet', fix: linkCamp ? { href: href(linkCamp)!, label: 'Review leads' } : null }
   const contactCamp = first(c => ready(c) > 0)
   const contact: ReadyItem = contactN > 0 ? { id: 'contact', label: 'Contact found', state: 'done', detail: `${contactN} qualified lead${contactN === 1 ? '' : 's'} with a contact`, fix: null }
     : !campsComplete ? unknown('contact', 'Contact found', campGap)
