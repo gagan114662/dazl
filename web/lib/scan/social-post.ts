@@ -240,13 +240,11 @@ function thirdParty(sentence: string, company: string): boolean {
 //  (c) no time or future wording (statesTime, the round-1 list, kept as a second guard);
 //  (d) English: no non-English function words, and non-ASCII letters do not dominate.
 // Other sentences of the caption ("open late Mondays", "you will love our team", "at 2050 Queen St E") never block.
-export const POST_OPEN_PREDICATES = /\b(?:(?:has|have)\s+(?:just\s+|officially\s+|finally\s+)?opened|(?:just|officially|finally)\s+opened|opened\s+our\s+doors|opened|(?:is|are)\s+(?:now\s+|officially\s+)?open|now\s+open|officially\s+open|our\s+doors\s+are\s+(?:now\s+)?open|open\s+for\s+business)\b/i
-export const POST_HIRING_PREDICATES = /\b(?:we['’]re\s+(?:now\s+)?hiring|we\s+are\s+(?:now\s+)?hiring|(?:is|are)\s+(?:now\s+)?hiring|now\s+hiring|joined\s+our\s+team|(?:has|have)\s+joined)\b/i
 const STREET = String.raw`(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Way|Lane|Ln|Cres|Crescent|Pl|Place|Ct|Court|Pkwy|Parkway|Sq|Square|Terrace|Trail|Line|Sideroad|Concession)`
 const ADDRESS = new RegExp(String.raw`\b(?:at|on)\s+(?:(?:unit|suite|ste)\s*\d{1,5}[A-Za-z]?\s*[,-]?\s*)?\d{1,6}[A-Za-z]?(?:-\d{1,6})?\s+(?:[A-Z][\w'’.-]*\s+){0,4}${STREET}\b\.?(?:\s+(?:N|S|E|W|North|South|East|West)\b\.?)?|\b(?:at|on)\s+(?:Hwy|Highway|Route|Regional\s+Road)\s+\d{1,4}\b`, 'g')
 const NAMED_STREET = new RegExp(String.raw`\b(?:[A-Z][\w'’-]*\s+){1,3}${STREET}\b\.?(?:\s+(?:N|S|E|W|North|South|East|West)\b\.?)?`, 'g')
 const POSTCODE = /\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b|\b(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\s+\d{5}(?:-\d{4})?\b/g
-const FOREIGN_STRONG = /\b(?:abri[óo]|abre|abrimos|nueva|nuevo|cl[ií]nica|semana|pr[óo]xim[oa]|ouvre|ouvert|ouverture|nouvelle|nouveau|bient[ôo]t|clinique|semaine|er[öo]ffnet|er[öo]ffnung|n[äa]chste|neue|praxis|woche|aperto|apre|nuova|apriamo|abriu|aberta|inaugur\w+)\b/i
+const FOREIGN_STRONG = /\b(?:hace|semanas|wochen|vor\s+\w+\s+(?:tagen|wochen|monaten|jahren)|depuis|il\s+y\s+a|atr[áa]s|abri[óo]|abre|abrimos|nueva|nuevo|cl[ií]nica|semana|pr[óo]xim[oa]|ouvre|ouvert|ouverture|nouvelle|nouveau|bient[ôo]t|clinique|semaine|er[öo]ffnet|er[öo]ffnung|n[äa]chste|neue|praxis|woche|aperto|apre|nuova|apriamo|abriu|aberta|inaugur\w+)\b/i
 const FOREIGN_WEAK = /\b(?:el|la|los|las|del|una|un|y|con|por|para|est[áa]|le|les|des|une|et|à|au|aux|est|dans|pour|avec|der|die|das|und|ein|eine|mit|ist|im|zur|zum|il|di|che|della|nel|e|o|em|os|da|do|uma)\b/gi
 function englishEnough(s: string): boolean {
   if (FOREIGN_STRONG.test(s)) return false
@@ -268,6 +266,48 @@ function sentenceSpans(t: string): [number, number][] {
   return out
 }
 
+// #878 review round 3 (e7592d02): the SHAPE of the whole sentence is allow-listed, not only its predicate ("bookings now open", "is
+// open late", "opened a GoFundMe", "opened when the pandemic hit" all carried an allowed predicate). The quote's sentence must be,
+// and be nothing but (emoji aside):
+//   [lead-in: "Big news", "We're thrilled to announce", "Huge thanks to our team", ... ending in ":" "!" "," or "that"]
+//   <the company, or We / Our team> [has/have/is/are/'s/'re/'ve] [just/officially/finally/now] <predicate>
+//   [for "opened" only: a/our/the [new] [second ...] location/clinic/office/practice/branch/studio/store/shop/doors]
+//   [in/at/on <Capitalised Place words or a street address>]{0,2} [", <City>"]
+//   [", our [second ...] [new] clinic/location/..."] [" for patients / new patients / business / appointments"]
+// or the greeting "Welcome to <company> [<Place>][, our second clinic], now open [in <Place>] [for patients]". Predicates: opening
+// "opened" (also has/have/just/officially/finally opened) or "now / officially / just / finally open" (bare "is open" and "open for
+// business" are not read); hiring "is / are / 're / now hiring [a|an] <up to 4 role words> [for|at our <Place> clinic|team ...]".
+// "first", "originally", "initially", "re-opened", "reopen", "again" anywhere refuse. Every other sentence the quote overlaps must
+// be a lead-in alone. The time (b, c) and English (d) guards still apply.
+const ci = (w: string) => w.replace(/[A-Za-z]/, c => `[${c.toLowerCase()}${c.toUpperCase()}]`)   // the first letter in either case ("Now open")
+const CAP = String.raw`(?:[A-Z][\w'’.&-]*)`
+const PLACE_WORDS = String.raw`${CAP}(?:\s+(?:${CAP}|of|on|the|de|du))*`
+const ADDR = String.raw`\d{1,6}[A-Za-z]?\s+(?:${CAP}\s+){0,4}${STREET}\.?(?:\s+(?:N|S|E|W|North|South|East|West)\.?)?|(?:Hwy|Highway|Route)\s+\d{1,4}`
+const PLACE = String.raw`(?:\s+(?:in|at|on)\s+(?:the\s+)?(?:${ADDR}|${PLACE_WORDS})){0,2}(?:,\s+${CAP}(?:\s+${CAP})?)?`
+const NTH = String.raw`(?:(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))\s+)?`
+const NOUN = String.raw`(?:location|clinic|office|practice|branch|studio|store|shop)`
+const TRAIL = String.raw`(?:,?\s+(?:our|the|its)\s+${NTH}(?:new\s+)?${NOUN}(?:\s+in\s+${PLACE_WORDS})?)?(?:,?\s+(?:now\s+open\s+)?for\s+(?:patients|new\s+patients|business|appointments))?`
+const LEADIN = String.raw`(?:(?:Big|Great|Exciting|Good|Happy|Some)\s+news|We['’]re\s+(?:so\s+)?(?:thrilled|excited|happy|proud|delighted)(?:\s+to\s+(?:announce|share))?|So\s+excited|Exciting\s+times|Huge\s+thanks\s+to\s+our\s+team|Thank\s+you(?:\s+to\s+our\s+(?:team|patients|community))?)`
+const LEAD_ONLY = new RegExp(String.raw`^${LEADIN}\s*[:!,.]?$`, 'i')
+const RETRO_WORDS = /\b(?:first|originally|initially|re-?opened|re-?open(?:s|ing)?|again)\b/i
+const stripEmoji = (s: string) => s.replace(/[\p{Extended_Pictographic}‍️⃣]/gu, ' ').replace(/\s+/g, ' ').trim()
+function shapeOf(sentence: string, company: string, kind: 'event' | 'hiring'): 'main' | 'lead' | null {
+  const t = stripEmoji(sentence).replace(/\s*[.!]+$/, '')
+  if (!t) return 'lead'
+  if (LEAD_ONLY.test(t)) return 'lead'
+  if (RETRO_WORDS.test(t)) return null
+  const co = ws(company).split(' ').map(w => ci(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('\\s+')
+  const subj = String.raw`(?:${co}|${ci('we')}|${ci('our')}\s+team)`
+  const lead = String.raw`(?:${LEADIN}\s*(?:[:!,]|\s+that)\s*)?`
+  const pred = kind === 'hiring'
+    ? String.raw`(?:\s+(?:is|are)|['’]re)?\s+(?:${ci('now')}\s+)?hiring(?:\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,3}[\w'’-]+)?(?:\s+(?:for|at)\s+our\s+(?:${CAP}\s+)?(?:${NOUN}|team))?`
+    : String.raw`(?:(?:\s+(?:has|have)|['’]ve)?(?:\s+(?:just|officially|finally))?\s+opened(?:\s+(?:a|our|the|its)\s+(?:brand[- ]new\s+|new\s+)?${NTH}(?:new\s+)?(?:${NOUN}|doors))?|(?:\s+(?:is|are)|['’](?:s|re))?\s+(?:now|officially|just|finally)(?:\s+(?:now|officially))?\s+open)`
+  const main = new RegExp(String.raw`^${lead}${subj}${pred}${PLACE}${TRAIL}$`)
+  if (main.test(t)) return 'main'
+  if (kind !== 'hiring' && new RegExp(String.raw`^${ci('welcome')}\s+to\s+(?:the\s+)?${co}(?:\s+${CAP}){0,2}(?:,\s+our\s+${NTH}(?:new\s+)?${NOUN})?,?\s+(?:now|officially)\s+open${PLACE}(?:\s+for\s+(?:patients|new\s+patients|business|appointments))?$`).test(t)) return 'main'
+  return null
+}
+
 // Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text, its
 // sentences pass the allow-list above, the post is not another party's (thirdParty), and the existing binding rule (eventDateBound)
 // ties the day to this company and event when the post's day stands as the dateline of that sentence.
@@ -285,7 +325,6 @@ export function socialPostBound(post: SocialPost | null | undefined, quote: stri
   const qs = m.index, qe = m.index + m[0].length
   const spans = sentenceSpans(text).filter(([a, b]) => a < qe && b > qs)
   const name = ws(company).toLowerCase()
-  const PRED = kind === 'hiring' ? POST_HIRING_PREDICATES : POST_OPEN_PREDICATES
   let main: { sentence: string } | null = null
   for (const [a, b] of spans) {
     const sentence = ws(text.slice(a, b))
@@ -295,10 +334,15 @@ export function socialPostBound(post: SocialPost | null | undefined, quote: stri
     if (/\d/.test(place)) return { bound: false, why: "the quote's sentence carries a number that is not a street address, so it may state its own time" }
     const when = statesTime(place)
     if (when) return { bound: false, why: `the quote's sentence states its own time (${when}), so the post's day is not its event's day` }
-    if (!main && sentence.toLowerCase().includes(name) && PRED.test(sentence)) main = { sentence }
+    const shape = shapeOf(sentence, company, kind)
+    if (!shape) return { bound: false, why: `the quote's sentence is not a plain statement that this company ${kind === 'hiring' ? 'is hiring' : 'opened or is now open'} (the allowed sentence shape)` }
+    if (shape === 'main' && !main) main = { sentence }
   }
-  if (!main) return { bound: false, why: `the quote's sentence naming this company states no completed ${kind === 'hiring' ? 'hiring' : 'opening'} event from the allowed wording` }
+  if (!main) return { bound: false, why: `the quote's sentence states no completed ${kind === 'hiring' ? 'hiring' : 'opening'} event in the allowed shape` }
   if (thirdParty(main.sentence, company)) return { bound: false, why: "the post speaks about this company from someone else's side" }
+  // first person ("We're hiring ...", "Our team opened ..."): the post's own statement; the company it belongs to is the verifier's
+  // check (the quote or the page heading names it). The text binding below needs the company named, so it is not asked.
+  if (!main.sentence.toLowerCase().includes(name)) return { bound: true, why: `the ${post.platform} post's own structured publish time for exactly this post URL, as the dateline of its own first-person text` }
   // the post's day stands as the dateline of the statement about the company: from its first mention in that sentence (what comes
   // before it, a greeting such as "Welcome to", was judged by thirdParty above)
   const from = main.sentence.slice(main.sentence.toLowerCase().indexOf(name))

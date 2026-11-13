@@ -311,9 +311,12 @@ test('#878 review R5: another party\'s post about the company (congratulations, 
     const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
     assert.equal(socialPostBound(post, quoteOf(caption), 'Northwind Dental').bound, false, caption)
   }
-  // the company's own post that also thanks someone is still its own
-  const own = socialPostOf(IG, IG, igPage({ caption: 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team!' }), NOW)
-  assert.equal(socialPostBound(own, 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team', 'Northwind Dental').bound, true)
+  // the company's own post that thanks its team in a lead-in is still its own; a thanks AFTER the statement is outside the sentence
+  // shape (round 3 at e7592d02: an accepted loss, never a wrong date)
+  const own = socialPostOf(IG, IG, igPage({ caption: 'Huge thanks to our team: Northwind Dental opened a new location in Leslieville!' }), NOW)
+  assert.equal(socialPostBound(own, 'Huge thanks to our team: Northwind Dental opened a new location in Leslieville', 'Northwind Dental').bound, true)
+  const after = socialPostOf(IG, IG, igPage({ caption: 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team!' }), NOW)
+  assert.equal(socialPostBound(after, 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team', 'Northwind Dental').bound, false)
 })
 
 // ---- review round 2 at 8e38655d: an ALLOW-LIST, not a blocklist. Every caption below leaked through the round-1 word list.
@@ -380,7 +383,7 @@ test('#878 review round 2 (R6, R5): other sentences never block; a greeting or "
 })
 
 test('#878 review round 2 (a): only a completed event of the kind the claim needs, from the fixed English wording', () => {
-  const hiring = socialPostOf(IG, IG, igPage({ caption: "Northwind Dental is hiring a front desk coordinator for our Leslieville clinic, apply in the link in bio." }), NOW)
+  const hiring = socialPostOf(IG, IG, igPage({ caption: "Northwind Dental is hiring a front desk coordinator for our Leslieville clinic.\nApply in the link in bio." }), NOW)
   const q = 'Northwind Dental is hiring a front desk coordinator for our Leslieville clinic'
   assert.equal(socialPostBound(hiring, q, 'Northwind Dental', 'hiring').bound, true)
   assert.equal(socialPostBound(hiring, q, 'Northwind Dental', 'event').bound, false, 'hiring wording does not date an opening claim')
@@ -388,4 +391,73 @@ test('#878 review round 2 (a): only a completed event of the kind the claim need
   for (const caption of ['Grand opening of our new clinic: Northwind Dental in Parkdale welcomes patients.', 'Come visit Northwind Dental at our new clinic in Parkdale, now accepting new patients.']) {
     assert.equal(socialPostBound(socialPostOf(IG, IG, igPage({ caption }), NOW), quoteOf(caption), 'Northwind Dental').bound, false, `acknowledged loss: ${caption}`)
   }
+})
+
+// ---- review round 3 at e7592d02: the whole sentence's SHAPE is allow-listed
+const ROUND3: string[] = [
+  // R1: other times with no time word the guards knew
+  'Northwind Dental opened at the start of the school year in Leslieville.',
+  'Northwind Dental opened the first week of school in Leslieville.',
+  'Northwind Dental opened when the pandemic hit, right here in Leslieville.',
+  'Northwind Dental opened mid-pandemic in Leslieville, our second clinic.',
+  'Northwind Dental opened in Leslieville once upon a time, and we are still here.',
+  'Northwind Dental opened in Leslieville way back when.',
+  'Northwind Dental opened in Leslieville a fortnight back.',
+  'Northwind Dental has opened in Leslieville in the past few weeks.',
+  'Northwind Dental opened in Leslieville in the fourth quarter.',
+  'Northwind Dental opened in Leslieville in twenty twenty-four.',
+  'Northwind Dental opened in Leslieville as the leaves turned, our second clinic.',
+  'Northwind Dental first opened in Leslieville, where it all began.',
+  'Northwind Dental originally opened in Leslieville, where it all began.',
+  'Northwind Dental opened in Leslieville when we moved from Riverdale.',
+  // R7: a state, or something else that opened
+  'Northwind Dental is open late in Leslieville, our second clinic.',
+  'Northwind Dental is open in Leslieville, as always.',
+  'Northwind Dental bookings now open for the Leslieville clinic.',
+  'Northwind Dental patio is now open in Leslieville.',
+  "Northwind Dental's patio is now open in Leslieville.",   // already undated at e7592d02 (kept as a guard)
+  'Northwind Dental online booking is now open for new patients in Leslieville.',
+  'Northwind Dental registration for the charity run is now open.',
+  'Northwind Dental has opened a pop-up booth at the Leslieville fair.',
+  'Northwind Dental opened a GoFundMe for a local family in Leslieville.',
+  // R8: another language's time words
+  'Northwind Dental opened in Leslieville hace dos semanas.',
+  'Northwind Dental opened in Leslieville vor zwei Wochen.',
+]
+const R3_DATED: [string, 'event' | 'hiring', string][] = [
+  ['Northwind Dental is now open in Parkdale!', 'event', 'Northwind Dental'],
+  ['Northwind Dental opened a new location in Leslieville.', 'event', 'Northwind Dental'],
+  ['Welcome to Northwind Dental Parkdale, our second clinic, now open for patients.', 'event', 'Northwind Dental'],
+  ['Huge thanks to our team: Northwind Dental opened a new location in Parkdale.', 'event', 'Northwind Dental'],
+  ["We're hiring a front desk coordinator!", 'hiring', 'Northwind Dental'],
+  ['Kailash Dentistry is now open in Parkdale. Created with intention. Fueled by purpose.', 'event', 'Kailash Dentistry'],   // the real staging quote's caption
+]
+
+test('#878 review round 3: captions outside the allowed sentence shape are undated, through socialPostBound and the verifier (claimed day none)', async () => {
+  for (const caption of ROUND3) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    assert.equal(post?.day, '2026-10-20', caption)
+    const r = socialPostBound(post, quoteOf(caption), 'Northwind Dental')
+    assert.equal(r.bound, false, `${caption}: ${r.why}`)
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption }) }))
+    try {
+      const o = await verifyLeads([draft({ excerpt: quoteOf(caption) })], read, new Date(NOW))
+      for (const l of [...o.leads, ...o.review]) assert.ok(l.event_date !== '2026-10-20' && l.event_date_proof !== 'page_bound', `${caption}: ${JSON.stringify([l.event_date, l.event_date_proof])}`)
+    } finally { restore() }
+  }
+})
+
+test('#878 review round 3: the allowed shapes still date (opening, greeting, lead-in, first-person hiring, the real Kailash quote)', async () => {
+  for (const [caption, kind, company] of R3_DATED) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    const quote = caption.startsWith('Kailash') ? 'Kailash Dentistry is now open in Parkdale.' : quoteOf(caption)
+    const r = socialPostBound(post, quote, company, kind)
+    assert.equal(r.bound, true, `${caption}: ${r.why}`)
+  }
+  // through the verifier: the real Kailash caption shape
+  const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption: 'Kailash Dentistry is now open in Parkdale. Created with intention. Fueled by purpose. Built to help people become the best version of themselves- starting with their smile. 😊' }) }))
+  try {
+    const o = await verifyLeads([draft({ company: 'Kailash Dentistry', excerpt: 'Kailash Dentistry is now open in Parkdale.' })], read, new Date(NOW))
+    assert.deepEqual(o.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-20', 'page_bound']])
+  } finally { restore() }
 })
