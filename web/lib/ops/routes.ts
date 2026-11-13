@@ -56,6 +56,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/leads/ranking-fixture',
   '/api/leads/source-metrics',
   '/api/leads/source-review',
+  '/api/leads/tech-fixture',
   '/api/leads/verification-fixture',
   '/api/onboarding/policy',
   '/api/monitors',
