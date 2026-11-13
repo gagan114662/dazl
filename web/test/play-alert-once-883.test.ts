@@ -1,11 +1,12 @@
 // #883 "alert sent once and deduped across plays". Both engines, no network, no provider, no paid call.
 //
-// The lead rows are production's (backup of 2026-11-13, read-only): the seven leads one finished play run stored there
-// (company, signal, date, fit, review state and score exactly as stored; no account, run or person identifier is kept,
-// and the plays' sentences and profile here are made up). With those rows, main's mail for that run lists Ngenaire,
-// Campfire and Chesky; the test then lets the account's OTHER play find Campfire and Ngenaire again, which main mails a
-// second time as "new leads you have not been shown before". Smile Avenue Dental, Zenithon, OpenRelay and Photon are
-// more stored production leads.
+// The lead rows are adapted from production's (backup of 2026-11-13, read-only; every row comes from a dazl-owned or test
+// account): the seven leads one finished play run stored there (company, signal, fit, review state and score as stored;
+// two personal post addresses shortened; no account, run or person identifier is kept, and the plays' sentences and
+// profile here are made up). With those rows, main's mail for that run lists Ngenaire, Campfire and Chesky; the test
+// then lets the account's OTHER play find Campfire and Ngenaire again, which main mails a second time as "new leads you
+// have not been shown before". Smile Avenue Dental and Zenithon are adapted from stored production leads (dates moved
+// into the window), OpenRelay and Photon are four stored rows as they are.
 // Each run goes through the production steps: createWatch -> a run's job and leads -> the runner's mark (writeWatchLeads,
 // the Db-layer twin of markWatchLeads) -> the mail pass (sendPlayRunMails), and for monitors createMonitor ->
 // runDueMonitors -> collectMonitorResults. A monitor lead is given date_status 'verified' by hand: no scan writes that
@@ -42,7 +43,7 @@ const Q_AGENCIES = 'Marketing agencies posting about outbound or lead generation
 const Q_LONDON = 'funded startups in London hiring'
 const ICP = JSON.stringify({ summary: 'Small B2B sales teams', who: ['Founder', 'Head of Sales'], industries: ['B2B SaaS', 'Marketing agencies'], sizes: ['1-50 employees'], where: ['United States', 'Canada'], signals: ['Hiring their first salesperson', 'posting about outbound pain'], exclude: [] })
 
-interface L { company: string; domain?: string | null; date?: string | null; kind?: string | null; signal: string; url: string; fit: number | null; review?: string | null; score: number; dateStatus?: string; conf?: number | null }
+interface L { reachable?: boolean; company: string; domain?: string | null; date?: string | null; kind?: string | null; signal: string; url: string; fit: number | null; review?: string | null; score: number; dateStatus?: string; conf?: number | null }
 // the seven leads of one production play run (fit <= 1 is the hidden tier: Mercury, Clark, beehiiv, LeanPBX)
 const MERCURY: L = { company: 'Mercury', signal: 'Hiring a Sales Development Representative', url: 'https://job-boards.greenhouse.io/mercury/jobs/6167220004', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
 const CLARK: L = { company: 'Clark', signal: 'Hiring a Sales Development Representative', url: 'https://www.builtinnyc.com/job/sales-development-representative/11701959', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
@@ -68,9 +69,12 @@ async function play(db: Db, t: string, query: string, at: number): Promise<strin
   await db.run('UPDATE watches SET created_at = ? WHERE id = ?', [at, r.watch.id])
   return r.watch.id
 }
-const addLead = (db: Db, job: string, l: L) => db.run(
-  `INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score, fit, event_date, date_status, confidence, review_reason, signal_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  [id24(), job, l.company, l.domain ?? null, l.signal, l.url, l.score, l.fit, l.date ?? null, l.dateStatus ?? 'undated', l.conf ?? null, l.review ?? null, l.kind ?? null])
+async function addLead(db: Db, job: string, l: L): Promise<string> {
+  const id = id24()
+  await db.run(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score, fit, event_date, date_status, confidence, review_reason, signal_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, job, l.company, l.domain ?? null, l.signal, l.url, l.score, l.fit, l.date ?? null, l.dateStatus ?? 'undated', l.conf ?? null, l.review ?? null, l.kind ?? null])
+  return id
+}
 // One run of a weekly / daily play that stored `leads`, up to the point the scan runner leaves it: leads marked by the
 // runner's own step, the job done and its enrichment ended at `at`. `mark: false` leaves the marking to the caller.
 async function runJob(db: Db, t: string, watch: string | null, query: string, at: number, leads: L[], o: { mark?: boolean } = {}): Promise<string> {
@@ -83,7 +87,8 @@ async function runJob(db: Db, t: string, watch: string | null, query: string, at
 }
 const outbox = (db: Db, t: string) => db.all<{ subject: string; body: string }>('SELECT subject, body FROM system_mail_outbox WHERE user_id = ? ORDER BY created_at, subject', [t])
 const listed = (body: string) => body.split('\n').filter(x => x.startsWith('- ')).map(x => x.slice(2).split(':')[0])
-const alerts = (db: Db, t: string) => db.all<{ entity_key: string; play_kind: string; play_id: string }>('SELECT entity_key, play_kind, play_id FROM play_alerts WHERE tenant_id = ? ORDER BY entity_key', [t])
+// the account's alert record, without the once-only marker row of the backfill (lib/play-alerts.ts SEEDED)
+const alerts = (db: Db, t: string) => db.all<{ entity_key: string; play_kind: string; play_id: string }>("SELECT entity_key, play_kind, play_id FROM play_alerts WHERE tenant_id = ? AND entity_key <> '~seeded' ORDER BY entity_key", [t])
 const newFlags = async (db: Db, job: string) => Object.fromEntries((await db.all<{ company: string; watch_new: number }>('SELECT company, watch_new FROM leads WHERE scan_job_id = ? ORDER BY company', [job])).map(r => [r.company, Number(r.watch_new)]))
 
 bothEngines('#883 a company one play has mailed is not mailed, or counted as new, again by another play of the account (production play run)', async ({ db }) => {
@@ -305,7 +310,11 @@ async function monitorRun(db: Db, mon: string, at: number, leads: L[]) {
   const jobs = await runDueMonitors(db, { now: at })
   assert.equal(jobs.length, 1)
   await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [jobs[0]])
-  for (const l of leads) await addLead(db, jobs[0], { ...l, dateStatus: 'verified', conf: l.conf ?? 60, review: null })
+  for (const l of leads) {
+    const id = await addLead(db, jobs[0], { ...l, dateStatus: 'verified', conf: l.conf ?? 60, review: null })
+    // the scan's own end-to-end verdict (lib/scan/actionable.ts), which the monitor reads as "reachable"
+    if (l.reachable) await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, (SELECT user_id FROM scan_jobs WHERE id = ?), 'scan:actionable', 'actionability', 'Actionable: domain, person and published contact confirmed', 'https://invalid.example/', '2026-11-13', ?)", [id24(), id, jobs[0], at])
+  }
   await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [at, jobs[0]])
   await collectMonitorResults(db, { now: at + 3600 })
   return db.all<{ kind: string; company: string }>('SELECT a.kind, a.company FROM monitor_alerts a JOIN monitor_runs r ON r.id = a.run_id WHERE r.job_id = ? ORDER BY a.company', [jobs[0]])
@@ -343,6 +352,96 @@ bothEngines('#883 across play kinds: a monitor does not repeat what a weekly pla
     { entity_key: 'n:smile avenue dental', play_kind: 'watch', play_id: sdr },
     { entity_key: 'n:zenithon', play_kind: 'monitor', play_id: m.id },
   ])
+})
+
+bothEngines('#883 one monitor: a company alerted without its website is not a "new company" again when the next run knows the website (review on PR #1162)', async ({ db }) => {
+  await account(db, A, 'founder@a.example')
+  const m = await createMonitor(db, A, { query: Q_SEED }, NOW)
+  assert.ok('id' in m, JSON.stringify(m))
+  // run 1: the two production rows with no website
+  assert.deepEqual(await monitorRun(db, m.id, NOW + DAY, [PHOTON, OPENRELAY]), [{ kind: 'new_company', company: 'OpenRelay' }, { kind: 'new_company', company: 'Photon' }])
+  // run 2: the same companies as the next scan stored them, website known (Photon's event now carries a kind; OpenRelay's row has no date)
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 8 * DAY, [PHOTON_2, OPENRELAY_2]), [], 'the same event under the company\'s other key is not new')
+  // run 3: the identical event, website added
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 15 * DAY, [{ ...PHOTON, domain: 'photon.codes' }]), [])
+  // "now reachable" still alerts, once, across the name / website change
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 22 * DAY, [{ ...PHOTON_2, reachable: true }]), [{ kind: 'now_reachable', company: 'Photon' }])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 29 * DAY, [{ ...PHOTON_2, reachable: true }, { ...PHOTON, reachable: true }]), [])
+  // a genuinely different, later event of the same company is a new signal, once, never a new company
+  const later: L = { ...PHOTON_2, date: '2026-11-20', kind: 'hiring', signal: 'Photon is hiring its first sales rep', url: 'https://jobs.example/photon-sales' }
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 36 * DAY, [later]), [{ kind: 'new_signal', company: 'Photon' }])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 43 * DAY, [later, { ...later, domain: null }]), [])
+  // a second monitor of the account does not re-alert them either
+  const m2 = await createMonitor(db, A, { query: Q_SDR }, NOW)
+  assert.ok('id' in m2)
+  assert.deepEqual(await monitorRun(db, m2.id, NOW + 44 * DAY, [PHOTON_2, { ...OPENRELAY_2, date: '2026-09-01' }]), [])
+})
+
+// Main's state at the deploy, written the way main writes it (lib/watch.ts markWatchLeads + lib/play-mail.ts on f6c697d7): the
+// run's leads marked new, the play's own memory in watch_seen (the domain, else the squeezed name), the mail pass's
+// 'mail:<job>' marker, and NO play_alerts row. The outbox is not seeded: production keeps it 24 hours.
+async function mailedOnMain(db: Db, t: string, watch: string, query: string, at: number, leads: L[], o: { marker?: boolean } = {}): Promise<string> {
+  const id = id24()
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at, watch_id) VALUES (?, ?, 'x', '-', '-', ?, ?, 'running', ?, ?)", [id, t, query, ICP, at - 300, watch])
+  for (const l of leads) {
+    const lead = await addLead(db, id, l)
+    await db.run('UPDATE leads SET watch_new = 1 WHERE id = ?', [lead])
+    await db.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING', [watch, l.domain ? l.domain.toLowerCase() : l.company.toLowerCase().replace(/[^a-z0-9]/g, '')])
+  }
+  await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ?, enrich_started_at = ?, enrich_finished_at = ? WHERE id = ?", [at, at, at, id])
+  if (o.marker !== false) await db.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?)', [watch, `mail:${id}`])
+  return id
+}
+
+bothEngines('#883 the deploy: what main already mailed is not mailed again by the first runs of this code (review on PR #1162; production replay split at the deploy)', async ({ db }) => {
+  await account(db, A, 'founder@a.example')
+  const seed = await play(db, A, Q_SEED, NOW - 9 * DAY)
+  const sdr = await play(db, A, Q_SDR, NOW - 9 * DAY)
+  // before the deploy, on main: play 1 mailed OpenRelay and Photon (no website) and Mercury only in the hidden tier; play 2 mailed
+  // Campfire; a third run finished but its mail pass never came (no marker); a monitor alerted Zenithon
+  const j1 = await mailedOnMain(db, A, seed, Q_SEED, NOW - 3 * DAY, [OPENRELAY, PHOTON, MERCURY])
+  await mailedOnMain(db, A, sdr, Q_SDR, NOW - 2 * DAY, [CAMPFIRE])
+  await mailedOnMain(db, A, sdr, Q_SDR, NOW - 2 * DAY + 3600, [SMILE], { marker: false })
+  const m = await createMonitor(db, A, { query: Q_LONDON }, NOW - 5 * DAY)
+  assert.ok('id' in m)
+  const run = id24(), mjob = id24()
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, created_at) VALUES (?, ?, 'x', '-', '-', ?, ?, 'running', ?)", [mjob, A, Q_LONDON, ICP, NOW - 4 * DAY])
+  await db.run('INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, processed, new_count, missed_runs) VALUES (?, ?, ?, ?, 1, 1, 0)', [run, m.id, mjob, NOW - 4 * DAY])
+  await db.run("INSERT INTO monitor_alerts (id, user_id, monitor_id, run_id, event_key, kind, company, latency_s, at) VALUES (?, ?, ?, ?, 'd:zenithon.ai|2026-09-30|signal', 'new_company', 'Zenithon', 0, ?)", [id24(), A, m.id, run, NOW - 4 * DAY])
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM play_alerts'))!.n), 0, "main's state: no record yet")
+
+  // after the deploy. Play 1's next run knows the websites (its own memory holds "openrelay", the lead's key is now
+  // "openrelay.com": main mails both again); play 2 finds Photon too; play 1 finds Campfire, Zenithon and Smile Avenue Dental;
+  // play 2 finds Mercury as a real lead (a play never re-surfaces a company it has itself seen: that rule is main's and stays)
+  const j2 = await runJob(db, A, seed, Q_SEED, NOW, [OPENRELAY_2, PHOTON_2, CAMPFIRE, ZENITHON, SMILE])
+  const j3 = await runJob(db, A, sdr, Q_SDR, NOW + 600, [{ ...PHOTON_2, company: 'Photon, Inc.' }, { ...MERCURY, fit: 3, review: null }])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 660 }), 2)
+  const box = await outbox(db, A)
+  assert.deepEqual(box.map(mm => listed(mm.body)).sort((x, y) => x[0].localeCompare(y[0])), [['Mercury'], ['Smile Avenue Dental']],
+    'only what nobody was told about before the deploy: Mercury (hidden tier then) and Smile Avenue Dental (its run was never mailed)')
+  assert.deepEqual(await newFlags(db, j2), { Campfire: 0, OpenRelay: 0, Photon: 0, 'Smile Avenue Dental': 1, Zenithon: 0 })
+  assert.deepEqual(await newFlags(db, j3), { Mercury: 1, 'Photon, Inc.': 0 })
+  // the record names who alerted each company first, and when it was read in
+  const rec = Object.fromEntries((await alerts(db, A)).map(a => [a.entity_key, `${a.play_kind}:${a.play_id}`]))
+  assert.equal(rec['n:openrelay'], `watch:${seed}`); assert.equal(rec['d:openrelay.com'], `watch:${seed}`)
+  assert.equal(rec['n:photon'], `watch:${seed}`); assert.equal(rec['d:photon.codes'], `watch:${seed}`)
+  assert.equal(rec['n:campfire'], `watch:${sdr}`); assert.equal(rec['d:zenithon.ai'], `monitor:${m.id}`); assert.equal(rec['n:zenithon'], `monitor:${m.id}`)
+  assert.equal(rec['n:mercury'], `watch:${sdr}`, 'Mercury is held by the run that actually mailed it')
+  assert.deepEqual(await db.get<{ job_id: string }>("SELECT job_id FROM play_alerts WHERE tenant_id = ? AND entity_key = 'n:photon'", [A]), { job_id: j1 })
+  // once only: the marker is there, and a later pass adds and changes nothing
+  assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM play_alerts WHERE tenant_id = ? AND entity_key = '~seeded'", [A]))!.n), 1)
+  const before = await alerts(db, A)
+  await runJob(db, A, sdr, Q_SDR, NOW + 3600, [OPENRELAY_2])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 3660 }), 0)
+  assert.deepEqual(await alerts(db, A), before)
+  // the monitor does not alert what the plays mailed before the deploy either
+  assert.deepEqual(await monitorRun(db, m.id, NOW + DAY, [PHOTON_2, ZENITHON]), [])
+  // another account's record is its own
+  await account(db, B, 'founder@b.example')
+  const other = await play(db, B, Q_SEED, NOW - 3 * DAY)
+  await runJob(db, B, other, Q_SEED, NOW, [OPENRELAY_2])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 3720 }), 1)
+  assert.deepEqual(listed((await outbox(db, B))[0].body), ['OpenRelay'])
 })
 
 bothEngines('#883 the first play\'s own leads are held by its automatic repeat: another play does not mail them as new', async ({ db }) => {

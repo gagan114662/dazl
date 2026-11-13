@@ -8,7 +8,7 @@
 // - results surface in-app only
 // On the Db layer (SQLite or Postgres), except markWatchLeads: the scan runner still calls it on the raw handle.
 import type Database from 'better-sqlite3'
-import type { Db, Tx, TxBody } from './db/client.ts'
+import { sqliteDb, type Db, type Tx, type TxBody } from './db/client.ts'
 import { randomBytes } from 'node:crypto'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { readHasKey } from './llm/key-store.ts'
@@ -18,7 +18,7 @@ import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmiss
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
 import { alertKeysOf } from './monitor-events.ts'
-import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
+import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, seedPlayAlertsStep, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
 import { cappedRunBudget, DAY_S, PLAY_SKIPPED, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
@@ -141,6 +141,9 @@ export function markWatchLeads(db: Database.Database, watchId: string, jobId: st
   const leads = db.prepare(WATCH_LEADS_SQL).all(jobId) as WatchLead[]
   const seen = new Set((db.prepare(WATCH_SEEN_SQL).all(watchId) as { seen_key: string }[]).map(r => r.seen_key))
   const tenant = (db.prepare(WATCH_TENANT_SQL).get(watchId) as { user_id: string } | undefined)?.user_id
+  // #883: what main mailed before the alert record existed is read in first, once per account (lib/play-alerts.ts). The SQLite
+  // transaction runs to its end inside this call (lib/db/client.ts); a failure leaves the record unseeded for the next pass.
+  if (tenant) void sqliteDb(db).tx(t => seedPlayAlertsStep(t, tenant, alertKeysOf)).catch(() => { /* seeded by the next pass */ })
   let fresh = 0
   const mark = db.prepare(MARK_NEW_SQL)
   const remember = db.prepare(REMEMBER_SQL)
@@ -158,6 +161,7 @@ export function* watchLeadsStep(t: Tx, watchId: string, jobId: string): TxBody<n
   const leads = yield* t.all<WatchLead>(WATCH_LEADS_SQL, [jobId])
   const seen = new Set((yield* t.all<{ seen_key: string }>(WATCH_SEEN_SQL, [watchId])).map(r => r.seen_key))
   const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
+  if (tenant) { yield* lockAlertsStep(t, tenant); yield* seedPlayAlertsStep(t, tenant, alertKeysOf) }
   let fresh = 0
   for (const l of freshLeads(leads, seen)) {
     if (l.fresh && !(tenant && heldElsewhere(yield* alertHolderStep(t, tenant, l.keys, jobId), jobId))) { yield* t.run(MARK_NEW_SQL, [l.id]); fresh++ }
@@ -189,6 +193,7 @@ export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now
   if (!tenant) return 0 // the play was deleted: nothing of it is mailed or listed any more
   yield* lockAlertsStep(t, tenant)
   if (!(yield* t.get('SELECT 1 AS x FROM watches WHERE id = ? AND user_id = ?', [watchId, tenant]))) return 0 // deleted while this waited
+  yield* seedPlayAlertsStep(t, tenant, alertKeysOf) // what main mailed before this record existed, once per account
   let kept = 0
   for (const l of yield* t.all<AlertLead>(SHOWN_SQL, [jobId, watchId, tenant])) {
     const keys = alertKeysOf(l)

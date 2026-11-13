@@ -11,10 +11,12 @@
 // the tenant's plays (dedupe across plays). Each event keeps first_seen / occurred / last_checked / actionable / reachable
 // timestamps; each monitor keeps a cursor per source host; each alert keeps its detection latency.
 // #883, across play kinds: the tenant's alert record (lib/play-alerts.ts) also holds what its weekly / daily plays have
-// alerted. A new event for a company such a play already alerted is suppressed as already seen when that play's lead
-// carried the same event (same day and kind) or no date; a different dated event alerts once as new_signal (the
-// company is known to the tenant, so never new_company). Every new_company / new_signal alert claims the company there,
-// so a weekly / daily play does not mail it again.
+// alerted, and knows a company by its website AND its name. A new event for a company already alerted there (by such a
+// play, or by a monitor under the company's other key: stored first without a website, then with one) is suppressed as
+// already seen when the earlier alert carried the same event (same day, same kind when both name one) or no date; a
+// different dated event alerts once as new_signal (the company is known to the tenant, so never new_company); the same
+// event under the other key continues on its own row, so "now reachable" still alerts once. Every new_company /
+// new_signal alert claims the company there, so a weekly / daily play does not mail it again.
 // No network and no paid calls: this only reads rows the scan pipeline already wrote and gated, inside the caller's
 // transaction. The scans themselves stay on the scheduler's quota and the runner's spend reservation (lib/monitors.ts).
 // Db layer (SQLite + Postgres); migrateMonitorEvents is the SQLite setup, pg/0046_monitor_events.sql the Postgres one.
@@ -22,7 +24,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { windowStatus } from './scan/window.ts'
-import { alertHolderStep, claimAlertStep, lockAlertsStep, migratePlayAlerts, sameEventAs, type AlertKeys } from './play-alerts.ts'
+import { alertHolderStep, claimAlertStep, lockAlertsStep, migratePlayAlerts, sameEventAs, seedPlayAlertsStep, type AlertKeys } from './play-alerts.ts'
 
 export function migrateMonitorEvents(db: Database.Database): void {
   db.exec(`
@@ -137,6 +139,7 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
   const out: FoldResult = { alerts: [], suppressed: {} }
   const bump = (s: Suppress) => { out.suppressed[s] = (out.suppressed[s] ?? 0) + 1 }
   yield* lockAlertsStep(t, a.userId)   // #883: one claim pass per tenant at a time (lib/play-alerts.ts)
+  yield* seedPlayAlertsStep(t, a.userId, alertKeysOf)   // what was alerted before the record existed, once per account
   // the cursors as they stood before this run (this run's own writes below never shrink its backfill)
   const cursors = new Map((yield* t.all<{ source: string; last_checked_at: number }>('SELECT source, last_checked_at FROM monitor_cursors WHERE monitor_id = ?', [a.monitorId]))
     .map(c => [c.source, Number(c.last_checked_at)] as const))
@@ -149,26 +152,38 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
     const ek = entityKeyOf(l), ev = eventKeyOf(l), occ = dayStartS(l.event_date)
     const prior = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, ev])
     const known = !!(yield* t.get('SELECT 1 AS x FROM monitor_events WHERE user_id = ? AND entity_key = ? AND event_key <> ? AND actionable_at IS NOT NULL LIMIT 1', [a.userId, ek, ev]))
-    const p: PriorEvent | null = prior ? { actionable_at: prior.actionable_at == null ? null : Number(prior.actionable_at), reachable_at: prior.reachable_at == null ? null : Number(prior.reachable_at) } : null
-    // #883: the company as a weekly / daily play of this tenant already alerted it (null: no such play did)
+    // #883: who already alerted this company, by either of its keys (null: nobody, or only this run). A weekly / daily play, or a
+    // monitor that alerted it under its other key (stored first without a website, then with one: the event key changes with it).
     const keys = alertKeysOf(l), job = a.jobId ?? a.runId
     const held = yield* alertHolderStep(t, a.userId, keys, job)
-    const byPlay = held && held.play_kind === 'watch' ? held : null
-    let d: Decision = decide(l, p, known || !!byPlay, a.policy, wd, a.now)
+    const other = held && held.job_id !== job ? held : null
+    let p: PriorEvent | null = prior ? { actionable_at: prior.actionable_at == null ? null : Number(prior.actionable_at), reachable_at: prior.reachable_at == null ? null : Number(prior.reachable_at) } : null
+    let evKey = ev
+    // The same event already recorded under the company's OTHER key continues on that row, so it is not new again and its
+    // "now reachable" change still alerts once.
+    if (!p && other) {
+      // the company's other keys: this lead's own, and the ones the record holds for it (a lead stored without the website still finds the website's row)
+      for (const k of new Set([keys.nameKey, keys.domainKey, other.domain_key, other.entity_key])) for (const kind of new Set([l.signal_kind ?? 'signal', other.signal_kind ?? 'signal', 'signal'])) {
+        if (p || !k || k === ek) continue
+        const old = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, `${k}|${l.event_date}|${kind}`])
+        if (old) { p = { actionable_at: old.actionable_at == null ? null : Number(old.actionable_at), reachable_at: old.reachable_at == null ? null : Number(old.reachable_at) }; evKey = `${k}|${l.event_date}|${kind}` }
+      }
+    }
+    let d: Decision = decide(l, p, known || !!other, a.policy, wd, a.now)
     const fresh = 'kind' in d && d.kind !== 'now_reachable'   // a first actionable sighting of this event
-    if (fresh && byPlay && sameEventAs(byPlay, l)) d = { suppress: 'already_seen' }   // the play's mail was this event
+    if (fresh && other && sameEventAs(other, l)) d = { suppress: 'already_seen' }   // the earlier alert (a play's mail, or this company under its other key) was this event
     const act = fresh, reach = fresh ? l.reachable : 'kind' in d && l.reachable
     yield* t.run(`INSERT INTO monitor_events (user_id, event_key, entity_key, monitor_id, occurred_at, first_seen_at, last_checked_at, actionable_at, reachable_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (user_id, event_key) DO UPDATE SET last_checked_at = excluded.last_checked_at,
         actionable_at = COALESCE(monitor_events.actionable_at, excluded.actionable_at), reachable_at = COALESCE(monitor_events.reachable_at, excluded.reachable_at)`,
-      [a.userId, ev, ek, a.monitorId, occ, a.now, a.now, act ? a.now : null, reach ? a.now : null])
+      [a.userId, evKey, ek, a.monitorId, occ, a.now, a.now, act ? a.now : null, reach ? a.now : null])
     if ('suppress' in d) bump(d.suppress)
     else if (!d.alert) bump('policy')
     else {
       const latency = Math.max(0, a.now - occ)
       yield* t.run('INSERT INTO monitor_alerts (id, user_id, monitor_id, run_id, event_key, kind, company, latency_s, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [randomBytes(12).toString('hex'), a.userId, a.monitorId, a.runId, ev, d.kind, l.company.slice(0, 150), latency, a.now])
-      out.alerts.push({ kind: d.kind, company: l.company, event_key: ev, latency_s: latency })
+        [randomBytes(12).toString('hex'), a.userId, a.monitorId, a.runId, evKey, d.kind, l.company.slice(0, 150), latency, a.now])
+      out.alerts.push({ kind: d.kind, company: l.company, event_key: evKey, latency_s: latency })
       // the company is alerted: no weekly / daily play mails it as new after this (the first holder keeps the row)
       if (d.kind !== 'now_reachable') yield* claimAlertStep(t, { tenantId: a.userId, keys, playKind: 'monitor', playId: a.monitorId, jobId: job, eventDate: l.event_date, signalKind: l.signal_kind, now: a.now })
     }
