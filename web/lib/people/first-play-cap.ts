@@ -10,3 +10,14 @@ export function firstPlayPeopleCap(env: Record<string, string | undefined> = pro
   if (!/^\d{1,3}$/.test(raw.trim())) return 0
   return Math.min(FIRST_PLAY_MAX, Number(raw.trim()))
 }
+
+// #1037 item 1: a first play whose free news search cannot serve it (switched off, not run, failed or found nothing usable) falls back to
+// the existing TinyFish lead search, HARD-capped per run: DAZL_FIRST_PLAY_LEAD_SEARCHES (default 3) searches and
+// DAZL_FIRST_PLAY_LEAD_FETCHES (default 6) page reads. Each setting can only lower its default; anything that is not a plain
+// non-negative integer is 0; searches 0 turns the fallback off. A free-trial play pays each from its trial reserve as before.
+export const FIRST_PLAY_LEAD_SEARCHES_MAX = 3
+export const FIRST_PLAY_LEAD_FETCHES_MAX = 6
+export function firstPlayLeadCaps(env: Record<string, string | undefined> = process.env): { searches: number; fetches: number } {
+  const n = (raw: string | undefined, max: number) => { if (typeof raw !== 'string' || raw.trim() === '') return max; return /^\d{1,3}$/.test(raw.trim()) ? Math.min(max, Number(raw.trim())) : 0 }
+  return { searches: n(env.DAZL_FIRST_PLAY_LEAD_SEARCHES, FIRST_PLAY_LEAD_SEARCHES_MAX), fetches: n(env.DAZL_FIRST_PLAY_LEAD_FETCHES, FIRST_PLAY_LEAD_FETCHES_MAX) }
+}

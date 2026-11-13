@@ -31,10 +31,21 @@ async function first5(env: Record<string, string | undefined>): Promise<Disc> {
 }
 const people = (d: Disc) => d.excluded_paths.filter(x => x.startsWith('People search after the scan'))
 
-test('#1037 route: people search off (PEOPLE_SEARCH_ENABLED=0) -> search_and_fetch off, no people line', async () => {
-  const d = await first5({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: 'tf-fixture', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined })
+test('#1037 route: people search off (PEOPLE_SEARCH_ENABLED=0) and the lead fallback off -> search_and_fetch off, no people line', async () => {
+  const d = await first5({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: 'tf-fixture', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined, DAZL_FIRST_PLAY_LEAD_SEARCHES: '0' })
   const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!
   assert.equal(s.status, 'off'); assert.deepEqual(people(d), [])
+})
+
+test('#1037 item 1 route: people search off but the capped lead fallback on -> not_covered, states the server cap', async () => {
+  const d = await first5({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: 'tf-fixture', DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined, DAZL_FIRST_PLAY_LEAD_SEARCHES: '2', DAZL_FIRST_PLAY_LEAD_FETCHES: undefined })
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(s.status, 'not_covered'); assert.match(s.note, /capped at 2 lead searches and 6 page reads/); assert.deepEqual(people(d), [])
+})
+
+test('#1037 item 1 route: no TinyFish key -> the lead fallback cannot run and is not stated', async () => {
+  const d = await first5({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: undefined, DAZL_FIRST_PLAY_PEOPLE_SEARCHES: undefined, DAZL_FIRST_PLAY_LEAD_SEARCHES: undefined })
+  assert.equal(d.surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'off')
 })
 
 test('#1037 route: DAZL_FIRST_PLAY_PEOPLE_SEARCHES=3 -> "up to 3" in the surface AND the excluded path, nothing else', async () => {

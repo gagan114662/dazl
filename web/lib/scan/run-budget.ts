@@ -15,7 +15,7 @@
 import type { RunBudget } from './runner.ts'
 import { icpPrompt, MAX_QUERY } from './icp.ts'
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-guard.ts'
-import { FIRST_PLAY_MAX } from '../people/first-play-cap.ts'
+import { FIRST_PLAY_MAX, FIRST_PLAY_LEAD_SEARCHES_MAX, FIRST_PLAY_LEAD_FETCHES_MAX } from '../people/first-play-cap.ts'
 
 export const MAX_BUDGET_USD = 1000 // sanity bound on the number, not a claim about any invoice
 const NARROWING = ['paid_fallback', 'credit_enrichment', 'judge'] as const
@@ -102,9 +102,13 @@ export interface BudgetDisclosure {
 // opts.firstPlayPeopleSearches (#1037): the people searches a first play or free-trial scan will really make - the server passes
 // peopleSearchEnabled() ? firstPlayPeopleCap() : 0. Omitted (a browser preview cannot read the operator's env): the code maximum,
 // stated as "up to". opts.trial: a free-trial scan (not first5) also runs its people step at that cap (runner.ts firstPlay).
-export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSearches?: number; trial?: boolean } = {}): BudgetDisclosure {
+// opts.firstPlayLead (#1037 item 1): the server passes firstPlayLeadCaps(); omitted: the code maximum, stated as "up to".
+export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSearches?: number; trial?: boolean; firstPlayLead?: { searches: number; fetches: number } } = {}): BudgetDisclosure {
   const fp = opts.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
+  const cap = (n: unknown, max: number) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? Math.min(n, max) : max
+  const leadS = cap(opts.firstPlayLead?.searches, FIRST_PLAY_LEAD_SEARCHES_MAX), leadF = leadS === 0 ? 0 : cap(opts.firstPlayLead?.fetches, FIRST_PLAY_LEAD_FETCHES_MAX)
+  const leadFallback = leadS > 0 ? `; only when free news cannot serve the play, a TinyFish lead search runs instead, capped at ${leadS} lead searches and ${leadF} page reads` : '; no TinyFish lead search or page fetch'
   const capped = typeof b?.max_usd === 'number'
   const llm = (note: string): { status: SurfaceStatus; note: string } => capped ? { status: 'allowed', note: `${note}; each call is reserved against max_usd and refused when it would pass it` } : { status: 'allowed', note: `${note}; no dollar limit` }
   const row = (surface: string, r: { status: SurfaceStatus; note: string }) => ({ surface, ...r })
@@ -128,7 +132,7 @@ export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSe
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', { status: 'refused', note: 'Web-search research is never run: its search-result tokens are bounded by nothing dazl sends, so no run - capped or not - spends on it. When search finds nothing the run ends as budget_stopped' }),
       row('credit_enrichment', b?.credit_enrichment === false || capped ? { status: 'off', note: capped ? 'Off for any run with max_usd' : 'credit_enrichment=false' } : { status: 'allowed', note: 'Bring-your-own-key Apollo/People Data Labs, on your own credits' }),
-      row('search_and_fetch', b?.first5 ? firstPlayPeople === 0 ? { status: 'off', note: 'first5: no TinyFish search, fetch or post-scan people search (people search is off for this deployment); free sources only. Model calls (extraction, scoring) still run and are not free' } : { status: 'not_covered', note: `first5: no TinyFish lead search or page fetch; the leads come from free sources. After the scan, up to ${firstPlayPeople} TinyFish people searches (one per ready lead that names nobody yet) look up who to contact, bounded by count, not by max_usd. Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default${adaptiveRound ? `, plus at most ${ADAPTIVE_SEARCHES} searches + ${ADAPTIVE_FETCHES} pages in one more round when the first round verifies no lead (never a play's run; unless the operator has turned it off)` : ''}), not by max_usd` }),
+      row('search_and_fetch', b?.first5 ? firstPlayPeople === 0 && leadS === 0 ? { status: 'off', note: `first5: no TinyFish search, fetch or post-scan people search (people search and the lead-search fallback are off for this deployment); free sources only. Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `first5: the leads come from free sources first${leadFallback}. ${firstPlayPeople > 0 ? `After the scan, up to ${firstPlayPeople} TinyFish people searches (one per ready lead that names nobody yet) look up who to contact, bounded by count, not by max_usd.` : 'No post-scan people search (off for this deployment).'} Model calls (extraction, scoring) still run and are not free` } : { status: 'not_covered', note: `TinyFish search and fetch are bounded by count (${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default${adaptiveRound ? `, plus at most ${ADAPTIVE_SEARCHES} searches + ${ADAPTIVE_FETCHES} pages in one more round when the first round verifies no lead (never a play's run; unless the operator has turned it off)` : ''}), not by max_usd` }),
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [
