@@ -228,28 +228,32 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   return { ok: true, hits }
 }
 
-export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number; capacity?: true }> {
+export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number; capacity?: true; tenantLeft?: number }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
   let alert: { used: number; cap: number } | null = null
-  const gate = await asDb(db).tx(function* (t: Tx): TxBody<{ out: 'cap' | 'capacity' | 'rate' | 'go'; batch: string[]; trimmed: number }> {
+  const gate = await asDb(db).tx(function* (t: Tx): TxBody<{ out: 'cap' | 'capacity' | 'rate' | 'go'; batch: string[]; trimmed: number; tenantLeft: number }> {
     yield* lockDay(t, day)
-    const own = Math.min(10, urls.length, L.fetchesPerScan - spent.fetches, L.tenantDaily - (yield* used(t, day, tenant, 'search')))
+    const tenantRoom = L.tenantDaily - (yield* used(t, day, tenant, 'search'))
+    const own = Math.min(10, urls.length, L.fetchesPerScan - spent.fetches, tenantRoom)
+    // what the tenant's own daily cap still allows after this batch's own units: a caller recording pages it will not try
+    // as capacity never counts ones the tenant cap would have refused anyway
+    const tenantLeft = Math.max(0, tenantRoom - Math.max(0, own))
     // the platform's share (#1082) can only lower what this scan's own caps allow; what it removes is "capacity"
     const room = Math.min(own, yield* fairRoom(t, day, tenant, 'fetch', L, env))
     const batch = urls.slice(0, Math.max(0, room))
     const trimmed = Math.max(0, own) - batch.length
-    if (batch.length === 0) return { out: own > 0 ? 'capacity' : 'cap', batch, trimmed }
-    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch, trimmed }
+    if (batch.length === 0) return { out: own > 0 ? 'capacity' : 'cap', batch, trimmed, tenantLeft }
+    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch, trimmed, tenantLeft }
     spent.fetches += batch.length; yield* bump(t, day, tenant, 'fetch', batch.length)
     alert = yield* earlyHighUse(t, day, now, 'fetch', L)
-    return { out: 'go', batch, trimmed }
+    return { out: 'go', batch, trimmed, tenantLeft }
   })
   if (alert) reportHighUse('fetch', alert)
   const batch = gate.batch
   // a share refusal records the units the share removed (what this scan's own caps would have allowed), not every URL asked
-  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return gate.out === 'capacity' ? { ok: false, reason: 'cap', capacity: true } : { ok: false, reason: 'cap' } }
+  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return gate.out === 'capacity' ? { ok: false, reason: 'cap', capacity: true, tenantLeft: gate.tenantLeft } : { ok: false, reason: 'cap' } }
   // a batch the platform share cut short: the pages it left out are recorded as not fetched for capacity
   if (gate.trimmed > 0) d.trace?.fetch({ requested: gate.trimmed, attempted: false, outcome: 'capacity', pages: null })
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
@@ -336,7 +340,7 @@ export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], sp
       first = first ?? r.reason; firstStatus = firstStatus ?? r.status
       // #1082: the platform share refused this batch, so it would refuse the ones not tried either: those pages are left
       // out for capacity too, and are recorded as such (the run report's count, not only the first batch's 10)
-      const rest = todo.length - (i + 10)
+      const rest = Math.min(todo.length - (i + 10), r.tenantLeft ?? 0)   // never more than the tenant's own daily cap still allows
       if (r.capacity && rest > 0) d.trace?.fetch({ requested: rest, attempted: false, outcome: 'capacity', pages: null })
       break
     }

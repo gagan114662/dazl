@@ -246,3 +246,17 @@ bothEngines('#1082: tfFetchMany refused by the share records all 16 pages a scan
   assert.equal(r.ok, false)
   assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 16)
 })
+
+// council round 2 (haiku): pages the tenant's OWN daily cap would refuse are never recorded as platform capacity
+bothEngines('#1082: tfFetchMany near the tenant daily cap records only what the tenant could still read as capacity', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '15', TINYFISH_FETCHES_PER_SCAN: '16', TINYFISH_TENANT_DAILY: '9' }
+  const day = new Date(NOON * 1000).toISOString().slice(0, 10)
+  await db.run("INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, 'B', 'fetch', 15)", [day])   // other tenants used the whole day: no share room
+  await db.run("INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, 'A', 'search', 7)", [day])   // A: 2 of its 9 daily units left
+  const { tfFetchMany } = await import('../lib/search/tinyfish.ts')
+  const trace = new SearchTrace()
+  const r = await tfFetchMany(db, 'A', urls(16, 'A4'), { fetches: 0 }, { env, now: NOON, fetchImpl: okFetch, trace })
+  assert.equal(r.ok, false)
+  assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 2, 'the 2 the tenant could still read, not 16')
+})
