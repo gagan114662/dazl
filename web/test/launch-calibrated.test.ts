@@ -373,7 +373,8 @@ test('HOLD (#402): a launch bound to the product truth record never sends a prom
   assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
   lead(db, job, 'g@seven.example')
   const ok = gmail()
-  assert.ok((await runAutopilot(db, 'A', 'Acme', ok.d)).sent >= 1); assert.ok(ok.to().includes('g@seven.example'), JSON.stringify(ok.to()))
+  // f@six is the lead the stale launch held back; after re-acceptance it goes out with g@seven, and nothing else does.
+  assert.equal((await runAutopilot(db, 'A', 'Acme', ok.d)).sent, 2); assert.deepEqual(ok.to(), ['f@six.example', 'g@seven.example'])
 })
 
 // A recorded model: every completion is captured with the max_tokens it was allowed; usage is what the test says the
