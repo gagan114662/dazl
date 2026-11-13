@@ -232,6 +232,7 @@ bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown
     { company: 'Mixed Dental', domain: 'mixed.example', fit: 3, proof: 'ats_structured', kind: 'expansion', signals: ['expansion', 'hiring'], signal: 'Mixed Dental is hiring a hygienist' },
     { company: 'Zero Dental', domain: 'zero.example', fit: 4 },   // graded again, now shown: its first alert
   ]), { newCount: 5, kinds: ['new_company', 'new_company', 'new_company', 'new_company', 'new_company'] })
+  assert.equal((await db.get<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE entity_key = 'd:mixed.example'"))!.event_key, 'd:mixed.example|2026-10-20|hiring', 'dated by the board: recorded as the hiring event, not as an expansion on that day')
 })
 
 bothEngines('#882 a row from before 2026-10-23 with date_status verified and no proof never alerts; a board day dates a hiring trigger only', async ({ db }) => {
@@ -278,6 +279,10 @@ test('pure rules: keys are spelling-independent; undated, out-of-window and unve
   for (const kind of ['raised_funding', 'funding', 'product_launch', 'leadership_change', 'partnership', 'layoffs']) assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: kind, signal: 'Acme raised a Series B and is hiring 40 engineers' }, null, false, 'all', W, NOW), { suppress: 'undated' }, kind)
   // the grader's list has no order: another event first and a hiring signal after it is still a hiring posting
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","hiring_relevant_role"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
+  // such a lead is recorded as the hiring event its date belongs to, never as the other event on the posting's day
+  assert.ok(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: 'raised_funding', signals: '["raised_funding","hiring"]', signal: 'Acme raised a Series B and is hiring 40 engineers' }).endsWith('|2026-10-20|hiring'))
+  assert.ok(eventKeyOf({ ...l, event_date_proof: 'page_bound', signal_kind: 'raised_funding' }).endsWith('|2026-10-20|raised_funding'), 'a day the page ties to the event keeps its kind')
+  assert.ok(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: 'open_role_language' }).endsWith('|2026-10-20|open_role_language'))
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","press_mention"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: 'not json', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   // ...but a graded hiring lead keeps its board day whatever hiring-type or ambient kind the grader put first (the card's rule decides)

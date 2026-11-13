@@ -87,7 +87,11 @@ export const entityKeyOf = (l: Pick<RunLead, 'company' | 'company_domain'>): str
   l.company_domain && hostOf(l.company_domain).includes('.') ? `d:${hostOf(l.company_domain)}` : `n:${slug(l.company)}`
 // One event = the company, the day it happened and what kind of thing happened. The same news re-found next week, or
 // reported by a second outlet, is the same event; a later dated event for the same company is a new one.
-export const eventKeyOf = (l: RunLead): string => `${entityKeyOf(l)}|${l.event_date}|${l.signal_kind ?? 'signal'}`
+// The kind in the key is what the DATE is the date of. A job board's publish day is the posting's day, so a board-dated lead whose
+// first graded signal names another event (graded ["raised_funding", "hiring"], cited to the posting) is recorded as the hiring event it
+// is dated as, never as a funding round on the posting's day.
+export const eventKeyOf = (l: RunLead): string =>
+  `${entityKeyOf(l)}|${l.event_date}|${l.event_date_proof === 'ats_structured' && !!l.signal_kind && OTHER_EVENT_KINDS.has(l.signal_kind) ? 'hiring' : l.signal_kind ?? 'signal'}`
 export const sourceOf = (l: Pick<RunLead, 'source_url'>): string => hostOf(l.source_url) || 'unknown'
 const dayStartS = (d: string) => Math.floor(Date.parse(`${d}T00:00:00Z`) / 1000)
 
