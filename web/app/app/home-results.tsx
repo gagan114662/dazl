@@ -31,7 +31,7 @@ export default function HomeResultsPanel() {
         {tile('New leads', t.leads, '/app/leads?latest=1', 'leads')}
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
         {tile('Replied', t.replied, '/app/inbox?status=all', 'replied')}
-        {tile('Interested', t.interested, '/app/inbox?status=all', 'interested')}
+        {tile('Interested', t.interested, '/app/inbox?status=all&class=positive', 'interested')}
       </div>
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
@@ -45,8 +45,8 @@ export default function HomeResultsPanel() {
           </div>
         </div>
         {r.by_signal.length > 0 && <div className="card p-4 mt-3 overflow-x-auto"><h3 className="text-sm font-semibold mb-2">By signal</h3>
-          <table className="w-full text-sm" data-testid="by-signal"><thead><tr className="text-left text-[var(--ink-3)]"><th className="font-normal pr-3">Signal</th><th className="font-normal pr-3 text-right">Leads</th><th className="font-normal pr-3 text-right">Contacted</th><th className="font-normal text-right">Replied</th></tr></thead>
-            <tbody>{r.by_signal.map(s => <tr key={s.signal} className="border-t border-black/5"><td className="pr-3 py-1">{signalLabel(s.signal)}</td><td className="pr-3 text-right tabular-nums">{s.leads}</td><td className="pr-3 text-right tabular-nums">{s.contacted}</td><td className="text-right tabular-nums">{s.replied}</td></tr>)}</tbody>
+          <table className="w-full text-sm" data-testid="by-signal"><caption className="sr-only">Leads, contacted and replied in the last {r.window_days} days by signal type</caption><thead><tr className="text-left text-[var(--ink-3)]"><th scope="col" className="font-normal pr-3">Signal</th><th scope="col" className="font-normal pr-3 text-right">Leads</th><th scope="col" className="font-normal pr-3 text-right">Contacted</th><th scope="col" className="font-normal text-right">Replied</th></tr></thead>
+            <tbody>{r.by_signal.map(s => <tr key={s.signal} className="border-t border-black/5"><th scope="row" className="pr-3 py-1 text-left font-normal">{signalLabel(s.signal)}</th><td className="pr-3 text-right tabular-nums">{s.leads}</td><td className="pr-3 text-right tabular-nums">{s.contacted}</td><td className="text-right tabular-nums">{s.replied}</td></tr>)}</tbody>
           </table></div>}
       </>}
     </section>)

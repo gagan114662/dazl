@@ -46,7 +46,7 @@ const out = []
 async function open(width, results) {
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-  const writes = []
+  const writes = [], inboxUrls = []
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url()); const p = u.pathname
     if (u.origin !== base) return route.abort()
@@ -55,21 +55,25 @@ async function open(width, results) {
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (p === '/api/home/results') return results === 'fail' ? json({ error: 'unavailable' }, 503) : json(results)
     if (p === '/api/scan/jobs') return json({ jobs: [] })
+    // a workspace that has its business details (a brand-new one sees the onboarding wizard, not Home's results)
+    if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals: ['opened a new location'], exclude: [] }, new_play_offer: null })
+    if (p === '/api/outreach/inbox') { inboxUrls.push(u.search); return json({ threads: [], counts: { threads: 0, needs_owner: 0, unread: 0, unread_needs_owner: 0 }, next_cursor: null, read_granted: true, account: 'dana@brightsmile.example' }) }
     return json({}, 404)
   })
   const page = await ctx.newPage()
   await page.goto(base + '/app', { waitUntil: 'networkidle' })
-  return { ctx, page, writes }
+  return { ctx, page, writes, inboxUrls }
 }
 try {
   for (const width of [1280, 390]) {
-    const { ctx, page, writes } = await open(width, FULL)
+    const { ctx, page, writes, inboxUrls } = await open(width, FULL)
     const sec = page.getByTestId('home-results'); await sec.waitFor({ timeout: 20000 })
     const tile = async id => (await page.getByTestId(`tile-${id}`).textContent()).replace(/\s+/g, ' ').trim()
     assert.equal(await tile('leads'), '4New leads'); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
     assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), '/app/inbox?status=all')
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
     assert.equal(await page.getByTestId('tile-leads').getAttribute('href'), '/app/leads?latest=1')
+    assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), '/app/inbox?status=all&class=positive')
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
     assert.equal(rows.reduce((n, r) => n + Number(r[3]), 0), 2, 'the replied column adds up to the Replied tile')
@@ -79,6 +83,12 @@ try {
     assert.deepEqual(writes, [], 'Home writes nothing')
     if (process.env.SHOTS) await sec.screenshot({ path: path.join(process.env.SHOTS, `home-results-${width}.png`) })
     out.push(`${width}: tiles 4/4/2/1, by signal adds up`)
+    if (width === 1280) {   // Interested opens Inbox filtered to interested replies (the API's class filter), with a way back to all
+      await page.getByTestId('tile-interested').click()
+      await page.getByTestId('class-filter').waitFor({ timeout: 20000 })
+      assert.ok(inboxUrls.some(q => /class=positive/.test(q)), `Inbox asked for interested replies only: ${JSON.stringify(inboxUrls)}`)
+      out.push('Interested opens Inbox filtered')
+    }
     await ctx.close()
   }
   { const { ctx, page } = await open(1280, ZERO)

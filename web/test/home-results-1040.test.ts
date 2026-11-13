@@ -19,6 +19,7 @@ async function seed(db: Db) {
   await lead('a5', J, 'hiring', IN, true)               // rejected: never counted
   await lead('a6', J, null, IN)                         // no type
   await lead('b1', K, 'hiring', IN)                     // another tenant
+  await lead('a7', J, 'hiring', OLD); await lead('a8', J, 'hiring', OLD); await lead('a9', J, 'hiring', OLD)   // older leads for the edge cases below
   const msg = (id: string, tenant: string, leadId: string, status: string, sentAt: number | null, isTest = 0) => db.run(
     "INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, ?, ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', ?, ?, ?, ?)",
     [id, tenant, leadId, status, sentAt ?? IN, sentAt, isTest])
@@ -27,24 +28,29 @@ async function seed(db: Db) {
   await msg('m5', 'A', 'a6', 'sent', OLD)               // sent before the window: not contacted
   await msg('m6', 'A', 'a5', 'draft', null)             // not sent
   await msg('m7', 'B', 'b1', 'sent', IN)                // another tenant
+  await msg('m8', 'A', 'a9', 'sent', IN, 1)             // a test send: never contacted, its reply never counted
+  await msg('m10', 'A', 'a7', 'sent', NOW - 30 * DAY)   // exactly 30 days ago: inside the window
+  await msg('m11', 'A', 'a8', 'sent', NOW - 30 * DAY - 1) // one second earlier: outside
   const reply = (gid: string, tenant: string, msgId: string, cls: string, at = IN + DAY) => db.run(
     "INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, 'p@co.example', 'hi', ?, ?, ?)",
     [gid, tenant, `t-${msgId}`, cls, at, msgId])
   await reply('g1', 'A', 'm1', 'positive'); await reply('g2', 'A', 'm1', 'other', IN + 2 * DAY)   // two replies, one message: counted once
   await reply('g3', 'A', 'm3', 'negative')
-  await reply('g4', 'A', 'm2', 'auto'); await reply('g5', 'A', 'm4', 'bounce')                     // not a person-written reply
+  await reply('g4', 'A', 'm2', 'auto'); await reply('g5', 'A', 'm4', 'bounce_review'); await reply('g9', 'A', 'm4', 'soft_bounce')   // not person-written (the classifier's real bounce values)
+  await reply('g7', 'A', 'm8', 'positive')                                                        // to a test send
+  await reply('g8', 'A', 'm5', 'positive')                                                        // received in the window, to a message sent before it
   await reply('g6', 'B', 'm7', 'positive')                                                        // another tenant
 }
 
 bothEngines('#1040: the last 30 days - new leads, contacted, replied, interested - from stored rows, tenant-scoped; by signal adds up', async ({ db }) => {
   await seed(db)
   const r = await homeResults(db, 'A', NOW)
-  assert.deepEqual(r.tiles, { leads: 4, contacted: 4, replied: 2, interested: 1 })
+  assert.deepEqual(r.tiles, { leads: 4, contacted: 5, replied: 2, interested: 1 })
   assert.deepEqual(r.by_signal.map(s => [s.signal, s.leads, s.contacted, s.replied]),
-    [['hiring', 2, 2, 1], ['raised_funding', 1, 2, 1], ['unknown', 1, 0, 0]])
+    [['hiring', 2, 3, 1], ['raised_funding', 1, 2, 1], ['unknown', 1, 0, 0]])
   for (const k of ['leads', 'contacted', 'replied'] as const) assert.equal(r.by_signal.reduce((n, s) => n + s[k], 0), r.tiles[k], `by signal adds up to the ${k} tile`)
   assert.equal(r.latest_leads.length, 4); assert.ok(r.latest_leads.every(l => l.company.startsWith('Co a')), 'only this tenant\'s leads')
-  assert.deepEqual(r.latest_replies.map(x => [x.company, x.classification]), [['Co a1', 'other'], ['Co a3', 'negative'], ['Co a1', 'positive']], 'person-written replies only, newest first (same time: newest message id first)')
+  assert.deepEqual(r.latest_replies.map(x => [x.company, x.classification]), [['Co a1', 'other'], ['Co a3', 'negative'], ['Co a1', 'positive']], 'person-written replies to messages sent in the window only, newest first (same time: the newest gmail id first)')
   // another tenant sees only its own
   assert.deepEqual((await homeResults(db, 'B', NOW)).tiles, { leads: 1, contacted: 1, replied: 1, interested: 1 })
   // a new workspace: zeros, empty lists
@@ -71,4 +77,14 @@ test('#1040: the 30-day reads use indexes (no full scan of messages, replies or 
   }
   assert.match(replies, /inbound_messages_tenant_received/, replies)
   assert.match(matched, /inbound_messages_outreach/, matched)
+})
+
+test('#1040 route: the real handler answers 401 / 503 / 200 no-store (child process, its own session and Db)', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const { fileURLToPath } = await import('node:url')
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/tenant-route-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/home-results-route-runtime.mts'],
+    { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
 })

@@ -6,6 +6,8 @@
 //    inbound_messages.outreach_message_id, classified positive / negative / other / opt_out / uncertain - never an
 //    auto-reply or any bounce notice);
 //  - interested: of those, the ones with a positive reply.
+// The latest replies are replies to those same messages (sent in the window), so the list never shows a reply the tiles
+// do not count. A sent message whose lead row is gone still counts, under no signal type.
 // Per signal type, each lead counts under its own stored type (leads.signal_kind), so a reply is counted once, under the
 // lead its message went to: the table's replied column always sums to the Replied tile.
 // "Ready" leads are not counted here: that verdict needs the per-request gate checks of the Leads page (the draft guard,
@@ -36,7 +38,7 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
     `SELECT l.signal_kind AS kind, COUNT(*) AS sent,
        SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification IN (${marks})) THEN 1 ELSE 0 END) AS replied,
        SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification = 'positive') THEN 1 ELSE 0 END) AS interested
-     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
+     FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id
      WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
      GROUP BY l.signal_kind`, [...PERSON_REPLY, tenantId, since])
   const kind = (k: string | null) => k || 'unknown'
@@ -54,8 +56,8 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const latest_replies = (await db.all<{ thread_id: string; company: string | null; classification: string; received_at: number | string }>(
     `SELECT r.thread_id, l.company, r.classification, r.received_at FROM inbound_messages r
      JOIN outreach_messages m ON m.id = r.outreach_message_id AND m.tenant_id = r.tenant_id LEFT JOIN leads l ON l.id = m.lead_id
-     WHERE r.tenant_id = ? AND r.received_at >= ? AND r.classification IN (${marks}) AND COALESCE(m.test, 0) = 0
-     ORDER BY r.received_at DESC, r.gmail_id DESC LIMIT 5`, [tenantId, since, ...PERSON_REPLY]))
+     WHERE r.tenant_id = ? AND r.classification IN (${marks}) AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
+     ORDER BY r.received_at DESC, r.gmail_id DESC LIMIT 5`, [tenantId, ...PERSON_REPLY, since]))
     .map(r => ({ thread_id: r.thread_id, company: r.company || 'Unknown company', classification: r.classification, received_at: Number(r.received_at) }))
   return { window_days: RESULTS_WINDOW_DAYS, since, tiles: { leads: sum('leads'), contacted: sum('contacted'), replied: sum('replied'), interested }, by_signal, latest_leads, latest_replies }
 }
