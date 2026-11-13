@@ -267,7 +267,10 @@ test('#784 only the file the run printed can consume the claim: without the prin
 
 test('#784 more refusals: an artifact that does not name one of the two key variables, one scored under other thresholds, a report filed under another split or judge; and a run with no results clears a lock entry planted by hand', async () => {
   const x = await run()
-  const mutate = async (f: (a: Record<string, any>) => void) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+  // the parts of the artifact these cases edit
+  type Report = { judge: { id: string } }
+  type Editable = { run_guard: { key_env?: string | null }; fixed_before_run: { thresholds: Record<string, number> }; results: Record<string, Record<string, { report: Report }>> }
+  const mutate = async (f: (a: Editable) => void) => {
     const a = JSON.parse(x.artifactText); f(a)
     return imp({ artifactText: JSON.stringify(a, null, 1), recordText: x.recordText })
   }
