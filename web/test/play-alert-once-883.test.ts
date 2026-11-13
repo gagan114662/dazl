@@ -1,10 +1,11 @@
 // #883 "alert sent once and deduped across plays". Both engines, no network, no provider, no paid call.
 //
-// The data is production's (backup of 2026-11-13, read-only): the account that has two saved plays there, those plays'
-// own sentences and profile, and the seven leads its one finished play run stored (company, signal, source, fit and
-// review state exactly as stored). On main that run's mail lists Ngenaire, Campfire and Chesky; the test then lets the
-// account's OTHER real play find Campfire and Ngenaire again, which main mails a second time as "new leads you have
-// not been shown before". Smile Avenue Dental and Zenithon are two more stored production leads (with a domain).
+// The lead rows are production's (backup of 2026-11-13, read-only): the seven leads one finished play run stored there
+// (company, signal, date, fit, review state and score exactly as stored; no account, run or person identifier is kept,
+// and the plays' sentences and profile here are made up). With those rows, main's mail for that run lists Ngenaire,
+// Campfire and Chesky; the test then lets the account's OTHER play find Campfire and Ngenaire again, which main mails a
+// second time as "new leads you have not been shown before". Smile Avenue Dental, Zenithon, OpenRelay and Photon are
+// more stored production leads.
 // Each run goes through the production steps: createWatch -> a run's job and leads -> the runner's mark (writeWatchLeads,
 // the Db-layer twin of markWatchLeads) -> the mail pass (sendPlayRunMails), and for monitors createMonitor ->
 // runDueMonitors -> collectMonitorResults. A monitor lead is given date_status 'verified' by hand: no scan writes that
@@ -34,20 +35,20 @@ const NOW = Math.floor(Date.parse('2026-11-13T12:00:00Z') / 1000)
 let n = 0
 const id24 = () => (++n).toString(16).padStart(24, '0')
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
-// production's three saved plays (watches.query) and the profile the first two share (watches.icp)
-const Q_SDR = 'B2B SaaS founders in the US and Canada hiring their first SDR or salesperson'
-const Q_AGENCIES = 'Marketing and lead-gen agencies in the US and Canada posting about outbound or lead generation pain'
+// three saved plays of one account and the profile they share (made up; nothing depends on their wording)
+const Q_SDR = 'B2B software companies hiring their first sales rep'
+const Q_AGENCIES = 'Marketing agencies posting about outbound or lead generation pain'
 const Q_LONDON = 'funded startups in London hiring'
-const ICP = JSON.stringify({ summary: 'B2B founders, marketing/lead-gen agencies and small sales teams (1-50 people) in the US and Canada', who: ['Founder', 'CEO', 'Head of Sales', 'Agency owner'], industries: ['B2B SaaS', 'Marketing agencies'], sizes: ['1-50 employees'], where: ['United States', 'Canada'], signals: ['Hiring their first SDR or salesperson', 'posting about outbound or lead gen pain'], exclude: ['Enterprises over 500 employees', 'consumer apps'] })
+const ICP = JSON.stringify({ summary: 'Small B2B sales teams', who: ['Founder', 'Head of Sales'], industries: ['B2B SaaS', 'Marketing agencies'], sizes: ['1-50 employees'], where: ['United States', 'Canada'], signals: ['Hiring their first salesperson', 'posting about outbound pain'], exclude: [] })
 
 interface L { company: string; domain?: string | null; date?: string | null; kind?: string | null; signal: string; url: string; fit: number | null; review?: string | null; score: number; dateStatus?: string; conf?: number | null }
-// the seven leads of production's play run ebc9d520… (fit <= 1 is the hidden tier: Mercury, Clark, beehiiv, LeanPBX)
+// the seven leads of one production play run (fit <= 1 is the hidden tier: Mercury, Clark, beehiiv, LeanPBX)
 const MERCURY: L = { company: 'Mercury', signal: 'Hiring a Sales Development Representative', url: 'https://job-boards.greenhouse.io/mercury/jobs/6167220004', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
 const CLARK: L = { company: 'Clark', signal: 'Hiring a Sales Development Representative', url: 'https://www.builtinnyc.com/job/sales-development-representative/11701959', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
 const BEEHIIV: L = { company: 'beehiiv', signal: 'Hiring a Sales Development Representative', url: 'https://jobgether.com/offer/6aedba771c8aea01fb8d5e6d-sales-development-representative-u.s.', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
 const NGENAIRE: L = { company: 'Ngenaire', date: '2026-09-08', signal: 'Hiring a B2B SaaS Sales Representative', url: 'https://wellfound.com/jobs/4688472-b2b-saas-sales-representative-commission-based-contractor', fit: 3, review: 'no_sales_hiring_evidence', score: 49 }
-const LEANPBX: L = { company: 'LeanPBX', signal: 'Hiring Outbound SDRs', url: 'https://www.instagram.com/p/DYePbT7CID4/', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
-const CAMPFIRE: L = { company: 'Campfire', signal: 'Building an AI native sales org', url: 'https://www.linkedin.com/posts/sophiebuonassisi_new-ai-native-sales-how-to-build-hire-activity-7503859264197713920-xdrT', fit: 2, review: 'no_sales_hiring_evidence', score: 75 }
+const LEANPBX: L = { company: 'LeanPBX', signal: 'Hiring Outbound SDRs', url: 'https://www.instagram.com/', fit: 1, review: 'no_sales_hiring_evidence', score: 49 }
+const CAMPFIRE: L = { company: 'Campfire', signal: 'Building an AI native sales org', url: 'https://www.linkedin.com/posts/', fit: 2, review: 'no_sales_hiring_evidence', score: 75 }
 const CHESKY: L = { company: 'Chesky', signal: 'Hiring a Founding Sales Development Representative', url: 'https://www.linkedin.com/jobs/view/founding-sales-development-representative-sdr-at-chesky-4483464804', fit: null, review: 'counterparty_signal', score: 98 }
 const PROD_RUN = [MERCURY, CLARK, BEEHIIV, NGENAIRE, LEANPBX, CAMPFIRE, CHESKY]
 // two more stored production leads, each with a confirmed domain and a date
@@ -183,14 +184,14 @@ bothEngines('#883 the scan runner\'s step: two runs marked before either is clai
   assert.deepEqual(bodies, [['Smile Avenue Dental'], ['Campfire', 'Ngenaire']])
 })
 
-// Production, tenant 357a98a0…, 2026-10-21: scan c8b921da stored OpenRelay and Photon with no website; the same request's
-// next scan 0ea7e743 stored them with openrelay.com and photon.codes (fit 5). Replayed as play runs, main mails both twice.
+// Production, 2026-10-21: one scan stored OpenRelay and Photon with no website; the same request's next scan stored
+// them with openrelay.com and photon.codes (fit 5). Replayed as play runs, main mails both twice.
 // The four rows exactly as stored (company, domain, date, kind, signal, source, fit, score).
 const OPENRELAY: L = { company: 'OpenRelay', date: '2026-09-01', signal: 'AI infrastructure company providing decentralized GPU infrastructure raised $9M in September 2026.', url: 'https://www.vcbacked.co/directory/industries/ai-infrastructure', fit: null, score: 88 }
 const OPENRELAY_2: L = { company: 'OpenRelay', domain: 'openrelay.com', kind: 'raised_funding', signal: 'Raised $9M seed round for decentralized GPU infrastructure for AI inference', url: 'https://www.vcbacked.co/directory/industries/ai-infrastructure', fit: 5, score: 89 }
 const PHOTON: L = { company: 'Photon', date: '2026-10-01', signal: 'AI agent deployment and messaging infrastructure startup raised $4.5M seed round in October 2026.', url: 'https://newmarketpitch.com/blogs/news/generative-ai-funding-news', fit: null, score: 89 }
 const PHOTON_2: L = { company: 'Photon', domain: 'photon.codes', date: '2026-10-01', kind: 'raised_funding', signal: 'Raised $4.5M seed round for AI agent deployment and messaging infrastructure', url: 'https://newmarketpitch.com/blogs/news/generative-ai-funding-news', fit: 5, score: 87 }
-const Q_SEED = 'startups that just raised a seed round for AI infrastructure or developer tools'
+const Q_SEED = 'startups that just raised a seed round for AI infrastructure'
 bothEngines('#883 a company first stored without its website and then with it is alerted once (production: OpenRelay, Photon); two companies sharing a name are not merged', async ({ db }) => {
   await account(db, A, 'founder@a.example')
   const seed = await play(db, A, Q_SEED, NOW - 3 * DAY)
