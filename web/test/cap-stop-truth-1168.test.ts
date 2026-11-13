@@ -1,0 +1,77 @@
+// #1168: a scan stopped by the account spending limit tells the truth. Built from the two real runs taken for #1154 on a production
+// build of that branch (2026-11-13, a brand-new free-trial account, DAZL_OWNER_DAY_MAX_USD=0.01, request "Austin B2B SaaS companies
+// hiring their first account executive in the last 30 days"):
+//   job 434086302058d86a308d9b96: three model calls refused owner_pool_limit before sending (reserve 0.019407, 0.011652, 0.059082),
+//     search and fetch settled at 0; the page said "3 model calls recorded, but the provider reported no token usage for them, so the
+//     actual cost is unknown - not $0", and scan_jobs.spend_reserved_usd kept 0.090141 (charged to the trial wallet when it settled).
+//   job b51c4104e46070941c974229: two model calls refused owner_pool_limit, then the search failed; the page said "A source this run
+//     depends on failed ... This was not a budget stop".
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { compareActual } from '../lib/scan/price-estimate.ts'
+import { meterProvider, type ModelCall } from '../lib/scan/model-usage.ts'
+import { guardProvider, SpendGuard, SpendRefused } from '../lib/llm/spend-guard.ts'
+import { earlierLimitRefusal } from '../lib/scan/runner.ts'
+import { migrateScanSpendCap } from '../lib/scan/spend-cap.ts'
+import { migrateScan } from '../lib/scan/store.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+
+// the real ledger rows of the two jobs (kind, reserve_usd, status, reason), in order
+const JOB_REFUSED = [['llm.anthropic', 0.019407, 'refused', 'owner_pool_limit'], ['llm.anthropic', 0.011652, 'refused', 'owner_pool_limit'], ['tinyfish.search', 0, 'settled', null], ['tinyfish.fetch', 0, 'settled', null], ['llm.anthropic', 0.059082, 'refused', 'owner_pool_limit']] as const
+const JOB_SOURCE_FAILED = [['llm.anthropic', 0.019407, 'refused', 'owner_pool_limit'], ['llm.anthropic', 0.011652, 'refused', 'owner_pool_limit'], ['tinyfish.search', 0, 'settled', null]] as const
+// the model rows of the estimate the user confirmed ($0.09 - $0.66)
+const EST = { total: { min: 0.093, max: 0.6615 }, rows: [{ id: 'm', kind: 'model', label: 'model', usd: { min: 0.09, max: 0.66 } }] } as unknown as Parameters<typeof compareActual>[0]
+
+test('#1168 item 1: three model calls refused before sending -> the cost line says no model call was made and the cost is $0, never "recorded ... unknown"', () => {
+  const refused = JOB_REFUSED.filter(r => r[0].startsWith('llm.') && r[2] === 'refused').length
+  const a = compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 1, reservedUsd: 0, requests: 0, requestsWithTokens: 0, refusedBeforeSending: refused })
+  assert.equal(a.summary, 'No model call was made: 3 were refused by a spending limit before sending, so the model cost is $0. Estimate was $0.09-$0.66.')
+  assert.doesNotMatch(a.summary, /recorded|unknown/)
+  // one refused call reads in the singular; calls that WERE sent keep the existing wording (the refusals do not hide them)
+  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: 1 }).summary, /^No model call was made: 1 was refused/)
+  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 2, requestsWithTokens: 0, refusedBeforeSending: 1 }).summary, /^2 model calls recorded/)
+  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0 }).summary, /^Actual model cost was not recorded/)
+})
+
+test('#1168 item 1: a call refused before sending is not recorded as a model request; a call that failed after it was sent still is', async () => {
+  const calls: ModelCall[] = []
+  const refusing = { completeDetailed: async () => { throw new SpendRefused('owner_pool_limit') }, research: async () => { throw new SpendRefused('owner_pool_limit') } } as unknown as Provider
+  const m = meterProvider(refusing, c => calls.push(c))
+  await assert.rejects(m.completeDetailed!('k', 'p', undefined, 10), SpendRefused)
+  await assert.rejects(m.complete!('k', 'p', undefined, 10), SpendRefused)
+  await assert.rejects(m.research('k', 'p'), SpendRefused)
+  assert.equal(calls.length, 0, 'nothing was sent, so nothing is recorded')
+  const failing = { completeDetailed: async () => { throw new Error('socket hang up') }, research: async () => { throw new Error('x') } } as unknown as Provider
+  const sent: ModelCall[] = []
+  await assert.rejects(meterProvider(failing, c => sent.push(c)).completeDetailed!('k', 'p', undefined, 10))
+  assert.deepEqual(sent.map(c => c.outcome), ['error'], 'a request that may have reached the provider is recorded')
+})
+
+test('#1168 item 3: the scan\'s own guard gives back the reservation of a call the cap refused before sending (0.090141 was kept and charged to the trial)', async () => {
+  for (const settle of [false, true]) {
+    const saved: number[] = []
+    const g = new SpendGuard(3); g.persist = usd => { saved.push(usd) }
+    const capRefuses = { configuredModel: () => 'claude-sonnet-4-5', completeDetailed: async () => { throw new SpendRefused('owner_pool_limit') }, research: async () => { throw new SpendRefused('research_unbounded') } } as unknown as Provider
+    const p = guardProvider(capRefuses, g, undefined, undefined, settle)
+    for (let i = 0; i < 3; i++) await assert.rejects(p.completeDetailed!('k', 'a prompt', undefined, 300), (e: unknown) => e instanceof SpendRefused && e.reason === 'owner_pool_limit')
+    assert.equal(g.reservedUsd, 0, `settle=${settle}: nothing stays reserved for calls never sent`)
+    assert.equal(saved.at(-1), 0, 'and the job row (spend_reserved_usd) is written back to 0')
+    // a call that failed AFTER sending keeps its reservation: the vendor may have billed it
+    const sentThenFailed = { configuredModel: () => 'claude-sonnet-4-5', completeDetailed: async () => { throw new Error('socket hang up') }, research: async () => { throw new Error('x') } } as unknown as Provider
+    await assert.rejects(guardProvider(sentThenFailed, g, undefined, undefined, settle).completeDetailed!('k', 'a prompt', undefined, 300))
+    assert.ok(g.reservedUsd > 0, `settle=${settle}: a sent call keeps its worst case`)
+  }
+})
+
+test('#1168 item 2: the ledger names the limit that refused first; a later source failure does not hide it (job b51c4104)', () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateScanSpendCap(db)
+  const seed = (job: string, rows: readonly (readonly [string, number, string, string | null])[], attempt = 1) => rows.forEach((r, i) => db.prepare('INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)').run(`${job}-${attempt}-${i}`, 'u', job, attempt, r[0], r[1], r[2], r[3], 1794602998))
+  seed('b51c4104e46070941c974229', JOB_SOURCE_FAILED); seed('434086302058d86a308d9b96', JOB_REFUSED)
+  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 1 }), 'owner_pool_limit')
+  assert.equal(earlierLimitRefusal(db, { id: '434086302058d86a308d9b96', attempts: 1 }), 'owner_pool_limit')
+  // only a NUMERIC limit counts (a config or accounting refusal refuses at any budget), only this attempt, only a refused row
+  seed('other', [['llm.anthropic', 0.01, 'refused', 'cap_config_invalid'], ['llm.anthropic', 0.01, 'settled', null]])
+  assert.equal(earlierLimitRefusal(db, { id: 'other', attempts: 1 }), null)
+  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 2 }), null, 'an earlier attempt\'s refusal is not this attempt\'s')
+})

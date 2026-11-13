@@ -716,6 +716,18 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   return 'unbounded_fallback_hold'
 }
 
+// #1168: a numeric limit that refused a paid step EARLIER in this attempt (the profile or query-writing model call, whose refusal the
+// run survives by falling back to the request's own words) is still why the run could not search properly. When the run then ends
+// with nothing, that limit stop is what the user is told, never a later source failure or "nothing found". Read from the ledger
+// (scan_spend_calls): the first refused row of this attempt whose reason is a numeric limit.
+const LIMIT_REASONS = ['over_limit', 'over_cap', OWNER_POOL_LIMIT_REASON, TRIAL_BUDGET_REASON]
+export function earlierLimitRefusal(db: Database.Database, job: { id: string; attempts: number }): string | null {
+  try {
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'refused' AND reason IN (${LIMIT_REASONS.map(() => '?').join(',')}) ORDER BY created_at, rowid LIMIT 1`).get(job.id, job.attempts, ...LIMIT_REASONS) as { reason: string } | undefined
+    return r?.reason ?? null
+  } catch { return null }
+}
+
 // A SpendRefused names why the spend layer refused the call (spend-guard.ts reason); the job error must preserve that
 // reason's class end to end. Only a real numeric cap refusal is a budget stop: everything else (unbounded research,
 // unpriced model, failed accounting, lost ownership) refuses at ANY budget, so calling it budget_stopped would send the
@@ -732,7 +744,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
     case 'accounting_uncertain': case 'accounting_unsettled': case 'reservation_not_saved':
     case 'reservation_invalid': case 'ledger_unavailable': case 'busy': return 'spend_accounting_unavailable'
     case 'ownership_lost': case 'scan_not_found': case 'scan_not_active': return 'ownership_lost'   // the run no longer owns an active job row
-    case 'cap_config_invalid': case 'kind_unknown': return 'spend_config_invalid'
+    case 'cap_config_invalid': case 'kind_unknown': case 'account_limits_missing': return 'spend_config_invalid'
     case 'provider_rejected': return 'provider_rejected'
     case 'units_invalid': case 'price_invalid': case 'price_unknown': case 'cost_invalid': return 'spend_config_invalid'
     default: return 'spend_refused'   // named, never silently a budget stop
@@ -751,8 +763,10 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused && spendAttemptRejected() !== null && !uncertainSpend.has(job) && !spendAttemptUncertain()) { finish(db, job, 'failed', rejectionCode(spendAttemptRejected()!), null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) {
-    const code = refusalCode(e, ledger)
-    ledger?.report({ stop: { code, spend_refusal_reason: e.reason } })
+    // #1168: the unpriceable-research refusal that ends an empty search can follow a real limit refusal earlier in the attempt
+    const limit = e.reason === 'research_unbounded' ? earlierLimitRefusal(db, job) : null
+    const code = refusalCode(limit ? new SpendRefused(limit) : e, ledger)
+    ledger?.report({ stop: { code, spend_refusal_reason: limit ?? e.reason, ...(limit ? { superseded_refusal_reason: e.reason } : {}) } })
     finish(db, job, 'failed', code, null, null, ledger)
     return 'failed'
   } // a refused call is never retried: attempts must not multiply spend
@@ -886,8 +900,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       // research/ground/judge calls. The error names what actually ended the search (source_error / no_discovery /
       // unbounded_fallback_hold) - the fallback's absence alone is not a budget stop.
       if (deps.paidFallback === false) {
-        const code = fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: null } })
+        const limit = earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1441,8 +1456,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // An earlier SpendRefused names the stop by its OWN reason (refusalCode): only a real numeric cap refusal is a
         // budget stop - count_failed / model_unpriced / accounting / ownership refusals refuse at ANY budget, so
         // calling them budget_stopped would send the user to raise a budget that cannot fix it.
-        const code = budgetRefused ? refusalCode(new SpendRefused(budgetRefusal!), ledger) : fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
+        const limit = budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1454,9 +1470,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       } catch (e) {
         // The unbounded-research refusal can FOLLOW an earlier real spend refusal (the TinyFish path's): the earlier
         // refusal is the cause of the empty search, so its reason names the stop - the fallback's shape does not.
-        if (e instanceof SpendRefused && e.reason === 'research_unbounded' && budgetRefused) {
-          const code = refusalCode(new SpendRefused(budgetRefusal!), ledger)
-          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal, superseded_refusal_reason: e.reason } })
+        // #1168: the same holds for a limit that refused an earlier model call the run survived (earlierLimitRefusal)
+        const limit = e instanceof SpendRefused && e.reason === 'research_unbounded' ? (budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)) : null
+        if (limit) {
+          const code = refusalCode(new SpendRefused(limit), ledger)
+          ledger.report({ stop: { code, spend_refusal_reason: limit, superseded_refusal_reason: (e as SpendRefused).reason } })
           finish(db, job, 'failed', code, null, 0, ledger)
           return 'failed'
         }

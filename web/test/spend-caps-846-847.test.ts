@@ -70,7 +70,7 @@ test('#846 the per-scan cap: missing -> CAD 5 default; 0 or malformed -> every p
 async function job(db: Db, id: string, tenant: string) {
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts) VALUES (?, ?, 'Biz', 'software', 'Toronto', 'running', 1)", [id, tenant])
 }
-const scanCtx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: scanCapConfig({}), clock: () => T0, ...o })
+const scanCtx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: scanCapConfig({}), accountLimits: null, clock: () => T0, ...o })
 
 bothEngines('#846 inside a scan: a model call of an account without an entry reserves its day and month in the scan cap transaction; past the day cap it is refused owner_pool_limit, recorded, and the scan cap is untouched', async ({ db }) => {
   await job(db, 'j1', A)
@@ -236,4 +236,16 @@ bothEngines('#1154 XHawk: an account-path settle that fails twice is captured an
   try { await runWithAccountSpend(ctx, () => h!.settle(0.1)) } finally { restore() }
   assert.deepEqual(seen, ['account-spend-cap:settle'])
   await assert.rejects(runWithAccountSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('accounting_unsettled'))
+})
+
+// #1167 item 2: accountLimits is required on a scan context. A context opened without it (a cast, a JS caller, a future helper that
+// forgets the field) used to run its model calls under the per-scan cap only, with no error. Now every model call in it is refused.
+bothEngines('#1167 a scan context opened WITHOUT accountLimits refuses a model call (account_limits_missing); a non-model call is unaffected; null (the PooledGuard path) still reserves on the scan cap only', async ({ db }) => {
+  await job(db, 'j1', A)
+  const bare = { db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), clock: () => T0 } as unknown as ScanSpendCtx
+  await assert.rejects(runWithScanSpend(bare, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('account_limits_missing'))
+  const render = await runWithScanSpend(bare, () => reserveScanSpend('render', () => 0.01))
+  assert.ok(render, 'a non-model kind never reached the account windows, so it is not refused for them')
+  const pooled = await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: null }), () => reserveScanSpend('llm.anthropic', () => 0.01))
+  assert.ok(pooled); assert.deepEqual(await rows(db, A), [], 'null: the runner\'s PooledGuard counts the account, the transport writes no window')
 })

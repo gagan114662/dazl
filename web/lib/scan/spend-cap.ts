@@ -60,7 +60,7 @@ import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
-import { OWNER_POOL_LIMIT_REASON, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
+import { accountLimits, ownerLimits, OWNER_POOL_LIMIT_REASON, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
 
 type Env = Record<string, string | undefined>
 
@@ -180,7 +180,9 @@ export interface ScanSpendCtx {
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
   // in the same transaction as this scan's cap, for every model completion of the scan. Null when the runner reserves the
   // owner pool itself (an account with its own operator entry: PooledGuard), so a call is never counted twice.
-  accountLimits?: PoolLimits | null
+  // #1167: REQUIRED. A context opened without it (a cast, a JS caller) refuses every model call ('account_limits_missing'):
+  // a forgotten field must never mean a scan whose model calls skip the day and month caps.
+  accountLimits: PoolLimits | null
   clock?: () => number
 }
 const store = new AsyncLocalStorage<ScanSpendCtx>()
@@ -220,7 +222,8 @@ export async function runWithJobSpend<T>(d: DbLike, tenantId: string, jobId: str
   if (j && !j.csv_domain && j.run_budget) {
     try { const m = (JSON.parse(j.run_budget) as { max_usd?: unknown } | null)?.max_usd; if (typeof m === 'number' && Number.isFinite(m) && m > 0) requestMaxUsd = m } catch { /* no budget: the cap alone */ }
   }
-  return runWithScanSpend({ db: d, jobId, tenantId, attempt: j ? Number(j.attempts) : -1, cap: scanCapConfig(), requestMaxUsd }, fn)
+  // no PooledGuard runs here, so the account's own windows are carried whoever the owner is (it makes no model call today)
+  return runWithScanSpend({ db: d, jobId, tenantId, attempt: j ? Number(j.attempts) : -1, cap: scanCapConfig(), requestMaxUsd, accountLimits: ownerLimits(tenantId) ?? accountLimits(tenantId) }, fn)
 }
 
 export function effectiveCapUsd(ctx: ScanSpendCtx): number | null {
@@ -278,6 +281,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const vendor = VENDOR_SCOPED_REJECTION[kind]
   if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('vendor_rejected') // its own reason: THIS vendor refused, not the scan's providers
+  if (isModel(kind) && (ctx as { accountLimits?: unknown }).accountLimits === undefined) throw new SpendRefused('account_limits_missing')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()

@@ -266,9 +266,12 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
   // cleared, and if even that cannot be saved the marker stays and refuses later reservations (fail closed).
   const run = async <T>(k: string, prompt: string, f: typeof fetch | undefined, max: number, call: () => Promise<T>, detail: (r: T) => DetailedCompletion): Promise<T> => {
     const held = await reserveAll(g, model(), await inputTokens(k, prompt, f), max)
-    if (!settle) return call()
+    // #1168: a call the layer below refused BEFORE sending (SpendRefused: a cap, a missing context) was never made, so its
+    // reservation is given back. Without this a trial scan stopped by the account cap was charged for calls never sent.
+    const unsent = (e: unknown) => e instanceof SpendRefused
+    if (!settle) { try { return await call() } catch (e) { if (unsent(e)) await settleAll(g, -held.usd, 0, held).catch(() => {}); throw e } }
     let r: T
-    try { r = await call() } catch (e) { await settleAll(g, 0, null, held).catch(() => {}); throw e }
+    try { r = await call() } catch (e) { await settleAll(g, unsent(e) ? -held.usd : 0, unsent(e) ? 0 : null, held).catch(() => {}); throw e }
     await settleCompletion(g, held, detail(r))
     return r
   }

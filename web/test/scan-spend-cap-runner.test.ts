@@ -344,3 +344,17 @@ test('settleAll: a second settle and a retry with different amounts are refused 
   r2.settlement = { deltaUsd: -1, reportedUsd: 1 }
   await assert.rejects(settleAll([g], -2, 0, r2), /different amounts/)
 })
+
+// #1168 (the real run for #1154, job b51c4104e46070941c974229): the account day cap refused the profile and query-writing model
+// calls (owner_pool_limit), the run went on with the request's own words, then the search failed. The page said "A source this run
+// depends on failed ... This was not a budget stop". The limit refused first, so the limit stop is what the run ends with.
+test('#1168 runner: the account cap refuses the model calls, then the search fails: the scan ends as the limit stop (owner_pool_limit), not source_error', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, true, { tfAnswer: () => new Response('down', { status: 500 }) })
+  assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
+  assert.ok(x.calls.some(c => c.status === 'refused' && c.kind === 'llm.anthropic' && c.reason === 'owner_pool_limit'), JSON.stringify(x.calls))
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'], 'the limit stop, not the later source failure')
+  // #1168 item 1: calls refused before sending are not recorded as model requests
+  const has = x.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'scan_model_calls'").get()
+  const recorded = has ? (x.db.prepare('SELECT count(*) AS n FROM scan_model_calls').get() as { n: number }).n : 0
+  assert.equal(recorded, 0, 'no model call is recorded as made')
+})
