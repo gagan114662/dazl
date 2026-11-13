@@ -3,6 +3,7 @@ import { scryptSync, timingSafeEqual } from 'crypto'
 import { cookies } from 'next/headers'
 import { confirmationPending, createPasswordSession, findPasswordUser, SESSION_TTL_S } from '@/lib/auth-db'
 import { validateEmail } from '@/lib/validate'
+import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -18,6 +19,9 @@ import { systemMailAvailable } from '@/lib/system-mail'
 const DUMMY_SALT = '00000000000000000000000000000000'
 
 export async function POST(req: NextRequest) {
+  // #1095: a cross-site page must not sign this browser in to another account (login CSRF: with Link Google that
+  // account could then take the victim's Google identity). The form posts JSON from this origin.
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
     const body = await req.json().catch(() => null)
     const email = validateEmail(body?.email)

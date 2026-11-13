@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
+import { signUpPlanLine } from '@/lib/trial-copy'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
@@ -60,12 +61,11 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
         <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">
-          {trialFunded
-            ? 'Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first. Upgrade any time.'
-            : 'Free plan: 50 scans a month with your own AI key. Upgrade any time.'}
+          {signUpPlanLine(trialFunded)}
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
-        <a href={claim.googleHref} className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
+        <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
+        <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -86,7 +86,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
             className="field" />
           </label>
           <button type="submit" disabled={loading}
-            className="btn-primary mt-1 !py-3">
+            className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition text-sm mt-1 disabled:opacity-50">
             {loading ? 'Creating account…' : 'Create your account'}
           </button>
         </form>

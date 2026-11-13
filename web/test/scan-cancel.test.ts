@@ -79,7 +79,10 @@ test('Home never asks for an AI key once one is saved; seller profile stays visi
   assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null })
   assert.match(rows.find(x => x.id === 'site')!.detail, /Booking software/)
   assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
-  assert.match(rd('../app/sign-up/sign-up-form.tsx'), /with your own AI key/)
+  // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) names the own-key plan in both modes
+  const { signUpPlanLine } = await import('../lib/trial-copy.ts')
+  for (const funded of [true, false]) assert.match(signUpPlanLine(funded), /with your own AI key/)
+  assert.match(rd('../app/sign-up/sign-up-form.tsx'), /signUpPlanLine\(/)
 })
 
 test('profile save returns canonical stored values; business name round-trips; keyless copy is neutral; usage failure is labelled', async () => {
