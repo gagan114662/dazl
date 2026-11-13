@@ -94,7 +94,7 @@ type Json = { [k: string]: unknown }
 const json = (b: string): Json | null => { try { return JSON.parse(b) } catch { return null } }
 // The board's own publish date as a day (ISO string or epoch ms); anything else is unknown, never guessed.
 const boardDay = (v: unknown): string | null => { const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null }
-export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null; passages?: string[] } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
+export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null; passages?: string[]; names?: string[] } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
 // The role comes from the POSTING itself (its JSON title or its own heading), never from the index label. It must be a sales / GTM role and agree with what the index
 // claimed: same role once locations / levels after a dash, pipe, comma or bracket are dropped ("Account Executive - London" ~ "Account Executive"); a different role
 // behind the same link (a Backend Engineer behind "Account Executive") is rejected.
@@ -116,12 +116,13 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   // (lib/sources/ats-posting.ts). `body` joins the title (and Greenhouse's company_name) onto the description for the closed / company checks;
   // that join appears nowhere on the posting, so a quote is never taken from it, only from inside one passage.
   let passages: string[] = []
+  let boardName = '' // the company the board itself names (Greenhouse company_name): with the org token and the site's name, who "<company> is hiring" may be
   if (host.endsWith('greenhouse.io')) {
     const id = segs[2]; if (!id || segs[1] !== 'jobs') return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${id}`)
     if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); if (r.status >= 400 || !j || typeof j.title !== 'string') return { ok: false, reason: 'job_unverified' }
-    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; passages = [htmlText(String(j.content ?? ''))]; open = true; posted = boardDay(j.first_published); postedBoard = 'greenhouse'
+    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; passages = [htmlText(String(j.content ?? ''))]; boardName = typeof j.company_name === 'string' ? j.company_name : ''; open = true; posted = boardDay(j.first_published); postedBoard = 'greenhouse'
   } else if (host === 'jobs.lever.co') {
     const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://api.lever.co/v0/postings/${token}/${id}`)
@@ -145,7 +146,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
   if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
   if (!roleAgrees(indexTitle, title, accept)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
-  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null, passages: passages.filter(p => p.length >= 20) }
+  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null, passages: passages.filter(p => p.length >= 20), names: [boardName, token, site.split('.')[0] ?? ''].filter(n => n.length >= 3) }
 }
 // Only the fields the verifier's read of the board record also renders as text: Ashby / Lever descriptionPlain (and Lever additionalPlain), Greenhouse content
 // (escaped HTML), turned into text by the verifier's OWN functions (lib/scan/fetch-page.ts: htmlToText(decode(content))), so the quote source is byte-identical to
@@ -210,14 +211,16 @@ const ADV = String.raw`(?:(?:currently|actively|now|also|urgently)\s+)?`
 const ROLE_TAIL = String.raw`(?:managers?|assistants?|leads?|engineers?|directors?|academy|associates?|coordinators?|specialists?|interns?|internship|trainees?|teams?|program|programme|platform|tools?|community|webinars?|head|officers?|partners?|consultants?|analysts?|operations|enablement|development|representatives?|executives?|reps?|sdrs?|bdrs?|vp|admin|administrators?)`
 const END = String.raw`(?![\p{L}\p{N}])(?!\s*[-‐-—]?\s*${ROLE_TAIL}(?![\p{L}\p{N}]))`
 const words = (t: string) => t.split(/[^\p{L}\p{N}]+/u).filter(Boolean)
-export function postingQuote(passages: string[], title: string, company?: string, nameInQuote = true): string {
+// company: the lead's name (the subject, and the name a namedQuote widens to); also: other names the posting may call itself by (board org, site name).
+export function postingQuote(passages: string[], title: string, company?: string, nameInQuote = true, also: string[] = []): string {
   const core = title.split(/\s[-–—|·]\s|\s*[,(\[]/)[0]?.trim() ?? ''
   // the role without a leading level is the same vacancy ("We're looking for an Account Executive" on a Senior Account Executive posting)
   const unlevelled = [title, core].map(t => t.replace(/^(?:(?:senior|sr\.?|junior|jr\.?|principal|staff|founding|mid[- ]level|entry[- ]level)\s+)+/i, '')).filter(t => words(t).length >= 2)
   const alts = [...new Set([title, core, ...unlevelled].filter(Boolean).map(t => words(t).join(String.raw`[\s\-‐-—_/]+`)).filter(Boolean))]
   if (!alts.length) return ''
   const T = `(?<![\\p{L}\\p{N}])(?:${alts.join('|')})${END}`
-  const co = company && words(company).length ? words(company).join(String.raw`\s+`) : null
+  const names = [...new Set([company ?? '', ...also].map(n => words(n).join(String.raw`\s+`)).filter(n => n.length >= 3))]
+  const co = names.length ? `(?:${names.join('|')})` : null
   const WE = String.raw`(?:we(?:'|’)re|we\s+are|our\s+(?:[\p{L}-]+\s+){0,2}team\s+is${co ? String.raw`|${co}\s+(?:is|are)` : ''})`
   const JOIN = String.raw`join\s+(?:us|our\s+team|the\s+team${co ? `|${co}` : ''})(?:\s+[^.!?]{0,30}?)?\s+as`
   const re = (s: string) => new RegExp(s, 'iu')
@@ -287,7 +290,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
       const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: v.passages ? postingQuote(v.passages, shown, opts.company, !!opts.namedQuote) : quoteFor(vt, shown, at, opts.namedQuote ? opts.company : undefined), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: v.passages ? postingQuote(v.passages, shown, opts.company, !!opts.namedQuote, v.names) : quoteFor(vt, shown, at, opts.namedQuote ? opts.company : undefined), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
       // a posting with no quotable statement never hides a later quotable one among this page's sampled hits (#767): it is kept as the fallback
       const quotable = vacancy.quote.trim() !== ''
       if (!opts.roleMatch) { if (quotable) return { vacancy, reason: 'found', pages, readPages }; unquoted ??= vacancy; continue }

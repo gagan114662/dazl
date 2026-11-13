@@ -131,6 +131,11 @@ const VACANCY: [string, string, string][] = [
   ['We\'re looking for an Account Executive to own deals at Brightloop.', 'Senior Account Executive', 'We\'re looking for an Account Executive to own deals at Brightloop.'],
   ['Join the team as an Account Executive: a pro-sales role at Brightloop.', 'Account Executive', 'Join the team as an Account Executive: a pro-sales role at Brightloop.'],
 ]
+test('"<company> is hiring" is recognised by the board org / site name when the lead\'s company is not known (a pages-only scan)', () => {
+  const t = 'Brightloop is hiring an Account Executive to own the sales cycle end to end.'
+  assert.equal(postingQuote([t], 'Account Executive', undefined, true, ['brightloop']), t)
+  assert.equal(postingQuote([t], 'Account Executive', undefined, true, ['otherco']), '', 'another name as subject is not this posting speaking')
+})
 for (const [text, title, quote] of VACANCY) test(`quote (${title}): ${text.slice(0, 60)}`, () => assert.equal(postingQuote([text], title, 'Brightloop'), quote))
 
 // #767 review R2: Greenhouse content is turned into text by the verifier's own functions, so entities (&rsquo; &#8217; &mdash; and a double-escaped &amp;lt;)
