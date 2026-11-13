@@ -11,7 +11,7 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { listCampaigns } from '../lib/outreach/campaigns.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { leadStatus } from '../lib/outreach/campaign-view.ts'
-import { campaignStatus, currentQual, currentRun, runStatusOf } from '../lib/run-status.ts'
+import { campaignStatus, currentQual, currentRun, runStatusOf, listQual } from '../lib/run-status.ts'
 import { readyItems } from '../lib/ready-card.ts'
 import type { ReadinessInput } from '../lib/readiness.ts'
 import { reviewIsActionable, heldState } from '../lib/lead-state.ts'
@@ -184,4 +184,27 @@ test('#683 review finding 2: a DEFAULT-DENY required-gate hold (London Test B sh
   finish(db, 'jl')
   assert.equal(requiredGateHeld(db, 'A', 'l1'), 'sales_hiring_check_failed'); assert.equal(currentnessHeld(db, 'A', 'l1'), true)
   await agree(db, 'jl', LONDON)
+})
+
+test('#683 review finding 1: listQual moves each held slice out of the right count (source-checked vs confirmed by you), never both', () => {
+  const base = { sourceChecked: 2, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 0, held: 1, rejected: 0 }
+  assert.deepEqual(listQual({ ...base, heldResearch: 1, heldResearchSourceChecked: 1 }), { ...base, heldResearch: 1, heldResearchSourceChecked: 1, sourceChecked: 1, confirmedByYou: 1, research: 1 })
+  assert.deepEqual(listQual({ ...base, heldResearch: 1, heldResearchSourceChecked: 0 }), { ...base, heldResearch: 1, heldResearchSourceChecked: 0, sourceChecked: 2, confirmedByYou: 0, research: 1 })
+  assert.equal(qualificationLines({ ...base, heldResearch: 1, heldResearchSourceChecked: 0 }, 4)[0], '2 source-checked, 0 confirmed by you, 0 to review')
+})
+
+test('#683 review finding 1: a clean source-checked lead beside a lead confirmed out of an uncheckable hold - card pill, label and page agree', async () => {
+  const db = setup()
+  job(db, 'A', 'jm', NYC, 90)
+  lead(db, 'jm', 'ok', { machine: true, date: recent })                                         // clean, dated, inside the window
+  lead(db, 'jm', 'cf', { date: recent, confirmedFrom: 'counterparty_signal' })                 // confirmed by you OUT of someone else's customer
+  finish(db, 'jm')
+  const rec = { id: 'jm', status: 'done', error: null, candidates: 5, verified: 1, needs_review: 1, dropped: 3, lead_count: 2 } as never
+  const [c] = listCampaigns(db, 'A')
+  const card = campaignStatus(c, rec)
+  const d = (await campaignDetail(sqliteDb(db), 'A', 'jm'))!
+  const page = currentRun(runStatusOf(rec), currentQual(d.leads), NYC)
+  assert.equal(page.label, '2 leads found: 1 source-checked, 0 confirmed by you, 0 need your review, 1 research only, 0 rejected')
+  assert.equal(card.run?.label, page.label); assert.equal(card.run?.tag, 'Leads found'); assert.equal(page.tag, 'Leads found')
+  assert.equal(qualificationLines(c.qualification, c.discovery.leads)[0], '1 source-checked, 0 confirmed by you, 0 to review')
 })
