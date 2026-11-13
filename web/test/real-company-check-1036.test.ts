@@ -73,7 +73,11 @@ test('#1036 review R1: a real-company check lead is never an autopilot candidate
 test('#1036 review R2: a crawl that reads nothing is a reported failure with the crawler\'s reason, not a silent success', async () => {
   const db = setup()
   const blocked: Get = async url => ({ status: 403, body: 'Forbidden', finalUrl: url })
-  await assert.rejects(runRealCompanyCheck(db, T, INPUT, { env: STAGING, get: blocked, gapMs: 0 }), (e: unknown) => e instanceof RealCheckNotRead && e.reason.length > 0)
+  let reason = ''
+  await assert.rejects(runRealCompanyCheck(db, T, INPUT, { env: STAGING, get: blocked, gapMs: 0 }), (e: unknown) => { reason = (e as RealCheckNotRead).reason; return e instanceof RealCheckNotRead })
+  const audited = (db.prepare("SELECT status FROM connector_audit WHERE tenant_id = ? AND connector = 'sitecrawl' ORDER BY created_at DESC, id DESC LIMIT 1").get(T) as { status: string } | undefined)?.status
+  assert.ok(audited, 'precondition: the crawler audited why it read nothing')
+  assert.equal(reason, audited!.slice(0, 200), 'the reason is the crawler\'s own audit status, not a generic line')
   const nobody: Get = async url => { const p = new URL(url).pathname; return p === '/team' ? { status: 200, body: html(PROSE), finalUrl: url } : get(url) }
   await assert.rejects(runRealCompanyCheck(db, T, INPUT, { env: STAGING, get: nobody, gapMs: 0 }), (e: unknown) => e instanceof RealCheckNotRead && /names no one/.test(e.reason))
 })

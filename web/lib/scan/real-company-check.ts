@@ -61,7 +61,7 @@ export async function runRealCompanyCheck(db: Database.Database, tenantId: strin
   const result = { jobId, leadId, site: rows.find(r => r.kind === 'domain')?.value.split('|')[0] ?? null, people: rows.filter(r => r.kind === 'person').map(r => r.value) }
   if (!result.site || !result.people.length) {
     let last = ''
-    try { last = (db.prepare("SELECT status FROM connector_audit WHERE tenant_id = ? AND job_id = ? AND connector = 'sitecrawl' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(tenantId, jobId) as { status: string } | undefined)?.status ?? '' } catch { last = '' }
+    try { last = (db.prepare("SELECT status FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = 'sitecrawl' ORDER BY created_at DESC, id DESC LIMIT 1").get(tenantId, jobId) as { status: string } | undefined)?.status ?? '' } catch { last = '' }
     throw new RealCheckNotRead((result.site ? `the site was read but names no one with these buyer roles` : last || 'the company website could not be read or settled').slice(0, 200), jobId)
   }
   return result
