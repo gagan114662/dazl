@@ -9,7 +9,8 @@ export function siteKeyReason(why: string | null): string {
   // The limiter is a fixed window (lib/rate-limit.ts): all three come back together, 30 days after the first.
   if (why === 'site_reads_used') return `You have used your three free website reads for now; they come back together, 30 days after the first. ${own}`
   if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${own}`
-  if (why === 'google_required') return `The free trial needs an account that signs in with Google. ${own}`
+  // #1095: a password account links Google to THIS account (first-run shows the Link Google step beside this text)
+  if (why === 'google_required') return `Free website reads need a Google account: link Google to this account to read it free (no card). ${own}`
   // Another account on the same company email domain started the trial: this account's own trial is not "used up".
   if (why === 'domain_used') return `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${own}`
   // The money ceiling: website reads on the trial draw on the same allowance as scans (lib/trial-copy.ts says the same).

@@ -105,5 +105,5 @@ test('countActiveJobs: a scan that is pending, running or enriching is active; d
 })
 test('the Find leads button is disabled while the scan runs or enriches, with a reason (string check; the rendered check is test/ui/scan-active.ui.mjs)', async () => {
   const fs = await import('node:fs'); const ui = fs.readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
-  assert.match(ui, /status === 'pending' \|\| status === 'running' \|\| status === 'enriching'\)/); assert.match(ui, /disabled=\{busy \|\| starting \|\| scanActive\}/); assert.match(ui, /data-reason="scan-active"/)
+  assert.match(ui, /status === 'pending' \|\| status === 'running' \|\| status === 'enriching'\)/); assert.match(ui, /disabled=\{busy \|\| starting \|\| scanActive( \|\| !!trialRefused)?\}/); assert.match(ui, /data-reason="scan-active"/)
 })

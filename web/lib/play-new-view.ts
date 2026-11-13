@@ -55,6 +55,7 @@ export function runNowMessage(status: number, body: RunNowAnswer, timeZone?: str
     case 'no_api_key': return { ok: false, text: 'Running a play on demand uses your own AI key. Add one in Settings, or run a one-off search in Leads.' }
     case 'trial_used': return { ok: false, text: 'Your free searches are used up. Add your own AI key in Settings to keep this play running.' }
     case 'trial_busy': return { ok: false, text: "Today's free searches are all taken. Try again tomorrow, or add your own AI key in Settings." }
+    case 'daily_cap': return { ok: false, text: `The free plan runs this play once a day and a search already ran today. It can run again after ${body && 'retry_at' in body && typeof body.retry_at === 'number' ? whenOf(body.retry_at, timeZone) : 'midnight UTC'}.` }
     case 'runner_unavailable': return { ok: false, text: "Plays can't be run on demand right now. Its scheduled run still happens." }
     case 'quota_exceeded': return { ok: false, text: "This month's scans are used up, so it can't run now." }
     case 'scan_active': return { ok: false, text: 'A scan is already running or finishing. Try again when it ends.' }
