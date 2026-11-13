@@ -322,3 +322,58 @@ test('read consent revoked during the MX lookup: no suppression is written', asy
   assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false)
   assert.equal(bounceCount(db, 'A'), 0)
 })
+
+// #676: the separate-thread journey with the Authentication-Results Gmail really writes for a bounce. A DSN is sent
+// with MAIL FROM:<>, so SPF is evaluated on the HELO host and Gmail prints `smtp.helo=`, never `smtp.mailfrom=`.
+const GOOGLE_HELO_AR = 'mx.google.com;\r\n       spf=pass (google.com: domain of postmaster@mx.buyer.example designates 192.0.2.7 as permitted sender) smtp.helo=mx.buyer.example'
+
+test('#676: a genuine null-sender DSN on its own thread (SPF HELO pass, MX-aligned) suppresses exactly the recipient, stops the sequence, counts once', async () => {
+  const db = await setup(); seedSend(db)
+  const n = withHeaders(withAuth(returnedHeaders(dsnNotice('dsn-helo', {}), '<dazl.MID@acme.example>'), GOOGLE_HELO_AR), { name: 'Return-Path', value: '<>' })
+  const r1 = await syncReplies(db, 'A', syncDeps(gmailStub([n])))
+  assert.equal(r1.error, undefined)
+  assert.equal(r1.bounces, 1)
+  assert.equal(r1.reviews, 0)
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
+  assert.deepEqual(db.prepare("SELECT email, reason FROM suppressions WHERE tenant_id = 'A'").all(), [{ email: 'sam@buyer.example', reason: 'bounce' }], 'exactly the recorded recipient')
+  assert.deepEqual(db.prepare("SELECT status, stop_reason FROM sequences WHERE id = 'seq1'").get(), { status: 'stopped', stop_reason: 'suppressed' })
+  assert.equal((db.prepare("SELECT stopped FROM followup_threads WHERE tenant_id = 'A' AND thread_id = 'th-1'").get() as { stopped: string }).stopped, 'bounce')
+  assert.equal(bounceCount(db, 'A'), 1); assert.equal(bounceAudits(db), 1)
+  // the same notice re-listed plus a duplicate from a retrying MTA (new Gmail id): still once
+  const dup = withAuth(withHeaders(dsnNotice('dsn-helo-dup', {}), { name: 'In-Reply-To', value: '<dazl.MID@acme.example>' }), GOOGLE_HELO_AR)
+  const r2 = await syncReplies(db, 'A', syncDeps(gmailStub([n, dup]), NOW + 600))
+  assert.equal(r2.bounces, 0)
+  assert.equal(bounceCount(db, 'A'), 1); assert.equal(bounceAudits(db), 1)
+})
+
+test('#676: a HELO pass for a host aligned only through the recipient domain DNS MX set also counts (looked up, never read from the notice)', async () => {
+  const db = await setup(); seedSend(db)
+  const n = withAuth(dsnNotice('dsn-helo-mx', { ref: '<dazl.MID@acme.example>' }), 'mx.google.com; spf=pass (google.com: domain of postmaster@mx1.mailhost.example designates 192.0.2.9 as permitted sender) smtp.helo=mx1.mailhost.example')
+  const r = await syncReplies(db, 'A', { ...syncDeps(gmailStub([n])), resolveMxFor: async (d: string) => d === 'buyer.example' ? ['mx1.mailhost.example'] : [] })
+  assert.equal(r.bounces, 1)
+  assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), true)
+})
+
+test('#676 adversarial: forged, unaligned, soft or failed-HELO separate-thread notices still suppress nobody', async () => {
+  const cases: [string, Notice, 'bounce_review' | 'bounce_unmatched' | 'soft_bounce'][] = [
+    ['attacker-helo', withAuth(returnedHeaders(dsnNotice('h1', { from: 'mailer-daemon@attacker.example' }), '<dazl.MID@acme.example>'), 'mx.google.com; spf=pass smtp.helo=mail.attacker.example'), 'bounce_review'],
+    ['helo-softfail', withAuth(returnedHeaders(dsnNotice('h2', {}), '<dazl.MID@acme.example>'), 'mx.google.com; spf=softfail smtp.helo=mx.buyer.example'), 'bounce_review'],
+    ['helo-in-comment-only', withAuth(returnedHeaders(dsnNotice('h3', {}), '<dazl.MID@acme.example>'), 'mx.google.com; spf=pass (smtp.helo=mx.buyer.example) smtp.helo=mail.attacker.example'), 'bounce_review'],
+    ['helo-second-header', withAuth(returnedHeaders(dsnNotice('h4', {}), '<dazl.MID@acme.example>'), 'mx.google.com; spf=none', GOOGLE_HELO_AR), 'bounce_review'],
+    ['helo-ip-literal', withAuth(returnedHeaders(dsnNotice('h5', {}), '<dazl.MID@acme.example>'), 'mx.google.com; spf=pass smtp.helo=[192.0.2.7]'), 'bounce_review'],
+    ['helo-other-recipient', withAuth(returnedHeaders(dsnNotice('h6', { recipient: 'carol@other.example' }), '<dazl.MID@acme.example>'), GOOGLE_HELO_AR), 'bounce_unmatched'],
+    ['helo-no-reference', withAuth(dsnNotice('h7', { ref: null }), GOOGLE_HELO_AR), 'bounce_unmatched'],
+    ['helo-soft-4xx', withAuth(returnedHeaders(dsnNotice('h8', { status: '4.2.2' }), '<dazl.MID@acme.example>'), GOOGLE_HELO_AR), 'soft_bounce'],
+  ]
+  for (const [name, notice, cls] of cases) {
+    const db = await setup(); seedSend(db)
+    const r = await syncReplies(db, 'A', syncDeps(gmailStub([notice])))
+    assert.equal(r.error, undefined, name)
+    assert.equal(r.bounces, 0, name)
+    assert.equal(isSuppressed(db, 'A', 'sam@buyer.example'), false, name)
+    assert.equal(isSuppressed(db, 'A', 'carol@other.example'), false, name)
+    assert.deepEqual(db.prepare("SELECT status FROM sequences WHERE id = 'seq1'").get(), { status: 'active' }, name)
+    assert.equal(bounceCount(db, 'A'), 0, name)
+    assert.equal((db.prepare('SELECT classification FROM inbound_messages WHERE gmail_id = ?').get(notice.id) as { classification: string }).classification, cls, name)
+  }
+})

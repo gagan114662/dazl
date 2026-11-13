@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseDsn, decideDsn } from '../lib/outreach/dsn.ts'
+import { parseDsn, decideDsn, dsnProvenance, firstAuthenticationResults } from '../lib/outreach/dsn.ts'
 import type { GPart } from '../lib/outreach/reply-text.ts'
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64url')
@@ -105,4 +105,49 @@ test('multi-recipient DSN: only the block matching the recorded recipient acts',
 test('not a DSN at all', () => {
   assert.equal(parseDsn({ mimeType: 'text/plain', headers: [], body: { data: b64('hello') } }), null)
   assert.equal(decideDsn(fixture({}), 'lead@prospect.example', known).kind, 'ignore')
+})
+
+// #676: a real bounce has a NULL return path, so Gmail authenticates it by the HELO identity and writes
+// `spf=pass (google.com: domain of postmaster@<helo> designates ...) smtp.helo=<helo>`. That header, as Gmail actually
+// prints it (folded, with a comment), must count as provenance when the HELO host aligns with the recipient's MX.
+const HELO_AR = 'mx.google.com;\r\n       spf=pass (google.com: domain of postmaster@mx.example.com designates 192.0.2.7 as permitted sender) smtp.helo=mx.example.com'
+
+test('#676: Gmail null-sender bounce authenticated by SPF HELO (smtp.helo=) and aligned with the recipient MX is permanent', () => {
+  assert.deepEqual(firstAuthenticationResults(fixture({ auth: HELO_AR })), { authservId: 'mx.google.com', passDomains: ['mx.example.com'] })
+  const v = decideDsn(fixture({ auth: HELO_AR }), 'mailer-daemon@mx.example.com', known, TRUST)
+  assert.deepEqual(v, { kind: 'permanent', recipient: 'lead@prospect.example', originalMessageId: MSGID, outreachMessageId: 'abc123' })
+})
+
+test('#676: smtp.mailfrom given as a full address (the form Gmail prints) yields its domain', () => {
+  const ar = 'mx.google.com; spf=pass (google.com: domain of bounce@mx.example.com designates 192.0.2.7 as permitted sender) smtp.mailfrom=bounce@mx.example.com'
+  assert.deepEqual(firstAuthenticationResults(fixture({ auth: ar }))!.passDomains, ['mx.example.com'])
+})
+
+test('#676 adversarial: an SPF HELO result never proves anything it should not', () => {
+  const hold = (auth: string, why: string) => assert.equal(decideDsn(fixture({ auth }), 'mailer-daemon@mx.example.com', known, TRUST).kind, 'hold', why)
+  hold('mx.google.com; spf=pass smtp.helo=mail.evil.example', 'attacker HELO passes for its own host: not aligned')
+  hold('mx.google.com; spf=softfail smtp.helo=mx.example.com', 'softfail is not pass')
+  hold('mx.google.com; spf=neutral smtp.helo=mx.example.com', 'neutral is not pass')
+  hold('mx.google.com; spf=none smtp.helo=mx.example.com', 'none is not pass')
+  hold('mx.google.com; spf=fail (google.com: smtp.helo=mx.example.com) smtp.helo=mail.evil.example', 'a failed check never counts')
+  hold('mx.google.com; spf=pass (google.com: domain of postmaster@smtp.helo=mx.example.com designates) smtp.helo=mail.evil.example', 'a property quoted inside a comment is never read')
+  hold('mx.google.com; spf=pass (unbalanced smtp.helo=mx.example.com', 'unbalanced comment: nothing is read')
+  hold('mx.google.com; spf=pass smtp.helo=[192.0.2.7]', 'an IP-literal HELO never aligns')
+  hold('mx.google.com; spf=pass smtp.helo=', 'empty HELO')
+  hold('mx.google.com; spf=pass smtp.helo=example.com.evil.example', 'suffix trick: alignment is on the right-most labels')
+  hold('mx.google.com; spf=passed smtp.helo=mx.example.com', 'only the exact result keyword pass')
+  hold('mail.evil.example; spf=pass smtp.helo=mx.example.com', 'untrusted authserv-id')
+  hold('mx.google.com; spf=pass smtp.helo=\u00ff\ufffd.example', 'non-ASCII junk host')
+  // a HELO pass in a deeper (second) header travelled with the message and is injectable
+  const deeper = fixture({ auth: 'mx.google.com; spf=none' })
+  deeper.headers!.splice(2, 0, { name: 'Authentication-Results', value: HELO_AR })
+  assert.equal(decideDsn(deeper, 'mailer-daemon@mx.example.com', known, TRUST).kind, 'hold', 'second header is never trusted')
+  // no caller-supplied expected origins: held, whatever the header says
+  assert.deepEqual(dsnProvenance(fixture({ auth: HELO_AR }), { trustedAuthservIds: ['mx.google.com'], expectedBounceDomains: [] }), { ok: false, reason: 'no_expected_origins' })
+  // huge / pathologically nested header: bounded, never throws, never a false pass
+  const nested = 'mx.google.com; spf=pass ' + '('.repeat(5000) + 'x' + ')'.repeat(5000) + ' smtp.helo=mx.example.com'
+  assert.equal(decideDsn(fixture({ auth: nested }), 'mailer-daemon@mx.example.com', known, TRUST).kind, 'hold', 'over-nested comments fail closed')
+  hold('mx.google.com; ' + 'x'.repeat(200_000) + ' spf=pass smtp.helo=mail.evil.example', 'huge header, unaligned')
+  // a soft status stays soft even with a perfect HELO pass
+  assert.equal(decideDsn(fixture({ auth: HELO_AR, status: '4.2.2' }), 'mailer-daemon@mx.example.com', known, TRUST).kind, 'soft')
 })
