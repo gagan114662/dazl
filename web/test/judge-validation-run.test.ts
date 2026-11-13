@@ -200,7 +200,7 @@ test('inputs are explicit and fail closed: no default cap, model, run id, FX or 
 
 test('the key comes from the environment only, is removed from it, and malformed keys are refused', () => {
   const env: Record<string, string | undefined> = { [KEY_ENV]: KEY }
-  assert.deepEqual(readKeyFromEnv(env), { key: KEY }); assert.equal(KEY_ENV in env, false)
+  assert.deepEqual(readKeyFromEnv(env), { key: KEY, name: KEY_ENV }); assert.equal(KEY_ENV in env, false)
   for (const v of [undefined, '', 'short', `${KEY} x`, `${KEY}\n`]) assert.ok('problem' in readKeyFromEnv({ [KEY_ENV]: v }), String(v))
   const p = parseValidationArgs(['--key', KEY]); assert.ok(p.problems.some(x => /unknown argument/.test(x)), 'no key flag')
 })
@@ -617,11 +617,11 @@ test('the machine fingerprint: the OS machine id (never HOME), parsed strictly; 
   }
 })
 
-test('the committed record is valid and holds no claim, so --execute refuses at this head; nothing else (env, flag, file) is read', async () => {
+test('the committed record is valid and holds the one claim for the approved run (#784), so --execute refuses any other run, machine or input at this head; nothing else (env, flag, file) is read', async () => {
   const rec = readRunRecord(runRecordPath())
-  assert.ok(!('problem' in rec), JSON.stringify(rec)); if (!('problem' in rec)) assert.deepEqual(rec.claims, [], 'no claim has been made')
+  assert.ok(!('problem' in rec), JSON.stringify(rec)); if (!('problem' in rec)) assert.equal(rec.claims.length, 1, 'exactly one claim (test/judge-validation-import.test.ts checks its fields)')
   const t = stub(), r = await runValidation(inputs(tmp()), { transport: t.transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, hostClaim: join(tmp(), 'host-claim'), machineFingerprint: () => FP_A })
-  assert.equal(r.status, 'refused'); assert.match(r.problems.join(), /no pre-call claim/); assert.equal(t.requests, 0)
+  assert.equal(r.status, 'refused'); assert.match(r.problems.join(), /claim run_id does not match this run/); assert.match(r.problems.join(), /the claim is for another machine/); assert.equal(t.requests, 0)
   assert.match(hostClaimPath(), /[\\/]\.dazl[\\/]judge-validation\.host-claim$/)
   const lib = readFileSync(new URL('lib/evals/judge-validation-run.ts', WEB), 'utf8'), cliSrc = readFileSync(new URL('scripts/judge-validation-run.mts', WEB), 'utf8')
   assert.doesNotMatch(lib, /process\.env|approved_rerun|RERUN_APPROVAL|approvedRerun|defaultStateDir|--approved-rerun/, 'the library reads no env var and has no rerun or default-state-dir path')
@@ -723,7 +723,7 @@ test('the command line: plan-only by default, every input required, the paid pat
   assert.equal(existsSync(join(CLI_HOME, '.dazl')), false, 'plan only writes no host claim')
   // Plan-only needs no claim, and prints the one this machine, these inputs and this checkout need, for review.
   assert.match(plan.stdout, /the pre-call claim this run needs in lib\/evals\/judge-validation-runs\.json/)
-  assert.match(plan.stdout, /--execute would refuse now:\n {2}(no pre-call claim|machine fingerprint unavailable)/)
+  assert.match(plan.stdout, /--execute would refuse now:\n {2}(claim run_id does not match this run|machine fingerprint unavailable)/) // the committed record holds the approved run's claim (#784), not this one
   const printed = plan.stdout.match(/\n(\{\n[\s\S]*?\n\})\n/)
   if (process.platform === 'darwin' || existsSync('/etc/machine-id')) {
     assert.ok(printed, plan.stdout)

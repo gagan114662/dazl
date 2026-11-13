@@ -352,7 +352,22 @@ a lead it calls `contradicts`. It has no send or tool authority.
   at run time; only `claude-sonnet-4-5` is priced), USD cap, the dated Bank of Canada USD/CAD rate with its
   bankofcanada.ca source URL, and the billing account's fee/tax rate with its stated basis. All of these are recorded in
   the artifact. The cap's CAD equivalent must fit the owner's approval: Gagan's WhatsApp messages of 2026-11-03 (19:52
-  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
+  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY`; on staging only
+  (`DAZL_ENV=staging`) and only when that name is unset, from `DAZL_TRIAL_ANTHROPIC_KEY`, the key the staging box
+  already holds (#784). No other name is read, and the name used (never the value) is printed.
+  - The claim for the approved run (`jv-396-20261113`, the staging box) is committed. It binds the sha256 of six files,
+    one of them `lib/scan/runner.ts`: any merge that changes one of them before the run makes `--execute` refuse, and
+    plan-only says which file. Re-print the claim then.
+  - After the run, `scripts/judge-validation-import.mts --artifact <result.json> --write` (no key, no network;
+    `lib/evals/judge-validation-import.ts`) turns the run's redacted artifact into what the gate and the reports read:
+    the claim's consumption, `test/fixtures/evals/judges/verdicts.jsonl` (every answer, both judges, both splits) and
+    one calibration entry per judge in `judges.lock.json`, `ok` exactly as measured. It accepts only the claimed run's
+    artifact (run id, model, corpus, code hashes, the claim's own sha256), a failed or stopped run imports no verdict
+    and no entry, and `test/judge-validation-import.test.ts` re-derives the log and the entries from the committed
+    artifact on every CI run. Limits: before the claim is consumed nothing in the repo binds the artifact's content,
+    so the reviewer compares the PR's `artifact_sha256` with the sha256 the run printed on the box. And an entry counts
+    only for its exact fingerprint: the scan's verification judge is registered on the tenant's own provider, so its
+    calibration on `claude-sonnet-4-5` is recorded and reported but does not make the registered scan judge count.
   - Before each request, the worst case is reserved and persisted.
   - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
     as failed.

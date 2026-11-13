@@ -5,7 +5,7 @@
 // What makes the run safe to approve in money and honest in what it reports:
 //  - Inputs are explicit, never defaulted: run id, model, USD cap, a dated FX rate and the fee/tax rate. The cap's CAD
 //    equivalent (cap x FX x (1 + fee)) must fit the owner's approval (APPROVED_CAD). The key comes from the environment only
-//    (KEY_ENV), lives in the transport's closure, and is redacted from every line this module writes.
+//    (KEY_ENV; on staging also STAGING_KEY_ENV, see readKeyFromEnv), lives in the transport's closure, and is redacted from every line this module writes.
 //  - The plan is fixed before any request: every call the run will make (both judges x both splits x every item x
 //    FIXED.repeats, plus one reversed-source call for multi-source items), each priced at its real prompt's UTF-8 bytes
 //    (+ INPUT_MARGIN_TOKENS) and its explicit max_tokens. A cap below that worst case refuses the run up front.
@@ -221,12 +221,21 @@ export function anthropicTransport(key: string, fetchImpl: typeof fetch = fetch)
 }
 
 // The key: from the environment only, removed from it once read. Never from argv (visible in `ps`) or a file.
-export function readKeyFromEnv(env: Record<string, string | undefined>): { key: string } | { problem: string } {
-  const k = env[KEY_ENV]
+// The key's name. KEY_ENV everywhere; on staging only (DAZL_ENV=staging) and only when KEY_ENV is unset, the key the
+// staging box already holds for its own model calls (STAGING_KEY_ENV), because that is where the one approved run is
+// made (#784). Two fixed names, never a flag or an input: nothing at run time can point the run at another variable.
+// Both names are removed from the environment once read; the caller gets the name it came from, never to be printed
+// with the value.
+export const STAGING_KEY_ENV = 'DAZL_TRIAL_ANTHROPIC_KEY'
+export function readKeyFromEnv(env: Record<string, string | undefined>): { key: string; name: string } | { problem: string } {
+  const staging = env.DAZL_ENV === 'staging'
+  const name = typeof env[KEY_ENV] === 'string' && env[KEY_ENV] ? KEY_ENV : staging ? STAGING_KEY_ENV : KEY_ENV
+  const k = env[name]
   delete env[KEY_ENV]
-  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set: the key is read from the environment only` }
-  if (k.length < 20 || /\s/.test(k)) return { problem: `${KEY_ENV} does not look like an API key (too short or contains whitespace)` }
-  return { key: k }
+  if (staging) delete env[STAGING_KEY_ENV]
+  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set${staging ? ` (and ${STAGING_KEY_ENV}, read on staging, is not set either)` : ''}: the key is read from the environment only` }
+  if (k.length < 20 || /\s/.test(k)) return { problem: `${name} does not look like an API key (too short or contains whitespace)` }
+  return { key: k, name }
 }
 
 // Persisted, append-only accounting. write() must be durable when it returns, and throws when it is not.
