@@ -229,5 +229,149 @@ test('controls: a valid current appointment, a possessive target and "formerly a
 })
 
 test('the check version moved with the relationship rule', () => {
-  assert.equal(CHECK_VERSIONS.person_current, 2)
+  assert.equal(CHECK_VERSIONS.person_current, 3)
+})
+
+// #781 follow-up (same audit class as 9379b162): the role must be tied POSITIVELY to the name and to the claimed
+// company. Before this change every sentence below passed person_current on main, because only "<title> at <X>" and
+// "<X>'s <title>" were read as an attached employer and anything else in the same sentence counted as the target's.
+const PAT: LeadClaim = { ...BASE, person: { name: 'Pat Example', title: 'Sales Director', source_url: PEOPLE_PAGE } }
+const pcOf = (claim: LeadClaim, text: string) => {
+  const checks = run(claim, [EVENT_SOURCE, snap(PEOPLE_PAGE, page(`<p>${text}</p>`))])
+  return { pc: checks.find(c => c.check === 'person_current')!, action: overall(checks).action }
+}
+
+test('#781: rival employer in any explicit shape (apposition, adjective, of/for/with, works at/joined ... as) never passes for the target', () => {
+  for (const text of [
+    'Pat Example (Sales Director, Rival Corp) thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example, Sales Director, Rival Corp, thanked Harbor Ledger Analytics for hosting.',
+    'Rival Corp Sales Director Pat Example thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example, Rival Corp Sales Director, thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example, Sales Director of Rival Corp, thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example, Sales Director for Rival Corp, thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example, Sales Director with Rival Corp, thanked Harbor Ledger Analytics for hosting.',
+    'Pat Example works at Rival Corp as Sales Director and praised Harbor Ledger Analytics.',
+    'Pat Example joined Rival Corp as Sales Director after leaving Harbor Ledger Analytics.',
+    'Pat Example is Sales Director at Rival Corp, a partner of Harbor Ledger Analytics.',
+    'Pat Example is Rival Corp\u2019s Sales Director and met Harbor Ledger Analytics.',
+    'Rival Corp named Pat Example Sales Director, Harbor Ledger Analytics said.',
+    'Pat Example, Sales Director at Harbor Ledger Analytics\' London partner Rival Corp, spoke.',
+  ]) {
+    const { pc, action } = pcOf(PAT, text)
+    assert.equal(pc.status, 'unknown', text)
+    assert.notEqual(action, 'accept', text)
+  }
+})
+
+test('#781: someone else\'s title at the target, with the claimed person merely in the same sentence, never passes', () => {
+  for (const text of [
+    'Jane Doe, Sales Director at Harbor Ledger Analytics, introduced Pat Example.',
+    'Pat Example met Jane Doe, Sales Director at Harbor Ledger Analytics.',
+    'Pat Example thanked Harbor Ledger Analytics\' Sales Director for the invitation.',
+  ]) {
+    const { pc, action } = pcOf(PAT, text)
+    assert.equal(pc.status, 'unknown', text)
+    assert.match(pc.reason, /never states that Pat Example is "Harbor Ledger Analytics"'s Sales Director/, text)
+    assert.notEqual(action, 'accept', text)
+  }
+})
+
+test('#781: explicit current-role shapes at the target still pass', () => {
+  for (const text of [
+    'Pat Example, Sales Director, Harbor Ledger Analytics, spoke on the panel.',
+    'Pat Example (Sales Director, Harbor Ledger Analytics) spoke on the panel.',
+    'Pat Example - Sales Director, Harbor Ledger Analytics',
+    'Pat Example, Harbor Ledger Analytics Sales Director, spoke on the panel.',
+    'Pat Example is Sales Director of Harbor Ledger Analytics.',
+    'Pat Example is the Sales Director at Harbor Ledger Analytics.',
+    'Pat Example is Harbor Ledger Analytics\' Sales Director.',
+    'Harbor Ledger Analytics hired Pat Example as Sales Director.',
+    'Harbor Ledger Analytics has appointed Pat Example as its new Sales Director.',
+    'Harbor Ledger Analytics promoted Pat Example to Sales Director in October.',
+    'Pat Example joined Harbor Ledger Analytics as Sales Director in May.',
+    'Meet Pat Example, Sales Director at Harbor Ledger Analytics.',
+  ]) assert.equal(pcOf(PAT, text).pc.status, 'pass', text)
+})
+
+test('#781: former-role wording still fails once the role is positively bound', () => {
+  for (const text of [
+    'Pat Example, previously Sales Director at Harbor Ledger Analytics, now advises startups.',
+    'Pat Example, Sales Director at Harbor Ledger Analytics until 2025, now runs Rival Corp.',
+    'Pat Example, formerly Sales Director at Harbor Ledger Analytics, is now CEO at Rival Corp.',
+  ]) {
+    const { pc, action } = pcOf(PAT, text)
+    assert.equal(pc.status, 'fail', text)
+    assert.equal(action, 'skip', text)
+  }
+})
+
+test('#781: adversarial inputs: regex metacharacters in names, huge sentences and repeated names stay fail-closed and fast', () => {
+  const odd: LeadClaim = { ...BASE, company: 'Smith & Sons (UK) Ltd.', person: { name: 'Pat O\'Neil+', title: 'Head (Sales)', source_url: PEOPLE_PAGE } }
+  const oddEvent = snap(OWN, page('<p>Smith & Sons (UK) Ltd. opened its new London, United Kingdom office on October 20, 2026.</p>'))
+  const check = (text: string) => run(odd, [oddEvent, snap(PEOPLE_PAGE, page(`<p>${text}</p>`))]).find(c => c.check === 'person_current')!.status
+  assert.equal(check('Pat O\'Neil+, Head (Sales) at Smith & Sons (UK) Ltd., leads the team.'), 'pass')
+  assert.equal(check('Pat O\'Neil+, Head (Sales) at Rival Corp, met Smith & Sons (UK) Ltd. staff.'), 'unknown')
+  // one enormous sentence with hundreds of name/title/company occurrences and no binding shape: bounded time, unknown
+  const blob = 'Pat Example met Harbor Ledger Analytics and a Sales Director from Rival Corp '.repeat(800)
+  const t0 = Date.now()
+  const { pc } = pcOf(PAT, blob)
+  assert.equal(pc.status, 'unknown')
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`)
+})
+
+// #781 review fixes (xhawk on #1077): former-clause skip, backtracking, repeated-occurrence cost, shared modifiers.
+test('#781: a "formerly ..." clause about someone else never lends its title to the claimed name', () => {
+  const { pc, action } = pcOf(PAT, 'Pat Example, formerly managed by Jane Doe, Sales Director at Harbor Ledger Analytics, spoke.')
+  assert.notEqual(pc.status, 'pass'); assert.notEqual(action, 'accept')
+})
+
+test('#781: repeated "is now" near-matches and 20k-occurrence sentences finish quickly and never pass', () => {
+  const t0 = Date.now()
+  const a = pcOf(PAT, `Pat Example ${'is now '.repeat(30)}x Sales Director, Harbor Ledger Analytics.`)
+  assert.notEqual(a.pc.status, 'pass')
+  const b = pcOf(PAT, 'Pat Example Sales Director Harbor Ledger Analytics '.repeat(2000))
+  assert.notEqual(b.pc.status, 'fail')
+  assert.ok(Date.now() - t0 < 5000, `took ${Date.now() - t0}ms`)
+})
+
+test('#781: current/interim/acting/incoming after a possessive company or appointment still bind and pass', () => {
+  for (const m of ['current', 'interim', 'acting', 'incoming']) for (const text of [
+    `Pat Example is Harbor Ledger Analytics' ${m} Sales Director.`,
+    `Harbor Ledger Analytics appointed Pat Example as its ${m} Sales Director.`,
+  ]) assert.equal(pcOf(PAT, text).pc.status, 'pass', text)
+})
+
+// #781 Hermes-PC review (changes required at 92b9a7af): each sentence below passed before this commit.
+test('#781: a possessive after the name hands the title to someone else', () => {
+  for (const text of [
+    "Harbor Ledger Analytics Sales Director Pat Example's assistant, Jane Doe, spoke.",
+    "Harbor Ledger Analytics' Sales Director, Pat Example's former boss, spoke.",
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
+})
+
+test('#781: a rival that hired or named the person never yields a current role at the target', () => {
+  for (const text of [
+    'Rival Corp hired Harbor Ledger Analytics Sales Director Pat Example last week.',
+    'Rival Corp has poached Harbor Ledger Analytics Sales Director Pat Example.',
+    "Rival Corp named Pat Example, Harbor Ledger Analytics' Sales Director, as its new CRO.",
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
+  // the target as the hiring subject, and the passive, still bind
+  assert.equal(pcOf(PAT, 'Harbor Ledger Analytics named Pat Example its new Sales Director.').pc.status, 'pass')
+  assert.equal(pcOf(PAT, 'Pat Example was named Sales Director at Harbor Ledger Analytics.').pc.status, 'pass')
+})
+
+test('#781: a departure in the clause after the role means the person is not current', () => {
+  for (const text of [
+    'Pat Example, Sales Director at Harbor Ledger Analytics, left the company in October.',
+    'Pat Example, Sales Director at Harbor Ledger Analytics, has since joined Rival Corp.',
+    'Pat Example, the Sales Director at Harbor Ledger Analytics, retired in 2025.',
+  ]) assert.equal(pcOf(PAT, text).pc.status, 'fail', text)
+  assert.equal(pcOf(PAT, 'Pat Example, Sales Director at Harbor Ledger Analytics, joined the team in 2020 and leads sales.').pc.status, 'pass')
+})
+
+test('#781: a different organisation named straight after the company never binds', () => {
+  for (const text of [
+    'Pat Example is the new Sales Director at Harbor Ledger Analytics competitor Rival Corp.',
+    'Pat Example is Sales Director at Harbor Ledger Analytics Holdings Rival Unit.',
+  ]) assert.notEqual(pcOf(PAT, text).pc.status, 'pass', text)
 })
