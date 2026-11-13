@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { saveCredential, setEnrichFallback } from '../lib/connectors/store.ts'
-import { findWorkEmail } from '../lib/people/work-email.ts'
+import { findWorkEmail, workEmailProviders } from '../lib/people/work-email.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
 import { recordEmailGuesses, verifyCandidates } from '../lib/people/email-pattern.ts'
 
@@ -149,4 +149,11 @@ test('#1036 an address found while the check could not run is checked on the nex
   const again = await run(s, f)
   assert.equal(calls.apollo, 1, 'Apollo is not asked again'); assert.deepEqual(calls.zb, ['dana.lee@harbordental.example'])
   assert.equal(copyOf(again).checked, true)
+})
+
+test('#1036 the UI is told whether the mailbox check can run (no button that does nothing)', () => {
+  const s = seed()
+  assert.equal(workEmailProviders(s.db, 'A', ON).mailboxCheck, true)
+  for (const env of [{}, { ...ON, ZEROBOUNCE_API_KEY: undefined }, { ...ON, EMAIL_VERIFY_DAILY_CAP: undefined }, { ...ON, EMAIL_GUESS_ENABLED: undefined }, { ...ON, EMAIL_VERIFY_MONTHLY_CAP: '0' }])
+    assert.equal(workEmailProviders(s.db, 'A', env).mailboxCheck, false, JSON.stringify(env))
 })

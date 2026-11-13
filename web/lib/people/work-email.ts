@@ -31,7 +31,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { publishedCandidateFor, reserveMailboxCheck, verifierFromEnv } from './email-pattern.ts'
+import { emailGuessEnabled, publishedCandidateFor, reserveMailboxCheck, verifierFromEnv, verifyDailyCap, verifyMonthlyCap } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
@@ -87,12 +87,14 @@ export function workEmailsFor(db: Database.Database, tenantId: string, leadId: s
 }
 
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
-export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }
-export function workEmailProviders(db: Database.Database, tenantId: string): WorkEmailProviders {
+// mailboxCheck (#1036): the free-tier mailbox check can run at all here (flag, key and both caps set), so the UI offers it.
+export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean }
+export function workEmailProviders(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): WorkEmailProviders {
   const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
   const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
   const optIn = apollo && pdlSaved ? enrichFallbackEnabled(db, tenantId) : true
-  return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn }
+  const mailboxCheck = !!verifierFromEnv(env) && emailGuessEnabled(env) && verifyDailyCap(env) > 0 && verifyMonthlyCap(env) > 0
+  return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
 }
 
 export type FindWorkEmailResult =

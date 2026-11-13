@@ -8,7 +8,7 @@ import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDI
 // Rows from the server are MERGED by updated_at (mergeLookups): a slow first read never erases a newer result, and a
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
-type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }
+type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
@@ -77,7 +77,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
         const v = l ? workEmailCopy(l) : null
         const retry = !l || l.status === 'error' || l.status === 'uncertain'
         // #1036: a found address whose mailbox was never checked (caps used up, or the check was off) can be checked later: no provider credit again
-        const checkLater = !!l && l.status === 'unverified' && !!l.address && (l.mailbox_check ?? null) === null
+        const checkLater = !!providers?.mailboxCheck && !!l && l.status === 'unverified' && !!l.address && (l.mailbox_check ?? null) === null
         return (
           <div key={t.key} className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="work-email-row" data-status={l?.status ?? 'none'}>
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
