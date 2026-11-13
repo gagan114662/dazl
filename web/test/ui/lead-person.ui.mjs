@@ -46,11 +46,13 @@ const LEADS = [
   lead('3'.repeat(24), 'Harbor Analytics', []),
   lead('4'.repeat(24), 'Gramercy Cloud', [ppl('search:people', 'Pat Lee, Former Head of Sales', 'https://www.linkedin.com/in/pat-lee-gc')]),
 ]
-// Held for review (not cards): the same line on the "Needs your review" rows. Real staging rows (job 13808d9c, read 2026-11-13):
-// PagerDuty's stored search:people person, and Cisco with nobody stored.
+// Held for review (not cards): the same line on the "Needs your review" rows. Invented rows: a held lead with a stored
+// search:people person, and one with nobody stored.
 const HELD = [
-  lead('5'.repeat(24), 'PagerDuty', [ppl('search:people', 'Mark Sarman, Regional Sales Director', 'https://www.linkedin.com/in/marksarman')], { review_reason: 'quote_unconfirmed' }),
-  lead('6'.repeat(24), 'Cisco', [], { review_reason: 'blocked_by_site' }),
+  lead('5'.repeat(24), 'Pagewake', [ppl('search:people', 'Marta Solberg, Regional Sales Director', 'https://www.linkedin.com/in/marta-solberg-test')], { review_reason: 'quote_unconfirmed' }),
+  lead('6'.repeat(24), 'Corvane', [], { review_reason: 'blocked_by_site' }),
+  // someone else's customer: the company itself is in doubt, so its row names nobody (no line at all), even with a person stored
+  lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'counterparty_signal' }),
 ]
 const f5lead = l => ({ id: l.id, company: l.company, name: null, signal: l.signal, source_url: l.source_url, event_date: l.event_date, published_at: null, fit_pct: 100, provisional: false })
 const F5 = { target: 5, found: 4, verified: 4, enriching: false, next: { action: 'wider_search', label: 'Search wider' }, state: 'partial', finding_more: false, reason: null, message: '4 of 5 verified from the free sources. You can search wider.', leads: LEADS.map(f5lead), sources: [{ source: 'search:news', state: 'done', status: 'ok', note: null, candidates: 6, accepted: 4, review: 0, rejected: 2 }], failed_sources: [], can_continue: true }
@@ -102,11 +104,13 @@ async function leadsPage(width, height, tag) {
   }
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
   // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
-  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 2)
-  const pd = held.filter({ hasText: 'PagerDuty' }).getByTestId('lead-person'); assert.equal(await pd.count(), 1)
-  assert.equal((await pd.innerText()).replace(/\s+/g, ' ').trim(), 'Mark Sarman · Regional Sales Director · LinkedIn (search result, not verified as current)')
-  assert.equal(await pd.getByTestId('lead-person-linkedin').getAttribute('href'), 'https://www.linkedin.com/in/marksarman')
-  const cs = held.filter({ hasText: 'Cisco' }).getByTestId('lead-person'); assert.equal(await cs.count(), 1)
+  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 3)
+  assert.equal(await held.filter({ hasText: 'Meshgate' }).getByTestId('lead-person').count(), 0, 'a hold that puts the company in doubt shows no person line')
+  assert.doesNotMatch(await held.filter({ hasText: 'Meshgate' }).innerText(), /Anders Smed|No buyer named yet/)
+  const pd = held.filter({ hasText: 'Pagewake' }).getByTestId('lead-person'); assert.equal(await pd.count(), 1)
+  assert.equal((await pd.innerText()).replace(/\s+/g, ' ').trim(), 'Marta Solberg · Regional Sales Director · LinkedIn (search result, not verified as current)')
+  assert.equal(await pd.getByTestId('lead-person-linkedin').getAttribute('href'), 'https://www.linkedin.com/in/marta-solberg-test')
+  const cs = held.filter({ hasText: 'Corvane' }).getByTestId('lead-person'); assert.equal(await cs.count(), 1)
   assert.equal((await cs.innerText()).trim(), 'No buyer named yet'); assert.equal(await cs.getAttribute('data-empty'), 'true')
   assert.equal(await held.getByTestId('lead-person-find').count(), 0, 'a held row offers no Find contact (it is not confirmed)')
   assert.equal(await fitsAt(page, '[data-testid=lead-person], [data-testid=lead-person] *'), 0, `person lines fit at ${width}px`)

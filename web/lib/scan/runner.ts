@@ -73,7 +73,8 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
-import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchable, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
+import { searchableCompanyCount } from '../people/searchable-holds.ts'
+import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
@@ -1810,13 +1811,14 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     outcome.review.push(...walledRows)
     // #1037: a free-trial scan's people searches (run after finish, below) are reserved HERE, while the job is still
     // 'running' - the trial reserve is only written for a running job. One search per lead the pass may search (ready leads,
-    // then held ones whose company is not in doubt: people-search.ts peopleSearchable), at most
+    // then held ones whose company is not in doubt: searchable-holds.ts), at most
     // firstPlayPeopleCap(), and never into the last FIRST_PLAY_TRIAL_KEEP of the reserve (left for the checks after it).
     // A search reserved but not made stays reserved: the trial ledger over-counts, never under.
     let trialPeoplePrepaid = 0
     if (trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
       // One search per distinct company (the pass searches each company once), at most the cap.
-      const want = Math.min(firstPlayPeopleCap(), new Set([...outcome.leads, ...outcome.review.filter(r => peopleSearchable(r.review_reason))].map(l => companyKey(l.company))).size), price = trial.tinyfishSearchUsd
+      // The same leads the pass will read (searchable-holds.ts searchableCompanyCount): a row it never reads reserves nothing.
+      const want = Math.min(firstPlayPeopleCap(), searchableCompanyCount([...outcome.leads, ...outcome.review], companyKey)), price = trial.tinyfishSearchUsd
       // An unusable price (not a finite number >= 0) makes no search at all: never an unpriced trial search.
       const room = !(Number.isFinite(price) && price >= 0) ? 0 : price > 0 ? Math.floor((trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd) / price + 1e-9) : want
       const k = Math.max(0, Math.min(want, Number.isFinite(room) ? room : 0))
@@ -1842,7 +1844,34 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (icpForSources?.window_days) trace.note('date_resolution', datesFinished.length ? 'ok' : 'attempted_no_result', datesFinished.length ? null : 'no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)', datesFinished.length ? { resolved: datesFinished.length } : undefined)
     await runPostFinishBounded(db, job, deps, trace)
     try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
-    // #385: a person the tenant rejected is not re-added by the crawl (the people search, further down, repeats this for its own rows).
+    // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
+    // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
+    // #1037: the first play (first5) and free-trial scans run it too, so the first leads a new user sees name who to
+    // contact: one search per lead that names nobody yet (ready leads first, then held ones), at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
+    // lowers it, 0 = off). A trial scan pays each search from its own reserve (trialCharges) and stops searching while less
+    // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
+    const firstPlay = !!deps.first5 || !!trial
+    const peopleCap = firstPlay ? firstPlayPeopleCap() : null
+    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
+    else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
+    else try {
+      const stopped: { why: string | null } = { why: null }
+      // The first play's free sources never touched TinyFish, so its usage tables may not exist yet (as the lead search does).
+      migrateTinyfish(db)
+      // A trial scan spends only the searches it reserved before finish (trialPeoplePrepaid, above): canSearch is false once
+      // they are used up, and nothing is reserved after finish. Every other scan's searches are counted by TinyFish's own
+      // per-scan / tenant / global caps, as before.
+      const prepaid = { left: trialPeoplePrepaid }
+      const stats = newPeopleStats()
+      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, stats, onStop: why => { stopped.why ??= why }, alive: () => postFinishAlive(db, job),
+        ...(firstPlay ? { maxCompanies: peopleCap!, skipNamed: true } : {}),
+        ...(trial ? { canSearch: () => prepaid.left > 0, charge: async () => { if (prepaid.left <= 0) throw new SpendRefused(TRIAL_BUDGET_REASON); prepaid.left-- } } : {}) })
+      const detail = { people_stored: n, ...peopleStatsDetail(stats), ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
+      const status = peopleTraceStatus(n, stopped.why)
+      trace.note('people_search', status, peopleTraceMessage(n, stopped.why, stats), detail)
+    } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.
     try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
@@ -1876,41 +1905,6 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       trace.note('sales_hiring_gate', 'failed', `${msg} - ${held.length} lead(s) held as sales_hiring_check_failed${held.some(h => !h.written) ? ` (${held.filter(h => !h.written).length} write(s) rejected: held in memory)` : ''}`)
       console.error('sales-hiring gate failed', msg)
     }
-    // The people search runs HERE, after the buyer-fit and sales-hiring checks (#1037): they grade leads out (fit 0-1, hidden from the
-    // list) and hold others, and a search spent on a lead the user never sees is a search a visible lead did not get. Real run
-    // (staging job 13808d9c, 2026-11-13): all 5 searches went to leads the fit check then hid; the 9 rows left on screen named nobody.
-    // Still before the actionable-yield record below, which counts the named person.
-    // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
-    // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    // #1037: the first play (first5) and free-trial scans run it too, so the first leads a new user sees name who to
-    // contact: one search per lead that names nobody yet (ready leads first, then held ones), at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
-    // lowers it, 0 = off). A trial scan pays each search from its own reserve (trialCharges) and stops searching while less
-    // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
-    const firstPlay = !!deps.first5 || !!trial
-    const peopleCap = firstPlay ? firstPlayPeopleCap() : null
-    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
-    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
-    else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
-    else try {
-      const stopped: { why: string | null } = { why: null }
-      // The first play's free sources never touched TinyFish, so its usage tables may not exist yet (as the lead search does).
-      migrateTinyfish(db)
-      // A trial scan spends only the searches it reserved before finish (trialPeoplePrepaid, above): canSearch is false once
-      // they are used up, and nothing is reserved after finish. Every other scan's searches are counted by TinyFish's own
-      // per-scan / tenant / global caps, as before.
-      const prepaid = { left: trialPeoplePrepaid }
-      const stats = newPeopleStats()
-      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, stats, onStop: why => { stopped.why ??= why }, alive: () => postFinishAlive(db, job),
-        ...(firstPlay ? { maxCompanies: peopleCap!, skipNamed: true } : {}),
-        ...(trial ? { canSearch: () => prepaid.left > 0, charge: async () => { if (prepaid.left <= 0) throw new SpendRefused(TRIAL_BUDGET_REASON); prepaid.left-- } } : {}) })
-      const detail = { people_stored: n, ...peopleStatsDetail(stats), ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
-      const status = peopleTraceStatus(n, stopped.why)
-      trace.note('people_search', status, peopleTraceMessage(n, stopped.why, stats), detail)
-    } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
-    // The same two steps as after the crawl, for what the people search just wrote: a rejected person is not re-added (#385), and a
-    // lead whose every contact was refused is regraded (the grade only ever goes down; both are idempotent).
-    try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
-    try { regradeFromKeptContacts(db, job.user_id, job.id) } catch (e) { console.error('regrade from kept contacts failed', e instanceof Error ? e.message : 'error') }
     // Actionable yield (domain + sales proof + named person + published contact) is measured here, at the END of enrichment, apart from the source-checked counts.
     // The same facts go beside each lead and into the run report, so the card and the report agree.
     try {

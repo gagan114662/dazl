@@ -74,13 +74,8 @@ export function profileHit(h: SearchHit, company: string): { name: string; title
   return { name, title }
 }
 
-// Held leads the pass may also search (after every ready lead, inside the same cap): the lead is held for its evidence, its
-// date or a check that did not pass, and its company is still the named one. A person found for it is a labelled search
-// result on a held row; it never makes the lead ready. Not searched: a hold that puts the company itself in doubt (a place
-// that disagrees or is unconfirmed, someone else's customer, an owner's self-description, the tenant's own form signal) and
-// any reason not listed here (fail closed).
-export const SEARCHABLE_HOLDS: readonly string[] = ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'outside_window', 'outside_window_undated', 'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date', 'no_event_evidence', 'no_sales_hiring_evidence', 'sales_hiring_check_failed', 'source_review_required', 'job_closed', 'trial_budget_reached']
-export const peopleSearchable = (reviewReason: string | null | undefined): boolean => reviewReason === null || reviewReason === undefined || SEARCHABLE_HOLDS.includes(reviewReason)
+import { SEARCHABLE_HOLDS } from './searchable-holds.ts'
+export { SEARCHABLE_HOLDS, peopleSearchable } from './searchable-holds.ts'
 const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE_HOLDS.map(r => `'${r}'`).join(',')}))`
 
 // What one pass did, for the run report (#1037): a pass that searched nothing must never read as "searched, found nobody".
@@ -88,7 +83,8 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 //   already_named   leads skipped because the row already names its person (first play / trial only)
 //   searched        searches sent; results = results returned; profiles = results read as a person at the lead's company
 //   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word) and place
-export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number> }
+//   no_roles        the request names no buyer role, so the pass had nothing to search for and read no lead
+export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; no_roles?: boolean }
 export const newPeopleStats = (): PeopleStats => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} })
 // The flat detail the trace stores (numbers only; a cause with no refusal is left out).
 export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
@@ -135,6 +131,7 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
   const n = Number.isSafeInteger(stored) && stored > 0 ? stored : 0
   // Nothing was searched and nothing stopped the pass: say which, never "no profile results" (no search asked for any).
   if (stats && n === 0 && (stopped === null || stopped === undefined) && !(stats.searched > 0)) {
+    if (stats.no_roles) return 'the request names no buyer role to search for (0 searches run)'
     if (!(stats.eligible > 0)) return 'no lead was eligible for a people search (0 searches run)'
     if (stats.already_named >= stats.eligible) return 'every eligible lead already names its person (0 searches run)'
     return '0 searches run: no eligible lead had a company name and buyer roles to search for'
@@ -167,12 +164,12 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown; country?: unknown; language?: unknown; where?: unknown }) : null
     const where = Array.isArray(who?.where) ? (who!.where as unknown[]).filter((x): x is string => typeof x === 'string') : []
     const roles = Array.isArray(who?.who) ? (who!.who as unknown[]).filter((x): x is string => typeof x === 'string') : []
-    if (roles.length === 0) return 0 // no buyer roles: nothing to search for
+    if (roles.length === 0) { if (deps.stats) deps.stats.no_roles = true; return 0 } // no buyer roles: nothing to search for
     const roleText = roles.join('; ')
     const geo = { ...(typeof who?.country === 'string' ? { location: who.country } : {}), ...(typeof who?.language === 'string' ? { language: who.language } : {}) }
     // Ready leads first (best fit first), then the held leads a search still makes sense for (SEARCHABLE_HOLDS), all inside the
     // one cap, and never a lead graded out of the list: a held lead never takes a search from a ready one. The job id is the tenant's own (checked above).
-    const leads = db.prepare(`SELECT id, company, review_reason FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC LIMIT 200`).all(jobId) as Lead[]
+    const leads = db.prepare(`SELECT id, company, review_reason FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
     const stats = deps.stats
     if (stats) { stats.eligible = leads.length; stats.held = leads.filter(l => l.review_reason !== null).length }
     const refuse = (why: string) => { if (stats) stats.refused[why] = (stats.refused[why] ?? 0) + 1 }
