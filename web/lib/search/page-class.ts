@@ -79,6 +79,8 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   const at = m.index ?? 0, end = at + m[0].length
   const c = clauseAt(text, end)
   if (c.question) return false
+  // reported closed, shut or moved ("now open in Parkdale (closed permanently)", "- temporarily closed"): not an opening
+  if (/\b(?:closed|closing|closure|shut(?:\s*down)?|shutdown|moved|relocat\w*|no\s+longer)\b/i.test(c.rest)) return false
   const body = m[0], rest = c.rest.trim()
   const clean = (t: string) => !TIME_WORDS.test(t) && !FUTURE.test(t) && !anyDayMonth(t) && !PAST_YEAR.test(t) && !SAID.test(t)
   // case tells a name apart only in ordinary text: not in ALL CAPS, all lower case or a Title Case caption (every word of the match capitalised)

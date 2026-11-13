@@ -52,10 +52,42 @@ export function stageOk(clause: string, stage: Stage): boolean {
   const letter = stage.slice(7)
   return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
 }
+// #878 (review on #1130): an event the quote reports as closed, shut or moved is no current event ("now open in Parkdale
+// (closed permanently)", "- temporarily closed", "has since moved").
+export const CLOSED_EVENT = /\b(?:closed|closing|closure|shut(?:\s*down)?|shutdown|moved|relocat\w*|no\s+longer)\b/i
+// A pronoun subject ("Their new clinic is now open", "They opened a new clinic") names whoever the quote named last, before
+// the clause: the event is another company's when that nearest name is not the lead ("Bright Smiles is growing. Their new
+// clinic is now open", "Congrats to our friends at Bright Smiles! Their new clinic ..."). No name before it: the lead's own.
+const PRONOUN_SUBJECT = /\b(?:they|their|them|its|his|her)\b/i
+const NAME_STOP = new Set(['congrats', 'congratulations', 'our', 'we', 'the', 'a', 'an', 'their', 'they', 'it', 'its', 'his', 'her', 'new', 'today', 'big', 'huge', 'excited', 'thrilled', 'welcome', 'happy', 'proud', 'shoutout', 'thanks', 'thank', 'check', 'grand', 'opening', 'now', 'open', 'join', 'in', 'at', 'on', 'to', 'and', 'is', 'are', 'friends', 'team', 'great', 'news', 'so', 'this', 'that', 'with', 'for', 'of', 'from', 'by', 'meet', 'say', 'hello', 'hi', 'hey', 'i', 'you', 'your', 'my', 'me', 'us', 'all', 'everyone', 'love', 'wow', 'big news', 'exciting', 'update'])
+export function nearestName(text: string, at: number): string | null {
+  let last: string | null = null
+  for (const m of text.slice(0, Math.max(0, at)).matchAll(/\b[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*)*/g)) {
+    const kept = m[0].split(/\s+/).filter(w => !NAME_STOP.has(w.toLowerCase().replace(/[^a-z&'-]/g, '')))
+    if (kept.length) last = kept.join(' ')
+  }
+  return last
+}
+const OWN_GENERIC = new Set(['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group', 'and', 'of', 'dental', 'clinic', 'dentistry'])
+export function pronounNamesOther(text: string, at: number, company: string | null | undefined): boolean {
+  if (!company) return false
+  const name = nearestName(text, at)
+  if (!name) return false
+  const own = new Set(wordsOf(company).filter(w => w.length > 2 && !OWN_GENERIC.has(w)))
+  return !wordsOf(name).some(w => own.has(w))
+}
+// the subject in front of an event at `i` in clause `c` (which starts at `start` in the whole excerpt) is a pronoun that
+// names another company than the lead
+export function pronounSubjectIsOther(excerpt: string, c: string, start: number, i: number, company: string | null | undefined): boolean {
+  return PRONOUN_SUBJECT.test(c.slice(0, Math.max(0, i))) && pronounNamesOther(excerpt, start, company)
+}
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
-  return clauses(excerpt ?? '').some(c => {
+  const all = excerpt ?? ''
+  return clauses(all).some(c => {
+    if (!fundingAsked && CLOSED_EVENT.test(c)) return false
+    const start = Math.max(0, all.indexOf(c))
     // a noun-first opening's subject is in front of the opening phrase itself (#878): "Our 5th location is now open" names no other company
-    if (!fundingAsked) { const nf = nounFirstOpenAt(c, company); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+    if (!fundingAsked) { const nf = nounFirstOpenAt(c, company); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) && !pronounSubjectIsOther(all, c, start, i, company) }
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)

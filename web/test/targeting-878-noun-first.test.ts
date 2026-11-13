@@ -186,3 +186,30 @@ test('#878 review on #1130: hours and adjective requests compile to no opening c
   const c = planConditions(compileTargeting('dental groups that opened new offices', null).root)[0].cond
   assert.deepEqual([c.event, c.object], ['open', 'office'])
 })
+
+test('#878 review (Hermes-PC) at 942c1a71: a pronoun names whoever the quote named before it, and a closed opening is no opening', () => {
+  const q = 'Dental clinics in Toronto opening a new location or expanding'
+  const plan = compileTargeting(q, null)
+  const c1 = (quote: string, company = 'Metro City Dentistry') => evaluatePlan(plan, planProofs(plan, lead(company, quote, 'https://www.instagram.com/p/x/'), [], { ...ctx, query: q })).clauses.find(x => x.id === 'C1')!.truth
+  // finding 2: another company's opening, through a pronoun, never proves the lead's C1
+  for (const other of [
+    'Bright Smiles is growing. Their new clinic is now open in Parkdale',
+    'Congrats to our friends at Bright Smiles! Their new clinic is now open in Parkdale',
+    'Bright Smiles is growing. Their new clinic opened in Parkdale',
+    'Bright Smiles is growing. They opened a new clinic in Parkdale',
+  ]) assert.notEqual(c1(other), 'pass', other)
+  // the lead named before the pronoun, or no one named: the lead's own opening
+  assert.equal(c1('Metro City Dentistry is growing. Their new clinic is now open in Parkdale'), 'pass')
+  assert.equal(c1('Big news! Their new clinic is now open in Parkdale'), 'pass')
+  // finding 3: reported closed, shut or moved, in brackets, after a dash, in any form
+  for (const closed of [
+    'New clinic now open in Parkdale (closed permanently)',
+    'Our new clinic is now open in Parkdale - temporarily closed',
+    'Our new clinic is now open - closed until further notice',
+    'Grand opening of our new clinic in Parkdale (now permanently closed)',
+    'Metro City Dentistry opened a new clinic in Parkdale, since closed',
+    'Our new clinic opened in Parkdale but has moved',
+    'Our new clinic in Parkdale is no longer open',
+  ]) assert.notEqual(c1(closed), 'pass', closed)
+  assert.equal(c1('New clinic now open in Parkdale'), 'pass', 'the plain opening still passes')
+})
