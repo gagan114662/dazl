@@ -34,7 +34,7 @@ const shot = async (target, name) => { if (process.env.SHOTS) await target.scree
 const b = await chromium.launch()
 let failed = false
 try {
-  for (const w of [1280, 390]) {
+  for (const w of [1280, 640, 390]) {
     const ctx = await b.newContext({ viewport: { width: w, height: w > 500 ? 900 : 844 } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
     const writes = []
@@ -45,7 +45,7 @@ try {
       return route.continue()
     })
     const page = await ctx.newPage()
-    const tag = w > 500 ? 'desktop' : 'mobile'
+    const tag = w >= 1000 ? 'desktop' : w >= 600 ? 'tablet' : 'mobile'
 
     // 1. Campaigns: the NYC card asks for no review; its research leads are counted as research, its next step changes the search.
     await page.goto(`${base}/app/campaigns`, { waitUntil: 'networkidle' })
@@ -70,9 +70,10 @@ try {
     const rows = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => [e.children[0].textContent, e.children[1].textContent]))
     assert.deepEqual(rows, [['Synthetic Smiles NYC', 'Research only - checking the source cannot make it ready'], ['Example Dental Group', 'Research only - checking the source cannot make it ready']])
     // Hermes-PC review at feeda320/f65e2a95: on a phone each row keeps its company name and the status stays inside the row
-    const boxes = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => { const li = e.getBoundingClientRect(), n = e.children[0].getBoundingClientRect(), st = e.children[1].getBoundingClientRect(); return { li: [li.left, li.right], name: [n.left, n.right, n.width], status: [st.left, st.right] } }))
+    const boxes = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => { const li = e.getBoundingClientRect(), n = e.children[0].getBoundingClientRect(), st = e.children[1].getBoundingClientRect(); return { li: [li.left, li.right], name: [n.left, n.right, n.width], nameFull: e.children[0].scrollWidth, status: [st.left, st.right], spill: e.children[1].scrollWidth - e.children[1].clientWidth } }))
     for (const [i, x] of boxes.entries()) {
-      assert.ok(x.name[2] >= 60, `${w}px row ${i}: the company name is visible (${x.name[2]}px)`)
+      assert.ok(x.name[2] >= Math.min(60, x.nameFull), `${w}px row ${i}: the company name is visible (${x.name[2]}px of ${x.nameFull}px)`)
+      assert.ok(x.spill <= 1, `${w}px row ${i}: the status text stays inside its own box (spills ${x.spill}px)`)
       assert.ok(x.status[1] <= x.li[1] + 0.5 && x.status[0] >= x.li[0] - 0.5, `${w}px row ${i}: the status stays inside the row (${JSON.stringify(x)})`)
       assert.ok(x.name[1] <= x.li[1] + 0.5, `${w}px row ${i}: the name stays inside the row`)
     }

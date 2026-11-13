@@ -64,7 +64,7 @@ export default function CampaignView({ id }: { id: string }) {
             // 55% of the row (Hermes-PC review at feeda320: the long research-only status hid the name at 390 px).
             return <li key={l.id} className="p-3 text-sm flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3" data-testid="campaign-lead">
               <span className="min-w-0 break-words sm:truncate">{l.company || l.name || 'Unnamed company'}</span>
-              <span className="text-xs text-[#555] sm:text-right sm:max-w-[55%]" data-testid="lead-status" data-stage={s?.stage ?? ''}>{s ? s.text : 'Loading...'}{msgs === 'failed' && s && !['rejected'].includes(s.stage) ? ' (email status unavailable)' : ''}</span>
+              <span className="text-xs text-[#555] break-words [overflow-wrap:anywhere] sm:text-right sm:max-w-[55%]" data-testid="lead-status" data-stage={s?.stage ?? ''}>{s ? s.text : 'Loading...'}{msgs === 'failed' && s && !['rejected'].includes(s.stage) ? ' (email status unavailable)' : ''}</span>
             </li>
           })}
         </ul>}
