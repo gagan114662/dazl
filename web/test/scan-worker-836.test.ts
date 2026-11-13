@@ -51,7 +51,7 @@ function world(tenants: string[]) {
     workers.push(w)
     return w
   }
-  const stop = async (w: { proc: ChildProcess }, sig: NodeJS.Signals = 'SIGTERM') => { if (w.proc.exitCode !== null || w.proc.signalCode !== null) return; const gone = new Promise(r => w.proc.once('exit', r)); w.proc.kill(sig); await gone }
+  const stop = async (w: { proc: ChildProcess }, sig: NodeJS.Signals = 'SIGTERM') => { if (w.proc.exitCode !== null || w.proc.signalCode !== null) return; const gone = new Promise(r => w.proc.once('close', r)); w.proc.kill(sig); await gone } // 'close': its output has been read to the end
   const close = async () => { for (const w of workers) await stop(w, 'SIGKILL'); db.close(); rmSync(dir, { recursive: true, force: true }) }
   const scan = (t: string) => createJob(db, t, { business_name: 'Scan', industry: 'roofing', location: 'Toronto' })
   const queueRow = (id: string) => db.prepare('SELECT id, status, attempts, claim_token, claimed_by, claim_log FROM work_queue WHERE id = ?').get(id) as QRow | undefined
@@ -71,6 +71,8 @@ test('#836 two worker processes on one store: every scan is claimed and run once
     const a = w.start('worker-a', { W_SLOW_MS: '400' }), b = w.start('worker-b', { W_SLOW_MS: '400' })
     await until(() => ids.every(id => w.job(id).status === 'done'), 'every scan done')
     await until(() => ids.every(id => w.queueRow(id)?.status === 'done'), 'every queue item settled')
+    // a journal line is written just after its commit and read here through a pipe: wait for it, do not race it
+    await until(() => ids.every(id => [a, b].some(x => w.lines(x, new RegExp(`\\[shared-queue\\] settled scan=${id} `)).length > 0)), 'every settle line read')
     for (const id of ids) {
       assert.deepEqual(w.job(id), { status: 'done', attempts: 1 }, 'one attempt')
       const q = w.queueRow(id)!
@@ -151,6 +153,7 @@ test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its l
     await until(() => w.queueRow(id)!.status !== 'claimed', 'expired claim reaped')
     w.db.prepare("UPDATE work_queue SET not_before = ? WHERE id = ? AND status = 'pending'").run(nowS(), id)
     await until(() => w.queueRow(id)!.status === 'done', 'queue item closed')
+    await until(() => w.lines(b, /nothing to run/).length > 0, 'the closing line read')
     assert.equal(w.lines(b, /claimed scan=/).length, 0, 'worker-b never ran it')
     assert.equal(w.lines(b, /provider call/).length, 0)
     assert.match(w.lines(b, /nothing to run/)[0] ?? '', new RegExp(`nothing to run scan=${id} token=\\d+ scan_status=failed instance=worker-b`))
