@@ -461,3 +461,51 @@ test('#878 review round 3: the allowed shapes still date (opening, greeting, lea
     assert.deepEqual(o.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-20', 'page_bound']])
   } finally { restore() }
 })
+
+// ---- review round 4 at 79df6607: a time anywhere in the post's own text (R9); times and occasions in the place / role slots (R10)
+const ROUND4: [string, string, 'event' | 'hiring'][] = [
+  // R9: the time is in another line or sentence of the caption
+  ['Last week:\nNorthwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['Last week: Northwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['Back in 2019:\nNorthwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['October 1st 2024\nNorthwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['Remember March 2025? Northwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['Five years ago today. Northwind Dental opened a new location in Leslieville.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  ['Northwind Dental opened a new location in Leslieville.\nThat was in 2019, and we have grown since.', 'Northwind Dental opened a new location in Leslieville', 'event'],
+  // R10: the place slot
+  ...['in Lent', 'at Passover', 'at Midsummer', 'in Pride Month', 'in Black History Month', 'at Year End', 'at Cinco de Mayo', 'in Lockdown', 'in the Pandemic', 'in Leslieville, Back Then']
+    .map((p): [string, string, 'event'] => [`Northwind Dental opened a new location ${p}.`, `Northwind Dental opened a new location ${p}`, 'event']),
+  // R10: the hiring role slot
+  ...['is hiring a Pride Month coordinator', 'is hiring a temp receptionist for Lent', 'is hiring a hygienist previously', 'is hiring a hygienist Back Then']
+    .map((h): [string, string, 'hiring'] => [`Northwind Dental ${h}.`, `Northwind Dental ${h}`, 'hiring']),
+  // another party's post whose "we" is not the company
+  ['Congrats Northwind Dental!\nWe opened a new location in Leslieville!', 'We opened a new location in Leslieville', 'event'],
+]
+
+test('#878 review round 4: a time in another line of the caption, or a time / occasion in the place or role slot, gives no post day (socialPostBound and the verifier)', async () => {
+  for (const [caption, quote, kind] of ROUND4) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    assert.equal(post?.day, '2026-10-20', caption)
+    const r = socialPostBound(post, quote, 'Northwind Dental', kind)
+    assert.equal(r.bound, false, `${caption}: ${r.why}`)
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption }) }))
+    try {
+      const signal = kind === 'hiring' ? 'Hiring a front desk coordinator' : 'Opened a new location'
+      const o = await verifyLeads([draft({ excerpt: quote, signal })], read, new Date(NOW))
+      for (const l of [...o.leads, ...o.review]) assert.ok(l.event_date !== '2026-10-20' && l.event_date_proof !== 'page_bound', `${caption}: ${JSON.stringify([l.event_date, l.event_date_proof])}`)
+    } finally { restore() }
+  }
+})
+
+test('#878 review round 4: the positives still date (other-line opening hours, a street address, the hiring tail, the real Kailash caption)', () => {
+  const cases: [string, string, 'event' | 'hiring', string][] = [
+    [`${QUOTE}\nOpen late Mondays.`, QUOTE, 'event', 'Northwind Dental'],
+    ['Northwind Dental opened a new location at 2050 Queen St E, our second clinic.', 'Northwind Dental opened a new location at 2050 Queen St E, our second clinic', 'event', 'Northwind Dental'],
+    ['Northwind Dental is hiring a front desk coordinator at our Leslieville clinic.', 'Northwind Dental is hiring a front desk coordinator at our Leslieville clinic', 'hiring', 'Northwind Dental'],
+    ['Kailash Dentistry is now open in Parkdale. Created with intention. Fueled by purpose. Built to help people become the best version of themselves- starting with their smile. 😊\n🎥 Big thanks to @sonam_the_nomad for capturing the soul of this new space.', 'Kailash Dentistry is now open in Parkdale.', 'event', 'Kailash Dentistry'],
+  ]
+  for (const [caption, quote, kind, company] of cases) {
+    const r = socialPostBound(socialPostOf(IG, IG, igPage({ caption }), NOW), quote, company, kind)
+    assert.equal(r.bound, true, `${caption}: ${r.why}`)
+  }
+})

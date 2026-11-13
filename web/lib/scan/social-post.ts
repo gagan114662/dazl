@@ -280,11 +280,16 @@ function sentenceSpans(t: string): [number, number][] {
 // "first", "originally", "initially", "re-opened", "reopen", "again" anywhere refuse. Every other sentence the quote overlaps must
 // be a lead-in alone. The time (b, c) and English (d) guards still apply.
 const ci = (w: string) => w.replace(/[A-Za-z]/, c => `[${c.toLowerCase()}${c.toUpperCase()}]`)   // the first letter in either case ("Now open")
-const CAP = String.raw`(?:[A-Z][\w'’.&-]*)`
+// review round 4 (79df6607): a capitalised word in the place / city / role slots is never a time or an occasion ("in Lent", "at Year
+// End", "in Pride Month", ", Back Then", "a hygienist previously"): these words, and any -ly word, are refused there.
+const NOT_PLACE = String.raw`(?:Month|Week|Weekend|Season|Year|End|Then|Ago|Lockdown|Pandemic|COVID(?:-19)?|Lent|Passover|Advent|Pride|Midsummer|Mayo|Holiday|Holidays|Eve|Christmas|Easter|Ramadan|Diwali|Hanukkah|Thanksgiving|Halloween|Day|Night|Morning|Today|Tonight|Now|[A-Za-z]+ly)\b`
+const CAP = String.raw`(?:(?!${NOT_PLACE})[A-Z][\w'’.&-]*)`
 const PLACE_WORDS = String.raw`${CAP}(?:\s+(?:${CAP}|of|on|the|de|du))*`
 const ADDR = String.raw`\d{1,6}[A-Za-z]?\s+(?:${CAP}\s+){0,4}${STREET}\.?(?:\s+(?:N|S|E|W|North|South|East|West)\.?)?|(?:Hwy|Highway|Route)\s+\d{1,4}`
 const PLACE = String.raw`(?:\s+(?:in|at|on)\s+(?:the\s+)?(?:${ADDR}|${PLACE_WORDS})){0,2}(?:,\s+${CAP}(?:\s+${CAP})?)?`
 const NTH = String.raw`(?:(?:second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))\s+)?`
+// a role word: not a preposition (no "for <event>" tail), not a time / occasion word, not an -ly word
+const ROLE = String.raw`(?!(?:for|at|in|on|during|before|after|since|until|till|with|from|to|of|by|when|while|then|ago|back|previously|again|${NOT_PLACE.slice(3, -3)})\b)[\w'’-]+`
 const NOUN = String.raw`(?:location|clinic|office|practice|branch|studio|store|shop)`
 const TRAIL = String.raw`(?:,?\s+(?:our|the|its)\s+${NTH}(?:new\s+)?${NOUN}(?:\s+in\s+${PLACE_WORDS})?)?(?:,?\s+(?:now\s+open\s+)?for\s+(?:patients|new\s+patients|business|appointments))?`
 const LEADIN = String.raw`(?:(?:Big|Great|Exciting|Good|Happy|Some)\s+news|We['’]re\s+(?:so\s+)?(?:thrilled|excited|happy|proud|delighted)(?:\s+to\s+(?:announce|share))?|So\s+excited|Exciting\s+times|Huge\s+thanks\s+to\s+our\s+team|Thank\s+you(?:\s+to\s+our\s+(?:team|patients|community))?)`
@@ -300,13 +305,30 @@ function shapeOf(sentence: string, company: string, kind: 'event' | 'hiring'): '
   const subj = String.raw`(?:${co}|${ci('we')}|${ci('our')}\s+team)`
   const lead = String.raw`(?:${LEADIN}\s*(?:[:!,]|\s+that)\s*)?`
   const pred = kind === 'hiring'
-    ? String.raw`(?:\s+(?:is|are)|['’]re)?\s+(?:${ci('now')}\s+)?hiring(?:\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,3}[\w'’-]+)?(?:\s+(?:for|at)\s+our\s+(?:${CAP}\s+)?(?:${NOUN}|team))?`
+    ? String.raw`(?:\s+(?:is|are)|['’]re)?\s+(?:${ci('now')}\s+)?hiring(?:\s+(?:an?\s+)?(?:${ROLE}\s+){0,3}${ROLE})?(?:\s+(?:for|at)\s+our\s+(?:${CAP}\s+)?(?:${NOUN}|team))?`
     : String.raw`(?:(?:\s+(?:has|have)|['’]ve)?(?:\s+(?:just|officially|finally))?\s+opened(?:\s+(?:a|our|the|its)\s+(?:brand[- ]new\s+|new\s+)?${NTH}(?:new\s+)?(?:${NOUN}|doors))?|(?:\s+(?:is|are)|['’](?:s|re))?\s+(?:now|officially|just|finally)(?:\s+(?:now|officially))?\s+open)`
   const main = new RegExp(String.raw`^${lead}${subj}${pred}${PLACE}${TRAIL}$`)
   if (main.test(t)) return 'main'
   if (kind !== 'hiring' && new RegExp(String.raw`^${ci('welcome')}\s+to\s+(?:the\s+)?${co}(?:\s+${CAP}){0,2}(?:,\s+our\s+${NTH}(?:new\s+)?${NOUN})?,?\s+(?:now|officially)\s+open${PLACE}(?:\s+for\s+(?:patients|new\s+patients|business|appointments))?$`).test(t)) return 'main'
   return null
 }
+
+// review round 4 (79df6607): a time anywhere in the post's own text (another line, a heading such as "Last week:" or "Back in 2019:",
+// a closing "That was in 2019") may date the statement, so the WHOLE caption is checked: any year or stated day outside a street
+// address / postcode, any month name, ago / back in / remember / that was / since / anniversary / throwback / #tbt, last / this / next
+// / past + a time word, and "<N> years / months / weeks / days ago / later". Weekday and opening-hours wording in another sentence
+// ("Open late Mondays") stays allowed.
+const WHOLE_WHEN = /\b(?:ago|back\s+in|remember(?:ing)?|that\s+was|since|anniversary|throwback|flashback|tbt|(?:last|this|next|past)\s+(?:week|weekend|month|year|season|spring|summer|fall|autumn|winter|quarter|day|night|morning|time|(?:mon|tues|wednes|thurs|fri|satur|sun)day)|(?:years?|months?|weeks?|days?)\s+(?:ago|later|earlier))\b/i
+function postTimeGuard(raw: string): string | null {
+  const t = raw.replace(ADDRESS, ' ').replace(POSTCODE, ' ').replace(NAMED_STREET, ' ')
+  if (datePositions(t).length) return 'a stated day'
+  if (YEAR.test(t) || eventYears(t).length) return 'a year'
+  if (MONTH.test(t.replace(/\bmay\b/g, ' ')) || MAY.test(t)) return 'a month'
+  const w = WHOLE_WHEN.exec(t); return w ? `"${w[0]}"` : null
+}
+// A first-person statement ("We opened ...") is the post author's. A post that congratulates or speaks of the company as a client /
+// friend anywhere is someone else's, so its "we" is not the company.
+const OTHERS_POST = /\b(?:congrat\w*|kudos|shout\s*-?\s*outs?|proud\s+of\s+(?:our\s+)?(?:clients?|friends?|partners?|neighbou?rs?)|(?:our\s+)?(?:clients?|friends?|partners?|neighbou?rs?|customers?)\s+(?:at|from)\b)/i
 
 // Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text, its
 // sentences pass the allow-list above, the post is not another party's (thirdParty), and the existing binding rule (eventDateBound)
@@ -318,7 +340,8 @@ export function socialPostBound(post: SocialPost | null | undefined, quote: stri
   if (q.length < 20) return { bound: false, why: 'no quote' }
   const raw = post.texts.find(t => ws(t).toLowerCase().includes(q.toLowerCase()))
   if (raw === undefined) return { bound: false, why: "the quote is not in the post's own text" }
-  if (/\b(?:anniversary|throwback|flashback|tbt)\b/i.test(raw)) return { bound: false, why: 'the post looks back at an earlier time' }
+  const whole = postTimeGuard(raw)
+  if (whole) return { bound: false, why: `the post's own text states another time (${whole}), so its publish day may not be its event's day` }
   const text = raw.replace(/[ \t\r\f\v]+/g, ' ')
   const m = new RegExp(q.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'i').exec(text)
   if (!m) return { bound: false, why: "the quote is not in the post's own text" }
@@ -342,6 +365,7 @@ export function socialPostBound(post: SocialPost | null | undefined, quote: stri
   if (thirdParty(main.sentence, company)) return { bound: false, why: "the post speaks about this company from someone else's side" }
   // first person ("We're hiring ...", "Our team opened ..."): the post's own statement; the company it belongs to is the verifier's
   // check (the quote or the page heading names it). The text binding below needs the company named, so it is not asked.
+  if (!main.sentence.toLowerCase().includes(name) && OTHERS_POST.test(raw)) return { bound: false, why: "a first-person statement in a post that speaks of this company as someone else's" }
   if (!main.sentence.toLowerCase().includes(name)) return { bound: true, why: `the ${post.platform} post's own structured publish time for exactly this post URL, as the dateline of its own first-person text` }
   // the post's day stands as the dateline of the statement about the company: from its first mention in that sentence (what comes
   // before it, a greeting such as "Welcome to", was judged by thirdParty above)
