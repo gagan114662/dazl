@@ -70,6 +70,8 @@ export function businessSections(p: BrainProfile | null, m: BrainMemory | null, 
   ]
 }
 
+// lib/signals/competitor-reddit.ts MAX_COMPETITORS (not imported: that module is server-side; test/business-brain-1043.test.ts pins them equal)
+export const COMPLAINT_COMPETITORS = 5
 export interface BrainPlay { label: string; query: string }
 // Up to 5 one-click plays built only from what is saved, and only with signals dazl's search can actually find:
 // a buyer role (or industry) in the first place named with a saved signal, companies hiring the role a saved hiring
@@ -83,7 +85,9 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
   // xhawk #1145: a free-form signal ("attended a trade show") the targeting compiler cannot turn into a condition would make a play
   // that reads as signal-targeted but returns ordinary ICP matches; such a signal is not offered as a play
-  const enforceable = (x: string) => planConditions(compileTargeting(`${who[0] || ind[0] || 'companies'} - ${x}`).root).length > 0
+  // The signal is compiled ON ITS OWN (xhawk #1145 follow-up): compiled together with the buyer, a buyer role such as "Hiring
+  // manager" would supply the condition itself; it must make at least one positive (not negated) condition
+  const enforceable = (x: string) => planConditions(compileTargeting(x).root).some(c => !c.negated)
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
   const hiringSig = (x: string) => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.test(x)   // only a signal that yields a hiring play
   const firstPlain = sig.find(x => !hiringSig(x) && enforceable(x))   // a hiring signal becomes the hiring play below, never also a plain one
@@ -92,10 +96,11 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
   for (const h of sig.map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
-  // one play naming every competitor it covers (max 2): the scan's complaint collector reads the whole saved competitor list, so a
-  // play for "one" competitor would still surface the others' complaints (xhawk #1145)
-  const comps = list(competitors).slice(0, 2)
-  if (comps.length) add(`Looking for an alternative to ${comps.join(' or ')}`, `${buyer || 'Companies'}${place} looking for an alternative to ${comps.join(' or ')}`)
+  // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
+  // lib/signals/competitor-reddit.ts; pinned by test), so the play never leaves out a competitor whose complaints it surfaces
+  const comps = list(competitors).slice(0, COMPLAINT_COMPETITORS)
+  const named = comps.length > 1 ? `${comps.slice(0, -1).join(', ')} or ${comps[comps.length - 1]}` : comps[0]
+  if (comps.length) add(`Looking for an alternative to ${named}`, `${buyer || 'Companies'}${place} looking for an alternative to ${named}`)
   // a second plain-signal play (hiring signals are already the hiring plays above)
   const secondPlain = sig.filter(x => !hiringSig(x) && enforceable(x))[1]
   if (buyer && secondPlain) add(`${buyer}${place}: ${secondPlain}`, `${buyer}${place} - ${secondPlain}`)

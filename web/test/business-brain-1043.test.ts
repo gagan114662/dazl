@@ -1,7 +1,7 @@
 // #1043: "Your business" sections and suggested plays, built only from what is stored, with honest provenance.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { businessSections, businessPlays, profilePayload, type BrainProfile, type ProfileForm } from '../lib/business-brain.ts'
+import { businessSections, businessPlays, profilePayload, COMPLAINT_COMPETITORS, type BrainProfile, type ProfileForm } from '../lib/business-brain.ts'
 import type { Icp } from '../lib/scan/icp.ts'
 
 const icp = (o: Partial<Icp> = {}): Icp => ({ summary: 'Independent dental practices', who: ['Practice owner'], industries: ['Dental'], sizes: ['1-50 employees'], where: ['Ohio'], signals: ['opened a new location', 'hiring a front desk coordinator'], exclude: ['dental chains'], ...o })
@@ -98,4 +98,16 @@ test('#1043 xhawk: a saved signal the targeting compiler cannot enforce is not o
   assert.deepEqual(q(['attended a trade show', 'opened a new location']), ['Practice owner in Ohio - opened a new location'], 'the enforceable one is offered')
   const c = businessPlays({ buyer: icp({ signals: [] }) }, ['Zocdoc', 'Dentrix']).map(p => p.query)
   assert.deepEqual(c, ['Practice owner in Ohio looking for an alternative to Zocdoc or Dentrix'], 'one play covering every competitor the scan reads')
+})
+
+test('#1043 xhawk follow-up: the signal alone must be enforceable (a buyer role never supplies it); the competitor play names every competitor the scan reads', async () => {
+  const q = (who: string[], signals: string[]) => businessPlays({ buyer: icp({ who, signals }) }, []).map(p => p.query)
+  assert.deepEqual(q(['Hiring manager'], ['attended a trade show']), [], 'the buyer text "Hiring manager" does not make the signal enforceable')
+  assert.deepEqual(q(['Hiring manager'], ['opened a new location']), ['Hiring manager in Ohio - opened a new location'])
+  const { MAX_COMPETITORS } = await import('../lib/signals/competitor-reddit.ts')
+  assert.equal(COMPLAINT_COMPETITORS, MAX_COMPETITORS, 'the play covers exactly what the complaint collector reads')
+  const three = businessPlays({ buyer: icp({ signals: [] }) }, ['Zocdoc', 'Dentrix', 'Weave']).map(p => p.query)
+  assert.deepEqual(three, ['Practice owner in Ohio looking for an alternative to Zocdoc, Dentrix or Weave'])
+  const six = businessPlays({ buyer: icp({ signals: [] }) }, ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']).map(p => p.query)
+  assert.deepEqual(six, ['Practice owner in Ohio looking for an alternative to A1, B2, C3, D4 or E5'], 'the sixth is not read by the scan either')
 })
