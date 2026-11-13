@@ -199,3 +199,12 @@ test('review (Hermes-PC 5): when the name is too far from the title for one quot
   const q = quoteFor(text, title, 0, 'Brightloop')
   assert.ok(q === '' || (q.includes('Account Executive') && q.includes('Brightloop')), `the quote drops the vacancy: ${JSON.stringify(q.slice(0, 80))}`)
 })
+
+test('review R3: the quote uses the mention of the company nearest the title, not only the first one on the page', () => {
+  const title = 'Account Executive - London'
+  const head = 'Brightloop careers. '
+  const text = head + 'h'.repeat(335 - head.length) + title + ' ' + 'y'.repeat(199) + 'About Brightloop: we build tools for teams.'
+  const at = text.indexOf(title); assert.equal(at, 335)
+  const q = quoteFor(text, title, at, 'Brightloop')
+  assert.ok(q.includes(title) && q.includes('About Brightloop'), `a quote naming both: ${JSON.stringify(q.slice(0, 60))}`); assert.ok(q.length <= 300 && text.includes(q))
+})

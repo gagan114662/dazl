@@ -41,7 +41,8 @@ const sameSite = (a: string, b: string) => registrable(a) === registrable(b)
 // The public Greenhouse / Lever / Ashby JSON APIs a careers link is verified through are documented APIs, not crawled pages: they are not checked against a
 // robots.txt (api.ashbyhq.com answers its robots.txt with 401, which would otherwise make every Ashby posting unreadable).
 const ATS_API = /^(?:boards-api\.greenhouse\.io|api\.lever\.co|api\.ashbyhq\.com)$/
-const isRobotsUrl = (url: string) => /\/robots\.txt$/.test(new URL(url).pathname)
+// Only the host-root /robots.txt is a robots file: a page at /private/a/robots.txt is an ordinary page, checked like any other and never taken as the host's rules.
+const isRobotsUrl = (url: string) => new URL(url).pathname === '/robots.txt'
 type Policy = { allows: (p: string) => boolean } | null
 // A robots.txt answer -> the policy. Only a clean 404 / 410 means "no robots policy" (allow all), the same rule careers-page.ts applies to the site's own robots.txt.
 // Every other answer that is not a complete 2xx (400, 401, 403, 429, 451, 5xx, an unfollowed 3xx, a body cut at the byte cap, no answer) is unreachable: null.
@@ -90,7 +91,8 @@ export const careersAdapter: SourceAdapter = {
         if (!isRobots && !ATS_API.test(target.hostname.toLowerCase())) { // the rules of the host this request goes to
           const rb = await robotsOf(raw, target.hostname)
           if (!rb) break
-          if (!rb.allows(target.pathname)) return { status: 404, body: '', finalUrl: at } // disallowed: never fetched, never evidence
+          // disallowed: never fetched, never evidence. Answered as 403 (not 404), so a job behind it is unverified, never recorded as closed.
+          if (!rb.allows(target.pathname)) { note?.('robots_disallow'); return { status: 403, body: '', finalUrl: at } }
           if (over()) { note?.('budget'); failed = true; return null }
         }
         const r = await raw(at, { accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5', headers: UA })

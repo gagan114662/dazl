@@ -171,12 +171,20 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
   const win = at >= 0 ? text.slice(Math.max(0, at - 60), at + title.length + 160) : title
   const name = company?.trim()
   if (!name || name.length < 3 || norm(win).includes(norm(name))) return win.slice(0, 300)
-  const ci = text.toLowerCase().indexOf(name.toLowerCase())
-  if (ci < 0) return win.slice(0, 300)
-  if (at >= 0) { const a = Math.max(0, Math.min(at, ci) - 20), b = Math.min(text.length, Math.max(at + title.length, ci + name.length) + 20); if (b - a <= 300) return text.slice(a, b) }
-  return ''
+  const lt = text.toLowerCase(), ln = name.toLowerCase()
+  if (lt.indexOf(ln) < 0) return win.slice(0, 300)
+  if (at < 0) return ''
+  // the mention nearest the title (the last one before it or the first one after it), not merely the first on the page (a header naming the company)
+  let best = ''
+  for (const ci of [lt.lastIndexOf(ln, at), lt.indexOf(ln, at)]) {
+    if (ci < 0) continue
+    const a = Math.max(0, Math.min(at, ci) - 20), b = Math.min(text.length, Math.max(at + title.length, ci + name.length) + 20)
+    if (b - a <= 300 && (!best || b - a < best.length)) best = text.slice(a, b)
+  }
+  return best
 }
-// opts.namedQuote: the quote must name opts.company (the careers source adapter's evidence); without it the quote is the title window (the sales-hiring gate).
+// opts.namedQuote (the careers source adapter's evidence): when the posting names opts.company, the quote holds the title and that name or there is no quote;
+// when the posting never names it, the quote is the plain title window. Without namedQuote (the sales-hiring gate) the quote is always the title window.
 export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[]; namedQuote?: boolean } = {}): Promise<CareersResult> {
   const site = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?#].*$/, '')
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(site)) return { vacancy: null, reason: 'no_careers_page', pages: 0 }

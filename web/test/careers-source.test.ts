@@ -269,3 +269,44 @@ test('review (Hermes-PC 4): no robots.txt request starts after the budget ran ou
     assert.ok(r.notes.budget >= 1); assert.equal(r.notes.unreachable, 1, 'a spent budget is partial')
   } finally { careersLimits.now = saved }
 })
+
+// ---- independent review at 5279ab42 ----
+test('review R1: a page whose path merely ends in /robots.txt is checked like any page and never taken as the host\'s robots rules', async () => {
+  const asked: string[] = []
+  const idx = '<h2>Open roles</h2><ul><li><a href="https://jobs.brightloop.io/private/a/robots.txt">Sales Development Representative</a></li><li><a href="https://jobs.brightloop.io/private/ae">Account Executive - London</a></li></ul>'
+  const r = await run(site({ 'brightloop.io/careers': idx, 'jobs.brightloop.io/private/ae': JOB }, asked, {
+    'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private' },
+  }))
+  assert.deepEqual(r.items, [])
+  assert.ok(asked.includes('https://jobs.brightloop.io/robots.txt'), 'the host\'s real robots.txt was read')
+  assert.ok(!asked.includes('https://jobs.brightloop.io/private/a/robots.txt'), 'the disallowed look-alike page was not fetched')
+  assert.ok(!asked.includes('https://jobs.brightloop.io/private/ae'), 'the disallowed job page was not fetched')
+})
+
+const ASHBY_IDX = '<ul><li><a href="https://jobs.ashbyhq.com/brightloop/ae-1">Account Executive</a></li></ul>'
+const ASHBY_BOARD = JSON.stringify({ jobs: [{ jobUrl: 'https://jobs.ashbyhq.com/brightloop/ae-1', isListed: true, title: 'Account Executive', descriptionPlain: 'Brightloop is hiring an Account Executive to own the sales cycle end to end.', publishedAt: '2026-10-20T09:00:00Z' }] })
+test('review R2: the public ATS JSON API is read even though its robots.txt answers 401 (the documented API is not a crawled page)', async () => {
+  const asked: string[] = []
+  const r = await run(site({ 'brightloop.io/careers': ASHBY_IDX }, asked, {
+    'api.ashbyhq.com/robots.txt': { status: 401, body: 'Unauthorized' },
+    'api.ashbyhq.com/posting-api/job-board/brightloop': { status: 200, body: ASHBY_BOARD },
+  }))
+  assert.equal(r.items.length, 1, JSON.stringify(r.notes)); assert.equal(r.items[0].url, 'https://jobs.ashbyhq.com/brightloop/ae-1'); assert.equal(r.items[0].date, '2026-10-20')
+  assert.ok(!asked.includes('https://api.ashbyhq.com/robots.txt'), 'the ATS API host is not robots-checked')
+})
+test('review R2: a look-alike of an ATS API host is robots-checked like any other host', async () => {
+  const asked: string[] = []
+  const r = await run(site({ 'ashbyhq.com.evil.io/careers': '<ul><li><a href="https://api.ashbyhq.com.evil.io/jobs/ae">Account Executive - London</a></li></ul>', 'api.ashbyhq.com.evil.io/jobs/ae': JOB }, asked, {
+    'api.ashbyhq.com.evil.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /jobs' },
+  }), { pages: ['https://ashbyhq.com.evil.io'] })
+  assert.deepEqual(r.items, [])
+  assert.ok(asked.includes('https://api.ashbyhq.com.evil.io/robots.txt'), 'the look-alike host\'s robots.txt was read')
+  assert.ok(!asked.includes('https://api.ashbyhq.com.evil.io/jobs/ae'), 'and obeyed')
+})
+
+test('review R4: a job page its host\'s robots.txt disallows is noted robots_disallow, never recorded as a closed job', async () => {
+  const r = await run(site({ 'brightloop.io/careers': '<ul><li><a href="https://jobs.brightloop.io/private/ae">Account Executive - London</a></li></ul>', 'jobs.brightloop.io/private/ae': JOB }, [], {
+    'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private' },
+  }))
+  assert.deepEqual(r.items, []); assert.equal(r.notes.robots_disallow, 1, JSON.stringify(r.notes))
+})
