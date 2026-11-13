@@ -228,7 +228,7 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
     const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
     if (month >= monthCap) return 'cap'
     const won = db.prepare("UPDATE email_candidates SET verification = 'pending', checked_at = ?, verifier = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'none'").run(nowS, vname, tenantId, leadId, address).changes === 1
-    if (won) db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = n + 1').run(vname, monthKey)
+    if (won) db.prepare('INSERT INTO email_verify_usage (verifier, month, n) VALUES (?, ?, 1) ON CONFLICT (verifier, month) DO UPDATE SET n = email_verify_usage.n + 1').run(vname, monthKey)
     return won ? 'ok' : 'lost'
   })
   for (const { address } of rows) {
