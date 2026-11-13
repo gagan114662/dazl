@@ -213,3 +213,63 @@ test('#878 review (Hermes-PC) at 942c1a71: a pronoun names whoever the quote nam
   ]) assert.notEqual(c1(closed), 'pass', closed)
   assert.equal(c1('New clinic now open in Parkdale'), 'pass', 'the plain opening still passes')
 })
+
+// review (Hermes-PC) at 57008172
+const truthOf = (q: string, company: string, quote: string) => { const plan = compileTargeting(q, null); return evaluatePlan(plan, planProofs(plan, lead(company, quote, 'https://x.example/p'), [], { ...ctx, query: q })).clauses.find(x => x.id === 'C1')!.truth }
+const DENTAL = 'Dental clinics in Toronto opening a new location or expanding'
+
+test('#878 review at 57008172 finding 1: closing a round, a Series A or a gap is no closure; launches and expansions keep their main result', () => {
+  // [plan, quote, gate on main, C1 on main]
+  const rows: [string, string, boolean, string][] = [
+    ['SaaS companies launching a new product', 'Acme launched a new product after closing a $5M round', true, 'pass'],
+    ['SaaS companies expanding to new markets', 'Acme closed its Series A and is expanding to Austin', true, 'unknown'],
+    ['SaaS companies expanding to new markets', 'Acme expanded to Austin after closing a seed round', true, 'unknown'],
+    ['SaaS companies expanding to new markets', 'Acme moved to a bigger office and is expanding to Austin', true, 'unknown'],
+    ['SaaS companies launching a new product', 'Acme launched a new app, closing the gap with rivals', true, 'unknown'],
+  ]
+  for (const [q, quote, gate, c1] of rows) {
+    assert.equal(quoteShowsEvent(quote, quote, false, 'Acme'), gate, quote)
+    assert.equal(truthOf(q, 'Acme', quote), c1, quote)
+  }
+})
+
+test('#878 review at 57008172 finding 2: a closure anywhere in the quote, not only in the opening\'s clause, undoes the opening', () => {
+  for (const quote of [
+    'Our new clinic is now open in Parkdale. Permanently closed',
+    'Our new clinic is now open in Parkdale\nPermanently closed',
+    'We opened a new clinic in Parkdale. It has since closed',
+  ]) {
+    assert.notEqual(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+    assert.equal(quoteShowsEvent(quote, quote, false, 'Metro City Dentistry'), false, quote)
+  }
+})
+
+test('#878 review at 57008172 finding 3: an opening with no subject of its own belongs to the nearest name before it; @handles are names', () => {
+  for (const quote of [
+    'Bright Smiles is growing. The new clinic is now open in Parkdale',
+    'Bright Smiles is growing! New clinic now open in Parkdale',
+    'Bright Smiles is growing. Opened a new clinic in Parkdale',
+    'Congrats @brightsmiles! Their new clinic is now open in Parkdale',
+  ]) {
+    assert.notEqual(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+    assert.equal(quoteShowsEvent(quote, quote, false, 'Metro City Dentistry'), false, quote)
+  }
+  for (const quote of [
+    'New dental clinic now open in Parkdale',
+    'Metro City Dentistry is growing! New clinic now open in Parkdale',
+    'Congrats to us @metrocitydentistry! Our new clinic is now open',
+    'Congrats @metrocitydentistry! Their new clinic is now open in Parkdale',
+  ]) {
+    assert.equal(truthOf(DENTAL, 'Metro City Dentistry', quote), 'pass', quote)
+    assert.equal(quoteShowsEvent(quote, quote, false, 'Metro City Dentistry'), true, quote)
+  }
+})
+
+test('#878 review at 57008172 finding 4: an earlier name is the lead only when it carries every distinctive word of the lead\'s name (or the reverse)', () => {
+  const no = 'Bright Family Dentistry is growing. Their new clinic is now open in Parkdale'
+  assert.notEqual(truthOf(DENTAL, 'Family Dental Care', no), 'pass', no)
+  assert.equal(quoteShowsEvent(no, no, false, 'Family Dental Care'), false, no)
+  const yes = 'Family Dental Care is growing. Their new clinic is now open'
+  assert.equal(truthOf(DENTAL, 'Family Dental Care', yes), 'pass', yes)
+  assert.equal(quoteShowsEvent(yes, yes, false, 'Family Dental Care'), true, yes)
+})

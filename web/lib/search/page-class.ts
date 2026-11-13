@@ -65,6 +65,12 @@ function clauseAt(text: string, from: number): { rest: string; question: boolean
   const tail = text.slice(from), stop = tail.search(/[.!?;]/)
   return { rest: stop < 0 ? tail : tail.slice(0, stop), question: stop >= 0 && tail[stop] === '?' }
 }
+// #878 (review on #1130 at 57008172): the opened PLACE reported closed, shut or moved: "permanently closed", "closed its
+// doors", "has since closed", "(closed)", "[closed]", "shut down", "no longer open", "moved to", "relocated". Only the place:
+// "closing a $5M round", "closed its Series A" and "closing the gap" are no closure. Applied to openings only.
+export const PLACE_CLOSED = /\b(?:(?:permanently|temporarily|now)\s+closed|closed\s+(?:its|our|the|their)\s+doors|closed\s+(?:permanently|temporarily|for\s+good|until)|(?:has\s+)?since\s+closed|has\s+closed|shut\s*down|shutdown|shuttered|no\s+longer\s+open|moved\s+to|has\s+(?:since\s+)?moved|relocat\w*)\b|[([]\s*closed\b/i
+// A verb-first opening of premises ("opened a new clinic"), as EVENT_SIGNAL reads it.
+export const VERB_OPEN = /\bopen(?:s|ed|ing)?\s+(?:a|an|its|their|new|second|third|another|additional)\s/i
 // #878 allow-list (reviews on #1130). A noun-first match is an opening only when what follows the open verb is:
 //   - nothing more (end of clause), "its/their doors", "for business", "and accepting / welcoming / serving ...", or
 //     "- <words>" / ", <words>" / ": <words>" with no hours, availability, future, day, month or "said <Name>";
@@ -79,8 +85,8 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   const at = m.index ?? 0, end = at + m[0].length
   const c = clauseAt(text, end)
   if (c.question) return false
-  // reported closed, shut or moved ("now open in Parkdale (closed permanently)", "- temporarily closed"): not an opening
-  if (/\b(?:closed|closing|closure|shut(?:\s*down)?|shutdown|moved|relocat\w*|no\s+longer)\b/i.test(c.rest)) return false
+  // the place reported closed, shut or moved ("now open in Parkdale (closed permanently)", "- temporarily closed"): not an opening
+  if (PLACE_CLOSED.test(c.rest)) return false
   const body = m[0], rest = c.rest.trim()
   const clean = (t: string) => !TIME_WORDS.test(t) && !FUTURE.test(t) && !anyDayMonth(t) && !PAST_YEAR.test(t) && !SAID.test(t)
   // case tells a name apart only in ordinary text: not in ALL CAPS, all lower case or a Title Case caption (every word of the match capitalised)

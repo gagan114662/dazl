@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, nounFirstOpenAt } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, nounFirstOpenAt, PLACE_CLOSED, VERB_OPEN } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 
@@ -52,42 +52,66 @@ export function stageOk(clause: string, stage: Stage): boolean {
   const letter = stage.slice(7)
   return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
 }
-// #878 (review on #1130): an event the quote reports as closed, shut or moved is no current event ("now open in Parkdale
-// (closed permanently)", "- temporarily closed", "has since moved").
-export const CLOSED_EVENT = /\b(?:closed|closing|closure|shut(?:\s*down)?|shutdown|moved|relocat\w*|no\s+longer)\b/i
-// A pronoun subject ("Their new clinic is now open", "They opened a new clinic") names whoever the quote named last, before
-// the clause: the event is another company's when that nearest name is not the lead ("Bright Smiles is growing. Their new
-// clinic is now open", "Congrats to our friends at Bright Smiles! Their new clinic ..."). No name before it: the lead's own.
+// #878 (reviews on #1130): who an event belongs to when its clause does not name a subject. A pronoun subject ("Their new
+// clinic is now open", "They opened a new clinic") and, for an opening, no subject at all (a bare noun-first form "New
+// clinic now open", "The new clinic is now open", or a verb-first form with nothing before the verb "Opened a new clinic")
+// name whoever the quote named last before the event: the event is another company's when that nearest name is not the
+// lead ("Bright Smiles is growing. The new clinic is now open", "Congrats @brightsmiles! Their new clinic ..."). No name
+// before it: the lead's own.
 const PRONOUN_SUBJECT = /\b(?:they|their|them|its|his|her)\b/i
-const NAME_STOP = new Set(['congrats', 'congratulations', 'our', 'we', 'the', 'a', 'an', 'their', 'they', 'it', 'its', 'his', 'her', 'new', 'today', 'big', 'huge', 'excited', 'thrilled', 'welcome', 'happy', 'proud', 'shoutout', 'thanks', 'thank', 'check', 'grand', 'opening', 'now', 'open', 'join', 'in', 'at', 'on', 'to', 'and', 'is', 'are', 'friends', 'team', 'great', 'news', 'so', 'this', 'that', 'with', 'for', 'of', 'from', 'by', 'meet', 'say', 'hello', 'hi', 'hey', 'i', 'you', 'your', 'my', 'me', 'us', 'all', 'everyone', 'love', 'wow', 'big news', 'exciting', 'update'])
+const NAME_STOP = new Set(['congrats', 'congratulations', 'our', 'we', 'the', 'a', 'an', 'their', 'they', 'it', 'its', 'his', 'her', 'new', 'today', 'big', 'huge', 'excited', 'thrilled', 'welcome', 'happy', 'proud', 'shoutout', 'thanks', 'thank', 'check', 'grand', 'opening', 'now', 'open', 'opened', 'join', 'in', 'at', 'on', 'to', 'and', 'is', 'are', 'friends', 'team', 'great', 'news', 'so', 'this', 'that', 'with', 'for', 'of', 'from', 'by', 'meet', 'say', 'hello', 'hi', 'hey', 'i', 'you', 'your', 'my', 'me', 'us', 'all', 'everyone', 'love', 'wow', 'big news', 'exciting', 'update', 'visit', 'come', 'book', 'call', 'stop'])
+// The last name before `at`: a capitalised run (stop words dropped) or an @handle, whichever comes later.
 export function nearestName(text: string, at: number): string | null {
-  let last: string | null = null
-  for (const m of text.slice(0, Math.max(0, at)).matchAll(/\b[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*)*/g)) {
+  let last: string | null = null, lastAt = -1
+  const before = text.slice(0, Math.max(0, at))
+  for (const m of before.matchAll(/(?<![@\w])[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*)*/g)) {
     const kept = m[0].split(/\s+/).filter(w => !NAME_STOP.has(w.toLowerCase().replace(/[^a-z&'-]/g, '')))
-    if (kept.length) last = kept.join(' ')
+    if (kept.length && (m.index ?? 0) > lastAt) { last = kept.join(' '); lastAt = m.index ?? 0 }
   }
+  for (const m of before.matchAll(/@[A-Za-z0-9_.]+/g)) if ((m.index ?? 0) > lastAt) { last = m[0].replace(/\.+$/, ''); lastAt = m.index ?? 0 }
   return last
 }
 const OWN_GENERIC = new Set(['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group', 'and', 'of', 'dental', 'clinic', 'dentistry'])
+const distinctive = (x: string) => { const all = wordsOf(x), d = all.filter(w => !OWN_GENERIC.has(w)); return d.length ? d : all }
+// A name is the lead's only when it carries every distinctive word of the lead's name, or the lead's name carries every
+// distinctive word of it: one shared word ("Bright Family Dentistry" for the lead "Family Dental Care") is another
+// practice. An @handle is the lead's when it contains the lead's distinctive words joined ("@metrocitydentistry").
+export function nameIsLead(name: string, company: string): boolean {
+  const own = distinctive(company)
+  if (own.length === 0) return true
+  if (name.startsWith('@')) return name.slice(1).toLowerCase().replace(/[^a-z0-9]/g, '').includes(own.join(''))
+  const theirs = distinctive(name)
+  if (theirs.length === 0) return true
+  return own.every(w => theirs.includes(w)) || theirs.every(w => own.includes(w))
+}
 export function pronounNamesOther(text: string, at: number, company: string | null | undefined): boolean {
   if (!company) return false
   const name = nearestName(text, at)
-  if (!name) return false
-  const own = new Set(wordsOf(company).filter(w => w.length > 2 && !OWN_GENERIC.has(w)))
-  return !wordsOf(name).some(w => own.has(w))
+  return name !== null && !nameIsLead(name, company)
 }
-// the subject in front of an event at `i` in clause `c` (which starts at `start` in the whole excerpt) is a pronoun that
-// names another company than the lead
-export function pronounSubjectIsOther(excerpt: string, c: string, start: number, i: number, company: string | null | undefined): boolean {
-  return PRONOUN_SUBJECT.test(c.slice(0, Math.max(0, i))) && pronounNamesOther(excerpt, start, company)
+// the subject in front of an event at `i` in clause `c` (which starts at `start` in the whole excerpt) is a pronoun, or
+// (for an opening) missing, and the nearest name before the event is another company than the lead
+export function pronounSubjectIsOther(excerpt: string, c: string, start: number, i: number, company: string | null | undefined, opening = false): boolean {
+  const prefix = c.slice(0, Math.max(0, i))
+  // a pronoun names whoever was named before the pronoun itself ("Acme closed its Series A and is expanding": its = Acme)
+  const pronouns = [...prefix.matchAll(new RegExp(PRONOUN_SUBJECT.source, 'gi'))]
+  if (pronouns.length) return pronounNamesOther(excerpt, start + (pronouns[pronouns.length - 1].index ?? 0), company)
+  const bare = opening && wordsOf(prefix).every(w => w === 'the') && !/^our\b/i.test(c.slice(Math.max(0, i)))
+  return bare && pronounNamesOther(excerpt, start + Math.max(0, i), company)
 }
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
   const all = excerpt ?? ''
+  // an opening whose place the quote reports closed anywhere ("... now open in Parkdale. Permanently closed") is no opening
+  const placeClosed = PLACE_CLOSED.test(all)
   return clauses(all).some(c => {
-    if (!fundingAsked && CLOSED_EVENT.test(c)) return false
     const start = Math.max(0, all.indexOf(c))
     // a noun-first opening's subject is in front of the opening phrase itself (#878): "Our 5th location is now open" names no other company
-    if (!fundingAsked) { const nf = nounFirstOpenAt(c, company); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) && !pronounSubjectIsOther(all, c, start, i, company) }
+    if (!fundingAsked) {
+      const nf = nounFirstOpenAt(c, company), opening = nf >= 0 || VERB_OPEN.test(c)
+      if (opening && placeClosed) return false
+      const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i)
+      return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) && !pronounSubjectIsOther(all, c, start, i, company, opening && (nf >= 0 || /^open/i.test(c.slice(Math.max(0, i)))))
+    }
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
