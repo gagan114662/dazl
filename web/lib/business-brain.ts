@@ -83,32 +83,37 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const place = where ? ` in ${where}` : ''
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
-  // Every play is judged on the signal's own compiled plan (lib/scan/targeting.ts), never on its raw words alone (#1145 xhawk +
-  // council): compiled together with the buyer, a buyer such as "Hiring manager" would supply a condition itself.
-  // - a HIRING play: a positive hiring condition with a real role, and no words saying the hiring stopped (the compiler still
-  //   reads "stopped / paused / cancelled hiring", "isn't hiring", a "hiring freeze" as positive); the role is the compiler's;
-  // - a PLAIN play: a signal with any positive condition other than a stopped hiring one, unless it already made a hiring
-  //   play ("raised funding, not hiring a receptionist" is a plain play: the compiler enforces both, the negation too).
-  // A free-form signal the compiler cannot enforce ("attended a trade show") makes no play.
+  // Every play is judged on the signal's own compiled plan (lib/scan/targeting.ts), never joined with the buyer text (a buyer
+  // such as "Hiring manager" would supply a condition itself). The compiler reads many negations the wrong way round
+  // ("Business rejecting venture capital funding", a real saved signal, compiles to a POSITIVE funding condition), and a play
+  // that searches for the opposite of what the user saved is worse than no play. So both kinds of play are refused on wording:
+  // NEGATING is a list of known negating, stopping and shrinking wordings - a list, not a guarantee; the compiler itself is
+  // the follow-up (#1163) - and a signal that has any of them makes no play at all. It still shows on the page.
+  // - a HIRING play, stricter (an allow-list): the signal must START with hiring - only "is / are / now / currently / actively /
+  //   started / just / recently", "not only", "not just" or "never stopped" may come before the hiring word - have none of the
+  //   NEGATING words anywhere else ("hiring SDRs on hold", "hiring nobody", "instead of hiring recruiters": none), and compile
+  //   to a positive hiring condition with a real role. The role is the compiler's.
+  // - a PLAIN play: any other signal with a positive condition and no NEGATING word; a hiring condition backs one only as
+  //   "hiring" with no role ("Expanding team, hiring").
+  // Cost, accepted: a mixed but positive signal ("hiring freeze lifted, now hiring SDRs", "raised funding, not hiring a
+  // receptionist") makes no play. A free-form signal the compiler cannot enforce ("attended a trade show") makes none either.
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  const STOPPED = /\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|frozen|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|cancel(?:led|ed|s|ling|ing)?|defer(?:red|s|ring)?|suspend(?:ed|s|ing)?|no longer|isn['\u2019]?t|is not|aren['\u2019]?t|are not|\w+n['\u2019]t|not|never|nobody|none|zero|lack(?:s|ing)?(?:\s+of)?|fail(?:s|ed|ing)?\s+to)\s+(?:currently\s+|actively\s+)?hir/i
-  const stoppedHiring = (x: string) => !/\b(?:not (?:only|just)|never (?:stopped|stops))\b/i.test(x) && (STOPPED.test(x) || /\bhiring\s+(?:freeze|frozen|paused|stopped|on hold)\b/i.test(x))
+  const NEGATING = /(?:n['\u2019]t\b|\bpre-|\b(?:not|never|no|nobody|none|nothing|zero|without|sans|lack(?:s|ing)?|fail(?:s|ed|ing|ure)?|fell through|fall(?:s|ing)? through|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|pass(?:es|ed|ing)? on|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer|on hold|lost|los(?:e|es|ing)|ran out|run(?:s|ning)? out|yet to|before|prior to|fewer|less|few|barely|hardly|rarely|seldom|gave up|giv(?:e|es|ing) up|done|end(?:s|ed|ing)|reduc(?:e|es|ed|ing)|cut(?:s|ting)?|shr(?:ink|inks|ank|unk|inking)|slow(?:s|ed|ing)?)\b)/i
   const conds = (x: string) => planConditions(compileTargeting(x).root)
+  // the three phrases that contain a NEGATING word but mean the hiring is real
+  const POSITIVE_LEAD = /^(?:not (?:only|just)|never (?:stopped|stops))\s+/i
+  const LEAD_IN = /^(?:(?:is|are|now|currently|actively|started|just|recently)\s+)*$/i
   const hiringRole = (x: string): string | null => {
-    if (stoppedHiring(x)) return null
+    const t = x.trim(), m = /\bhir(?:e|es|ing|ed)\b/i.exec(t)
+    if (!m) return null
+    const lead = t.slice(0, m.index), rest = t.slice(m.index)
+    if (!(LEAD_IN.test(lead) || (POSITIVE_LEAD.test(lead) && LEAD_IN.test(lead.replace(POSITIVE_LEAD, ''))))) return null
+    if (NEGATING.test(rest) || NEGATING.test(lead.replace(POSITIVE_LEAD, ''))) return null
     const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
     const role = c?.cond.role?.replace(/^(?:a|an|the|their first|new)\s+/i, '').trim().slice(0, 80)
-    return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an)$/i.test(role) ? role : null
+    return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role) ? role : null
   }
-  // a hiring condition backs a plain play only as "hiring" with no role ("Expanding team, hiring"); a junk role ("hiring the")
-  // backs nothing, and one with a real role is the hiring play above
-  // A PLAIN play is never offered from a signal whose words negate anything (fail closed, #1145 Hermes + review): the compiler
-  // reads some negations the wrong way round ("Business rejecting venture capital funding", a real saved signal, compiles to a
-  // POSITIVE funding condition; so do "didn't raise funding", "nobody hiring"), and a play that searches for the opposite of
-  // what the user saved is worse than no play. Such a signal still shows on the page; it just makes no play. Cost, accepted:
-  // a mixed signal ("raised funding, not hiring a receptionist", "hiring freeze lifted, now hiring SDRs") makes no plain play.
-  const NEGATING = /(?:n['\u2019]t\b|\b(?:not|never|no|nobody|none|nothing|zero|without|lack(?:s|ing)?|fail(?:s|ed|ing)? to|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer)\b)/i
-  const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
+  const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim()))
   const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the

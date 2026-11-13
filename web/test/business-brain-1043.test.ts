@@ -129,7 +129,7 @@ test('#1043 council r2: a hiring play only from a positive hiring condition, nev
   for (const s of ['stopped hiring SDRs', "isn't hiring a receptionist", 'no longer hiring SDRs', 'paused hiring SDRs', 'cancelled hiring SDRs', 'deferred hiring SDRs',
     'hiring freeze', 'hiring frozen', 'stopped hiring', 'paused hiring', "isn't hiring", 'not hiring']) assert.deepEqual(q([s]), [], s)
   // ...while real hiring that merely mentions a negation still makes its play
-  for (const [s, role] of [['not only hiring SDRs', 'SDRs'], ['not just hiring engineers', 'engineers'], ['never stopped hiring SDRs', 'SDRs'], ['not B2C hiring SDRs', 'SDRs']])
+  for (const [s, role] of [['not only hiring SDRs', 'SDRs'], ['not just hiring engineers', 'engineers'], ['never stopped hiring SDRs', 'SDRs'], ['currently hiring SDRs', 'SDRs'], ['is actively hiring SDRs', 'SDRs']])
     assert.deepEqual(q([s]), [`Practice owner at companies in Ohio hiring ${role}`], s)
   assert.deepEqual(q(['hiring their first sales rep']), ['Practice owner at companies in Ohio hiring sales rep'])
   assert.deepEqual(q(['hiring SDRs and AEs']), ['Practice owner at companies in Ohio hiring SDRs'], 'the role the compiler enforces')
@@ -165,4 +165,30 @@ test('#1043 review: no play from any negated wording the compiler may read the w
   for (const s of ['hiring freeze lifted, now hiring SDRs', 'not yet profitable']) assert.deepEqual(q([s]), [], `fail closed: ${s}`)
   // plain positive signals are unaffected
   assert.deepEqual(q(['raised a Series A', 'opened a new location']), ['Practice owner - raised a Series A', 'Practice owner - opened a new location'])
+})
+
+// Review (Hermes-PC) at 01387296. Roles in real prod wording ("front-desk staff", "an office manager", "recruiters").
+test('#1043 Hermes 01387296: a hiring play needs the signal to start with hiring and carry no negating word; the listed funding wordings make no play', () => {
+  const q = (signals: string[], who = ['Practice owner']) => businessPlays({ buyer: icp({ who, where: [], signals }) }, []).map(p => p.query)
+  // 1. negating words before the hiring word: each made "companies hiring <role>" before
+  for (const s of ['instead of hiring front-desk staff', 'outsourcing rather than hiring recruiters', 'against hiring an office manager', 'rejecting hiring recruiters',
+    'avoiding hiring front-desk staff', 'avoid hiring SDRs', 'refuses hiring SDRs', 'declined hiring SDRs', 'gave up hiring SDRs', 'done hiring SDRs', 'ended hiring SDRs',
+    'reduced hiring SDRs', 'cut hiring of SDRs', 'not B2C hiring SDRs', 'Outsourcing instead of hiring front-desk staff'])
+    assert.deepEqual(q([s]), [], s)
+  // ...and stop words after the role
+  for (const s of ['hiring SDRs on hold', 'hiring SDRs was cancelled', 'hiring of SDRs stopped', 'hiring nobody', 'hiring no one', 'hiring zero SDRs', 'hiring fewer SDRs'])
+    assert.deepEqual(q([s]), [], s)
+  // 2. the plain play: wordings that compile to a positive funding or hire condition and mean the opposite
+  for (const s of ['lost funding', 'funding fell through', 'funding round failed', 'ran out of funding', 'passed on funding', 'yet to raise funding', 'before raising funding',
+    'prior to raising funding', 'pre-funding', 'sans funding', 'hired fewer SDRs', 'barely hiring', 'hardly hiring', 'rarely hiring', 'raised less funding'])
+    assert.deepEqual(q([s]), [], s)
+  // the real prod signals keep their plays (9 saved profiles, 21 signals, read-only 2026-11-13)
+  assert.deepEqual(q(['Opened a new location', 'hiring front-desk staff', 'hiring an office manager']),
+    ['Practice owner - Opened a new location', 'Practice owner at companies hiring front-desk staff', 'Practice owner at companies hiring office manager'])
+  assert.deepEqual(q(['Opened a new office', 'hiring recruiters'], ['Agency owner']), ['Agency owner - Opened a new office', 'Agency owner at companies hiring recruiters'])
+  assert.deepEqual(q(['Hiring their first SDR or salesperson', 'posting about outbound or lead gen pain'], ['Founder']), ['Founder at companies hiring SDR'])
+  assert.deepEqual(q(['Company expressing frustration with enterprise software complexity', 'Team adopting remote or distributed work', 'Business rejecting venture capital funding',
+    'Organization implementing calmer work policies', 'Company switching away from ad-supported or data-selling tools'], ['Small team leaders']), [])
+  // a signal that only mentions hiring after something else is not a hiring play, but stays a plain one when nothing negates it
+  assert.deepEqual(q(['raised a Series A, hiring SDRs']), ['Practice owner - raised a Series A, hiring SDRs'])
 })
