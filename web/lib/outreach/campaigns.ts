@@ -55,8 +55,9 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       else if (st === 'human') confirmedByYou++
       else if (r.review_reason) {
         // A required check that has not passed outranks a reviewable reason: confirming the source cannot release it (#1062, the campaign page's verdict).
-        if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id) }) && requiredGateHeld(db, tenantId, r.id) === null) needsReview++; else research++
+        if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: requiredGateHeld(db, tenantId, r.id) !== null })) needsReview++; else research++
       }
+      else if (requiredGateHeld(db, tenantId, r.id) !== null) research++   // #1062: unverified, but held by a required check checking cannot release
       else unverified++
     }
     // The real gates, not a re-derivation: currentnessHeld is what holds drafting until timing is confirmed, and

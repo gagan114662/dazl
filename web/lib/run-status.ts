@@ -56,7 +56,8 @@ export function currentQual(rows: QualRow[]): CurrentQual & { research: number }
     else if ((st === 'machine' || st === 'human') && held) q.research++
     else if (st === 'machine') q.sourceChecked++
     else if (st === 'human') q.confirmedByYou++
-    else if (r.review_reason) { if (reviewIsActionable(r) && !r.gate_held) q.needsReview++; else q.research++ }
+    else if (r.review_reason) { if (reviewIsActionable(r)) q.needsReview++; else q.research++ }
+    else if (r.gate_held) q.research++   // #1062: unverified, but a required check that has not passed holds it - checking cannot release it
     else q.unverified++
   }
   return q

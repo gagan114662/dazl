@@ -23,14 +23,14 @@ export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
   const m = msgs.find(x => x.lead_id === l.id)
   if (m) { const [stage, text] = MSG[m.status] ?? ['other', `Email ${m.status}`]; return { stage, text } }
   // A review-list lead no check can make usable is research, never a review item (#683; the same verdict as Home, lib/lead-state.ts).
-  // A required check that has not passed also outranks a reviewable reason: confirming the source cannot release it (#1062).
-  if (l.review_reason) return reviewIsActionable(l) && !l.gate_held ? { stage: 'review', text: 'Needs your review' } : { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
+  if (l.review_reason) return reviewIsActionable(l) ? { stage: 'review', text: 'Needs your review' } : { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
+  // A required check that has not passed holds it whatever its evidence state: checking the source cannot release it (#1062).
+  if (l.gate_held) return { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
   const ev = evidenceStateOf(l)
   if (ev === 'unverified') return { stage: 'unverified', text: 'Not verified - check the source' }
   // A source-checked or confirmed lead can still be held by the time window, or be confirmed OUT of a hold a check cannot
   // resolve (human_confirmed_from): confirming it does not lift either, so it stays research, never "not drafted" (#683).
-  // A required check that has not passed holds it too, whatever the row's evidence state says (#1062, requiredGateHeld).
-  if (l.window_held || l.gate_held || uncheckableCause(l.human_confirmed_from)) return { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
+  if (l.window_held || uncheckableCause(l.human_confirmed_from)) return { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
   return { stage: 'qualified', text: ev === 'machine' ? 'Source-checked, not drafted' : 'Confirmed by you, not drafted' }
 }
 

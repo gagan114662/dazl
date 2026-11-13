@@ -31,6 +31,8 @@ export interface CardLead {
   // reason 'out_of_window'). Distinct from an unresolved window - copy must not call a known miss "unresolved".
   window_missed?: boolean
   currentness_held?: boolean; window_held?: boolean
+  // A REQUIRED check that has not passed holds it (lib/scan/held-state.ts requiredGateHeld, #1062): no confirmation releases it.
+  gate_held?: boolean
   enrichments?: { connector: string; kind: string; value: string; label: string | null; source_url: string; retrieved_at?: number | null }[]
 }
 export interface OpportunityCard {

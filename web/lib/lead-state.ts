@@ -45,7 +45,8 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   const date = l.event_date ?? ''
   // A date problem outranks any other reason: a blocked page with no usable date is still undated research.
   if (r === 'outside_window_undated' || (l.window_held && !date)) return 'undated'
-  if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
+  if (Object.hasOwn(CAUSE, r)) return CAUSE[r]
+  if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
   if (l.window_held) return 'older'
   if (l.currentness_held || !date || l.date_status !== 'verified') return 'undated'
   return 'unsupported'
@@ -54,9 +55,10 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
 // A lead in the review list (it carries a review_reason): can a person's check of the source still make it usable? The ONE verdict Home's
 // journey (heldState), the Campaigns funnel, a campaign's page and the Home checklist all count by (#683), so no page calls a research-only
 // lead a review item. A time-window hold survives confirmation; an unknown, empty or non-string reason fails closed to research.
-export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown }): boolean {
+// A REQUIRED check that has not passed (gate_held: lib/scan/held-state.ts requiredGateHeld, the draft guard's own verdict) survives it too (#1062).
+export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown; gate_held?: unknown }): boolean {
   const r = l.review_reason
-  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held
+  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held && !l.gate_held
 }
 
 export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
