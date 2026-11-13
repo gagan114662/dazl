@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Db } from '../lib/db/client.ts'
-import { trialRefusal, stagingTrialWithoutGoogle } from '../lib/billing/trial-budget.ts'
+import { trialRefusal, stagingTrialWithoutGoogle, admitTrialScan, admitTrialSiteReadBudget } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const BASE: Record<string, string | undefined> = {
@@ -29,4 +29,20 @@ bothEngines('#1037 a listed password account on staging passes the Google prereq
   assert.equal(await trialRefusal(db, other, { env: staging }), 'google_required')
   assert.equal(await trialRefusal(db, qa, { env: { ...BASE, DAZL_ENV: 'production', DAZL_STAGING_TRIAL_NO_GOOGLE: 'qa-1037@gmail.com' } }), 'google_required')
   assert.equal(await trialRefusal(db, qa, { env: { ...staging, DAZL_TRIAL_ACCOUNT_TOTAL_USD: '0.01' } }), 'account_total_cap', 'every other trial gate still applies')
+})
+
+bothEngines('#1037 the admission paths (scan and website read) honour the staging exemption; unlisted and production are refused and reserve nothing', async ({ db }) => {
+  const qa = await user(db, 'u-qa2', 'qa2-1037@gmail.com')
+  const other = await user(db, 'u-other2', 'someone2@gmail.com')
+  const staging = { ...BASE, DAZL_ENV: 'staging', DAZL_STAGING_TRIAL_NO_GOOGLE: 'qa2-1037@gmail.com', DAZL_TRIAL_SITE_READ_ALLOWLIST: 'qa2-1037@gmail.com,someone2@gmail.com' }
+  const count = async () => Number((await db.get<{ n: number | string }>('SELECT count(*) AS n FROM trial_reservations'))?.n ?? 0)
+  assert.equal((await admitTrialScan(db, qa, { env: staging })).ok, true)
+  assert.equal((await admitTrialSiteReadBudget(db, qa, { env: staging })).ok, true)
+  const before = await count()
+  assert.deepEqual(await admitTrialScan(db, other, { env: staging }), { ok: false, reason: 'google_required' })
+  assert.deepEqual(await admitTrialSiteReadBudget(db, other, { env: staging }), { ok: false, reason: 'google_required' })
+  const prod = { ...staging, DAZL_ENV: 'production' }
+  assert.deepEqual(await admitTrialScan(db, qa, { env: prod }), { ok: false, reason: 'google_required' })
+  assert.deepEqual(await admitTrialSiteReadBudget(db, qa, { env: prod }), { ok: false, reason: 'google_required' })
+  assert.equal(await count(), before, 'a refusal reserves nothing')
 })
