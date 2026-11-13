@@ -100,6 +100,8 @@ test('a quote must state THIS vacancy: hiring wording about something else or a 
   assert.equal(postingQuote(['The Account Executive works with our Account Executive Managers. Team is hiring process lead.'], 'Account Executive - London'), '', 'a passing title mention is not a vacancy statement')
   assert.equal(postingQuote(['We are hiring an SDR to support our Account Executive team in London.'], 'Account Executive'), '', 'the hiring is for another role named first')
   assert.equal(postingQuote(['Hi there! We\u2019re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Brightloop.'], 'Sales Assist Representative', 'Brightloop'), 'We\u2019re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Brightloop.')
+  assert.equal(postingQuote(['Join Brightloop in London as CRM Administrator.'], 'CRM Administrator', 'Brightloop'), 'Join Brightloop in London as CRM Administrator.', '"join <company> as <title>" states the vacancy')
+  assert.equal(postingQuote(['You will join the team as it grows and work with our CRM Administrator.'], 'CRM Administrator'), '', '"join ... as" not followed by the title is not one')
   assert.equal(postingQuote(['The role: Brightloop is hiring an Account Executive to own the London sales cycle.'], 'Account Executive - London', 'Brightloop'), 'The role: Brightloop is hiring an Account Executive to own the London sales cycle.', 'the core role before " - London"')
 })
 

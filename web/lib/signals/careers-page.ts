@@ -195,11 +195,11 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
 }
 // The quote for a public ATS posting (#767 live check: a quote glued the title onto the description's boilerplate preamble, "Sales Assist Representative AI AT
 // ZAPIER At Zapier ...", which is on no page). It is a window inside ONE passage of the posting's own text, never across the title join, and it must state THIS
-// vacancy: one sentence holding hiring wording ("We're looking for", "we are hiring", "seeking a") followed closely by the posting's title or its core role (any
+// vacancy: one sentence holding hiring wording ("We're looking for", "we are hiring", "seeking a", "join Brightloop in London as") followed closely by the posting's title or its core role (any
 // spacing / hyphenation: "Sales-Assist Representative"). Hiring wording about something else ("our customers are looking for", "our Engineering team is hiring
 // for a Backend Engineer") and a passing title mention ("works with our Account Executive Managers") are not a vacancy statement: no quote (''), and the callers
 // skip a vacancy without one.
-const HIRING = /\b(?:we(?:'|\u2019)re|we are) (?:currently |actively |now )?(?:hiring|looking for|seeking|searching for|in search of|recruiting)\b|\b(?:looking for|seeking|hiring|recruiting) (?:an?|our (?:first|next|new))\b/gi
+const HIRING = /\b(?:we(?:'|\u2019)re|we are) (?:currently |actively |now )?(?:hiring|looking for|seeking|searching for|in search of|recruiting)\b|\b(?:looking for|seeking|hiring|recruiting) (?:an?|our (?:first|next|new))\b|\bjoin (?:us|[^.!?]{1,40}?) as\b/gi
 // between the hiring wording and the title: at most 3 filler words ("a new", "an experienced"), none that starts another clause ("an SDR to support our Account
 // Executive team" is not hiring an Account Executive)
 const TIE = /^[\s,]*(?:[\p{L}\p{N}'\u2019-]+[\s,]+){0,3}$/u
