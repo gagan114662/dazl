@@ -112,7 +112,7 @@ const hiringShape = (over: Partial<Fixture> = {}) => base(HIRING, {
 test('#1037 hiring shape (2934229e, hiring profile, three places): the capped plan keeps a model-planned query - board site: queries never take every capped search', async () => {
   const r = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(hiringShape()))
   assert.ok(r.calls.searches.length >= 1 && r.calls.searches.length <= 3, `capped: ${r.calls.searches.length}`)
-  assert.ok(r.calls.searches.filter(q => !/site:/.test(q)).length >= 2, `model-planned queries (not board site: queries) were sent that is not a board site: query was sent: ${JSON.stringify(r.calls.searches)}`)
+  assert.ok(r.calls.searches.filter(q => !/site:/.test(q)).length >= 2, `at least 2 model-planned (non site:) queries sent that is not a board site: query was sent: ${JSON.stringify(r.calls.searches)}`)
   assert.notEqual(r.job.error, 'unbounded_fallback_hold')
 })
 
@@ -121,6 +121,11 @@ test('#1037 first play: the capped fallback searched and found nothing -> no_dis
   assert.ok(none.calls.searches.length >= 1); assert.equal(none.job.error, 'no_discovery', String(none.job.error))
   const empty = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { extraction: [] })))
   assert.ok(empty.calls.searches.length >= 1); assert.equal(empty.job.error, 'no_discovery', String(empty.job.error))
+  // Council round 2: hits that could not be read (an unusable extraction reply) are NOT 'nothing there'.
+  const unread = await withEnv({ NEWS_SEARCH_ENABLED: '0' }, () => runFixture(base(FUNDING, { extractionFn: () => null as never })))
+  assert.ok(unread.calls.searches.length >= 1); assert.notEqual(unread.job.error, 'no_discovery', 'an unreadable extraction never concludes')
+  assert.equal(sourceStatus(unread, 'search:tinyfish'), 'unavailable')
+  assert.equal(sourceStatus(none, 'search:tinyfish'), 'empty', 'every capped search answered with zero hits')
 })
 
 test('#1037 ordinary scan, paid_fallback=false, news off, TinyFish searched clean and extracted nothing: still no_discovery (classification kept)', async () => {
@@ -145,4 +150,10 @@ test('#1037 first play: news switched on but no runnable news query -> the repor
   assert.equal(newsCalls, 0, 'no news query was runnable')
   assert.equal(sourceStatus(r, 'search:news'), 'unavailable')
   assert.deepEqual(rep(r).news, { attempted: 0, failed: 0, limited: 0, malformed: 0, failure_classes: {}, http_statuses: {}, query_classes: {} })
+})
+
+test('#1037 FREE TRIAL first play: the fallback never plans into the last quarter of the trial reserve (kept for the checks after the scan)', async () => {
+  // Reserve 1: 75% is 0.75; at 0.3 per search two searches (0.6) fit and a third (0.9) would eat into the kept quarter.
+  const t = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.3' }, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5', hits: [] })))
+  assert.ok(t.calls.searches.length >= 1 && t.calls.searches.length <= 2, `searches inside the 75% line: ${t.calls.searches.length}`)
 })

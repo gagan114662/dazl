@@ -709,8 +709,6 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   if (first5 && notRun(news) && notRun(tf)) return 'no_lead_source'
   // A news stage that recorded skipped_* never ran: it neither concluded nor blocks TinyFish's clean result from concluding.
   if (clean(news) || (notRun(news) && clean(tf))) return 'no_discovery'
-  // A first play's capped fallback that searched and got no hits at all ('unavailable') searched everything the play may use.
-  if (first5 && notRun(news) && tf === 'unavailable') return 'no_discovery'
   return 'unbounded_fallback_hold'
 }
 
@@ -1325,7 +1323,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (leads?.length) partial.candidates = leads
         tfCandidates = leads?.length ?? 0
         // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
-        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? 'unavailable' : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        // #1037 item 1: the capped first-play fallback whose every search answered with zero hits searched clean and found nothing
+        // ('empty'). Hits that could not be read or extracted stay 'unavailable' (never concluded).
+        const zeroHits = (): boolean => { const t = summarizeTrace(diag.trace); return t.hits_complete === true && t.hits_raw === 0 }
+        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
@@ -1398,7 +1399,17 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // usable) the play falls back to the existing TinyFish lead search, HARD-capped per run (firstPlayLeadCaps: default 3 searches
     // and 6 page reads, settings can only lower them, 0 = off). It draws on the same per-scan spend cap, and a free-trial play pays
     // each call from its trial reserve (trialCharges), exactly as an ordinary scan's TinyFish calls do.
-    const playCaps = firstPlayLeadCaps()
+    let playCaps = firstPlayLeadCaps()
+    // A free-trial play's fallback never plans into the last FIRST_PLAY_TRIAL_KEEP of the trial reserve (left for the checks after the
+    // scan), the same rule as its people step: the caps shrink to what fits, priced at the trial's own search and page-read prices.
+    if (trial && trialGuard && playCaps.searches > 0) {
+      const sp = trial.tinyfishSearchUsd, fp = trial.tinyfishFetchUsd, full = playCaps
+      const room = trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd
+      const fetchesFor = (n: number) => n === full.searches ? full.fetches : Math.floor(full.fetches * n / full.searches)
+      let n = Number.isFinite(sp) && sp >= 0 && Number.isFinite(fp) && fp >= 0 && Number.isFinite(room) ? full.searches : 0
+      while (n > 0 && n * sp + fetchesFor(n) * fp > room + 1e-9) n--
+      playCaps = { searches: n, fetches: fetchesFor(n) }
+    }
     if (!leads && !budgetRefused && deps.first5 && job.query && icpForSources && complete && tinyfishEnabled() && playCaps.searches > 0) {
       await runTinyfishStage(playCaps)
       const st = { ...summarizeTrace(diag.trace), ...diag.info }

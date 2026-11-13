@@ -134,6 +134,7 @@ test('#1037 item 1: the first-play estimate states the capped lead-search fallba
   assert.equal(l.provider, 'TinyFish'); assert.deepEqual(l.units, { min: 0, max: 3 })
   assert.deepEqual(l.usd, { min: 0, max: 0.02 * 3 + 0.01 * 6 })
   assert.match(l.note ?? '', /Only when free news cannot serve the play: at most 3 TinyFish searches and 6 page reads/)
+  assert.match(l.note ?? '', /never from its last 25%/)
   assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '1' } }), 'first_play_lead_search')!.units, { min: 0, max: 1 })
   assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '0' } }), 'first_play_lead_search'), undefined)
   assert.equal(row(estimateRun({ budget: { paid_fallback: false }, payer: 'trial', env: {} }), 'first_play_lead_search'), undefined, 'not a first play: no fallback row')
