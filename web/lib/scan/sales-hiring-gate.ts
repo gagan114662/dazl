@@ -70,6 +70,7 @@ export function stageOk(clause: string, stage: Stage): boolean {
 // When in doubt the opening is not the lead's (unknown); main gave unknown for all of these forms.
 const THIRD_PERSON = /\b(?:they|their|theirs|them|its|his|her)\b/i
 const CAP_STOP = new Set(['the', 'a', 'an', 'big', 'news', 'congrats', 'congratulations', 'visit', 'proud', 'thanks', 'thank', 'you', 'welcome', 'hello', 'hi', 'hey', 'looking', 'try', 'our', 'we', 'us', 'it', 'its', 'their', 'they', 'this', 'that', 'these', 'those', 'new', 'now', 'open', 'opened', 'opening', 'today', 'great', 'exciting', 'excited', 'thrilled', 'huge', 'happy', 'grand', 'just', 'also', 'come', 'book', 'call', 'check', 'join', 'meet', 'say', 'stop', 'shoutout', 'introducing', 'announcing', 'update', 'wow', 'love', 'growing', 'finally', 'officially', 'sadly', 'good', 'here', 'there', 'what', 'who', 'why', 'when', 'how', 'is', 'are', 'and', 'or', 'in', 'at', 'on', 'to', 'for', 'of', 'from', 'by', 'with', 'i', 'my', 'me', 'your', 'all', 'everyone', 'brand', 'yes', 'so', 'more', 'best', 'first', 'second', 'third', 'next', 'last', 'one', 'home', 'clinic', 'location', 'office', 'store', 'team', 'did', 'now', 'offered', 'available'])
+const PREMISES_WORD = /^(?:clinics?|offices?|locations?|dental|dentistry|health|centre|center|studios?|practices?)$/
 const MONTH_DAY = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)$/i
 const CONGRATS = /\b(?:congrat\w*|kudos|shout-?outs?|hats\s+off|cheers\s+to|well\s+done|proud\s+(?:of|for)|happy\s+for|excited\s+for|thrilled\s+for)\b[,!]?\s*(?:(?:to|for|of|on|at|with)\s+)?/gi
 const UNNAMED = /\b(?:our|my)\s+(?:[\w'’-]+\s+)?(?:neighbou?rs|friends|colleagues|partners|pals|peers)\b/i
@@ -126,8 +127,13 @@ function parties(text: string, company: string, places: ReadonlySet<string>): Pa
   if (UNNAMED.test(text)) out.push({ name: null })
   for (const m of text.matchAll(/\bthe\s+((?:[\w'’-]+\s+){1,3})team\b/gi)) if (!nameIsLead(m[1].trim(), company)) out.push({ name: null })
   for (const m of text.matchAll(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g)) {
-    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !ALLOW.has(k.replace(/’/g, "'")) && !MONTH_DAY.test(k) && !places.has(k) })
-    if (kept.length) out.push({ name: kept.join(' ') })
+    if (nameIsLead(m[0], company)) { out.push({ name: m[0] }); continue }
+    const key = (w: string) => w.toLowerCase().replace(/’/g, "'").replace(/'s?$|[^a-z0-9&'-]/g, '')
+    // a capitalised run, less stop words, months, weekdays and places, is a name when it keeps 2+ words, a premises or
+    // practice word ("Open Door Clinic", "The Community Clinic", "Hello Clinic"), or a word off the allow-list ("Invisalign")
+    const words = m[0].split(/[ \t]+/).map(key).filter(k => k !== '' && !MONTH_DAY.test(k) && !places.has(k))
+    const kept = words.filter(k => !CAP_STOP.has(k) && !CTA_WORDS.has(k))
+    if (kept.length >= 2 || words.some(k => PREMISES_WORD.test(k)) || kept.some(k => !ALLOW.has(k))) out.push({ name: kept.length ? kept.join(' ') : m[0] })
   }
   return out
 }
@@ -191,7 +197,7 @@ const CTA = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi)|book\s+(?:now|tod
 // word ("bright smiles", "network", "owner", "competition", "told reporters") fails the opening closed.
 const ALLOW = new Set(('a an the and or but so to of in on at for with as is are was be been am it this that these those ' +
   'we we\'re we\'ve we\'ll our ours us you your you\'re i i\'m me my all any some every more most very just now here there ' +
-  'what when where how not no yes can will do have has had get got go come see let make new great good best amazing awesome ' +
+  'what when where how no yes can will do have has had get got go come see let make new great good best amazing awesome ' +
   'wonderful beautiful lovely happy excited exciting thrilled proud pleased delighted grateful thankful thank thanks share ' +
   'sharing announce announcing finally officially official big news update today day week month year time patients patient ' +
   'staff team community neighbourhood neighborhood same address location locations clinic office space home doors door open ' +
@@ -218,6 +224,8 @@ function unlisted(rest: string, lead: string, places: ReadonlySet<string>, prono
 // A domain or URL host is a party unless its label is the lead's ("brightsmiles.com" is another practice).
 const domainsOther = (text: string, lead: string) => [...text.matchAll(DOMAIN)].some(m => !nameIsLead('@' + m[1], lead))
 const PRACTICE_WORD = /^(?:dental|dentistry|smiles?|orthodontics?|clinic|practice|studio|centre|center|group|health)$/i
+// The lead named only to set it apart ("Not Metro City Dentistry", "the same space as Metro City Dentistry").
+const contrastsLead = (text: string, lead: string) => new RegExp(String.raw`\b(?:not|than|as|like|from|next\s+(?:door\s+)?to|instead\s+of|unlike)\s+(?:the\s+)?` + lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text)
 export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
   const lead = company ?? ''
   if (lead === '') return false
@@ -226,6 +234,9 @@ export function openingAttributable(excerpt: string, at: number, end: number, pr
   // R13: the opening's own place never hides a practice ("open at Bright Smiles Dental in Parkdale")
   const placeWords = wordsOf(excerpt.slice(end, stop)), leadWords = new Set(wordsOf(lead))
   if (placeWords.some(w => PRACTICE_WORD.test(w) && !leadWords.has(w))) return false
+  // a place run carrying the lead's words must be the lead itself ("at Metro City Dentistry North" is not)
+  for (const m of excerpt.slice(end, stop).matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
+  if (contrastsLead(excerpt, lead)) return false
   const where = new Set([...places, ...placeWords])
   const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
   if (domainsOther(rest, lead)) return false
