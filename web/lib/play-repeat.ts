@@ -15,7 +15,8 @@
 //     watch someone made by hand (its only job older than the watch).
 // Daily on every plan: the repeat runs every day (lib/play-cadence.ts watchIntervalS); a watch made by hand stays weekly.
 // Existing accounts are not enrolled on deploy: only a first play that finished within the window qualifies. A repeat
-// created weekly before this change switches to daily at its next run (its cadence is read, not stored).
+// created weekly before this change is pulled in to a day after its last run by the scheduler (lib/watch.ts
+// pullInWeeklyRepeats); its cadence is read, not stored.
 // Each account's writes are one transaction, fenced by the tick's lease and ordered with create/resume of a watch by
 // the same per-tenant lock (lib/watch.ts activationCheck): the "no saved play yet" check and the insert cannot interleave
 // with the person saving a play by hand. Nothing here runs a scan or spends anything; the runs are the scheduler's.
