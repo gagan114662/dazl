@@ -1,0 +1,29 @@
+# staging.dazl.ai scan worker (#836, docs/STAGING.md "Second scan worker"). A second process beside the app that takes
+# scans from the shared work queue: same release, same env file, same database, no port. It does nothing unless
+# DAZL_SCAN_SHARED_QUEUE=1 is in the env file (it idles and says so). Not for production.
+# PartOf: stopping or restarting dazl-staging.service stops or restarts this too. WantedBy: starting the app starts it.
+# deploy.sh also stops it by name before a recovery point and starts it with the new release.
+[Unit]
+Description=dazl staging scan worker (shared work queue)
+After=network.target dazl-staging.service
+PartOf=dazl-staging.service
+
+[Service]
+User=dazl-staging
+WorkingDirectory=/srv/dazl-staging/current/web
+EnvironmentFile=/etc/dazl-staging/env
+EnvironmentFile=-/var/lib/dazl-staging-deploy/release.env
+Environment=NODE_ENV=production
+# One scan at a time (SCAN_WORKER_CONCURRENCY, default 1). Measured 160 MB resident idle on a production-shaped
+# database; the heap cap and MemoryMax keep a runaway scan from taking the box (1.8 GB, shared with production).
+ExecStart=/usr/bin/node --experimental-strip-types --no-warnings --max-old-space-size=320 scripts/scan-worker.mts
+Restart=on-failure
+RestartSec=5
+MemoryHigh=420M
+MemoryMax=512M
+# SIGTERM: the worker hands its running scan back to the queue and exits (143 is its normal stop)
+SuccessExitStatus=143
+TimeoutStopSec=20
+
+[Install]
+WantedBy=dazl-staging.service

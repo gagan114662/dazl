@@ -38,7 +38,29 @@ PORT=${STAGING_PORT:-3200}
 SERVICE=${STAGING_SERVICE:-dazl-staging.service}
 RUN_AS=${STAGING_USER:-dazl-staging}
 REPO_URL=${STAGING_REPO_URL:-https://github.com/gagan114662/dazl.git}
-RESTART=${STAGING_RESTART:-systemctl restart $SERVICE}
+# The scan worker (#836, ops/staging/dazl-staging-worker.service): a second process on the same release and database.
+# When its unit is installed, it is stopped with the app (before a recovery point, a restore or a migration: nothing
+# else may write) and never left running an old release beside a new one; it is started again after the app, when
+# enabled. Not installed: nothing below touches it. Tests replace SYSTEMCTL, or STOP and RESTART whole.
+WORKER=${STAGING_WORKER_SERVICE:-dazl-staging-worker.service}
+SYSTEMCTL=${STAGING_SYSTEMCTL:-systemctl}
+worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
+# Stop the worker first and by name, so the command returns only once it has exited: PartOf alone would stop it too,
+# but without waiting for it before the recovery point is taken.
+stop_services() {
+  if worker_installed; then $SYSTEMCTL stop "$WORKER" || return 1; fi
+  $SYSTEMCTL stop "$SERVICE"
+}
+# Restart the app on the release `current` names; the worker is stopped first and started after it (a worker that does
+# not start is reported, not a failed deploy: the app still runs every scan itself).
+restart_services() {
+  if worker_installed; then $SYSTEMCTL stop "$WORKER" || return 1; fi
+  $SYSTEMCTL restart "$SERVICE" || return 1
+  if worker_installed && $SYSTEMCTL is-enabled --quiet "$WORKER"; then
+    $SYSTEMCTL start "$WORKER" || echo "staging-deploy: ALERT scan worker $WORKER did not start; scans run on the app only" >&2
+  fi
+}
+RESTART=${STAGING_RESTART:-restart_services}
 MIN_FREE_BYTES=${MIN_FREE_BYTES:-2147483648}
 # Headroom kept above the floor while building: the build is stopped, and a finished release is not put live, once free
 # space falls below MIN_FREE_BYTES + DISK_RESERVE_BYTES, so the protected floor itself is never crossed.
@@ -53,7 +75,7 @@ PROD_ENV_FILE=${PROD_ENV_FILE:-}
 BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache'}
 # The schema change and seed (#908): run only after the service is stopped and a verified recovery point exists. Tests replace it.
 MIGRATE=${STAGING_MIGRATE:-'npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
-STOP=${STAGING_STOP:-systemctl stop $SERVICE}
+STOP=${STAGING_STOP:-stop_services}
 # The recovery helper, installed beside this script in a root-owned directory (docs/STAGING.md), and the root-only directory
 # recovery points live in: outside STAGING_ROOT (the service account's home) so that account cannot rename or replace them.
 RECOVERY=${STAGING_RECOVERY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recovery_point.py}
@@ -457,6 +479,13 @@ trap - ERR
 clear_pending   # the commit point: from here a crash is NOT rolled back (a retry redeploys this commit over its migrated database)
 safe_touch "$rel/.complete"; echo "$new" > "$STATE/current-sha"
 log "live: $new"
+# The scan worker's state after the cutover, in the journal (#836). A report only: the gate above is the app's health.
+if worker_installed; then
+  wstate=$($SYSTEMCTL is-active "$WORKER" 2>/dev/null || true)
+  if [ "$wstate" = active ]; then log "scan worker: active ($WORKER)"
+  elif $SYSTEMCTL is-enabled --quiet "$WORKER"; then log "ALERT scan worker: ${wstate:-unknown} ($WORKER is enabled but not running; scans run on the app only)"
+  else log "scan worker: ${wstate:-inactive} ($WORKER is installed but not enabled)"; fi
+fi
 # Release identity (ops/release-manifest.mjs): the exact commit, build id and readiness the live service reports, in the
 # journal and in the release's release.json. A report only; the gate above is /api/health with the commit.
 if [ -f "$rel/ops/release-manifest.mjs" ]; then

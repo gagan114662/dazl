@@ -26,6 +26,8 @@ import type { Db } from '../db/client.ts'
 import { captureError } from '../ops/errors.ts'
 import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
 import { DbQueue } from './db.ts'
+import { instanceId } from '../ops/instance.ts'
+import { isStaging } from '../staging.ts'
 
 // Off unless DAZL_SCAN_SHARED_QUEUE is exactly 1. Any other set value (a typo, ' 1', 'true') stays off, today's
 // in-process claimer, and is reported once so the operator sees the flag did not take.
@@ -53,6 +55,21 @@ export function scanPerTenantLimit(env: Record<string, string | undefined> = pro
   return Number(raw.trim())
 }
 
+// TEST-ONLY, staging only (#836): a pause between a scan's claim and its run. Read only with DAZL_ENV=staging AND
+// DAZL_STAGING_SCAN_HOLD_MS set to 1..120000; production never reads it, and any other value is no pause. During the
+// pause the scan is running under this instance's claim and has made no paid request, so restarting the instance in
+// that window shows the restart path whole: the exit hook hands the scan and its claim back and the other worker runs
+// it (attempt 2). Without the pause a restart usually lands inside a paid request, where the scan is deliberately not
+// re-run (accounting_uncertain after the lease: lib/scan/store.ts reapStaleJobs), so that path could not be shown on
+// demand. Nothing else changes: the same claim, bind, run and settle.
+export function stagingScanHoldMs(env: Record<string, string | undefined> = process.env): number {
+  if (!isStaging(env)) return 0
+  const raw = env.DAZL_STAGING_SCAN_HOLD_MS?.trim()
+  if (!raw || !/^\d{1,6}$/.test(raw)) return 0
+  const n = Number(raw)
+  return n >= 1 && n <= 120_000 ? n : 0
+}
+
 // The row claimKeyedJob returns, column for column.
 const JOB_COLUMNS = 'id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd'
 export interface ClaimedScan { id: string; user_id: string; attempts: number }
@@ -70,6 +87,12 @@ export interface SharedScanDeps<J extends ClaimedScan> {
   // per-tenant claim limit; default scanPerTenantLimit()
   perTenantInFlight?: number
   now?: () => number
+  // This instance, recorded on every claim it takes (work_queue.claimed_by and claim_log); default instanceId(), the
+  // id /api/health reports. log: one line per claim and per settle; default the process log (the service journal).
+  owner?: string
+  log?: (line: string) => void
+  // the staging-only pause before a claimed scan runs; default stagingScanHoldMs() (0 outside staging)
+  holdMs?: number
 }
 
 import { settleReapedTrial } from '../billing/trial-reap.ts'
@@ -116,6 +139,8 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   const clock = d.now ?? nowS
   const q = new DbQueue(d.queue)
   const perTenant = d.perTenantInFlight ?? scanPerTenantLimit()
+  const owner = d.owner ?? instanceId()
+  const log = d.log ?? ((line: string) => console.log(line))
   await reapStaleScans(d.domain, lease, clock())
   await mirrorScans(d.domain, q, clock())
   while (d.slots.available()) {
@@ -124,7 +149,7 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
     // every slot while another tenant's scan waits. The scan lane: only scan claims count against these caps, so
     // runtime-worker items (lib/workers) never take a scan's place, nor scans theirs. No global cap beyond this
     // instance's run slots.
-    const claim = await q.claim({ kinds: ['scan'], lane: true, leaseSeconds: lease, now: clock(), perTenantInFlight: perTenant, maxInFlight: 1_000_000, order: 'round_robin' })
+    const claim = await q.claim({ kinds: ['scan'], lane: true, leaseSeconds: lease, now: clock(), perTenantInFlight: perTenant, maxInFlight: 1_000_000, order: 'round_robin', owner })
     if (!claim) return
     // The bind is scoped to the item's tenant as well as its id: an item whose tenant is not the scan's owner (a
     // corrupted or hand-made row) binds nothing and completes, so the per-tenant limit is never charged to the wrong
@@ -135,19 +160,33 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
       [clock(), claim.item.id, claim.item.tenantId])
     if (!job) {
       const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ? AND user_id = ?', [claim.item.id, claim.item.tenantId])
-      if (!row || (row.status !== 'pending' && row.status !== 'running')) await q.complete(claim.token) // finished or cancelled: nothing to run
-      else await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
+      // No scan was started under this claim; the journal says why, so a queue item that ends without a "claimed" line is
+      // explained: the scan already ended (its own row has the outcome), or another attempt still holds it.
+      if (!row || (row.status !== 'pending' && row.status !== 'running')) {
+        await q.complete(claim.token) // finished or cancelled: nothing to run
+        log(`[shared-queue] nothing to run scan=${claim.item.id} token=${claim.token} scan_status=${row?.status ?? 'missing'} instance=${owner}`)
+      } else {
+        await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
+        log(`[shared-queue] not taken scan=${claim.item.id} token=${claim.token} scan_status=${row.status} instance=${owner} (another attempt holds it; retried later)`)
+      }
       continue
     }
     const bound = { ...job, attempts: Number(job.attempts) } as J
     d.slots.acquire()
     const token = claim.token
+    // The journal's side of the claim record (#836): scan id, the scan's attempt, the fencing token and this instance.
+    // No tenant id and nothing of the scan's content.
+    log(`[shared-queue] claimed scan=${bound.id} attempt=${bound.attempts} token=${token} instance=${owner}`)
     const untrack = d.track?.(bound, token)
-    void d.run(bound)
+    const hold = d.holdMs ?? stagingScanHoldMs()
+    if (hold > 0) log(`[shared-queue] staging hold scan=${bound.id} attempt=${bound.attempts} ms=${hold} instance=${owner} (test-only: no paid request until it ends)`)
+    void (hold > 0 ? new Promise<void>(r => setTimeout(r, hold)).then(() => d.run(bound)) : d.run(bound))
       .catch(e => { d.onCrash(bound, e); return 'failed' as const })
       .then(async outcome => {
-        if (outcome === 'done') await q.complete(token)
-        else await q.fail(token, { retryable: outcome === 'retry', error: outcome === 'retry' ? 'executor_retry' : 'executor_failed' })
+        // applied=false: the token no longer owned the item (handed back, reaped or re-claimed), so nothing changed
+        const applied = outcome === 'done' ? await q.complete(token)
+          : (await q.fail(token, { retryable: outcome === 'retry', error: outcome === 'retry' ? 'executor_retry' : 'executor_failed' })) !== 'stale'
+        log(`[shared-queue] settled scan=${bound.id} attempt=${bound.attempts} token=${token} outcome=${outcome} applied=${applied} instance=${owner}`)
       })
       .catch(e => { captureError(e, { source: 'worker', where: 'shared-queue:settle', tenantId: bound.user_id, ref: bound.id }) })
       .finally(() => { untrack?.(); d.slots.release() })

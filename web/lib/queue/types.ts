@@ -55,7 +55,15 @@ export interface WorkItem {
   // Monotonic fencing token for the live claim; null while unclaimed.
   claimToken: number | null
   lastError: string | null
+  // Who took the latest claim (ClaimOptions.owner), kept after the claim settles, and the last CLAIM_LOG_MAX claims,
+  // oldest first: which instance ran which attempt (#836). DbQueue only; the other adapters leave them unset.
+  claimedBy?: string | null
+  claimLog?: ClaimRecord[]
 }
+
+// One claim of an item: its attempt number, fencing token, who took it and when (epoch seconds).
+export interface ClaimRecord { attempt: number; token: number; by: string | null; at: number }
+export const CLAIM_LOG_MAX = 8
 
 export interface EnqueueInput {
   tenantId: string
@@ -85,6 +93,8 @@ export interface EnqueueResult {
 }
 
 export interface ClaimOptions {
+  // The claiming instance (lib/ops/instance.ts), recorded on the item as claimedBy and in its claim log. DbQueue only.
+  owner?: string
   now?: number
   // Restrict which kinds this worker executes (Hermes claims 'scan' only).
   kinds?: string[]

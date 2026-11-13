@@ -256,6 +256,36 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
   ```
   `journalctl -u dazl-staging-prebuilt` shows each run; a deploy ends with `live: <sha>`.
 
+## Second scan worker and the shared work queue (#836)
+
+Staging can run scans through the shared work queue with two workers: the app and `dazl-staging-worker.service`, a second process on the same release, env file and database (`web/scripts/scan-worker.mts`; no port, no tick work, scans only). Each scan is claimed by one of them; a scan whose worker stops is finished once by the other. Production does not use this: the flag is unset there and no worker unit is installed.
+
+- **Switch on** (as root, once; from a checkout of `main`):
+  ```sh
+  install -o root -g root -m 755 ops/staging/deploy.sh /usr/local/lib/dazl-staging/      # stops and starts the worker around a deploy
+  install -m 644 ops/staging/dazl-staging-worker.service /etc/systemd/system/
+  systemctl daemon-reload
+  # in /etc/dazl-staging/env (or the ops door: env/set?env=staging&key=DAZL_SCAN_SHARED_QUEUE, body 1):
+  #   DAZL_SCAN_SHARED_QUEUE=1
+  systemctl enable dazl-staging-worker.service
+  systemctl restart dazl-staging.service          # PartOf/WantedBy: the worker starts and restarts with the app
+  systemctl is-active dazl-staging.service dazl-staging-worker.service   # active, active
+  journalctl -u dazl-staging-worker -n 5          # [scan-worker] started instance=worker-... shared_queue=on
+  ```
+- **Redeploys keep it.** `deploy.sh` stops the worker by name before it stops the app for the recovery point (nothing writes during a migration or a restore), starts it after the app on the new release, and ends with `scan worker: active (...)` in the journal, or an `ALERT scan worker` line when it is enabled but did not start (the deploy stands: the app runs every scan itself). A box without the unit is untouched.
+- **Who ran what** is in the store. Each claim writes `work_queue.claimed_by` (the instance: the app's is `instance` in `/api/health`, the worker's is `worker-<8 hex>` or `DAZL_INSTANCE_ID`) and appends `{attempt, token, by, at}` to `work_queue.claim_log` (the last 8 claims). Both journals carry one line per claim and per settle:
+  `[shared-queue] claimed scan=<id> attempt=<n> token=<t> instance=<who>` and `[shared-queue] settled scan=<id> ... outcome=done applied=true instance=<who>`.
+  ```sql
+  SELECT id, status, attempts, claim_token, claimed_by, claim_log FROM work_queue WHERE kind = 'scan' ORDER BY created_at DESC LIMIT 5;
+  ```
+- **Restart check, two outcomes.** What a restart does to a running scan depends on one thing: whether a paid request (model or search) was in flight at that moment.
+  - *No paid request in flight:* the stopping process hands the scan and its claim back as it exits, and the next kick (the worker looks every 5 s; the app on the next status poll or tick) takes it. The row ends `status = 'done'`, `attempts = 2`, two `claim_log` entries with a higher token on the second, `scan_jobs.attempts = 2`, and the scan's leads are there once.
+  - *A paid request in flight:* the scan is deliberately **not** run again, because the request may have been billed (the existing rule, `reapStaleJobs`, `lib/scan/store.ts`). It stays `running` under the stopped instance's claim until the lease (`SCAN_STALE_RUNNING_S`, 20 minutes by default), then ends `failed` / `accounting_uncertain` at `attempts = 1` ("Stopped after an interruption - a paid step may already have been billed" on the scan), and its queue item is closed by the next kick with `[shared-queue] nothing to run scan=<id> ... scan_status=failed` in the journal. It never runs twice.
+  A real scan spends most of its time inside paid requests, so an unprepared restart usually shows the second outcome. To show the first on demand, staging has a **test-only pause**: `DAZL_STAGING_SCAN_HOLD_MS=<1..120000>` (read only with `DAZL_ENV=staging`; production never reads it) holds every claimed scan that long before it runs, with no paid request made. The journal says `[shared-queue] staging hold scan=<id> attempt=1 ms=<n> instance=<who>`. Steps: set `DAZL_STAGING_SCAN_HOLD_MS=45000` and restart staging; start a scan (the app kicks at once, so the app's instance normally takes attempt 1); within 45 s read `work_queue.claimed_by` and stop that process: `systemctl kill -s TERM dazl-staging.service` for the app's instance (the id `/api/health` reports; systemd starts the app again 5 s later, and the worker is not restarted), `systemctl restart dazl-staging-worker` for `worker-...`. The process still running takes attempt 2 on its next look, waits its own pause, runs the scan once and finishes it; `claim_log` names both. `systemctl restart dazl-staging` restarts both processes instead: the scan is still handed back and finished once, by whichever is back first. Remove the variable and restart afterwards: it slows every staging scan by that much.
+  - *Hard kill* (`systemctl kill -s KILL dazl-staging-worker`): nothing hands the claim back, so either outcome arrives only after the lease plus the queue's retry backoff: `attempts = 2` and `done` when no paid request was in flight, `accounting_uncertain` when one was.
+- **Memory.** The worker runs one scan at a time (`SCAN_WORKER_CONCURRENCY`, 1 to 8) and was measured at 160 MB resident idle on a production-shaped database; the unit caps it (`MemoryMax=512M`, heap 320 MB). On the 1.8 GB box that is memory production's deploy also needs (it refuses to start a second release under 300 MB available): `systemctl stop dazl-staging-worker` frees it, and the app keeps running scans alone.
+- **Switch off.** `systemctl disable --now dazl-staging-worker.service` stops the second worker. Removing `DAZL_SCAN_SHARED_QUEUE` and restarting returns scans to the app's in-process claimer; queue rows sit inert and the worker, if still running, idles.
+
 ## Day to day
 - **Deploys** are automatic (from prebuilt builds, above). `journalctl -u dazl-staging-prebuilt` (and `-u dazl-staging-deploy`) shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
 - **Pause tracking:** `systemctl stop dazl-staging-prebuilt.timer` (or `dazl-staging-deploy.timer` on a box that builds itself).
