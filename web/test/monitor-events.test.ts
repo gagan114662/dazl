@@ -152,7 +152,7 @@ bothEngines('a run is folded only after its enrichment settles, so a contact con
   assert.equal(await collectMonitorResults(db, { now: NOW + 180 }), 1)
 })
 
-// The 16 leads of a real staging scan, as stored (job 13808d9c..., demo workspace, 2026-11-13, request "B2B software companies hiring
+// The 16 leads of a real staging scan, as stored (demo workspace, 2026-11-13, request "B2B software companies hiring
 // account executives"; read through the read-only ops door): company, company_domain, signal, signal_kind, event_date, date_status,
 // event_date_proof, confidence, review_reason, the scan:actionable verdict, source_url. No row has date_status 'verified'.
 type RealRow = [string, string | null, string, string | null, string | null, string, string | null, number | null, string | null, string | null, string]
@@ -176,7 +176,7 @@ const REAL_SCAN: RealRow[] = [
 ]
 bothEngines('#882 real staging scan: its one ready, board-dated hiring lead (Flexport) alerts once; the ready undated lead and the 14 review-lane leads never do', async ({ db }) => {
   const mon = await play(db, 'u1', { query: 'B2B software companies hiring account executives' })
-  const at = Math.floor(Date.parse('2026-11-13T09:27:42Z') / 1000) // the real scan's start (scan_jobs.created_at 1794562062)
+  const at = Math.floor(Date.parse('2026-11-13T09:27:42Z') / 1000) // when the real scan started
   const fold = async (runAt: number) => {
     await db.run('UPDATE monitors SET next_run_at = ? WHERE id = ?', [runAt, mon])
     const [job] = await runDueMonitors(db, { now: runAt })
@@ -214,8 +214,11 @@ bothEngines('#882 a row from before 2026-10-23 with date_status verified and no 
   assert.deepEqual(await run(db, 'u1', mon, NOW, [
     { company: 'Legacy Dental', domain: 'legacy.example', legacyStatus: 'verified', proof: null },                    // the old nearby-year verdict: no proof
     { company: 'Board Dental', domain: 'board.example', proof: 'ats_structured' },                                    // a posting day on an expansion signal
+    { company: 'Future Dental', domain: 'future.example', date: '2026-11-20' },                                      // a proven-looking day that has not happened yet
+    { company: 'Baddate Dental', domain: 'baddate.example', date: '2026-02-30' },                                    // not a calendar day
   ]), { newCount: 0, kinds: [] })
   assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM monitor_events'))!.n), 0)
+  assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM monitor_cursors'))!.n), 0, 'no cursor moves for a lead that is not an event')
   assert.deepEqual(await run(db, 'u1', mon, NOW + 7 * DAY, [{ company: 'Board Dental', domain: 'board.example', proof: 'ats_structured', kind: 'hiring', signal: 'Board Dental is hiring a hygienist' }]), { newCount: 1, kinds: ['new_company'] })
 })
 
