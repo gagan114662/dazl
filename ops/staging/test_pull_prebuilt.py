@@ -33,7 +33,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2;;
     -w) has_w=1; shift 2;;
-    --max-time|--max-filesize|--proto|--retry) shift 2;;
+    --max-time) echo "max-time $2" >> "$FAKE_T/curl-maxtime.log"; shift 2;;
+    --max-filesize|--proto|--retry) shift 2;;
     -*) [[ "$1" == *f* ]] && has_f=1; shift;;
     *) url=$1; shift;;
   esac
@@ -61,22 +62,31 @@ exit 0
 FAKE_LOG = r'''#!/usr/bin/env bash
 echo "$(basename "$0") $*" >> "$FAKE_T/migrate.log"
 '''
-# deploy.sh's interface. MARKER is replaced by "STAGING_MIGRATE" for the current deploy.sh (migrate is its own step)
+# deploy.sh's interface (the #908 layout, main's ops/staging/deploy.sh): migrate is its own step (STAGING_MIGRATE), the
+# live commit is recorded in $STAGING_STATE_ROOT/current-sha (root-owned, outside the service account's home), and
+# --check-env FILE validates the env file (here: refuses a non-staging env or a DB path under /prod/). MARKER is replaced
+# by "STAGING_MIGRATE" for the current deploy.sh, or by an old comment for a deploy.sh from before #908.
 FAKE_DEPLOY = r'''#!/usr/bin/env bash
 # MARKER
 set -euo pipefail
 T=$FAKE_T
+if [ "${1:-}" = --check-env ]; then
+  grep -q '^DAZL_ENV=staging$' "$2" && ! grep -q '^DB_PATH=.*/prod/' "$2" || { echo "fake deploy: env refused" >&2; exit 1; }
+  echo "env ok"; exit 0
+fi
 printf '%s' "$STAGING_BUILD" > "$T/build-cmd"
+echo run >> "$T/deploy-runs"
 [ ! -e "$T/deploy-fail" ] || exit 3
+STATE=${STAGING_STATE_ROOT:-/var/lib/dazl-staging-deploy}
 new=$(cat "$T/deploy-main" 2>/dev/null || cat "$T/main")
-cur=$(cat "$T/root/current-sha" 2>/dev/null || true)
+cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 [ "$new" != "$cur" ] || exit 0
 rel="$T/root/releases/$new"; rm -rf "$rel"; mkdir -p "$rel/web"
 cp "$T/lockfile" "$rel/web/package-lock.json"
 live=; [ -L "$T/root/current" ] && live=$(readlink -f "$T/root/current")
 if [ -n "$live" ] && [ -d "$live/web/node_modules" ] && cmp -s "$live/web/package-lock.json" "$T/lockfile"; then cp -al "$live/web/node_modules" "$rel/web/node_modules"; fi
 if ! bash -c "cd '$rel/web' && echo '$new' > .build-commit && $STAGING_BUILD"; then rm -rf "$rel"; echo "fake deploy: build of $new failed" >&2; exit 1; fi
-ln -sfn "$rel" "$T/root/current"; echo "$new" > "$T/root/current-sha"
+ln -sfn "$rel" "$T/root/current"; mkdir -p "$STATE"; echo "$new" > "$STATE/current-sha"
 echo "fake deploy: live: $new"
 '''
 
@@ -95,7 +105,8 @@ def sha(path):
 class PullPrebuiltTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.t = T = Path(self.tmp.name)
-        for d in ('bin', 'assets', 'root/releases', 'data'): (T / d).mkdir(parents=True)
+        for d in ('bin', 'assets', 'root/releases', 'data', 'lib', 'state'): (T / d).mkdir(parents=True)
+        (T / 'lib').chmod(0o755)  # the deploy script's directory: writable by its owner only (whatever the umask)
         for name, body in (('git', FAKE_GIT), ('curl', FAKE_CURL), ('npm', FAKE_LOG), ('node', FAKE_LOG)):
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
         self.deploy(new_style=True)
@@ -105,7 +116,7 @@ class PullPrebuiltTest(unittest.TestCase):
         (live / 'node_modules/next/package.json').write_text('{}')
         (live / 'package-lock.json').write_bytes(LOCK1)
         os.symlink(T / 'root/releases' / A, T / 'root/current')
-        (T / 'root/current-sha').write_text(A + '\n')
+        (T / 'state/current-sha').write_text(A + '\n')
         (T / 'lockfile').write_bytes(LOCK1)
         self.db = T / 'data/app.db'
         con = sqlite3.connect(self.db); con.execute('pragma journal_mode=wal')
@@ -118,7 +129,8 @@ class PullPrebuiltTest(unittest.TestCase):
 
     def deploy(self, new_style):
         body = FAKE_DEPLOY.replace('MARKER', 'STAGING_MIGRATE' if new_style else 'deploy.sh from before #908')
-        (self.t / 'deploy.sh').write_text(body)
+        d = self.t / 'lib/deploy.sh'
+        d.write_text(body); d.chmod(0o755)
 
     def publish(self, commit=B, inner=None, lock=LOCK1, edit=None):
         """The workflow's three assets for commit, with an optional edit of the manifest dict."""
@@ -138,9 +150,11 @@ class PullPrebuiltTest(unittest.TestCase):
         T = self.t
         e = {'PATH': f"{T / 'bin'}:{os.environ['PATH']}", 'FAKE_T': str(T), 'HOME': str(T),
              'STAGING_REPO_URL': 'https://example.test/dazl.git', 'STAGING_PREBUILT_BASE_URL': 'https://example.test/rel',
-             'STAGING_ROOT': str(T / 'root'), 'STAGING_ENV_FILE': str(T / 'env'), 'STAGING_DEPLOY_SH': str(T / 'deploy.sh'),
+             'STAGING_ROOT': str(T / 'root'), 'STAGING_ENV_FILE': str(T / 'env'), 'STAGING_DEPLOY_SH': str(T / 'lib/deploy.sh'),
              'STAGING_PREBUILT_DIR': str(T / 'dl'), 'STAGING_PREBUILT_STATE': str(T / 'pstate'),
-             'STAGING_BACKUP_DIR': str(T / 'backups'), 'STAGING_CURRENT_SHA_FILES': str(T / 'root/current-sha'),
+             'STAGING_BACKUP_DIR': str(T / 'backups'), 'STAGING_STATE_ROOT': str(T / 'state'),
+             # the deploy script must be owned by root; here the test user stands in for root (the unit never sets this)
+             'STAGING_TRUSTED_UID': str(os.getuid()),
              'MIN_FREE_BYTES': '0', 'DISK_RESERVE_BYTES': '0', 'STAGING_NODE_ARCH': 'arm64', 'STAGING_NODE_ABI': '127'}
         e.update({k: str(v) for k, v in env.items()})
         return subprocess.run(['bash', SCRIPT, *args], env=e, capture_output=True, text=True, timeout=60)
@@ -150,7 +164,7 @@ class PullPrebuiltTest(unittest.TestCase):
         return p.read_text() if p.exists() else ''
 
     def live(self):
-        return (self.t / 'root/current-sha').read_text().strip()
+        return (self.t / 'state/current-sha').read_text().strip()
 
     def deployed(self):
         return (self.t / 'build-cmd').exists()
@@ -208,17 +222,14 @@ class PullPrebuiltTest(unittest.TestCase):
         r2 = self.run_pull()
         self.assertEqual(r2.returncode, 0, r2.stderr); self.assertEqual(self.curl_log(), before)
 
-    def test_lockfile_changed_ships_node_modules_and_old_deploy_migrates_in_the_build(self):
-        self.deploy(new_style=False)
+    def test_lockfile_changed_ships_node_modules(self):
         (self.t / 'lockfile').write_bytes(LOCK2); self.publish(lock=LOCK2)
         r = self.run_pull()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.live(), B)
         self.assertIn(f'staging-modules-{B}.tgz', self.curl_log())
         self.assertEqual((self.t / 'root/releases' / B / 'web/node_modules/next/package.json').read_text(), '{"name":"next"}')
-        self.assertIn('db:migrate', (self.t / 'build-cmd').read_text())
-        mig = (self.t / 'migrate.log').read_text()
-        self.assertIn('npm run -s db:migrate', mig); self.assertIn('scripts/staging-seed.mts', mig)
+        self.assertNotIn('db:migrate', (self.t / 'build-cmd').read_text(), 'deploy.sh migrates in its own step')
 
     def test_backups_keep_the_newest(self):
         self.publish(B)
@@ -241,13 +252,160 @@ class PullPrebuiltTest(unittest.TestCase):
         self.assertRegex(r.stdout + r.stderr, why)
         self.assertFalse(self.deployed(), 'deploy.sh must not run'); self.assertEqual(self.live(), A)
 
+    # --- #1061 Hermes review (a8425d09): findings 1-7 ----------------------------------------------------------------
+    def test_untrusted_deploy_script_is_refused_before_anything(self):
+        # finding 1: root runs DEPLOY; a file or directory a non-root account can replace must never be run
+        self.publish()
+        d = self.t / 'lib/deploy.sh'
+        cases = {
+            'group-writable script': lambda: d.chmod(0o775),
+            'world-writable script': lambda: d.chmod(0o757),
+            'group-writable parent directory': lambda: (self.t / 'lib').chmod(0o775),
+            'symlinked script': lambda: (d.rename(self.t / 'lib/real.sh'), d.symlink_to(self.t / 'lib/real.sh')),
+            'symlinked parent directory': lambda: ((self.t / 'lib').rename(self.t / 'lib2'), (self.t / 'lib').symlink_to(self.t / 'lib2')),
+        }
+        for why, mutate in cases.items():
+            with self.subTest(why):
+                self.setUp_deploy_fresh()
+                mutate()
+                (self.t / 'curl.log').unlink(missing_ok=True)
+                r = self.run_pull()
+                self.assert_refused(r, 'deploy script .* not trusted')
+                self.assertEqual(self.curl_log(), '', 'refused before any download')
+                self.assertFalse((self.t / 'backups').exists(), 'refused before any backup')
+        # owned by someone other than the trusted user (root)
+        self.setUp_deploy_fresh()
+        self.assert_refused(self.run_pull(STAGING_TRUSTED_UID=os.getuid() + 1), 'deploy script .* not trusted')
+
+    def setUp_deploy_fresh(self):
+        lib = self.t / 'lib'
+        if lib.is_symlink(): lib.unlink()
+        if (self.t / 'lib2').exists(): (self.t / 'lib2').rename(lib)
+        lib.chmod(0o755)
+        for f in ('deploy.sh', 'real.sh'):
+            p = lib / f
+            if p.is_symlink() or p.exists(): p.unlink()
+        self.deploy(new_style=True)
+
+    def test_deploy_script_from_before_908_is_refused(self):
+        # finding 1/2: the prerequisite is the #908 layout (root-owned deploy.sh outside the service home, current-sha in
+        # its root-owned state directory); a deploy.sh without the STAGING_MIGRATE step is refused, nothing done
+        self.deploy(new_style=False); self.publish()
+        r = self.run_pull()
+        self.assert_refused(r, 'from before #908')
+        self.assertEqual(self.curl_log(), '')
+
+    def test_documented_defaults_second_tick_is_a_no_op(self):
+        # finding 2: with the documented env (no override of where current-sha is read), tick 2 after a deploy must
+        # neither back up nor run deploy.sh again
+        self.publish()
+        r1 = self.run_pull()
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr); self.assertIn('live: ' + B, r1.stdout)
+        backups1 = sorted(p.name for p in (self.t / 'backups').iterdir())
+        runs1 = (self.t / 'deploy-runs').read_text()
+        r2 = self.run_pull()
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(sorted(p.name for p in (self.t / 'backups').iterdir()), backups1, 'tick 2 takes no backup')
+        self.assertEqual((self.t / 'deploy-runs').read_text(), runs1, 'tick 2 does not run deploy.sh')
+
+    def test_keep_backups_must_be_a_whole_number_of_at_least_one(self):
+        # finding 3: 0 would delete the just-verified backup before deploy.sh runs
+        self.publish()
+        for bad in ('0', '-1', 'x', '', '1.5'):
+            with self.subTest(bad=bad):
+                (self.t / 'curl.log').unlink(missing_ok=True)
+                self.assert_refused(self.run_pull(STAGING_KEEP_BACKUPS=bad), 'STAGING_KEEP_BACKUPS')
+                self.assertEqual(self.curl_log(), ''); self.assertFalse((self.t / 'backups').exists())
+
+    def test_download_or_verify_failure_is_throttled_like_a_deploy_failure(self):
+        # finding 4: a bad asset must not be downloaded again every tick
+        nxt, _ = self.publish()
+        data = bytearray(nxt.read_bytes()); data[len(data) // 2] ^= 0xFF; nxt.write_bytes(bytes(data))
+        self.assert_refused(self.run_pull(), "does not match the manifest's sha256")
+        self.assertTrue((self.t / 'pstate' / f'failed-{B}').exists(), 'a verification failure writes the retry stamp')
+        downloads = self.curl_log().count('.tgz')
+        r2 = self.run_pull()
+        self.assertEqual(r2.returncode, 0, r2.stderr); self.assertIn('failed less than', r2.stdout)
+        self.assertEqual(self.curl_log().count('.tgz'), downloads, 'tick 2 downloads nothing')
+        # a failed backup is throttled too; a not-yet-published build and low disk are not failures
+        self.assertFalse((self.t / 'pstate' / f'failed-{C}').exists())
+
+    def test_backup_failure_is_throttled(self):
+        self.db.unlink(); Path(str(self.db) + '-wal').unlink(missing_ok=True); Path(str(self.db) + '-shm').unlink(missing_ok=True)
+        self.db.write_bytes(b'this is not a database' * 100)
+        self.publish()
+        self.assert_refused(self.run_pull(), 'backup failed')
+        self.assertTrue((self.t / 'pstate' / f'failed-{B}').exists())
+
+    def test_not_published_and_low_disk_write_no_stamp(self):
+        r = self.run_pull()
+        self.assertEqual(r.returncode, 0); self.assertFalse((self.t / 'pstate' / f'failed-{B}').exists())
+        self.publish()
+        r = self.run_pull(MIN_FREE_BYTES=10 ** 15)
+        self.assertEqual(r.returncode, 0); self.assertIn('ALERT low_disk', r.stdout)
+        self.assertFalse((self.t / 'pstate' / f'failed-{B}').exists())
+
+    def test_cached_modules_archive_that_is_not_needed_is_not_counted_as_free_space(self):
+        # finding 5: lockfile unchanged (need_mods=0) - a cached modules archive is not reused, so it is no credit;
+        # here it is a 1 GB sparse file: with the old credit the floor check passed although real free space is short
+        import shutil
+        nxt, _ = self.publish()
+        dl = self.t / 'dl'; dl.mkdir()
+        big = dl / f'staging-modules-{B}.tgz'
+        with open(big, 'wb') as f: f.truncate(10 ** 9)
+        free = shutil.disk_usage(dl).free
+        need = nxt.stat().st_size + self.db.stat().st_size
+        r = self.run_pull(MIN_FREE_BYTES=free - need + 5 * 10 ** 8)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('ALERT low_disk', r.stdout)
+        self.assertFalse(self.deployed())
+
+    def test_env_is_checked_by_deploy_sh_before_the_database_is_touched(self):
+        # finding 6: the root-run backup must never read a production database: deploy.sh --check-env runs first
+        self.publish()
+        (self.t / 'env').write_text(f'DAZL_ENV=production\nDB_PATH={self.db}\n')
+        self.assert_refused(self.run_pull(), 'env')
+        self.assertFalse((self.t / 'backups').exists(), 'no backup of a database the env check refused')
+
+    def test_symlinked_or_hard_linked_database_is_refused(self):
+        self.publish()
+        link = self.t / 'data/link.db'; link.symlink_to(self.db)
+        (self.t / 'env').write_text(f'DAZL_ENV=staging\nDB_PATH={link}\n')
+        self.assert_refused(self.run_pull(), 'symlink')
+        self.assertFalse((self.t / 'backups').exists())
+        link.unlink(); os.link(self.db, link)
+        self.assert_refused(self.run_pull(STAGING_RETRY_AFTER_S=0), 'hard link')
+        self.assertFalse((self.t / 'backups').exists())
+
+    def test_downloads_share_one_time_budget_below_the_unit_timeout(self):
+        # finding 7: every download is bounded by what is left of one budget; an exhausted budget fails (and is throttled)
+        (self.t / 'lockfile').write_bytes(LOCK2); self.publish(lock=LOCK2)
+        r = self.run_pull(STAGING_DOWNLOAD_BUDGET_S=600)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        times = [int(l.split()[1]) for l in (self.t / 'curl-maxtime.log').read_text().splitlines()]
+        self.assertTrue(all(t <= 600 for t in times), times)
+        (self.t / 'main').write_text(C); self.publish(C)
+        self.assert_refused_at(self.run_pull(STAGING_DOWNLOAD_BUDGET_S=0), 'time budget', B)
+        unit = Path(SCRIPT).with_name('dazl-staging-prebuilt.service').read_text()
+        import re
+        tmo = int(re.search(r'^TimeoutStartSec=(\d+)min$', unit, re.M).group(1)) * 60
+        src = Path(SCRIPT).read_text()
+        budget = int(re.search(r'DOWNLOAD_BUDGET_S=\$\{STAGING_DOWNLOAD_BUDGET_S:-(\d+)\}', src).group(1))
+        deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=(\d+)', src).group(1))
+        self.assertLess(budget + deploy_allow, tmo, 'the downloads plus deploy.sh fit inside the unit timeout')
+
+    def assert_refused_at(self, r, why, live):
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertRegex(r.stdout + r.stderr, why)
+        self.assertEqual(self.live(), live)
+
     def test_download_that_does_not_match_the_manifest_is_refused(self):
         nxt, _ = self.publish()
         data = bytearray(nxt.read_bytes()); data[len(data) // 2] ^= 0xFF; nxt.write_bytes(bytes(data))  # same size, other bytes
         self.assert_refused(self.run_pull(), "does not match the manifest's sha256")
         self.assertFalse(any(p.name.endswith('.part') for p in (self.t / 'dl').iterdir()))
-        nxt.write_bytes(nxt.read_bytes() + b'x')  # other size
-        self.assert_refused(self.run_pull(), 'is not the .* bytes the manifest records')
+        nxt.write_bytes(nxt.read_bytes() + b'x')  # other size (the first failure is throttled: retry now)
+        self.assert_refused(self.run_pull(STAGING_RETRY_AFTER_S=0), 'is not the .* bytes the manifest records')
 
     def test_build_from_another_commit_is_refused(self):
         self.publish(inner=C)

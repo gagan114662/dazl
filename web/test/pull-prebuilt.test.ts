@@ -26,8 +26,8 @@ test('pull-prebuilt.sh is valid bash', () => {
 function rig(curlStatus: number, curlBody = '') {
   const dir = mkdtempSync(path.join(tmpdir(), 'pull-prebuilt-'))
   const bin = path.join(dir, 'bin'); mkdirSync(bin)
-  const deploy = path.join(dir, 'deploy.sh'); writeFileSync(deploy, '#!/usr/bin/env bash\n'); chmodSync(deploy, 0o755)
-  const envFile = path.join(dir, 'env'); writeFileSync(envFile, '')
+  const deploy = trustedDeploy(dir)
+  const envFile = path.join(dir, 'env'); writeFileSync(envFile, `DAZL_ENV=staging\nDB_PATH=${path.join(dir, 'app.db')}\n`)
   const calls = path.join(dir, 'curl-calls.log')
   writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env bash\necho "${SHA}\trefs/heads/main"\n`); chmodSync(path.join(bin, 'git'), 0o755)
   // Mimics real curl closely enough for this script's two call shapes: with -f, any HTTP status >= 400 is exit 22
@@ -55,10 +55,19 @@ exit 0
     STAGING_DEPLOY_SH: deploy, STAGING_ENV_FILE: envFile,
     STAGING_PREBUILT_STATE: path.join(dir, 'pstate'), STAGING_ROOT: path.join(dir, 'root'),
     STAGING_BACKUP_DIR: path.join(dir, 'backups'), STAGING_PREBUILT_DIR: path.join(dir, 'dl'),
-    STAGING_CURRENT_SHA_FILES: path.join(dir, 'nonexistent-current-sha'),
+    STAGING_STATE_ROOT: path.join(dir, 'state'), STAGING_TRUSTED_UID: String(process.getuid!()),
   } as unknown as NodeJS.ProcessEnv
   const r = spawnSync('bash', [script, '--dry-run'], { encoding: 'utf8', env })
   return { status: r.status, out: r.stdout + r.stderr, calls }
+}
+
+// The #908 deploy script stand-in: root-owned in production; here owned by the test user, who stands in for root
+// (STAGING_TRUSTED_UID), in a directory writable by its owner only, with deploy.sh's --check-env interface.
+function trustedDeploy(dir: string) {
+  const lib = path.join(dir, 'lib'); mkdirSync(lib); chmodSync(lib, 0o755)
+  const deploy = path.join(lib, 'deploy.sh')
+  writeFileSync(deploy, '#!/usr/bin/env bash\n# STAGING_MIGRATE\n[ "${1:-}" = --check-env ] && { echo "env ok"; exit 0; }\n'); chmodSync(deploy, 0o755)
+  return deploy
 }
 
 test('a true 404 (no build published yet) is still benign: nothing to do, exit 0', () => {
@@ -88,48 +97,43 @@ test('a 200 with a malformed manifest fails on the manifest content, not the tra
   assert.match(r.out, /manifest refused/)
 })
 
-// The $ROOT/current-sha legacy path (#972: inside the service account's own home) is read only when a box
-// explicitly opts in, never by default - checked directly against the script's own CURRENT_FILES line, since
-// exercising it end to end would need a real "already live" state the dry-run path above does not build.
-test('#972: the legacy $ROOT/current-sha path is gated behind an explicit opt-in, never read by default', () => {
-  const src = readFileSync(script, 'utf8')
-  assert.match(src, /CURRENT_FILES=\$\{STAGING_CURRENT_SHA_FILES:-\/var\/lib\/dazl-staging-deploy\/current-sha\}/, 'default CURRENT_FILES is the trusted, root-owned path only')
-  assert.match(src, /STAGING_TRUST_LEGACY_CURRENT_SHA/, 'the legacy path is added only behind an explicit env opt-in')
-})
-
-// End-to-end version of the test above (round-2 council nit): a real $ROOT/current-sha matching main's head, with
-// STAGING_CURRENT_SHA_FILES left UNSET so the script's own default applies (the rig() helper above always sets it,
-// which short-circuits the opt-in's `-z` check and so can't exercise this). Without the opt-in the file is never
-// read; with it, the script does treat main as already live.
-function rigLegacyCurrentSha(trustLegacy: boolean) {
+// #972 / #1061 review finding 2: deploy.sh records the live commit in its root-owned state directory; the pre-#908
+// $ROOT/current-sha, inside the service account's own home, is never read - not even with the old opt-in variable, which
+// no longer exists. A legacy file naming main must not make the script treat main as live.
+test('#1061: a legacy $ROOT/current-sha naming main is never read (the opt-in is gone); the state root\'s file is', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pull-prebuilt-legacy-'))
   const bin = path.join(dir, 'bin'); mkdirSync(bin)
-  const deploy = path.join(dir, 'deploy.sh'); writeFileSync(deploy, '#!/usr/bin/env bash\n'); chmodSync(deploy, 0o755)
-  const envFile = path.join(dir, 'env'); writeFileSync(envFile, '')
+  const deploy = trustedDeploy(dir)
+  const envFile = path.join(dir, 'env'); writeFileSync(envFile, `DAZL_ENV=staging\nDB_PATH=${path.join(dir, 'app.db')}\n`)
   writeFileSync(path.join(bin, 'git'), `#!/usr/bin/env bash\necho "${SHA}\trefs/heads/main"\n`); chmodSync(path.join(bin, 'git'), 0o755)
-  // curl is never reached in the "already live" case; stub it to fail loudly if it is, so a regression that skips
-  // the early-exit shows up as a curl-not-found-ish failure rather than silently passing.
-  writeFileSync(path.join(bin, 'curl'), '#!/usr/bin/env bash\nexit 77\n'); chmodSync(path.join(bin, 'curl'), 0o755)
+  // past the live check the dry run fetches the manifest: a 404 here means "proceeded past the legacy file"
+  writeFileSync(path.join(bin, 'curl'), '#!/usr/bin/env bash\nprintf 404\n'); chmodSync(path.join(bin, 'curl'), 0o755)
   const root = path.join(dir, 'root'); mkdirSync(root)
   writeFileSync(path.join(root, 'current-sha'), SHA)
+  const state = path.join(dir, 'state'); mkdirSync(state)
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
-    STAGING_DEPLOY_SH: deploy, STAGING_ENV_FILE: envFile,
-    STAGING_PREBUILT_STATE: path.join(dir, 'pstate'), STAGING_ROOT: root,
+    STAGING_DEPLOY_SH: deploy, STAGING_ENV_FILE: envFile, STAGING_TRUSTED_UID: String(process.getuid!()),
+    STAGING_PREBUILT_STATE: path.join(dir, 'pstate'), STAGING_ROOT: root, STAGING_STATE_ROOT: state,
     STAGING_BACKUP_DIR: path.join(dir, 'backups'), STAGING_PREBUILT_DIR: path.join(dir, 'dl'),
-    ...(trustLegacy ? { STAGING_TRUST_LEGACY_CURRENT_SHA: '1' } : {}),
+    STAGING_TRUST_LEGACY_CURRENT_SHA: '1',
   } as unknown as NodeJS.ProcessEnv
-  const r = spawnSync('bash', [script, '--dry-run'], { encoding: 'utf8', env })
-  return { status: r.status, out: r.stdout + r.stderr }
-}
-
-test('#972 end-to-end: without the opt-in, a live legacy current-sha is never read - the script proceeds past it', () => {
-  const r = rigLegacyCurrentSha(false)
-  assert.doesNotMatch(r.out, /already live/, 'the legacy file matches main but must not be trusted by default')
+  let r = spawnSync('bash', [script, '--dry-run'], { encoding: 'utf8', env })
+  assert.doesNotMatch(r.stdout + r.stderr, /already live/, 'the legacy file is not trusted, even with the old opt-in')
+  assert.match(r.stdout + r.stderr, /no prebuilt build published/)
+  writeFileSync(path.join(state, 'current-sha'), SHA)
+  r = spawnSync('bash', [script, '--dry-run'], { encoding: 'utf8', env })
+  assert.equal(r.status, 0); assert.match(r.stdout, /already live/)
 })
 
-test('#972 end-to-end: with STAGING_TRUST_LEGACY_CURRENT_SHA=1, the same legacy file is read and main is seen as live', () => {
-  const r = rigLegacyCurrentSha(true)
-  assert.equal(r.status, 0)
-  assert.match(r.out, /already live/)
+// #1061 review finding 8: a same-commit rerun must not replace the archives under a still-visible old manifest. The
+// publish step deletes this commit's manifest asset BEFORE uploading the archives, and uploads the manifest last.
+test('#1061: the publish step removes the old manifest before replacing the archives, and uploads the manifest last', () => {
+  const wf = readFileSync(fileURLToPath(new URL('../../.github/workflows/staging-prebuilt.yml', import.meta.url)), 'utf8')
+  const step = wf.slice(wf.indexOf('- name: Publish to the staging-prebuilt prerelease'), wf.indexOf('- name: Keep the newest 3'))
+  const del = step.search(/gh api -X DELETE "repos\/\$REPO\/releases\/assets\/\$mid"/)
+  const archives = step.indexOf('gh release upload "$TAG" -R "$REPO" --clobber "staging-next-$SHA.tgz"')
+  const manifest = step.indexOf('gh release upload "$TAG" -R "$REPO" --clobber "staging-prebuilt-$SHA.json"')
+  assert.ok(del > 0, 'the old manifest asset is deleted'); assert.ok(archives > 0 && manifest > 0)
+  assert.ok(del < archives, 'deleted before the archives are replaced'); assert.ok(archives < manifest, 'the manifest last')
 })

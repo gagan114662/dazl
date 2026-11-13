@@ -4,18 +4,21 @@
 # (.github/workflows/staging-prebuilt.yml, on every push to main) and is published as assets of the `staging-prebuilt`
 # prerelease of this public repo. Run by dazl-staging-prebuilt.timer every 2 minutes, as root, this script:
 #   1. reads main's head commit (git ls-remote, no token: the repo is public);
-#   2. does nothing when that commit is already live (the deploy's current-sha file) or failed less than
-#      STAGING_RETRY_AFTER_S ago, or when no prebuilt build has been published for it yet;
+#   0. refuses to run unless the installed deploy.sh is trusted (root-owned, root-writable only, no symlink, in
+#      root-owned directories; the #908 layout) and `deploy.sh --check-env` accepts the env file;
+#   2. does nothing when that commit is already live (deploy.sh's $STAGING_STATE_ROOT/current-sha) or failed less than
+#      STAGING_RETRY_AFTER_S ago (any failure after the manifest is accepted), or when no prebuilt build is published yet;
 #   3. reads the build's manifest (staging-prebuilt-<sha>.json, uploaded last, so a manifest means a complete set) and
 #      checks it names exactly that commit, this box's CPU architecture and Node ABI;
 #   4. skips (journal ALERT) when the downloads plus a database backup would take free space below the 2 GiB floor
 #      plus a reserve, before downloading anything;
-#   5. downloads the build (and node_modules only when the lockfile differs from the live release's), checks each
-#      file's size and sha256 against the manifest and the commit recorded inside the build (.build-commit);
-#   6. backs up the staging SQLite database (online backup API, integrity_check ok) into a root-only directory,
-#      keeping the newest STAGING_KEEP_BACKUPS; no verified backup, no deploy;
+#   5. downloads the build (and node_modules only when the lockfile differs from the live release's) within one time
+#      budget, checks each file's size and sha256 against the manifest and the commit inside the build (.build-commit);
+#   6. backs up the staging SQLite database (never through a symlink or a second hard link; online backup API,
+#      integrity_check ok) into a root-only directory, keeping the newest STAGING_KEEP_BACKUPS (>= 1); no verified backup,
+#      no deploy;
 #   7. runs the installed deploy.sh with STAGING_BUILD replaced by `pull-prebuilt.sh --extract`: deploy.sh keeps doing
-#      everything else (env checks, disk floor, release dir, migrate + seed, health check, rollback, and keeping the
+#      everything else (disk floor, release dir, its own migrate + seed step, health check, rollback, and keeping the
 #      live release plus two rollbacks). The extract step runs as the service user in the new release's web/ and only
 #      unpacks the verified build whose commit equals the one deploy.sh is deploying; if main moved in between, it
 #      fails closed and deploy.sh removes the release (the live one is untouched). Nothing is built on the box.
@@ -31,28 +34,38 @@ TAG=${STAGING_PREBUILT_TAG:-staging-prebuilt}
 BASE_URL=${STAGING_PREBUILT_BASE_URL:-https://github.com/$REPO/releases/download/$TAG}
 ROOT=${STAGING_ROOT:-/srv/dazl-staging}
 ENV_FILE=${STAGING_ENV_FILE:-/etc/dazl-staging/env}
-# The installed deploy script (root-owned). A box still on the layout from before #908 runs /srv/dazl-staging/deploy.sh.
+# The installed deploy script. Prerequisite: the #908 layout (docs/STAGING.md "Upgrading to the root-owned deploy"): a
+# root-owned deploy.sh outside the service account's home. Root runs it, so it is refused unless it and every directory
+# above it are root-owned and writable by root only (finding 1, #1061 review: a script the service account can replace
+# would run as root every 2 minutes).
 DEPLOY=${STAGING_DEPLOY_SH:-/usr/local/lib/dazl-staging/deploy.sh}
+# Who the deploy script must belong to. Tests stand in a test user for root; the unit never sets this.
+TRUSTED_UID=${STAGING_TRUSTED_UID:-0}
 # Downloads: root-owned, world-readable (the extract step runs as the service user), never writable by it.
 DL=${STAGING_PREBUILT_DIR:-/var/cache/dazl-staging-prebuilt}
 # This script's own state (lock, failure stamps): root-only.
 PSTATE=${STAGING_PREBUILT_STATE:-/var/lib/dazl-staging-prebuilt}
 BACKUPS=${STAGING_BACKUP_DIR:-/var/lib/dazl-staging-backups}
-KEEP_BACKUPS=${STAGING_KEEP_BACKUPS:-3}
-# Where deploy.sh records the live commit: the current, root-owned layout. The pre-#908 path ($ROOT/current-sha) sits
-# inside the service account's own home (#972: root never writes, or trusts, a file by a name that account controls -
-# $ROOT/current-sha itself can be swapped for a symlink or edited by the service account), so deploy.sh itself does not
-# read it; this script only reads the trusted path unless a box still on the old layout explicitly opts in.
-CURRENT_FILES=${STAGING_CURRENT_SHA_FILES:-/var/lib/dazl-staging-deploy/current-sha}
-if [ "${STAGING_TRUST_LEGACY_CURRENT_SHA:-0}" = 1 ] && [ -z "${STAGING_CURRENT_SHA_FILES:-}" ]; then CURRENT_FILES="$CURRENT_FILES $ROOT/current-sha"; fi
+KEEP_BACKUPS=${STAGING_KEEP_BACKUPS-3}
+# Where deploy.sh records the live commit: its own root-owned state directory (the same variable deploy.sh reads, so the
+# two can never disagree: finding 2). The pre-#908 $ROOT/current-sha, inside the service account's home, is never read.
+STATE_ROOT=${STAGING_STATE_ROOT:-/var/lib/dazl-staging-deploy}
+CURRENT_FILE=$STATE_ROOT/current-sha
 MIN_FREE_BYTES=${MIN_FREE_BYTES:-2147483648}
 DISK_RESERVE_BYTES=${DISK_RESERVE_BYTES:-268435456}
 RETRY_AFTER_S=${STAGING_RETRY_AFTER_S:-1800}
 MAX_ASSET_BYTES=${STAGING_MAX_ASSET_BYTES:-2000000000}
-MIGRATE_STEP='npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'
+# One time budget for all downloads of a run (finding 7). With the time deploy.sh may take (DEPLOY_ALLOWANCE_S: release,
+# migrate, health check, rollback) it stays below the unit's TimeoutStartSec, so systemd never kills a valid run; the
+# test checks the three numbers against each other.
+DOWNLOAD_BUDGET_S=${STAGING_DOWNLOAD_BUDGET_S:-2400}
+DEPLOY_ALLOWANCE_S=1800
 
 log() { echo "staging-prebuilt: $*"; }
-fail() { echo "staging-prebuilt: $*" >&2; exit 1; }
+# After the manifest is accepted, every fatal failure writes the retry stamp (finding 4), so a bad asset or a failing
+# backup is not retried every tick; a build not published yet and low disk are not failures and write none.
+stamp=
+fail() { echo "staging-prebuilt: $*" >&2; [ -z "$stamp" ] || touch "$stamp" 2>/dev/null || true; exit 1; }
 is_sha() { [[ ${1:-} =~ ^[0-9a-f]{40}$ ]]; }
 sha256() { sha256sum -- "$1" | cut -c1-64; }
 val() { sed -n "s/^\(export \)\{0,1\}$1=//p" "$2" | tail -n 1 | sed "s/^[\"']//; s/[\"']$//"; }
@@ -90,8 +103,37 @@ case "${1:-}" in
   *) fail "usage: pull-prebuilt.sh [--dry-run]" ;;
 esac
 
-[ -f "$DEPLOY" ] || fail "the deploy script $DEPLOY is not installed (docs/STAGING.md); nothing done"
+# finding 3: a whole number >= 1, or the just-verified backup would be deleted before deploy.sh runs
+[[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] || fail "STAGING_KEEP_BACKUPS must be a whole number of at least 1 (got '$KEEP_BACKUPS'); nothing done"
+[[ $DOWNLOAD_BUDGET_S =~ ^[0-9]+$ ]] || fail "STAGING_DOWNLOAD_BUDGET_S must be a whole number of seconds; nothing done"
+# finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
+# and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
+# owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
+trusted_path() {
+  local p=$1 st owner mode dir child
+  [ -e "$p" ] && [ ! -L "$p" ] && [ -f "$p" ] || return 1
+  read -r owner mode < <(stat -c '%u %a' -- "$p") || return 1
+  [ "$owner" = "$TRUSTED_UID" ] && (( (8#$mode & 8#022) == 0 )) || return 1
+  child=$p; dir=$(dirname -- "$p")
+  while :; do
+    [ ! -L "$dir" ] && [ -d "$dir" ] || return 1
+    read -r owner mode < <(stat -c '%u %a' -- "$dir") || return 1
+    [ "$owner" = "$TRUSTED_UID" ] || [ "$owner" = 0 ] || return 1
+    if (( (8#$mode & 8#022) != 0 )); then
+      (( (8#$mode & 8#1000) != 0 )) || return 1
+      st=$(stat -c %u -- "$child") || return 1
+      [ "$st" = "$TRUSTED_UID" ] || [ "$st" = 0 ] || return 1
+    fi
+    [ "$dir" = / ] && break
+    child=$dir; dir=$(dirname -- "$dir")
+  done
+}
+trusted_path "$DEPLOY" || fail "the deploy script $DEPLOY is not trusted (missing, a symlink, or it or a directory above it is not root-owned and root-writable only); install the #908 layout (docs/STAGING.md); nothing done"
+grep -q 'STAGING_MIGRATE' "$DEPLOY" || fail "the deploy script $DEPLOY is from before #908 (no separate migrate step, current-sha in the service home); upgrade it first (docs/STAGING.md); nothing done"
 [ -r "$ENV_FILE" ] || fail "the staging env file $ENV_FILE is not readable (run as root); nothing done"
+# finding 6: deploy.sh validates the env file (staging, not production; DB path checks) before this script reads DB_PATH
+bash "$DEPLOY" --check-env "$ENV_FILE" >/dev/null || fail "deploy.sh refused the env file $ENV_FILE; nothing done"
+started=$(date +%s)
 if [ $dry = 0 ]; then
   [ ! -L "$PSTATE" ] || fail "$PSTATE is a symlink; nothing done"
   install -d -m 700 "$PSTATE"
@@ -103,15 +145,13 @@ main_sha=$(git ls-remote "$REPO_URL" refs/heads/main 2>/dev/null | awk 'NR==1 {p
 is_sha "$main_sha" || fail "could not read main's head commit from $REPO_URL; nothing done"
 
 # 2. already live, recently failed, or not built yet
-for f in $CURRENT_FILES; do
-  if [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$main_sha" ]; then
-    [ $dry = 0 ] || log "dry run: $main_sha (main) is already live ($f); nothing to do"
-    exit 0
-  fi
-done
-stamp="$PSTATE/failed-$main_sha"
-if [ -e "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp") )) -lt "$RETRY_AFTER_S" ]; then
-  log "the deploy of $main_sha failed less than ${RETRY_AFTER_S}s ago; retrying later (delete $stamp to retry now)"
+if [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE" 2>/dev/null)" = "$main_sha" ]; then
+  [ $dry = 0 ] || log "dry run: $main_sha (main) is already live ($CURRENT_FILE); nothing to do"
+  exit 0
+fi
+stamp_path="$PSTATE/failed-$main_sha"
+if [ -e "$stamp_path" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp_path") )) -lt "$RETRY_AFTER_S" ]; then
+  log "the deploy of $main_sha failed less than ${RETRY_AFTER_S}s ago; retrying later (delete $stamp_path to retry now)"
   exit 0
 fi
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -155,6 +195,7 @@ print(' '.join(out + [m['lock_sha256']]))
 PY
 ) || true
 [[ $next_sha =~ ^[0-9a-f]{64}$ ]] || fail "the manifest of $main_sha was refused; nothing downloaded"
+[ $dry = 1 ] || stamp=$stamp_path
 
 # lockfile unchanged from the live release: deploy.sh hard-links its node_modules, so only the build is downloaded
 live=; [ -L "$ROOT/current" ] && live=$(readlink -f -- "$ROOT/current")
@@ -165,23 +206,30 @@ if [ -n "$live" ] && [ -f "$live/web/package-lock.json" ] && [ -d "$live/web/nod
 # 4. disk: the downloads and the backup must leave the floor plus the reserve (deploy.sh then checks the release itself)
 db=$(val DB_PATH "$ENV_FILE")
 [ -n "$db" ] || fail "DB_PATH is not set in $ENV_FILE; nothing done"
+# finding 6: the root-run backup reads DB_PATH; never through a symlink or a second hard link (sqlite follows symlinks)
+[ ! -L "$db" ] || fail "DB_PATH $db is a symlink; nothing done"
+if [ -e "$db" ]; then
+  [ -f "$db" ] || fail "DB_PATH $db is not a regular file; nothing done"
+  [ "$(stat -c %h -- "$db")" = 1 ] || fail "DB_PATH $db has another hard link; nothing done"
+fi
 db_bytes=0; [ -f "$db" ] && db_bytes=$(stat -c %s -- "$db")
 need=$(( next_bytes + db_bytes )); [ $need_mods = 0 ] || need=$(( need + mods_bytes ))
 probe=$DL; [ -d "$probe" ] || probe=$(dirname "$DL")
-reuse_bytes=0; for f in "$DL/staging-next-$main_sha.tgz" "$DL/staging-modules-$main_sha.tgz"; do [ -f "$f" ] && reuse_bytes=$(( reuse_bytes + $(stat -c %s -- "$f") )); done
+# finding 5: only an archive this run needs (and so reuses or replaces) counts as space it gets back
+reuse_bytes=0; keep_names="staging-next-$main_sha.tgz"; [ $need_mods = 0 ] || keep_names="$keep_names staging-modules-$main_sha.tgz"
+for n in $keep_names; do f="$DL/$n"; [ -f "$f" ] && [ ! -L "$f" ] && reuse_bytes=$(( reuse_bytes + $(stat -c %s -- "$f") )); done
 avail=$(( $(df -B1 --output=avail "$probe" | tail -n 1 | tr -d ' ') + reuse_bytes ))
 if [ $(( avail - need )) -lt $(( MIN_FREE_BYTES + DISK_RESERVE_BYTES )) ]; then
   log "ALERT low_disk: skipped $main_sha: $avail bytes free, the download and backup need about $need, and the floor is $MIN_FREE_BYTES plus a reserve of $DISK_RESERVE_BYTES; nothing downloaded, the live release is unchanged"
   exit 0
 fi
-if grep -q 'STAGING_MIGRATE' "$DEPLOY"; then migrate_in_build=0; else migrate_in_build=1; fi
 
 if [ $dry = 1 ]; then
   log "dry run: main is $main_sha; live is $(basename "${live:-none}"); manifest ok (arch $box_arch, Node ABI $box_abi)"
   log "dry run: would download staging-next ($next_bytes bytes)$([ $need_mods = 1 ] && echo " and staging-modules ($mods_bytes bytes, lockfile changed)" || echo "; node_modules reused (lockfile unchanged)")"
   log "dry run: $avail bytes free, about $need needed, floor $MIN_FREE_BYTES + reserve $DISK_RESERVE_BYTES: ok"
   log "dry run: would back up $db ($db_bytes bytes) into $BACKUPS, keeping $KEEP_BACKUPS"
-  log "dry run: would run $DEPLOY with the prebuilt extract as its build step$([ $migrate_in_build = 1 ] && echo ", migrate and seed included (deploy.sh from before #908)")"
+  log "dry run: would run $DEPLOY with the prebuilt extract as its build step"
   exit 0
 fi
 
@@ -190,7 +238,7 @@ fi
 install -d -m 755 "$DL"
 for f in "$DL"/* "$DL"/.[!.]*; do # superseded builds and partial downloads go first
   [ -e "$f" ] || [ -L "$f" ] || continue
-  case "$(basename "$f")" in "staging-next-$main_sha.tgz"|"staging-modules-$main_sha.tgz") [ -f "$f" ] && [ ! -L "$f" ] && continue ;; esac
+  case " $keep_names " in *" $(basename "$f") "*) [ -f "$f" ] && [ ! -L "$f" ] && continue ;; esac
   rm -rf -- "$f"
 done
 fetch() { # file expected-sha256 expected-bytes
@@ -198,7 +246,10 @@ fetch() { # file expected-sha256 expected-bytes
   if [ -f "$f" ] && [ "$(stat -c %s -- "$f")" = "$3" ] && [ "$(sha256 "$f")" = "$2" ]; then log "reusing the verified $1"
   else
     rm -f -- "$f" "$f.part"
-    curl -fsSL --proto '=https' --retry 2 --max-time 1800 --max-filesize "$3" -o "$f.part" "$BASE_URL/$1" || { rm -f -- "$f.part"; fail "download of $1 failed; nothing deployed"; }
+    local spent=$(( $(date +%s) - started )); [ "$spent" -ge 0 ] || spent=0 # a clock stepped back never extends the budget
+    local left=$(( DOWNLOAD_BUDGET_S - spent ))
+    [ "$left" -ge 30 ] || fail "the download time budget (${DOWNLOAD_BUDGET_S}s) is used up before $1; nothing deployed"
+    curl -fsSL --proto '=https' --max-time "$left" --max-filesize "$3" -o "$f.part" "$BASE_URL/$1" || { rm -f -- "$f.part"; fail "download of $1 failed; nothing deployed"; }
     [ "$(stat -c %s -- "$f.part")" = "$3" ] || { rm -f -- "$f.part"; fail "$1 is not the $3 bytes the manifest records; nothing deployed"; }
     [ "$(sha256 "$f.part")" = "$2" ] || { rm -f -- "$f.part"; fail "$1 does not match the manifest's sha256; nothing deployed"; }
     mv -f -- "$f.part" "$f"
@@ -234,14 +285,10 @@ else log "no staging database at $db yet; nothing to back up"; fi
 # 7. deploy.sh does the rest, with the verified build as its build step
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 build="bash '$self' --extract '$DL'"
-[ $migrate_in_build = 0 ] || build="$build && $MIGRATE_STEP"
 st=0; STAGING_BUILD=$build bash "$DEPLOY" 8>&- || st=$?
 now=
-for f in $CURRENT_FILES; do [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$main_sha" ] && now=1; done
-if [ $st != 0 ]; then
-  touch "$stamp"
-  fail "deploy.sh failed for $main_sha (exit $st); retrying after ${RETRY_AFTER_S}s; the downloaded build is kept"
-fi
+[ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE" 2>/dev/null)" = "$main_sha" ] && now=1
+[ $st = 0 ] || fail "deploy.sh failed for $main_sha (exit $st); retrying after ${RETRY_AFTER_S}s; the downloaded build is kept"
 if [ -n "$now" ]; then
   rm -f -- "$PSTATE"/failed-* "$DL"/staging-*
   log "live: $main_sha"

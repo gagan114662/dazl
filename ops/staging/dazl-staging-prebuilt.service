@@ -11,9 +11,10 @@ After=network-online.target
 Type=oneshot
 Environment=PROD_ENV_FILE=/CHANGE-ME/path/to/production/env
 Environment=MIN_FREE_BYTES=2147483648
-# The installed deploy script. A box still on the layout from before #908 sets /srv/dazl-staging/deploy.sh here.
+# The installed, root-owned deploy script (the #908 layout is a prerequisite; pull-prebuilt.sh refuses any other).
 Environment=STAGING_DEPLOY_SH=/usr/local/lib/dazl-staging/deploy.sh
 # Installed root-owned beside deploy.sh (docs/STAGING.md), never in the service account's home.
 ExecStart=/usr/local/lib/dazl-staging/pull-prebuilt.sh
 Nice=10
-TimeoutStartSec=40min
+# Above pull-prebuilt.sh's download budget (40 min) plus deploy.sh's allowance (30 min): systemd never kills a valid run.
+TimeoutStartSec=80min

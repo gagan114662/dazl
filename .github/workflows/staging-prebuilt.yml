@@ -112,6 +112,12 @@ jobs:
           gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 || gh release create "$TAG" -R "$REPO" --prerelease --target "$SHA" \
             --title "Staging prebuilt builds (automatic)" \
             --notes "Built by .github/workflows/staging-prebuilt.yml on every push to main and deployed to staging by ops/staging/pull-prebuilt.sh. Assets are named by commit; the newest 3 commits are kept. Not a product release."
+          # A rerun for the same commit: remove that commit's manifest FIRST, so no box ever pairs an old manifest with
+          # new archive bytes (and a run that dies before the manifest leaves no manifest, i.e. "not built yet", never a
+          # permanently mismatched set) - #1061 review finding 8.
+          rid=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          mid=$(gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq ".[] | select(.name == \"staging-prebuilt-$SHA.json\") | .id")
+          if [ -n "$mid" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$mid"; fi
           gh release upload "$TAG" -R "$REPO" --clobber "staging-next-$SHA.tgz" "staging-modules-$SHA.tgz"
           # the manifest last: the box acts only once it exists, so it never sees a half-uploaded set
           gh release upload "$TAG" -R "$REPO" --clobber "staging-prebuilt-$SHA.json"

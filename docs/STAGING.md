@@ -215,21 +215,31 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
 - **Deploy, on the box:** `dazl-staging-prebuilt.timer` runs `ops/staging/pull-prebuilt.sh` every 2 minutes, as root. It
   does nothing when main's head is already live, when its build is not published yet, or when it failed less than 30
   minutes ago (`STAGING_RETRY_AFTER_S`). Otherwise it checks the manifest (exact commit, `arm64`, the box's Node ABI), checks
-  that the downloads plus a database backup leave the 2 GiB floor plus the reserve, downloads the build (and `node_modules`
-  only when the lockfile changed), verifies size, sha256 and `.build-commit`, backs up the staging SQLite database
+  that the downloads plus a database backup leave the 2 GiB floor plus the reserve (a cached archive counts only if this run
+  needs it), downloads the build (and `node_modules` only when the lockfile changed) within one 40-minute time budget,
+  verifies size, sha256 and `.build-commit`, backs up the staging SQLite database
   (online backup, `integrity_check` ok) into `/var/lib/dazl-staging-backups` (root-only, newest 3 kept), then runs the
   installed `deploy.sh` with its build step replaced by `pull-prebuilt.sh --extract`. `deploy.sh` does the rest as before:
   env checks, disk floor, release directory, migrate + seed, health check, rollback, and keeping the live release plus two
   rollbacks. If main moves between the check and `deploy.sh`'s own fetch, the extract step finds no verified build for the
   newer commit and fails closed; the live release is untouched and the next run deploys the newer commit.
+- **Before anything else** it refuses to run unless the installed `deploy.sh` is trusted: a regular file (not a symlink)
+  owned by root, writable by root only, in directories that are all root-owned and root-writable only. It runs
+  `deploy.sh --check-env` on the env file before it reads `DB_PATH`, and refuses a database path that is a symlink or has a
+  second hard link. `STAGING_KEEP_BACKUPS` must be a whole number of at least 1.
+- **Retries:** any failure after the manifest is accepted (download, verification, backup, `deploy.sh`) waits
+  `STAGING_RETRY_AFTER_S` before the same commit is tried again; a build not published yet and low disk are not failures.
 - **No token or secret on the box:** the repo is public, so `git ls-remote` and the release downloads need no credentials.
-- **Install** (as root, from a checkout of `main`; replaces step 7's timer):
+- **Prerequisite: the #908 layout** ("Upgrading to the root-owned deploy" above): `deploy.sh` installed root-owned at
+  `/usr/local/lib/dazl-staging/deploy.sh` and the live commit recorded in `/var/lib/dazl-staging-deploy/current-sha`. A box
+  still running `/srv/dazl-staging/deploy.sh` (inside the service account's home, which that account could replace) must be
+  upgraded first: `pull-prebuilt.sh` refuses it, and refuses a `deploy.sh` without the separate migrate step.
+- **Install** (as root, from a checkout of `main`, after the #908 upgrade; replaces step 7's timer):
   ```sh
   install -d -o root -g root -m 755 /usr/local/lib/dazl-staging
   install -o root -g root -m 755 ops/staging/pull-prebuilt.sh /usr/local/lib/dazl-staging/
   install -m 644 ops/staging/dazl-staging-prebuilt.service ops/staging/dazl-staging-prebuilt.timer /etc/systemd/system/
-  # same PROD_ENV_FILE (or PROD_DB_PATH) as dazl-staging-deploy.service; on a box still running /srv/dazl-staging/deploy.sh
-  # (the layout from before #908) also set Environment=STAGING_DEPLOY_SH=/srv/dazl-staging/deploy.sh
+  # same PROD_ENV_FILE (or PROD_DB_PATH) as dazl-staging-deploy.service
   systemctl edit dazl-staging-prebuilt.service
   systemctl daemon-reload
   /usr/local/lib/dazl-staging/pull-prebuilt.sh --dry-run   # read-only: prints what it would download, back up and deploy
@@ -237,8 +247,6 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
   systemctl enable --now dazl-staging-prebuilt.timer
   ```
   `journalctl -u dazl-staging-prebuilt` shows each run; a deploy ends with `live: <sha>`.
-- With a `deploy.sh` from before #908 (no separate migrate step), the build step also runs the migration and seed, the same
-  as the manual prebuilt deploys did.
 
 ## Day to day
 - **Deploys** are automatic (from prebuilt builds, above). `journalctl -u dazl-staging-prebuilt` (and `-u dazl-staging-deploy`) shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
