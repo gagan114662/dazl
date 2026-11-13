@@ -22,7 +22,8 @@ Environment=NODE_ENV=production
 # Never beside a deploy that is not committed: while a recovery point is pending (a deploy between its migration and
 # its commit point, or one a reboot interrupted), the database may still be rolled back, and a paid call recorded by
 # the worker would be erased with it. deploy.sh starts the worker after the commit point; this keeps a boot or a hand
-# start from doing it earlier. (The path is deploy.sh's STAGING_RECOVERY_ROOT default; + runs the check as root.)
+# start from doing it earlier. (The path is deploy.sh's STAGING_RECOVERY_ROOT default: a box that overrides that
+# variable needs a drop-in with the same path here. + runs the check as root.)
 ExecCondition=+/usr/bin/test ! -e /var/lib/dazl-staging-recovery/pending
 ExecStart=/usr/bin/node --experimental-strip-types --no-warnings --max-old-space-size=448 scripts/scan-worker.mts
 Restart=on-failure

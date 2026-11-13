@@ -169,10 +169,16 @@ esac\n`)
     assert.match(r.out, /scan worker: active/)
 
     // a deploy killed between its commit point and the worker's start left the worker stopped: the next run, with
-    // nothing to deploy, starts it (and does not when a recovery point is pending, or when it already runs)
-    flag('worker-up', false)
+    // nothing to deploy, starts it; it does not when the worker already runs, or was stopped by hand
+    const stamp = path.join(T, 'state', 'worker-stopped-by-deploy')
+    assert.equal(existsSync(stamp), false, 'a finished deploy leaves no stamp')
+    flag('worker-up', false); writeFileSync(stamp, '') // the killed deploy: it stopped the worker and never got to start it
     r = deploy()
-    assert.equal(r.code, 0, r.out); assert.deepEqual(r.order, [`start ${W}`]); assert.ok(existsSync(path.join(T, 'worker-up')))
+    assert.equal(r.code, 0, r.out); assert.deepEqual(r.order, [`start ${W}`]); assert.ok(existsSync(path.join(T, 'worker-up'))); assert.equal(existsSync(stamp), false)
     r = deploy(); assert.deepEqual(r.order.filter(Boolean), [], 'already running: nothing to do')
+    // a worker an operator stopped by hand (no stamp) stays stopped, run after run
+    flag('worker-up', false)
+    r = deploy(); assert.deepEqual(r.order.filter(Boolean), [], 'stopped by hand: not started by a no-change run')
+    assert.equal(existsSync(path.join(T, 'worker-up')), false)
   } finally { server.kill(); rmSync(T, { recursive: true, force: true }) }
 })

@@ -53,18 +53,27 @@ APP_RESTART=${STAGING_RESTART:-$SYSTEMCTL restart $SERVICE}
 worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
 # Stop the worker first and by name, so the command returns only once it has exited: PartOf alone would stop it too,
 # but without waiting for it before the recovery point is taken.
+# worker_stamp: this script stopped a running worker and has not started it again yet. Only then does a later run with
+# nothing to deploy start it; a worker an operator stopped by hand (to free memory) is left stopped.
+worker_stamp() { echo "$STATE/worker-stopped-by-deploy"; }
+stop_worker() {
+  worker_installed || return 0
+  if $SYSTEMCTL is-active --quiet "$WORKER"; then : > "$(worker_stamp)"; fi
+  $SYSTEMCTL stop "$WORKER"
+}
 stop_services() {
-  if worker_installed; then $SYSTEMCTL stop "$WORKER" || return 1; fi
+  stop_worker || return 1
   $APP_STOP
 }
 # Restart the app on the release `current` names, with the worker stopped. It stays stopped: start_worker runs later.
 restart_services() {
-  if worker_installed; then $SYSTEMCTL stop "$WORKER" || return 1; fi
+  stop_worker || return 1
   $APP_RESTART
 }
 # Start the worker when its unit is installed and enabled. A worker that does not start is reported, never a failed
 # deploy: the app still runs every scan itself.
 start_worker() {
+  rm -f "$(worker_stamp)"
   if worker_installed && $SYSTEMCTL is-enabled --quiet "$WORKER"; then
     $SYSTEMCTL start "$WORKER" || echo "staging-deploy: ALERT scan worker $WORKER did not start; scans run on the app only" >&2
   fi
@@ -357,10 +366,11 @@ cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 # Upgrading from a deploy that kept current-sha in STAGING_ROOT: the old file is the service account's and is not read; the
 # validated, complete live release names the deployed commit instead.
 if [ -z "$cur" ]; then l=$(live_release); [ -n "$l" ] && [ -e "$l/.complete" ] && cur=$(basename "$l"); fi
-# Nothing to deploy. A deploy killed between its commit point and the worker's start left the worker stopped: no
-# recovery point is pending here (step 0 finished any), so an enabled worker that is not running is started now.
+# Nothing to deploy. A deploy killed between its commit point and the worker's start left the worker stopped, with this
+# script's stamp still there: no recovery point is pending here (step 0 finished any), so the worker is started now.
+# Without the stamp the worker was stopped by someone else, and stays stopped.
 if [ "$new" = "$cur" ]; then
-  if worker_installed && [ ! -e "$pending" ] && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
+  if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
   exit 0
 fi
 

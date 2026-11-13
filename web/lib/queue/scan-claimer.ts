@@ -19,7 +19,7 @@
 //      for a scan that is pending again is retired and re-enqueued (a new scheduling epoch; scan_jobs.attempts keeps
 //      counting).
 //   2b. Claims in step with their scans (renewScanLeases): a live scan's renewed claim time is copied to its queue
-//      item, and a claim whose scan already ended is closed.
+//      item, and the open claim of a scan that a stopping instance ended is closed.
 //   3. While this instance has a free run slot: claim one item (round-robin across tenants, at most
 //      SCAN_PER_TENANT_MAX of one tenant's scans claimed at once across every instance), then bind the scan row with the runner's own guard
 //      (pending -> running, attempts + 1). A row that is already finished, cancelled or failed completes the item
@@ -124,25 +124,36 @@ export async function reapStaleScans(domain: Db, leaseSeconds: number, now: numb
 // tenant's claimed count dropped during a live run. Each kick copies the scan row's newer claim time onto its claimed
 // item (compare-and-set on the old lease, so a claim that changed meanwhile is untouched). A scan whose worker died
 // stops renewing its row, so its item's lease still runs out. At most one read and one write per claimed scan.
-// How long after a scan ended its still-open claim is closed by a kick. A scan that just finished is settled by its own
-// instance a moment later (complete or fail, by token); this leaves that settle alone and only closes claims nobody
-// came back for.
+// How long after a stop ended a scan its still-open claim is closed by a kick (see renewScanLeases). A scan the runner
+// itself failed with one of those two errors is settled by its own instance a moment later; the wait leaves that alone.
 export const CLOSE_ENDED_AFTER_S = 15
 export async function renewScanLeases(queue: Db, domain: Db, leaseSeconds: number, now: number = nowS()): Promise<number> {
-  const claimed = await queue.all<{ id: string; tenant_id: string; lease_expires_at: number | null; claim_token: number | null }>(
-    "SELECT id, tenant_id, lease_expires_at, claim_token FROM work_queue WHERE status = 'claimed' AND kind = 'scan'")
+  const claimed = await queue.all<{ id: string; tenant_id: string; lease_expires_at: number | null; claim_token: number | null; claimed_at: number | null }>(
+    "SELECT id, tenant_id, lease_expires_at, claim_token, claimed_at FROM work_queue WHERE status = 'claimed' AND kind = 'scan'")
   let n = 0
   for (const c of claimed) {
-    const row = await domain.get<{ status: string; claimed_at: number | null; finished_at: number | null }>('SELECT status, claimed_at, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?', [c.id, c.tenant_id])
-    // The scan already ended (failed, done, cancelled) but its claim is still open: an instance ended the scan as it
-    // stopped and could not reach the queue (the queue on Postgres), or died between the two writes. Close the claim
-    // by its token, once CLOSE_ENDED_AFTER_S has passed since the scan ended, so it stops counting against the tenant's
-    // limit; waiting for the lease only delayed the account's next scan.
-    if (row && row.status !== 'running' && row.status !== 'pending' && c.claim_token !== null) {
+    const row = await domain.get<{ status: string; error: string | null; claimed_at: number | null; finished_at: number | null }>('SELECT status, error, claimed_at, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?', [c.id, c.tenant_id])
+    // A scan that a stopping instance ended itself (requeueInFlightForShutdown: failed with accounting_uncertain or
+    // timeout, the only outcomes a stop writes) but whose claim is still open: the instance could not reach the queue
+    // (the queue on Postgres) or died between the two writes. Its run is over, so the claim is closed here, by its
+    // token, once CLOSE_ENDED_AFTER_S has passed; waiting for the lease only delayed the account's next scan.
+    // Nothing else is closed: a scan whose row says done is usually still running its paid post-finish stage under
+    // this claim, and a cancelled one may still have a provider call in flight; their own instance settles them.
+    if (row && row.status === 'failed' && (row.error === 'accounting_uncertain' || row.error === 'timeout') && c.claim_token !== null) {
       // closed 'done', as the claimer closes any item whose scan already ended (the scan row has the outcome)
-      if (row.finished_at === null || Number(row.finished_at) <= now - CLOSE_ENDED_AFTER_S) {
+      if (row.finished_at !== null && Number(row.finished_at) <= now - CLOSE_ENDED_AFTER_S) {
         await queue.run("UPDATE work_queue SET status = 'done', last_error = NULL, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL, dedupe_key = NULL WHERE id = ? AND status = 'claimed' AND claim_token = ?", [c.id, c.claim_token])
       }
+      continue
+    }
+    // A scan a stopping instance handed back (pending again, no claim time) whose claim is still open, for the same
+    // reason: the claim goes back to pending, claimable now, by its token. Only a claim older than
+    // CLOSE_ENDED_AFTER_S: a claim just taken is bound to its scan a moment later and must not be released under it.
+    // And only while the claim's lease has not run out: an expired claim (its worker died) is the queue reaper's, with
+    // its retry backoff.
+    if (row && row.status === 'pending' && row.claimed_at === null && c.claim_token !== null && c.claimed_at !== null && Number(c.claimed_at) <= now - CLOSE_ENDED_AFTER_S
+      && c.lease_expires_at !== null && Number(c.lease_expires_at) > now) {
+      await queue.run("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND status = 'claimed' AND claim_token = ?", [now, c.id, c.claim_token])
       continue
     }
     const until = row?.status !== 'running' || row.claimed_at == null ? null : Number(row.claimed_at) + leaseSeconds

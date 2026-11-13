@@ -2119,7 +2119,7 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
         }
         return c
       })()
-    } catch { /* shutting down: the lease reaper is the fallback */ }
+    } catch (e) { console.error(`[scan] stop: scan ${job.id} could not be handed back or ended (${e instanceof Error ? e.message.slice(0, 120) : 'error'}); the lease reaper will end it`) } // shutting down: the lease reaper is the fallback
   }
   return n
 }

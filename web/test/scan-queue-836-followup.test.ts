@@ -197,3 +197,39 @@ test('#836 a claim whose scan already ended is closed by the next kick (the stop
   assert.deepEqual([w.item(first)!.status, w.item(first)!.claim_token], ['done', null])
   w.raw.close()
 })
+
+test('#836 only a scan a stop ended has its open claim closed: a scan that finished its search and is still running its paid post-finish stage, and a cancelled scan, keep their claim and the account\'s slot', async () => {
+  const w = world()
+  const enriching = await w.job(A), cancelled = await w.job(B)
+  await kickSharedScanQueue(w.deps(() => new Promise(() => {}))) // both runs are still going
+  const t0 = nowS()
+  // the scan proper finished (done, finished_at set) and its post-finish stage runs on under the same claim
+  w.raw.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ?, claimed_at = NULL WHERE id = ?").run(t0, enriching)
+  w.raw.prepare("UPDATE scan_jobs SET status = 'failed', error = 'cancelled', finished_at = ?, claimed_at = NULL WHERE id = ?").run(t0, cancelled)
+  const nextA = await w.job(A), nextB = await w.job(B)
+  const ran: string[] = []
+  await kickSharedScanQueue(w.deps(async j => { ran.push(j.id); return 'done' }, { now: () => t0 + 10 * CLOSE_ENDED_AFTER_S }))
+  assert.deepEqual([w.item(enriching)!.status, w.item(cancelled)!.status], ['claimed', 'claimed'], 'both claims are left to their own instance')
+  assert.deepEqual(ran, [], 'neither account gets a second scan while the first still runs')
+  assert.deepEqual([w.scan(nextA).status, w.scan(nextB).status], ['pending', 'pending'])
+  w.raw.close()
+})
+
+test('#836 a scan handed back at a stop whose claim is still open (the stopping instance could not reach the queue) is released by a kick after the grace, and runs as attempt 2; a claim just taken is never released under its bind', async () => {
+  const w = world()
+  const id = await w.job(A)
+  await kickSharedScanQueue(w.deps(() => new Promise(() => {})))
+  const t0 = nowS()
+  const token = w.item(id)!.claim_token
+  // the hand-back as it lands with the queue elsewhere: the scan row pending again, its claim untouched
+  w.raw.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ?").run(id)
+  const ran: string[] = []
+  const run = async (j: ClaimedScan) => { ran.push(`${j.id}@${j.attempts}`); return (await finishJob(w.db, j, { status: 'done', error: null })).owned ? 'done' as const : 'failed' as const }
+  await kickSharedScanQueue(w.deps(run, { now: () => t0 + CLOSE_ENDED_AFTER_S - 2 }))
+  assert.deepEqual([w.item(id)!.status, w.item(id)!.claim_token], ['claimed', token], 'inside the grace a claim is left alone: it may be a claim about to bind')
+  assert.deepEqual(ran, [])
+  await kickSharedScanQueue(w.deps(run, { now: () => t0 + CLOSE_ENDED_AFTER_S + 1 }))
+  await until(() => ran.length === 1)
+  assert.deepEqual(ran, [`${id}@2`], 'released and run again as attempt 2, without waiting for the lease')
+  w.raw.close()
+})
