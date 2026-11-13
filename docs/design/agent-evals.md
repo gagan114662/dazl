@@ -193,7 +193,10 @@ model behind it (`harnessFor`, `test/helpers/judge-stubs.ts`). Release is blocke
   report that is not exactly a `DriftReport` with a known status. Once the lock holds a calibration for a judge's current
   fingerprint, the log must hold that fingerprint's verdicts on every calibration item of the frozen corpus (recorded by
   the same reviewed PR as the lock entry); without them drift cannot be checked and release is blocked. A critical
-  false positive in any stored run of that fingerprint on this corpus also blocks, whichever run is the drift baseline.
+  false positive in any stored run of that fingerprint on this corpus also blocks, whichever run is the drift baseline;
+  criticality is taken from the corpus, and a stored record on this corpus hash whose label, condition, critical kind,
+  split or origin differs from its corpus item (or whose item the corpus lacks) blocks. Runs stored under an earlier
+  corpus hash are deliberately not counted: a re-frozen corpus is a new benchmark and starts over.
   When the log is missing from the gate input or unreadable, no judge's verdicts count. The CI test and
   `scripts/judges.mts --gate` read the same files (`--lock` and `--verdict-log` point the CLI at others).
 
@@ -219,8 +222,12 @@ or refresh dates never support anything. The records are bound to the text. The 
 is rendered from the truth claim by a fixed template (`claimText`), and any other wording is refused. Each fact's
 `evidence` must state its kind (and not use a kind word in another sense, such as "a round of layoffs"), detail, person,
 contact, date and status: a retraction or plan in its own words, and an assertion that is neither negated nor a failure,
-modal, rumour or plan. The sentence the evidence sits in must name the fact's company and no other company of the item,
-except one it sets apart ("no relation to ..."); instructions and publication or refresh dates are exempt. Kind words,
+modal, rumour or plan (checked on the whole evidence; only the keyword of a set-apart clause is masked). The sentence
+the evidence sits in must name the fact's company as a whole name ("Querix Labs" does not name Querix) and no other
+company of the item, except one it sets apart: a clause bounded by punctuation on both sides whose body is a company name
+(", no relation to Corvid Robotics,"). Instructions and publication or refresh dates are exempt. A role or contact claim
+is about now ("is the current ..."), so only an undated assertion supports it; an acquisition claim names its acquirer
+when the record has one. Kind words,
 exclusions, detail translations and month names are listed in code, not in the corpus. `checkCorpus` refuses an item whose
 label disagrees with its records, whose claim or evidence does not state what its records say, whose evidence, company or
 contact is not verbatim on the page it cites, whose dates are not real calendar dates, or whose records do not show what its

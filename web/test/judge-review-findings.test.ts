@@ -12,8 +12,12 @@ import {
   calibrate, checkCorpus, detectDrift, judgeGate, lockEntry, parseStoredVerdicts, releaseGate, toStoredVerdicts, truthLabel, verdictHistory,
   JudgeCorpusError, type JudgeCorpus, type JudgeItem, type JudgeLock, type JudgeSpec, type JudgeTruth, type StoredVerdict,
 } from '../lib/evals/judge.ts'
+import * as judgeModule from '../lib/evals/judge.ts'
 import { CLAIM_SUPPORT_SPEC, claimSupportJudge, releaseInputs, STUB_MODELS } from './helpers/judge-stubs.ts'
 
+// claimText is read off the module object, so this file still loads against an older judge.ts that lacks it (each test
+// then fails on its own, which is what the fail-before check needs)
+const claimText = (c: JudgeTruth['claim']) => (judgeModule as unknown as { claimText: (c: JudgeTruth['claim']) => string }).claimText(c)
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const WEB = fileURLToPath(new URL('..', import.meta.url))
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
@@ -313,4 +317,52 @@ test('R7: hold-contact-neg keeps its claim detail "sales lead", and its displaye
   assert.equal(it.truth!.claim.detail, 'sales lead')
   assert.equal(it.claim, 'Jane Doe (jane@ostro.example) is the current sales lead at Ostro Analytics.')
   assert.equal(it.label, 'not_supported')
+})
+
+// --- the re-review at c3bb8855 (R8-R11): each fails at c3bb8855 ------------------------------------------------------
+
+test('R8: a set-apart clause must be punctuation-bounded with a company-name body; a negation cannot hide in it', () => {
+  const asserted = (sentence: string) => withItem('cal-plain-pos', it => { it.sources[0].text = `${sentence}.`; it.truth!.facts[0].evidence = sentence; it.quote = sentence })
+  for (const ev of ['Querix unlike what was reported did not raise a seed round in October 2026', 'Querix, unlike the press claimed it never raised a seed round in October 2026', 'Querix, no relation to Not Querix, did not raise a seed round in October 2026']) {
+    refused(asserted(ev), /cal-plain-pos: fact 1: its evidence does not state its status \(asserted, but the text is negated\)/, ev)
+  }
+  // a real set-apart clause still reads as an assertion about its subject (the committed Corvid and Kesselwerke items)
+  checkCorpus(CORPUS)
+  checkCorpus(asserted('Querix, no relation to Querix Capital, raised a seed round in October 2026'))
+})
+
+test('R9: a company is named only as a whole name: "Querix Labs" does not name Querix', () => {
+  refused(withItem('cal-plain-pos', it => { it.sources[0].text = it.sources[0].text.replace('Querix,', 'Querix Labs,') }), /cal-plain-pos: fact 1: the sentence of its evidence does not name its company Querix/, 'Querix Labs')
+  refused(withItem('cal-plain-pos', it => { it.sources[0].text = it.sources[0].text.replace('Querix,', 'Querixa,') }), /does not name its company Querix/, 'Querixa')
+})
+
+test('R10: the rendered claim says what the label means: an acquirer is named, and a "current" role needs an undated assertion', () => {
+  assert.equal(claimText({ company: 'Halden Systems', kind: 'acquisition', detail: 'Ferro Group' }), 'Halden Systems was acquired by Ferro Group.')
+  assert.equal(claimText({ company: 'Halden Systems', kind: 'acquisition' }), 'Halden Systems was acquired.')
+  const role = { company: 'Quarry Labs', kind: 'role' as const, detail: 'Head of Marketing', person: 'Priya Raman' }
+  const fact = { source: 1, evidence: 'Priya Raman, Head of Marketing, Quarry Labs', company: 'Quarry Labs', kind: 'role' as const, status: 'asserted' as const, detail: 'head of marketing', person: 'Priya Raman' }
+  assert.equal(claimText(role), 'Priya Raman is the current Head of Marketing at Quarry Labs.')
+  assert.equal(truthLabel({ claim: role, facts: [{ ...fact, date: '2024' }] }), 'not_supported', 'a 2024 archive does not say she is the current one')
+  assert.equal(truthLabel({ claim: role, facts: [fact] }), 'supported', 'an undated statement does')
+  assert.equal(truthLabel({ claim: { ...role, date: '2024' }, facts: [{ ...fact, date: '2024' }] }), 'supported', 'a dated role claim is settled by a fact of that date')
+})
+
+test('R11: the gate takes label and criticality from the corpus: a log line that rewrites them blocks', async () => {
+  const cal = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.truthful(), CLAIM_SUPPORT_SPEC), CORPUS)
+  const bad = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.name_matcher(), CLAIM_SUPPORT_SPEC), CORPUS)
+  const lock = { ...LOCK, judges: [lockEntry(cal, AT, SRC)] }
+  const judges = await releaseInputs(CORPUS)
+  for (const [what, rs] of [
+    ['critical stripped', toStoredVerdicts(bad, CORPUS, 'b1', AT).map(r => ({ ...r, critical: null }))],
+    ['critical stripped and label flipped', toStoredVerdicts(bad, CORPUS, 'b1', AT).map(r => r.critical ? { ...r, critical: null, label: 'supported' as const } : r)],
+    ['an item the corpus lacks', [...toStoredVerdicts(cal, CORPUS, 'c1', AT), { ...toStoredVerdicts(cal, CORPUS, 'c1', AT)[0], run: 'c2', item: 'ghost-item' }]],
+  ] as const) {
+    const d = releaseGate({ lock, corpus: CORPUS, judges, verdicts: jsonl([...rs]) })
+    assert.equal(d.release, 'blocked', what)
+    assert.ok(d.blocks.some(b => /^the stored-verdict log disagrees with corpus judge-claims-synthetic-5/.test(b)), `${what}: ${d.blocks.join('; ')}`)
+    assert.equal(d.judges.find(j => j.id === 'claim_support')!.real_model.usable, false, what)
+  }
+  // with criticality taken from the corpus, the stripped bad run is still a critical false positive of the calibrated fingerprint
+  const d = releaseGate({ lock, corpus: CORPUS, judges, verdicts: jsonl(toStoredVerdicts(bad, CORPUS, 'b1', AT).map(r => ({ ...r, critical: null }))) })
+  assert.ok(d.blocks.some(b => /a stored run of its calibrated fingerprint has a critical false positive: .*cal-date-neg/.test(b)), d.blocks.join('; '))
 })

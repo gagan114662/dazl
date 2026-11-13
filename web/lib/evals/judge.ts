@@ -226,6 +226,7 @@ const STATUS_WORDS: Partial<Record<FactStatus, readonly string[]>> = {
 }
 // An assertion is a plain statement that it happened: a failure, a modal, a rumour or a refutation is not one.
 const HEDGES = ['failed', 'fails', 'fail', 'may', 'might', 'could', 'would', 'rumoured', 'rumored', 'reportedly', 'allegedly', 'refuted', 'unconfirmed', 'expected', 'plans', 'planned', 'will', 'collapsed', 'cancelled', 'canceled', 'abandoned']
+const negatedOrHedged = (text: string) => { const w = words(text); return negated(w, text) || w.some(x => HEDGES.includes(x)) }
 const negated = (w: string[], text: string) => w.some(x => NEGATIONS.includes(x)) || /n['’]t\b/i.test(text)
 // A kind word used in another sense ("a seed round of layoffs" is not funding): words that, next to the kind's own words,
 // mean the text is about something else.
@@ -234,11 +235,32 @@ const KIND_EXCLUSIONS: Partial<Record<FactKind, readonly string[]>> = {
   hiring: ['hiring freeze', 'paused hiring'], hire: ['hire purchase', 'for hire'], opening: ['opening hours', 'opening remarks', 'opened an investigation', 'opened talks'],
   acquisition: ['acquired a taste', 'acquired skills'],
 }
-// "X, no relation to Y," / "unlike Y": a named company the text sets apart from its subject. Removed before the subject,
-// negation and other-company checks, so "Corvid Robotic Systems, no relation to Corvid Robotics, opened a Leeds office"
-// is an assertion about Corvid Robotic Systems only.
-const SET_APART = /(?:,\s*|\(\s*)?\b(?:no relation to|not affiliated with|unrelated to|unlike|not to be confused with|nicht zu verwechseln mit|sans lien avec|sin relación con)\s+[^,.;:()]+[,.;:)]?/giu
-const setApart = (text: string) => squash(text).replace(SET_APART, ' ').replace(/\s+/g, ' ').trim()
+// "X, no relation to Y," / "(nicht zu verwechseln mit der Y)": a named company the text sets apart from its subject. Only
+// a clause bounded by punctuation on both sides whose body is a company name (capitalised name words, none of them a
+// negation or hedge) is set apart; "unlike what was reported did not ..." is not. Two uses:
+//  - the negation and hedge checks run on the whole text with only the set-apart keyword ("no relation to") masked, so
+//    the body is still checked and nothing else is hidden;
+//  - the subject and other-company checks drop the whole clause, so "Corvid Robotic Systems, no relation to Corvid
+//    Robotics, opened a Leeds office" is about Corvid Robotic Systems only.
+const tidy = (s: string) => s.normalize('NFC').replace(/\s+/g, ' ').trim()
+const NAME_WORD = String.raw`\p{Lu}[\p{L}\p{N}&'.-]*`
+const SET_APART = new RegExp(String.raw`([,(;]\s*)(no relation to|not affiliated with|unrelated to|unlike|not to be confused with|nicht zu verwechseln mit|sans lien avec|sin relación con)\s+((?:(?:the|der|die|das|dem|den|la|le|el)\s+)?${NAME_WORD}(?:\s+(?:&\s+)?${NAME_WORD})*)\s*(?=[,;)])`, 'gu')
+const setApartWith = (text: string, keep: (lead: string, name: string) => string) => tidy(text).replace(SET_APART, (m: string, lead: string, _kw: string, name: string) =>
+  words(name).some(x => NEGATIONS.includes(x) || HEDGES.includes(x)) ? m : keep(lead, name))
+const maskSetApart = (text: string) => setApartWith(text, (lead, name) => `${lead}${name}`)
+const dropSetApart = (text: string) => setApartWith(text, lead => lead.trim().startsWith('(') ? '(' : ' ')
+// Whether `text` names `company` as a whole name: case aside, not inside a longer word, and not followed by another
+// capitalised name word ("Querix Labs" does not name "Querix").
+export function namesCompany(text: string, company: string): boolean {
+  const t = tidy(text), lower = t.toLowerCase(), c = tidy(company).toLowerCase()
+  if (!c || lower.length !== t.length) return squash(text).includes(squash(company))
+  for (let at = lower.indexOf(c); at >= 0; at = lower.indexOf(c, at + 1)) {
+    const before = t.slice(0, at), after = t.slice(at + c.length)
+    if (/[\p{L}\p{N}]$/u.test(before) || /^[\p{L}\p{N}]/u.test(after) || /^\s+(?:&\s+)?\p{Lu}/u.test(after)) continue
+    return true
+  }
+  return false
+}
 const DETAIL_WORDS: Readonly<Record<string, readonly string[]>> = { 'seed': ['amorçage', 'startkapital'], 'cto': ['directeur technique'], 'series a': ['series-a'] }
 const MONTH_WORDS: readonly (readonly string[])[] = [
   ['january', 'janvier', 'januar', 'enero', 'janeiro'], ['february', 'février', 'februar', 'febrero', 'fevereiro'], ['march', 'mars', 'märz', 'marzo', 'março'],
@@ -257,11 +279,11 @@ export function unstatedAttrs(text: string, r: { kind?: unknown; status?: unknow
   const t = squash(text), has = (x: string) => t.includes(squash(x)), w = words(text)
   const out: string[] = []
   const sw = isStr(r.status) ? STATUS_WORDS[r.status as FactStatus] : undefined
-  const plain = setApart(text), pw = words(plain)
+  const plain = maskSetApart(text), pw = words(plain)
   if (sw && !sw.some(x => w.includes(x)) && !(r.status === 'denied' && negated(w, text))) out.push(`status (${String(r.status)})`)
   if (r.status === 'asserted' && negated(pw, plain)) out.push('status (asserted, but the text is negated)')
   if (r.status === 'asserted' && pw.some(x => HEDGES.includes(x))) out.push('status (asserted, but the text is a failure, modal, rumour or plan)')
-  if (withCompany && isStr(r.company) && !plain.includes(squash(r.company))) out.push('company')
+  if (withCompany && isStr(r.company) && !namesCompany(dropSetApart(text), r.company)) out.push('company')
   const kw = FACT_KINDS.includes(r.kind as FactKind) ? KIND_WORDS[r.kind as FactKind] : []
   if (kw.length && !kw.some(has)) out.push('kind')
   if ((KIND_EXCLUSIONS[r.kind as FactKind] ?? []).some(has)) out.push('kind (a kind word used in another sense)')
@@ -271,10 +293,10 @@ export function unstatedAttrs(text: string, r: { kind?: unknown; status?: unknow
   if (isStr(r.date) && isPartialDate(r.date) && !statesDate(text, r.date)) out.push('date')
   return out
 }
-// The sentence(s) of `source` around `evidence` (from the sentence start before it to the sentence end after it, squashed):
-// where a fact's subject must be named, since evidence often starts after the name ("raised a seed round").
+// The sentence(s) of `source` around `evidence` (from the sentence start before it to the sentence end after it, case
+// kept): where a fact's subject must be named, since evidence often starts after the name ("raised a seed round").
 function sentenceOf(source: string, evidence: string): string {
-  const s = squash(source), e = squash(evidence), at = s.indexOf(e)
+  const s = tidy(source), e = tidy(evidence), at = s.toLowerCase().indexOf(e.toLowerCase())
   if (at < 0) return e
   const before = s.slice(0, at), after = s.slice(at + e.length)
   const start = Math.max(...['. ', '! ', '? '].map(b => { const i = before.lastIndexOf(b); return i < 0 ? 0 : i + b.length }))
@@ -286,7 +308,8 @@ function sentenceOf(source: string, evidence: string): string {
 const MONTH_NAMES = MONTH_WORDS.map(m => m[0][0].toUpperCase() + m[0].slice(1))
 const dateText = (d: string) => { const [y, m, day] = d.split('-'); return day ? ` on ${+day} ${MONTH_NAMES[+m - 1]} ${y}` : m ? ` in ${MONTH_NAMES[+m - 1]} ${y}` : ` in ${y}` }
 const article = (x: string) => /^\d/.test(x) ? x : `${/^[aeiou]/i.test(x) ? 'an' : 'a'} ${x}`
-const proper = (x: string) => /^\p{Lu}/u.test(x) && !/^\p{Lu}{2,}/u.test(x)
+// a place name: every word capitalised ("Leeds", "New York"), not an acronym; "London office" is not one
+const proper = (x: string) => x.split(' ').every(w => /^\p{Lu}/u.test(w)) && !/^\p{Lu}{2,}/u.test(x)
 export function claimText(c: TruthClaim): string {
   const C = c.company, d = c.detail, p = c.person, k = c.contact
   let t: string, usedPerson = false, usedContact = false
@@ -296,7 +319,7 @@ export function claimText(c: TruthClaim): string {
     case 'hire': t = d ? `${C} hired ${article(d)}` : `${C} made a hire`; break
     case 'opening': t = d ? (proper(d) ? `${C} opened a new location in ${d}` : `${C} opened a new ${d}`) : `${C} opened a new location`; break
     case 'closure': t = d ? (proper(d) ? `${C} closed its location in ${d}` : `${C} closed its ${d}`) : `${C} closed a location`; break
-    case 'acquisition': t = `${C} was acquired`; break
+    case 'acquisition': t = d ? `${C} was acquired by ${d}` : `${C} was acquired`; break
     case 'product': t = d ? `${C} launched ${d}` : `${C} launched a new product`; break
     case 'contact': t = `${k ?? 'An address'} is ${d ? article(`${d} contact`) : 'a contact'} at ${C}`; usedContact = true; break
     case 'role': t = `${p ?? 'Someone'}${k ? ` (${k})` : ''} is the current ${d ?? 'role holder'} at ${C}`; usedPerson = usedContact = true; break
@@ -315,8 +338,11 @@ export function truthLabel(t: JudgeTruth): JudgeLabel {
   const c = t.claim
   const eq = (a: string | undefined, b: string | undefined) => a !== undefined && b !== undefined && squash(a) === squash(b)
   const same = (f: TruthFact) => eq(f.company, c.company) && f.kind === c.kind
+  // A role or contact claim is about now ("is the current ..."): a dated assertion (an archived team page from 2024) says
+  // when it held, not that it still does, so only an undated assertion supports an undated role or contact claim.
+  const now = (f: TruthFact) => !((c.kind === 'role' || c.kind === 'contact') && c.date === undefined && f.date !== undefined)
   const attrs = (f: TruthFact) => (c.detail === undefined || eq(f.detail, c.detail)) && (c.person === undefined || eq(f.person, c.person))
-    && (c.contact === undefined || eq(f.contact, c.contact)) && (c.date === undefined || (f.date !== undefined && f.date.startsWith(c.date)))
+    && (c.contact === undefined || eq(f.contact, c.contact)) && (c.date === undefined || (f.date !== undefined && f.date.startsWith(c.date))) && now(f)
   // a retraction applies to the claim unless it names a different detail, person or contact, or a date that cannot be the
   // claim's (neither date is a prefix of the other: a denial of a 2025 round says nothing about a 2026 one). An undated
   // retraction applies to a dated claim, and a dated one to an undated claim.
@@ -340,6 +366,8 @@ export function checkTruth(it: JudgeItem): string[] {
   if (!FACT_KINDS.includes(claim.kind as FactKind) || claim.kind === 'instruction') p.push(`${it.id}: truth claim kind ${String(claim.kind)} is not a claimable kind`)
   for (const a of OPTIONAL_ATTRS) if (claim[a] !== undefined && !nonEmpty(claim[a])) p.push(`${it.id}: truth claim ${a} must be a non-empty string`)
   if (claim.date !== undefined && !isPartialDate(claim.date)) p.push(`${it.id}: truth claim date ${String(claim.date)} is not a real YYYY[-MM[-DD]] date`)
+  // a claim attribute rendered into the claim text cannot carry a negation or hedge ("launched no new version")
+  for (const a of ['detail', 'person'] as const) if (isStr(claim[a]) && negatedOrHedged(claim[a])) p.push(`${it.id}: truth claim ${a} ${JSON.stringify(claim[a])} is negated or hedged`)
   if (!p.length && it.claim !== claimText(claim as unknown as TruthClaim)) p.push(`${it.id}: the displayed claim is not the one its truth claim renders (${JSON.stringify(claimText(claim as unknown as TruthClaim))})`)
   t.facts.forEach((f: unknown, n: number) => {
     const at = `${it.id}: fact ${n + 1}`
@@ -360,10 +388,11 @@ export function checkTruth(it: JudgeItem): string[] {
     // this item except one it sets apart ("no relation to ..."). An instruction is about no company, and a publication or
     // refresh date is about the page, so those are exempt.
     if (nonEmpty(f.evidence) && nonEmpty(f.company) && f.status !== 'instruction' && f.kind !== 'publication' && f.kind !== 'page_update') {
-      const sent = setApart(sentenceOf(src.text, f.evidence)), own = squash(f.company)
-      if (!sent.includes(own)) p.push(`${at}: the sentence of its evidence does not name its company ${f.company}`)
+      const sent = dropSetApart(sentenceOf(src.text, f.evidence)), own = squash(f.company)
+      if (!namesCompany(sent, f.company)) p.push(`${at}: the sentence of its evidence does not name its company ${f.company}`)
       const others = [...new Set([claim.company, ...(t.facts as unknown[]).map((x: unknown) => isObj(x) ? x.company : undefined)].filter(nonEmpty).map(squash))].filter(o => o !== own && !own.includes(o))
-      const named = others.filter(o => sent.replaceAll(own, ' ').includes(o))
+      const withoutOwn = sent.replace(new RegExp(tidy(f.company).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu'), ' ')
+      const named = others.filter(o => namesCompany(withoutOwn, o))
       if (named.length) p.push(`${at}: the sentence of its evidence also names ${named.join(', ')}, another company of this item`)
     }
   })
@@ -981,6 +1010,14 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
   const supplied: unknown[] = i?.drift === undefined ? [] : Array.isArray(i.drift) ? i.drift : []
   if (i?.drift !== undefined && !Array.isArray(i.drift)) blocks.push('the drift reports are not a list')
   supplied.forEach((d, n) => { const p = driftReportProblem(d); if (p) blocks.push(`drift report ${n + 1} is unreadable: ${p}`) })
+  // A stored record on the current corpus hash must carry its corpus item's own label, condition, critical kind and split:
+  // a log line that rewrites them (e.g. critical: null on a critical item) would hide a critical false positive.
+  if (records && hash) {
+    const byId = new Map((Array.isArray(i.corpus?.items) ? i.corpus.items : []).filter(isObj).map(it => [it.id, it]))
+    const off = [...new Set(records.filter(r => r.corpus_hash === hash).filter(r => { const it = byId.get(r.item); return !it || it.label !== r.label || it.condition !== r.condition || it.critical !== r.critical || it.split !== r.split || r.origin !== i.corpus.origin }).map(r => `${r.item} (run ${r.run})`))]
+    if (off.length) blocks.push(`the stored-verdict log disagrees with corpus ${String(i.corpus.id)} (an item missing from it, or another label, condition, critical kind, split or origin): ${off.slice(0, 10).join(', ')}${off.length > 10 ? ` and ${off.length - 10} more` : ''}`)
+    if (off.length) logProblem ??= 'the stored-verdict log disagrees with the corpus'
+  }
   const calIds = JSON.stringify((Array.isArray(i?.corpus?.items) ? i.corpus.items : []).filter(it => isObj(it) && it.split === 'calibration').map(it => it.id).sort())
   const judges: ReleaseJudgeInput[] = Array.isArray(i?.judges) ? i.judges : []
   if (!judges.length) blocks.push('no judge was checked')
@@ -1028,9 +1065,12 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
     }
     // A stored run of the locked fingerprint is held to the lock's own bar: a critical false positive in any of them (any
     // split, on this corpus) blocks, whatever the lock entry says and whichever run is the drift baseline.
+    // Criticality comes from the corpus (kindOf), never from the log line, and every stored record on this corpus hash
+    // must agree with its corpus item (storedMismatch, above). Runs stored under an earlier corpus hash are deliberately
+    // not counted: a re-frozen corpus is a new benchmark, and its calibration and stored verdicts start over.
     let storedCritical: string | null = null
     if (entries.length && records) {
-      const bad = [...new Set(records.filter(r => r.judge === j.spec.id && r.fingerprint === fp && r.corpus_hash === hash && r.critical && r.answer === 'supported').map(r => `${r.item} (run ${r.run}, ${r.split})`))]
+      const bad = [...new Set(records.filter(r => r.judge === j.spec.id && r.fingerprint === fp && r.corpus_hash === hash && kindOf.get(r.item) && r.answer === 'supported').map(r => `${r.item} (run ${r.run}, ${r.split})`))]
       if (bad.length) { storedCritical = `a stored run of its calibrated fingerprint has a critical false positive: ${bad.join(', ')}`; b.push(`${j.spec.id}: ${storedCritical}: release blocked`) }
     }
     const real_model: GateResult = lp ? { usable: false, reason: lp }
