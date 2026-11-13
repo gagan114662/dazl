@@ -91,14 +91,16 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // the follow-up (#1163) - and a signal that has any of them makes no play at all. It still shows on the page.
   // - a HIRING play, stricter (an allow-list): the signal must START with hiring - only "is / are / now / currently / actively /
   //   started / just / recently", "not only", "not just" or "never stopped" may come before the hiring word - have none of the
-  //   NEGATING words anywhere else ("hiring SDRs on hold", "hiring nobody", "instead of hiring recruiters": none), and compile
-  //   to a positive hiring condition with a real role. The role is the compiler's.
+  //   NEGATING words anywhere else ("hiring SDRs on hold", "hiring nobody", "instead of hiring recruiters": none), be
+  //   followed by a role and nothing else (a shape check, see hiringRole), and compile to a positive hiring condition with a
+  //   real role. The role is the compiler's.
   // - a PLAIN play: any other signal with a positive condition and no NEGATING word; a hiring condition backs one only as
   //   "hiring" with no role ("Expanding team, hiring").
   // Cost, accepted: a mixed but positive signal ("hiring freeze lifted, now hiring SDRs", "raised funding, not hiring a
   // receptionist") makes no play. A free-form signal the compiler cannot enforce ("attended a trade show") makes none either.
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  const NEGATING = /(?:n['\u2019]t\b|\bpre-|\b(?:not|never|no|nobody|none|nothing|zero|without|sans|lack(?:s|ing)?|fail(?:s|ed|ing|ure)?|fell through|fall(?:s|ing)? through|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|pass(?:es|ed|ing)? on|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer|on hold|lost|los(?:e|es|ing)|ran out|run(?:s|ning)? out|yet to|before|prior to|fewer|less|few|barely|hardly|rarely|seldom|gave up|giv(?:e|es|ing) up|done|end(?:s|ed|ing)|reduc(?:e|es|ed|ing)|cut(?:s|ting)?|shr(?:ink|inks|ank|unk|inking)|slow(?:s|ed|ing)?)\b)/i
+  const NEGATING = /(?:n['\u2019]t\b|\bpre-|\b(?:not|never|no|nobody|none|nothing|zero|without|sans|lack(?:s|ing)?|fail(?:s|ed|ing|ure)?|fell through|fall(?:s|ing)? through|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|pass(?:es|ed|ing)? on|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer|on hold|lost|los(?:e|es|ing)|ran out|run(?:s|ning)? out|yet to|before|prior to|fewer|less|few|barely|hardly|rarely|seldom|gave up|giv(?:e|es|ing) up|done|end(?:s|ed|ing)|reduc(?:e|es|ed|ing)|cut(?:s|ting)?|shr(?:ink|inks|ank|unk|inking)|slow(?:s|ed|ing)?|neither|nor|unlikely|impossible|unable|minimal|nil|zilch|postpon\w*|delay\w*|shelv\w*|scrap\w*|abandon\w*|discontinu\w*|terminat\w*|slash\w*|unsuccessful\w*)\b)/i
+  const HIRING_NOUN = /^(?:slowdown|moratorium|ban|cap|cutbacks?|pullback|restrictions?|drought|embargo|lull|standstill|plans?|budget|freeze|pause)$/i
   const conds = (x: string) => planConditions(compileTargeting(x).root)
   // the three phrases that contain a NEGATING word but mean the hiring is real
   const POSITIVE_LEAD = /^(?:not (?:only|just)|never (?:stopped|stops))\s+/i
@@ -109,6 +111,15 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
     const lead = t.slice(0, m.index), rest = t.slice(m.index)
     if (!(LEAD_IN.test(lead) || (POSITIVE_LEAD.test(lead) && LEAD_IN.test(lead.replace(POSITIVE_LEAD, ''))))) return null
     if (NEGATING.test(rest) || NEGATING.test(lead.replace(POSITIVE_LEAD, ''))) return null
+    // What follows the hiring word must be a role and nothing else, judged by SHAPE (Hermes review at c12ab77d: "hiring
+    // slowdown", "hiring SDRs postponed", "hiring front-desk staff is off the table" all compiled to a role):
+    // at most 5 words; no digit and no punctuation but a hyphen, & or /; no verb or particle word; no word ending in -ed;
+    // and the last word is not a hiring noun (HIRING_NOUN is a list, like NEGATING).
+    const tail = rest.replace(/^\S+\s*/, '').replace(/^(?:(?:a|an|the|new)\s+|(?:their|our|its)\s+first\s+)/i, '').trim()
+    const words = tail.split(/\s+/).filter(Boolean)
+    if (!words.length || words.length > 5 || /[^A-Za-z\s&/-]/.test(tail)) return null
+    if (words.some(w => /^(?:is|are|was|were|be|been|has|had|off|out|down|up|over|anymore|yet)$/i.test(w) || /ed$/i.test(w))) return null
+    if (HIRING_NOUN.test(words[words.length - 1])) return null
     const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
     const role = c?.cond.role?.replace(/^(?:a|an|the|their first|new)\s+/i, '').trim().slice(0, 80)
     return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role) ? role : null

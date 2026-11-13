@@ -192,3 +192,24 @@ test('#1043 Hermes 01387296: a hiring play needs the signal to start with hiring
   // a signal that only mentions hiring after something else is not a hiring play, but stays a plain one when nothing negates it
   assert.deepEqual(q(['raised a Series A, hiring SDRs']), ['Practice owner - raised a Series A, hiring SDRs'])
 })
+
+// Review (Hermes-PC) at c12ab77d: stop wordings AFTER the hiring word. What follows "hiring" must be a role and nothing else.
+test('#1043 Hermes c12ab77d: a hiring play only when a role, and nothing but a role, follows the hiring word', () => {
+  const q = (s: string, who = ['Practice owner']) => businessPlays({ buyer: icp({ who, where: [], signals: [s] }) }, []).map(p => p.query)
+  const none = ['hiring slowdown', 'hiring moratorium', 'hiring ban', 'hiring cap', 'hiring cutbacks', 'hiring pullback', 'hiring restrictions', 'hiring drought', 'hiring embargo', 'hiring lull', 'hiring standstill',
+    'hiring down 30%', 'hiring budget slashed', 'hiring plans shelved', 'hiring plans scrapped', 'hiring plans abandoned',
+    'hiring front-desk staff postponed', 'hiring recruiters shelved', 'Hiring front-desk staff is off the table', 'hiring an office manager is off the table',
+    'hiring SDRs postponed', 'hiring SDRs delayed', 'hiring SDRs shelved', 'hiring SDRs scrapped', 'hiring SDRs abandoned', 'hiring SDRs discontinued', 'hiring SDRs terminated', 'hiring SDRs put off', 'hiring SDRs called off', 'hiring SDRs ruled out',
+    'hiring SDRs is unlikely', 'hiring SDRs unlikely this year', 'hiring SDRs impossible', 'hiring SDRs proved impossible', 'hiring SDRs out of budget', 'hiring SDRs is too expensive for them', 'hiring SDRs unsuccessfully', 'hiring SDRs was a mistake', 'hiring SDRs backfired',
+    'hiring SDRs is over', 'hiring SDRs neither now nor later', 'hiring SDRs? Nope', 'hiring SDRs anymore? unclear', 'hiring zilch', 'hiring nil SDRs', 'hiring 0 SDRs', 'hiring minimal staff']
+  for (const s of none) assert.ok(!q(s).some(p => / hiring /i.test(` ${p} `) && /at companies/.test(p)), `${s} -> ${JSON.stringify(q(s))}`)
+  // none of them may make a hiring play; the ones that carry a listed word make no play at all
+  for (const s of ['hiring SDRs postponed', 'hiring budget slashed', 'hiring SDRs is unlikely', 'hiring nil SDRs', 'hiring SDRs neither now nor later']) assert.deepEqual(q(s), [], s)
+  // these keep their plays
+  for (const [s, play, who] of [
+    ['hiring front-desk staff', 'Practice owner at companies hiring front-desk staff'], ['hiring an office manager', 'Practice owner at companies hiring office manager'],
+    ['hiring recruiters', 'Agency owner at companies hiring recruiters', 'Agency owner'], ['Hiring their first SDR or salesperson', 'Founder at companies hiring SDR', 'Founder'],
+    ['hiring a Head of Sales', 'Practice owner at companies hiring Head of Sales'], ['now hiring recruiters', 'Practice owner at companies hiring recruiters'],
+    ['just started hiring front-desk staff', 'Practice owner at companies hiring front-desk staff'], ['are currently actively hiring SDRs', 'Practice owner at companies hiring SDRs']] as [string, string, string?][])
+    assert.deepEqual(q(s, [who ?? 'Practice owner']), [play], s)
+})
