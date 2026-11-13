@@ -147,6 +147,37 @@ check_signin_client() {
 
 if [ "${1:-}" = --check-env ]; then check_env "${2:?usage: deploy.sh --check-env FILE}"; echo "env ok"; exit 0; fi
 
+# NEVER-AGAIN #1 (docs/NEVER-AGAIN.md; prod down 2026-11-12 20:25 and 2026-11-13 ~09:12, OOM from building on the box):
+# the dazl box (prod + staging, 1.8 GB RAM) never builds. The default BUILD above (npm ci + next build) runs only when
+# STAGING_BUILD is not given (or given empty), which on the box means dazl-staging-deploy.timer or a hand run: refused. pull-prebuilt.sh
+# (the prebuilt path) and the tests always pass STAGING_BUILD. The throwaway-machine e2e test (e2e-test.sh) may build
+# with DAZL_ALLOW_HOST_BUILD=throwaway-machine, and even then never where a dazl box marker exists.
+# Tested by ops/test_never_again.py.
+BOX_MARKERS=${DAZL_BOX_MARKERS:-/usr/local/lib/dazl-prod /usr/local/lib/dazl-staging/pull-prebuilt.sh /etc/dazl-staging /var/lib/dazl-staging-deploy}
+# An EMPTY STAGING_BUILD is the default build too (line "BUILD=${STAGING_BUILD:-...}" above uses the same :- expansion), so
+# empty is refused exactly like unset.
+if [ -z "${STAGING_BUILD:-}" ]; then
+  [ "${DAZL_ALLOW_HOST_BUILD:-}" = throwaway-machine ] \
+    || fail "REFUSED: no on-box build (docs/NEVER-AGAIN.md #1). Deploy staging from the prebuilt build (ops/staging/pull-prebuilt.sh, dazl-staging-prebuilt.timer); nothing fetched, built or changed"
+  for m in $BOX_MARKERS; do
+    [ ! -e "$m" ] || fail "REFUSED: $m exists, so this is the dazl box: no on-box build even with DAZL_ALLOW_HOST_BUILD (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
+  done
+# On the box, a non-empty STAGING_BUILD may be ONE thing: the prebuilt unpack step pull-prebuilt.sh passes
+# (bash '<...>/pull-prebuilt.sh' --extract '<dir>'). Anything else - npm ci, yarn, make build, a wrapper script - could be
+# an on-box build under another name, and no list of build commands is complete: refused. Off the box (tests, CI, the
+# throwaway machine) any command is allowed.
+else
+  case "$STAGING_BUILD" in
+    "bash '"*"/pull-prebuilt.sh' --extract '"*"'") case "$STAGING_BUILD" in *[\;\&\|\`\$\<\>]*|*"'"*"'"*"'"*"'"*"'"*) prebuilt=0 ;; *) prebuilt=1 ;; esac ;;
+    *) prebuilt=0 ;;
+  esac
+  if [ "$prebuilt" = 0 ]; then
+    for m in $BOX_MARKERS; do
+      [ ! -e "$m" ] || fail "REFUSED: STAGING_BUILD is not the prebuilt unpack step and $m exists, so this is the dazl box: no on-box build (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
+    done
+  fi
+fi
+
 check_env "$ENV_FILE"
 # Staging's own directory must not be, contain, or sit inside production's data directory: everything this script
 # deletes (failed releases, old staging releases) is under it, so production data and production rollbacks can never be.
