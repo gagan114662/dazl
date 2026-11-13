@@ -75,6 +75,7 @@ import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, adaptiveDiscoveryOn } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -922,8 +923,7 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 // when the run disabled paid steps, a budget already refused a call, or too little of the scan's time budget is left.
 // Its outcome is the 'search:adaptive' source row: ok / empty / skipped:<why> / budget_stopped / search_cap, so a
 // bounded stop is never reported as an exhausted market.
-export const ADAPTIVE_SEARCHES = 3
-export const ADAPTIVE_FETCHES = 6
+export { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES }
 export const ADAPTIVE_MIN_REMAINING_MS = 120_000
 interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
 
@@ -1562,11 +1562,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
     }
     // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
-    // Gated OFF by default: one round costs up to ADAPTIVE_SEARCHES searches + ADAPTIVE_FETCHES fetches + 1 extraction
-    // on top of round one, for every paid non-trial scan that verified nothing, and that extra spend has no owner
-    // approval. DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 opts in; OFF behaves exactly as without the feature (no round, no
-    // calls, no ledger row). Trial scans skip the round on their own policy (paidFallback=false) even when enabled.
-    if (process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED === '1' && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+    // ON by default (lib/scan/run-budget.ts adaptiveDiscoveryOn): one round costs up to ADAPTIVE_SEARCHES searches +
+    // ADAPTIVE_FETCHES fetches + 1 extraction on top of round one, and the price estimate's maxima include it.
+    // DAZL_ADAPTIVE_DISCOVERY_ENABLED=0 turns it off; OFF behaves exactly as without the feature (no round, no calls,
+    // no ledger row). Trial scans skip the round on their own policy (paidFallback=false).
+    if (adaptiveDiscoveryOn(process.env) && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())

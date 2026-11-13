@@ -20,7 +20,7 @@ test('menu: every provider/source has a unit price and a projected range; the to
 test('the estimate prices a model call exactly as the spend guard reserves it, so the estimate and the hard cap agree', () => {
   const e = estimateRun({ budget: { max_usd: 5 }, payer: 'you' })
   const x = row(e, 'extraction'), p = PRICES_USD_PER_M['claude-sonnet-4-5']
-  const guardMax = 3 * (((30_000 + INPUT_MARGIN_TOKENS) * p.in) + 4_000 * p.out) / 1e6   // 3 calls at the worst-case size
+  const guardMax = 4 * (((30_000 + INPUT_MARGIN_TOKENS) * p.in) + 4_000 * p.out) / 1e6   // 3 calls + the adaptive round's 1 (#381, on by default), at the worst-case size
   assert.ok(Math.abs(x.usd!.max - guardMax) < 1e-9)
   // A guard whose limit is the capped worst case admits the first worst-case call; one below the expected minimum refuses it.
   const one = (30_000 + INPUT_MARGIN_TOKENS) * p.in / 1e6 + 4_000 * p.out / 1e6
@@ -141,7 +141,7 @@ test('#851 known alternate model: gpt-4.1 rows, total and unit price use its own
   const ex = row(e, 'extraction')
   assert.match(ex.unit_usd, /^\$3\.50 in \/ \$14\.00 out per 1M tokens \(gpt-4\.1\)$/)
   assert.ok(modelRows(e).every(r => !/claude-sonnet-4-5/.test(r.unit_usd)), 'no model row names the default model')
-  assert.ok(Math.abs(ex.usd!.min - at({ in: 3.5, out: 14 }, 1, 8, 1.5)) < 1e-12 && Math.abs(ex.usd!.max - at({ in: 3.5, out: 14 }, 3, 30, 4)) < 1e-12)
+  assert.ok(Math.abs(ex.usd!.min - at({ in: 3.5, out: 14 }, 1, 8, 1.5)) < 1e-12 && Math.abs(ex.usd!.max - at({ in: 3.5, out: 14 }, 4, 30, 4)) < 1e-12) // 3 + the adaptive round's extraction (#381)
   const sonnet = estimateRun({ budget: null, payer: 'you', priceModel: scanModelPrice })
   assert.notDeepEqual(e.total, sonnet.total, 'a different model is a different total')
   assert.deepEqual(e.unpriced, []); assert.match(e.assumptions[0], /^Model: gpt-4\.1\./)
@@ -257,4 +257,27 @@ test('#851 trial payer: the trial always runs under its reserve guard, so an unp
   assert.match(e.verdict.message, /^The free trial's model \(claude-opus-unlisted\) has no listed price/)
   assert.deepEqual(e.verdict.change, ['This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.'])
   assert.equal(estimateRun({ budget: null, payer: 'trial', model: 'claude-sonnet-4-5', priceModel: scanModelPrice, limited: true }).verdict.ok, true, 'the default trial model is unaffected')
+})
+
+test('#381 the estimate states the adaptive round in its maxima wherever the round can run (on by default; off with "0", on a trial or with paid steps off)', async () => {
+  const { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } = await import('../lib/scan/run-budget.ts')
+  const priced = { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_PRICE_TINYFISH_FETCH_USD: '0.002' }
+  const rows = (e: ReturnType<typeof estimateRun>) => Object.fromEntries(e.rows.map(r => [r.id, r]))
+  const on = rows(estimateRun({ budget: null, payer: 'you', env: priced }))
+  assert.equal(on.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + ADAPTIVE_SEARCHES + PEOPLE_SEARCHES_MAX)
+  assert.equal(on.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)
+  assert.equal(on.extraction.units.max, 4)
+  assert.match(on.tinyfish_search.note, /one more round, only when the first round verifies no lead/)
+  assert.ok(Math.abs(on.tinyfish_fetch.usd!.max - 0.002 * (DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)) < 1e-9, 'the dollar maximum includes the extra pages')
+  for (const [why, e] of [
+    ['turned off', estimateRun({ budget: null, payer: 'you', env: { ...priced, DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' } })],
+    ['paid steps off', estimateRun({ budget: { paid_fallback: false }, payer: 'you', env: priced })],
+  ] as const) {
+    const r = rows(e)
+    assert.equal(r.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + PEOPLE_SEARCHES_MAX, why)
+    assert.equal(r.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan, why)
+    assert.equal(r.extraction.units.max, 3, why)
+  }
+  const trial = rows(estimateRun({ budget: null, payer: 'trial', env: priced }))
+  assert.equal(trial.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan, 'a trial scan never runs the round')
 })

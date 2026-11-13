@@ -50,6 +50,15 @@ export type SurfaceStatus = 'allowed' | 'refused' | 'off' | 'not_covered'
 // Defaults below mirror lib/search/tinyfish.ts limits({}) (a test pins them); the operator can change those by env.
 export const DEFAULT_TINYFISH = { searchesPerScan: 8, fetchesPerScan: 16, tenantDaily: 200 }
 export const PEOPLE_SEARCHES_MAX = 5 // lib/people/people-search.ts MAX_COMPANIES
+// #381 adaptive discovery (lib/scan/runner.ts): when round one verified no lead, ONE more bounded TinyFish round with
+// genuinely different queries, on unseen pages, through the same caps, guards and verifier. Its counts live here (not in
+// the runner) so the price estimate, which is bundled into the browser, states them in its maxima.
+// Decision (builder, under the lane's delegation, 2026-11-13; see the PR for #381): ON by default for scans that may use
+// paid steps (never a free-trial scan, never a run with paid_fallback=false). The operator turns it off with
+// DAZL_ADAPTIVE_DISCOVERY_ENABLED=0; any other value, or none, leaves it on.
+export const ADAPTIVE_SEARCHES = 3
+export const ADAPTIVE_FETCHES = 6
+export const adaptiveDiscoveryOn = (env: Record<string, string | undefined>): boolean => (env.DAZL_ADAPTIVE_DISCOVERY_ENABLED ?? '').trim() !== '0'
 // Profile generation is ONE request with a known maximum size. icpPrompt JSON-encodes the 600-char request and 300-char seller
 // text, and JSON.stringify turns one control char (U+0000) into 6 ASCII bytes (\u0000), which beats a 3-byte BMP char, a 2-byte
 // escaped quote and a surrogate pair; so 600 + 300 control chars is the largest prompt it can build. Priced at the highest listed

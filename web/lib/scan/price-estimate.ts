@@ -8,7 +8,7 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
 import { FIRST_PLAY_MAX } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
@@ -115,9 +115,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const rows: EstimateRow[] = []
   const p = model === UNKNOWN_MODEL ? null : (i.priceModel ?? listedPrice)(model)
   const modelUnit = p ? `$${p.in.toFixed(2)} in / $${p.out.toFixed(2)} out per 1M tokens (${model})` : `${model}: no listed price`
+  // #381: the adaptive round (one more search round when round one verified nothing) can run on this scan: its searches,
+  // pages and extraction call are in the maxima, so "about $X" never understates what the scan may do
+  const adaptive = !b?.first5 && i.payer !== 'trial' && b?.paid_fallback !== false && adaptiveDiscoveryOn(env)
   for (const c of CALLS) {
     const off = (c.optional === 'judge' && b?.judge === false) || (c.optional === 'hiring' && !i.hiringRequest)
-    const calls = off ? { min: 0, max: 0 } : c.calls
+    const calls = off ? { min: 0, max: 0 } : c.id === 'extraction' && adaptive ? { min: c.calls.min, max: c.calls.max + 1 } : c.calls
     const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
@@ -140,10 +143,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     // trial reserve at the trial price (runner.ts trialPeoplePrepaid); the lead searches keep the operator's price.
     const people = i.payer === 'trial' ? firstPlayPeople : PEOPLE_SEARCHES_MAX
     const trialPeoplePrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
-    const searchMax = (tfSearch ?? 0) * DEFAULT_TINYFISH.searchesPerScan + (trialPeoplePrice ?? tfSearch ?? 0) * people
+    const searches = DEFAULT_TINYFISH.searchesPerScan + (adaptive ? ADAPTIVE_SEARCHES : 0), fetches = DEFAULT_TINYFISH.fetchesPerScan + (adaptive ? ADAPTIVE_FETCHES : 0)
+    const extra = adaptive ? `; plus at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages in one more round, only when the first round verifies no lead` : ''
+    const searchMax = (tfSearch ?? 0) * searches + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
-    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: DEFAULT_TINYFISH.searchesPerScan + people }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
-    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: DEFAULT_TINYFISH.fetchesPerScan }, usd: price(tfFetch, DEFAULT_TINYFISH.fetchesPerScan), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)` })
+    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
+    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {

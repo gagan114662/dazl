@@ -206,22 +206,25 @@ test('#381 cancellation inside the adaptive round: ScanStopped and ScanTimedOut 
   assert.ok(!s.leads.some(l => l.company === B.company), 'nothing from the timed-out round is kept')
 })
 
-test('#381 gate: the adaptive round is OFF by default - a zero-verified scan behaves exactly as without the feature (no round, no calls, no row)', async () => {
-  const s = await scan({ adaptiveOff: true })
-  assert.equal(s.r, 'done')
-  assert.equal(s.adaptive, undefined, `no search:adaptive row at all: ${JSON.stringify(s.runs)}`)
-  assert.ok(!s.searched.some(q => /front desk/i.test(q)), `no adaptive search: ${JSON.stringify(s.searched)}`)
-  assert.deepEqual(s.fetchBatches, [[A.url]], 'no adaptive fetch')
-  assert.equal(s.extractions.length, 1, 'no adaptive extraction')
-  assert.equal(s.jobRow.status, 'done')
+test('#381 gate: the adaptive round is ON by default (decision on #381) - a zero-verified scan with the variable unset runs it', async () => {
+  const s = await scan({ adaptiveOff: true }) // the variable unset
+  assert.ok(s.adaptive, `a search:adaptive row: ${JSON.stringify(s.runs)}`)
+  assert.ok(s.searched.some(q => /front desk/i.test(q)), `the adaptive search ran: ${JSON.stringify(s.searched)}`)
+  assert.equal(s.extractions.length, 2, 'one adaptive extraction')
 })
 
-test('#381 gate: only the literal "1" enables the round - "0", "true", "" and " 1" all stay off', async () => {
-  for (const v of ['0', 'true', '', ' 1']) {
+test('#381 gate: only "0" turns the round off (no round, no calls, no row); "1", "true" and "" leave it on', async () => {
+  for (const v of ['0', ' 0 ']) {
     const s = await scan({ adaptiveFlag: v })
-    assert.equal(s.adaptive, undefined, `flag ${JSON.stringify(v)} must stay off: ${JSON.stringify(s.runs)}`)
+    assert.equal(s.r, 'done')
+    assert.equal(s.adaptive, undefined, `flag ${JSON.stringify(v)} turns it off: ${JSON.stringify(s.runs)}`)
     assert.ok(!s.searched.some(q => /front desk/i.test(q)), `flag ${JSON.stringify(v)}: no adaptive search`)
+    assert.deepEqual(s.fetchBatches, [[A.url]], `flag ${JSON.stringify(v)}: no adaptive fetch`)
     assert.equal(s.extractions.length, 1, `flag ${JSON.stringify(v)}: no adaptive extraction`)
+  }
+  for (const v of ['1', 'true', '']) {
+    const s = await scan({ adaptiveFlag: v })
+    assert.ok(s.adaptive, `flag ${JSON.stringify(v)} leaves it on`)
   }
 })
 
