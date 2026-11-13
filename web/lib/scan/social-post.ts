@@ -180,7 +180,7 @@ function fromX(html: string, ref: SocialPostRef, now: number): Found[] {
     if (a >= 0 && z > m.index! && html.lastIndexOf('</article>', m.index!) < a) {
       const body = html.slice(a, z), t = /<div\b[^>]*data-testid\s*=\s*["']tweetText["'][^>]*>/i.exec(body)
       if (t) {
-        let depth = 1, i = t.index + t[0].length
+        let depth = 1; const i = t.index + t[0].length
         for (const d of body.slice(i).matchAll(/<(\/?)div\b[^>]*>/gi)) { depth += d[1] ? -1 : 1; if (depth === 0) { texts.push(str(toText(body.slice(i, i + d.index!)))); break } }
       }
     }

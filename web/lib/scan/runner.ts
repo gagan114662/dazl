@@ -61,6 +61,7 @@ import { isHiringTrigger } from './scoreboard.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { socialPostBound } from './social-post.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
@@ -368,6 +369,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
+    // #878: a public social post's own structured publish time (page.post: exactly the post this URL names) dates the claim only when the quote is the
+    // post's own text and the binding rule ties the day to this company and event there (lib/scan/social-post.ts). A day the page TEXT binds to the
+    // claim keeps that day; a claimed day the date rules reject keeps the hold, as on any page.
+    const postBound = page && !isFail(page) && page.post && !claimedRejected ? socialPostBound(page.post, cIn.excerpt, cIn.company) : null
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
       // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A
@@ -379,9 +384,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
       } else {
         const b = eventDateBound(cIn.event_date, page.text, cIn.excerpt, cIn.company)
-        if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
-        else c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
+        if (b.bound) c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
+        else if (postBound?.bound) c0 = { ...cIn, event_date: page.post!.day, event_date_proof: 'page_bound', event_date_proof_note: postBound.why.slice(0, 200) }
+        else { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
       }
+    } else if (page && !isFail(page) && !cIn.event_date && postBound?.bound) {
+      // #878: no claimed day; the public social post's own publish time dates the claim its own text states (socialPostBound)
+      c0 = { ...cIn, event_date: page.post!.day, event_date_proof: 'page_bound', event_date_proof_note: postBound.why.slice(0, 200) }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0

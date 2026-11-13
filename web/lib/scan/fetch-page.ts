@@ -4,13 +4,16 @@ import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
+import { socialPostOf, type SocialPost } from './social-post.ts'
 import { withAtsReadSlot } from './ats-read-slots.ts' // #1127: at most ATS_RECORD_CONCURRENCY board record reads at a time per scan
 
 // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD. postedAt (#533): set only when the
 // page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
 // first-published day for it, the posting's own structured publish date (#460).
 // board: set only for a posting read through its board's API record (#1126); the identity the verifier matches instead of the title
-export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null; board?: BoardIdentity }
+// post (#878): set only when the URL names one public social post and the page's own structured data states that post's publish
+// time (lib/scan/social-post.ts): its day and its own text. It dates a claim only through socialPostBound.
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null; board?: BoardIdentity; post?: SocialPost }
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -257,6 +260,9 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
   }
 }
 
+// #878: the social post the cited URL names, when the page read (after redirects, still that post) states its own publish time
+const postOf = (rawUrl: string, url: URL, html: string): { post?: SocialPost } => { const post = socialPostOf(rawUrl, url.toString(), html); return post ? { post } : {} }
+
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
 export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
   // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
@@ -301,7 +307,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       } else {
         const t = htmlToText(html)
         thin = classifyThin(html, t.text)
-        if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
+        if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000), ...postOf(rawUrl, url, html) } : { fail: 'error' }
       }
       // a board API that refused the record is a refusal: never sent to the rendering service
       if (posting) return { fail: thin ?? 'error' }
@@ -309,7 +315,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       const rendered = await render(url.toString())
       if (rendered) {
         const t = htmlToText(rendered)
-        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000) }
+        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000), ...postOf(rawUrl, url, rendered) }
       }
       return { fail: thin }
     }
