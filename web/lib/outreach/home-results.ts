@@ -15,7 +15,9 @@
 // VISIBLE_LEAD), not test fixtures (lib/scan/store.ts and store-db.ts list reads leave out source_kind 'test').
 // The latest replies are replies to those same messages (sent in the window), so the list never shows a reply the tiles
 // do not count. A sent message whose lead row is gone still counts, under no signal type.
-// Per signal type, each lead counts under its own stored type (leads.signal_kind), so a reply is counted once, under the
+// Per signal type, each lead counts under its own stored type (leads.signal_kind) or, never graded, under its channel
+// (leads.source_kind, "Search (signal type not graded)"); "No signal type" = a lead with neither, or a message whose lead is gone
+// or another tenant's. So a reply is counted once, under the
 // lead its message went to: the table's replied column always sums to the Replied tile.
 // "Ready" leads are not counted here: that verdict needs the per-request gate checks of the Leads page (the draft guard,
 // the time window, timing), so Home says "new leads" and links to Leads, never a "ready" number it cannot back.
@@ -62,7 +64,7 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
      GROUP BY l.signal_kind, l.source_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
   // A lead's row: its graded signal type; a lead never graded (no stored type: most search leads made without a scoring
   // model, every hiring-feed / CSV / manual lead) is counted under the channel that produced it ("source:<kind>"), never under a
-  // type it was not given. A message whose lead is gone (or another tenant's) has neither: 'unknown'.
+  // type it was not given. 'unknown': a lead with neither field (older rows), or a message whose lead is gone or another tenant's.
   const kind = (k: string | null, src: string | null) => k || (src ? `source:${src}` : 'unknown')
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
@@ -92,13 +94,14 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
 }
 
 // The signal ids (lib/scan/score.ts SIGNALS, plus commenter imports' competitor_complaint) in plain words.
+// A source row holds only that channel's leads with no graded type (a graded lead counts under its type), so each label says so.
 const SOURCE_LABEL: Record<string, string> = {
-  query: 'Search (signal type not graded)', hiring_feed: 'Hiring feed', csv: 'CSV import', manual_source: 'Added by you',
+  query: 'Search', hiring_feed: 'Hiring feed', csv: 'CSV import', manual_source: 'Added by you',
   watch: 'Watched search', monitor: 'Monitor', commenter: 'Commenters on a post', first_party: 'Your site visitors',
 }
 export function signalLabel(id: string): string {
   if (id === 'unknown') return 'No signal type'
-  if (id.startsWith('source:')) { const s = id.slice(7); return SOURCE_LABEL[s] ?? `${s.charAt(0).toUpperCase()}${s.slice(1).replace(/_/g, ' ')} (signal type not graded)` }
+  if (id.startsWith('source:')) { const s = id.slice(7); return `${SOURCE_LABEL[s] ?? `${s.charAt(0).toUpperCase()}${s.slice(1).replace(/_/g, ' ')}`} (signal type not graded)` }
   const s = id.replace(/_/g, ' ')
   return s.charAt(0).toUpperCase() + s.slice(1)
 }

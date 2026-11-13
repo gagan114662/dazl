@@ -165,27 +165,32 @@ test('#1040 route: the real handler answers 401 / 503 / 200 no-store (child proc
   assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
 })
 
-// Built from a real prod account's shape (2026-11-13, read-only ops-door SQL, counts only): most search leads were never
-// graded (signal_kind and signals NULL), plus hiring-feed, CSV and manual leads; the only sends in 30 days were a test send and
-// a verification-fixture send (test flag 0, to a source_kind 'test' lead); two replies with no matched send.
+// The SHAPE of a real prod account (2026-11-13, read-only ops-door SQL, counts only; the wording here is neutral, never a
+// customer's own text): most search leads were never graded (signal_kind and signals NULL), plus hiring-feed, CSV and manual
+// leads; the only sends in 30 days were a test send and a verification-fixture send (test flag 0, to a source_kind 'test' lead);
+// two replies with no matched send. Plus one real send to an ungraded search lead, with a reply, for the sends path.
 bothEngines('#1040 real-data shape: ungraded leads count under the channel that found them; fixture and test sends are not contacted', async ({ db }) => {
   const J = 'r'.repeat(24), F = 'f'.repeat(24)
-  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, 'R', 'x', '(from request)', '-', 'companies frustrated with their sales software looking for a new CRM', 'running', ?)", [J, IN])
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, 'R', 'x', '(from request)', '-', 'companies looking for a new sales tool', 'running', ?)", [J, IN])
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'R', 'x', 'test only', 'test only', 'running', ?)", [F, IN])
   const lead = (id: string, job: string, signal: string, kind: string | null, src: string) => db.run(
     'INSERT INTO leads (id, scan_job_id, company, signal, source_url, signal_kind, source_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, job, `Co ${id}`, signal, 'https://jobs.example/p', kind, src, IN])
-  for (let i = 0; i < 6; i++) await lead(`q${i}`, J, 'Hiring Sales Operations Manager with responsibility for managing CRM systems', null, 'query')
-  await lead('g1', J, 'Hiring for Head of Sales Enablement position suggests sales operations investment', 'hiring_relevant_role', 'query')
-  for (let i = 0; i < 2; i++) await lead(`h${i}`, J, 'Hiring a Sales Operations Analyst', null, 'hiring_feed')
-  await lead('c1', J, 'Imported from your CSV', null, 'csv'); await lead('m1', J, 'Customer posting highly negative review calling it "Worst CRM in 2025"', null, 'manual_source')
+  for (let i = 0; i < 6; i++) await lead(`q${i}`, J, 'Hiring a sales operations manager', null, 'query')
+  await lead('g1', J, 'Hiring a head of sales enablement', 'hiring_relevant_role', 'query')
+  for (let i = 0; i < 2; i++) await lead(`h${i}`, J, 'Hiring a sales analyst', null, 'hiring_feed')
+  await lead('c1', J, 'Imported from your CSV', null, 'csv'); await lead('m1', J, 'Posted a review of their current tool', null, 'manual_source')
   await lead('t1', F, 'verification fixture lead', null, 'test'); await lead('t2', F, 'verification fixture lead', null, 'test')
   const msg = (id: string, leadId: string, isTest: number) => db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, 'R', ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, ?)", [id, leadId, IN, IN, isTest])
   await msg('s1', 't1', 0); await msg('s2', 't2', 1)
+  await msg('s3', 'q0', 0)   // a real send to an ungraded search lead
+  await db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES ('u3', 'R', 't-s3', NULL, 'p@co.example', 'hi', 'other', ?, 's3')", [IN + DAY])
   for (const [g, cls] of [['u1', 'positive'], ['u2', 'other']]) await db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, 'R', ?, NULL, 'p@co.example', 'hi', ?, ?, NULL)", [g, `t-${g}`, cls, IN + DAY])
   const r = await homeResults(db, 'R', NOW)
-  assert.deepEqual(r.tiles, { leads: 11, contacted: 0, replied: 0, interested: 0 })
-  assert.deepEqual(r.by_signal.map(s => [signalLabel(s.signal), s.leads]),
-    [['Search (signal type not graded)', 6], ['Hiring feed', 2], ['Hiring relevant role', 1], ['CSV import', 1], ['Added by you', 1]])
+  assert.deepEqual(r.tiles, { leads: 11, contacted: 1, replied: 1, interested: 0 })
+  assert.deepEqual(r.by_signal.map(s => [signalLabel(s.signal), s.leads, s.contacted, s.replied]),
+    [['Search (signal type not graded)', 6, 1, 1], ['Hiring feed (signal type not graded)', 2, 0, 0], ['Hiring relevant role', 1, 0, 0], ['CSV import (signal type not graded)', 1, 0, 0], ['Added by you (signal type not graded)', 1, 0, 0]],
+    'the send to an ungraded search lead counts in that lead\'s row, not a separate one')
+  for (const k of ['leads', 'contacted', 'replied'] as const) assert.equal(r.by_signal.reduce((n, x) => n + (x[k] ?? 0), 0), r.tiles[k], `adds up to the ${k} tile`)
   assert.ok(!r.by_signal.some(s => s.signal === 'unknown'), 'no lead of this account reads "No signal type": each has the channel that found it')
-  assert.equal(r.latest_replies.length, 0, 'replies matched to no send are not results of a play')
+  assert.deepEqual(r.latest_replies.map(x => x.classification), ['other'], 'replies matched to no send are not results of a play; the matched one is')
 })
