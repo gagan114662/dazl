@@ -59,6 +59,7 @@ try {
     results.push(`${label}: card ${c.width}px, Run ${Math.round(r.width)}px at x ${Math.round(r.x)}-${Math.round(r.x + r.width)}, disclosure ${Math.round(d.width)}px, note ${Math.round(n.width)}px`)
     assert.ok(r.x >= c.x - 0.5 && r.x + r.width <= c.x + c.width + 0.5, `${label}: the Run button stays inside the card (${results.at(-1)})`)
     assert.ok(r.x + r.width <= width + 0.5, `${label}: the Run button is on screen`)
+    assert.equal(await page.getByRole('button', { name: 'Run scan with this profile' }).count(), 2, `${label}: the card has its two Run buttons`)
     const r2 = await page.getByRole('button', { name: 'Run scan with this profile' }).last().boundingBox()   // the card's second Run button, at its foot
     assert.ok(r2.x >= c.x - 0.5 && r2.x + r2.width <= c.x + c.width + 0.5, `${label}: the second Run button stays inside the card too`)
     assert.ok(await run.isVisible(), `${label}: the Run button is visible`)
