@@ -391,6 +391,15 @@ export function fallbackCoverage(query: string): FallbackCoverage {
   return { complete: false, kept_chars: caps.summary, request_chars: full.length, dropped: full.slice(caps.summary) }
 }
 
+// #917: what the profile preview (POST /api/scan/icp) says about how much of the request the profile carries. A profile
+// built from the request's own words (fallbackIcp: the model could not infer one, OR keepStatedFundingStage threw out a
+// model reading that contradicted a stated funding stage and fell back to the request) carries only the first part of
+// a long request: its coverage says so. A model-inferred profile is the model's reading, not a cut: no coverage.
+export function previewCoverage(query: string, out: { icp: Icp; inferred: boolean }): FallbackCoverage | null {
+  const fromRequest = !out.inferred || out.icp.summary === fallbackIcp(query).summary
+  return fromRequest ? fallbackCoverage(query) : null
+}
+
 // Uses the tenant's own provider and key. Returns the ICP and whether the model made it.
 export async function inferIcp(provider: Provider, apiKey: string, query: string, fetchImpl?: typeof fetch, seller?: string): Promise<{ icp: Icp; inferred: boolean }> {
   const complete = provider.complete

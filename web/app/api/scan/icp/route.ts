@@ -4,7 +4,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { previewIcp } from '@/lib/scan/runner'
-import { MAX_QUERY, fallbackCoverage, guardedPreviewResearch, normalizeIcp } from '@/lib/scan/icp'
+import { MAX_QUERY, guardedPreviewResearch, normalizeIcp, previewCoverage } from '@/lib/scan/icp'
 import { denied } from '@/lib/workspace-access'
 import { PROVIDER_FAILED_COPY } from '@/lib/error-copy'
 
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
   // keep their exact bindings, always: no merge, no conditional, no silent replacement. Presence here is NOT a
   // review; the editor shows every decision and Run (the explicit review event) applies the canonical semantics.
   if (out.icp && prior?.research) out.icp = { ...out.icp, research: guardedPreviewResearch(out.icp.research, prior.research) }
-  // #917: a fallback profile is the request's own words, capped; a longer request's tail is disclosed, never implied kept.
-  return NextResponse.json(out.inferred ? out : { ...out, coverage: fallbackCoverage(query) })
+  // #917: a profile built from the request's own words (no inference, or the funding-stage guard's fallback) is capped;
+  // a longer request's tail is disclosed, never implied kept (lib/scan/icp.ts previewCoverage).
+  const coverage = previewCoverage(query, out)
+  return NextResponse.json(coverage ? { ...out, coverage } : out)
 }
