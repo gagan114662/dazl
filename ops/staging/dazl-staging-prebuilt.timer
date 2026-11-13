@@ -1,0 +1,10 @@
+# Checks main every 2 minutes; a merge is live on staging once its GitHub build is published (about 10 minutes).
+[Unit]
+Description=dazl staging: deploy main's prebuilt build when main changes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
