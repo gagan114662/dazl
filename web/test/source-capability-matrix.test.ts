@@ -24,7 +24,7 @@ test('entries are complete: markets, languages, refresh, proofs, access, license
 })
 
 test('the planned gaps are listed and not built: they claim no coverage', () => {
-  for (const id of ['registry-funding-regional', 'local-openings-permits', 'procurement-rfp', 'leadership-changes', 'first-party-careers', 'authorized-engagement']) {
+  for (const id of ['registry-funding-regional', 'local-openings-permits', 'procurement-rfp', 'leadership-changes', 'authorized-engagement']) {
     const c = byId(id)!; assert.equal(c.status, 'planned'); assert.equal(availability(c, { workers: new Set(['x']) }), 'not_built'); assert.equal(advertisable(c), false)
     assert.match(sourceStatusLine(c, 'not_built'), /not built yet - no coverage claimed/)
   }

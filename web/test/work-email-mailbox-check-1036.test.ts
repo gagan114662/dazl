@@ -1,0 +1,211 @@
+// #1036 follow-up (stacked on #899): Find work email's Apollo -> PDL -> free-tier verifier waterfall. An address a provider found
+// but did not verify gets the ZeroBounce free-tier check under the shared caps; only an explicit "valid" makes it checked.
+// Stubbed HTTP only (invented company and person); no network, no credits.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { createJob } from '../lib/scan/store.ts'
+import { saveCredential, setEnrichFallback } from '../lib/connectors/store.ts'
+import { findWorkEmail, workEmailProviders, workEmailsFor, PENDING_STALE_S } from '../lib/people/work-email.ts'
+import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
+import { recordEmailGuesses, verifyCandidates } from '../lib/people/email-pattern.ts'
+
+const master = randomBytes(32)
+const NOW = 1_800_000_000
+const SITE = 'harbordental.example'
+const DANA = 'Dana Lee|Practice Manager'
+const ICP = { summary: 'NYC dental', where: ['New York, NY'], who: ['Practice manager', 'Owner'], signals: [] }
+const ON = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', ZEROBOUNCE_API_KEY: 'zb-key' }
+
+function seed(tenant = 'A') {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const job = createJob(db, tenant, { business_name: 'Seller', industry: 'software', location: 'New York' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(ICP), job)
+  const lead = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, confidence) VALUES (?, ?, '', 'Harbor Dental', ?, 'hiring', 'https://harbordental.example/careers', 80)").run(lead, job, SITE)
+  const add = (connector: string, kind: string, value: string, source_url: string, label: string | null = null) =>
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, 70, ?, '2026-11-01', ?)").run(randomBytes(12).toString('hex'), lead, tenant, connector, kind, value, label, source_url, NOW - 100)
+  add('sitecrawl', 'domain', `${SITE}|evidence_own_domain`, `https://${SITE}/`, 'domain-basis-v1:evidence_own_domain')
+  add('enrich:apollo', 'contact', 'Dana Lee - Practice Manager', 'https://www.linkedin.com/in/dana-lee-invented')
+  saveCredential(db, tenant, 'enrich:apollo', 'test-apollo-key-1234', master)
+  saveCredential(db, tenant, 'enrich:pdl', 'test-pdl-key-5678', master); setEnrichFallback(db, tenant, true)
+  return { db, lead, tenant }
+}
+const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status })
+const apolloUnverified = () => json({ person: { name: 'Dana Lee', first_name: 'Dana', last_name: 'Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', email_status: 'unverified', country: 'United States', linkedin_url: 'https://www.linkedin.com/in/dana-lee-invented', organization: { name: 'Harbor Dental', primary_domain: SITE } } })
+type Calls = { apollo: number; pdl: number; zb: string[] }
+const stub = (zb: () => Response, calls: Calls, apollo = apolloUnverified) => (async (u: RequestInfo | URL) => {
+  const s = String(u)
+  if (s.includes('apollo.io')) { calls.apollo++; return apollo() }
+  if (s.includes('zerobounce.net')) { calls.zb.push(new URL(s).searchParams.get('email')!); return zb() }
+  calls.pdl++; throw new Error('PDL must not be called: Apollo kept an address')
+}) as typeof fetch
+const run = (s: ReturnType<typeof seed>, f: typeof fetch, env: Record<string, string | undefined> = ON) => findWorkEmail(s.db, s.tenant, s.lead, DANA, { fetchImpl: f, master, now: NOW, env })
+const copyOf = (r: Awaited<ReturnType<typeof run>>) => workEmailCopy((r as { row: Parameters<typeof workEmailCopy>[0] }).row)
+
+test('#1036 Apollo found it unverified; ZeroBounce "valid" -> shown as a checked work email, with who checked it', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const r = await run(s, stub(() => json({ status: 'valid' }), calls))
+  assert.equal(r.status, 'unverified', 'the provider\'s own status is kept')
+  assert.deepEqual(calls.zb, ['dana.lee@harbordental.example']); assert.equal(calls.pdl, 0)
+  const row = (r as { row: { mailbox_check: string; mailbox_verifier: string } }).row
+  assert.deepEqual([row.mailbox_check, row.mailbox_verifier], ['valid', 'zerobounce'])
+  const c = copyOf(r)
+  assert.equal(c.checked, true); assert.equal(c.headline, 'Checked work email')
+  assert.match(c.note, /Found by Apollo; ZeroBounce confirmed the mailbox accepts mail on \d{4}-\d{2}-\d{2}/)
+})
+
+test('#1036 catch-all, unknown or an error never make it checked; undeliverable hides the address', async () => {
+  for (const [zb, check, checked, shown] of [
+    [() => json({ status: 'catch-all' }), 'catch_all', false, true],
+    [() => json({ status: 'unknown' }), 'uncertain', false, true],
+    [() => json({}, 503), 'uncertain', false, true],
+    [() => json({ status: 'invalid' }), 'undeliverable', false, false],
+  ] as [() => Response, string, boolean, boolean][]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const r = await run(s, stub(zb, calls))
+    assert.equal((r as { row: { mailbox_check: string } }).row.mailbox_check, check)
+    const c = copyOf(r)
+    assert.equal(c.checked, checked, check); assert.equal(c.showAddress, shown, check)
+    if (check === 'catch_all') assert.match(c.note, /catch-all/)
+  }
+})
+
+test('#1036 no check without the flag, the key or a daily cap: the address stays "Found, not checked", no ZeroBounce call', async () => {
+  for (const env of [{ ...ON, EMAIL_GUESS_ENABLED: undefined }, { ...ON, ZEROBOUNCE_API_KEY: undefined }, { ...ON, EMAIL_VERIFY_DAILY_CAP: undefined }]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const r = await run(s, stub(() => json({ status: 'valid' }), calls), env)
+    assert.equal(calls.zb.length, 0, JSON.stringify(env))
+    assert.equal(copyOf(r).headline, 'Found, not checked')
+  }
+})
+
+test('#1036 an Apollo-verified address is not re-checked (no ZeroBounce call, no allowance used)', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const r = await run(s, stub(() => json({ status: 'valid' }), calls, () => json({ person: { name: 'Dana Lee', first_name: 'Dana', last_name: 'Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', email_status: 'verified', country: 'United States', linkedin_url: 'https://www.linkedin.com/in/dana-lee-invented', organization: { name: 'Harbor Dental', primary_domain: SITE } } })))
+  assert.equal(r.status, 'verified'); assert.equal(calls.zb.length, 0)
+})
+
+test('#1036 the daily cap is shared with the scan\'s guess checks; the monthly allowance is the same ledger', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  // the scan already used today's one check (a guess on another lead)
+  recordEmailGuesses(s.db, 'A', 'other-lead', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO'], { env: ON, homeText: '120 Main St, Austin, TX 78701' })
+  await verifyCandidates(s.db, 'A', 'other-lead', { name: 'zerobounce', async verify() { return { outcome: 'deliverable' as const } } }, { env: { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' }, now: NOW * 1000 })
+  const r = await run(s, stub(() => json({ status: 'valid' }), calls), { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' })
+  assert.equal(calls.zb.length, 0, 'the tenant\'s daily cap was already used'); assert.equal(copyOf(r).checked, false)
+  const s2 = seed(); const c2: Calls = { apollo: 0, pdl: 0, zb: [] }
+  s2.db.prepare("INSERT INTO email_verify_usage (verifier, month, n) VALUES ('zerobounce', ?, 100)").run(new Date(NOW * 1000).toISOString().slice(0, 7))
+  await run(s2, stub(() => json({ status: 'valid' }), c2))
+  assert.equal(c2.zb.length, 0, 'the free monthly allowance is spent')
+  // and a Find-work-email check counts against the scan's daily cap the other way round
+  const s3 = seed(); const c3: Calls = { apollo: 0, pdl: 0, zb: [] }
+  await run(s3, stub(() => json({ status: 'valid' }), c3), { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' })
+  recordEmailGuesses(s3.db, 'A', 'other-lead', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO'], { env: ON, homeText: '120 Main St, Austin, TX 78701' })
+  let scanCalls = 0
+  await verifyCandidates(s3.db, 'A', 'other-lead', { name: 'zerobounce', async verify() { scanCalls++; return { outcome: 'deliverable' as const } } }, { env: { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' }, now: NOW * 1000 })
+  assert.equal(c3.zb.length, 1); assert.equal(scanCalls, 0)
+})
+
+test('#1036 spamtrap / do-not-mail: hidden, with its own reason, never "check it before you send"', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const r = await run(s, stub(() => json({ status: 'spamtrap' }), calls))
+  const c = copyOf(r)
+  assert.equal(c.showAddress, false); assert.equal(c.checked, false)
+  assert.equal(c.headline, 'Not shown: flagged as do-not-mail'); assert.doesNotMatch(c.note, /before you send/)
+})
+
+test('#1036 a failed check still uses its slot: with a daily cap of 1, the next lookup of the tenant makes no ZeroBounce call', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  await run(s, stub(() => json({}, 503), calls), { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' })
+  assert.equal(calls.zb.length, 1)
+  s.db.prepare("DELETE FROM work_email_lookups WHERE status <> 'unverified'").run()
+  const lead2 = 'b'.repeat(24)
+  s.db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, confidence) SELECT ?, scan_job_id, '', company, company_domain, signal, source_url, confidence FROM leads WHERE id = ?").run(lead2, s.lead)
+  s.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) SELECT lower(hex(randomblob(12))), ?, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at FROM lead_enrichments WHERE lead_id = ?").run(lead2, s.lead)
+  await findWorkEmail(s.db, s.tenant, lead2, DANA, { fetchImpl: stub(() => json({ status: 'valid' }), calls), master, now: NOW, env: { ...ON, EMAIL_VERIFY_DAILY_CAP: '1' } })
+  assert.equal(calls.zb.length, 1, 'the second lead got no check: the failed one counted')
+})
+
+test('#1036 replay: a second Find work email for the same person makes no ZeroBounce call', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const f = stub(() => json({ status: 'valid' }), calls)
+  await run(s, f); const again = await run(s, f)
+  assert.equal(calls.zb.length, 1); assert.equal((again as { replayed: boolean }).replayed, true)
+})
+
+test('#1036 a non-US person is never checked (US-only rule): not_us, no ZeroBounce call', async () => {
+  const s = seed(); s.db.prepare("DELETE FROM tenant_connectors WHERE connector = 'enrich:pdl'").run(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const r = await run(s, stub(() => json({ status: 'valid' }), calls, () => json({ person: { name: 'Dana Lee', first_name: 'Dana', last_name: 'Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', email_status: 'unverified', country: 'Canada', linkedin_url: 'https://www.linkedin.com/in/dana-lee-invented', organization: { name: 'Harbor Dental', primary_domain: SITE } } })))
+  assert.equal(r.status, 'not_us'); assert.equal(calls.zb.length, 0)
+})
+
+test('#1036 an address found while the check could not run is checked on the next click (no provider call again)', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const f = stub(() => json({ status: 'valid' }), calls)
+  await run(s, f, { ...ON, ZEROBOUNCE_API_KEY: undefined })
+  assert.equal(calls.zb.length, 0)
+  const again = await run(s, f)
+  assert.equal(calls.apollo, 1, 'Apollo is not asked again'); assert.deepEqual(calls.zb, ['dana.lee@harbordental.example'])
+  assert.equal(copyOf(again).checked, true)
+})
+
+test('#1036 the UI is told whether the mailbox check can run (no button that does nothing)', () => {
+  const s = seed()
+  assert.equal(workEmailProviders(s.db, 'A', ON).mailboxCheck, true)
+  for (const env of [{}, { ...ON, ZEROBOUNCE_API_KEY: undefined }, { ...ON, EMAIL_VERIFY_DAILY_CAP: undefined }, { ...ON, EMAIL_GUESS_ENABLED: undefined }, { ...ON, EMAIL_VERIFY_MONTHLY_CAP: '0' }])
+    assert.equal(workEmailProviders(s.db, 'A', env).mailboxCheck, false, JSON.stringify(env))
+})
+
+test('#1036 a spent monthly allowance also hides the check', () => {
+  const s = seed()
+  s.db.prepare("INSERT INTO email_verify_usage (verifier, month, n) VALUES ('zerobounce', ?, 100)").run(new Date().toISOString().slice(0, 7))
+  assert.equal(workEmailProviders(s.db, 'A', ON).mailboxCheck, false)
+})
+
+test('#1036 staging fake verifier: a check it answers is labelled as the staging test verifier, never as ZeroBounce', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const env = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', DAZL_ENV: 'staging', DAZL_STAGING_FAKE_ZEROBOUNCE: '1' }
+  const r = await run(s, stub(() => { throw new Error('the fake must make no network call') }, calls), env)
+  assert.equal(calls.zb.length, 0)
+  const c = copyOf(r)
+  assert.equal(c.checked, true); assert.match(c.note, /STAGING TEST verifier \(not a real mailbox check\)/); assert.doesNotMatch(c.note, /ZeroBounce confirmed/)
+})
+
+test('#1036 ZeroBounce "valid" on a catch-all domain (accept_all) reads "Found, not checked ... catch-all", never checked (Hermes review at fa623be9)', async () => {
+  for (const body of [{ status: 'valid', sub_status: 'accept_all' }, { status: 'valid', sub_status: 'role_based_accept_all' }, { status: 'valid', sub_status: '', catchall_domain: true }]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const r = await run(s, stub(() => json(body), calls))
+    const c = copyOf(r)
+    assert.equal(c.checked, false, JSON.stringify(body)); assert.equal(c.headline, 'Found, not checked'); assert.match(c.note, /catch-all/)
+  }
+})
+
+test('#1036 an address the check found does not exist or flagged do-not-mail is never sent to the client: GET and POST rows have no address', async () => {
+  for (const zb of [{ status: 'invalid' }, { status: 'spamtrap' }, { status: 'do_not_mail' }]) {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+    const post = await run(s, stub(() => json(zb), calls))
+    assert.equal((post as { row: { address: string | null } }).row.address, null, `POST ${zb.status}`)
+    const get = workEmailsFor(s.db, s.tenant, s.lead, NOW)
+    assert.equal(get[0].address, null, `GET ${zb.status}`)
+    const again = await run(s, stub(() => json(zb), calls))
+    assert.equal((again as { row: { address: string | null } }).row.address, null, `replay ${zb.status}`)
+  }
+})
+
+test('#1036 a check in flight reads "Checking the mailbox..."; one whose process died reads as could-not-confirm', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  await run(s, stub(() => json({ status: 'valid' }), calls), { ...ON, ZEROBOUNCE_API_KEY: undefined })
+  s.db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_verifier = 'zerobounce', mailbox_checked_at = ?").run(NOW)
+  const live = workEmailsFor(s.db, s.tenant, s.lead, NOW + 5)[0]
+  assert.equal(workEmailCopy(live).headline, 'Checking the mailbox...')
+  const dead = workEmailsFor(s.db, s.tenant, s.lead, NOW + PENDING_STALE_S + 5)[0]
+  assert.equal(dead.mailbox_check, 'uncertain'); assert.match(workEmailCopy(dead).note, /could not confirm the mailbox/)
+})
+
+test('#1036 the daily count over Find work email checks reads an index', () => {
+  const s = seed()
+  const plan = (s.db.prepare('EXPLAIN QUERY PLAN SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').all('A', 0) as { detail: string }[]).map(r => r.detail).join(' ')
+  assert.match(plan, /work_email_lookups_mailbox_checked/)
+})
