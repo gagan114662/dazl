@@ -82,7 +82,14 @@ export function datePositions(text: string): { day: string; index: number; end: 
 // left out (#460 review). Words that also describe events ("formed", "established", "since") are NOT background: "a joint
 // venture formed in 2019" or "an office established in 2019" is the event's own year and stays stale. Used by the stale-year checks (event-date-binding.ts, page-timing.ts).
 const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)\s+(?:in\s+)?$/i
+// #1129: a four-digit number written right after an Australian state or territory code is a postcode, never a year
+// ("Sydney, NSW 2000 / Melbourne, VIC 3000" held a lead as stale for "the year 2000"). Case-sensitive: the codes are
+// written in capitals in addresses, so "sa 2000" or "act 2019" in running text stays a year.
+const POSTCODE_BEFORE = /\b(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\s*,?\s*$/
 export function eventYears(text: string): number[] {
   const t = text.replace(/\s+/g, ' ')
-  return [...t.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => !BACKGROUND.test(t.slice(Math.max(0, m.index! - 40), m.index!))).map(m => +m[1])
+  return [...t.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => {
+    const before = t.slice(Math.max(0, m.index! - 40), m.index!)
+    return !BACKGROUND.test(before) && !POSTCODE_BEFORE.test(before)
+  }).map(m => +m[1])
 }
