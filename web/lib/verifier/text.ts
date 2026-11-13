@@ -170,11 +170,16 @@ export function linkedDomains(html: string): Set<string> {
   return out
 }
 
-export function canonicalOf(html: string): string | null {
+// `base` (the page's own URL) resolves a protocol-relative or root-relative canonical ("//wire.example/story", "/story"), so a
+// copy that declares its canonical that way is still compared with the absolute original and not counted as a second origin.
+export function canonicalOf(html: string, base?: string): string | null {
   for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
     if (!/\brel\s*=\s*["']?canonical["'\s>]/i.test(m[0])) continue
     const h = /\bhref\s*=\s*["']([^"']+)["']/i.exec(m[0])
-    if (h && /^https?:\/\//i.test(h[1])) return normalizeUrl(decodeEntities(h[1]))
+    if (!h) continue
+    const href = decodeEntities(h[1])
+    if (/^https?:\/\//i.test(href)) return normalizeUrl(href)
+    if (base) { try { const u = new URL(href, base); if (u.protocol === 'http:' || u.protocol === 'https:') return normalizeUrl(u.href) } catch { /* unresolvable: no canonical */ } }
   }
   return null
 }

@@ -1,0 +1,35 @@
+{
+  "format": "dazl-benchmark-adapters",
+  "version": 1,
+  "note": "Every system of the competitive benchmark (#397, lib/benchmark/recorded.ts). A system other than dazl runs only with an owner authorization quoted from Gagan's own words (granted_by, granted_at with time, owner_words verbatim, channel, a scope naming the system, max_usd, and the one task_set_version and recording_sha256 it covers); a GitHub comment on the shared login is not one. Without it the system is unavailable in every batch and any recording supplied for it is ignored. No login wall, paywall or platform restriction is ever bypassed. Adding an authorization is a reviewed commit.",
+  "systems": [
+    {
+      "system": "dazl",
+      "product": "dazl",
+      "requires_authorization": false,
+      "authorization": null,
+      "note": "Our own product. Its recording comes from web/scripts/scoreboard.mts (a paid run that needs its own owner-approved key and budget), converted with benchmark.mts dazl-recording."
+    },
+    {
+      "system": "pancake",
+      "product": "Pancake",
+      "requires_authorization": true,
+      "authorization": null,
+      "unavailable_reason": "no authorized Pancake account (NEEDS GAGAN: an account, plan and preset budget)"
+    },
+    {
+      "system": "gojiberry",
+      "product": "Gojiberry",
+      "requires_authorization": true,
+      "authorization": null,
+      "unavailable_reason": "no authorized Gojiberry account (NEEDS GAGAN: an account, plan and preset budget)"
+    },
+    {
+      "system": "chatgpt-web-baseline",
+      "product": "ChatGPT plain web research (no connectors, no paid data)",
+      "requires_authorization": true,
+      "authorization": null,
+      "unavailable_reason": "no authorized plain-ChatGPT baseline (NEEDS GAGAN: the exact product/model, plan and preset budget)"
+    }
+  ]
+}

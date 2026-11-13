@@ -108,7 +108,9 @@ for (const s of searches) {
       fit: l.fit, company_domain_confirmed: sc.confirmed, person_title: person, routes,
       event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind,
     }
-    return { ...l, v2, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }
+    // The page each person and route was read on, so the benchmark's independent verifier (#397) can re-read it.
+    const site_evidence = own.map(r => ({ kind: r.kind, value: r.value, source_url: r.source_url }))
+    return { ...l, v2, site_evidence, contacts: (contactsOf.all(l.id) as { value: string }[]).map(r => r.value) }
   })
   const score = scoreSearchV2(leads.map(l => l.v2), opts)
   for (const l of leads) if (scoreLeadV2(l.v2, opts).qualified) qualifiedCompanies.add(companyKey(l.company))

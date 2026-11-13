@@ -98,7 +98,7 @@ test('blind scoring: the evaluator never sees a system, product, model or config
   await runBatch({ ...base(), evaluator: spyEval })
   const blob = JSON.stringify(seen)
   for (const s of ['dazl', 'chatgpt', 'baseline', 'pancake', 'synthetic-1', 'web browsing', 'SYNTHETIC fixture']) assert.ok(!blob.includes(s), s)
-  for (const items of seen) for (const i of items) assert.deepEqual(Object.keys(i).sort(), ['blind_id', 'company', 'contact', 'domain', 'event_date', 'evidence_urls', 'text'])
+  for (const items of seen) for (const i of items) assert.deepEqual(Object.keys(i).sort(), ['blind_id', 'company', 'contact', 'contact_source_url', 'domain', 'event_date', 'event_source_url', 'evidence_urls', 'person', 'quotes', 'text', 'unchecked'])
   assert.equal(seen[0].length, 4) // Toronto: two from each system in one pool
   // an evaluator that throws or omits an item yields unknown, never pass
   const broken: BlindEvaluator = { ...allPass, judge: async () => { throw new Error('judge down') } }
@@ -246,4 +246,14 @@ test('an evaluator that omits an item records why; the blind ids map back to the
   const missing = r.evaluations.filter(e => (e.record as { error?: string } | null)?.error === 'evaluator returned no judgement for this item')
   assert.ok(missing.length > 0 && missing.every(e => Object.values(e.verdicts).every(v => v === 'unknown')))
   for (const e of r.evaluations) assert.ok(r.runs.find(x => x.system === e.system)!.tasks.find(t => t.task_id === e.task_id)!.results.some(x => x.entity_key === e.entity_key))
+})
+
+test('a recorded failure keeps the time it measured: status failed, seconds kept for the per-tool time report (greptile P2)', async () => {
+  const fx = structuredClone(BATCH.systems[0]); const id = BATCH.task_set.tasks[0].id
+  fx.tasks[id] = { error: 'key_rejected', seconds: 7 }
+  const r = await runBatch({ ...base(), adapters: [fixtureAdapter(fx)], evaluator: allPass })
+  const t = r.scorecards[0].tasks.find(t => t.task_id === id)!
+  assert.equal(t.status, 'failed'); assert.equal(t.seconds, 7)
+  fx.tasks[id] = { error: 'key_rejected' }
+  assert.equal((await runBatch({ ...base(), adapters: [fixtureAdapter(fx)], evaluator: allPass })).scorecards[0].tasks.find(t => t.task_id === id)!.seconds, null)
 })

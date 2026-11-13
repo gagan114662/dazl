@@ -9,6 +9,12 @@
 //   node --experimental-strip-types scripts/benchmark.mts run --batch BATCH.json [--store STORE.json] [--out DIR]
 //     a blinded, equal-budget batch (#397, lib/benchmark/runner.ts): every system's runs, scorecards and one batch report;
 //     --store resumes (a run already recorded there is reused, nothing is called again)
+//     BATCH.json is either a synthetic batch file (outputs inline, judged by labels or by the verifier over synthetic
+//     snapshots), or a recorded batch (lib/benchmark/recorded.ts: format dazl-benchmark-recorded-batch) naming one
+//     recording per system and the verifier's own snapshots; every system of ../scoreboard/benchmark/adapters.json is in
+//     it, and one without an owner authorization is unavailable. A recorded batch is always judged by the verifier.
+//   node --experimental-strip-types scripts/benchmark.mts dazl-recording --result ../scoreboard/results/<file>.json --out REC.json
+//     a recorded scripts/scoreboard.mts result -> the dazl recording a recorded batch replays (task set v1)
 //   node --experimental-strip-types scripts/benchmark.mts superiority --plan PLAN.json --hash HASH --ledger LOOKS.json --batches A.json,B.json,...
 //     repeated-run paired comparison (#398, lib/benchmark/superiority.ts) against a plan registered (hashed) before the
 //     results; LOOKS.json counts looks and the stop rule refuses past max_looks. Prints the plan hash with --hash-only.
@@ -21,10 +27,11 @@
 // JSON, a run that is not a dazl-benchmark-run, no frozen task set for its version, a duplicate or unknown task id,
 // ... see inputProblems in lib/benchmark/scorecard.ts) prints every problem, writes no card and exits 2: it is never
 // scored partially.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { evaluateThresholds, fromScoreboardResult, inputProblems, problemSummary, regressions, scorecard, scorecardMarkdown, type BenchmarkRun, type InvalidScorecard, type Scorecard, type TaskSet, type ThresholdSet } from '../lib/benchmark/scorecard.ts'
 import { batchFromFile, batchMarkdown, BenchmarkRunError, memoryStore, runBatch, type BatchFile, type BatchResult, type StoredRun } from '../lib/benchmark/runner.ts'
+import { dazlRecordingFromScoreboard, RECORDED_BATCH_FORMAT, recordedBatch, type RecordedNote } from '../lib/benchmark/recorded.ts'
 import { analyze, checkPrereg, preregHash, PreregError, type LookLedger, type Prereg } from '../lib/benchmark/superiority.ts'
 
 const dir = path.resolve(import.meta.dirname, '..', '..', 'scoreboard', 'benchmark')
@@ -47,6 +54,9 @@ const scoredCard = (f: string): Scorecard => {
   if (c.status !== 'scored') return die(`invalid_input: ${f} is not a scored card (status ${JSON.stringify(c.status)})`)
   return c
 }
+// A recording or snapshots file is read whole: one over this size is refused before it is parsed.
+const MAX_INPUT_BYTES = 64 * 1024 * 1024
+const bounded = (f: string): unknown => { let n = 0; try { n = statSync(f).size } catch (e) { return die(`invalid_input: cannot read ${f}: ${(e as Error).message}`) } return n > MAX_INPUT_BYTES ? die(`invalid_input: ${f} is ${n} bytes, over the ${MAX_INPUT_BYTES}-byte limit`) : json<unknown>(f) }
 const cmd = process.argv[2]
 
 if (cmd === 'scorecard') {
@@ -102,14 +112,28 @@ if (cmd === 'scorecard') {
   const h = json<{ note: string; observations: { date: string; source: string; commit: string | null; request: string; counts: Record<string, number>; note?: string }[] }>(path.join(dir, 'history.json'))
   console.log(h.note + '\n')
   for (const o of h.observations) console.log(`${o.date}  ${o.request}  [${o.source}${o.commit ? `, ${o.commit}` : ''}]  ${Object.entries(o.counts).map(([k, v]) => `${k}=${v}`).join(' ') || '(no counts)'}${o.note ? `  - ${o.note}` : ''}`)
+} else if (cmd === 'dazl-recording') {
+  const file = arg('--result') ?? die('--result FILE is required'), out = arg('--out') ?? die('--out REC.json is required')
+  let rec: ReturnType<typeof dazlRecordingFromScoreboard>
+  try { rec = dazlRecordingFromScoreboard(json<unknown>(file), taskSet('1')) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}; nothing written`); throw e }
+  writeFileSync(out, JSON.stringify(rec, null, 2) + '\n')
+  console.log(`benchmark: dazl recording of ${Object.keys(rec.tasks).length} task(s) from ${path.basename(file)} -> ${out}`)
 } else if (cmd === 'run') {
-  const batch = json<BatchFile>(arg('--batch') ?? die('--batch BATCH.json is required'))
-  if (!isObj(batch) || !isObj(batch.task_set)) die('invalid_input: the batch file has no task_set')
-  let opts: ReturnType<typeof batchFromFile>
-  try { opts = batchFromFile(batch) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}`); throw e }
-  // the committed frozen task set for this version, if there is one: the batch must run it unchanged
-  const v = String(batch.task_set.version), committedFile = path.join(dir, `v${v}`, 'tasks.json')
-  const committedSet = /^[\w.-]+$/.test(v) && existsSync(committedFile) ? json<TaskSet>(committedFile) : null
+  const batchFile = arg('--batch') ?? die('--batch BATCH.json is required')
+  const batch = json<BatchFile & { format?: unknown; task_set_version?: unknown }>(batchFile)
+  const committedOf = (v: string) => { const f = path.join(dir, `v${v}`, 'tasks.json'); return /^[\w.-]+$/.test(v) && existsSync(f) ? json<TaskSet>(f) : null }
+  let opts: ReturnType<typeof batchFromFile>, committedSet: TaskSet | null, notes: RecordedNote[] = []
+  if (isObj(batch) && batch.format === RECORDED_BATCH_FORMAT) {
+    // a recorded batch: the committed task set, the committed adapter registry, and files named relative to the batch
+    committedSet = committedOf(String(batch.task_set_version))
+    const base = path.dirname(path.resolve(batchFile))
+    try { const rb = recordedBatch(batch, { registry: json<unknown>(path.join(dir, 'adapters.json')), committedSet, read: f => bounded(path.resolve(base, f)) }); opts = rb.options; notes = rb.notes } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}; nothing run`); throw e }
+  } else {
+    if (!isObj(batch) || !isObj(batch.task_set)) die('invalid_input: the batch file has no task_set')
+    try { opts = batchFromFile(batch) } catch (e) { if (e instanceof BenchmarkRunError) die(`invalid_input: ${e.message}`); throw e }
+    // the committed frozen task set for this version, if there is one: the batch must run it unchanged
+    committedSet = committedOf(String(batch.task_set.version))
+  }
   const storeFile = arg('--store')
   const store = memoryStore()
   if (storeFile && existsSync(storeFile)) for (const r of json<StoredRun[]>(storeFile)) store.put(r)
@@ -121,8 +145,10 @@ if (cmd === 'scorecard') {
   const out = arg('--out')
   if (out) {
     mkdirSync(out, { recursive: true })
-    writeFileSync(path.join(out, `batch-${r.manifest.batch_id}.json`), JSON.stringify(r, null, 2) + '\n')
-    writeFileSync(path.join(out, `batch-${r.manifest.batch_id}.md`), batchMarkdown(r) + '\n')
+    // one file per scoring: the same runs judged with other snapshots or thresholds never overwrite an earlier report
+    const name = `batch-${r.manifest.batch_id}.${r.manifest.scored_id.slice(0, 12)}`
+    writeFileSync(path.join(out, `${name}.json`), JSON.stringify(r, null, 2) + '\n')
+    writeFileSync(path.join(out, `${name}.md`), batchMarkdown(r) + '\n')
   }
-  process.stdout.write(batchMarkdown(r) + `\n\nruns: ${store.runs.size - before} new, ${before} reused from the store\n`)
-} else die('usage: benchmark.mts scorecard|from-scoreboard|compare|run|superiority|history (see the header)')
+  process.stdout.write(batchMarkdown(r) + `${notes.length ? `\n\n${notes.map(n => `- ${n.system}: ${n.used ? 'recording replayed' : n.reason}`).join('\n')}` : ''}\n\nruns: ${store.runs.size - before} new, ${before} reused from the store\n`)
+} else die('usage: benchmark.mts scorecard|from-scoreboard|compare|run|dazl-recording|superiority|history (see the header)')

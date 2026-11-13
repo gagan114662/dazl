@@ -1,0 +1,99 @@
+{
+ "note": "SYNTHETIC benchmark batch judged by the independent verifier (#397). Every company, domain, page and output is invented; it is no result of dazl or of any competitor. It shows what validated means: a dated event stated on two independent origins the verifier read itself, the brief's place and event wording on those pages, and a published, non-hiring email route on the company's own domain.",
+ "as_of": "2026-10-20",
+ "seed": 11,
+ "budget": { "usd_per_task": 2.0, "seconds_per_task": 45, "batch_usd": 40 },
+ "task_set": {
+  "version": "synthetic-verified-1",
+  "frozen_at": "2026-10-20",
+  "tasks": [
+   { "id": "toronto-agency-office", "region": "Toronto", "country": "CA", "sector": "marketing", "kind": "standard", "language": "en", "brief": { "seller": "Office fit-out service" },
+     "query": "Toronto marketing agencies that opened a new office in the past 90 days",
+     "constraints": { "all_of": [ { "geo": "Toronto, CA" }, { "event": "office_opening", "within_days": 90 } ] } },
+   { "id": "london-seed-saas", "region": "London", "country": "GB", "sector": "software", "kind": "standard", "language": "en", "brief": { "seller": "Outbound SDR agency" },
+     "query": "London B2B SaaS startups that raised a seed round in the past 60 days",
+     "constraints": { "all_of": [ { "geo": "London, GB" }, { "event": "funding", "stage": "seed", "within_days": 60 } ] } },
+   { "id": "negative-reykjavik-ipo", "region": "Reykjavik", "country": "IS", "sector": "robotics", "kind": "negative", "language": "en", "brief": { "seller": "Investor relations software" },
+     "query": "Reykjavik robotics companies that completed an IPO in the past 30 days", "expect": { "expected_empty": true },
+     "constraints": { "all_of": [ { "geo": "Reykjavik, IS" }, { "event": "ipo", "within_days": 30 } ] } }
+  ]
+ },
+ "systems": [
+  {
+   "system": "dazl", "origin": "synthetic",
+   "config": { "product": "dazl", "product_version": "synthetic", "model": null, "sources": ["synthetic fixture"], "paid": false },
+   "tasks": {
+    "toronto-agency-office": { "cost_usd": 0.4, "seconds": 20, "interventions": 0, "items": [
+     { "company": "Maple Leaf Marketing", "domain": "mapleleaf.example", "event_date": "2026-10-08",
+       "event_source_url": "https://news.example/toronto/maple-leaf", "evidence_urls": ["https://news.example/toronto/maple-leaf", "https://mapleleaf.example/news/new-office"],
+       "contact": "hello@mapleleaf.example", "contact_source_url": "https://mapleleaf.example/contact",
+       "person": { "name": "Pat Example", "title": "Managing Director", "source_url": "https://mapleleaf.example/team" },
+       "text": "Opened a new Toronto office on October 8, 2026." },
+     { "company": "Lakeshore Creative", "domain": "https://www.lakeshore.example/", "event_date": "2026-10-12",
+       "evidence_urls": ["https://news.example/toronto/lakeshore"], "contact": "studio@lakeshore.example", "contact_source_url": "https://lakeshore.example/contact" }
+    ] },
+    "london-seed-saas": { "cost_usd": 0.4, "seconds": 22, "interventions": 0, "items": [
+     { "company": "Querix Ltd", "domain": "querix.example", "event_date": "2026-10-01",
+       "evidence_urls": ["https://news2.example/london/querix-seed", "https://querix.example/blog/seed"],
+       "contact": "founders@querix.example", "contact_source_url": "https://querix.example/about" }
+    ] },
+    "negative-reykjavik-ipo": { "cost_usd": 0.3, "seconds": 15, "interventions": 0, "items": [] }
+   }
+  },
+  {
+   "system": "chatgpt-web-baseline", "origin": "synthetic",
+   "config": { "product": "plain chat web research (synthetic stand-in)", "product_version": "synthetic", "model": "synthetic", "sources": ["synthetic fixture"], "paid": false },
+   "tasks": {
+    "toronto-agency-office": { "cost_usd": null, "seconds": 40, "interventions": 4, "items": [
+     { "company": "Maple Leaf Marketing", "domain": "mapleleaf.example", "event_date": "2026-10-08",
+       "evidence_urls": ["https://news.example/toronto/maple-leaf", "https://mapleleaf.example/news/new-office"] },
+     { "company": "Harbour Studio", "domain": "harbourstudio.example", "text": "A well-reviewed Toronto marketing agency that fits the profile." }
+    ] },
+    "london-seed-saas": { "cost_usd": null, "seconds": 38, "interventions": 3, "items": [
+     { "company": "Querix Ltd", "domain": "querix.example", "event_date": "2026-10-01",
+       "evidence_urls": ["https://news2.example/london/querix-seed", "https://aggregator.example/startups/querix"],
+       "contact": "founders@querix.example", "contact_source_url": "https://querix.example/about" }
+    ] },
+    "negative-reykjavik-ipo": { "cost_usd": null, "seconds": 30, "interventions": 2, "items": [
+     { "company": "Reykjavik Robotics", "domain": "reykjavikrobotics.example", "event_date": "2026-11-15",
+       "evidence_urls": ["https://news3.example/iceland/reykjavik-robotics-ipo"] }
+    ] }
+   }
+  }
+ ],
+ "unavailable": [
+  { "system": "pancake", "reason": "no authorized Pancake account (NEEDS GAGAN)" },
+  { "system": "gojiberry", "reason": "no authorized Gojiberry account (NEEDS GAGAN)" }
+ ],
+ "evaluator": {
+  "kind": "verifier",
+  "min_independent_origins": 2,
+  "snapshots": {
+   "format": "dazl-verifier-snapshots", "version": 1, "captured_by": "dazl-verifier (synthetic fixture)", "captured_at": "2026-10-20T12:00:00Z",
+   "snapshots": [
+    { "url": "https://news.example/toronto/maple-leaf", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": ["2026-10-09"], "linked_domains": [],
+      "text": "Toronto business news. Maple Leaf Marketing opened a new office in Toronto, Canada on October 8, 2026. The agency, at mapleleaf.example, now employs 40 people." },
+    { "url": "https://mapleleaf.example/news/new-office", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "News. On October 8, 2026 Maple Leaf Marketing opened its new Toronto studio on King Street." },
+    { "url": "https://mapleleaf.example/contact", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Contact Maple Leaf Marketing: hello@mapleleaf.example or call the Toronto studio." },
+    { "url": "https://mapleleaf.example/team", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Our team. Pat Example is Managing Director at Maple Leaf Marketing. Sam Example leads design." },
+    { "url": "https://news.example/toronto/lakeshore", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Lakeshore Creative (lakeshore.example) opened an office in Toronto, Canada on October 12, 2026." },
+    { "url": "https://lakeshore.example/contact", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Lakeshore Creative studio: studio@lakeshore.example" },
+    { "url": "https://news2.example/london/querix-seed", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Querix Ltd, a London, United Kingdom B2B SaaS startup at querix.example, raised a seed round of 2 million pounds on October 1, 2026." },
+    { "url": "https://querix.example/blog/seed", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "html": "<html><head><title>Seed</title></head><body><article><p>On October 1, 2026 Querix Ltd closed its seed round in London.</p></article></body></html>" },
+    { "url": "https://aggregator.example/startups/querix", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "html": "<html><head><link rel=\"canonical\" href=\"https://news2.example/london/querix-seed\"></head><body><p>Querix Ltd, a London, United Kingdom B2B SaaS startup at querix.example, raised a seed round of 2 million pounds on October 1, 2026.</p></body></html>" },
+    { "url": "https://querix.example/about", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "About Querix Ltd. Write to the founders at founders@querix.example." },
+    { "url": "https://news3.example/iceland/reykjavik-robotics-ipo", "outcome": "ok", "final_url": null, "truncated": false, "meta_days": [], "linked_domains": [],
+      "text": "Reykjavik Robotics (reykjavikrobotics.example) will list its shares in Reykjavik, Iceland on November 15, 2026." }
+   ]
+  }
+ }
+}

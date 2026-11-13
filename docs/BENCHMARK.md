@@ -86,7 +86,10 @@ a second scoreboard), and writes one batch report with, per system:
 - The order rotates per task, seeded, so every system goes first equally often.
 
 **Idempotent:** every (batch, system, task) has a stable run id. With `--store`, a re-run reuses what is recorded and
-calls nothing again. A change to the briefs, systems, budget or seed is a different batch.
+calls nothing again. A change to the briefs, systems, budget or seed is a different batch. The `scored_id` in the
+manifest also covers the evaluator (name, version, config: snapshots digest, corroboration threshold), so the same runs
+judged again with other pages or another threshold get another scored id and their own `batch-<batch_id>.<scored_id>`
+output files, never overwriting the first report.
 
 **Honest gaps:**
 
@@ -94,7 +97,7 @@ calls nothing again. A change to the briefs, systems, budget or seed is a differ
 | --- | --- |
 | no authorized adapter (e.g. no Pancake or Gojiberry account) | `unsupported`, with the reason; the system is **not ranked**, never a zero-result loser |
 | budget, timeout or rate-limit stop | `incomplete` |
-| login wall, paywall or missing feature | `unsupported`; it is never bypassed |
+| login wall, paywall or missing feature | `unsupported`; it is never bypassed. Its time, cost and interventions are kept; partial output from it is counted in the reason, never scored |
 | adapter error | `failed` |
 
 None of these is an empty market.
@@ -107,7 +110,9 @@ preset finite budget, or it does not run.
 kept beside it). They are then pooled per task across systems, given opaque ids, shuffled, and judged without the system,
 product, model or configuration. Any system id, product or model name in an item's text or contact is replaced with
 `[system]`, and an evidence URL that names one is withheld, so an output cannot sign itself (the count is in the
-manifest's `blinding`). An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
+manifest's `blinding`). Evidence the producer supplied that cannot be checked (a malformed quote, person or source
+URL, or one withheld for naming a system) is named, never its value, in the item's `unchecked`, and the verifier keeps
+the field that needed it `unknown`, so dropping evidence can never help a lead pass. An evaluator failure, or an item it leaves out, is `unknown`. Every judgement is recorded in the
 batch's `evaluations` (blind id, system after unblinding, task, entity, verdicts and the evaluator's own record).
 
 **Equal limits are enforced:** a run over the task's time limit (by the clock, or by its own report) or its cost limit is
@@ -143,8 +148,79 @@ synthetic data.
 baseline as hand-written outputs, and Pancake and Gojiberry unavailable. It exercises the runner and is no result of any
 product.
 
-**Not built:** live adapters (a dazl adapter over `runJob`, and the competitor ones), and no live or paid batch has run.
-Each needs owner-authorized accounts, keys and a budget. Repeated runs with uncertainty are #398.
+**Untrusted outputs:** an adapter result with a wrong type (a cost as a string, items that are not a list, an unknown stop)
+fails that task with the reason and reserves its full cost limit; an output row that is not an object or has no company is
+dropped and counted in the task's reason, and at most 50 rows per task are scored (`MAX_ITEMS_PER_TASK`). A system whose
+adapter was available but that started no task (every task unsupported, or not run on the batch budget) is reported
+`not_started` with the reason, never as a system that ran and found nothing. A task whose adapter was called counts as
+attempted even when it then hit a login wall or paywall, so its time, cost and interventions stay visible.
+
+### The independent evaluator (`web/lib/benchmark/verified-evaluator.ts`)
+
+`verifierEvaluator()` judges each blind item with the deterministic verifier of #780/#781 (`lib/verifier/checks.ts`),
+on page snapshots the verifier captured itself (`dazl-verifier-snapshots` files), never on the producer's own copy, text,
+rationale or score. It makes no network or model call. A lead is validated only when all four fields pass:
+
+| field | passes only when |
+| --- | --- |
+| identity | the event source names the company and is on its domain or names the domain next to it |
+| constraints | the brief's place (from the brief, never the producer) is next to the company, and each requested event kind is stated whole (its wording, unhedged, with a requested role or funding round) in one sentence that dates the event, on at least `min_independent_origins` origins. An opening counts only for the kind of place asked for (an office, a location, a facility: the opening verb and a noun of that kind within a few words), so a shop or "opened applications" is no office; a required name is in the company name. Segment, headcount and exclusions have no deterministic check: `unknown` |
+| event_date | the day is stated next to the company, inside the window, not in the future, not announced-only, not only a publication stamp, no source dates it differently, every quote is verbatim, AND at least `min_independent_origins` (default 2) distinct origins state it, each of which itself establishes which company it means (on its domain, or naming the domain next to the name; a namesake's page never counts). One registrable domain is one origin; a syndicated copy (the same event sentence, or a rel=canonical to the other page) is the same origin |
+| contact | a published email route on the company's domain, printed on the cited page, not a hiring inbox; a named person must be current at the company on the cited page |
+
+So "high intent" is independently corroborated evidence: a list of companies that merely fit a segment (no dated event) is
+never validated, and neither is an event only the producer's text asserts. Each judgement records its verdicts in the
+#394 evaluation contract's field vocabulary (`identity.entity`, `place.matches`, `event.predicate`, `event.date_real`,
+`event.date_in_window`, `contact.usable`; `lib/evals/contract.ts`), folded into the four scorecard fields by the
+contract's own `scorecardVerdicts()`, plus every check, the
+number of independent origins, a `signal_tier` (`corroborated`, `source-checked`, `unverified`) and why each field is
+not a pass. A malformed or conflicting snapshot is dropped and listed in the evaluator config in the manifest; the
+checks that needed it are `unknown`. Besides the pages a producer cites, the snapshots file can list pages the verifier
+found itself for a company (`found_by_verifier`, keyed by the company's registrable domain): they can corroborate an event
+that the producer cited a source for, the same way for every system. Its hash covers only the bounded, parsed content.
+`test/fixtures/benchmark/synthetic-verified-batch.json` is a SYNTHETIC batch judged this way (invented companies and pages).
+
+### Recorded batches (`web/lib/benchmark/recorded.ts`)
+
+`benchmark.mts run --batch BATCH.json` with `"format": "dazl-benchmark-recorded-batch"` replays one recording per system
+and the verifier's snapshots, all named relative to the batch file:
+
+```json
+{ "format": "dazl-benchmark-recorded-batch", "version": 1, "as_of": "2026-11-01", "seed": 3, "task_set_version": "1",
+  "budget": { "usd_per_task": 2, "seconds_per_task": 600, "batch_usd": 40 },
+  "recordings": { "dazl": "dazl.json" }, "snapshots": "snapshots.json", "min_independent_origins": 2 }
+```
+
+- **Every system is in every batch.** The committed registry `scoreboard/benchmark/adapters.json` lists dazl, Pancake,
+  Gojiberry and the plain-ChatGPT baseline. A system other than dazl needs an owner authorization in that file, quoted from
+  Gagan's own words (`granted_by` gagan, `granted_at` with a time, `owner_words` verbatim, `channel`, a `scope` naming
+  the system, a `max_usd` cap, and the one `task_set_version` and `recording_sha256` it covers); a GitHub comment on the
+  shared login is not one. Without it the system is `unavailable` with its reason, and a recording supplied for it is
+  ignored (the run output says so). With it, a different recording, another task set or a worst-case exposure over the
+  cap (every replayed task at its recorded cost, or at the full task limit when unknown) is still `unavailable`. Today
+  none of the three is authorized.
+- **`min_independent_origins` is required** in a recorded batch (2 = independently corroborated, 1 = source-checked):
+  it is the batch's stated choice, never a default. Today a Dazl recording cites one event page per lead, so at 2 its
+  leads validate only when another origin is in the snapshots (`found_by_verifier`).
+- **Snapshots must be attributed:** a recorded batch refuses a snapshots file without `captured_by` and `captured_at`,
+  or one whose `captured_by` names a system under test. The attribution is a recorded string, not a signature: the
+  verifier's own fetching service (#395) is what will produce these files.
+- Each recording or snapshots file is read whole and refused over 64 MB.
+- **Recordings are checked whole** (`dazl-benchmark-recording` v1): the committed frozen task set only, its own system
+  name and task set version, a valid config. A malformed task inside fails that task only. The recording's sha256 is in
+  the system's config, so a different recording is a different batch.
+- **The dazl adapter:** `benchmark.mts dazl-recording --result ../scoreboard/results/<file>.json --out dazl.json` turns a
+  `scripts/scoreboard.mts` result into a recording: every presented lead with its evidence URL, Dazl's claimed domain
+  (the verifier checks the binding), the person and email route with the page they were read on (`site_evidence`, now
+  recorded by the scoreboard harness), quarantined leads left out, budget/timeout stops as `incomplete`, other failures
+  as `failed`, and the cost unknown (the scoreboard records one shared budget, not a per-task cost).
+- A recorded batch is always judged by the verifier; labels are refused, and so is a batch with no committed task set,
+  no snapshots or a recording of a system the registry does not list.
+
+**Not done (needs authority):** no recorded or live batch of any product has run. A real batch needs a paid dazl
+scoreboard run (its key and budget), the verifier's capture of the cited pages (the fetching service of #395 is a
+separate PR; until then the snapshots file is produced outside this tool), and, for any competitor, Gagan's
+authorization of an account, plan and budget. Repeated runs with uncertainty are #398.
 
 ## Repeated-run superiority (`web/lib/benchmark/superiority.ts`, #398)
 
@@ -241,7 +317,7 @@ The report always reads *"thresholds are proposed: owner approval required; noth
 
 ## What it takes to produce real numbers (not done; each needs authority)
 
-1. **An independent evaluator** for the four fields (#394 contract, #395/#396). Until then every dazl run is a self-report.
+1. **An independent evaluator** for the four fields: the deterministic verifier evaluator above (#397, over #780/#781). Segment, headcount and exclusions still need the semantic judge (#782), so tasks with them stay `unknown` on constraints.
 2. **An owner-authorized dazl run:** the scoreboard key and TinyFish key, and a total budget. The scoreboard's own spend guard covers the six reused tasks; the other eight need the same harness pointed at v1.
 3. **Competitor and baseline runs** on the same tasks: Pancake, Gojiberry, and a specified plain-ChatGPT web-research baseline. This needs accounts and paid plans, so it is owner decisions. A system that cannot express a task is recorded `unsupported`.
 4. **Repeated runs and paired comparison** with uncertainty (#397/#398), and the week-long recurring-discovery measurement from #393.
