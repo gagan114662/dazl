@@ -205,20 +205,28 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
 // Also a sentence opening "As our new <title>" or "About the role: <title>", "we're hiring for the <title> role", and "We're hiring!" followed by a
 // sentence that opens with the title. Anything else (customers / competitors "looking for", "Hiring an AE is hard", a passing title mention, another role)
 // gives no quote (''): the careers source then offers no evidence for that posting, and the sales-hiring gate records the vacancy as on main.
-const FILL = String.raw`(?:(?:an?|our|the|one|two|three|\d+|new|next|first|experienced|driven|talented|motivated|senior|junior|founding|ambitious|enthusiastic|dedicated|additional|another|full[- ]time|part[- ]time|remote|hybrid|in-house|seasoned|proven|exceptional|strong)[\s,]+){0,3}`
+// filler words between the verb and the title; `levels` are the seniority words allowed there (a level other than the posting's own is another role)
+const fill = (levels: string) => String.raw`(?:(?:an?|our|the|one|two|three|four|five|several|multiple|\d+|new|next|first|experienced|driven|talented|motivated|${levels}|founding|ambitious|enthusiastic|dedicated|additional|another|full[- ]time|part[- ]time|remote|hybrid|in-house|seasoned|proven|exceptional|strong)[\s,]+){0,3}`
+const LEVEL = /^(senior|sr\.?|junior|jr\.?|lead|principal|staff)\s+/i
+const LEVEL_WORDS: Record<string, string> = { senior: String.raw`senior|sr\.?`, sr: String.raw`senior|sr\.?`, junior: String.raw`junior|jr\.?`, jr: String.raw`junior|jr\.?`, lead: 'lead', principal: 'principal', staff: 'staff' }
 const VERB = String.raw`(?:hiring|looking\s+for|looking\s+to\s+hire|seeking|searching\s+for|in\s+search\s+of|recruiting)`
 const ADV = String.raw`(?:(?:currently|actively|now|also|urgently)\s+)?`
 const ROLE_TAIL = String.raw`(?:managers?|assistants?|leads?|engineers?|directors?|academy|associates?|coordinators?|specialists?|interns?|internship|trainees?|teams?|program|programme|platform|tools?|community|webinars?|head|officers?|partners?|consultants?|analysts?|operations|enablement|development|representatives?|executives?|reps?|sdrs?|bdrs?|vp|admin|administrators?)`
-const END = String.raw`(?![\p{L}\p{N}])(?!\s*[-‐-—]?\s*${ROLE_TAIL}(?![\p{L}\p{N}]))`
+// (?!-\p{L}): not the first half of a hyphen compound ("Account Executive-led growth marketer")
+const END = String.raw`(?!-\p{L})(?![\p{L}\p{N}])(?!\s*[-‐-—]?\s*${ROLE_TAIL}(?![\p{L}\p{N}]))`
 const words = (t: string) => t.split(/[^\p{L}\p{N}]+/u).filter(Boolean)
 // company: the lead's name (the subject, and the name a namedQuote widens to); also: other names the posting may call itself by (board org, site name).
 export function postingQuote(passages: string[], title: string, company?: string, nameInQuote = true, also: string[] = []): string {
   const core = title.split(/\s[-–—|·]\s|\s*[,(\[]/)[0]?.trim() ?? ''
   // the role without a leading level is the same vacancy ("We're looking for an Account Executive" on a Senior Account Executive posting)
-  const unlevelled = [title, core].map(t => t.replace(/^(?:(?:senior|sr\.?|junior|jr\.?|principal|staff|founding|mid[- ]level|entry[- ]level)\s+)+/i, '')).filter(t => words(t).length >= 2)
+  const unlevelled = [title, core].map(t => t.replace(/^(?:(?:senior|sr\.?|junior|jr\.?|lead|principal|staff|founding|mid[- ]level|entry[- ]level)\s+)+/i, '')).filter(t => words(t).length >= 2)
   const alts = [...new Set([title, core, ...unlevelled].filter(Boolean).map(t => words(t).join(String.raw`[\s\-‐-—_/]+`)).filter(Boolean))]
   if (!alts.length) return ''
-  const T = `(?<![\\p{L}\\p{N}])(?:${alts.join('|')})${END}`
+  // a plural names the same role ("We're hiring two Account Executives")
+  const T = `(?<![\\p{L}\\p{N}])(?:${alts.join('|')})(?:e?s)?${END}`
+  // a posting with a level (Senior Account Executive) is not stated by a sentence naming another level (a Junior Account Executive); with no level, either is allowed
+  const lv = LEVEL.exec(title)?.[1]?.toLowerCase().replace('.', '')
+  const FILL = fill(lv ? LEVEL_WORDS[lv] ?? lv : String.raw`senior|sr\.?|junior|jr\.?`)
   const names = [...new Set([company ?? '', ...also].map(n => words(n).join(String.raw`\s+`)).filter(n => n.length >= 3))]
   const co = names.length ? `(?:${names.join('|')})` : null
   const WE = String.raw`(?:we(?:'|’)re|we\s+are|our\s+(?:[\p{L}-]+\s+){0,2}team\s+is${co ? String.raw`|${co}\s+(?:is|are)` : ''})`
@@ -233,7 +241,8 @@ export function postingQuote(passages: string[], title: string, company?: string
   ]
   const bareHiring = re(String.raw`\b${WE}\s+${ADV}(?:hiring|recruiting)\s*[.!]+\s*$`), opensWithTitle = re(String.raw`^\s*${FILL}${T}`)
   for (const p of passages) {
-    const sentences = [...p.matchAll(/[^.!?]+(?:[.!?]+|$)/g)].map(m => ({ text: m[0], at: m.index ?? 0 }))
+    // "Sr." / "Jr." do not end a sentence
+    const sentences = [...p.matchAll(/(?:\b(?:Sr|Jr)\.|[^.!?])+(?:[.!?]+|$)/gi)].map(m => ({ text: m[0], at: m.index ?? 0 }))
     for (let i = 0; i < sentences.length; i++) {
       const { text, at } = sentences[i]
       let from = -1, to = -1

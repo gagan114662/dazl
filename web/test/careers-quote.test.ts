@@ -114,6 +114,10 @@ const NOT_A_VACANCY: [string, string, string][] = [
   ['Join the Account Executive Academy as an attendee and learn deals every week for free.', 'Account Executive', 'an academy'],
   ['Ready to join Brightloop as a customer? Our Account Executive will onboard you quickly.', 'Account Executive', 'join as a customer, then a passing mention'],
   ['You will join the team as it grows and work with our CRM Administrator.', 'CRM Administrator', '"join ... as" not followed by the title'],
+  // round 3: a hyphen compound and a level swap are other roles
+  ['We are hiring a Account Executive-led growth marketer to run campaigns.', 'Account Executive', 'a hyphen compound "Account Executive-led growth marketer"'],
+  ['We\'re looking for a Junior Account Executive to own deals at Brightloop.', 'Senior Account Executive', 'a Junior role on a Senior posting'],
+  ['We\'re looking for a Lead Account Executive to own deals at Brightloop.', 'Senior Account Executive - London', 'a Lead role on a Senior posting'],
 ]
 for (const [text, title, why] of NOT_A_VACANCY) test(`no quote (${why}): ${text.slice(0, 60)}`, () => assert.equal(postingQuote([text], title, 'Brightloop'), '', why))
 
@@ -130,6 +134,11 @@ const VACANCY: [string, string, string][] = [
   ['We\'re hiring! Account Executive at Brightloop.', 'Account Executive', 'We\'re hiring! Account Executive at Brightloop.'],
   ['We\'re looking for an Account Executive to own deals at Brightloop.', 'Senior Account Executive', 'We\'re looking for an Account Executive to own deals at Brightloop.'],
   ['Join the team as an Account Executive: a pro-sales role at Brightloop.', 'Account Executive', 'Join the team as an Account Executive: a pro-sales role at Brightloop.'],
+  // round 3: the posting's own level (also as "Sr."), and the plural, are the same role
+  ['We\'re looking for a Senior Account Executive to own deals at Brightloop.', 'Senior Account Executive', 'We\'re looking for a Senior Account Executive to own deals at Brightloop.'],
+  ['We\'re looking for a Sr. Account Executive to own deals at Brightloop.', 'Senior Account Executive', 'We\'re looking for a Sr. Account Executive to own deals at Brightloop.'],
+  ['We\'re hiring two Account Executives in London at Brightloop.', 'Account Executive', 'We\'re hiring two Account Executives in London at Brightloop.'],
+  ['We\'re hiring Account Executives in London at Brightloop.', 'Account Executive', 'We\'re hiring Account Executives in London at Brightloop.'],
 ]
 test('"<company> is hiring" is recognised by the board org / site name when the lead\'s company is not known (a pages-only scan)', () => {
   const t = 'Brightloop is hiring an Account Executive to own the sales cycle end to end.'
