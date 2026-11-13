@@ -289,9 +289,12 @@ test('#1062 Leads review button: a lead held by BOTH the time window and the req
       `${R}${RAN} It also has no valid event date, which a wider time window does not change. Only running the scan again, with the check passing and a source with a valid event date, can make it usable.`],
     [{ review_reason: 'sales_hiring_check_failed', window_held: true },
       `${R}${RAN} It is also outside the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
-    // the gate alone: no window wording at all
-    [{ review_reason: 'quote_unconfirmed', gate_held: true },
+    // the gate alone, with a dated event: no window or date wording
+    [{ review_reason: 'quote_unconfirmed', gate_held: true, event_date: '2026-11-01' },
       `${R}${PASSED} Only running the scan again, with the check passing, can make it usable.`],
+    // the gate alone, no window hold, no usable date (haiku r2 R6): the date still has to be confirmed afterwards
+    [{ review_reason: 'quote_unconfirmed', gate_held: true, event_date: null, window_held: false },
+      `${R}${PASSED} Only running the scan again, with the check passing, can make it usable. Its event date still has to be confirmed after that.`],
   ]
   for (const [l, hint] of cases) assert.deepEqual(reviewAction(l, now), { label: 'Keep as research', hint }, JSON.stringify(l))
   // control: the window alone still gives the window advice
