@@ -775,6 +775,8 @@ test('#533 AC4 dedupe: a careers link to an ATS posting already stored from the 
 
 // #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board, with no website domain to find the board.
 // The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the verified quote must name the role.
+// the board's public record for the seeded posting: the title is what the requested role is matched against (XHawk on #1155)
+const GH_REC = (title: string) => ({ 'https://boards-api.greenhouse.io/v1/boards/justworks/jobs/7301001': { id: 7301001, title, first_published: d(9).slice(0, 10) + 'T00:00:00Z', content: '', location: { name: 'Austin, TX' } } })
 function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | null; proof?: string | null }) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const query = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
@@ -788,7 +790,7 @@ function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | nul
 }
 test('#1095 PASS: the lead\'s own board-dated Greenhouse posting naming the requested role is the role evidence (no website domain needed); evidence row written', async () => {
   const { db, job } = seedOwnPosting({})
-  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  const r = await applySalesHiringGate(db, job, serve(GH_REC('Account Executive')), { now: NOW })
   assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
   assert.equal(lead(db).review_reason, null)
   const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring')
@@ -805,7 +807,7 @@ test('#1095 HELD: the own-posting path needs the board\'s date inside the clock,
     ['not a public job-board posting', { url: 'https://www.linkedin.com/jobs/view/account-executive-in-territory-austin-tx-at-justworks-4485363528' }],
   ] as const) {
     const { db, job } = seedOwnPosting(o)
-    await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    await applySalesHiringGate(db, job, serve(GH_REC('Account Executive')), { now: NOW })
     assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
     db.close()
   }
@@ -814,7 +816,22 @@ test('#1095 HELD: the own-posting path needs the board\'s date inside the clock,
 test('#1095 XHawk: a posting already stored as hiring evidence for the lead is not written again by the own-posting path (one posting, one row)', async () => {
   const { db, job } = seedOwnPosting({})
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E0', 'L1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - In-Territory - posted x', 'x', 70, 'https://job-boards.greenhouse.io/justworks/jobs/7301001', ?, 1)").run(d(9).slice(0, 10))
-  await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  await applySalesHiringGate(db, job, serve(GH_REC('Account Executive')), { now: NOW })
+  assert.equal(lead(db).review_reason, null)
+  assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1)
+})
+test('#1095 XHawk: the requested role must be in the posting\'s own title: a Sales Engineer ad whose body says "we are hiring Account Executives" is held', async () => {
+  const { db, job } = seedOwnPosting({ excerpt: 'Justworks is hiring Account Executives to grow the team; this Sales Engineer works alongside them in Austin' })
+  await applySalesHiringGate(db, job, serve(GH_REC('Sales Engineer')), { now: NOW })
+  assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
+  const u = seedOwnPosting({})   // record unreadable: proves nothing, held
+  await applySalesHiringGate(u.db, u.job, serve({}), { now: NOW })
+  assert.equal(lead(u.db).review_reason, 'no_sales_hiring_evidence')
+})
+test('#1095 XHawk: the same posting under another URL spelling (boards. vs job-boards.greenhouse.io) is not stored twice', async () => {
+  const { db, job } = seedOwnPosting({})
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E0', 'L1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - posted x', 'x', 70, 'https://boards.greenhouse.io/justworks/jobs/7301001', ?, 1)").run(d(9).slice(0, 10))
+  await applySalesHiringGate(db, job, serve(GH_REC('Account Executive')), { now: NOW })
   assert.equal(lead(db).review_reason, null)
   assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1)
 })

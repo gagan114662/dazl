@@ -50,7 +50,10 @@ function fx(sourceHttp: SafeGet): Fixture {
     extractionFn: p => p.includes('"source":"jobboards"') && p.includes(GH_AUSTIN)
       ? [...fromSearch, { company: 'Justworks', signal: 'hiring an Account Executive in Austin, TX', source_url: GH_AUSTIN, excerpt: QUOTE, event_date: daysAgo(9) }]
       : fromSearch,
-    deps: { sourceHttp },
+    // the sales-hiring gate reads the cited posting's board record to match the requested role against its TITLE (XHawk on #1155)
+    deps: { sourceHttp, fetchImpl: (async (u: RequestInfo | URL) => String(u) === 'https://boards-api.greenhouse.io/v1/boards/justworks/jobs/7301001'
+      ? new Response(JSON.stringify({ id: 7301001, title: 'Account Executive - In-Territory', first_published: daysAgo(9), content: '', location: { name: 'Austin, TX' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      : new Response('{}', { status: 404 })) as typeof fetch },
   }
 }
 
@@ -107,4 +110,18 @@ test('#1095 XHawk: when the user PICKED the job boards as a source, the profile 
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
   assert.ok(run && ['ok', 'partial'].includes(run.status), `the picked board source ran with the profile place: ${run?.status}`)
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/justworks/jobs'), 'the board was read')
+})
+
+// XHawk on #1155: with mixed sources the profile-place query goes only to the job boards.
+test('#1095 XHawk: collectEvidenceReport gives a per-adapter query only to that adapter', async () => {
+  const { collectEvidenceReport, ADAPTERS } = await import('../lib/sources/index.ts')
+  const seen: Record<string, string> = {}
+  const orig = { jobboards: ADAPTERS.jobboards.collect, web: ADAPTERS.web.collect }
+  ADAPTERS.jobboards.collect = async i => { seen.jobboards = i.query; return [] }
+  ADAPTERS.web.collect = async i => { seen.web = i.query; return [] }
+  try {
+    await collectEvidenceReport({ adapters: ['jobboards', 'web'], feeds: [], pages: ['https://example.com/'] } as never, 'hiring account executives', undefined, 1000, [], undefined, [], { jobboards: 'hiring account executives in Austin, TX' })
+  } finally { ADAPTERS.jobboards.collect = orig.jobboards; ADAPTERS.web.collect = orig.web }
+  assert.equal(seen.jobboards, 'hiring account executives in Austin, TX')
+  assert.equal(seen.web, 'hiring account executives')
 })

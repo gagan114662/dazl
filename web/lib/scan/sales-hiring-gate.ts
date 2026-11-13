@@ -9,7 +9,7 @@ import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { addEnrichment, audit } from '../connectors/store.ts'
-import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, BOARD_LABEL } from '../signals/ats-gtm.ts'
+import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, postingIdentity, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
@@ -31,7 +31,7 @@ export function postingStatesRole(quote: string, term: string): boolean {
   for (const m of quote.matchAll(re)) if (!ROLE_TAIL.test(quote.slice(m.index! + m[0].length))) return true
   return false
 }
-import { atsPostingRef } from '../sources/ats-posting.ts'
+import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
@@ -262,10 +262,22 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         // the quote must STATE this vacancy: hiring wording, then (within a few words) the requested role, and no other role noun right after it
         // ("... report to the Account Executive Lead" or "an Account Executive Manager" is another role, not this vacancy)
         const m = own ? roles.find(r => postingStatesRole(l.evidence_excerpt ?? '', r.term)) ?? null : null
+        // XHawk on #1155 (wrong vacancy): the quote may be another vacancy's body ("we are hiring Account Executives" inside a Sales Engineer ad).
+        // The requested role must also be in the posting's OWN TITLE, read from the board's public record; an unreadable record proves nothing (falls through).
+        let titleOk = false
         if (ats && m) {
+          try {
+            const r = await fetchImpl(atsRecordUrl(ats), { headers: { accept: 'application/json' } })
+            const rec = r.ok ? atsRecord(await r.json(), ats) : null
+            titleOk = !!rec && rec !== 'missing' && !!matchedHiringRole(rec.title, [m])
+          } catch { titleOk = false }
+        }
+        if (ats && m && titleOk) {
           const board = BOARD_LABEL[ats.kind]
           // one posting, one hiring row: an enrichment for this posting already stored (signal enrichment runs first) is not written again (XHawk on #1155)
-          const already = db.prepare("SELECT 1 AS x FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role') AND source_url = ? LIMIT 1").get(l.id, l.source_url)
+          // the same posting is known by its board id, not its URL spelling (boards. vs job-boards.greenhouse.io): compare postingIdentity
+          const pid = postingIdentity(l.source_url)
+          const already = (db.prepare("SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as { source_url: string | null }[]).some(e => e.source_url === l.source_url || (!!pid && postingIdentity(e.source_url) === pid))
           if (!already) addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
           passed++; passedIds.push(l.id); continue
         }
