@@ -748,6 +748,14 @@ test('#878 review at d010a0c3: first person, lead named and nobody named are str
     ['Metro City Dentistry', 'New clinic now open in Parkdale. A bright smiles dental location'],
     ['Metro City Dentistry', 'New clinic now open in Parkdale, a bright smiles location'],
     ['Metro City Dentistry', 'Grand opening of their new clinic in Parkdale'],
+    // a lower-case sign-off or attribution naming another practice
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale. love, bright smiles'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale - the bright smiles team'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale from all of us at bright smiles'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale via @brightsmiles'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale. xo bright smiles'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale. cheers, bright smiles'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale. hosted by bright smiles'],
     // documented fail-closed limits: the lead's own post with another name, a person or an unlisted place in it
     ['Metro City Dentistry', 'Welcome Dr. Patel to the team! Our new clinic is now open in Parkdale'],
     ['Metro City Dentistry', 'Happy Monday Parkdale! Our new clinic is now open'],
@@ -766,6 +774,11 @@ test('#878 review at d010a0c3: first person, lead named and nobody named are str
     ['Metro City Dentistry', 'Our new clinic is now open in Parkdale, #parkdale #torontodentist'],
     ['Kailash Dentistry', 'new dental clinic now open in parkdale'],
     ['Kailash Dentistry', 'New clinic now open - come say hi'],
+    // a call to action, or the lead's own sign-off
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale! See you soon'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale - the Metro City Dentistry team'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale - the metro city dentistry team'],
+    ['Metro City Dentistry', 'Our new clinic is now open in Parkdale! Stop by and say hi'],
   ]
   for (const [company, quote] of yes) assert.equal(truthOf(DENTAL, company, quote), 'pass', quote)
 })

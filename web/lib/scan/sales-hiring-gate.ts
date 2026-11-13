@@ -126,7 +126,7 @@ function parties(text: string, company: string, places: ReadonlySet<string>): Pa
   if (UNNAMED.test(text)) out.push({ name: null })
   for (const m of text.matchAll(/\bthe\s+((?:[\w'’-]+\s+){1,3})team\b/gi)) if (!nameIsLead(m[1].trim(), company)) out.push({ name: null })
   for (const m of text.matchAll(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g)) {
-    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !MONTH_DAY.test(k) && !places.has(k) })
+    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !MONTH_DAY.test(k) && !places.has(k) })
     if (kept.length) out.push({ name: kept.join(' ') })
   }
   return out
@@ -135,10 +135,27 @@ function parties(text: string, company: string, places: ReadonlySet<string>): Pa
 // Party markers, in any case: wording that brings in another practice or person without a capitalised name. "welcome(s)
 // <x>", "<x> dental / location / team / family / practice / clinic" for an x that is not the lead, "says / said <x>",
 // "reposted / shared <x>", "<lead> and <x>", "with <x>", "a new neighbour", "down the street", "next door".
-function partyMarker(quote: string, lead: string): boolean {
+// The words a sign-off or attribution may carry that name no one (stop words and the call-to-action words).
+const CTA_WORDS = new Set(['come', 'visit', 'see', 'soon', 'book', 'booking', 'today', 'now', 'walk', 'walk-ins', 'ins', 'welcome', 'say', 'hi', 'us', 'you', 'all', 'of', 'at', 'the', 'team', 'online', 'call', 'stop', 'drop', 'pop', 'in', 'by'])
+// A sign-off or attribution that names a party other than the lead, in any case: "love, <x>", "xo <x>", "cheers, <x>",
+// "- <x>" / "— <x>" at the end, "from / by / hosted by / brought to you by / part of / at / via <x>". <x> is up to 4
+// words that are not stop words, call-to-action words, places of the request or the opening, or the lead.
+function signOffOther(text: string, lead: string, places: ReadonlySet<string>): boolean {
+  const named = (x: string) => {
+    if (/[@#][A-Za-z0-9_]/.test(x)) return true
+    const ws = x.split(/\s+/).slice(0, 4).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !places.has(k) && !MONTH_DAY.test(k) })
+    return ws.length > 0 && !(lead !== '' && nameIsLead(ws.join(' '), lead))
+  }
+  const after = (i: number) => text.slice(i).split(/[.,!?;:\n()]|\s[-–—]\s/)[0].trim()
+  for (const m of text.matchAll(/\b(?:love|xo+|cheers|from|by|hosted\s+by|brought\s+to\s+you\s+by|part\s+of|at|via)\b[,:]?\s*/gi)) if (named(after((m.index ?? 0) + m[0].length))) return true
+  const tail = /(?:^|\s)[-–—]\s*([^-–—\n]+?)\s*[.!]*\s*$/.exec(text)
+  return !!tail && named(tail[1])
+}
+function partyMarker(quote: string, lead: string, places: ReadonlySet<string> = new Set()): boolean {
   // the lead's own name never marks another party ("Family Dental Care is growing")
   let text = lead === '' ? quote : quote.replace(new RegExp(lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => ' '.repeat(m.length))
   if (lead !== '') text = text.replace(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g, m => (nameIsLead(m, lead) ? ' '.repeat(m.length) : m))
+  if (signOffOther(text, lead, places)) return true
   if (/\bwelcomes?\s+(?!to\b|you\b|all\b|everyone\b|new\s+patients\b|walk-?ins\b)[\w@#]/i.test(text)) return true
   if (/\b(?:says|said|reposted|shared|retweeted|regrammed)\b|\bwith\s+[\w@#]|\ba\s+new\s+neighbou?r|\bdown\s+the\s+street\b|\bnext\s+door\b/i.test(text)) return true
   for (const m of text.matchAll(/\b((?:[\w'’-]+\s+){1,3})(?:dental|location|team|family|practice|clinic)\b/gi)) {
@@ -176,7 +193,7 @@ export function openingAttributable(excerpt: string, at: number, end: number, pr
   const where = new Set([...places, ...wordsOf(excerpt.slice(end, stop))])
   const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
   const ps = parties(rest, lead, where)
-  const onlyLead = ps.every(p => p.name !== null && nameIsLead(p.name, lead)) && !partyMarker(rest, lead)
+  const onlyLead = ps.every(p => p.name !== null && nameIsLead(p.name, lead)) && !partyMarker(rest, lead, where)
   if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) return onlyLead
   if (ps.length > 0) {
     if (!onlyLead) return false
