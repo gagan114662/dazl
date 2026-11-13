@@ -16,7 +16,7 @@ export default function MemoryPanel() {
   useEffect(() => {
     const blank = { icp: '', positioning: '', tone: '', exclusions: [], objections: [] }
     void fetch('/api/settings/memory').then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status)))).then(j => {
-      if (!j || typeof j !== 'object' || !('memory' in j) || Array.isArray(j.memory) || (j.memory !== null && typeof j.memory !== 'object')) throw new Error('shape')
+      if (!j || typeof j !== 'object' || !('memory' in j) || Array.isArray(j.memory) || (j.memory !== null && (typeof j.memory !== 'object' || !Array.isArray(j.memory.exclusions) || !Array.isArray(j.memory.objections)))) throw new Error('shape')
       setM(j.memory ?? blank)
     }).catch(() => setFailed(true))
   }, [])

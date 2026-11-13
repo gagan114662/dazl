@@ -253,6 +253,37 @@ try {
     out.push("an editor whose own read fails offers no form")
     await ctx.close()
   }
+  {
+    // a Memory read with the wrong shape (an array) is a failed read: no Voice editor, no writes; and the Settings page,
+    // which mounts the same editors, shows "cannot be edited" instead of blank forms
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    const writes = []
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (req.method() !== 'GET') { writes.push(p); return json({ ok: true }) }
+      if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: '', website: null, buyer: null, new_play_offer: null })
+      if (p === '/api/settings/memory') return json({ memory: [] })
+      if (p === '/api/settings/competitors') return json({})
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByTestId('load-failed').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('section-voice').textContent(), /Could not load Memory/)
+    assert.equal(await page.getByTestId('section-voice').getByRole('button', { name: /^Edit / }).count(), 0)
+    await page.goto(base + '/app/settings', { waitUntil: 'networkidle' })
+    await page.getByTestId('memory-unread').waitFor({ timeout: 20000 })
+    await page.getByTestId('competitors-unread').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByRole('button', { name: /Save memory/i }).count(), 0, 'Settings: no Memory form after a failed read')
+    assert.equal(await page.locator('#competitors textarea').count(), 0, 'Settings: no Competitors form after a failed read')
+    assert.deepEqual(writes.filter(p => /settings\/(memory|competitors)/.test(p)), [])
+    out.push('a Memory array and the Settings page fail closed too')
+    await ctx.close()
+  }
   console.log(`business page UI check passed (real build): ${out.join('; ')}`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
