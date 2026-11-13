@@ -44,6 +44,8 @@ case "$url" in
   http://127.0.0.1:*/api/health)
     p=${url#http://127.0.0.1:}; p=${p%%/*}
     stall "$p"
+    # a live release whose first /api/health read is dropped (flaky/<port>), then answers
+    if [ -e "$FAKE_T/flaky/$p" ]; then rm -f "$FAKE_T/flaky/$p"; exit 7; fi
     [ -f "$FAKE_T/health/$p" ] || exit 7
     emit "{\"commit\":\"$(cat "$FAKE_T/health/$p")\"}"; exit 0;;
   https://dazl.test/api/health)
@@ -126,7 +128,7 @@ def sha(path):
 class ProdPrebuiltTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); T = self.t = Path(self.tmp.name)
-        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib', 'stall', 'df-credit'): (T / d).mkdir(parents=True)
+        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib', 'stall', 'df-credit', 'flaky'): (T / d).mkdir(parents=True)
         # the scripts as installed: root-owned in a root-only-writable directory (the test user stands in for root)
         (T / 'lib').chmod(0o755)
         for f in ('pull-release.sh', 'deploy-prod.sh'):
@@ -155,7 +157,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         for f in (self.t / 'listen').iterdir():
             try: os.kill(int(f.read_text()), 9)
             except (ValueError, ProcessLookupError, PermissionError): pass
-        self.proc.kill(); self.tmp.cleanup()
+        self.proc.kill(); self.proc.wait(); self.tmp.cleanup()
 
     def publish(self, commit=B, lock=LOCK1, edit=None, inner=None):
         a = self.t / 'assets'
@@ -524,7 +526,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.box(self.BOX_FREE - self.BOX_DOWNLOADS, {'dazl-0ld0ld00-prod': 918 * 2 ** 20})
         try:
             r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
-        finally: pp.kill()
+        finally: pp.kill(); pp.wait()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         out = r.stdout
         self.assertIn('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), out)
@@ -542,7 +544,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         op = subprocess.Popen(['sleep', '600'], cwd=other); (self.t / 'listen/4000').write_text(str(op.pid))  # e.g. a staging service
         (self.t / 'ops/prod-state').write_text(f'PREV_PORT=3105\nPREV_SHA={P}\nNEW_SHA={A}\n')
         r = self.deploy(B)  # nothing published for B: the deploy stops at the download, after the prune
-        op.kill()
+        op.kill(); op.wait()
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue(target.exists(), 'the recorded rollback target is kept'); self.assertTrue(other.exists(), 'a running release is kept')
         self.assertTrue(self.live.exists()); self.assertFalse((self.t / 'rel/dazl-0ld0ld00-prod').exists(), 'the unused one is removed')
@@ -577,7 +579,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         op = subprocess.Popen(['sleep', '600'], cwd=odd); (self.t / 'listen/4001').write_text(str(op.pid))
         self.publish()
         try: r = self.deploy(B)
-        finally: op.kill()
+        finally: op.kill(); op.wait()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(odd.exists(), 'compared as text, never as a pattern')
 
@@ -606,10 +608,15 @@ class ProdPrebuiltTest(unittest.TestCase):
         # release, so nothing is removed (each release is listed with its manual step); the deploy itself goes on
         self.publish()
         other = subprocess.Popen(['sleep', '600']); (self.t / 'listen/4002').write_text(str(other.pid)); (self.t / 'unreadable-pid').write_text(str(other.pid))
+        D = 'd' * 40; (self.t / 'rel' / f'dazl-{D[:8]}-prod' / 'web').mkdir(parents=True)   # the recorded rollback target (down)
+        (self.t / 'ops/prod-state').write_text(f'PREV_PORT=3105\nPREV_SHA={D}\nNEW_SHA={A}\n')
         try: r = self.deploy(B)
-        finally: other.kill()
+        finally: other.kill(); other.wait()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr); self.assertEqual(self.live_port(), '3105')
         self.assertIn('not removing any release: a listening process', r.stdout)
         self.assertIn('remove it by hand once: sudo rm -rf -- ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), r.stdout)
+        before = r.stdout[:r.stdout.index('verified the prebuilt build')]   # after the switch, A is the rollback target instead
+        self.assertNotIn('sudo rm -rf -- ' + str(self.t / 'rel/dazl-dddddddd-prod'), before, 'the recorded rollback target is never offered for removal')
         self.assertNotIn('sudo rm -rf -- ' + str(self.live.parent) + '\n', r.stdout + '\n', 'the live release is never offered for removal')
         self.assertTrue((self.t / 'rel/dazl-0ld0ld00-prod').exists())
 
@@ -618,7 +625,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         (self.t / 'rel' / f'dazl-{B[:8]}-prod' / 'web').mkdir(parents=True)
         other = subprocess.Popen(['sleep', '600']); (self.t / 'listen/4002').write_text(str(other.pid)); (self.t / 'unreadable-pid').write_text(str(other.pid))
         try: r = self.deploy(B)
-        finally: other.kill()
+        finally: other.kill(); other.wait()
         self.assert_untouched(r, f'directory cannot be read, so .*dazl-{B[:8]}-prod may be in use')
 
     def test_a_live_release_that_does_not_report_its_commit_is_replaced_with_no_rollback_target(self):
@@ -635,6 +642,13 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertEqual((self.t / 'ops/prod-state').read_text(), f'PREV_PORT=none\nPREV_SHA=\nNEW_SHA={B}\n')
         rb = self.deploy('--rollback')
         self.assertNotEqual(rb.returncode, 0); self.assertIn('no rollback target recorded', rb.stdout)
+
+    def test_one_dropped_health_read_of_the_live_release_keeps_the_rollback_target(self):
+        self.publish(); (self.t / 'flaky/3104').write_text('')
+        r = self.deploy(B)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn('did not report its commit', r.stdout)
+        self.assertEqual((self.t / 'ops/prod-state').read_text(), f'PREV_PORT=3104\nPREV_SHA={A}\nNEW_SHA={B}\n')
 
     def test_hard_linked_node_modules_is_not_counted_unpacked_ones_are(self):
         # Finding 1(b): room for the build and the backup, not for 624 MB of node_modules

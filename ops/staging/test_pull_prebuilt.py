@@ -395,10 +395,11 @@ class PullPrebuiltTest(unittest.TestCase):
         budget = int(re.search(r'DOWNLOAD_BUDGET_S=\$\{STAGING_DOWNLOAD_BUDGET_S:-(\d+)\}', src).group(1))
         backup_allow = int(re.search(r'BACKUP_ALLOWANCE_S=\$\{STAGING_BACKUP_ALLOWANCE_S:-(\d+)\}', src).group(1))
         deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=\$\{STAGING_DEPLOY_ALLOWANCE_S:-(\d+)\}', src).group(1))
-        self.assertIn('--max-time 60', src, 'the manifest read is bounded at 60 s')
-        self.assertLess(60 + 60 + budget + backup_allow + 10 + deploy_allow + 60, tmo, 'reading main, the downloads, the backup and deploy.sh (with their kill graces) fit inside the unit timeout')
+        mt = int(re.search(r'curl -sSL[^\n]*--max-time (\d+)\b[^\n]*\$manifest_name', src).group(1))
+        self.assertEqual(mt, 60, 'the manifest read is bounded at the 60 s the cap counts')
+        self.assertIn('timeout --kill-after=5 60 git ls-remote', src, 'reading main is bounded too')
+        self.assertLess(65 + mt + budget + backup_allow + 10 + deploy_allow + 60, tmo, 'reading main, the downloads, the backup and deploy.sh (with their kill graces) fit inside the unit timeout')
         self.assertEqual(int(re.search(r'^UNIT_LIMIT_S=(\d+)', src, re.M).group(1)), tmo - 60, "the script's limit follows the unit's TimeoutStartSec")
-        self.assertIn('timeout 60 git ls-remote', src, 'reading main is bounded too')
 
     def test_deploy_sh_is_stopped_inside_its_allowance(self):
         # #1061 review (XHawk at c51687fd): DEPLOY_ALLOWANCE_S was declared but never enforced, so a deploy.sh that ran

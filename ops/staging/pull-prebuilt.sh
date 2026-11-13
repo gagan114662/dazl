@@ -112,10 +112,10 @@ esac
 BACKUP_ALLOWANCE_S=${STAGING_BACKUP_ALLOWANCE_S:-300}
 [[ $BACKUP_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_BACKUP_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
 # Every step is bounded, and together they end before the unit's TimeoutStartSec (80 min = 4800 s) with a minute to spare:
-# reading main (60 s), the manifest (60 s), the downloads, the database backup and its 10 s kill grace, deploy.sh and its
+# reading main (60 s + 5 s kill grace), the manifest (60 s), the downloads, the database backup and its 10 s kill grace, deploy.sh and its
 # 60 s kill grace.
 UNIT_LIMIT_S=4740   # TimeoutStartSec (80min, dazl-staging-prebuilt.service) minus a minute; the test keeps the two in step
-[ $(( 60 + 60 + DOWNLOAD_BUDGET_S + BACKUP_ALLOWANCE_S + 10 + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_BACKUP_ALLOWANCE_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 190 ))s together); nothing done"
+[ $(( 65 + 60 + DOWNLOAD_BUDGET_S + BACKUP_ALLOWANCE_S + 10 + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_BACKUP_ALLOWANCE_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 195 ))s together); nothing done"
 # finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
 # and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
 # owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
@@ -151,7 +151,7 @@ if [ $dry = 0 ]; then
 fi
 
 # 1. main's head
-main_sha=$(timeout 60 git ls-remote "$REPO_URL" refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}') || true
+main_sha=$(timeout --kill-after=5 60 git ls-remote "$REPO_URL" refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}') || true
 is_sha "$main_sha" || fail "could not read main's head commit from $REPO_URL; nothing done"
 
 # 2. already live, recently failed, or not built yet

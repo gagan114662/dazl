@@ -128,7 +128,7 @@ if [ "${1:-}" = "--rollback" ]; then
   [ -f "$STATE" ] || die "no previous deploy recorded"
   PREV_PORT=; PREV_SHA=; NEW_SHA=
   . "$STATE"
-  [[ $PREV_PORT =~ ^310[45]$ ]] && [[ $PREV_SHA =~ ^[0-9a-f]{40}$ ]] || die "no rollback target recorded (a later deploy stopped it); deploy the commit you want instead"
+  [[ $PREV_PORT =~ ^310[45]$ ]] && [[ $PREV_SHA =~ ^[0-9a-f]{40}$ ]] || die "no rollback target recorded (a later deploy stopped it, or the previous release did not report its commit); deploy the commit you want instead"
   cur=$(live_port)
   log "rollback: dazl.ai $cur -> $PREV_PORT"
   got=$(health_sha "http://127.0.0.1:$PREV_PORT")
@@ -154,7 +154,9 @@ LIVE_WEB=$(readlink "/proc/$LIVE_PID/cwd" 2>/dev/null || true)
 # The rollback target, read BEFORE anything changes. A live release that does not report its commit (hung, or 'unknown')
 # is no rollback target, but it never blocks the deploy that replaces it: the new release still has to prove itself on
 # /api/health before the switch, and the state then records no target (--rollback refuses; deploy a commit instead).
-OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE")
+# a few tries: one slow or dropped read of a healthy live release must not cost the rollback target
+OLD_SHA=
+for _ in 1 2 3; do OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE"); [[ $OLD_SHA =~ ^[0-9a-f]{40}$ ]] && break; sleep "${PROD_HEALTH_SLEEP:-2}"; done
 [[ $OLD_SHA =~ ^[0-9a-f]{40}$ ]] || { log "WARNING: the live release on :$LIVE did not report its commit (got '${OLD_SHA:-nothing}'): after this deploy there is no rollback target"; OLD_SHA=; }
 log "live port $LIVE (pid $LIVE_PID, ${LIVE_WEB:-unknown dir}), new port $NEW, sha $SHA"
 
@@ -280,4 +282,5 @@ if [ -n "$OLD_SHA" ]; then write_state "$LIVE" "$OLD_SHA" "$SHA"; else write_sta
 # 6. disk: keep the live release and the previous one (the instant rollback target); remove the rest nothing runs from
 # (only when the previous release runs from its own release directory: one running from elsewhere may use any of them)
 if release_web "$OLD_WEB"; then LIVE_WEB=$DIR/web; prune_unused "$DIR" "${OLD_WEB%/web}"; else log "not removing old releases: the previous release ran from $OLD_WEB"; fi
-log "DONE: dazl.ai now $SHA on :$NEW. Previous $OLD_SHA still running on :$LIVE (deploy-prod.sh --rollback to switch back)."
+if [ -n "$OLD_SHA" ]; then log "DONE: dazl.ai now $SHA on :$NEW. Previous $OLD_SHA still running on :$LIVE (deploy-prod.sh --rollback to switch back)."
+else log "DONE: dazl.ai now $SHA on :$NEW. The previous release on :$LIVE did not report its commit: no rollback target (deploy a commit to go back)."; fi
