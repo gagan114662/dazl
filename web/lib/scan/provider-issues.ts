@@ -58,6 +58,9 @@ export async function readProviderIssues(db: Db, tenantId: string, jobId: string
         for (const r of byReason) out.push({ ...i, lookups_affected: Number(r.n), latest_at: Number(r.latest), ...(r.lookup.startsWith(SPEND_REFUSAL_PREFIX) ? { refusal: r.lookup.slice(SPEND_REFUSAL_PREFIX.length) } : {}) })
       } catch { out.push(i) /* reason omitted: the sentence then says the spend check refused it, without a reason */ }
     }
+    // Newest first across every notice (an expanded spend_refused group must not push its older causes above newer notices of
+    // another provider); ties broken deterministically by connector, status, then the refusal reason.
+    out.sort((a, b) => b.latest_at - a.latest_at || a.connector.localeCompare(b.connector) || a.status.localeCompare(b.status) || (a.refusal ?? '').localeCompare(b.refusal ?? ''))
     return out
   } catch {
     return null

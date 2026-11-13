@@ -258,3 +258,13 @@ test('#382 notices: two refusal causes for one provider are two lines, each with
   assert.ok(texts.some(t => t.includes('may have been billed without a confirmed cost')), JSON.stringify(texts))
   assert.ok(texts.some(t => t.includes("this scan's spending cap had no room left")), JSON.stringify(texts))
 })
+
+test('#382 notices stay newest-first when one provider has several refusal causes (Hermes review at 08349525)', async () => {
+  const s = seed()
+  const row = (connector: string, status: string, lookup: string, at: number) => s.db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES (?, 'u1', ?, ?, ?, ?, 0, ?)").run(randomBytes(12).toString('hex'), connector, s.jobId, lookup, status, at)
+  row('enrich:pdl', 'spend_refused', 'spend refused: accounting_uncertain', 100)
+  row('enrich:apollo', 'timeout', 'org Harbor Dental', 200)
+  row('enrich:pdl', 'spend_refused', 'spend refused: over_cap', 300)
+  const order = (await providerIssues('u1', s.jobId))!.map(i => `${i.connector}:${i.status}:${i.refusal ?? ''}@${i.latest_at}`)
+  assert.deepEqual(order, ['enrich:pdl:spend_refused:over_cap@300', 'enrich:apollo:timeout:@200', 'enrich:pdl:spend_refused:accounting_uncertain@100'])
+})
