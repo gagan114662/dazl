@@ -26,3 +26,6 @@ jobs:
       # ops/staging has no __init__.py, so discovery over ops never reaches it (#907/#908 tests): its own step.
       - name: Ops staging tests (ops/staging/test_*.py)
         run: python3 -m unittest discover -s ops/staging -p 'test_*.py'
+      # ops/prod (the production deploy from a prebuilt build, #907) has no __init__.py either: its own step.
+      - name: Ops prod tests (ops/prod/test_*.py)
+        run: python3 -m unittest discover -s ops/prod -p 'test_*.py'
