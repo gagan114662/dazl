@@ -70,9 +70,10 @@ export function profilePreviewNote(inferred: unknown, coverage: unknown): Previe
   // a cut request is disclosed whatever made the profile (the funding-stage guard can fall back to the request's words
   // under an inferred profile, lib/scan/icp.ts previewCoverage)
   if (c && c.complete === false && typeof c.dropped === 'string' && c.dropped.trim()) {
-    // counts only when both are real numbers (Number(null) is 0: 'the first 0 of your 388' would contradict the text)
+    // counts only when both are whole, safe, non-negative character counts with something left out (Number(null) is 0:
+    // 'the first 0 of your 388' would contradict the text; -1, 1.5 or 1e21 would be made up)
     const kept = typeof c.kept_chars === 'number' ? c.kept_chars : NaN, total = typeof c.request_chars === 'number' ? c.request_chars : NaN
-    const counts = Number.isFinite(kept) && Number.isFinite(total) && total > kept ? `Only the first ${kept} of your ${total} characters are in this profile; the last ${total - kept} are not. ` : 'Only the first part of your request is in this profile. '
+    const counts = Number.isSafeInteger(kept) && Number.isSafeInteger(total) && kept >= 0 && total > kept ? `Only the first ${kept} of your ${total} characters are in this profile; the last ${total - kept} are not. ` : 'Only the first part of your request is in this profile. '
     const why = inferred === true ? "dazl used your request's own words for this profile, so it uses its first part only." : 'dazl could not infer more from your request, so this profile uses its first part only.'
     return { text: `${why} ${counts}Add what was left out to the fields below (or shorten the request) before you run the scan.`, dropped: c.dropped.trim() }
   }

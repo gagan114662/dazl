@@ -105,6 +105,7 @@ for (const [label, size] of [['1280', { width: 1280, height: 900 }], ['390', { w
   assert.doesNotMatch(await note.innerText(), /as they are/, `${label}: never claims every word was kept`)
   const dropped = page.getByTestId('draft-dropped')
   assert.ok(await dropped.isVisible(), `${label}: the left-out text is shown`)
+  assert.match(await dropped.innerText(), /^The generated profile originally left out:/, `${label}: the label says what the generated profile left out, not what this profile holds now`)
   assert.match(await dropped.innerText(), /exclude firms that only do payroll or tax preparation for individuals or estates/, `${label}: the dropped exclusion is visible`)
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${label}: no horizontal scroll`)
   await dropped.scrollIntoViewIfNeeded()

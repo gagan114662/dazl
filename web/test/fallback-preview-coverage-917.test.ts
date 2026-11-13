@@ -44,6 +44,12 @@ test('#917: a complete fallback (300 characters or fewer) and an inferred profil
   const n = profilePreviewNote(false, { complete: false, dropped: 'payroll only' })
   assert.match(n.text, /Only the first part of your request is in this profile\./); assert.equal(n.dropped, 'payroll only')
   for (const kept_chars of [null, '', [], true, '300']) assert.match(profilePreviewNote(false, { complete: false, dropped: 'x', kept_chars, request_chars: 388 }).text, /Only the first part of your request/, `kept_chars ${JSON.stringify(kept_chars)}: no invented count`)
+  // counts that are numbers but not real character counts (negative, fractional, unsafe, NaN, infinite): never printed
+  for (const [kept_chars, request_chars] of [[-1, 388], [1.5, 388], [-300, -1], [300, 1e21], [NaN, 388], [300, Infinity]]) {
+    const t = profilePreviewNote(false, { complete: false, dropped: 'x', kept_chars, request_chars }).text
+    assert.match(t, /Only the first part of your request is in this profile\./, `[${kept_chars}, ${request_chars}]: generic wording`)
+    assert.doesNotMatch(t, /\d|NaN|Infinity/, `[${kept_chars}, ${request_chars}]: no number printed`)
+  }
 })
 
 test('#917: the funding-stage guard falling back to the request\'s words under an "inferred" profile is disclosed too (council finding)', () => {
