@@ -318,13 +318,16 @@ function shapeOf(sentence: string, company: string, kind: 'event' | 'hiring'): '
 // address / postcode, any month name, ago / back in / remember / that was / since / anniversary / throwback / #tbt, last / this / next
 // / past + a time word, and "<N> years / months / weeks / days ago / later". Weekday and opening-hours wording in another sentence
 // ("Open late Mondays") stays allowed.
+// retrospective markers, as words or inside hashtags (#ThrowbackThursday, #FlashbackFriday, #onthisday; final review on #1150), and
+// "N years" wording without "ago" ("Celebrating 5 years", "Five years strong", "#5years")
+const WHOLE_WHEN_TAG = /#?(?:throwback|flashback|tbt|onthisday|memories|repost|regram)\w*|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a\s+decade)\s*-?\s*(?:years?|yrs?)\b|#\d+\s*(?:years?|yrs?)\b|\bwhere\s+it\s+(?:all\s+)?(?:started|began)\b|\byesterday\b|\bback\s*(?:when|:)|\bdecade\b|\bpre-\w+/i
 const WHOLE_WHEN = /\b(?:ago|back\s+in|remember(?:ing)?|that\s+was|since|anniversary|throwback|flashback|tbt|(?:last|this|next|past)\s+(?:week|weekend|month|year|season|spring|summer|fall|autumn|winter|quarter|day|night|morning|time|(?:mon|tues|wednes|thurs|fri|satur|sun)day)|(?:years?|months?|weeks?|days?)\s+(?:ago|later|earlier))\b/i
 function postTimeGuard(raw: string): string | null {
   const t = raw.replace(ADDRESS, ' ').replace(POSTCODE, ' ').replace(NAMED_STREET, ' ')
   if (datePositions(t).length) return 'a stated day'
   if (YEAR.test(t) || eventYears(t).length) return 'a year'
   if (MONTH.test(t.replace(/\bmay\b/g, ' ')) || MAY.test(t)) return 'a month'
-  const w = WHOLE_WHEN.exec(t); return w ? `"${w[0]}"` : null
+  const w = WHOLE_WHEN.exec(t) ?? WHOLE_WHEN_TAG.exec(t); return w ? `"${w[0]}"` : null
 }
 // A first-person statement ("We opened ...") is the post author's. A post that congratulates or speaks of the company as a client /
 // friend anywhere is someone else's, so its "we" is not the company.

@@ -480,6 +480,9 @@ const ROUND4: [string, string, 'event' | 'hiring'][] = [
     .map((h): [string, string, 'hiring'] => [`Northwind Dental ${h}.`, `Northwind Dental ${h}`, 'hiring']),
   // another party's post whose "we" is not the company
   ['Congrats Northwind Dental!\nWe opened a new location in Leslieville!', 'We opened a new location in Leslieville', 'event'],
+  // final review (R11/R12): retrospective hashtags and "N years" wording anywhere in the caption
+  ...['#ThrowbackThursday', '#FlashbackFriday', '#throwback', '#onthisday', '#Memories', 'Repost:', 'Celebrating 5 years with you!', 'Five years strong!', '#5years', 'A decade on.', 'Where it all began.', 'Yesterday:', 'Way back when:', 'Pre-pandemic:']
+    .map((x): [string, string, 'event'] => [x.endsWith(':') ? `${x}\nNorthwind Dental opened a new location in Leslieville.` : `Northwind Dental opened a new location in Leslieville.\n${x}`, 'Northwind Dental opened a new location in Leslieville', 'event']),
 ]
 
 test('#878 review round 4: a time in another line of the caption, or a time / occasion in the place or role slot, gives no post day (socialPostBound and the verifier)', async () => {
