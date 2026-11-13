@@ -26,6 +26,7 @@
 // ('pending' row) BEFORE any paid call, so a double click, a second tab or a retry while it runs pays once.
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
+import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
@@ -126,7 +127,7 @@ export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
 
-interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; icp: string | null }
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
 
 const isUS = (c: string | null) => !!c && /^(?:united states(?: of america)?|usa?|u\.s\.a?\.?)$/i.test(c.trim())
 const domainOf = (address: string) => (address.split('@')[1] ?? '').toLowerCase()
@@ -188,9 +189,13 @@ export async function findWorkEmail(
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   if (typeof target !== 'string' || !target || target.length > TARGET_KEY_MAX) return { status: 'not_eligible', detail: 'no such person on this lead' }
-  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, j.icp
+  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
+  // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
+  // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
+  // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
+  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
   if (!workEmailLeadEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
   // #1036: the test-only work-email fixture lead is looked up ONLY on the test tenant with the staging fake PDL on (never a real
