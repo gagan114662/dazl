@@ -1121,7 +1121,7 @@ CREATE TABLE work_email_lookups (
       detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
       source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
       checked_at INTEGER,
-      updated_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL, mailbox_check TEXT CHECK (mailbox_check IS NULL OR mailbox_check IN ('pending','valid','catch_all','undeliverable','uncertain','refused')), mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR length(mailbox_verifier) <= 40), mailbox_checked_at INTEGER,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
       CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
       CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),

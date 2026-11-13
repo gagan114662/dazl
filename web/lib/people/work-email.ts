@@ -31,7 +31,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { publishedCandidateFor } from './email-pattern.ts'
+import { publishedCandidateFor, reserveMailboxCheck, verifierFromEnv } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
@@ -66,10 +66,18 @@ export function migrateWorkEmail(db: Database.Database): void {
       CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
       PRIMARY KEY (tenant_id, lead_id, target)
     );`)
+  // #1036: the free-tier mailbox check of an address a provider found but did not verify (Postgres: 0064_work_email_mailbox_check.sql).
+  // The status stays what the provider said ('unverified'); this records whether the mailbox itself was then checked, by whom, when.
+  const has = (c: string) => (db.prepare('PRAGMA table_info(work_email_lookups)').all() as { name: string }[]).some(r => r.name === c)
+  if (!has('mailbox_check')) db.exec(`ALTER TABLE work_email_lookups ADD COLUMN mailbox_check TEXT CHECK (mailbox_check IS NULL OR mailbox_check IN (${MAILBOX_CHECKS.map(s => `'${s}'`).join(',')}))`)
+  if (!has('mailbox_verifier')) db.exec('ALTER TABLE work_email_lookups ADD COLUMN mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR length(mailbox_verifier) <= 40)')
+  if (!has('mailbox_checked_at')) db.exec('ALTER TABLE work_email_lookups ADD COLUMN mailbox_checked_at INTEGER')
 }
+// pending: a slot was reserved and the call did not finish (never shown as checked). valid: the verifier's explicit "valid".
+export const MAILBOX_CHECKS = ['pending', 'valid', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 
-export interface WorkEmailRow { target: string; status: WorkEmailStatus; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; updated_at: number }
-const ROW_COLS = 'target, status, provider, address, detail, source_url, checked_at, updated_at'
+export interface WorkEmailRow { target: string; status: WorkEmailStatus; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; updated_at: number; mailbox_check?: string | null; mailbox_verifier?: string | null; mailbox_checked_at?: number | null }
+const ROW_COLS = 'target, status, provider, address, detail, source_url, checked_at, updated_at, mailbox_check, mailbox_verifier, mailbox_checked_at'
 
 // Stored lookups for one lead of this tenant, as shown on the lead. A 'pending' row past PENDING_STALE_S reads as 'uncertain'.
 export function workEmailsFor(db: Database.Database, tenantId: string, leadId: string, nowS: number = Math.floor(Date.now() / 1000)): WorkEmailRow[] {
@@ -252,12 +260,35 @@ export async function findWorkEmail(
   }
   if (!best && pdlOff) notes.push('People Data Labs fallback is off (turn it on in Settings > Enrichment)')
   const detail = notes.join('; ')
-  if (best) save(best.kind, { provider: best.provider, address: best.address, detail, checked_at: best.kind === 'verified' ? now : null, source_url: null }, now)
+  if (best) {
+    save(best.kind, { provider: best.provider, address: best.address, detail, checked_at: best.kind === 'verified' ? now : null, source_url: null }, now)
+    // #1036/#899: an address the provider found but did not verify gets the free-tier mailbox check, under the shared caps.
+    if (best.kind === 'unverified') await checkMailbox(db, tenantId, lead.id, target, best.address, deps)
+  }
   else if (!answered || incomplete) save('error', { detail }, now) // an allowed provider gave no answer: retryable
   else if (seen.has('not_us')) save('not_us', { detail }, now)
   else if (seen.has('rejected')) save('rejected', { detail }, now)
   else save('not_found', { detail }, now)
   return done()
+}
+
+// The free-tier check of one found address (lib/people/zerobounce.ts via verifierFromEnv): only with EMAIL_GUESS_ENABLED, a
+// ZEROBOUNCE_API_KEY and room under both caps. Only an explicit 'deliverable' becomes 'valid'; a catch-all domain never does.
+// Any failure leaves 'uncertain' (the slot stays counted). Never throws: the lookup's own result is already saved.
+async function checkMailbox(db: Database.Database, tenantId: string, leadId: string, target: string, address: string, deps: { fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; now?: number }): Promise<void> {
+  const env = deps.env ?? process.env
+  const verifier = verifierFromEnv(env, deps.fetchImpl)
+  if (!verifier) return
+  try {
+    const slot = reserveMailboxCheck(db, tenantId, verifier.name, nowS => db.prepare("UPDATE work_email_lookups SET mailbox_check = 'pending', mailbox_verifier = ?, mailbox_checked_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND status = 'unverified' AND address = ? AND mailbox_check IS NULL").run(verifier.name.slice(0, 40), nowS, tenantId, leadId, target, address).changes === 1, { env, now: deps.now === undefined ? undefined : deps.now * 1000 })
+    if (slot !== 'ok') return
+    let out: (typeof MAILBOX_CHECKS)[number] = 'uncertain'
+    try {
+      const a = await verifier.verify(address)
+      out = a?.outcome === 'deliverable' ? 'valid' : a?.outcome === 'catch_all' ? 'catch_all' : a?.outcome === 'undeliverable' ? 'undeliverable' : a?.outcome === 'refused' ? 'refused' : 'uncertain'
+    } catch { out = 'uncertain' }
+    db.prepare("UPDATE work_email_lookups SET mailbox_check = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, tenantId, leadId, target)
+  } catch (e) { console.error('[work-email] mailbox check not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
 }
 
 async function settle(db: Database.Database, h: CreditHold, charged: number): Promise<void> {
