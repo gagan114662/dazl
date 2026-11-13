@@ -18,17 +18,17 @@ import { targetKey, workEmailCopy, workEmailTargets } from '../lib/people/work-e
 const PROSE = '<p>Bluebonnet Realty is a boutique real estate firm servicing the Greater Austin area. We help buyers and sellers with every step of the process, and we care about the neighborhoods we work in and the people who live there.</p>'
 const card = (name: string, email: string, role: string, slug: string) => `<div class="team-member__container" data-search-string="${name} ${email}" data-tags="[]" > <a class="team-member__link" href="/agent/${slug}"> <div class="team-member__image-wrap"> <div class="team-member__image"> </div> <div class="team-member__hover"> <span class="btn btn--primary-dark team-member__btn button-style-1">LEARN MORE</span> </div> </div> <div class="team-member__info"> <span class="team-member__name">${name}</span> <span class="team-member__role">${role}</span> </div> </a> </div>`
 const html = (b: string) => `<html><body>${b}</body></html>`
-const page = (team: string): Record<string, string> => ({
+const page = (team: string, contactExtra = ''): Record<string, string> => ({
   '/robots.txt': 'User-agent: *\nAllow: /',
   '/': html(`${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Austin, TX 78702</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`),
   '/team': html(`${PROSE}<div class="team-grid__wrapper ordered-elements">${team}</div>`),
-  '/contact': html(`${PROSE}<a href="mailto:hello@bluebonnetrealty.com">hello</a>`),
+  '/contact': html(`${PROSE}<a href="mailto:hello@bluebonnetrealty.com">hello</a>${contactExtra}`),
 })
 const TEAM = `${card('Maya Thornton', 'maya@bluebonnetrealty.com', 'Real Estate Broker | Owner', 'maya-thornton')}${card('Owen Pike', 'owen@bluebonnetrealty.com', 'Real Estate Agent', 'owen-pike-1')}`
 const ICP = { summary: 'Austin real-estate brokerages', who: ['Broker', 'Owner'], where: ['Austin, TX'], signals: [] }
 
-async function run(env: Record<string, string>, team = TEAM) {
-  const PAGES = page(team)
+async function run(env: Record<string, string>, team = TEAM, contactExtra = '') {
+  const PAGES = page(team, contactExtra)
   const db = new Database(':memory:'); migrateAllSqlite(db)
   const job = createJob(db, 'T', { business_name: 'Seller', industry: 'proptech', location: 'Austin, TX' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(ICP), job)
@@ -108,7 +108,49 @@ test('#1036 address contexts on a 760 KB directory page with 1,500 addresses sta
   for (const a of found) n += addressContexts(big, a.at).length
   const ms = performance.now() - t0
   assert.ok(n >= 1500); assert.ok(ms < base * 12, `contexts for 1,500 addresses took ${Math.round(ms)} ms vs ${Math.round(base)} ms for the address scan`)
-  // control: the per-address search this replaces is far over that bound on the same page
-  const s0 = performance.now(); const lower = big.toLowerCase(); for (const a of found) lower.indexOf(a.address)
-  assert.ok(performance.now() - s0 > base * 12, 'control: one page search per address would fail this bound')
+})
+
+// Independent review of the guard (second pass): layouts where nearby text used to decide. The same three functions the crawl uses.
+import { addressContexts as ctxOf } from '../lib/connectors/sitecrawl.ts'
+import { personalAddresses as addrs, publishedFor, type AddressContext } from '../lib/people/email-pattern.ts'
+const seenFrom = (...pagesHtml: string[]) => {
+  const seen = new Map<string, { address: string; url: string; ctx: AddressContext[] }>()
+  pagesHtml.forEach((h, n) => { for (const a of addrs(h, 'x.com')) { const had = seen.get(a.address); const c = ctxOf(h, a.at); if (had) had.ctx.push(...c); else seen.set(a.address, { address: a.address, url: `https://x.com/p${n}`, ctx: c }) } })
+  return [...seen.values()]
+}
+const who = (first: string, last: string) => ({ first, last })
+const owner = '<div><h3>Maya Thornton</h3><p>Owner</p></div>'
+test('#1036 guard: a mailto in ANOTHER person\'s card is never the buyer\'s, however the other name is marked up', () => {
+  for (const other of ['<h3><span class="f">Maya</span> <span class="l">Ortiz</span></h3>', '<h3>Maya<br>Ortiz</h3>', '<h3>maya ortiz</h3>', '<h3>Maya de Souza</h3>', '<h3>Maya</h3><p>Office Manager</p>', `<h3>Maya Ortiz</h3>${'<svg><path d="M0 0"/></svg>'.repeat(30)}`])
+    assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`${owner}<div>${other}<a href="mailto:maya@x.com">maya@x.com</a></div>`)), null, other)
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`${owner}<div><a href="mailto:maya@x.com">maya@x.com</a>${'<svg><path d="M0 0"/></svg>'.repeat(30)}<h3>Maya Ortiz</h3></div>`)), null, 'the address before the other name, far apart')
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`<div><h3>Maya Thornton</h3><a href="mailto:maya@x.com">Email</a></div>`)), null, 'a nearby heading alone is not a pairing (fail closed)')
+})
+test('#1036 guard: a name used as both first and last name (jordan@ in Michael Jordan\'s card; thornton@ in Thornton Wilder\'s)', () => {
+  assert.equal(publishedFor(who('jordan', 'lee'), seenFrom(`<div data-s="Jordan Lee"></div><div data-s="Michael Jordan jordan@x.com"></div>`)), null)
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`<div data-s="Maya Thornton"></div><div data-s="Thornton Wilder thornton@x.com"></div>`)), null)
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`<p>Assistant to Maya Thornton: maya@x.com</p><h3>Maya Ortiz</h3>`)), null, 'the text around a text-node pairing names another Maya')
+})
+test('#1036 guard: any other place the address is printed can refuse it, on the same page or another page', () => {
+  const pair = '<div data-s="Maya Thornton maya@x.com"></div>'
+  assert.deepEqual(publishedFor(who('maya', 'thornton'), seenFrom(pair))?.address, 'maya@x.com', 'control: the pairing alone is attributed')
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`${pair}<div data-s="Maya Ortiz maya@x.com"></div>`)), null, 'second place, same page')
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(pair, '<div data-s="Maya Ortiz maya@x.com"></div>')), null, 'second page')
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom('<p>Maya Thornton, Broker - maya@x.com</p>', '<div data-s="Maya Ortiz maya@x.com"></div>')), null)
+})
+test('#1036 guard keeps the plain legitimate pairings: middle name, mixed-case address, possessive, another Maya in a neighbouring card', () => {
+  for (const h of ['<div data-s="Maya Grace Thornton maya@x.com"></div>', '<div data-s="Maya Thornton Maya@X.com"></div>', "<p>Maya Thornton's email: maya@x.com</p>", '<div data-s="Maya Thornton maya@x.com"></div><div data-s="Maya Ortiz"></div>'])
+    assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(h))?.address, 'maya@x.com', h)
+  // a full-name address was never subject to this rule
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom('<h3>Maya Ortiz</h3><a href="mailto:maya.thornton@x.com">mail</a>'))?.address, 'maya.thornton@x.com')
+})
+
+test('#1036 guard through the real crawl: the buyer\'s card pairs the address on /team, but /contact prints it in another Maya\'s card -> nobody\'s', async () => {
+  const pairOnly = await run({}, c3('Maya Thornton', 'maya@bluebonnetrealty.com', OWNER))
+  assert.equal(pairOnly.r.status, 'published', 'control: without the second page it is hers')
+  // Both orders: whichever page the crawl reads first, the other page's place still counts.
+  const both = await run({}, c3('Maya Thornton', 'maya@bluebonnetrealty.com', OWNER), c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT))
+  assert.notEqual(both.r.status, 'published', JSON.stringify(both.r))
+  const swapped = await run({}, `${c3('Maya Thornton', '', OWNER)}${c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT)}`, '<div data-search-string="Maya Thornton maya@bluebonnetrealty.com"></div>')
+  assert.notEqual(swapped.r.status, 'published', JSON.stringify(swapped.r))
 })

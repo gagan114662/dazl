@@ -293,7 +293,7 @@ import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 // 60 s crawl deadline. One still 'running' after STAGING_CHECK_DEAD_S lost its process (a restart mid-crawl): it is failed here, so
 // it stops counting as an active scan and can be removed. Never re-queued (it is not a scan a worker may run).
 export const STAGING_CHECK_DEAD_S = 180
-export const REAP_STAGING_CHECKS_SQL = "UPDATE scan_jobs SET status = 'failed', error = 'staging_check_interrupted', finished_at = ? WHERE status = 'running' AND industry = 'staging check' AND location = 'staging check' AND claimed_at IS NULL AND created_at < ?"
+export const REAP_STAGING_CHECKS_SQL = "UPDATE scan_jobs SET status = 'failed', error = 'staging_check_interrupted', finished_at = ? WHERE status = 'running' AND business_name = 'dazl real-company Find work email check (staging test)' AND industry = 'staging check' AND location = 'staging check' AND claimed_at IS NULL AND created_at < ?"
 export function reapStaleRunningJobs(db: Database.Database): void {
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(

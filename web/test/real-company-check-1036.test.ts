@@ -112,3 +112,16 @@ test('#1036 a check job left running by a restart is reaped: not an active scan,
   assert.throws(() => deleteRealCompanyChecks(db, T), (e: unknown) => e instanceof FixtureError && e.code === 'check_in_flight', 'a crawl inside its deadline still refuses')
   reapStaleJobs(db); assert.equal((db.prepare("SELECT status FROM scan_jobs WHERE id = 'fresh'").get() as { status: string }).status, 'running', 'and is not reaped')
 })
+
+test('#1036 the Db-layer reaper fails a dead check too, and never touches a real running scan or a job that only shares the industry text', async () => {
+  const { sqliteDb } = await import('../lib/db/client.ts'); const sd = await import('../lib/scan/store-db.ts')
+  const raw = setup(); const db = sqliteDb(raw)
+  const ins = raw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at, claimed_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)")
+  ins.run('dead', T, 'dazl real-company Find work email check (staging test)', 'staging check', 'staging check', now() - 600, null)
+  ins.run('user-job', T, 'Acme', 'staging check', 'staging check', now() - 600, now())
+  ins.run('real-scan', T, 'Acme', 'software', 'Austin', now() - 600, now())
+  await sd.reapStaleRunningJobs(db)
+  const st = (id: string) => (raw.prepare('SELECT status FROM scan_jobs WHERE id = ?').get(id) as { status: string }).status
+  assert.deepEqual([st('dead'), st('user-job'), st('real-scan')], ['failed', 'running', 'running'])
+  assert.equal(await sd.countActiveJobs(db, T), 2)
+})

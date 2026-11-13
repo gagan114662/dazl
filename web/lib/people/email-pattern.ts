@@ -120,37 +120,35 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 // Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
 // the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
 // #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares that name, and the crawl keeps only
-// buyer-role people, so the real owner may not be among `people`. Such an address is attributed only on the page's own pairing
-// (`ctx`, recorded by the crawl for each place the address is printed):
-//   - the TIGHTEST context that names anyone decides: the attribute value or text node holding the address when it names a person
-//     (a team card's data attribute, "Maya Thornton maya@..."), otherwise the text around it;
-//   - that context must print THIS person's first and last name together, and no other person-shaped name sharing the token
-//     ("Maya Ortiz" for maya@, "Tom Thornton" for thornton@) - in ANY place the address is printed. Otherwise it is nobody's.
-export interface AddressContext { tight: string; wide: string }
-const plain = (s: string) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-// Person-shaped pairs: two neighbouring capitalised words (an optional middle initial between them), as [first, last] in ascii lower case.
-function namePairs(text: string): [string, string][] {
-  const words = plain(text).split(/[^A-Za-z'\u2019.-]+/).filter(Boolean)
-  const cap = (w: string) => /^[A-Z][A-Za-z'\u2019-]+$/.test(w)
-  const out: [string, string][] = []
-  for (let i = 0; i + 1 < words.length; i++) {
-    if (!cap(words[i])) continue
-    const k = /^[A-Z]\.?$/.test(words[i + 1]) && i + 2 < words.length ? i + 2 : i + 1
-    if (cap(words[k])) out.push([ascii(words[i]), ascii(words[k])])
+// buyer-role people, so the real owner may not be among `people`. Such an address is attributed only on the page's OWN pairing
+// (`ctx`: every place the crawl saw the address printed, on any page). Fail closed:
+//   - some place must hold this person's first and last name (one middle name allowed) in the SAME attribute value or text node
+//     as the address (a team card's data attribute "Maya Thornton maya@...", or the text "Maya Thornton - maya@..."). Text that is
+//     merely nearby (a neighbouring heading or card) is never a pairing;
+//   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
+//     around a text-node place, or in the attribute / text node of ANY other place the address is printed ("Maya Ortiz", "maya",
+//     "Michael Jordan" for jordan@). Otherwise it is nobody's.
+export interface AddressContext { tight: string; wide: string; attr: boolean }
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
+// The words left once every "first [middle] last" of this person is taken out, and whether one was found.
+function withoutOwnName(words: string[], n: Name): { rest: string[]; found: boolean } {
+  const rest: string[] = []; let found = false
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === n.first && words[i + 1] === n.last) { found = true; i += 1; continue }
+    if (words[i] === n.first && words[i + 2] === n.last) { found = true; i += 2; continue }
+    rest.push(words[i])
   }
-  return out
+  return { rest, found }
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
   if (!ctx?.length) return false
-  const isFirst = local === localFor('first', n), isLast = local === localFor('last', n)
   let paired = false
   for (const c of ctx) {
-    const tight = namePairs(c.tight)
-    const pairs = tight.length ? tight : namePairs(c.wide)
-    for (const [f, l] of pairs) {
-      if (f === n.first && l === n.last) { paired = true; continue }
-      if ((isFirst && f === local) || (isLast && l === local)) return false // someone else who shares the name is printed with it
-    }
+    const tight = withoutOwnName(nameWords(c.tight), n)
+    if (tight.rest.includes(local)) return false                                         // someone else sharing the name, in the same attribute / text
+    if (!c.attr && withoutOwnName(nameWords(c.wide), n).rest.includes(local)) return false // or right around a text-node place
+    if (tight.found) paired = true
   }
   return paired
 }

@@ -639,8 +639,8 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
       const gt = back.lastIndexOf('>'), lt = fwd.indexOf('<')
       if (gt >= 0 && lt >= 0 && !back.slice(gt).includes('<')) tight = back.slice(gt + 1) + html.slice(i, end) + fwd.slice(0, lt)
     }
-    const wide = html.slice(Math.max(0, i - 400), end + 400).replace(/[<>"'=]/g, ' ').replace(/\s+/g, ' ').slice(0, 900)
-    out.push({ tight: tight.replace(/\s+/g, ' ').slice(0, 400), wide })
+    const wide = html.slice(Math.max(0, i - 400), end + 400).replace(/<[^>]*>/g, ' ').replace(/[<>"'=]/g, ' ').replace(/\s+/g, ' ').slice(0, 900)
+    out.push({ tight: tight.replace(/\s+/g, ' ').slice(0, 400), wide, attr: inAttr })
   }
   return out
 }
@@ -697,8 +697,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           locals.add(a.local)
           const had = seen.get(a.address)
           if (!had && seen.size >= 200) continue // full: no context is built for an address that will not be kept
-          const ctx = had && had.url !== url ? [] : addressContexts(html, a.at)
-          if (had) { if (had.url === url) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 6) }
+          // Every page's places are kept (up to 12): a later page printing the address beside someone else must be able to refuse it.
+          if (had && (had.ctx?.length ?? 0) >= 12) continue
+          const ctx = addressContexts(html, a.at)
+          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 12)
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
