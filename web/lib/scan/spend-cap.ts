@@ -60,6 +60,7 @@ import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
+import { OWNER_POOL_LIMIT_REASON, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
 
 type Env = Record<string, string | undefined>
 
@@ -176,9 +177,21 @@ export interface ScanSpendCtx {
   cap: CapConfig
   // The request's own run_budget.max_usd, when it set one: it can only lower the cap.
   requestMaxUsd?: number | null
+  // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
+  // in the same transaction as this scan's cap, for every model completion of the scan. Null when the runner reserves the
+  // owner pool itself (an account with its own operator entry: PooledGuard), so a call is never counted twice.
+  accountLimits?: PoolLimits | null
   clock?: () => number
 }
 const store = new AsyncLocalStorage<ScanSpendCtx>()
+// #846/#847: a paid model call made for an account outside any scan (ownerGuarded paths: replies, drafts, sequences, SEO,
+// qualification, the website read) reserves its worst case on the account's day/month windows at the transport, before
+// the request, and settles to the vendor-reported cost after it. Set by lib/llm/owner-guard.ts for every account without
+// its own operator entry (those keep their PooledGuard).
+export interface AccountSpendCtx { db: DbLike; tenantId: string; limits: PoolLimits; clock?: () => number }
+const accountStore = new AsyncLocalStorage<AccountSpendCtx>()
+export function runWithAccountSpend<T>(ctx: AccountSpendCtx, fn: () => Promise<T>): Promise<T> { return accountStore.run(ctx, fn) }
+const isModel = (kind: string) => kind === 'llm.anthropic' || kind === 'llm.openai'
 // Runs fn with the scan's spend context: every gated paid call inside it (awaited or not) reserves on this scan.
 export function runWithScanSpend<T>(ctx: ScanSpendCtx, fn: () => Promise<T>): Promise<T> { return store.run(ctx, fn) }
 export function scanSpendContext(): ScanSpendCtx | undefined { return store.getStore() }
@@ -251,7 +264,7 @@ const newId = () => randomBytes(10).toString('hex')
 // recorded as the refusal.
 export async function reserveScanSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
   const ctx = store.getStore()
-  if (!ctx) return null
+  if (!ctx) return isModel(kind) ? reserveAccountSpend(kind, cost) : null
   if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const vendor = VENDOR_SCOPED_REJECTION[kind]
@@ -274,6 +287,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
+      // #846/#847: the owner's day/month caps first, in this same transaction; refused there, the scan's cap is untouched.
+      const pool = !why && isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
+      if (pool && !(yield* reservePoolWindows(t, ctx.tenantId, pool, usd, at))) why = OWNER_POOL_LIMIT_REASON
       if (!why) {
         // claimed_at is refreshed with the reservation FROM THE DATABASE CLOCK inside the statement: a live attempt holding a
         // reserved (possibly billed) call must not be reapable. PG clock_timestamp() (NOT now(), which is the transaction's
@@ -300,6 +316,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
         // 'over_cap' means the scan's RECORDED cap refused: that cap is min(fixed cap, the run's own max_usd, earlier
         // attempts' persisted floor), and which of those was binding is NOT recoverable here (an earlier lower operator
         // setting leaves the same floor as a run budget), so the reason names no origin (#1006).
+        if (pool) yield* releasePoolWindows(t, ctx.tenantId, pool, usd, at)
         const j = yield* t.get<{ attempts: number | string; status: string }>('SELECT attempts, status FROM scan_jobs WHERE id = ? AND user_id = ?', [ctx.jobId, ctx.tenantId])
         why = !j ? 'scan_not_found' : Number(j.attempts) !== attempt ? 'ownership_lost' : j.status !== 'running' && j.status !== 'done' ? 'scan_not_active' : 'over_cap'
       }
@@ -314,6 +331,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     throw new SpendRefused('ledger_unavailable')
   }
   if (refused) throw new SpendRefused(refused)
+  const pooled = isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
   let done = false
   return {
     id, kind, usd,
@@ -342,11 +360,48 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
         }
         if (r.changes !== 1 || actual === null) return // a replay, or nothing to move: the worst case stands
         const delta = actual - usd
+        if (pooled) yield* settlePoolWindows(t, ctx.tenantId, pooled, delta, actual, at, now())
         if (delta !== 0) yield* t.run('UPDATE scan_jobs SET spend_cap_reserved_usd = CASE WHEN spend_cap_reserved_usd + ? < 0 THEN 0 ELSE spend_cap_reserved_usd + ? END WHERE id = ? AND user_id = ?',
           [delta, delta, ctx.jobId, ctx.tenantId])
       })
       try { await write() } catch {
         try { await write() } catch (e) { captureError(e, { source: 'worker', where: 'scan-spend-cap:settle', tenantId: ctx.tenantId, ref: ctx.jobId }) }
+      }
+    },
+  }
+}
+
+// The account path (see AccountSpendCtx): outside a scan, a model call of an account with a context reserves on its
+// day/month windows, or is refused (OWNER_POOL_LIMIT_REASON) before anything is sent. No context: null, as before.
+async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
+  const a = accountStore.getStore()
+  if (!a) return null
+  const db = asDb(a.db)
+  const now = a.clock ?? (() => Math.floor(Date.now() / 1000))
+  const at = now()
+  let usd: number
+  try { usd = cost() } catch (e) { throw e instanceof SpendRefused ? e : new SpendRefused('cost_invalid') }
+  if (!(typeof usd === 'number' && Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('cost_invalid')
+  let ok: boolean
+  try { ok = await db.tx(function* (t: Tx): TxBody<boolean> { return yield* reservePoolWindows(t, a.tenantId, a.limits, usd, at) }) } catch (e) {
+    // The store did not answer: no reservation exists, so the call must not happen.
+    captureError(e, { source: 'worker', where: 'account-spend-cap:reserve', tenantId: a.tenantId })
+    throw new SpendRefused('reservation_not_saved')
+  }
+  if (!ok) throw new SpendRefused(OWNER_POOL_LIMIT_REASON)
+  let done = false
+  return {
+    id: newId(), kind, usd,
+    uncertain() { done = true }, // maybe billed: the worst case stays reserved
+    rejected() { /* outside a scan there is no attempt to stop; the caller sees the provider's error */ },
+    async settle(actualUsd) {
+      if (done) return
+      done = true
+      const actual = typeof actualUsd === 'number' && Number.isFinite(actualUsd) && actualUsd >= 0 ? actualUsd : null
+      if (actual === null) return // the worst case stands
+      const write = () => db.tx(function* (t: Tx): TxBody<void> { yield* settlePoolWindows(t, a.tenantId, a.limits, actual - usd, actual, at, now()) })
+      try { await write() } catch {
+        try { await write() } catch (e) { captureError(e, { source: 'worker', where: 'account-spend-cap:settle', tenantId: a.tenantId }) } // unsaved: the worst case stands, an over-count only
       }
     },
   }

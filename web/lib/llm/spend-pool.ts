@@ -189,24 +189,125 @@ export async function poolRows(d: DbLike, owner: string): Promise<PoolRow[]> {
   return asDb(d).all<PoolRow>('SELECT tenant_id, period, reserved_usd, reported_usd, calls, updated_at FROM tenant_spend_pools WHERE tenant_id = ? ORDER BY period', [owner])
 }
 
-// Operator settings, same format as before ("<owner id>:<usd>,..."; exact id match; a malformed entry is ignored):
-//   DAZL_RUN_MAX_USD_USERS         per owner per UTC day (was: per process lifetime, reset on restart)
-//   DAZL_OWNER_MONTH_MAX_USD_USERS per owner per UTC month
-export function ownerSetting(name: string, userId: string, env: Record<string, string | undefined>): number | null {
+// Spend caps (#846 / #847): every account is capped per UTC day and per UTC month, never unlimited. Each window's
+// number comes from, in order:
+//   1. the account's own entry, "<owner id>:<usd>,..." (exact id match):
+//        DAZL_RUN_MAX_USD_USERS         per owner per UTC day
+//        DAZL_OWNER_MONTH_MAX_USD_USERS per owner per UTC month
+//   2. the deployment default for every other account:
+//        DAZL_OWNER_DAY_MAX_USD   (built-in default OWNER_DAY_DEFAULT_USD)
+//        DAZL_OWNER_MONTH_MAX_USD (built-in default OWNER_MONTH_DEFAULT_USD)
+//   3. the built-in default.
+// A value must be a finite number above 0. Anything else (missing, empty, "0", negative, "Infinity", text) is not a
+// limit: the next source applies, so a typo or a 0 can never mean "unlimited", and a missing setting is never zero
+// either. A value above the hard ceiling (OWNER_DAY_CEILING_USD / OWNER_MONTH_CEILING_USD) is clamped to it.
+// Accounts with their own entry keep the guard path they had before (PooledGuard in the runner and ownerGuarded);
+// every other account is reserved at the model transport (lib/scan/spend-cap.ts reserveScanSpend, accountLimits).
+export const OWNER_DAY_DEFAULT_USD = 10
+export const OWNER_MONTH_DEFAULT_USD = 100
+export const OWNER_DAY_CEILING_USD = 100
+export const OWNER_MONTH_CEILING_USD = 1000
+export const CAP_ENV = {
+  day: { account: 'DAZL_RUN_MAX_USD_USERS', deployment: 'DAZL_OWNER_DAY_MAX_USD', dflt: OWNER_DAY_DEFAULT_USD, ceiling: OWNER_DAY_CEILING_USD },
+  month: { account: 'DAZL_OWNER_MONTH_MAX_USD_USERS', deployment: 'DAZL_OWNER_MONTH_MAX_USD', dflt: OWNER_MONTH_DEFAULT_USD, ceiling: OWNER_MONTH_CEILING_USD },
+} as const
+type Env = Record<string, string | undefined>
+// A positive finite number, or null (not a limit).
+function positiveUsd(raw: string | undefined): number | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null
+  const n = Number(raw.trim())
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+// The raw text of this owner's entry in a "<owner id>:<usd>,..." list (the first exact id match), or null.
+function ownerEntry(name: string, userId: string, env: Env): string | null {
   for (const part of (env[name] ?? '').split(',')) {
     const i = part.lastIndexOf(':'); if (i < 0) continue
-    if (part.slice(0, i).trim() !== userId) continue
-    const n = Number(part.slice(i + 1).trim()); return Number.isFinite(n) && n > 0 ? n : null
+    if (part.slice(0, i).trim() === userId) return part.slice(i + 1)
   }
   return null
+}
+// One owner's valid entry in an operator list, clamped to its window's ceiling; null when the owner has none or it is
+// not a positive number (then the deployment default applies, see windowCap).
+export function ownerSetting(name: string, userId: string, env: Env): number | null {
+  const n = positiveUsd(ownerEntry(name, userId, env) ?? undefined)
+  if (n === null) return null
+  const w = name === CAP_ENV.month.account ? CAP_ENV.month : name === CAP_ENV.day.account ? CAP_ENV.day : null
+  return w ? Math.min(n, w.ceiling) : n
+}
+// Where a cap's number came from, for the operator's check (app/api/internal/spend-caps).
+export interface CapValue {
+  usd: number
+  source: 'account' | 'env' | 'default'
+  env: string                  // the setting the number came from (the built-in default names the setting that would override it)
+  clamped: boolean             // the setting was above the ceiling and was lowered to it
+  ignored: string[]            // settings that were present but not a positive number, so the next source applied
+}
+export function windowCap(w: PoolWindow, userId: string | null, env: Env = process.env): CapValue {
+  const c = CAP_ENV[w], ignored: string[] = []
+  if (userId !== null) {
+    const raw = ownerEntry(c.account, userId, env)
+    if (raw !== null) {
+      const n = positiveUsd(raw)
+      if (n !== null) return { usd: Math.min(n, c.ceiling), source: 'account', env: c.account, clamped: n > c.ceiling, ignored }
+      ignored.push(c.account)
+    }
+  }
+  const raw = env[c.deployment]
+  const n = positiveUsd(raw)
+  if (n !== null) return { usd: Math.min(n, c.ceiling), source: 'env', env: c.deployment, clamped: n > c.ceiling, ignored }
+  if (raw !== undefined) ignored.push(c.deployment)
+  return { usd: c.dflt, source: 'default', env: c.deployment, clamped: false, ignored }
 }
 // The typed refusal reason of the owner pool's guard (PooledGuard.label): a reservation refused by the shared
 // day/month pool is NOT a refusal by the run's own budget, and the report's stop provenance must say which.
 export const OWNER_POOL_LIMIT_REASON = 'owner_pool_limit'
 
-export function ownerLimits(userId: string, env: Record<string, string | undefined> = process.env): PoolLimits | null {
-  const day = ownerSetting('DAZL_RUN_MAX_USD_USERS', userId, env), month = ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', userId, env)
-  return day === null && month === null ? null : { day, month }
+// Every account's limits: always both windows, never unlimited.
+export function accountLimits(userId: string, env: Env = process.env): { day: number; month: number } {
+  return { day: windowCap('day', userId, env).usd, month: windowCap('month', userId, env).usd }
+}
+// The limits of an account the operator named in DAZL_RUN_MAX_USD_USERS or DAZL_OWNER_MONTH_MAX_USD_USERS (a valid
+// entry in either), for the PooledGuard path it had before; null for every other account (capped at the transport by
+// accountLimits instead). A named account's other window is the deployment default, never unlimited.
+export function ownerLimits(userId: string, env: Env = process.env): PoolLimits | null {
+  if (ownerSetting(CAP_ENV.day.account, userId, env) === null && ownerSetting(CAP_ENV.month.account, userId, env) === null) return null
+  return accountLimits(userId, env)
+}
+
+// One reservation on an owner's windows inside a caller's transaction (lib/scan/spend-cap.ts, the transport path).
+// Each window row is created at zero if missing and raised only WHERE it still fits; a window that does not fit
+// undoes the windows already raised in this same transaction (under their row locks) and returns false, so the
+// caller can record its refusal and commit. Nothing is written for 0 USD.
+export function* reservePoolWindows(t: Tx, owner: string, limits: PoolLimits, usd: number, nowS: number): TxBody<boolean> {
+  if (!(Number.isFinite(usd) && usd >= 0)) return false
+  if (usd === 0) return true
+  const raised: string[] = []
+  for (const [w, limit] of windows(limits)) {
+    const period = periodOf(w, nowS)
+    yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])
+    const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = reserved_usd + ?, calls = calls + 1, updated_at = ? WHERE tenant_id = ? AND period = ? AND reserved_usd + ? <= ?', [usd, nowS, owner, period, usd, limit + EPS])
+    if (r.changes !== 1) {
+      for (const p of raised) yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd - ? < 0 THEN 0 ELSE reserved_usd - ? END, calls = calls - 1 WHERE tenant_id = ? AND period = ?', [usd, usd, owner, p])
+      return false
+    }
+    raised.push(period)
+  }
+  return true
+}
+// Undo a reservePoolWindows that returned true, in the same transaction (the caller's own step refused after it).
+export function* releasePoolWindows(t: Tx, owner: string, limits: PoolLimits, usd: number, atS: number): TxBody<void> {
+  if (!(Number.isFinite(usd) && usd > 0)) return
+  for (const [w] of windows(limits)) yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd - ? < 0 THEN 0 ELSE reserved_usd - ? END, calls = calls - 1 WHERE tenant_id = ? AND period = ?', [usd, usd, owner, periodOf(w, atS)])
+}
+// Move a reservation made at atS by delta (to the vendor-reported cost) in every window it was made in; reported adds
+// the vendor's own figure. Never below zero; an overrun is recorded past the limit (later reservations then refuse).
+export function* settlePoolWindows(t: Tx, owner: string, limits: PoolLimits, delta: number, reported: number, atS: number, nowS: number): TxBody<void> {
+  const d = Number.isFinite(delta) ? delta : 0, rep = Number.isFinite(reported) && reported > 0 ? reported : 0
+  if (d === 0 && rep === 0) return
+  for (const [w] of windows(limits)) {
+    yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
+      [d, d, rep, nowS, owner, periodOf(w, atS)])
+  }
 }
 
 export function migrateSpendPools(db: { exec(sql: string): unknown }): void {

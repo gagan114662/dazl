@@ -42,7 +42,7 @@ import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLog
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
-import { OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
+import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
@@ -1125,7 +1125,8 @@ export interface RunBudget { paid_fallback?: boolean; credit_enrichment?: boolea
 // crash/retry can produce further attempts - never a research call.
 // Operator settings DAZL_RUN_MAX_USD_USERS (per UTC day) and DAZL_OWNER_MONTH_MAX_USD_USERS (per UTC month), each
 // "<owner id>:<usd>,...", bound every query job of the named owners together, in the shared store
-// (lib/llm/spend-pool.ts). Exact id match; a malformed entry is ignored for that entry. Every limit applies.
+// (lib/llm/spend-pool.ts). Exact id match; a malformed entry is ignored for that entry (the deployment default applies).
+// Every other owner is capped by the deployment defaults at the transport (#846/#847, runJobUntraced).
 export function ownerMaxUsd(userId: string, env: Record<string, string | undefined> = process.env): number | null {
   return ownerSetting('DAZL_RUN_MAX_USD_USERS', userId, env)
 }
@@ -1206,7 +1207,10 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
 // run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd }, () => runJobCapped(db, job, deps))
+  // #846/#847: the owner's day/month caps. An owner the operator named, on a query job, is reserved by the runner's own
+  // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
+  const pooledByRunner = !job.csv_domain && ownerLimits(job.user_id) !== null
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
 async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {

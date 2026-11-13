@@ -3,9 +3,12 @@
 // read from the seller's website. The runner reserves against the same pool; here each completion reserves its worst
 // case (prompt bytes plus a margin in, max_tokens out, at the model's listed price) before the call, in the shared store,
 // so a restart, a retry, a second instance or another kind of paid call cannot reset or pass the limit.
-// Only when the operator set a limit for this owner (DAZL_RUN_MAX_USD_USERS / DAZL_OWNER_MONTH_MAX_USD_USERS); without
-// one the provider is returned unchanged. With one, a model without a listed price is refused (fails closed), and so is
-// a reservation the store could not save. A refused call is never made: the caller's own fallback (a template, an
+// An owner the operator named (DAZL_RUN_MAX_USD_USERS / DAZL_OWNER_MONTH_MAX_USD_USERS) goes through the PooledGuard
+// below: a model without a listed price is refused (fails closed), and so is a reservation the store could not save.
+// Every other owner (#846/#847: never unlimited) runs each call in an account spend context (lib/scan/spend-cap.ts
+// runWithAccountSpend) with the deployment's day/month caps (spend-pool.ts accountLimits): the model transport reserves
+// the call's worst case on the same windows before the request, refuses it (owner_pool_limit) past a cap, and settles it
+// to the vendor-reported cost. A refused call is never made: the caller's own fallback (a template, an
 // error) applies, and nothing is billed.
 // After the call each completion is settled to what the vendor reported (guardProvider's settle, lib/llm/spend-guard.ts):
 // the served model's price with cache writes and reads, so an overrun past the limit is recorded and refuses every later
@@ -18,11 +21,20 @@
 import type { DbLike } from '../db/client.ts'
 import type { Provider } from './provider.ts'
 import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'
-import { ownerLimits, sharedPool } from './spend-pool.ts'
+import { accountLimits, ownerLimits, sharedPool } from './spend-pool.ts'
+import { runWithAccountSpend } from '../scan/spend-cap.ts'
 
 export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Record<string, string | undefined> = process.env): Provider {
   const limits = ownerLimits(ownerId, env)
-  if (!limits) return p
+  if (!limits) {
+    const ctx = { db: d, tenantId: ownerId, limits: accountLimits(ownerId, env) }
+    return {
+      ...p,
+      research: (k, prompt, f) => runWithAccountSpend(ctx, () => p.research(k, prompt, f)),
+      ...(p.complete ? { complete: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.complete!(k, prompt, f, max)) } : {}),
+      ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.completeDetailed!(k, prompt, f, max)) } : {}),
+    }
+  }
   // DAZL_SPEND_BUSY_WAIT_MS: how long a call waits for another call of the same owner to settle (default 10 s).
   const wait = Number(env.DAZL_SPEND_BUSY_WAIT_MS)
   const pool = sharedPool(d, ownerId, limits, undefined, Number.isFinite(wait) && wait >= 0 ? wait : undefined)
