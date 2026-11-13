@@ -1,0 +1,56 @@
+'use client'
+// #1040: "Last 30 days" on Home - what the workspace's plays produced (new leads, contacted, replied, interested), the
+// latest leads and replies, and the same counts by signal type, each linking to where they live. Counts come from
+// GET /api/home/results (lib/outreach/home-results.ts); a read that fails says so, never a row of zeros.
+import Link from 'next/link'
+import { useEffect, useState } from 'react'
+import type { HomeResults } from '@/lib/outreach/home-results'
+import { signalLabel } from '@/lib/outreach/home-results'
+
+const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
+const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+export default function HomeResultsPanel() {
+  const [r, setR] = useState<HomeResults | 'failed' | null>(null)
+  useEffect(() => {
+    void fetch('/api/home/results').then(x => x.ok ? x.json() : Promise.reject(new Error(String(x.status))))
+      .then(j => setR(j && typeof j === 'object' && j.tiles ? j as HomeResults : 'failed')).catch(() => setR('failed'))
+  }, [])
+  if (r === null) return null
+  if (r === 'failed') return <p className="text-sm text-[var(--ink-3)] mb-4" role="status" data-testid="results-unread">Your last 30 days could not be loaded. Refresh to retry.</p>
+  const t = r.tiles
+  // nothing at all in the window: no counts AND nothing to list (a stored reply is never hidden behind the empty state)
+  const empty = t.leads === 0 && t.contacted === 0 && !t.replied && r.latest_leads.length === 0 && r.latest_replies.length === 0
+  // null = unknown (reply reading is off): a dash read out as "unknown", never a 0 nobody observed
+  const tile = (label: string, n: number | null, href: string, id: string) => (
+    <Link href={href} className="card p-4 block hover:border-black/30" data-testid={`tile-${id}`}>
+      <div className="text-2xl font-semibold tabular-nums">{n === null ? <><span aria-hidden="true">-</span><span className="sr-only">unknown</span></> : n}</div><div className="text-xs text-[var(--ink-2)]">{label}</div>
+    </Link>)
+  return (
+    <section className="mb-6" aria-labelledby="h-results" data-testid="home-results">
+      <h2 id="h-results" className="font-semibold mb-2">Last {r.window_days} days</h2>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {tile('New leads', t.leads, '/app/leads?latest=1', 'leads')}
+        {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
+        {tile('Replied', t.replied, '/app/inbox?status=all', 'replied')}
+        {tile('Interested', t.interested, '/app/inbox?status=all&class=positive', 'interested')}
+      </div>
+      {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
+      {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
+        <div className="grid sm:grid-cols-2 gap-3 mt-3">
+          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest leads</h3>
+            {r.latest_leads.length === 0 ? <p className="text-sm text-[var(--ink-3)]">No new leads in this period.</p>
+              : <ul className="space-y-1 text-sm" data-testid="latest-leads">{r.latest_leads.map(l => <li key={l.id} className="min-w-0"><Link className="underline break-words" href={`/app/leads?job_id=${l.job_id}`}>{l.company}</Link> <span className="text-[var(--ink-3)]">{day(l.created_at)}</span></li>)}</ul>}
+          </div>
+          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest replies</h3>
+            {r.latest_replies.length === 0 ? <p className="text-sm text-[var(--ink-3)]">No replies in this period.</p>
+              : <ul className="space-y-1 text-sm" data-testid="latest-replies">{r.latest_replies.map((x, i) => <li key={`${x.thread_id}-${i}`} className="min-w-0"><Link className="underline break-words" href="/app/inbox?status=all">{x.company}</Link> <span className="text-[var(--ink-3)]">{REPLY_WORD[x.classification] ?? 'Replied'}, {day(x.received_at)}</span></li>)}</ul>}
+          </div>
+        </div>
+        {r.by_signal.length > 0 && <div className="card p-4 mt-3 overflow-x-auto"><h3 className="text-sm font-semibold mb-2">By signal or source</h3>
+          <table className="w-full text-sm" data-testid="by-signal"><caption className="sr-only">Leads, contacted and replied in the last {r.window_days} days by signal type, or the source of leads with no graded type</caption><thead><tr className="text-left text-[var(--ink-3)]"><th scope="col" className="font-normal pr-3">Signal or source</th><th scope="col" className="font-normal pr-3 text-right">Leads</th><th scope="col" className="font-normal pr-3 text-right">Contacted</th><th scope="col" className="font-normal text-right">Replied</th></tr></thead>
+            <tbody>{r.by_signal.map(s => <tr key={s.signal} className="border-t border-black/5"><th scope="row" className="pr-3 py-1 text-left font-normal">{signalLabel(s.signal)}</th><td className="pr-3 text-right tabular-nums">{s.leads}</td><td className="pr-3 text-right tabular-nums">{s.contacted}</td><td className="text-right tabular-nums">{s.replied === null ? <><span aria-hidden="true">-</span><span className="sr-only">unknown</span></> : s.replied}</td></tr>)}</tbody>
+          </table></div>}
+      </>}
+    </section>)
+}

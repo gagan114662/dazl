@@ -181,6 +181,8 @@ function addColumns(db: Database.Database): void {
   db.exec(`CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL`)
+  // #1040 Home's 30-day results: a scan's leads found since a date, a range seek (not every lead the scan ever found)
+  db.exec('CREATE INDEX IF NOT EXISTS leads_job_created ON leads (scan_job_id, created_at)')
   // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
   // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
@@ -348,7 +350,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`
+       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.insert_seq LIMIT ?`
   return allWithHeldFallback(db, withHeld(plain, 'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`), [jobId, userId, Math.min(limit, 500)])
 }
 
@@ -421,6 +423,8 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 // genuine company whose name happens to contain '(test only)' is never hidden.
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
+// Same-second ties in insertion order (insert_seq), as the Db store (store-db.ts): never the query plan's order, which an index
+// such as leads (scan_job_id, created_at) (#1040) changes.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
   const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
@@ -430,7 +434,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-       ORDER BY l.created_at DESC LIMIT ?`
+       ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`
   return allWithHeldFallback(db, withHeld(plain.replace('l.score, l.confidence, l.event_date, l.date_status, l.review_reason,', 'l.score, l.confidence, l.event_date, l.date_status, l.review_reason,'), 'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`), jobId ? [userId, jobId, limit] : [userId, limit])
 }
 

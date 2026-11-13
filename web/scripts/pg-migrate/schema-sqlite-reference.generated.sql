@@ -1261,6 +1261,10 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
+CREATE INDEX inbound_messages_outreach ON inbound_messages (tenant_id, outreach_message_id);
+
+CREATE INDEX inbound_messages_tenant_received ON inbound_messages (tenant_id, received_at);
+
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 
 CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
@@ -1283,6 +1287,8 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
+CREATE INDEX leads_job_created ON leads (scan_job_id, created_at);
+
 CREATE INDEX lifecycle_events_email ON lifecycle_events (email);
 
 CREATE INDEX memberships_member ON memberships (member_id);
@@ -1302,6 +1308,8 @@ CREATE INDEX newsjacks_tenant ON newsjacks (tenant_id, created_at);
 CREATE INDEX onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
 
 CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
+
+CREATE INDEX outreach_messages_tenant_sent ON outreach_messages (tenant_id, sent_at);
 
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
