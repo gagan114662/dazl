@@ -9,7 +9,7 @@
 // cutover. created_at is an epoch integer in both dialects; count(*) comes back as a string from
 // the pg driver, so both aggregates go through Number().
 export { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, providerIssueText } from './provider-issue-text.ts'
-import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES } from './provider-issue-text.ts'
+import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, SPEND_REFUSAL_PREFIX } from './provider-issue-text.ts'
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
 import { getDb, type Db } from '../db/client.ts'
@@ -44,7 +44,24 @@ export async function readProviderIssues(db: Db, tenantId: string, jobId: string
         if (c) i.credit = c
       } catch { /* numbers omitted: the sentence then names no window */ }
     }
-    return issues
+    // A spend refusal carries the gate's reason on its skip row (SPEND_REFUSAL_PREFIX + reason), never a later re-read. Each cause
+    // is its own notice: a scan pass refused for one reason and an owner retry refused for another are two lines, never one line
+    // naming whichever row came last.
+    const out: ProviderIssue[] = []
+    for (const i of issues) {
+      if (i.status !== 'spend_refused') { out.push(i); continue }
+      try {
+        const byReason = await db.all<{ lookup: string; n: number | string; latest: number | string }>(
+          `SELECT lookup, count(*) AS n, max(created_at) AS latest FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = 'spend_refused' GROUP BY lookup ORDER BY latest DESC, lookup`,
+          [tenantId, jobId, i.connector])
+        if (!byReason.length) { out.push(i); continue }
+        for (const r of byReason) out.push({ ...i, lookups_affected: Number(r.n), latest_at: Number(r.latest), ...(r.lookup.startsWith(SPEND_REFUSAL_PREFIX) ? { refusal: r.lookup.slice(SPEND_REFUSAL_PREFIX.length) } : {}) })
+      } catch { out.push(i) /* reason omitted: the sentence then says the spend check refused it, without a reason */ }
+    }
+    // Newest first across every notice (an expanded spend_refused group must not push its older causes above newer notices of
+    // another provider); ties broken deterministically by connector, status, then the refusal reason.
+    out.sort((a, b) => b.latest_at - a.latest_at || a.connector.localeCompare(b.connector) || a.status.localeCompare(b.status) || (a.refusal ?? '').localeCompare(b.refusal ?? ''))
+    return out
   } catch {
     return null
   }

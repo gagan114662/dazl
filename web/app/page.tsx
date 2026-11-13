@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 
 const STEPS = [
   { n: '1', title: 'Paste your website', desc: 'That is the only thing you type. dazl reads your site and works out who buys from you and which signals to watch for. You can edit it.' },
-  { n: '2', title: 'Get new leads every week', desc: 'Your Play runs again each week, searching hiring, funding and expansion news. Each ready lead comes with the line that shows the signal, linked to its source.' },
+  { n: '2', title: 'Get new leads every day', desc: 'Your first Play runs again every day, searching hiring, funding and expansion news. Each ready lead comes with the line that shows the signal, linked to its source.' },
   { n: '3', title: 'Approve and send', desc: 'dazl drafts the message from the evidence. You approve each email before it sends, unless you turn on Autopilot. Email goes from your own Gmail.' },
 ]
 const PROOF = [
