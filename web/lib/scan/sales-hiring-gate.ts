@@ -84,7 +84,9 @@ export function requestPlaces(query: string | null | undefined): Set<string> {
 function placeEnd(text: string, end: number): number {
   // words never run across a sentence end ("in Parkdale. Congrats Bright Smiles" stops at "Parkdale")
   const RUN = String.raw`(?:\d+[\w-]*\s+)?(?:[A-Z][\w'’-]*|\d+)(?:[ \t]+(?:[A-Z][\w'’-]*|\d+))*`
-  const STEP = new RegExp(String.raw`^(?:[ \t]+(?:[Ii][Nn]|[Aa][Tt]|[Oo][Nn]|[Nn]ear)[ \t]+(?:the[ \t]+|THE[ \t]+)?(?:heart[ \t]+of[ \t]+)?${RUN}|[ \t]*,[ \t]*[A-Z][\w'’-]*(?=[ \t]*(?:$|[.,;:!?\n)])))`)
+  // a lower-case place: one or two words, never one that brings in someone ("in parkdale", not "in parkdale run by ...")
+  const LC = String.raw`(?!(?:by|with|from|for|and|run|hosted|says|said|of|a|an|the|our|their|its)\b)[a-z][\w'’-]*`
+  const STEP = new RegExp(String.raw`^(?:[ \t]+(?:[Ii][Nn]|[Aa][Tt]|[Oo][Nn]|[Nn]ear)[ \t]+(?:the[ \t]+|THE[ \t]+)?(?:heart[ \t]+of[ \t]+)?(?:${RUN}|${LC}(?:[ \t]+${LC})?(?=[ \t]*(?:$|[.,;:!?\n)#]|[ \t]-)))|[ \t]*,[ \t]*[A-Z][\w'’-]*(?=[ \t]*(?:$|[.,;:!?\n)])))`)
   for (let m = STEP.exec(text.slice(end)); m && m[0].length; m = STEP.exec(text.slice(end))) end += m[0].length
   return end
 }
@@ -130,28 +132,69 @@ function parties(text: string, company: string, places: ReadonlySet<string>): Pa
   return out
 }
 // A new-form opening at [at, end] of `excerpt` (its own clause has `prefix` before it) is the lead's own.
-export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
-  const match = excerpt.slice(at, end), stop = placeEnd(excerpt, end)
-  // the rest of the quote: everything but the opening and its own place
-  const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
-  const lead = company ?? ''
-  const ps = lead ? parties(rest, lead, places) : []
-  const isLead = (p: Party) => p.name !== null && lead !== '' && nameIsLead(p.name, lead)
-  // (i) the poster's own opening
-  if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) {
-    const handles = handlesIn(rest, places)
-    if (handles.some(h => !lead || !nameIsLead(h, lead))) return false
-    return congratsTargets(rest).every(t => { const bare = t.replace(/[@#][A-Za-z0-9_.]+/g, '').trim(); return SELF.test(bare) || (lead !== '' && nameIsLead(bare, lead)) })
+// Party markers, in any case: wording that brings in another practice or person without a capitalised name. "welcome(s)
+// <x>", "<x> dental / location / team / family / practice / clinic" for an x that is not the lead, "says / said <x>",
+// "reposted / shared <x>", "<lead> and <x>", "with <x>", "a new neighbour", "down the street", "next door".
+function partyMarker(quote: string, lead: string): boolean {
+  // the lead's own name never marks another party ("Family Dental Care is growing")
+  let text = lead === '' ? quote : quote.replace(new RegExp(lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => ' '.repeat(m.length))
+  if (lead !== '') text = text.replace(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g, m => (nameIsLead(m, lead) ? ' '.repeat(m.length) : m))
+  if (/\bwelcomes?\s+(?!to\b|you\b|all\b|everyone\b|new\s+patients\b|walk-?ins\b)[\w@#]/i.test(text)) return true
+  if (/\b(?:says|said|reposted|shared|retweeted|regrammed)\b|\bwith\s+[\w@#]|\ba\s+new\s+neighbou?r|\bdown\s+the\s+street\b|\bnext\s+door\b/i.test(text)) return true
+  for (const m of text.matchAll(/\b((?:[\w'’-]+\s+){1,3})(?:dental|location|team|family|practice|clinic)\b/gi)) {
+    const x = m[1].trim().split(/\s+/).filter(w => !CAP_STOP.has(w.toLowerCase().replace(/['’]s?$/, '')) && !DESCRIPTIVE.has(w.toLowerCase())).join(' ')
+    if (x !== '' && !(lead !== '' && nameIsLead(x, lead))) return true
   }
-  // a possessive right after the verb names the clause's own subject when that subject is the lead ("Acme opened its 5th
-  // location"); anywhere else a third-person pronoun is someone else ("Grand opening of their new clinic")
-  const own = lead !== '' && prefix.trim() !== '' && nameIsLead(prefix.trim(), lead) ? match.replace(/^((?:opened|opening|opens|open)\s+)(?:its|their)\b/i, '$1') : match
-  // (ii) the lead named, and no one else anywhere: a pronoun then refers to the lead ("Family Dental Care is growing.
-  // Their new clinic is now open"); an unnamed party or a congrats target that is not the lead is someone else
-  if (ps.some(isLead)) return ps.every(isLead)
-  // (iii) no one named at all, and no pronoun ("Their new clinic is now open", "Grand opening of their new clinic")
-  if (THIRD_PERSON.test(rest.replace(/\b(?:its|their)\s+doors\b/gi, '') + ' ' + own)) return false
-  return ps.length === 0 && !new RegExp(CONGRATS.source, 'i').test(rest)
+  // "<lead> and <x>": read on the quote itself, with the lead's name in place
+  for (const m of quote.matchAll(/((?:[\w&'’@.-]+\s+){1,5})and\s+[\w@#]/gi)) {
+    const ws = m[1].trim().split(/\s+/)
+    for (let k = 1; k <= ws.length; k++) if (lead !== '' && nameIsLead(ws.slice(-k).join(' '), lead)) return true
+  }
+  return false
+}
+// "<Lead> is / has / opened / 's ...": the lead is the lead-in subject of the sentence.
+function leadSubject(sentence: string, lead: string): boolean {
+  const m = /^\s*(.+?)(?:\s+(?:is|are|was|were|has|have|had|just|opened|opens)\b|['’]s\b)/i.exec(sentence)
+  return !!m && nameIsLead(m[1].replace(/^[^\w@]+/, ''), lead)
+}
+// What a quote may say besides a nobody-named opening: generic tags, emoji, punctuation and a short call to action.
+const CTA = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi)|book\s+(?:now|today)|see\s+you\s+soon|now\s+booking|walk-?ins\s+welcome)\b/gi
+// A new-form opening at [at, end] of `excerpt` (its own clause has `prefix` before it) is the lead's own. Strict, by
+// design (review on #1130 at d010a0c3): main gives unknown for every new form, so failing closed loses nothing against
+// main. The rest of the quote is everything but the opening and its own place ("in Parkdale", ", Toronto").
+//   (i)   first person ("Our new clinic ...", "We opened ...", "Grand opening of our new clinic"): the rest names no one
+//         but the lead (no capitalised name past stop words, months, weekdays and places; no @handle; no business-name
+//         #tag; no congrats target), and has no party marker.
+//   (ii)  the lead named: the same, and a third-person pronoun only where the lead is the lead-in subject of the
+//         pronoun's own sentence or the one before ("Family Dental Care is growing. Their new clinic is now open").
+//   (iii) nobody named: the rest is empty, or only generic #tags, emoji, punctuation and a call to action ("Book now").
+export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
+  const lead = company ?? ''
+  if (lead === '') return false
+  const match = excerpt.slice(at, end), stop = placeEnd(excerpt, end)
+  // the opening's own place words are places too ("#parkdale" after "now open in Parkdale")
+  const where = new Set([...places, ...wordsOf(excerpt.slice(end, stop))])
+  const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
+  const ps = parties(rest, lead, where)
+  const onlyLead = ps.every(p => p.name !== null && nameIsLead(p.name, lead)) && !partyMarker(rest, lead)
+  if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) return onlyLead
+  if (ps.length > 0) {
+    if (!onlyLead) return false
+    // every third-person pronoun (in the rest or the opening) must have the lead as its sentence's lead-in subject
+    const blanked = excerpt.slice(0, stop).replace(/\b(?:its|their)\s+doors\b/gi, m => ' '.repeat(m.length)) + excerpt.slice(stop)
+    const sentences: [number, string][] = []
+    for (const m of blanked.matchAll(/[^.!?\n]+/g)) sentences.push([m.index ?? 0, m[0]])
+    for (const m of blanked.matchAll(new RegExp(THIRD_PERSON.source, 'gi'))) {
+      const k = sentences.findIndex(([i, t]) => (m.index ?? 0) >= i && (m.index ?? 0) < i + t.length)
+      if (k < 0 || !(leadSubject(sentences[k][1], lead) || (k > 0 && leadSubject(sentences[k - 1][1], lead)))) return false
+    }
+    return true
+  }
+  // (iii) nobody named: no third-person pronoun, the opening's own included ("Grand opening of their new clinic"), and
+  // nothing else in the quote but generic tags, emoji, punctuation and a call to action
+  if (THIRD_PERSON.test(rest.replace(/\b(?:its|their)\s+doors\b/gi, ' ') + ' ' + match)) return false
+  const left = rest.replace(/#[A-Za-z0-9_]+/g, t => (genericTag(t.slice(1), where) ? ' ' : t)).replace(CTA, ' ').replace(/[^\p{L}\p{N}#@]+/gu, ' ').trim()
+  return left === ''
 }
 // Corporate and descriptive words a name may carry around the lead's own words ("Acme Software", "Acme HQ", "Metro City
 // Dental Centre"); a place word ("North", a city) is not one of them.
