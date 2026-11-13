@@ -260,3 +260,15 @@ bothEngines('#1082: tfFetchMany near the tenant daily cap records only what the 
   assert.equal(r.ok, false)
   assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 2, 'the 2 the tenant could still read, not 16')
 })
+
+// the partial clamp: 15 tenant units, no share room, 16 URLs -> 10 from the refused first batch + min(6, 5) untried = 15
+bothEngines('#1082: tfFetchMany records the untried pages only up to what the tenant cap still allows (partial clamp)', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '15', TINYFISH_FETCHES_PER_SCAN: '16', TINYFISH_TENANT_DAILY: '15' }
+  const day = new Date(NOON * 1000).toISOString().slice(0, 10)
+  await db.run("INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, 'B', 'fetch', 15)", [day])
+  const { tfFetchMany } = await import('../lib/search/tinyfish.ts')
+  const trace = new SearchTrace()
+  await tfFetchMany(db, 'A', urls(16, 'A5'), { fetches: 0 }, { env, now: NOON, fetchImpl: okFetch, trace })
+  assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 15)
+})
