@@ -3,12 +3,13 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
-import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl } from '../sources/ats-posting.ts'
+import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
 
 // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD. postedAt (#533): set only when the
 // page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
 // first-published day for it, the posting's own structured publish date (#460).
-export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null }
+// board: set only for a posting read through its board's API record (#1126); the identity the verifier matches instead of the title
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null; board?: BoardIdentity }
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -273,7 +274,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         if (rec === 'missing') return { fail: 'not_found' }
         if (!rec) return { fail: 'error' }
         const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
-        return { text: page.text, title: page.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
+        return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
       } else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
         const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
