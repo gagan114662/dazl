@@ -68,15 +68,42 @@ test('#1168 item 2: the ledger names the limit that refused first; a later sourc
   const db = new Database(':memory:'); migrateScan(db); migrateScanSpendCap(db)
   const seed = (job: string, rows: readonly (readonly [string, number, string, string | null])[], attempt = 1) => rows.forEach((r, i) => db.prepare('INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)').run(`${job}-${attempt}-${i}`, 'u', job, attempt, r[0], r[1], r[2], r[3], 1794602998))
   seed('b51c4104e46070941c974229', JOB_SOURCE_FAILED); seed('434086302058d86a308d9b96', JOB_REFUSED)
-  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 1 }), 'owner_pool_limit')
-  assert.equal(earlierLimitRefusal(db, { id: '434086302058d86a308d9b96', attempts: 1 }), 'owner_pool_limit')
+  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 1, user_id: 'u' }), 'owner_pool_limit')
+  assert.equal(earlierLimitRefusal(db, { id: '434086302058d86a308d9b96', attempts: 1, user_id: 'u' }), 'owner_pool_limit')
   // only a NUMERIC limit counts (a config or accounting refusal refuses at any budget), only this attempt, only a refused row
   seed('other', [['llm.anthropic', 0.01, 'refused', 'cap_config_invalid'], ['llm.anthropic', 0.01, 'settled', null]])
-  assert.equal(earlierLimitRefusal(db, { id: 'other', attempts: 1 }), null)
-  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 2 }), null, 'an earlier attempt\'s refusal is not this attempt\'s')
+  assert.equal(earlierLimitRefusal(db, { id: 'other', attempts: 1, user_id: 'u' }), null)
+  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 2, user_id: 'u' }), null, 'an earlier attempt\'s refusal is not this attempt\'s')
   // only a MODEL call: a render or TinyFish call refused by the per-scan cap does not relabel a genuine source failure (independent review)
   seed('render-only', [['render', 0.01, 'refused', 'over_cap'], ['tinyfish.search', 0, 'refused', 'over_cap']])
-  assert.equal(earlierLimitRefusal(db, { id: 'render-only', attempts: 1 }), null)
+  assert.equal(earlierLimitRefusal(db, { id: 'render-only', attempts: 1, user_id: 'u' }), null)
+  // the ACCOUNT limit refusing any paid step is the limit stop (at the cap the account sends nothing): a refused search counts
+  seed('acct-search', [['tinyfish.search', 0, 'refused', 'owner_pool_limit']])
+  assert.equal(earlierLimitRefusal(db, { id: 'acct-search', attempts: 1, user_id: 'u' }), 'owner_pool_limit')
+  // review at b8eef37e: the job's own tenant only, through the (user_id, scan_job_id) index - never a scan of the whole table
+  assert.equal(earlierLimitRefusal(db, { id: 'b51c4104e46070941c974229', attempts: 1, user_id: 'someone-else' }), null)
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused' AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (?, ?))) ORDER BY created_at, rowid LIMIT 1").all('u', 'j', 1, 'x', 'y', 'z') as { detail: string }[]
+  assert.ok(plan.some(r => /SEARCH scan_spend_calls USING INDEX/.test(r.detail)) && !plan.some(r => /^SCAN scan_spend_calls/.test(r.detail)), JSON.stringify(plan))
+})
+
+test('#1168 review: a failed ledger read is recorded, never a silent return to the old stop name', async () => {
+  const { setErrorSinks } = await import('../lib/ops/errors.ts')
+  const db = new Database(':memory:')   // no scan_spend_calls table: the read throws
+  const seen: string[] = []; const restore = setErrorSinks([r => { seen.push(r.where) }])
+  try { assert.equal(earlierLimitRefusal(db, { id: 'j', attempts: 1, user_id: 'a'.repeat(32) }), null) } finally { restore() }
+  assert.equal(seen.length, 1, JSON.stringify(seen))
+})
+
+test('#1168 review: a release of an unsent call that cannot be saved is retried once, then recorded; the reservation stays (over-count only)', async () => {
+  const { setErrorSinks } = await import('../lib/ops/errors.ts')
+  let writes = 0
+  const g = new SpendGuard(3); g.persist = () => { writes++; if (writes > 1) throw new Error('store down') }   // the reserve saves, every release fails
+  const capRefuses = { configuredModel: () => 'claude-sonnet-4-5', completeDetailed: async () => { throw new SpendRefused('owner_pool_limit') }, research: async () => { throw new SpendRefused('research_unbounded') } } as unknown as Provider
+  const seen: string[] = []; const restore = setErrorSinks([r => { seen.push(r.where) }])
+  try { await assert.rejects(guardProvider(capRefuses, g).completeDetailed!('k', 'a prompt', undefined, 300), SpendRefused) } finally { restore() }
+  assert.equal(writes, 3, 'one reserve, then the release tried twice')
+  assert.equal(seen.length, 1, 'the failed release is recorded once')
+  assert.ok(g.reservedUsd > 0, 'the reservation stays: the count errs high')
 })
 
 test('#1168 item 1: the count behind the cost line is this tenant\'s model calls refused by a numeric limit, nothing else', async () => {
@@ -90,4 +117,9 @@ test('#1168 item 1: the count behind the cost line is this tenant\'s model calls
   assert.equal(await readRefusedModelCalls(db, 'u', 'j'), 3, 'the three owner_pool_limit model refusals of job 434086302058d86a308d9b96')
   assert.equal(await readRefusedModelCalls(db, 'other-tenant', 'j'), 1)
   assert.equal(await readRefusedModelCalls(db, 'u', 'none'), 0)
+  // review at b8eef37e (cap hit between call 1 and 2, DAZL_MODEL_USAGE=0): a model call that LEFT (a kept / settled / reserved ledger
+  // row) means the line must not claim "no model call was made", whatever scan_model_calls holds
+  ins.run('kept', 'u', 'j', 'llm.anthropic', 'kept', null)
+  assert.equal(await readRefusedModelCalls(db, 'u', 'j'), null)
+  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: await readRefusedModelCalls(db, 'u', 'j') }).summary, /^Actual model cost was not recorded/)
 })

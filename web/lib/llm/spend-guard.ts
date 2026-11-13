@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { CompletionUsage, DetailedCompletion, Provider } from './provider.ts'
 import type { SharedPool } from './spend-pool.ts'
+import { captureError } from '../ops/errors.ts'
 
 // A run-scoped spend guard. It RESERVES the worst case of every paid call before the call is made and refuses a call
 // that would pass the limit. It is a bound from what the code sends and allows, not a bill:
@@ -270,9 +271,16 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
     // #1168: a call the layer below refused BEFORE sending (SpendRefused: a cap, a missing context) was never made, so its
     // reservation is given back. Without this a trial scan stopped by the account cap was charged for calls never sent.
     const unsent = (e: unknown) => e instanceof SpendRefused
-    if (!settle) { try { return await call() } catch (e) { if (unsent(e)) await settleAll(g, -held.usd, 0, held).catch(() => {}); throw e } }
+    // The release is tried twice; if it still cannot be saved the reservation stays (an over-count, the safe side) and the
+    // failure is recorded: a charge kept for a call never sent must not be silent (review at b8eef37e).
+    const giveBack = async () => {
+      try { await settleAll(g, -held.usd, 0, held) } catch {
+        try { await settleAll(g, -held.usd, 0, held) } catch (e) { captureError(e, { source: 'worker', where: 'spend-guard:release-unsent' }) }
+      }
+    }
+    if (!settle) { try { return await call() } catch (e) { if (unsent(e)) await giveBack(); throw e } }
     let r: T
-    try { r = await call() } catch (e) { await settleAll(g, unsent(e) ? -held.usd : 0, unsent(e) ? 0 : null, held).catch(() => {}); throw e }
+    try { r = await call() } catch (e) { if (unsent(e)) await giveBack(); else await settleAll(g, 0, null, held).catch(() => {}); throw e }
     await settleCompletion(g, held, detail(r))
     return r
   }

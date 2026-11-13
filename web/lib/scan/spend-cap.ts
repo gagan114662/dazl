@@ -60,7 +60,7 @@ import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
-import { accountLimits, ownerLimits, OWNER_POOL_LIMIT_REASON, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
+import { accountLimits, ownerLimits, OWNER_POOL_LIMIT_REASON, poolWindowsFull, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
 
 type Env = Record<string, string | undefined>
 
@@ -186,6 +186,25 @@ export interface ScanSpendCtx {
   clock?: () => number
 }
 const store = new AsyncLocalStorage<ScanSpendCtx>()
+// #1167 (owner decision): an account at its day or month cap sends NOTHING. Once the account limit refused a paid step of this
+// attempt, every later paid step of the attempt (search, fetch, render, enrichment, model) is refused before it is sent.
+const accountStopped = new WeakSet<ScanSpendCtx>()
+export const spendAttemptAccountStopped = (): boolean => { const c = store.getStore(); return !!c && accountStopped.has(c) }
+// The runner's own guard of a NAMED account (PooledGuard) refuses a model call before the transport sees it: the runner reports
+// it here, so the attempt stops the same way and the refusal is in the ledger (scan_spend_calls) like every other one.
+export async function noteAccountLimitRefusal(kind: SpendKind): Promise<void> {
+  const ctx = store.getStore()
+  if (!ctx || accountStopped.has(ctx)) return
+  accountStopped.add(ctx)
+  const at = (ctx.clock ?? (() => Math.floor(Date.now() / 1000)))()
+  try {
+    await asDb(ctx.db).tx(function* (t: Tx): TxBody<void> {
+      yield* t.run('UPDATE scan_jobs SET spend_cap_refusals = spend_cap_refusals + 1 WHERE id = ? AND user_id = ?', [ctx.jobId, ctx.tenantId])
+      yield* t.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, ?, 0, NULL, 'refused', ?, ?, NULL)",
+        [newId(), ctx.tenantId, ctx.jobId, Number.isSafeInteger(ctx.attempt) ? ctx.attempt : -1, kind, OWNER_POOL_LIMIT_REASON, at])
+    })
+  } catch (e) { captureError(e, { source: 'worker', where: 'scan-spend-cap:note-account-limit', tenantId: ctx.tenantId, ref: ctx.jobId }) }
+}
 // #846/#847: a paid model call made for an account outside any scan (ownerGuarded paths: replies, drafts, sequences, SEO,
 // qualification, the website read) reserves its worst case on the account's day/month windows at the transport, before
 // the request, and settles to the vendor-reported cost after it. Set by lib/llm/owner-guard.ts for every account without
@@ -300,6 +319,11 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
+      // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
+      // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
+      if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON
+      const acct = ctx.accountLimits ?? ownerLimits(ctx.tenantId)
+      if (!why && !isModel(kind) && acct && (yield* poolWindowsFull(t, ctx.tenantId, acct, at))) why = OWNER_POOL_LIMIT_REASON
       // #846/#847: the owner's day/month caps first, in this same transaction; refused there, the scan's cap is untouched.
       const pool = !why && isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
       if (pool && !(yield* reservePoolWindows(t, ctx.tenantId, pool, usd, at))) why = OWNER_POOL_LIMIT_REASON
@@ -343,6 +367,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     captureError(e, { source: 'worker', where: 'scan-spend-cap:reserve', tenantId: ctx.tenantId, ref: ctx.jobId })
     throw new SpendRefused('ledger_unavailable')
   }
+  if (refused === OWNER_POOL_LIMIT_REASON) accountStopped.add(ctx)
   if (refused) throw new SpendRefused(refused)
   const pooled = isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
   let done = false

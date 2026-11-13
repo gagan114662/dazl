@@ -40,7 +40,8 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -631,13 +632,16 @@ const uncertainSpend = new WeakSet<Job>()
 // A model request the vendor answered with a documented rejection (429, 400, ...): not retried, no further model request in this attempt,
 // and the scan ends with its own status. dazl does not claim the rejected request was uncharged.
 const rejectionCode = (status: number | undefined) => status === 429 ? 'provider_rate_limited' : 'provider_rejected'
-function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider {
+function flagAccounting(db: Database.Database, job: Job, p: Provider, vendor: Vendor): Provider {
   // A request that may have been billed (ProviderError charge 'uncertain') ends the scan accounting_uncertain and no further model request is
   // made: stages that swallow errors cannot carry on and pay again. A vendor-declined (4xx) failure keeps the ordinary retry.
   const seen = async <T>(f: () => Promise<T>): Promise<T> => {
     if (uncertainSpend.has(job) || spendAttemptUncertain() || spendAttemptRejected() !== null) throw new SpendRefused('accounting_uncertain')
     try { return await f() } catch (e) {
       if (e instanceof SpendAccountingFailed) accountingFailed.add(job)
+      // #1167: the account limit refused this model call (a named account's own guard refuses before the transport): the attempt
+      // sends nothing more, and the refusal is in the ledger whichever layer refused
+      if (e instanceof SpendRefused && e.reason === OWNER_POOL_LIMIT_REASON) await noteAccountLimitRefusal(`llm.${vendor}`)
       if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'uncertain') uncertainSpend.add(job)
       else if (!(e instanceof ProviderError) && hasUnsettledCall(db, job)) uncertainSpend.add(job) // an unclassified failure with a request reserved and never settled: maybe billed
       throw e
@@ -719,14 +723,21 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
 // #1168: a numeric limit that refused a paid step EARLIER in this attempt (the profile or query-writing model call, whose refusal the
 // run survives by falling back to the request's own words) is still why the run could not search properly. When the run then ends
 // with nothing, that limit stop is what the user is told, never a later source failure or "nothing found". Read from the ledger
-// (scan_spend_calls): the first refused MODEL call of this attempt whose reason is a numeric limit. A refused render or TinyFish call
-// is not one: the run's own stages already account for those, and it would relabel a genuine source failure as a budget stop.
-const LIMIT_REASONS = ['over_limit', 'over_cap', OWNER_POOL_LIMIT_REASON]
-export function earlierLimitRefusal(db: Database.Database, job: { id: string; attempts: number }): string | null {
+// (scan_spend_calls): the first refused row of this attempt that is either the ACCOUNT limit (any paid step: at the day or month cap
+// the account sends nothing) or a numeric limit on a MODEL call. A render or TinyFish call refused by the per-scan cap is not one:
+// the run's own stages account for those, and it would relabel a genuine source failure as a budget stop.
+const MODEL_LIMIT_REASONS = ['over_limit', 'over_cap']
+export function earlierLimitRefusal(db: Database.Database, job: { id: string; user_id: string; attempts: number }): string | null {
   try {
-    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'refused' AND kind LIKE 'llm.%' AND reason IN (${LIMIT_REASONS.map(() => '?').join(',')}) ORDER BY created_at, rowid LIMIT 1`).get(job.id, job.attempts, ...LIMIT_REASONS) as { reason: string } | undefined
+    // by (user_id, scan_job_id): the table's index, and the job's own tenant
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
+      AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (${MODEL_LIMIT_REASONS.map(() => '?').join(',')}))) ORDER BY created_at, rowid LIMIT 1`).get(job.user_id, job.id, job.attempts, OWNER_POOL_LIMIT_REASON, ...MODEL_LIMIT_REASONS) as { reason: string } | undefined
     return r?.reason ?? null
-  } catch { return null }
+  } catch (e) {
+    // the stop then keeps its older name: recorded, never silent
+    captureError(e, { source: 'worker', where: 'runner:earlier-limit-refusal', tenantId: job.user_id, ref: job.id })
+    return null
+  }
 }
 
 // A SpendRefused names why the spend layer refused the call (spend-guard.ts reason); the job error must preserve that
@@ -1292,7 +1303,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor]) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
+    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor], vendor) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or

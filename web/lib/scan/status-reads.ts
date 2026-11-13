@@ -30,8 +30,12 @@ export async function readModelUsage(db: Db, tenantId: string, jobId: string) {
 // numeric-limit reasons: a config or accounting refusal is not a spending limit, and the cost line must not call it one.
 export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: string): Promise<number | null> {
   try {
-    const r = await db.get<{ n: number | string }>("SELECT COUNT(*) AS n FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND status = 'refused' AND kind LIKE 'llm.%' AND reason IN ('over_limit', 'over_cap', 'owner_pool_limit')", [tenantId, jobId])
-    return r ? Number(r.n) : null
+    // The ledger, not scan_model_calls, says whether a model call was SENT: a reserved / settled / kept llm row is a call that left
+    // (scan_model_calls is empty when DAZL_MODEL_USAGE=0 or a record write failed). Any such row: null, so the cost line keeps its
+    // unknown-cost wording and never claims "no model call was made" (review at b8eef37e).
+    const r = await db.get<{ n: number | string; sent: number | string | null }>("SELECT SUM(CASE WHEN status = 'refused' AND reason IN ('over_limit', 'over_cap', 'owner_pool_limit') THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN status <> 'refused' THEN 1 ELSE 0 END) AS sent FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND kind LIKE 'llm.%'", [tenantId, jobId])
+    if (!r) return null
+    return Number(r.sent ?? 0) > 0 ? null : Number(r.n ?? 0)
   } catch { return null }
 }
 export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
