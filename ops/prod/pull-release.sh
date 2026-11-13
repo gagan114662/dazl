@@ -83,19 +83,23 @@ fetch() {
     local f="$DL/${n%%:*}"; [ -f "$f" ] && [ ! -L "$f" ] && [ "$(sha256 "$f")" = "${n##*:}" ] && have=$(( have + $(stat -c %s -- "$f") ))
   done
   local need=$(( next_bytes + mods_bytes - have + next_unp + mods_unp ))
-  # both filesystems: the download cache and where the release is unpacked (often the same; then all of it counts there)
-  local fs avail rel_fs dl_dev rel_dev
-  rel_fs=${PROD_RELEASE_ROOT:-/home/ubuntu}; [ -d "$rel_fs" ] || rel_fs=/
-  dl_dev=$(stat -c %d -- "$DL"); rel_dev=$(stat -c %d -- "$rel_fs")
-  for fs in "$DL" "$rel_fs"; do
-    local here=$need
-    if [ "$dl_dev" != "$rel_dev" ]; then
-      if [ "$fs" = "$DL" ]; then here=$(( next_bytes + mods_bytes - have )); else here=$(( next_unp + mods_unp )); fi
-    fi
+  # every filesystem involved: the download cache, where the release is unpacked, and (when the deploy passes it) where
+  # the database backup goes. What lands on each filesystem is summed there, and each must keep MIN_FREE_BYTES free.
+  local rel_fs=${PROD_RELEASE_ROOT:-/home/ubuntu} bk_fs=${PROD_BACKUP_DIR:-} bk_bytes=${PROD_BACKUP_BYTES:-0} fs dev avail
+  [[ $bk_bytes =~ ^[0-9]+$ ]] || fail "PROD_BACKUP_BYTES must be a whole number; nothing done"
+  [ -d "$rel_fs" ] || rel_fs=/
+  if [ -n "$bk_fs" ]; then while [ ! -d "$bk_fs" ]; do bk_fs=$(dirname -- "$bk_fs"); done; fi
+  declare -A on=()
+  dev=$(stat -c %d -- "$DL"); on[$dev]=$(( ${on[$dev]:-0} + next_bytes + mods_bytes - have ))
+  dev=$(stat -c %d -- "$rel_fs"); on[$dev]=$(( ${on[$dev]:-0} + next_unp + mods_unp ))
+  if [ -n "$bk_fs" ]; then dev=$(stat -c %d -- "$bk_fs"); on[$dev]=$(( ${on[$dev]:-0} + bk_bytes )); fi
+  for fs in "$DL" "$rel_fs" ${bk_fs:+"$bk_fs"}; do
+    dev=$(stat -c %d -- "$fs"); [ -n "${on[$dev]:-}" ] || continue
     avail=$(df -B1 --output=avail "$fs" | tail -n 1 | tr -d ' ')
-    if [ $(( avail - here )) -lt "$MIN_FREE_BYTES" ]; then
-      fail "ALERT low_disk: $avail bytes free on $fs, the release needs about $here there (downloads plus the unpacked build), and the box keeps $MIN_FREE_BYTES free; nothing downloaded, nothing changed"
+    if [ $(( avail - on[$dev] )) -lt "$MIN_FREE_BYTES" ]; then
+      fail "ALERT low_disk: $avail bytes free on $fs, about ${on[$dev]} more lands there (downloads, the unpacked build, the database backup), and the box keeps $MIN_FREE_BYTES free; nothing downloaded, nothing changed"
     fi
+    unset "on[$dev]"
   done
   # superseded downloads go first (only this commit's verified files are kept)
   for f in "$DL"/* "$DL"/.[!.]*; do

@@ -76,7 +76,7 @@ assert n != t, 'caddy block not changed'
 open(sys.argv[3], 'w').write(n)
 PY
   caddy validate --config "$CADDY.next" --adapter caddyfile >/dev/null || { rm -f -- "$CADDY.next"; die "caddy refused the new config; nothing switched"; }
-  chmod --reference="$CADDY" "$CADDY.next" 2>/dev/null || true
+  chown --reference="$CADDY" "$CADDY.next" && chmod --reference="$CADDY" "$CADDY.next" || { rm -f -- "$CADDY.next"; die "could not give the new Caddyfile the live one's owner and mode; nothing switched"; }
   mv -f -- "$CADDY.next" "$CADDY"
   systemctl reload caddy || { cp -a "$bak" "$CADDY"; systemctl reload caddy || true; die "caddy did not reload; the previous config is restored"; }
 }
@@ -114,12 +114,14 @@ LIVE=$(live_port)
 NEW=$([ "$LIVE" = 3104 ] && echo 3105 || echo 3104)
 LIVE_PID=$(port_pid "$LIVE")
 LIVE_WEB=$(readlink "/proc/$LIVE_PID/cwd" 2>/dev/null || true)
+[[ $LIVE_PID =~ ^[0-9]+$ ]] || die "no process is listening on the live port $LIVE (the Caddyfile points there); nothing done"
 log "live port $LIVE (pid $LIVE_PID, ${LIVE_WEB:-unknown dir}), new port $NEW, sha $SHA"
 
 # the database migrate will change: the env's DB_PATH must be exactly $DB, a regular file (no symlink, one link)
 [ -f "$DB" ] && [ ! -L "$DB" ] || die "the database $DB is missing or not a regular file; nothing done"
 [ "$(stat -c %h -- "$DB")" = 1 ] || die "the database $DB has another hard link; nothing done"
 as_app test -w "$DB" || die "the database $DB is not writable by $APP_USER (the app and migrate run as $APP_USER: chown it once, web/docs/DEPLOY.md); nothing done"
+for f in "$DB-wal" "$DB-shm"; do [ ! -e "$f" ] || as_app test -w "$f" || die "$f is not writable by $APP_USER (chown it with the database, web/docs/DEPLOY.md); nothing done"; done
 # SQLite in WAL mode creates -wal/-shm beside the database: the directory must be writable by the app user too
 as_app test -w "$(dirname -- "$DB")" || die "the database directory $(dirname -- "$DB") is not writable by $APP_USER (WAL files are created there: chown it once, web/docs/DEPLOY.md); nothing done"
 db_bytes=$(stat -c %s -- "$DB")
@@ -142,12 +144,12 @@ for kv in open(f'/proc/{sys.argv[1]}/environ', 'rb').read().split(b'\0'):
 for n, line in enumerate(open(sys.argv[2], encoding='utf-8', errors='strict').read().splitlines(), 1):
     if not line.strip() or line.lstrip().startswith('#'):
         continue
-    m = re.match(r"""^(?:export\s+)?([A-Z][A-Z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([^\s'"$`\\#]*))\s*$""", line)
+    m = re.match(r"""^(?:export\s+)?([A-Z][A-Z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([A-Za-z0-9_./:,@%+=-]*))\s*$""", line)  # unquoted: a safe class only (no ; | & ~ * ( ) < > { } etc.)
     if not m:
         print(f'prod deploy: run env line {n} is not KEY=value data', file=sys.stderr); sys.exit(1)
     env[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
 # the release runs as the app user: never carry over the root process's identity or sudo's bookkeeping
-drop = {'PORT', '_', 'PWD', 'OLDPWD', 'SHLVL', 'HOME', 'USER', 'LOGNAME', 'MAIL'}
+drop = {'PORT', '_', 'PWD', 'OLDPWD', 'SHLVL', 'HOME', 'USER', 'LOGNAME', 'MAIL', 'PATH', 'XDG_RUNTIME_DIR'}  # PATH: the app user's own (sudo's secure_path)
 for k, v in env.items():
     if k in drop or k.startswith('SUDO_') or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
         continue
@@ -171,11 +173,9 @@ if [ -d "$DIR" ] && listener_cwds | grep -q "^$DIR"; then
   log "$DIR is live and a complete build of $SHA: reusing it"; reuse=1
 fi
 if [ $reuse = 0 ]; then
-  # verified download + disk floor; fails before anything on the box changes. When the backup lands on the release's
-  # filesystem, the floor it checks includes the backup, so downloads + release + backup together leave 3 GiB free.
-  fetch_floor=$PROD_MIN_FREE_BYTES
-  [ "$(stat -c %d -- "$RELEASE_ROOT")" != "$(stat -c %d -- "$(dirname "$BACKUPS")")" ] || fetch_floor=$(( PROD_MIN_FREE_BYTES + db_bytes ))
-  PROD_MIN_FREE_BYTES=$fetch_floor PROD_RELEASE_ROOT=$RELEASE_ROOT bash "$PULL" fetch "$SHA"
+  # verified download + disk floor; fails before anything on the box changes. The backup's size is counted on whichever
+  # filesystem holds the backups, so downloads + release + backup together leave the floor wherever they share one.
+  PROD_RELEASE_ROOT=$RELEASE_ROOT PROD_BACKUP_DIR=$BACKUPS PROD_BACKUP_BYTES=$db_bytes bash "$PULL" fetch "$SHA"
   as_app rm -rf -- "$DIR"
   as_app git clone -q --filter=blob:none "$REPO_URL" "$DIR"
   as_app git -C "$DIR" checkout -q "$SHA"

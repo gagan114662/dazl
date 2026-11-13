@@ -305,8 +305,10 @@ class ProdPrebuiltTest(unittest.TestCase):
     def test_unparseable_or_missing_run_env_is_refused(self):
         # R17: never guess at a line the old shell format would have read differently, and never run without the file
         self.publish()
-        (self.t / 'run.env').write_text('DAZL_A="x" # note\n')
-        self.assert_untouched(self.deploy(B), 'not KEY=value data')
+        for bad in ('DAZL_A="x" # note', 'DAZL_A=a;b', 'DAZL_A=~/x', 'DAZL_A=a|b', 'DAZL_A=*', 'DAZL_A=a b'):
+            with self.subTest(bad=bad):
+                (self.t / 'run.env').write_text(bad + '\n')
+                self.assert_untouched(self.deploy(B), 'not KEY=value data')
         (self.t / 'run.env').unlink()
         self.assert_untouched(self.deploy(B), 'run env .* is missing')
 
@@ -363,6 +365,41 @@ class ProdPrebuiltTest(unittest.TestCase):
         finally: stuck.chmod(0o755)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('could not remove all of', r.stdout); self.assertEqual(self.live_port(), '3105')
+
+    def test_existing_wal_file_must_be_writable_by_the_app_user(self):
+        # R20: a root-run app leaves <db>-wal behind; migrate as the app user would fail after the backup
+        self.publish()
+        wal = Path(str(self.db) + '-wal'); wal.write_bytes(b''); wal.chmod(0o444)
+        try: self.assert_untouched(self.deploy(B), '-wal is not writable')
+        finally: wal.chmod(0o644)
+        self.assertFalse((self.t / 'backups').exists())
+
+    def test_rollback_with_wrong_public_health_switches_back_and_keeps_the_state(self):
+        # R21a: after switching, dazl.ai must answer with the rollback target's commit; otherwise switch back
+        self.publish()
+        self.assertEqual(self.deploy(B).returncode, 0)
+        state = (self.t / 'ops/prod-state').read_text()
+        # the public endpoint keeps answering B (e.g. Caddy did not really switch)
+        (self.t / 'bin/curl').write_text((self.t / 'bin/curl').read_text().replace(
+            'https://dazl.test/api/health)\n    p=$(grep', 'https://dazl.test/api/health)\n    emit "{\\"commit\\":\\"%s\\"}"; exit 0\n    p=$(grep' % B))
+        r = self.deploy('--rollback')
+        self.assertNotEqual(r.returncode, 0, r.stdout); self.assertIn('after the rollback: switched back', r.stdout)
+        self.assertEqual(self.live_port(), '3105'); self.assertEqual((self.t / 'ops/prod-state').read_text(), state)
+
+    def test_failed_caddy_reload_restores_the_previous_config(self):
+        # R21b: a reload that fails puts back the exact previous Caddyfile
+        self.publish()
+        before = (self.t / 'Caddyfile').read_bytes()
+        (self.t / 'bin/systemctl').write_text('#!/usr/bin/env bash\nexit 1\n')
+        r = self.deploy(B)
+        self.assertNotEqual(r.returncode, 0); self.assertIn('caddy did not reload; the previous config is restored', r.stdout)
+        self.assertEqual((self.t / 'Caddyfile').read_bytes(), before)
+
+    def test_no_live_listener_is_refused_with_its_own_message(self):
+        # R25: an empty live pid is named, not reported as a run env problem
+        self.publish()
+        (self.t / 'listen/3104').unlink()
+        self.assert_untouched(self.deploy(B), 'no process is listening on the live port')
 
     def test_caddy_refusing_the_new_config_switches_nothing(self):
         # R18: the new config is validated before it replaces the live one
