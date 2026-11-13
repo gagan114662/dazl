@@ -247,6 +247,32 @@ export function dedupKey(c: { company: string; name: string }): string {
   return companyKey(c.company) || norm(c.name)
 }
 
+// #1126: does the board that published a posting name this company? The board's stated company name wins; its slug is
+// only the fallback. Either names the company only as its WHOLE key, never one of its words: "acme-health" (or a stated
+// "Acme Health") is "Acme Health", never "Health" or "Acme" alone.
+//   stated name: its company key (legal suffixes aside, as for the lead's own name) equals the lead's key, or the two are
+//                equal with their spaces removed (3+ characters).
+//   slug:        the same rule as a domain label in companyOwnsDomain: the slug with its separators removed equals the
+//                lead's key with its spaces removed, 3+ characters, and NO legal-suffix stripping on the slug, so
+//                "acme-co" and "the-acme-company" are not "Acme" (a stated name could say so; a slug cannot), while
+//                "acme-health", "acme_health" and "macquarietechnologygroup" are their whole names.
+const compact = (k: string) => k.replace(/[^\p{L}\p{N}]+/gu, '')
+export function boardNamesCompany(board: { company: string | null; slug: string | null }, key: string): boolean {
+  const k = compact(key)
+  if (key.length < 2) return false
+  if (board.company) { const named = companyKey(board.company); return named === key || (k.length >= 3 && compact(named) === k) }
+  return !!board.slug && k.length >= 3 && compact(norm(board.slug)) === k // no slug: nothing but a quote names the company
+}
+// The page's own heading names the company. For a posting read through its board's record (#1126) that is the board's
+// identity alone (boardNamesCompany): the posting's job title is the role, not the employer, so "Salesforce
+// Administrator" or "Health and Safety Officer" names neither Salesforce nor Health. Any other page: its title as a phrase.
+// Shared by every check that accepts "named in the quote or the page title" (verifyEvidence, the job-feed intake, the
+// source review) and by the runner's quote_unconfirmed routing and the own-block place check.
+export function pageHeadingNames(page: Pick<Page, 'title' | 'board'>, key: string): boolean {
+  if (key.length < 2) return false
+  return page.board ? boardNamesCompany(page.board, key) : hasPhrase(norm(page.title), key)
+}
+
 function parseDay(s: string | null): Date | null {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
   const d = new Date(`${s}T00:00:00Z`)
@@ -262,11 +288,11 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   const at = text.indexOf(excerpt)
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
 
-  // The company must be named in the quoted passage itself or in the page title.
+  // The company must be named in the quoted passage itself or in the page title (for a board record: the board's identity, #1126).
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const entityOk = hasPhrase(excerpt, key) || hasPhrase(norm(page.title), key)
+  const entityOk = hasPhrase(excerpt, key) || pageHeadingNames(page, key)
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70
