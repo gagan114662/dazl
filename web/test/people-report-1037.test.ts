@@ -40,7 +40,7 @@ test('#1037 run report: the pass counts what it did, with refusals by cause', as
 })
 
 test('#1037 run report: a place refusal is counted (a profile result naming no place, when the request names one)', async () => {
-  const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]], { ...ICP, where: ['Ohio'] })
+  const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]], { ...ICP, where: ['Columbus, Ohio'] })
   const stats = newPeopleStats()
   const noPlace = stub({ Meshgate: [{ url: 'https://www.linkedin.com/in/anders-smed-test', title: 'Anders Smed - VP of Sales Development & PG - Meshgate | LinkedIn', snippet: 'VP of Sales Development at Meshgate' }] })
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: noPlace.f, stats }), 0)

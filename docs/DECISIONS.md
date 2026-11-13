@@ -22,9 +22,12 @@ names nobody yet, ready leads first.
 
 Added the same day after Hermes-PC's review of PR #1164 (5 of 9 stored search people on staging were at a different
 business with the same name): **a company name alone never ties a search result to a lead.** A public profile search
-result is stored only when its own text also names the lead's confirmed website, the organisation the lead was found
-through (a Y Combinator company page), or the place the request names (`lib/people/company-tie.ts`); otherwise it is
-refused and counted. Results stored earlier by the name alone stay listed, labelled "matched by the company name only
+result is stored only when its own text also names the lead's confirmed website, gives the company's Y Combinator
+batch right after its name (for a lead found on its YC company page), or names the city the request names
+(`lib/people/company-tie.ts`); otherwise it is refused and counted. The city tie is the weakest (a same-name business
+in the same city would pass) and is kept because the place rule was already the product's answer to same-name
+businesses; a country, state or province is never a tie. Reviewer sign-off on keeping the city tie is asked for in PR
+#1164. Results stored earlier by the name alone stay listed, labelled "matched by the company name only
 - this may be a different business with the same name", and are never the lead's person, the export's best person or
 a work-email target. This lowers how many leads name a person; a wrong person at another business is worse than none.
 

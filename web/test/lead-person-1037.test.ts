@@ -76,8 +76,8 @@ test('row: the best buyer-role match is named first; an off-role titled person i
 })
 
 // ---- the first-play people pass (lib/people/people-search.ts) ----
-// The request names a place and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
-const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
+// The request names a city and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
+const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Columbus, Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '500', TINYFISH_PER_MINUTE: '500' }
 function setup(n: number) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateTinyfish(db); resetTinyfishState()

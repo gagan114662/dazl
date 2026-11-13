@@ -30,7 +30,7 @@ function setup(icp: unknown) {
     .run('L1', job, 'Acme Logistics', null, 'Acme Logistics is hiring', 'https://news.example.test/a', 'Acme Logistics is hiring', 90, 80)
   return { db, job }
 }
-const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
+const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Columbus, Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 
 test('stores matching people as labelled person enrichments with the profile URL; sends the buyer market', async () => {
@@ -46,7 +46,7 @@ test('stores matching people as labelled person enrichments with the profile URL
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f })
   assert.equal(n, 1)
   const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'contact_rejected'").all()
-  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: `${LABEL}; company confirmed beyond its name: the result names the requested place`, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
+  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: `${LABEL}; company confirmed beyond its name: the result names the requested city`, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
   const q = new URL(urls[0]).searchParams
   assert.ok(q.get('query')!.startsWith('site:linkedin.com/in "Acme Logistics"')); assert.equal(q.get('location'), 'US')
 })
@@ -62,7 +62,7 @@ test('a same-name company in another place is not attached: a result naming anot
   // ... but each refusal is recorded on the lead with its marker, and the search went on to the other results
   const refused = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE kind = 'contact_rejected' ORDER BY value").all() as { value: string; label: string; source_url: string }[]
   assert.deepEqual(refused.map(r => r.label).sort(), ['contact_location_mismatch', 'contact_location_unconfirmed'])
-  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
+  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Columbus, Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
   // No place in the request: the employer's NAME is then the only tie, and a name is not a company (5 of 9 stored people on staging
   // were at a same-name business). Nothing is stored, and the refusals are counted (lib/people/company-tie.ts).
   const g = setup({ ...ICP, where: [] }); const stats = newPeopleStats()

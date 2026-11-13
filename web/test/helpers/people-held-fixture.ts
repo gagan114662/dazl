@@ -5,10 +5,10 @@ import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { migrateConnectors } from '../../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../../lib/search/tinyfish.ts'
 
-// That run's ICP roles (scan_jobs.icp.who). The run named no place; these fixtures name one (and every result names it), because a
+// That run's ICP roles (scan_jobs.icp.who). The run named no place; these fixtures name a city (and every result names it), because a
 // company NAME alone no longer ties a search result to a lead (lib/people/company-tie.ts).
 export const HELD_WHO = ['Account Executive', 'Sales Manager', 'VP Sales', 'Head of Sales', 'Director of Sales', 'Chief Revenue Officer']
-export const HELD_ICP = { summary: 'Account executives being hired at B2B software companies.', who: HELD_WHO, industries: ['B2B Software'], sizes: [], where: ['Ohio'], signals: ['Hiring account executives'], exclude: [] }
+export const HELD_ICP = { summary: 'Account executives being hired at B2B software companies.', who: HELD_WHO, industries: ['B2B Software'], sizes: [], where: ['Columbus, Ohio'], signals: ['Hiring account executives'], exclude: [] }
 export const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 // Search result lines in the shape the stored search:people rows came from (invented people).
 export const HELD_RESULTS: Record<string, { url: string; title: string; snippet?: string }[]> = {

@@ -14,10 +14,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { findPeople, newPeopleStats, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus, LABEL } from '../lib/people/people-search.ts'
-import { companyTie, companyTied, tiedLabel, NAME_ONLY_SOURCE } from '../lib/people/company-tie.ts'
+import { companyTie, companyTied, requestedCities, tiedLabel, NAME_ONLY_SOURCE } from '../lib/people/company-tie.ts'
+import { opportunityCard } from '../lib/scan/opportunity.ts'
+import { bestPeople } from '../lib/people/best-person.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { contactsFromEnrichments, peopleSourceText } from '../lib/people/rank.ts'
 import { isWorkEmailTarget } from '../lib/people/work-email-eligible.ts'
@@ -61,7 +64,7 @@ test('#1037 real rows (Nautilus, Garage, Syncly): the five people at a same-name
   const { db, job } = setup(); const stats = newPeopleStats()
   const n = await findPeople(db, 'A', job, { env, fetchImpl: stub(), stats })
   assert.equal(n, 1)
-  assert.deepEqual(stored(db), [{ company: 'Garage', value: 'Casey Flynn, Co-Founder & CEO', label: `${LABEL}; company confirmed beyond its name: the result names the organisation the lead was found through`, source_url: 'https://www.linkedin.com/in/person-c-test' }])
+  assert.deepEqual(stored(db), [{ company: 'Garage', value: 'Casey Flynn, Co-Founder & CEO', label: `${LABEL}; company confirmed beyond its name: the result gives its Y Combinator batch`, source_url: 'https://www.linkedin.com/in/person-c-test' }])
   assert.equal(stats.refused.company_unconfirmed, 5); assert.equal(peopleStatsDetail(stats).refused_company_unconfirmed, 5)
   assert.equal(stats.searched, 3); assert.equal(stats.profiles, 6, 'all six were read as a person at an employer of that NAME')
   // The rows: Garage names its person; Nautilus and Syncly name nobody (no wrong person on the row).
@@ -89,30 +92,86 @@ test('#1037 real rows: the rows staging already holds (stored by the name alone)
   assert.equal(contactsFromEnrichments([{ kind: 'person', value: 'Dana Lee, CEO', label: 'x', source_url: 'https://acme.example/team', connector: 'sitecrawl' }], 'CEO')[0].nameOnly, undefined)
 })
 
-test('#1037 the tie: the lead\'s website, the organisation it was found through, or the requested place - named in the result itself', async () => {
-  const yc = { company_domain: null, source_url: 'https://www.ycombinator.com/companies/garage-2/jobs/x' }
-  assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24) · New York', yc, false), 'source')
-  assert.equal(companyTie('Founder at Garage, a Y Combinator company', yc, false), 'source')
-  assert.equal(companyTie('Founder & CEO · The Garage · healthcare software', yc, false), null)
-  assert.equal(companyTie('Founder at Garage · NYC', yc, false), null, '"NYC" is not "YC"')
-  assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24)', { company_domain: null, source_url: 'https://news.example.test/garage-raises' }, false), null, 'YC named, but the lead was not found on a Y Combinator page')
-  assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24)', { company_domain: null, source_url: 'https://notycombinator.com/x' }, false), null)
-  const site = { company_domain: 'withgarage.com', source_url: 'https://news.example.test/a' }
-  assert.equal(companyTie('CEO at Garage · withgarage.com · used equipment marketplace', site, false), 'domain')
-  assert.equal(companyTie('CEO at Garage · www.WithGarage.com', site, false), 'domain')
-  for (const t of ['CEO at Garage · notwithgarage.com', 'CEO at Garage · withgarage.community', 'CEO at Garage · withgarage.com.evil.example', 'CEO at Garage']) assert.equal(companyTie(t, site, false), null, t)
-  assert.equal(companyTie('CEO at Garage', { company_domain: 'com', source_url: null }, false), null, 'a bare TLD is not a domain')
-  assert.equal(companyTie('CEO at Garage', { company_domain: null, source_url: null }, true), 'place')
-  assert.equal(companyTie(undefined as unknown as string, { company_domain: 5 as unknown as string, source_url: 7 as unknown as string }, false), null)
-  // Through the search: the website tie stores the Syncly founder whose result names syncly.app, and no other.
-  const { db, job } = setup(ICP, { Syncly: 'syncly.app' })
-  const results = { ...RESULTS, Syncly: [...RESULTS.Syncly, { url: 'https://www.linkedin.com/in/person-g-test', title: 'Gray Lindqvist - Co-Founder - Syncly | LinkedIn', snippet: 'Co-Founder at Syncly · syncly.app · customer feedback analysis' }] }
-  await findPeople(db, 'A', job, { env, fetchImpl: stub(results) })
-  assert.deepEqual(stored(db).filter(r => r.company === 'Syncly').map(r => [r.value, r.label.split(': ').pop()]), [['Gray Lindqvist, Co-Founder', 'the result names its website']])
-  // Through the search: a request that names a place keeps the result naming that place (the existing rule, now the tie).
-  const p = setup({ ...ICP, where: ['Sydney'] })
-  await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub() })
-  assert.deepEqual(stored(p.db).map(r => [r.company, r.value, r.label.split(': ').pop()]), [['Syncly', 'Emery Vale, Founder and CEO', 'the result names the requested place']])
+test('#1037 the tie: the lead\'s confirmed website, its Y Combinator batch next to its name, or the requested CITY - in the result itself', () => {
+  const yc = { company: 'Garage', confirmed_domain: null, source_url: 'https://www.ycombinator.com/companies/garage-2/jobs/x' }
+  assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24) · New York', yc), 'source')
+  assert.equal(companyTie('Co-Founder & CEO - Garage, YC W24', yc), 'source')
+  // A mention of YC is not the company's batch (council probes): a venture firm, an alum, another business with a longer name.
+  for (const t of ['Managing Partner - Nautilus Venture Partners · Investor in YC companies', 'Founder & CEO - The Garage · Alumni of Y Combinator Startup School. Orlando', 'Founder at Garage, a Y Combinator company', 'Founder at Garage · Former YC Fellow',
+    'Founder & CEO at The Garage (YC S20) · Orlando', 'CEO at Mega Garage (YC W21)', 'Founder at Garage · NYC', 'Founder & CEO · The Garage · healthcare software', 'Founder at Garage (YC 2024 fan)']) assert.equal(companyTie(t, yc), null, t)
+  // Only the company's own YC page: not Hacker News, not another host, not a YC blog post.
+  for (const src of ['https://news.ycombinator.com/item?id=1', 'https://news.example.test/garage-raises', 'https://notycombinator.com/companies/garage', 'https://www.ycombinator.com/blog/garage', 'https://www.ycombinator.com.evil.example/companies/garage', 'not a url', null])
+    assert.equal(companyTie('Co-Founder & CEO at Garage (YC W24)', { company: 'Garage', confirmed_domain: null, source_url: src }), null, String(src))
+  const site = { company: 'Garage', confirmed_domain: 'withgarage.com', source_url: 'https://news.example.test/a' }
+  assert.equal(companyTie('CEO at Garage · withgarage.com · used equipment marketplace', site), 'domain')
+  assert.equal(companyTie('CEO at Garage · www.WithGarage.com', site), 'domain')
+  for (const t of ['CEO at Garage · notwithgarage.com', 'CEO at Garage · withgarage.community', 'CEO at Garage · withgarage.com.evil.example', 'CEO at Garage']) assert.equal(companyTie(t, site), null, t)
+  assert.equal(companyTie('CEO at Garage', { company: 'Garage', confirmed_domain: 'com', source_url: null }), null, 'a bare TLD is not a domain')
+  // The place: a CITY the request names, named in the result, and only when the place rule agreed. Never a country, state or province.
+  const none = { company: 'Garage', confirmed_domain: null, source_url: null }
+  assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, ['Austin, Texas'], true), 'place')
+  assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, ['Austin, Texas'], false), null, 'the place rule did not agree')
+  for (const where of [['United States'], ['Texas'], ['TX'], ['USA'], ['Ontario'], ['Canada'], ['UK'], ['Europe'], ['New York'], [], [5], ['Dallas, Texas']]) assert.equal(companyTie('Austin, Texas, United States · CEO · Garage', none, where, true), null, JSON.stringify(where))
+  assert.deepEqual(requestedCities(['Toronto, Ontario', 'Texas', 'United States', 'London', 'New York, NY', 'New York', 'Washington, DC', 'Washington', 'x', 7, 'St. John\'s, Newfoundland']), ['Toronto', 'London', 'New York', 'Washington', 'St. John\'s'])
+  assert.equal(companyTie('Greater Austintown area · CEO · Garage', none, ['Austin, Texas'], true), null, 'the city as a whole word')
+  assert.equal(companyTie(undefined as unknown as string, { company: 7 as unknown as string, confirmed_domain: 5 as unknown as string, source_url: 7 as unknown as string }, 'x' as unknown as string[], true), null)
+})
+
+test('#1037 through the search: the website tie needs the lead\'s CONFIRMED domain; a city ties, a state or country does not', async () => {
+  const g = [...RESULTS.Syncly, { url: 'https://www.linkedin.com/in/person-g-test', title: 'Gray Lindqvist - Co-Founder - Syncly | LinkedIn', snippet: 'Co-Founder at Syncly · syncly.app · customer feedback analysis' }]
+  // company_domain set but never confirmed (a name guess): the result naming it is NOT tied.
+  { const { db, job } = setup(ICP, { Syncly: 'syncly.app' }); const stats = newPeopleStats()
+    await findPeople(db, 'A', job, { env, fetchImpl: stub({ ...RESULTS, Syncly: g }), stats })
+    assert.deepEqual(stored(db).filter(r => r.company === 'Syncly'), []); assert.equal(stats.refused.company_unconfirmed, 6) }
+  // The same domain, confirmed by the crawl (the lead's own evidence page is on it): tied, and only that result.
+  { const { db, job } = setup(ICP, { Syncly: 'syncly.app' })
+    addEnrichment(db, 'A', 'L-syncly', { connector: 'sitecrawl', kind: 'domain', value: 'syncly.app|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', confidence: null, source_url: 'https://syncly.app/', source_date: '2026-11-13', retrieved_at: 1 })
+    await findPeople(db, 'A', job, { env, fetchImpl: stub({ ...RESULTS, Syncly: g }) })
+    assert.deepEqual(stored(db).filter(r => r.company === 'Syncly').map(r => [r.value, r.label.split(': ').pop()]), [['Gray Lindqvist, Co-Founder', 'the result names its website']]) }
+  // A request that names a city keeps the result naming that city.
+  { const p = setup({ ...ICP, where: ['Sydney'] }); await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub() })
+    assert.deepEqual(stored(p.db).map(r => [r.company, r.value, r.label.split(': ').pop()]), [['Syncly', 'Emery Vale, Founder and CEO', 'the result names the requested city']]) }
+  // A request that names only a country or a state: the place rule agrees, but that is not a tie (a same-name business in the same country).
+  for (const where of [['Australia'], ['New South Wales'], ['United States'], ['California']]) {
+    const p = setup({ ...ICP, where }); const stats = newPeopleStats(); await findPeople(p.db, 'A', p.job, { env, fetchImpl: stub(), stats })
+    assert.deepEqual(stored(p.db).filter(r => !r.label.endsWith('Y Combinator batch')), [], JSON.stringify(where))
+    // "Long Beach, California" agrees with a California request, and is still refused: a state is not a tie.
+    if (where[0] === 'California') assert.ok((stats.refused.company_unconfirmed ?? 0) >= 1, JSON.stringify(stats.refused))
+  }
+})
+
+test('#1037 a person already stored by the name alone gets the tie when a later search finds them with one (no duplicate, counted once, not searched again)', async () => {
+  const { db, job } = setup()
+  // As staging holds the Garage co-founder today: the bare label.
+  addEnrichment(db, 'A', 'L-garage', { connector: 'search:people', kind: 'person', value: 'Casey Flynn, Co-Founder & CEO', label: LABEL, confidence: null, source_url: 'https://www.linkedin.com/in/person-c-test', source_date: '2026-11-10', retrieved_at: 1 })
+  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; ')), null, 'name-only before')
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: stub() }), 1)
+  assert.deepEqual(stored(db).filter(r => r.company === 'Garage').map(r => [r.value, r.label.split(': ').pop()]), [['Casey Flynn, Co-Founder & CEO', 'the result gives its Y Combinator batch']], 'one row, now tied')
+  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; '))?.name, 'Casey Flynn')
+  // A second pass finds the same tied person: nothing new is stored or counted.
+  assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: stub() }), 0)
+  // First play: the lead now names its person, so no search is spent on it again.
+  const asked: string[] = []
+  const f = (async (u: string) => { asked.push(/"([^"]+)"/.exec(new URL(u).searchParams.get('query') ?? '')?.[1] ?? ''); return new Response('{"results":[]}') }) as unknown as typeof fetch
+  await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true })
+  assert.deepEqual(asked.sort(), ['Nautilus', 'Syncly'])
+})
+
+test('#1037 a name-only row is never the opportunity card\'s "who" or the CSV\'s best person; a tied row beside it is', async () => {
+  const lead = { id: 'L-garage', company: 'Garage', name: '', contact: null, signal: 'Hiring a founding sales rep', source_url: LEADS[1][2], evidence_excerpt: 'Founding sales role at Garage | Y Combinator', event_date: null, date_status: null, published_at: null, confidence: 90, review_reason: null, company_domain: null, fit: 4, intent: 4, action: 3, why: 'Hiring its first sales rep.', score: 80 }
+  const bare = { connector: 'search:people', kind: 'person', value: 'Devon Marsh, Founder & CEO', label: LABEL, source_url: 'https://www.linkedin.com/in/person-d-test', source_date: '2026-11-10', confidence: null, retrieved_at: 1 }
+  const tied = { ...bare, value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'source'), source_url: 'https://www.linkedin.com/in/person-c-test' }
+  const card = (rows: unknown[]) => opportunityCard({ ...lead, icp_match: null, enrichments: rows } as never, WHO.join('; '))
+  assert.equal(card([bare]).who, null, 'the wrong-business founder is not "who"')
+  assert.equal(card([bare, tied]).who?.name, 'Casey Flynn')
+  // CSV best person (lib/people/best-person.ts), through the database.
+  const { db } = setup()
+  const adb = sqliteDb(db)
+  const job = (db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  addEnrichment(db, 'A', 'L-garage', bare as never)
+  assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, '', 'a name-only row alone: no best person')
+  addEnrichment(db, 'A', 'L-garage', tied as never)
+  assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, 'Casey Flynn')
 })
 
 test('#1037 review finding 3: a search refused by the scan\'s spend cap is counted as not sent, with its cause, and the message names the spend cap', async () => {
@@ -124,9 +183,13 @@ test('#1037 review finding 3: a search refused by the scan\'s spend cap is count
   assert.deepEqual(stats.failed, { spend_cap: 1 }); assert.equal(peopleStatsDetail(stats).search_failed_spend_cap, 1)
   assert.equal(peopleTraceStatus(n, 'spend_cap'), 'attempted_no_result', 'not "failed": the pass stopped at its own limit')
   assert.equal(peopleTraceMessage(n, 'spend_cap', stats), "the people search stopped at this scan's spend cap (the next search did not fit, so it was not sent); 0 person(s) stored before it stopped")
-  // Any other error is still an error.
-  const why2: string[] = []
-  await findPeople(db, 'A', job, { env, fetchImpl: f, onStop: w => why2.push(w), charge: async () => { throw new Error('boom') } })
-  assert.deepEqual(why2, ['error'])
+  assert.equal(stats.searched, 0, 'a search the cap refused is not a search that ran')
+  // Only a real limit is a planned stop. A ledger that could not be read, an unknown price or any other error is an error; a lost job says so.
+  for (const [thrown, want] of [[new SpendRefused('owner_pool_limit'), 'spend_cap'], [new SpendRefused('ledger_unavailable'), 'error'], [new SpendRefused('accounting_uncertain'), 'error'], [new SpendRefused('price_unknown'), 'error'], [new SpendRefused('ownership_lost'), 'ownership_lost'], [new Error('boom'), 'error']] as [Error, string][]) {
+    const w: string[] = []
+    await findPeople(db, 'A', job, { env, fetchImpl: f, onStop: x => w.push(x), charge: async () => { throw thrown } })
+    assert.deepEqual(w, [want], thrown.message)
+  }
+  assert.equal(sent, 0)
 })
 

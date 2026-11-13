@@ -14,7 +14,8 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
 import { leadPerson } from './lead-person.ts'
-import { companyTie, tiedLabel, type CompanyTie } from './company-tie.ts'
+import { companyTie, companyTied, tiedLabel, type CompanyTie } from './company-tie.ts'
+import { domainConfirmed } from '../signals/domain-basis.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -86,7 +87,8 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 //   searched        searches sent; results = results returned; profiles = results read as a person at the lead's company
 //   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word), place, and
 //                   company_unconfirmed (the employer's NAME matches but nothing else ties the result to this lead's company)
-//   failed          searches sent (or stopped at our own gate) that got no answer, by cause (FAILED_SEARCH); searched counts them too
+//   failed          searches sent (or stopped at our own gate) that got no answer, by cause (FAILED_SEARCH); searched counts them too,
+//                   except spend_cap: a search the spend cap refused was never sent and is not in searched
 //   no_roles        the request names no buyer role, so the pass had nothing to search for and read no lead
 export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; failed: Record<string, number>; no_roles?: boolean }
 const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled', 'spend_cap']
@@ -214,7 +216,13 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       const watch = deps.alive ? setInterval(() => { try { if (!deps.alive!()) ctl.abort() } catch { ctl.abort() } }, deps.aliveEveryMs ?? 500) : undefined
       // A refusal by the scan's own spend cap (tfSearch throws SpendRefused before anything is sent) is this pass's planned stop, not an error.
       const pending = tfSearch(db, tenantId, q, geo, spent, { env: tfEnv, signal: ctl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.charge ? { charge: deps.charge } : {}) })
-        .catch((e: unknown) => { if (e instanceof SpendRefused) return { ok: false as const, reason: 'spend_cap' as const }; throw e })
+        .catch((e: unknown) => {
+          // Only a real limit is a planned stop: the scan's cap or the owner's pool. A lost job says so; anything else (the ledger could not
+          // be read or saved, an unknown price) is an error and takes the error path.
+          if (e instanceof SpendRefused && (e.reason === 'over_cap' || e.reason === 'over_limit' || e.reason === 'owner_pool_limit')) return { ok: false as const, reason: 'spend_cap' as const }
+          if (e instanceof SpendRefused && e.reason === 'ownership_lost') return { ok: false as const, reason: 'ownership_lost' as const }
+          throw e
+        })
       const r = await Promise.race([
         pending,
         new Promise<null>(res => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())) }),
@@ -226,10 +234,15 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       }
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
       // A search that got no answer (provider unavailable, our per-minute rate gate, a cap) is counted as failed, never as "searched, found nobody".
+      if (!r.ok && r.reason === 'ownership_lost') { deps.onStop?.('ownership_lost'); break }
+      // Refused by the spend cap before anything was sent: not a search that ran.
+      if (!r.ok && r.reason === 'spend_cap') { searched--; if (stats) stats.searched = searched }
       if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth' || r.reason === 'spend_cap') { deps.onStop?.(r.reason); break } continue }
       const refused = new Set<string>()
       if (stats) stats.results += r.hits.length
       const ties = new Map<string, CompanyTie>()
+      // The website counts as a tie only when it is the lead's CONFIRMED domain (a guessed one may be the same-name business's).
+      const tieLead = { company: l.company, source_url: l.source_url, confirmed_domain: l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null }
       const people = r.hits.map(h => ({ h, p: profileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => {
           if (typeof x.p === 'string') { refuse(x.p); return false }
@@ -244,7 +257,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
           const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
           // A company NAME is not a company (company-tie.ts): beyond the name, the result must name the lead's website, the organisation
           // the lead was found through, or the requested place. A name-only match is refused and counted, never stored.
-          if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, l, v === 'agrees'); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
+          if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, tieLead, where, v === 'agrees'); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
           const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
           refuse('place')
           if (!refused.has(reason) && !(deps.alive && !deps.alive())) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }
@@ -256,7 +269,13 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         if (seen.has(p.name.toLowerCase()) || seen.size >= MAX_PEOPLE) continue
         seen.add(p.name.toLowerCase())
         if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); return stored } // re-checked before EVERY write: another process may reclaim the job mid-loop
-        addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.title}`.slice(0, 120), label: tiedLabel(LABEL, ties.get(h.url) ?? 'place'), confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
+        // The same person may already be stored by the name alone (before the tie rule): the insert would be a no-op (one row per
+        // lead / connector / value), so the old row gets the tie instead. A row that is already tied is left as it is and not counted.
+        const value = `${p.name}, ${p.title}`.slice(0, 120), label = tiedLabel(LABEL, ties.get(h.url) ?? 'place')
+        const had = db.prepare("SELECT label FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = 'person' AND value = ?").get(l.id, tenantId, CONNECTOR, value) as { label: string | null } | undefined
+        if (had && companyTied(had.label)) continue
+        if (had) db.prepare("UPDATE lead_enrichments SET label = ? WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = 'person' AND value = ?").run(label, l.id, tenantId, CONNECTOR, value)
+        else addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value, label, confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
         stored++
       }
     }

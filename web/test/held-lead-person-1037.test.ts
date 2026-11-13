@@ -158,6 +158,16 @@ test('#1037 THROUGH THE RUNNER (review finding 3): a people search that no longe
   assert.deepEqual(refused, [{ kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }])
 })
 
+test('#1037 THROUGH THE RUNNER, a request with no place (the reviewer\'s real run): the result is tied by the company name only, so nobody is stored and the report counts the refusal', async () => {
+  const queries: string[] = []
+  const r = await runFixture(fx(queries, { modelIcp: { ...RICP, where: [] } }))
+  assert.equal(queries.length, 1, 'the search ran')
+  const st = stage(r)
+  assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st))
+  assert.equal(st?.detail?.refused_company_unconfirmed, 2); assert.equal(st?.detail?.people_stored, 0); assert.equal(st?.detail?.profile_results, 2)
+  assert.equal((r.db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector = 'search:people' AND kind = 'person'").get() as { n: number }).n, 0)
+})
+
 const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
 
 test('#1037 THROUGH THE RUNNER, free trial: the held lead\'s one search is reserved from the trial reserve before it runs (one search price, inside the reserve)', async () => {

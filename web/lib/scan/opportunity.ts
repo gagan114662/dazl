@@ -8,6 +8,7 @@
 // Pure: built only from what the lead already stores. Nothing here is fetched, guessed or invented; anything unknown
 // is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
+import { companyTied } from '../people/company-tie.ts'
 import { recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
@@ -106,7 +107,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
-    return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}) }
+    return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}), ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}) }
   })
   const top = recommendedPerson(people, buyerRoles) ?? undefined
   const ident = identityOf(l, rows)

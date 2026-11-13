@@ -102,7 +102,8 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
 // recommendation refuses them. Same rule whichever connector stored the row and with or without an ICP: explicit
 // contradiction is not a matter of ICP fit. A row with no title is not contradicted (it ranks last, as before).
 export function recommendedPerson<T extends PersonContact>(contacts: T[], icpText: string): (T & RankedPerson) | null {
-  return rankPeople(contacts, icpText).find(c => !c.historical && (!c.title || !roleContradicted(c.title, icpText))) ?? null
+  // A name-only search match (nameOnly) may be another business's person: never recommended either.
+  return rankPeople(contacts, icpText).find(c => !c.historical && !c.nameOnly && (!c.title || !roleContradicted(c.title, icpText))) ?? null
 }
 
 // Stored enrichment rows carry a contact as value "Name - Title" (title optional),
