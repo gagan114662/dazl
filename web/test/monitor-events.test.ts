@@ -4,8 +4,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { bothEngines } from './helpers/engines.ts'
-import { createMonitor, runDueMonitors, collectMonitorResults, listMonitors, monitorWindowDays } from '../lib/monitors.ts'
-import { decide, detectionReport, entityKeyOf, eventKeyOf, missedRuns, uncoveredDays, DEFAULT_EVENT_WINDOW_DAYS, type AlertPolicy, type RunLead } from '../lib/monitor-events.ts'
+import { createMonitor, runDueMonitors, collectMonitorResults, listMonitors, monitorWindowDays, setMonitorEnabled } from '../lib/monitors.ts'
+import { decide, detectionReport, entityKeyOf, eventKeyOf, missedRuns, uncoveredDays, DEFAULT_EVENT_WINDOW_DAYS, OTHER_EVENT_KINDS, HIRING_SIGNALS, AMBIENT_SIGNALS, type AlertPolicy, type RunLead } from '../lib/monitor-events.ts'
+import { SIGNALS } from '../lib/scan/score.ts'
 import type { Db } from '../lib/db/client.ts'
 
 const NOW = Math.floor(Date.parse('2026-10-30T12:00:00Z') / 1000), DAY = 86400
@@ -202,15 +203,15 @@ bothEngines('#882 real staging scan: its board-dated ready lead (Flexport) becom
   // Leads list hides it. Zapier's board-dated posting is in review and from June; Qualtrics is ready but has no proven day (and fit 0);
   // Kong and Dynatrace carry a day the scan could not prove.
   assert.deepEqual(await fold(at), { newCount: 0, alerts: [] })
-  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 300, null, null]])
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|hiring', day, at + 300, at + 300, null, null]])
   assert.deepEqual((await db.all<{ source: string; last_event_at: number }>('SELECT source, last_event_at FROM monitor_cursors WHERE monitor_id = ?', [mon])).map(c => [c.source, Number(c.last_event_at)]), [['job-boards.greenhouse.io', day]])
   // the next run returns the same 16 leads: still nothing new, the event is only re-checked
   assert.deepEqual(await fold(at + 7 * DAY), { newCount: 0, alerts: [] })
-  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 7 * DAY + 300, null, null]])
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|hiring', day, at + 300, at + 7 * DAY + 300, null, null]])
   // NOT the real grade from here on: had a run graded that same lead as one the list shows (fit 3), it is a new company, once
-  assert.deepEqual(await fold(at + 14 * DAY, 3), { newCount: 1, alerts: [['new_company', 'Flexport', 'd:flexport.com|2026-11-12|signal', at + 14 * DAY + 300 - day]] })
+  assert.deepEqual(await fold(at + 14 * DAY, 3), { newCount: 1, alerts: [['new_company', 'Flexport', 'd:flexport.com|2026-11-12|hiring', at + 14 * DAY + 300 - day]] })
   assert.deepEqual(await fold(at + 21 * DAY, 3), { newCount: 0, alerts: [] })
-  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|signal', day, at + 300, at + 21 * DAY + 300, at + 14 * DAY + 300, null]])
+  assert.deepEqual(await events(), [['d:flexport.com|2026-11-12|hiring', day, at + 300, at + 21 * DAY + 300, at + 14 * DAY + 300, null]])
 })
 
 bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown one (fit 2+, or ungraded) does; a stored kind naming another event is never dated by a job board day', async ({ db }) => {
@@ -235,6 +236,34 @@ bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown
   assert.equal((await db.get<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE entity_key = 'd:mixed.example'"))!.event_key, 'd:mixed.example|2026-10-20|hiring', 'dated by the board: recorded as the hiring event, not as an expansion on that day')
 })
 
+bothEngines('#882 detected once: the same posting returned by five runs under five different grades is one event and one alert; so is one page-proven day', async ({ db }) => {
+  const mon = await play(db, 'u1', { query: 'B2B software companies hiring account executives' })
+  // The Flexport posting (real company, posting URL, day and signal; fit set to 3 so the list shows it: NOT its real grade), returned by
+  // five weekly runs. Only the grader's label changes: none, hiring, hiring_relevant_role, job_board_presence, expansion (+hiring).
+  const posting = (kind: string | null, signals?: string[]): L => ({ company: 'Flexport', domain: 'flexport.com', url: 'https://job-boards.greenhouse.io/flexport/jobs/8383190', date: '2026-10-28', proof: 'ats_structured', fit: 3, kind, signals, signal: 'Flexport is hiring an Account Executive for Enterprise' })
+  const grades: [string | null, string[] | undefined][] = [[null, undefined], ['hiring', ['hiring']], ['hiring_relevant_role', ['hiring_relevant_role', 'hiring']], ['job_board_presence', ['job_board_presence']], ['expansion', ['expansion', 'hiring']]]
+  const out = []
+  for (const [i, [kind, signals]] of grades.entries()) out.push(await run(db, 'u1', mon, NOW + i * 7 * DAY, [posting(kind, signals)]))
+  assert.deepEqual(out, [{ newCount: 1, kinds: ['new_company'] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }])
+  assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u1'")).map(e => e.event_key), ['d:flexport.com|2026-10-28|hiring'])
+  assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_alerts WHERE user_id = 'u1'"))!.n), 1)
+  // A day the cited page ties to the event: ungraded, then graded expansion, then graded product_launch. One event, one alert.
+  // (Rule: one company, one page-proven day = one event; a later day is a new one.)
+  const news = (kind: string | null, date = '2026-10-21'): L => ({ company: 'Kestrel Freight', domain: 'kestrel.example', url: 'https://news.example/kestrel', date, proof: 'page_bound', fit: 3, kind, signal: 'Kestrel Freight opened a depot in Leeds' })
+  const mon2 = await play(db, 'u2')
+  assert.deepEqual(await run(db, 'u2', mon2, NOW, [news(null)]), { newCount: 1, kinds: ['new_company'] })
+  assert.deepEqual(await run(db, 'u2', mon2, NOW + 7 * DAY, [news('expansion')]), { newCount: 0, kinds: [] })
+  assert.deepEqual(await run(db, 'u2', mon2, NOW + 14 * DAY, [news('product_launch')]), { newCount: 0, kinds: [] })
+  assert.deepEqual(await run(db, 'u2', mon2, NOW + 21 * DAY, [news('expansion', '2026-11-15')]), { newCount: 1, kinds: ['new_signal'] })
+  assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u2' ORDER BY event_key")).map(e => e.event_key), ['d:kestrel.example|2026-10-21|event', 'd:kestrel.example|2026-11-15|event'])
+})
+
+test('#882 every grader signal id is in exactly one of the monitor\'s groups (another dated event / hiring-type / ambient)', () => {
+  for (const id of SIGNALS) assert.equal([OTHER_EVENT_KINDS, HIRING_SIGNALS, AMBIENT_SIGNALS].filter(g => g.has(id)).length, 1, id)
+  // nothing in the groups that the grader cannot store, except the legacy 'funding' label older rows carry
+  assert.deepEqual([...OTHER_EVENT_KINDS, ...HIRING_SIGNALS, ...AMBIENT_SIGNALS].filter(id => !(SIGNALS as readonly string[]).includes(id)), ['funding'])
+})
+
 bothEngines('#882 a row from before 2026-10-23 with date_status verified and no proof never alerts; a board day dates a hiring trigger only', async ({ db }) => {
   const mon = await play(db, 'u1')
   assert.deepEqual(await run(db, 'u1', mon, NOW, [
@@ -257,7 +286,10 @@ bothEngines('#759 a monitor on an account with no AI key of its own pauses with 
   assert.deepEqual([Number(m.enabled), m.paused_reason], [0, 'no_api_key'])
   assert.deepEqual(await runDueMonitors(db, { now: NOW + 600 }), [], 'a paused monitor stays paused')
   await db.run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES ('nokey', 'anthropic', 'x', '0000', ?)", [NOW])
-  await db.run("UPDATE monitors SET enabled = 1, paused_reason = NULL WHERE id = ?", [made.id])
+  // Resume, as the Plays button does it: the reason is cleared and the monitor runs
+  assert.equal(await setMonitorEnabled(db, 'nokey', made.id, true), true)
+  const resumed = (await listMonitors(db, 'nokey') as { enabled: number; paused_reason: string | null }[])[0]
+  assert.deepEqual([Number(resumed.enabled), resumed.paused_reason], [1, null])
   assert.equal((await runDueMonitors(db, { now: NOW + 1200 })).length, 1)
 })
 
@@ -280,9 +312,9 @@ test('pure rules: keys are spelling-independent; undated, out-of-window and unve
   // the grader's list has no order: another event first and a hiring signal after it is still a hiring posting
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","hiring_relevant_role"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   // such a lead is recorded as the hiring event its date belongs to, never as the other event on the posting's day
-  assert.ok(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: 'raised_funding', signals: '["raised_funding","hiring"]', signal: 'Acme raised a Series B and is hiring 40 engineers' }).endsWith('|2026-10-20|hiring'))
-  assert.ok(eventKeyOf({ ...l, event_date_proof: 'page_bound', signal_kind: 'raised_funding' }).endsWith('|2026-10-20|raised_funding'), 'a day the page ties to the event keeps its kind')
-  assert.ok(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: 'open_role_language' }).endsWith('|2026-10-20|open_role_language'))
+  // the key never carries the graded kind: one posting is one event whatever the grader calls it, and so is one page-proven day
+  for (const kind of [null, 'hiring', 'hiring_relevant_role', 'job_board_presence', 'open_role_language', 'raised_funding', 'expansion']) assert.equal(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: kind }), 'n:harbor dental|2026-10-20|hiring', String(kind))
+  for (const kind of [null, 'expansion', 'product_launch', 'raised_funding', 'press_mention']) assert.equal(eventKeyOf({ ...l, event_date_proof: 'page_bound', signal_kind: kind }), 'n:harbor dental|2026-10-20|event', String(kind))
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","press_mention"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: 'not json', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   // ...but a graded hiring lead keeps its board day whatever hiring-type or ambient kind the grader put first (the card's rule decides)

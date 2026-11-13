@@ -3,7 +3,7 @@
 // monitor had not stored yet, review lane included, so a blocked research item or the same news re-found under another
 // company spelling counted as new. Now an alert is one of three state changes of a DATED EVENT, per tenant:
 //   new_company   - the first actionable event of a company the tenant has had no actionable event for
-//   new_signal    - a genuinely new actionable event (another event date / kind) for a company already alerted on
+//   new_signal    - a genuinely new actionable event (another event day, or a posting beside a page-proven event) for a company already alerted on
 //   now_reachable - an event already alerted on whose lead is now actionable end to end (domain, matching person and a
 //                   published contact route: the `scan:actionable` verdict lib/scan/actionable.ts writes)
 // A DATED event is one whose day the cited source is shown to state: the lead card's own rule (lib/scan/scoreboard.ts
@@ -85,13 +85,15 @@ const slug = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\
 const hostOf = (u: string) => u.toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0]
 export const entityKeyOf = (l: Pick<RunLead, 'company' | 'company_domain'>): string =>
   l.company_domain && hostOf(l.company_domain).includes('.') ? `d:${hostOf(l.company_domain)}` : `n:${slug(l.company)}`
-// One event = the company, the day it happened and what kind of thing happened. The same news re-found next week, or
-// reported by a second outlet, is the same event; a later dated event for the same company is a new one.
-// The kind in the key is what the DATE is the date of. A job board's publish day is the posting's day, so a board-dated lead whose
-// first graded signal names another event (graded ["raised_funding", "hiring"], cited to the posting) is recorded as the hiring event it
-// is dated as, never as a funding round on the posting's day.
-export const eventKeyOf = (l: RunLead): string =>
-  `${entityKeyOf(l)}|${l.event_date}|${l.event_date_proof === 'ats_structured' && !!l.signal_kind && OTHER_EVENT_KINDS.has(l.signal_kind) ? 'hiring' : l.signal_kind ?? 'signal'}`
+// One event = the company, the day it happened and HOW that day is proven. The key never carries the lead's graded signal kind: that
+// is the first signal the model grader happened to list, and it changes from run to run for the same posting (ungraded, "hiring",
+// "hiring_relevant_role", "job_board_presence" ...), which made one posting a new event and a new alert on every relabel (#882:
+// "each detected once").
+//   - a day proven by a job board's own publish date (ats_structured) is the posting's event: `<company>|<day>|hiring`, always;
+//   - a day the cited page ties to the event (page_bound): `<company>|<day>|event`, whatever the grade. Two different page-proven events
+//     of one company on the same day are therefore ONE event and one alert; a later day is a new event (new_signal).
+// The same news re-found next week, or reported by a second outlet, is the same event.
+export const eventKeyOf = (l: RunLead): string => `${entityKeyOf(l)}|${l.event_date}|${l.event_date_proof === 'ats_structured' ? 'hiring' : 'event'}`
 export const sourceOf = (l: Pick<RunLead, 'source_url'>): string => hostOf(l.source_url) || 'unknown'
 const dayStartS = (d: string) => Math.floor(Date.parse(`${d}T00:00:00Z`) / 1000)
 
@@ -113,6 +115,8 @@ export const verified = (l: RunLead): boolean => l.review_reason == null && l.co
 export const OTHER_EVENT_KINDS: ReadonlySet<string> = new Set(['raised_funding', 'funding', 'leadership_change', 'product_launch', 'expansion', 'tech_stack_change', 'partnership',
   'rebranding', 'layoffs', 'new_website', 'event_presence', 'customer_win', 'pricing_change', 'integration_launch'])
 export const HIRING_SIGNALS: ReadonlySet<string> = new Set(['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence'])
+// Signals that describe the company's standing, not a dated event of their own: they follow the card's rule.
+export const AMBIENT_SIGNALS: ReadonlySet<string> = new Set(['press_mention', 'community_activity', 'founder_post', 'compliance_driver', 'seasonal_driver', 'accelerator'])
 const gradedHiring = (signals: string | null | undefined): boolean => {
   if (!signals) return false
   try { const a: unknown = JSON.parse(signals); return Array.isArray(a) && a.some(x => typeof x === 'string' && HIRING_SIGNALS.has(x)) } catch { return false }

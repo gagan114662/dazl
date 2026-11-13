@@ -104,7 +104,7 @@ test('#882 #759 a real scan\'s board-dated hiring lead raises one new_company al
   const ev = x.db.prepare('SELECT event_key, occurred_at, first_seen_at, last_checked_at, actionable_at FROM monitor_events').all() as { event_key: string; occurred_at: number; first_seen_at: number; last_checked_at: number; actionable_at: number | null }[]
   assert.equal(ev.length, 1)
   assert.deepEqual([ev[0].occurred_at, ev[0].first_seen_at, ev[0].last_checked_at, ev[0].actionable_at], [occurred, foldAt, foldAt, foldAt])
-  assert.ok(ev[0].event_key.endsWith(`|${published}|signal`) || ev[0].event_key.includes(`|${published}|`), ev[0].event_key)
+  assert.ok(ev[0].event_key.endsWith(`|${published}|hiring`), ev[0].event_key)
   const cursors = x.db.prepare('SELECT source, last_event_at, last_checked_at FROM monitor_cursors').all()
   assert.deepEqual(cursors, [{ source: 'job-boards.greenhouse.io', last_event_at: occurred, last_checked_at: foldAt }])
   const rep = await detectionReport(db, 'A', x.monitorId, 90)
