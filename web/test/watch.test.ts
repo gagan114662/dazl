@@ -58,7 +58,7 @@ test('a watch with no user key pauses and never creates a trial-funded job', asy
   const w = (await createWatch(D(db), 'u', 'funded startups hiring', ICP)).watch!
   due(db, w.id)
   const r = (await runDueWatches(D(db)))
-  assert.deepEqual(r, { ran: 0, paused: 1 })
+  assert.deepEqual(r, { ran: 0, paused: 1, skipped: 0 })
   const after = (await listWatches(D(db), 'u'))[0]
   assert.equal(after.active, false)
   assert.equal(after.paused_reason, 'no_api_key')
@@ -72,7 +72,7 @@ test('a watch over the monthly scan quota pauses instead of running', async () =
   for (let i = 0; i < 50; i++) db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, 'u', 'b', 'i', 'l', 'done')").run(`old${i}`)
   due(db, w.id)
   const r = (await runDueWatches(D(db)))
-  assert.deepEqual(r, { ran: 0, paused: 1 })
+  assert.deepEqual(r, { ran: 0, paused: 1, skipped: 0 })
   assert.equal((await listWatches(D(db), 'u'))[0].paused_reason, 'quota_exceeded')
 })
 
@@ -83,7 +83,7 @@ test('a running user scan defers the watch; it stays active for the next tick', 
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('busy', 'u', 'b', 'i', 'l', 'running')").run()
   due(db, w.id)
   const r = (await runDueWatches(D(db)))
-  assert.deepEqual(r, { ran: 0, paused: 0 })
+  assert.deepEqual(r, { ran: 0, paused: 0, skipped: 0 })
   assert.equal((await listWatches(D(db), 'u'))[0].active, true)
 })
 
@@ -94,7 +94,7 @@ test('a due watch with key and quota runs weekly and its job is linked', async (
   due(db, w.id)
   const now = Math.floor(Date.now() / 1000)
   const r = (await runDueWatches(D(db), { now }))
-  assert.deepEqual(r, { ran: 1, paused: 0 })
+  assert.deepEqual(r, { ran: 1, paused: 0, skipped: 0 })
   const job = db.prepare("SELECT * FROM scan_jobs WHERE user_id = 'u'").get() as { watch_id: string; funded_by: string; query: string; icp: string }
   assert.equal(job.watch_id, w.id)
   assert.equal(job.funded_by, 'user', 'watch jobs are funded by the user key')
@@ -102,7 +102,7 @@ test('a due watch with key and quota runs weekly and its job is linked', async (
   assert.equal(after.last_run_at, now)
   assert.ok((after.next_run_at ?? 0) >= now + 7 * 86400 - 1, 'next run is a week out')
   // not due again right away
-  assert.deepEqual((await runDueWatches(D(db), { now: now + 60 })), { ran: 0, paused: 0 })
+  assert.deepEqual((await runDueWatches(D(db), { now: now + 60 })), { ran: 0, paused: 0, skipped: 0 })
 })
 
 test('only leads the watch has never seen are flagged new, by domain then name', async () => {
@@ -144,5 +144,5 @@ test('resume re-arms a key-paused watch and it runs on the next tick', async () 
   giveKey(db, 'u')
   assert.ok((await watchAction(D(db), 'u', w.id, 'resume')))
   due(db, w.id)
-  assert.deepEqual((await runDueWatches(D(db))), { ran: 1, paused: 0 })
+  assert.deepEqual((await runDueWatches(D(db))), { ran: 1, paused: 0, skipped: 0 })
 })

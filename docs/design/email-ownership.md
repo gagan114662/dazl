@@ -84,12 +84,24 @@ is an explicit action instead: Settings > Account > "Add Google sign-in" (`/api/
 links the Google identity only when all of these hold:
 
 - the request carries that account's own session, signed in within the last hour;
-- the account's email is verified;
-- the account's email is the Google identity's email (Google verified it);
+- the account's email is the Google identity's email (Google verified it: `verifyIdToken` requires `email_verified`);
 - the Google identity belongs to no other account.
 
-Otherwise it lands on Settings with the reason (`mismatch`, `unverified`, `taken`, `reauth_required`,
-`signed_out`). Linking keeps the current session and never creates one.
+**Verify and link in one step (#1095).** An account whose email is not yet confirmed is confirmed by the link itself:
+in the same transaction as the identity insert, `email_verified_at` is set. A Google-verified ID token for exactly
+this address proves control of the mailbox, the same proof the confirmation link gives and the one dazl already
+trusts to create verified Google accounts (`resolveUser`). `mismatch`, `taken`, `reauth_required` and `signed_out`
+never touch `email_verified_at`. Residual risk: this relies on Google's `email_verified` claim for non-Gmail
+addresses, as sign-up already does; not reviewed by counsel. (Decided by Hermes, delegated by the owner, on #1095.)
+
+Otherwise the link fails with the reason (`mismatch`, `taken`, `reauth_required`, `signed_out`; `unverified` is no
+longer returned). It returns to the page that started it (`next`, an `/app` path checked by `safeNext`), else
+Settings, with `?google=<result>`. A failed or cancelled Google round trip in link mode returns there too, with
+`?google=failed` (or `google_unverified` when Google itself has not verified the address), never to the sign-in
+page. Linking keeps the current session and never creates one. A link that confirms the address signs out the
+account's other sessions in the same transaction. A link can be started only from a dazl page (`Sec-Fetch-Site`
+cross-site or same-site is refused), and sign-in and sign-up accept only same-origin JSON, so a cross-site page cannot
+sign a browser in to an account it planted and have that browser link its own Google identity to it.
 
 ## Acceptance tests
 
