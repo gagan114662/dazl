@@ -24,8 +24,8 @@ async function run(db: Db, user: string, mon: string, at: number, leads: L[]) {
   await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [job])
   for (const l of leads) {
     const id = hex(), slug = l.company.toLowerCase().replace(/[^a-z]+/g, '')
-    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key)
-      VALUES (?, ?, '', ?, 'opened a second location', ?, ?, 'verified', 80, NULL, ?, 'expansion', NULL, ?)`,
+    await db.run(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, event_date, date_status, event_date_proof, confidence, review_reason, company_domain, signal_kind, quarantined_at, dedup_key)
+      VALUES (?, ?, '', ?, 'opened a second location', ?, ?, 'unverified', 'page_bound', 80, NULL, ?, 'expansion', NULL, ?)`,
       [id, job, l.company, l.url ?? `https://news.example/${slug}`, l.date, `${slug}.example`, id])
     await db.run('INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [hex(), id, user, 'scan:actionable', 'actionability', 'Not actionable yet: no published contact', 'https://invalid.example/', day(at), at])
@@ -35,7 +35,9 @@ async function run(db: Db, user: string, mon: string, at: number, leads: L[]) {
   const r = (await db.get<{ id: string }>('SELECT id FROM monitor_runs WHERE job_id = ?', [job]))!
   return (await db.all<{ company: string }>('SELECT company FROM monitor_alerts WHERE run_id = ? ORDER BY company', [r.id])).map(a => a.company)
 }
-async function play(db: Db, user: string) { const r = await createMonitor(db, user, { query: QUERY }, NOW); assert.ok('id' in r); return r.id }
+async function play(db: Db, user: string) {
+  await db.run("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'x', '0000', ?) ON CONFLICT (tenant_id, vendor) DO NOTHING", [user, NOW]) // a monitor runs on the account's own key (#759)
+  const r = await createMonitor(db, user, { query: QUERY }, NOW); assert.ok('id' in r); return r.id }
 
 bothEngines('a skipped run is backfilled from cursors: events since the last check alert, older and future ones do not', async ({ db }) => {
   const mon = await play(db, 'u1')

@@ -159,7 +159,8 @@ test('watch job, two tenants: a due run spends only the owner key and quota; one
 
 test('monitor jobs, two tenants: due runs enqueue per-owner jobs; results fold only into the owner monitor', async () => {
   // migrateConnectors: monitor collection reads lead_enrichments (#387: gate and actionability markers).
-  const db = new Database(':memory:'); migrateScan(db); migratePlans(db); migrateConnectors(db); migrateMonitors(db)
+  const db = new Database(':memory:'); migrateScan(db); migratePlans(db); migrateConnectors(db); migrateMonitors(db); migrateKeys(db)
+  for (const t of ['A', 'B']) db.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'x', '1234', 1)").run(t) // a monitor runs on the account's own key (#759)
   const mA = await createMonitor(D(db), 'A', { query: 'robotics companies hiring sales' })
   const mB = await createMonitor(D(db), 'B', { query: 'fintech seed rounds in Europe' })
   assert.ok('id' in mA && 'id' in mB)
@@ -172,7 +173,7 @@ test('monitor jobs, two tenants: due runs enqueue per-owner jobs; results fold o
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobA)
   // Two companies with a verified, dated event each (#387: only novel, dated, in-window, verified events count as new).
   const today = new Date().toISOString().slice(0, 10)
-  for (const k of ['acme', 'beta']) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, confidence) VALUES (lower(hex(randomblob(12))), ?, 'n', ?, 's', 'https://e.com', ?, ?, 'verified', 80)").run(jobA, k, k, today)
+  for (const k of ['acme', 'beta']) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, event_date_proof, confidence) VALUES (lower(hex(randomblob(12))), ?, 'n', ?, 's', 'https://e.com', ?, ?, 'unverified', 'page_bound', 80)").run(jobA, k, k, today)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobA)
   assert.equal(await collectMonitorResults(D(db)), 1)
   assert.equal((db.prepare('SELECT new_count FROM monitor_runs WHERE monitor_id = ?').get((mA as { id: string }).id) as { new_count: number }).new_count, 2)

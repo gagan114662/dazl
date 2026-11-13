@@ -6,7 +6,11 @@
 //   new_signal    - a genuinely new actionable event (another event date / kind) for a company already alerted on
 //   now_reachable - an event already alerted on whose lead is now actionable end to end (domain, matching person and a
 //                   published contact route: the `scan:actionable` verdict lib/scan/actionable.ts writes)
-// Everything else is suppressed with a reason: undated or unverified-date leads, events outside the play's window (old
+// A DATED event is one whose day the cited source is shown to state: the lead card's own rule (lib/scan/scoreboard.ts
+// eventDayVerified: a recognised event_date_proof, compatible with the trigger, on a real past calendar day). The stored
+// date_status is NOT read: the scanner has written only 'undated' / 'unverified' there since 2026-10-23, so keying on its old
+// 'verified' value meant no real scan could ever raise an alert (#882, #759), and an old 'verified' row carries no proof.
+// Everything else is suppressed with a reason: leads with no proven event day, events outside the play's window (old
 // news, future dates), blocked / needs-review / quarantined / held research items, and an event already seen by ANY of
 // the tenant's plays (dedupe across plays). Each event keeps first_seen / occurred / last_checked / actionable / reachable
 // timestamps; each monitor keeps a cursor per source host; each alert keeps its detection latency.
@@ -17,6 +21,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { windowStatus } from './scan/window.ts'
+import { eventDayVerified } from './scan/scoreboard.ts'
 
 export function migrateMonitorEvents(db: Database.Database): void {
   db.exec(`
@@ -66,7 +71,9 @@ export const isAlertPolicy = (v: unknown): v is AlertPolicy => typeof v === 'str
 export const DEFAULT_EVENT_WINDOW_DAYS = 90
 
 export interface RunLead {
-  company: string; company_domain: string | null; event_date: string | null; date_status: string | null; signal_kind: string | null
+  company: string; company_domain: string | null; event_date: string | null; signal_kind: string | null
+  event_date_proof: string | null   // how the scan established event_date ('page_bound' | 'ats_structured'); null: unproven, never an event
+  signal: string | null             // the lead's stated trigger: a job board's publish day dates a hiring trigger only
   source_url: string; review_reason: string | null; confidence: number | null; quarantined_at: number | null
   held: boolean       // a required gate failed and its review write was rejected (the scan:gate marker): never verified
   reachable: boolean  // the scan's own actionability verdict: domain, matching person and published route confirmed
@@ -86,6 +93,9 @@ const dayStartS = (d: string) => Math.floor(Date.parse(`${d}T00:00:00Z`) / 1000)
 // unconfirmed...), a quarantined lead or a held one is research, never a new actionable lead.
 export const verified = (l: RunLead): boolean => l.review_reason == null && l.confidence != null && l.quarantined_at == null && !l.held && !!l.company.trim()
 
+// The event day is proven by the cited source (the same verdict the lead card shows as "verified on the cited source").
+export const dated = (l: Pick<RunLead, 'event_date' | 'event_date_proof' | 'signal' | 'signal_kind'>, now: number): boolean => eventDayVerified(l, { now: new Date(now * 1000) })
+
 export type Suppress = 'undated' | 'out_of_window' | 'not_actionable' | 'already_seen' | 'policy'
 export interface PriorEvent { actionable_at: number | null; reachable_at: number | null }
 export type Decision = { kind: AlertKind; alert: boolean } | { suppress: Exclude<Suppress, 'policy'> }
@@ -93,7 +103,7 @@ export type Decision = { kind: AlertKind; alert: boolean } | { suppress: Exclude
 // Pure. `windowDays`: the play's own window, else DEFAULT_EVENT_WINDOW_DAYS. `entityKnown`: the tenant already had an
 // actionable event for this company. A transition with alert=false was filtered by the policy (still recorded).
 export function decide(l: RunLead, prior: PriorEvent | null, entityKnown: boolean, policy: AlertPolicy, windowDays: number, now: number): Decision {
-  if (l.date_status !== 'verified' || !l.event_date) return { suppress: 'undated' }          // only dated events can be new
+  if (!l.event_date || !dated(l, now)) return { suppress: 'undated' }                        // only events with a proven day can be new
   if (windowStatus(l.event_date, windowDays, new Date(now * 1000)) !== 'inside') return { suppress: 'out_of_window' }  // old news, future or bad dates
   if (!verified(l)) return { suppress: 'not_actionable' }
   let kind: AlertKind
@@ -129,8 +139,9 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
   const latest = cursors.size ? Math.max(...cursors.values()) : null
   for (const l of a.leads) {
     const wd = backfillWindowDays(a.windowDays, cursors.get(sourceOf(l)) ?? latest, a.now)
-    if (l.date_status !== 'verified' || !l.event_date || windowStatus(l.event_date, wd, new Date(a.now * 1000)) !== 'inside') {
-      bump(l.date_status !== 'verified' || !l.event_date ? 'undated' : 'out_of_window'); continue   // never stored, never surfaced
+    const proven = !!l.event_date && dated(l, a.now)
+    if (!proven || !l.event_date || windowStatus(l.event_date, wd, new Date(a.now * 1000)) !== 'inside') {
+      bump(proven ? 'out_of_window' : 'undated'); continue   // never stored, never surfaced
     }
     const ek = entityKeyOf(l), ev = eventKeyOf(l), occ = dayStartS(l.event_date)
     const prior = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, ev])

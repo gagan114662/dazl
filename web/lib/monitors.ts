@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { readPlan, readScanQuota } from './plans.ts'
+import { readHasKey } from './llm/key-store.ts'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { lockScanAdmission } from './play-funding.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
@@ -122,6 +123,13 @@ export async function runDueMonitors(db: Db, o: { now?: number; fence?: Fence } 
     'SELECT id, user_id, query, icp, sources, next_run_at, interval_hours FROM monitors WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at, id', [now])
   const jobs: string[] = []
   for (const m of due) {
+    // #759: a monitor run is a scan on the account's OWN AI key (monitors have no free-trial path; lib/play-now.ts refuses the same
+    // way). Without a key the job could never be claimed (lib/scan/queue-runner.ts) and would sit pending as one of the tenant's two
+    // active scans, so the monitor pauses with the reason instead, as a weekly play does (lib/watch.ts); re-enabling clears it.
+    if (!(await readHasKey(db, m.user_id))) {
+      await db.tx(function* (t) { yield* fence(t); yield* t.run("UPDATE monitors SET enabled = 0, paused_reason = 'no_api_key' WHERE id = ? AND enabled = 1 AND next_run_at = ?", [m.id, m.next_run_at]) })
+      continue
+    }
     if (!(await readScanQuota(db, m.user_id)).allowed) {
       await db.tx(function* (t) { yield* fence(t); yield* t.run("UPDATE monitors SET enabled = 0, paused_reason = 'quota' WHERE id = ? AND enabled = 1 AND next_run_at = ?", [m.id, m.next_run_at]) })
       continue
@@ -169,7 +177,7 @@ export async function collectMonitorResults(db: Db, o: { fence?: Fence; now?: nu
       // held: the scan:gate marker (a required gate failed and its review write was rejected), read the same way as every
       // user-facing lead read (scan/store-db.ts); reachable: the scan's own end-to-end actionability verdict for this tenant
       const leads = (yield* t.all<Omit<RunLead, 'held' | 'reachable'> & { held: number; reachable: number }>(
-        `SELECT l.company, l.company_domain, l.event_date, l.date_status, l.signal_kind, l.source_url, l.review_reason, l.confidence, l.quarantined_at,
+        `SELECT l.company, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signal_kind, l.source_url, l.review_reason, l.confidence, l.quarantined_at,
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed') THEN 1 ELSE 0 END AS held,
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments a WHERE a.lead_id = l.id AND a.tenant_id = ? AND a.connector = 'scan:actionable' AND a.kind = 'actionability' AND a.value LIKE 'Actionable:%') THEN 1 ELSE 0 END AS reachable
          FROM leads l WHERE l.scan_job_id = ? ORDER BY l.score DESC, l.id`, [r.user_id, r.job_id]))

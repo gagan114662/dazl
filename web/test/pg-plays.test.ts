@@ -65,7 +65,7 @@ test('[pg] watches and monitors: tenant-scoped reads and actions, scheduled runs
       const owner = (await db.get<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE id = ?', [job]))!.user_id
       await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [job])
       // a verified, dated event (#387: only novel, dated, in-window, verified events count as new)
-      await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, confidence) VALUES (?, ?, 'n', 'c', 's', 'https://e.example', ?, ?, 'verified', 80)", [job.slice(0, 12) + 'aaaaaaaaaaaa', job, `key-${owner.slice(0, 1)}`, new Date(due * 1000).toISOString().slice(0, 10)])
+      await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, event_date_proof, confidence) VALUES (?, ?, 'n', 'c', 's', 'https://e.example', ?, ?, 'unverified', 'page_bound', 80)", [job.slice(0, 12) + 'aaaaaaaaaaaa', job, `key-${owner.slice(0, 1)}`, new Date(due * 1000).toISOString().slice(0, 10)])
       await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [due, job])
     }
     assert.equal(await collectMonitorResults(db, { now: due + 3600 }), 2)
