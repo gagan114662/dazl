@@ -88,7 +88,7 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 //   refused         results not kept, by cause: the ProfileRefusal causes, role (title shares no buyer-role word), place, and
 //                   company_unconfirmed (the employer's NAME matches but nothing else ties the result to this lead's company)
 //   failed          searches sent (or stopped at our own gate) that got no answer, by cause (FAILED_SEARCH); searched counts them too,
-//                   except spend_cap: a search the spend cap refused was never sent and is not in searched
+//                   except a search refused before it was sent (the spend cap, a lost job, a trial's own budget): not in searched
 //   no_roles        the request names no buyer role, so the pass had nothing to search for and read no lead
 export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; failed: Record<string, number>; no_roles?: boolean }
 const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled', 'spend_cap']
@@ -220,7 +220,9 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
           // Only a real limit is a planned stop: the scan's cap or the owner's pool. A lost job says so; anything else (the ledger could not
           // be read or saved, an unknown price) is an error and takes the error path.
           if (e instanceof SpendRefused && (e.reason === 'over_cap' || e.reason === 'over_limit' || e.reason === 'owner_pool_limit')) return { ok: false as const, reason: 'spend_cap' as const }
-          if (e instanceof SpendRefused && e.reason === 'ownership_lost') return { ok: false as const, reason: 'ownership_lost' as const }
+          if (e instanceof SpendRefused && (e.reason === 'ownership_lost' || e.reason === 'scan_not_active' || e.reason === 'scan_not_found')) return { ok: false as const, reason: 'ownership_lost' as const }   // the job is no longer this attempt's
+          // A free-trial scan's own budget (runner charge hook): the planned stop it always was.
+          if (e instanceof SpendRefused && e.reason === 'trial_budget_reached') return { ok: false as const, reason: 'budget_kept' as const }
           throw e
         })
       const r = await Promise.race([
@@ -234,7 +236,8 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       }
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
       // A search that got no answer (provider unavailable, our per-minute rate gate, a cap) is counted as failed, never as "searched, found nobody".
-      if (!r.ok && r.reason === 'ownership_lost') { deps.onStop?.('ownership_lost'); break }
+      // Refused before anything was sent (a lost job, a trial scan's own budget): not a search that ran.
+      if (!r.ok && (r.reason === 'ownership_lost' || r.reason === 'budget_kept')) { searched--; if (stats) stats.searched = searched; deps.onStop?.(r.reason); break }
       // Refused by the spend cap before anything was sent: not a search that ran.
       if (!r.ok && r.reason === 'spend_cap') { searched--; if (stats) stats.searched = searched }
       if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth' || r.reason === 'spend_cap') { deps.onStop?.(r.reason); break } continue }
@@ -271,10 +274,12 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); return stored } // re-checked before EVERY write: another process may reclaim the job mid-loop
         // The same person may already be stored by the name alone (before the tie rule): the insert would be a no-op (one row per
         // lead / connector / value), so the old row gets the tie instead. A row that is already tied is left as it is and not counted.
-        const value = `${p.name}, ${p.title}`.slice(0, 120), label = tiedLabel(LABEL, ties.get(h.url) ?? 'place')
+        const tie = ties.get(h.url); if (!tie) continue   // never stored without a tie
+        const value = `${p.name}, ${p.title}`.slice(0, 120), label = tiedLabel(LABEL, tie)
         const had = db.prepare("SELECT label FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = 'person' AND value = ?").get(l.id, tenantId, CONNECTOR, value) as { label: string | null } | undefined
         if (had && companyTied(had.label)) continue
-        if (had) db.prepare("UPDATE lead_enrichments SET label = ? WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = 'person' AND value = ?").run(label, l.id, tenantId, CONNECTOR, value)
+        // The tied result's own profile, date and reading time replace the old result's (it may have been another profile of the same name).
+        if (had) db.prepare("UPDATE lead_enrichments SET label = ?, source_url = ?, source_date = ?, retrieved_at = ? WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = 'person' AND value = ?").run(label, h.url.split('?')[0].slice(0, 500), h.date ?? today, now, l.id, tenantId, CONNECTOR, value)
         else addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value, label, confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
         stored++
       }
