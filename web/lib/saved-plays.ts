@@ -5,7 +5,10 @@ import { playName, type PlayIcp } from './play-card.ts'
 // Pure and display-only: it reads the two existing list routes' rows; pausing, resuming and deleting stay on their
 // routes, and nothing here runs a scan. A run's leads are results and live in Leads; a play links to its last run there.
 
-export interface WatchRow { id: string; query: string; icp: unknown; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number; auto?: boolean }
+// #1042: interval_s is the watch's cadence (a day for the first play's repeat, a week otherwise, lib/play-cadence.ts);
+// skipped is a run the free plan's daily cap skipped, until the play runs again
+export interface WatchSkip { at: number; reason: string; next_run_at: number | null }
+export interface WatchRow { id: string; query: string; icp: unknown; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number; auto?: boolean; interval_s?: number; skipped?: WatchSkip | null }
 export interface MonitorRow { id: string; query: string; icp?: string | null; interval_hours: number; enabled: number | boolean; paused_reason: string | null; last_run_at: number | null; next_run_at: number | null; last_new_count: number | null; run_count: number; last_job_id?: string | null }
 
 export type PlayTone = 'live' | 'running' | 'paused' | 'failed'
@@ -23,10 +26,14 @@ const PAUSED: Record<string, string> = {
   quota: "Paused: this month's scans are used up", quota_exceeded: "Paused: this month's scans are used up",
   trial_used: 'Paused: your free searches are used up. Add your AI key in Settings to keep it running',
 }
-// #1042: one line under a weekly play about how it repeats and the email after each run
-export const AUTO_NOTE = 'dazl set your first play to repeat every week. Pause it any time.'
+// #1042: one line under a play about how it repeats and the email after each run
+export const AUTO_NOTE = 'dazl set your first play to search again every day. Pause it any time.'
 export const MAIL_NOTE = 'After each run that finds new leads you get an email listing them. Pausing the play stops the runs and the emails.'
-export const noteOf = (auto: boolean, emails: boolean): string | null => [auto ? AUTO_NOTE : '', emails ? MAIL_NOTE : ''].filter(Boolean).join(' ') || null
+// #1042: the run the free plan's daily cap skipped, said once in words (Plays and Home)
+export function skipLine(s: WatchSkip, timeZone?: string): string {
+  return `The search due ${dayOf(s.at, timeZone)} was skipped: the free plan runs 1 search a day and another search had already run that day.${s.next_run_at ? ` Next search ${whenOf(s.next_run_at, timeZone)}.` : ''}`
+}
+export const noteOf = (auto: boolean, emails: boolean, skip: string | null = null): string | null => [skip ?? '', auto ? AUTO_NOTE : '', emails ? MAIL_NOTE : ''].filter(Boolean).join(' ') || null
 
 const asIcp = (v: unknown): PlayIcp | null => {
   if (typeof v === 'string') { try { return asIcp(JSON.parse(v)) } catch { return null } }
@@ -73,11 +80,11 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       : { tone: 'live', label: 'Live' }
     out.push({
       id: w.id, kind: 'watch', name: playName(w.query, icp), sentence: w.query,
-      audience: audienceOf(icp), signal: signalOf(icp), schedule: 'Weekly',
+      audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf((w.interval_s ?? (w.auto ? 86400 : 604800)) / 3600),
       lastRun: w.last_run_at ? `${when(w.last_run_at)}${w.last_status === 'done' ? `, ${w.new_leads} new` : ''}` : 'Not run yet',
       lastHref: w.last_job_id ? `/app/leads?job_id=${w.last_job_id}` : null,
       nextRun: w.active && w.next_run_at ? next(w.next_run_at) : 'Paused: resume to schedule it',
-      status, active: w.active, note: noteOf(w.auto === true, emails),
+      status, active: w.active, note: noteOf(w.auto === true, emails, w.active && w.skipped ? skipLine(w.skipped, timeZone) : null),
     })
   }
   for (const m of monitors ?? []) {

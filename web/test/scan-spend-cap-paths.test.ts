@@ -55,6 +55,7 @@ const FREE: Record<string, string> = {
   'https://api.anthropic.com/v1/models': 'key check (model list): free',
   'https://api.openai.com/v1/models': 'key check (model list): free',
   'https://api.gdeltproject.org/api/v2/doc/doc': 'GDELT news search: free public API',
+  'https://api.zerobounce.net/v2/validate': 'ZeroBounce free tier only (#899 decision): a card-less free account, capped by dazl at the free monthly allowance (email_verify_usage ledger, lib/people/email-pattern.ts verifyMonthlyCap) and the per-tenant daily cap; never upgraded',
   'https://api.github.com/search/repositories': 'GitHub search: free, rate-limited',
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
@@ -273,15 +274,27 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
     assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
   }
   // In-attempt stop (#363): once ANY vendor request of an attempt may have been billed, no later paid request of ANY vendor is sent in that attempt.
+  // A documented rejection by the scan's own search provider stops every vendor too. #382: a documented rejection by a BYOK enrichment
+  // vendor (Apollo, PDL: the tenant's own key and account) stops THAT vendor only - the waterfall's next provider and the scan's later
+  // steps still run - and that vendor is never called again in the attempt.
+  const vendorOf = (name: string) => name.split(' ')[0]
   for (const first of cases) for (const [how, firstAnswer] of [['maybe-billed (timeout)', async () => { throw new TypeError('aborted') }], ['documented rejection (429)', async () => new Response('{}', { status: 429 })], ['404 (no source shows a not-found is unbilled or harmless)', async () => new Response('{}', { status: 404 })]] as const) {
     if (how.startsWith('404') && first.name === 'pdl') continue // PDL documents a 404 no-match as unbilled (https://docs.peopledatalabs.com/support/troubleshooting/no-results-found): it does not stop the scan
     const s = scan()
-    let later = 0
+    resetTinyfishState() // an earlier leg's TinyFish 429 sets TinyFish's own process-wide rate block; each leg starts clear
+    const later: Record<string, number> = {}
     await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
       await first.call(firstAnswer as unknown as typeof fetch).catch(() => null)
-      for (const c of cases) await c.call((async () => { later++; return new Response('{}', { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
+      // A well-formed answer for every vendor (a bare {} is an unreadable PDL answer: maybe billed, which would itself stop the attempt).
+      for (const c of cases) await c.call((async () => { later[c.name] = (later[c.name] ?? 0) + 1; return new Response(JSON.stringify({ organization: null, people: [], data: [], results: [] }), { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
     })
-    assert.equal(later, 0, `after a ${how} ${first.name} no later vendor request of any vendor is sent`)
+    // An Apollo 404 keeps the attempt-wide stop: no source shows a not-found is unbilled or harmless.
+    const vendorScoped = how.startsWith('documented rejection') && (vendorOf(first.name) === 'apollo' || vendorOf(first.name) === 'pdl')
+    for (const c of cases) {
+      const sameVendor = vendorOf(c.name) === vendorOf(first.name)
+      if (!vendorScoped || sameVendor) assert.equal(later[c.name] ?? 0, 0, `after a ${how} ${first.name}, no later ${c.name} request is sent`)
+      else assert.equal(later[c.name], 1, `#382: after a ${how} ${first.name}, ${c.name} (another vendor) is still sent`)
+    }
   }
 })
 

@@ -146,6 +146,9 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
       // A hold (budget, credits, circuit) or a setup row that could not read a key / lead was written BEFORE any request: it is
       // an outcome of its own, never a provider lookup (a new job whose every lead was held also has no claims and lands here).
       if (HELD.has(r.status)) { out.held++; continue }
+      // #382: a lookup the scan's spend gate refused BEFORE sending (its claim released, lib/enrich/index.ts unsentStatus). Not a
+      // lookup and not a failure; the provider's 'spend_refused' skip row above already reports the hold once.
+      if (r.status.startsWith('not sent: ')) continue
       if (PRE_CALL_SETUP.test(r.status)) { out.failed++; continue }
       const org = /^(?:step:)?org /.test(r.lookup)
       const dedupe = `${r.connector}\u0000${org ? 'org ' + r.lookup.replace(/^(?:step:)?org /, '') : r.lookup}\u0000${r.status}\u0000${r.results}`
@@ -180,7 +183,8 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   for (const c of claims) {
     const a = statusOf.get(key(c.connector, c.lookup))
     const reserved = c.status === 'reserved'
-    const unsettled = () => { out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible
+    // 'not sent:' = an owner retry the spend gate refused before sending, kept held (#382): proven unsent, so a hold, not unconfirmed
+    const unsettled = () => { if (a?.startsWith('not sent: ')) { out.held++; return } out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible
     if (c.lookup.startsWith('step:org ')) {
       if (reserved) { unsettled(); continue }
       out.total++; out.byProvider[providerOf(c.connector)]++
@@ -208,6 +212,7 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   // compatibility 'org X' rows land here too (they only ever repeat an org claim) and are not events of their own.
   for (const r of audit) {
     if (claimed.has(key(r.connector, r.lookup)) || r.status === 'ok' || r.status === 'empty') continue
+    if (r.status.startsWith('not sent: ')) continue // #382: refused by the spend gate before sending, claim released; its 'spend_refused' skip row is the hold
     if (HELD.has(r.status)) out.held++; else out.failed++
   }
   return out

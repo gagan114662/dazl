@@ -1,7 +1,7 @@
 // The web form's spend-limit control builds the SAME budget object the API takes (lib/scan/run-budget.ts), through the same
 // validator, so the form can never send what the API would reject and the disclosure it shows is the one the server returns.
 // It is the optional PARTIAL budget described there, not a whole-scan dollar ceiling.
-import { normalizeScanBudget } from './run-budget.ts'
+import { describeRunBudget, normalizeScanBudget, type BudgetDisclosure } from './run-budget.ts'
 import type { RunBudget } from './runner.ts'
 
 export interface BudgetForm { enabled: boolean; maxUsd: string; noFallback: boolean; noEnrichment: boolean; noJudge: boolean }
@@ -21,4 +21,11 @@ export function budgetFromForm(f: BudgetForm): { budget: RunBudget | null; error
   if (Object.keys(o).length === 0) return { budget: null, error: 'Set a dollar limit or tick at least one option, or turn the spend limit off.' }
   const n = normalizeScanBudget(o, true)
   return n.ok ? { budget: n.budget, error: null } : { budget: null, error: n.error }
+}
+
+// The panel's disclosure before Run, with what the browser already knows about who pays: a keyless account's scan runs on the
+// free trial (app/api/scan/route.ts funded = 'trial'), which never takes the adaptive round (#381), so its rows say so.
+// hasKey null (not loaded yet) is read as own-key: the disclosure then states the round, the safe direction.
+export function panelDisclosure(budget: RunBudget | null, hasKey: boolean | null): BudgetDisclosure | null {
+  return budget ? describeRunBudget(budget, { trial: hasKey === false }) : null
 }

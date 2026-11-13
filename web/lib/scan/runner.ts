@@ -52,7 +52,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
-import { beginEnrichment, endEnrichment } from './enrichment.ts'
+import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -70,11 +70,13 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
+import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, adaptiveDiscoveryOn } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -361,8 +363,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
     // exactly as before. Unbinding it first would launder it into a verified undated lead.
     const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
-    if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
-      if (isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
+    // #533: the board's own first-published day for exactly this posting URL, from the job-board source or from the board's API record the page was read from
+    // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
+    const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
+    const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
+    if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
+      // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
+      // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A
+      // claimed day the date rules reject (stale, future, malformed) is never replaced: it keeps the hold, as on any page
+      c0 = { ...cIn, event_date: boardDay, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
+    } else if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
+      if (hiringCand && boardDay === cIn.event_date) {
         // A job board's own structured publish date for exactly this posting URL: proves THIS hiring posting's day only, never funding or another event.
         c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
       } else {
@@ -494,6 +505,18 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // Atomically claims one pending job whose owner has a key stored, or a trial-funded
 // job from a keyless account (those run on the shared operator key). Keyless non-trial
 // jobs are left alone (a worker such as Hermes can take them).
+// Fair across tenants (#1081): the tenant with the fewest busy jobs (running, or still in post-finish enrichment, which
+// holds a run slot), then the fewest jobs finished in the last hour (evens out turns even when finish times tie at the
+// second), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then the
+// oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
+// An enrichment row whose end mark never landed (a crash) stops counting as busy when the UI calls it interrupted.
+// Claim cost (#1081 review): every arm is an index seek bounded by the queue, never by history.
+//  - the enrichment arm must use the partial index scan_jobs_enriching: `+status` keeps the planner off
+//    scan_jobs_status, which would visit every 'done' job ever written (392 ms at 2M rows vs ~0.5 ms);
+//  - `served` is MATERIALIZED so its per-tenant subqueries run once per tenant, not once per pending job.
+// test/fair-legacy-claimer-1081.test.ts pins both with EXPLAIN QUERY PLAN.
+const ENRICHING_HOLDS_SLOT_S = ENRICH_STALE_S
+const RECENT_SERVED_S = 3600
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
   // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
   // by the queue bridge instead, so the legacy claimer must skip them
@@ -502,11 +525,25 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd FROM scan_jobs
-         WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
-           AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
-           ${excl}
-         ORDER BY created_at, rowid LIMIT 1`,
+        `WITH eligible AS MATERIALIZED (
+           SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd, created_at, rowid AS rid
+           FROM scan_jobs
+           WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
+             AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
+             ${excl}),
+         running AS (SELECT user_id, COUNT(*) AS n FROM (
+                       SELECT user_id FROM scan_jobs WHERE status = 'running'
+                       UNION ALL
+                       SELECT user_id FROM scan_jobs WHERE enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICHING_HOLDS_SLOT_S} AND +status = 'done')
+                     GROUP BY user_id),
+         served AS MATERIALIZED (SELECT t.user_id, MAX(COALESCE((SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id), 0),
+                                          COALESCE((SELECT MAX(f.finished_at) FROM scan_jobs f WHERE f.user_id = t.user_id), 0)) AS at,
+                           (SELECT COUNT(*) FROM scan_jobs h WHERE h.user_id = t.user_id AND h.finished_at >= CAST(strftime('%s','now') AS INTEGER) - ${RECENT_SERVED_S}) AS recent
+                    FROM (SELECT DISTINCT user_id FROM eligible) t)
+         SELECT e.id, e.user_id, e.business_name, e.industry, e.location, e.attempts, e.query, e.icp, e.sources, e.funded_by, e.watch_id, e.csv_domain, e.run_budget, e.spend_reserved_usd
+         FROM eligible e LEFT JOIN running r ON r.user_id = e.user_id LEFT JOIN served v ON v.user_id = e.user_id
+         ORDER BY COALESCE(r.n, 0), COALESCE(v.recent, 0), COALESCE(v.at, 0), e.created_at, e.rid
+         LIMIT 1`,
       )
       .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined
     if (!row) return null
@@ -887,9 +924,17 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 // when the run disabled paid steps, a budget already refused a call, or too little of the scan's time budget is left.
 // Its outcome is the 'search:adaptive' source row: ok / empty / skipped:<why> / budget_stopped / search_cap, so a
 // bounded stop is never reported as an exhausted market.
-export const ADAPTIVE_SEARCHES = 3
-export const ADAPTIVE_FETCHES = 6
+export { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES }
 export const ADAPTIVE_MIN_REMAINING_MS = 120_000
+// Is this job a monitor's run? Both paths that queue one (lib/monitors.ts runDueMonitors, the scheduled tick, and
+// lib/play-now.ts runPlayNow, "Find leads now") insert its monitor_runs row in the SAME transaction as the job, so the row
+// exists before any runner can claim the job, including for a job queued before this code shipped. An index seek on
+// monitor_runs_job (job_id), scoped to the job's owner through the monitor. No table: no monitors; any other read error
+// fails closed (true: no extra round).
+export const MONITOR_RUN_SQL = 'SELECT 1 AS x FROM monitor_runs r JOIN monitors m ON m.id = r.monitor_id WHERE r.job_id = ? AND m.user_id = ? LIMIT 1'
+export function isMonitorRun(db: Database.Database, job: Pick<Job, 'id' | 'user_id'>): boolean {
+  try { return !!db.prepare(MONITOR_RUN_SQL).get(job.id, job.user_id) } catch (e) { return !/no such table/i.test(String(e)) }
+}
 interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
 
 async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound): Promise<LeadDraft[] | null> {
@@ -1378,7 +1423,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
-    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (from the job-board source only)
+    const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
     const selfDescribedLeads: LeadDraft[] = []
     let complaints: ComplaintItem[] = []
     if (sel && icpForSources && complete) {
@@ -1386,7 +1431,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
         const items = collected.items
-        for (const it of items) if (it.source === 'jobboards' && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
+        for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
         for (const run of collected.runs) ledger.record(run.collector, run.status, run.evidence)
         if (items.length > 0) {
@@ -1531,15 +1576,19 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
     }
     // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
-    // Gated OFF by default: one round costs up to ADAPTIVE_SEARCHES searches + ADAPTIVE_FETCHES fetches + 1 extraction
-    // on top of round one, for every paid non-trial scan that verified nothing, and that extra spend has no owner
-    // approval. DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 opts in; OFF behaves exactly as without the feature (no round, no
-    // calls, no ledger row). Trial scans skip the round on their own policy (paidFallback=false) even when enabled.
-    if (process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED === '1' && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+    // ON by default (lib/scan/run-budget.ts adaptiveDiscoveryOn): one round costs up to ADAPTIVE_SEARCHES searches +
+    // ADAPTIVE_FETCHES fetches + 1 extraction on top of round one, and the price estimate's maxima include it.
+    // DAZL_ADAPTIVE_DISCOVERY_ENABLED=0 turns it off; OFF behaves exactly as without the feature (no round, no calls,
+    // no ledger row). Trial scans skip the round on their own policy (paidFallback=false).
+    if (adaptiveDiscoveryOn(process.env) && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
+      // a scheduled play run (a watch's or a monitor's) runs unattended under the caps it was confirmed with: no extra round
+      let recurring = !!job.watch_id
+      if (!recurring) recurring = isMonitorRun(db, job)
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
-      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      if (recurring) stop('skipped:recurring_run')
+      else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
       else if (budgetRefused) stop('budget_stopped')
       else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
       else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)
@@ -1865,8 +1914,19 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
 // post-work on every scan) or never - fail safe to the default and log why.
 // After finish() the job row is status 'done' (enrichment is the 'enriching' view of it): still ours while it is the same attempt and not failed / re-pended / deleted. This is NOT assertOwned, which
 // requires status 'running'. A real cancellation or a re-claim by a newer attempt changes the row; a lookup that is merely slow does not.
+// #899: the same check, but an unreadable job row counts as NOT alive: the mailbox check sends a prospect's address to a third
+// party, so "could not read" must never mean "carry on" there (the other post-finish steps keep postFinishAlive's lenient reading).
+export function postFinishAliveStrict(db: Database.Database, job: { id: string; attempts: number }): boolean {
+  try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return false }
+}
 export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
   try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
+}
+// #899: the mailbox check's own time budget (EMAIL_VERIFY_BUDGET_MS, default 20 s, between 1 s and 60 s): it runs after the
+// post-finish budget's steps, so this is the most it can add to a scan's wall time.
+export function emailVerifyBudgetMs(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.EMAIL_VERIFY_BUDGET_MS)
+  return Number.isFinite(n) && n > 0 ? Math.min(60_000, Math.max(1_000, Math.floor(n))) : 20_000
 }
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
@@ -1909,6 +1969,23 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
+    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
+    // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
+    // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
+    if (emailGuessEnabled()) {
+      const verifier = verifierFromEnv(process.env, deps.fetchImpl)
+      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
+      else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
+      else try {
+        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAliveStrict(db, job) })
+        const detail = { leads: v.leads, checked: v.checked, verified: v.verified, over_cap: v.capped }
+        if (v.skipped) trace.note('email_verify', 'skipped', v.skipped)
+        // The provider's own words describe the operator's shared account: they go to the server log, not into a tenant's trace.
+        else if (v.stopped) { console.error('[email-verify] stopped: the verifier refused (bad key, no credits or rate limit)'); trace.note('email_verify', 'failed', 'the mailbox check is unavailable right now, so no further address was sent', detail) }
+        else if (v.aborted) trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', `stopped early (time budget ${emailVerifyBudgetMs()} ms, or the scan was cancelled); unchecked addresses stay unchecked`, detail)
+        else trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', v.checked ? null : v.capped ? 'the monthly or daily check cap was reached' : 'no high-confidence US guess to check', detail)
+      } catch (e) { trace.note('email_verify', 'failed', e instanceof Error ? e.message.slice(0, 160) : 'error') }
+    }
   } finally {
     clearTimeout(postTimer)
   }
