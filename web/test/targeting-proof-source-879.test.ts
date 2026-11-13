@@ -162,6 +162,46 @@ test('#879 a pass that rests on the sales-hiring gate\'s record names the page t
   const bare = conditionProof(c, l, [COUNT_ROW, ...JUSTWORKS], gate)
   assert.equal(bare.truth, 'pass')
   assert.equal(bare.source_url, undefined)
+  // a posting far outside the gate's own window is not a page the gate can have passed on (it passed on the lead's quote): never cited
+  const stale: ProofRow = { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Account Executive - posted 2025-12-01', label: 'Remote; Greenhouse', source_url: 'https://job-boards.greenhouse.io/northpeak/jobs/1', source_date: '2025-12-01' }
+  const old = conditionProof(c, l, [stale], gate)
+  assert.deepEqual([old.truth, old.source_url], ['pass', undefined], old.reason)
+  assert.doesNotMatch(old.reason, /read on/)
+  // one inside it is
+  const recent: ProofRow = { ...stale, value: 'Account Executive - posted 2026-10-30', source_date: '2026-10-30', source_url: 'https://job-boards.greenhouse.io/northpeak/jobs/2' }
+  assert.equal(conditionProof(c, l, [stale, recent], gate).source_url, 'https://job-boards.greenhouse.io/northpeak/jobs/2')
   // without the gate's record the same rows prove nothing
   assert.equal(conditionProof(c, l, [careers, COUNT_ROW], ctx(q)).truth, 'unknown')
+})
+
+test('#879 the role matcher: abbreviations a request uses are read as the title; a title\'s stray "AE" / "SDR" is never the sales role', () => {
+  const m = (title: string, request: string) => !!matchedHiringRole(title, requestedHiringRoles(`hiring ${request}`))
+  // requests abbreviate, boards spell out (and the reverse for SDR / BDR)
+  assert.ok(m('Sales Development Representative', 'SDRs'))
+  assert.ok(m('SDR - Outbound', 'sales development representatives'))
+  assert.ok(m('Senior BDR', 'BDRs'))
+  assert.ok(m('Account Executive, Enterprise', 'AEs'))
+  assert.ok(m('Sales Representative', 'sales reps'))
+  assert.ok(m('Inside Sales Rep', 'sales representatives'))
+  assert.ok(m('VP, Sales', 'their first VP of Sales'))
+  assert.ok(m('Vice President, Sales', 'a VP of Sales'))
+  assert.ok(m('VP of Sales, EMEA', 'a Vice President of Sales'))
+  // another trade's title that happens to carry the letters (reviewers' inputs)
+  assert.equal(m('Motion Designer (After Effects / AE)', 'account executives'), false)
+  assert.equal(m('Customer Success Manager - Dubai, AE', 'account executives'), false)
+  assert.equal(m('AES Encryption Engineer', 'AE'), false)
+  assert.equal(m('RF Engineer, SDR (Software Defined Radio)', 'SDRs'), false)
+  // unchanged: one sales title is not another
+  assert.equal(m('Account Executive, Enterprise', 'SDRs'), false)
+  assert.equal(m('Associate Business Systems Administrator', 'a CRM administrator'), false)
+  assert.equal(m('VP, Marketing', 'a VP of Sales'), false)
+  // and through the proof: the stray letters do not prove the clause, the spelled-out title does
+  const row = (title: string): ProofRow => ({ connector: 'signals:ashby-gtm', kind: 'hiring', value: `${title} - posted 2026-11-05`, label: 'Remote; Ashby', source_url: 'https://jobs.ashbyhq.com/northpeak/2', source_date: '2026-11-05' })
+  const l = lead('Northpeak', 'northpeak.example')
+  assert.equal(prove(ask('account executives in the last 30 days'), l, [row('Motion Designer (After Effects / AE)')]).truth, 'unknown')
+  assert.equal(prove(ask('sales reps in the last 30 days'), l, [row('Sales Representative')]).truth, 'pass')
+  // a title that itself contains " - posted " keeps its own date; a named title with only the dated summary says so
+  assert.equal(prove(ask('account executives in the last 30 days'), l, [row('Account Executive - posted roles team')]).truth, 'pass')
+  const summaryOnly = prove(ask('account executives in the last 30 days'), lead('Qualtrics', 'qualtrics.com'), [QUAL_SUMMARY])
+  assert.match(summaryOnly.reason, /only a dated summary of its sales \/ GTM postings is stored .* names no single posting for account executives/)
 })

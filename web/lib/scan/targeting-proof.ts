@@ -186,7 +186,9 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   let rest = ownProof(c, lead, [], ctx)
   // A pass that rests on the gate's record names the page that record rests on, when the scan stored one (a confirmed posting or careers row for the role).
   if (rest.truth === 'pass' && !rest.source_url) {
-    const page = read.find(x => x.row.kind === 'hiring' && (!('why' in x) || x.why === 'undated') && fits(x.title ?? (bareTitle(x.row.value) || null)) && /^https?:/.test(x.row.source_url))
+    // Only a page the gate could have passed on: a posting inside the gate's own window, or the careers check's vacancy with no posting date.
+    const gateDays = parseWindowDays(ctx.query ?? '') ?? 90
+    const page = read.find(x => x.row.kind === 'hiring' && ('why' in x ? x.why === 'undated' : onClock(x.date, gateDays, now) === 'in') && fits(x.title ?? (bareTitle(x.row.value) || null)) && /^https?:/.test(x.row.source_url))
     if (page) rest = { ...rest, reason: `${rest.reason}; read on ${page.row.source_url}`, source_url: page.row.source_url }
   }
   // Nothing proves it: say what the stored rows DO show and why that is not this condition, with the row it was read on.
@@ -196,7 +198,7 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
     const near = late ? { row: late.row, why: `the posting for this role (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` }
       : unc ? { row: unc.row, why: `a board lists ${unc.title ?? role}, but that board is not established as this company's` }
       : audit ? { row: audit.row, why: `the board lists ${audit.title ?? role}, but its posting date was not read` }
-      : other ? { row: other.row, why: `the dated postings stored for this company are for other roles (${other.title ?? 'sales / GTM roles'}), not ${role}` }
+      : other ? { row: other.row, why: other.title !== null ? `the dated postings stored for this company are for other roles (${other.title}), not ${role}` : `only a dated summary of its sales / GTM postings is stored (${other.row.value}), which names no single posting for ${role}` }
       : (() => { const u = read.find((x): x is NotPosting => 'why' in x && x.why === 'undated'); return u ? { row: u.row, why: `its board was read (${u.row.value.slice(0, 80)}), but no posting for this role with its own posting date is stored` } : null })()
     if (near) rest = { truth: 'unknown', reason: `no dated posting shows this company hiring ${role}: ${near.why}`.slice(0, 300), ...link(near.row.source_url), ...(late ? { date: late.date } : {}) }
   }
