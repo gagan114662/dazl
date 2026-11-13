@@ -34,7 +34,7 @@ import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
-import { companySearchEligible } from '../scan/find-contact-eligible.ts'
+import { companySearchEligible, NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailTargets } from './work-email-eligible.ts'
@@ -119,7 +119,7 @@ export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
 
-interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; icp: string | null }
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
 
 const isUS = (c: string | null) => !!c && /^(?:united states(?: of america)?|usa?|u\.s\.a?\.?)$/i.test(c.trim())
 const domainOf = (address: string) => (address.split('@')[1] ?? '').toLowerCase()
@@ -181,9 +181,12 @@ export async function findWorkEmail(
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   if (typeof target !== 'string' || !target || target.length > TARGET_KEY_MAX) return { status: 'not_eligible', detail: 'no such person on this lead' }
-  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, j.icp
+  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
+  // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
+  // person's handle or the other side of a post: no company website to ground an address on (same rule as the Leads page).
+  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
   if (!companySearchEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []

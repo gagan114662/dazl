@@ -83,7 +83,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
             {v && v.showAddress && l?.address && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border ${v.checked ? 'border-green-600/40 text-green-800 bg-green-50' : 'border-amber-500/40 text-amber-800 bg-amber-50'}`} data-testid="work-email-address" data-checked={v.checked ? 'true' : 'false'}>
-                <span className="font-mono">{l.address}</span>
+                <span className="font-mono break-all">{l.address}</span>
                 <span className="text-[10px] uppercase tracking-wide">{v.checked ? (l.status === 'published' ? 'published' : l.status === 'unverified' ? 'checked' : 'verified') : 'not checked'}</span>
               </span>
             )}
