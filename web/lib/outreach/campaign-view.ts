@@ -4,7 +4,7 @@
 import { evidenceStateOf } from './evidence-state.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 
-export interface ViewLead { id: string; company?: string | null; name?: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; window_held?: boolean; human_confirmed_from?: string | null }
+export interface ViewLead { id: string; company?: string | null; name?: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; window_held?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
 export interface ViewMsg { id: string; lead_id: string; to_email: string; subject: string; status: string; sent_at: number | null }
 export type Stage = 'rejected' | 'review' | 'research' | 'unverified' | 'qualified' | 'draft' | 'approved' | 'sending' | 'sent' | 'other'
 export interface LeadStatus { stage: Stage; text: string }
@@ -28,7 +28,8 @@ export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
   if (ev === 'unverified') return { stage: 'unverified', text: 'Not verified - check the source' }
   // A source-checked or confirmed lead can still be held by the time window, or be confirmed OUT of a hold a check cannot
   // resolve (human_confirmed_from): confirming it does not lift either, so it stays research, never "not drafted" (#683).
-  if (l.window_held || uncheckableCause(l.human_confirmed_from)) return { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
+  // A required check that has not passed holds it too, whatever the row's evidence state says (#1062, requiredGateHeld).
+  if (l.window_held || l.gate_held || uncheckableCause(l.human_confirmed_from)) return { stage: 'research', text: 'Research only - checking the source cannot make it ready' }
   return { stage: 'qualified', text: ev === 'machine' ? 'Source-checked, not drafted' : 'Confirmed by you, not drafted' }
 }
 

@@ -41,7 +41,7 @@ export const runStatusOf = (j: ScanRecord) => runStatus(scanOutcome(j), j.lead_c
 // state first, then a review reason - split into review a check can resolve and research it cannot (#683, the same verdict as
 // Home: lib/lead-state.ts reviewIsActionable) - else unverified.
 export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number }
-type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; human_confirmed_from?: string | null }
+type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
 export function currentQual(rows: QualRow[]): CurrentQual & { research: number } {
   const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
   for (const r of rows) {
@@ -50,7 +50,8 @@ export function currentQual(rows: QualRow[]): CurrentQual & { research: number }
     // confirmed OUT of a hold a check cannot resolve, or it carries an uncheckable review_reason of its own (a lead
     // can be machine/human-verified AND still have a review_reason set - #683 round 3: the same verdict as leadStatus,
     // lib/outreach/campaign-view.ts, which checks review_reason before evidence state for exactly this case).
-    const held = r.window_held || !!uncheckableCause(r.human_confirmed_from) || !!uncheckableCause(r.review_reason)
+    // gate_held: a required check that has not passed (#1062) - the same hold the draft guard reads (requiredGateHeld).
+    const held = r.window_held || r.gate_held || !!uncheckableCause(r.human_confirmed_from) || !!uncheckableCause(r.review_reason)
     if (r.quarantined_at !== null) q.rejected++
     else if ((st === 'machine' || st === 'human') && held) q.research++
     else if (st === 'machine') q.sourceChecked++
