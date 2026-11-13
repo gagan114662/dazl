@@ -71,7 +71,13 @@ await ctx.route('**/*', async route => {
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   // An approved email and no rejections: the first-scan, leads-reviewed and first-approved rows are done here.
   if (p === '/api/outreach' && m === 'GET') return json({ messages: [{ id: 'm1', lead_id: 'x', status: 'approved' }] })
-  if (p === '/api/campaigns') return json({ campaigns: [] })
+  // #683 round 3: recentPlays prefers a matching campaign row's qualification over the job's own (possibly stale)
+  // verified/needs_review - so job a/b need rows here with the SAME counts or their outcome text falls back to
+  // "N found; open the campaign for current counts" instead of the source-checked/needs-review wording asserted below.
+  if (p === '/api/campaigns') return json({ campaigns: [
+    { id: 'a'.repeat(24), qualification: { rejected: 0, sourceChecked: 2, confirmedByYou: 0, needsReview: 1, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0 } },
+    { id: 'b'.repeat(24), qualification: { rejected: 0, sourceChecked: 0, confirmedByYou: 0, needsReview: 5, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0 } },
+  ] })
   return json({}, 404)
 })
 const page = await ctx.newPage()

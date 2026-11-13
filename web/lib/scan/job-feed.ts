@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
-import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { companyKey, hasPhrase, norm, pageHeadingNames } from './evidence.ts'
 import { crawlJob, rawGet, type Get } from '../connectors/sitecrawl.ts'
 import { guardedLookup } from './fetch-page.ts'
 import { migrateSourceReview } from './source-review.ts'
@@ -142,7 +142,7 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
       if (have.has(k)) continue
       have.add(k)
       const key = k, leadId = randomBytes(12).toString('hex')
-      const named = key.length >= 2 && (hasPhrase(norm(quote), key) || hasPhrase(norm(page.title), key))
+      const named = key.length >= 2 && (hasPhrase(norm(quote), key) || pageHeadingNames(page, key))
       const signal = `Posted a role titled "${it.role}" (hiring signal only: not buying intent, fit or current need)`
       if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at,claim) VALUES(?,?,?,?,'reading',?,?)").run(leadId, tenant, jobId, k, now, claimOf.get(leadId) ?? (claimOf.set(leadId, randomBytes(8).toString('hex')), claimOf.get(leadId)!)).changes !== 1) continue
       if (!rows.length) db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Hiring feed intake','manual','manual','running')").run(jobId, tenant)

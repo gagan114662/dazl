@@ -16,7 +16,9 @@ import { claimSupportJudge, scanJudgeTemplate, scanVerificationJudge, STUB_MODEL
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
 const LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
-const SPEC: JudgeSpec = { id: 'claim_support', version: 1, model: 'stub-model-a', prompt_version: 1 }
+// sim-model-*: a stub standing in for a named real model, so its report can be locked in these gate tests
+const SRC = 'test: simulated real-model calibration'
+const SPEC: JudgeSpec = { id: 'claim_support', version: 1, model: 'sim-model-a', prompt_version: 1 }
 const clone = <T>(x: T): T => structuredClone(x)
 const judge = (model: keyof typeof STUB_MODELS, spec = SPEC) => claimSupportJudge(CORPUS, STUB_MODELS[model](), spec)
 const calIds = CORPUS.items.filter(i => i.split === 'calibration').map(i => i.id)
@@ -98,7 +100,7 @@ test('calibration uses only the calibration split; a truthful judge passes with 
   const hold = await calibrate(judge('truthful'), CORPUS, { split: 'holdout' })
   assert.ok(Object.keys(hold.outcomes).every(id => id.startsWith('hold-')))
   assert.equal(hold.split, 'holdout'); assert.equal(hold.corpus.origin, 'synthetic')
-  assert.throws(() => lockEntry(hold, '2026-11-03T00:00:00Z'), /only a calibration-split report/)
+  assert.throws(() => lockEntry(hold, '2026-11-03T00:00:00Z', SRC), /only a calibration-split report/)
 })
 
 test('a page instruction cannot add an action, and a judge that obeys one is blocked', async () => {
@@ -124,7 +126,7 @@ test('a shared blind spot (the name on the page counts as support) is blocked on
 })
 
 test('two judges with the same blind spot agree with each other, and their unanimous panel still fails: agreement is not ground truth', async () => {
-  const a = judge('name_matcher'), b = judge('name_matcher', { ...SPEC, model: 'stub-model-b' })
+  const a = judge('name_matcher'), b = judge('name_matcher', { ...SPEC, model: 'sim-model-b' })
   const [ra, rb] = [await calibrate(a, CORPUS), await calibrate(b, CORPUS)]
   const pair = pairAgreement(ra, rb, CORPUS)
   assert.equal(pair.comparable, true)
@@ -202,7 +204,7 @@ test('stored verdicts: a JSON-lines log round-trips, and a damaged line is an er
   assert.equal(recs.length, calIds.length)
   const log = recs.map(x => JSON.stringify(x)).join('\n') + '\n'
   assert.deepEqual(parseStoredVerdicts(log), recs)
-  assert.throws(() => parseStoredVerdicts(log + '{"v":1}\n'), /verdict log line \d+: not a stored judge verdict/)
+  assert.throws(() => parseStoredVerdicts(log + '{"v":2}\n'), /verdict log line \d+: not a stored judge verdict/)
   assert.throws(() => parseStoredVerdicts('not json'), /line 1: not JSON/)
   const edited = clone(CORPUS); edited.items[0].why += ' (edited)'
   assert.throws(() => toStoredVerdicts(r, edited, 'x', '2026-11-01T00:00:00Z'), /report and corpus differ/)
@@ -223,7 +225,7 @@ test('drift: a new model, the same model answering differently, and a rate rise 
   assert.ok(d.problems.some(p => /^new critical false positive: .*cal-contact-former-neg/.test(p)))
   assert.ok(d.problems.some(p => /^copied_press: fp_rate 0\.00 -> 1\.00$/.test(p)), d.problems.join('; '))
   // a new model is a new fingerprint: recalibrate, even with identical answers
-  const newModel = toStoredVerdicts(await calibrate(judge('truthful', { ...SPEC, model: 'stub-model-b' }), CORPUS), CORPUS, 'run-4', at(4))
+  const newModel = toStoredVerdicts(await calibrate(judge('truthful', { ...SPEC, model: 'sim-model-b' }), CORPUS), CORPUS, 'run-4', at(4))
   const [m] = detectDrift([...base, ...newModel], { judge: SPEC.id })
   assert.equal(m.changed_judge, true); assert.equal(m.status, 'drifted'); assert.deepEqual(m.flipped, [])
   // live records are compared only with live records
@@ -237,10 +239,10 @@ test('the gate: only a passing, undrifted calibration for this exact fingerprint
   const j = judge('truthful')
   assert.deepEqual(judgeGate(j, LOCK, CORPUS), { usable: false, reason: 'judge claim_support was never calibrated' })
   const cal = await calibrate(j, CORPUS)
-  const lock: JudgeLock = { ...LOCK, judges: [lockEntry(cal, '2026-11-03T00:00:00Z')] }
+  const lock: JudgeLock = { ...LOCK, judges: [lockEntry(cal, '2026-11-03T00:00:00Z', SRC)] }
   assert.deepEqual(judgeGate(j, lock, CORPUS), { usable: true, reason: 'calibrated' })
   // any change to model, version, prompt version or prompt text is a new fingerprint, so a new calibration
-  for (const changed of [{ ...SPEC, model: 'stub-model-b' }, { ...SPEC, version: 2 }, { ...SPEC, prompt_version: 2 }]) {
+  for (const changed of [{ ...SPEC, model: 'sim-model-b' }, { ...SPEC, version: 2 }, { ...SPEC, prompt_version: 2 }]) {
     assert.notEqual(judgeFingerprint(changed, j.template), judgeFingerprint(SPEC, j.template))
     assert.match(judgeGate({ spec: changed, template: j.template }, lock, CORPUS).reason, /changed \(model, version or prompt\): recalibrate/)
   }
@@ -250,7 +252,7 @@ test('the gate: only a passing, undrifted calibration for this exact fingerprint
   assert.notEqual(corpusHash(edited), corpusHash(CORPUS))
   assert.match(judgeGate(j, lock, edited).reason, /another corpus version/)
   // a failed calibration can be locked (for the record) but never makes the judge usable
-  const failed: JudgeLock = { ...LOCK, judges: [lockEntry(await calibrate(judge('gullible'), CORPUS), '2026-11-03T00:00:00Z')] }
+  const failed: JudgeLock = { ...LOCK, judges: [lockEntry(await calibrate(judge('gullible'), CORPUS), '2026-11-03T00:00:00Z', SRC)] }
   assert.match(judgeGate(j, failed, CORPUS).reason, /failed calibration: critical false positive: cal-inj-neg, cal-inj-rubric-neg/)
   // a passing calibration stops counting once its stored verdicts drift
   const recs = [...toStoredVerdicts(cal, CORPUS, 'run-1', '2026-11-01T00:00:00Z'), ...toStoredVerdicts(await calibrate(judge('english_only'), CORPUS), CORPUS, 'run-2', '2026-11-02T00:00:00Z')]
