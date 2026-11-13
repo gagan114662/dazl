@@ -3,7 +3,18 @@
 // prefills the Plays box (/app/leads?q=...) for the user to start.
 import type { ResearchCause } from './lead-state.ts'
 export interface PlayIcp { summary?: string; who?: string[]; industries?: string[]; where?: string[]; sizes?: string[]; signals?: string[]; exclude?: string[]; window_days?: number }
-export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null }
+// #1042: auto = the first play's automatic repeat, which runs every day; skipped = a run the free plan's daily cap skipped
+export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null; auto?: boolean; skipped?: { at: number; next_run_at: number | null } | null }
+
+// #1042: Home's line about a run the free plan's daily cap skipped. Taken from the account's live first-play repeat
+// whatever Home's play card shows: the skip happens BECAUSE another search ran that day, and that search (usually a
+// different request) is what the card shows then.
+export function skipNoticeLine(watches: PlayWatch[] | null, timeZone?: string): string | null {
+  const w = watches?.find(x => x.active && x.auto && x.skipped)
+  if (!w?.skipped) return null
+  const day = (t: number) => new Date(t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone })
+  return `Your daily play "${playName(w.query, null)}" skipped its search due ${day(w.skipped.at)}: the free plan runs 1 search a day and another search had already run that day.${w.skipped.next_run_at ? ` Next search ${day(w.skipped.next_run_at)}.` : ''}`
+}
 
 const GENERIC = /^(?:independent|small|smaller|growing|local|b2b|smb|mid-?sized|established|new)\s+/i
 const SIGNALS: [RegExp, string][] = [
@@ -39,14 +50,15 @@ export type PlayStatus = 'live' | 'paused' | 'running' | 'done' | 'failed'
 export function playPace(job: { status: string; error: string | null; created_at: number; query: string | null }, watches: PlayWatch[] | null): { status: PlayStatus; label: string; pace: string } {
   const w = watches?.find(x => x.query.trim() === (job.query ?? '').trim()) ?? null
   const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const every = w?.auto ? 'every day' : 'weekly', Every = w?.auto ? 'Every day' : 'Weekly'
   const unknown = watches === null
-  if (job.status === 'pending' || job.status === 'running' || job.status === 'enriching') return { status: 'running', label: 'Running', pace: w ? `Runs weekly${w.active ? '' : ' (paused)'}` : unknown ? `Running now; schedule unavailable` : `Running now, started ${day(job.created_at)}` }
+  if (job.status === 'pending' || job.status === 'running' || job.status === 'enriching') return { status: 'running', label: 'Running', pace: w ? `Runs ${every}${w.active ? '' : ' (paused)'}` : unknown ? `Running now; schedule unavailable` : `Running now, started ${day(job.created_at)}` }
   if (unknown) {
     const last = job.status === 'failed' ? (job.error === 'no_candidates' ? 'No results' : job.error === 'cancelled' ? 'Stopped' : 'Failed') : 'Done'
     return { status: job.status === 'failed' && job.error !== 'no_candidates' ? 'failed' : 'done', label: last, pace: `Last run ${day(job.created_at)}; schedule unavailable` }
   }
-  if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs weekly${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}` }
-  if (w) return { status: 'paused', label: 'Paused', pace: `Weekly, paused${w.paused_reason ? ` (${w.paused_reason.replace(/_/g, ' ')})` : ''}` }
+  if (w && w.active) return { status: 'live', label: 'Live', pace: `Runs ${every}${w.next_run_at ? `, next ${day(w.next_run_at)}` : ''}` }
+  if (w) return { status: 'paused', label: 'Paused', pace: `${Every}, paused${w.paused_reason ? ` (${w.paused_reason.replace(/_/g, ' ')})` : ''}` }
   if (job.status === 'failed' && job.error === 'no_candidates') return { status: 'done', label: 'No results', pace: `Ran once, ${day(job.created_at)}` }
   if (job.status === 'failed') return { status: 'failed', label: job.error === 'cancelled' ? 'Stopped' : 'Failed', pace: `Ran once, ${day(job.created_at)}` }
   return { status: 'done', label: 'Ran once', pace: `Ran once, ${day(job.created_at)}` }
