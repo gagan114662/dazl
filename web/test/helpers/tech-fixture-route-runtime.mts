@@ -39,7 +39,7 @@ test('#769 tech fixture route refusals: 404 outside staging for a signed-in owne
   assert.equal((await call('POST', { page: 'plain' }, { host: 'localhost', 'content-type': 'text/plain' })).status, 403)
   const bad = await call('POST', { page: 'wordpress' })
   assert.equal(bad.status, 400)
-  assert.deepEqual(await bad.json(), { error: 'unknown_page', pages: ['plain', 'hubspot', 'consent_wall', 'challenge', 'outage_503'] })
+  assert.deepEqual(await bad.json(), { error: 'unknown_page', pages: ['plain', 'hubspot', 'consent_wall', 'challenge', 'outage_503', 'home_503'] })
   assert.equal((await call('POST', {})).status, 400)
   process.env.SITECRAWL_ENABLED = '0'
   const off = await call('POST', { page: 'plain' })
@@ -49,7 +49,7 @@ test('#769 tech fixture route refusals: 404 outside staging for a signed-in owne
   assert.equal(fetches, 0)
 })
 
-test('#769 tech fixture route on staging: plain -> hubspot adds; outage, consent wall and challenge change nothing; two plain pages remove; a forged tenant in the body is ignored; cleanup', async () => {
+test('#769 tech fixture route on staging: plain -> hubspot adds; an outage (whole site or homepage only), consent wall and challenge change nothing; two plain pages remove; a forged tenant in the body is ignored; cleanup', async () => {
   const db = build()
   process.env.DAZL_ENV = 'staging'; process.env.SITECRAWL_ENABLED = '1'
   setUser({ ...A, role: 'operator' })
@@ -58,7 +58,7 @@ test('#769 tech fixture route on staging: plain -> hubspot adds; outage, consent
   assert.equal((db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(first.job_id) as { user_id: string }).user_id, 'A')
   assert.deepEqual(first.changes, [])
   assert.deepEqual((await post('hubspot')).crawl.new_changes, ['HubSpot added'])
-  for (const page of ['outage_503', 'consent_wall', 'challenge']) {
+  for (const page of ['outage_503', 'home_503', 'consent_wall', 'challenge']) {
     const r = await post(page)
     assert.deepEqual(r.crawl.new_changes, [], page)
     assert.deepEqual(r.changes.map((c: { value: string }) => c.value), ['HubSpot added'], page)
@@ -66,7 +66,7 @@ test('#769 tech fixture route on staging: plain -> hubspot adds; outage, consent
   assert.deepEqual((await post('plain')).crawl.new_changes, [])
   const last = await post('plain')
   assert.deepEqual(last.crawl.new_changes, ['HubSpot removed'])
-  assert.deepEqual(last.measured, { crawls: 7, unreadable_or_failed_crawls: 3, changes_claimed: 2, false_changes: 0, changes_claimed_on_unreadable_or_failed: 0 })
+  assert.deepEqual(last.measured, { crawls: 8, unreadable_or_failed_crawls: 4, changes_claimed: 2, false_changes: 0, changes_claimed_on_unreadable_or_failed: 0 })
   assert.deepEqual(last.observations.map((o: { readability: string }) => o.readability), ['ok', 'ok', 'thin_page', 'blocked', 'ok', 'ok'])
 
   // B cannot remove A's fixture: B has none of its own.

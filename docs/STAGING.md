@@ -150,16 +150,17 @@ Google prerequisite is skipped for those addresses; every other trial limit stil
 
 ## Technology-change fixture (test only, #769)
 
-No real site changes its stack on demand, so an adoption, a removal and an outage between two readable pages could not be watched live. On staging only (`DAZL_ENV=staging`; the route answers 404 anywhere else) a signed-in member with the operate role can serve a fixture company's homepage in a named variant and crawl it once:
+No real site changes its stack on demand, so an adoption, a removal and an outage between two readable pages could not be watched live. On staging only (`DAZL_ENV=staging`; anywhere else it answers 404 to a signed-in member with the operate role, 401 signed out, 403 to a viewer) a signed-in member with the operate role can serve a fixture company's homepage in a named variant and crawl it once:
 
-    POST /api/leads/tech-fixture   {"page": "plain" | "hubspot" | "consent_wall" | "challenge" | "outage_503"}
+    POST /api/leads/tech-fixture   {"page": "plain" | "hubspot" | "consent_wall" | "challenge" | "outage_503" | "home_503"}
     DELETE /api/leads/tech-fixture
 
 - Each POST runs **one real crawl** (`crawlJob` -> `crawlSite` -> `recordTechObservation` -> `techChanges`) of `dazltechfixture.test` on a lead named "dazl tech fixture (test only)" in the caller's own workspace. Only the HTTP fetch is local; the readability verdict, the detector, the dated `tech_scan` row and the `tech_change` rows are the production code. No model, no search, nothing sent, $0. Needs `SITECRAWL_ENABLED` not `0` (else 503 `crawl_disabled`).
-- Pages: `plain` readable, no technology; `hubspot` readable with HubSpot's forms embed; `consent_wall` HTTP 200 cookie wall (recorded `thin_page`); `challenge` HTTP 200 bot challenge (recorded `blocked`); `outage_503` HTTP 503 everywhere (no observation).
-- The answer lists every dated observation, every change row, what this crawl added (`crawl.new_changes`) and `measured`: crawls, unreadable or failed crawls, changes claimed, and how many of those the served page could not carry (`false_changes`).
-- The check: `plain`, `hubspot` -> `HubSpot added`. Then `outage_503`, `consent_wall`, `challenge` -> no new change. Then `plain` -> still none; `plain` again -> `HubSpot removed` (two readable absences). The rows show on the lead's card at `/app/leads?job_id=<job_id>`.
+- Pages: `plain` readable, no technology; `hubspot` readable with HubSpot's forms embed; `consent_wall` HTTP 200 cookie wall (recorded `thin_page`); `challenge` HTTP 200 bot challenge (recorded `blocked`); `outage_503` HTTP 503 everywhere, robots.txt included (no observation, crawl status `robots_error`); `home_503` robots.txt answers and only the homepage is 503 (no observation, `site_unreachable`). A crawl that is cut short answers 503 `crawl_incomplete` and counts nothing.
+- The answer lists every dated observation, every change row, what this crawl added (`crawl.new_changes`) and `measured`: crawls, unreadable or failed crawls, changes claimed, and how many of those the served page could not carry (`false_changes`). This is a fixture-only measure against pages whose content is known, not a false-positive rate on real sites. A change counts once, the first time its row is written for the fixture lead.
+- The check: `plain`, `hubspot` -> `HubSpot added`. Then `outage_503`, `home_503`, `consent_wall`, `challenge` -> no new change. Then `plain` -> still none; `plain` again -> `HubSpot removed` (two readable absences). The rows show on the lead's card at `/app/leads?job_id=<job_id>`.
 - Observations are dated to the second: a call in the same second as the last one waits for the next.
+- One fixture history shows one adoption and one removal: a technology that comes back is treated as the same install, so `hubspot` after a confirmed removal claims nothing new. `DELETE` first to run the sequence again. One call at a time per workspace (a second at once answers 409 `crawl_in_flight`).
 - `DELETE` removes the fixture's play, lead and every row its crawls wrote.
 
 Code: `web/lib/scan/tech-fixture.ts`; tests `web/test/tech-fixture-769.test.ts`, `web/test/tech-fixture-route-769.test.ts`.

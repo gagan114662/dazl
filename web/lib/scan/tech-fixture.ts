@@ -11,6 +11,10 @@
 // Gate: DAZL_ENV=staging only (lib/staging.ts). Production never has it, so the fixture cannot run there. The lead is labelled test
 // only (job marker industry/location 'test only' -> source_kind 'test'), lives in the caller's own workspace, has no contact and is
 // never a draft candidate. deleteTechFixture removes every row the fixture and its crawls wrote.
+//
+// One fixture history shows ONE adoption and ONE removal. The rule treats a technology that comes back after a gap as the same install
+// (tech-observations.ts), and a lead keeps one row per change, so serving `hubspot` again after a confirmed removal claims nothing new and
+// the two dated rows stay as they are. Delete the fixture to start a fresh history.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { isStaging } from '../staging.ts'
@@ -31,12 +35,13 @@ const SIGNAL = 'Test-only fixture for checking technology change detection on st
 //   hubspot      the same page with HubSpot's forms embed (the script tag HubSpot's own embed code gives)
 //   consent_wall HTTP 200, a cookie wall and nothing else: readable as HTML but too thin to say anything about absence (thin_page)
 //   challenge    HTTP 200, a bot-challenge interstitial (blocked)
-//   outage_503   HTTP 503: the site is down
-export const TECH_FIXTURE_PAGES = ['plain', 'hubspot', 'consent_wall', 'challenge', 'outage_503'] as const
+//   outage_503   HTTP 503 on every path, robots.txt included: the site is down
+//   home_503     robots.txt answers, the homepage alone is HTTP 503
+export const TECH_FIXTURE_PAGES = ['plain', 'hubspot', 'consent_wall', 'challenge', 'outage_503', 'home_503'] as const
 export type TechFixturePage = typeof TECH_FIXTURE_PAGES[number]
 export const isTechFixturePage = (x: unknown): x is TechFixturePage => typeof x === 'string' && (TECH_FIXTURE_PAGES as readonly string[]).includes(x)
 // Whether the page a variant serves really carries the technology. null: the variant says nothing about the site's stack (it is down or walled).
-const TRUTH: Record<TechFixturePage, boolean | null> = { plain: false, hubspot: true, consent_wall: null, challenge: null, outage_503: null }
+const TRUTH: Record<TechFixturePage, boolean | null> = { plain: false, hubspot: true, consent_wall: null, challenge: null, outage_503: null, home_503: null }
 const FIXTURE_TECH = 'HubSpot'
 
 const BODY = `<main><h1>${TECH_FIXTURE_COMPANY}</h1>
@@ -57,7 +62,7 @@ export function techFixtureGet(p: TechFixturePage): Get {
     let u: URL; try { u = new URL(url) } catch { return null }
     if (u.protocol !== 'https:' || u.hostname !== TECH_FIXTURE_SITE) return null
     if (u.pathname === '/robots.txt') return p === 'outage_503' ? { status: 503, body: '', finalUrl: url } : { status: 404, body: 'Not Found', finalUrl: url }
-    if (u.pathname === '/') return { ...techFixtureHtml(p), finalUrl: url }
+    if (u.pathname === '/') return { ...techFixtureHtml(p === 'home_503' ? 'outage_503' : p), finalUrl: url }
     return { status: 404, body: 'Not Found', finalUrl: url }
   }
 }
@@ -130,11 +135,19 @@ function measured(db: Database.Database, tenantId: string, jobId: string): TechF
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 // Serve the fixture homepage as `p` and crawl it once. Creates the fixture lead on first use.
-export async function crawlTechFixture(db: Database.Database, tenantId: string, p: TechFixturePage, deps: { env?: Record<string, string | undefined>; now?: () => number; signal?: AbortSignal } = {}): Promise<TechFixtureResult> {
+export async function crawlTechFixture(db: Database.Database, tenantId: string, p: TechFixturePage, deps: { env?: Record<string, string | undefined>; now?: () => number; signal?: AbortSignal; get?: Get } = {}): Promise<TechFixtureResult> {
   const env = deps.env ?? process.env
   if (typeof tenantId !== 'string' || !tenantId || !techFixtureOn(env)) throw new FixtureError('staging_only')
   if (!isTechFixturePage(p)) throw new FixtureError('unknown_page')
   if (!sitecrawlEnabled(env)) throw new FixtureError('crawl_disabled')
+  // One fixture crawl per workspace at a time (in this process): two at once could date their observations to the same second,
+  // where one is silently ignored, and would read each other's ledger rows.
+  if (inFlight.has(tenantId)) throw new FixtureError('crawl_in_flight')
+  inFlight.add(tenantId)
+  try { return await crawlOnce(db, tenantId, p, env, deps) } finally { inFlight.delete(tenantId) }
+}
+const inFlight = new Set<string>()
+async function crawlOnce(db: Database.Database, tenantId: string, p: TechFixturePage, env: Record<string, string | undefined>, deps: { now?: () => number; signal?: AbortSignal; get?: Get }): Promise<TechFixtureResult> {
   const clock = deps.now ?? Date.now
   const ids = ensureLead(db, tenantId, Math.floor(clock() / 1000))
   // An observation is dated to the second and one is kept per timestamp (tech-observations.ts): a crawl in the same second as the
@@ -147,8 +160,11 @@ export async function crawlTechFixture(db: Database.Database, tenantId: string, 
   if (Math.floor(nowMs / 1000) <= last) throw new FixtureError('clock_not_advancing')
   const changesBefore = new Set(changeRows(db, tenantId, ids.leadId).map(c => c.value))
   const mark = (db.prepare('SELECT COALESCE(MAX(insert_seq), 0) AS n FROM connector_audit').get() as { n: number }).n
-  await crawlJob(db, tenantId, ids.jobId, { get: techFixtureGet(p), gapMs: 0, env, now: nowMs, signal: deps.signal, leads: [{ id: ids.leadId, company: TECH_FIXTURE_COMPANY, source_url: HOME }] })
+  await crawlJob(db, tenantId, ids.jobId, { get: deps.get ?? techFixtureGet(p), gapMs: 0, env, now: nowMs, signal: deps.signal, leads: [{ id: ids.leadId, company: TECH_FIXTURE_COMPANY, source_url: HOME }] })
   const ledger = db.prepare('SELECT connector, status FROM connector_audit WHERE insert_seq > ? AND tenant_id = ? AND scan_job_id = ? AND lookup = ? AND connector IN (?, ?) ORDER BY insert_seq').all(mark, tenantId, ids.jobId, TECH_FIXTURE_SITE, 'sitecrawl', TECH_AUDIT) as { connector: string; status: string }[]
+  // A crawl that was cut short or failed inside writes no ledger row for the site (crawlJob returns early on an abort and only logs its
+  // own errors). That is not an outage the site served: refuse it, never report it as "nothing changed".
+  if (deps.signal?.aborted || !ledger.some(r => r.connector === 'sitecrawl')) throw new FixtureError('crawl_incomplete')
   const observations = scans(db, tenantId, ids.leadId)
   const changes = changeRows(db, tenantId, ids.leadId)
   const newChanges = changes.map(c => c.value).filter(v => !changesBefore.has(v))

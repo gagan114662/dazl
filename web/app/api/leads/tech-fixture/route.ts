@@ -8,7 +8,8 @@ import { denied } from '@/lib/workspace-access'
 
 // TEST-ONLY, staging only (#769): serve the fixture company's homepage as the named variant and crawl it once through the real site
 // crawl, so a technology adoption, a removal and an outage between readable pages can be watched live. See lib/scan/tech-fixture.ts.
-// Outside staging the route does not exist for anyone allowed to use it (404 before the request is read or anything is written).
+// Outside staging a signed-in member with the operate role gets 404, before the request body is read or anything is written
+// (signed out is 401 and a viewer 403 everywhere, like every session route).
 const notFound = () => NextResponse.json({ error: 'Not found' }, { status: 404 })
 
 export async function POST(req: NextRequest) {
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest) {
   try {
     return NextResponse.json(await crawlTechFixture(getScanDb(), user.tenantId, body.page, { signal: AbortSignal.timeout(30_000) }), { headers: { 'Cache-Control': 'no-store' } })
   } catch (e) {
-    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: e.code === 'crawl_disabled' ? 503 : 403 })
+    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: e.code === 'crawl_disabled' || e.code === 'clock_not_advancing' || e.code === 'crawl_incomplete' ? 503 : e.code === 'crawl_in_flight' ? 409 : 403 })
     throw e
   }
 }
