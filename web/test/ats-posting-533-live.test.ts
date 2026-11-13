@@ -48,7 +48,7 @@ test('#533 live 1: "Posted a <role> role on Ashby/Lever" is hiring wording; a po
   assert.equal(isHiringTrigger('Posted an Account Executive job on Greenhouse', null), true)
   for (const no of ['Posted record revenue for Q3', 'Posted a Series A announcement', 'Posted a blog about its new office', 'Raised a Series A round']) assert.equal(isHiringTrigger(no, null), false, no)
   // review on #1128: only the whole board wording counts, and never under another stored kind
-  for (const [no, kind] of [['Raised a Series B and posted a press release on its new CRO role', 'funding'], ['Raised a Series B and posted a press release on its new CRO role', null], ['CEO posted a LinkedIn update about leaving her role', null], ['VP Sales posted a farewell note about leaving her role', 'leadership_change'], ['Jane posted a photo from her new job', null]] as const) assert.equal(isHiringTrigger(no, kind), false, `${no} (${kind})`)
+  for (const [no, kind] of [['Raised a Series B and posted a press release on its new CRO role', 'funding'], ['Raised a Series B and posted a press release on its new CRO role', null], ['CEO posted a LinkedIn update about leaving her role', null], ['VP Sales posted a farewell note about leaving her role', 'leadership_change'], ['Jane posted a photo from her new job', null], ['Posted a press release about the new CRO role', null], ['Posted a photo from her new job', null], ['Posted a farewell note about leaving her role', null], ['Posted a Series B announcement naming a new CRO to the role on LinkedIn', null]] as const) assert.equal(isHiringTrigger(no, kind), false, `${no} (${kind})`)
   assert.equal(isHiringTrigger(TEKION_SIGNAL, 'funding'), false, 'a stored non-hiring kind wins over the wording')
 })
 

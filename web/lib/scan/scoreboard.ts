@@ -106,7 +106,8 @@ const HIRING_EN = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bo
 // Lever". Only that WHOLE wording counts (anchored: the signal is the posted role and nothing else), and only when no other
 // kind is stored, so "Raised a Series B and posted a press release on its new CRO role" or "CEO posted an update about
 // leaving her role" never read as hiring.
-const POSTED_ROLE = /^\s*posted an? [^.;!?]{1,80}? (?:role|job|position|opening|vacancy)(?: on [a-z][\w .-]{0,30})?\s*\.?\s*$/i
+// the posted thing is the role itself: a press release, photo, update, note or announcement ABOUT a role is not a posting
+const POSTED_ROLE = /^\s*posted an? (?![^.;!?]*\b(?:press|release|photo|picture|update|note|post|announcement|article|video|story|about|after|naming|named|leaving|left|farewell|congrat\w*)\b)[^.;!?]{1,80}? (?:role|job|position|opening|vacancy)(?: on [a-z][\w .-]{0,30})?\s*\.?\s*$/i
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed
 // trigger is hiring; it is never a funding or other trigger's date.
 export const isHiringTrigger = (signal: string | null | undefined, signalKind?: string | null): boolean =>
