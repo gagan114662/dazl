@@ -179,3 +179,14 @@ bothEngines('#846 review R3: reserve and settle both lock tenant_spend_pools bef
   await h!.settle(0.1)
   assert.deepEqual(order, [['tenant_spend_pools', 'scan_jobs'], ['tenant_spend_pools', 'scan_jobs']], 'reserve, then settle: pool rows first in both')
 })
+
+// Review on #1154: the escape hatch out of the account caps is for tests and offline tools only. No module under lib/ or app/ may open it
+// (spend-cap.ts, which defines it, excepted), so a product path can never run a model call uncapped.
+test('#1154: runWithoutAccountSpend is used by no product module under lib/ or app/', async () => {
+  const { readdirSync, readFileSync, statSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const walk = (d: string): string[] => readdirSync(d).flatMap(n => { const f = `${d}/${n}`; return statSync(f).isDirectory() ? (n === 'node_modules' || n === '.next' ? [] : walk(f)) : /\.(ts|tsx|mts)$/.test(n) ? [f] : [] })
+  const users = [...walk(`${root}lib`), ...walk(`${root}app`)].filter(f => !f.endsWith('/lib/scan/spend-cap.ts') && readFileSync(f, 'utf8').includes('runWithoutAccountSpend'))
+  assert.deepEqual(users, [])
+})
