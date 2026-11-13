@@ -1,8 +1,10 @@
 // First-party careers source (#388 / #767): an open sales / GTM role on a company's OWN careers page, as a source adapter. The page reading is
 // lib/signals/careers-page.ts (robots.txt obeyed, same registrable domain, the job's own page re-fetched and proven open, role read from the posting
 // itself, closed wording and non-job "apply" links rejected). This file only decides WHICH sites to read and turns a verified vacancy into Evidence.
-//  - Sites come from what the scan was GIVEN: the company websites / careers URLs the user listed (input.pages) and companies that carry a domain
-//    (input.companies). A domain is never guessed from a company name here, so the identity of the site is whatever the user / scan already established.
+//  - Sites come only from the company websites / careers URLs listed in the scan's pages (input.pages). A domain is never guessed from a company name here,
+//    so the identity of the site is whatever the user listed. input.companies entries that carry a domain are also accepted (tested), but no caller passes
+//    one yet: the runner hands this list to adapters only when jobboards is selected, and then as names without a domain. Wiring company domains through
+//    the runner is a separate change.
 //  - Evidence cites the specific job URL. Its date is the Greenhouse / Lever / Ashby publish date when the careers link is a public ATS posting, and null
 //    otherwise: an own-domain job page does not date itself and the retrieval day is never used in its place.
 //  - Only sales / GTM roles are read (what the careers reader can prove). A request that names no sales role, or a scan with no company site, is reported as

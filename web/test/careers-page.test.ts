@@ -208,3 +208,18 @@ test('review R3: the quote uses the mention of the company nearest the title, no
   const q = quoteFor(text, title, at, 'Brightloop')
   assert.ok(q.includes(title) && q.includes('About Brightloop'), `a quote naming both: ${JSON.stringify(q.slice(0, 60))}`); assert.ok(q.length <= 300 && text.includes(q))
 })
+
+test('review (Hermes-PC 1 at 41a445fa): the site\'s own robots.txt answering 401 / 403 / 429 / 400 is robots_unreachable and no page is read; 404 / 410 still read the page', async () => {
+  const pages = { '/careers': '<h2>Open roles</h2><ul><li><a href="/careers/ae">Account Executive - London</a> <a href="/careers/ae">Apply</a></li></ul>', '/careers/ae': JOB() }
+  for (const status of [401, 403, 429, 400]) {
+    const asked: string[] = []
+    const get = site(pages, { '/robots.txt': { status, body: 'Forbidden' } })
+    const r = await careersSalesVacancy('brightloop.io', async url => { asked.push(url); return get(url) }, { now: NOW, company: 'Brightloop' })
+    assert.equal(r.reason, 'robots_unreachable', `robots ${status}`); assert.equal(r.vacancy, null, `robots ${status}`)
+    assert.deepEqual(asked, ['https://brightloop.io/robots.txt'], `robots ${status}: nothing is read around it`)
+  }
+  for (const status of [404, 410]) {
+    const r = await careersSalesVacancy('brightloop.io', site(pages, { '/robots.txt': { status, body: '' } }), { now: NOW, company: 'Brightloop' })
+    assert.equal(r.reason, 'found', `robots ${status}: no policy, the page is read`); assert.equal(r.vacancy!.url, 'https://brightloop.io/careers/ae')
+  }
+})

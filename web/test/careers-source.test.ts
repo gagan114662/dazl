@@ -33,6 +33,7 @@ test('an open sales role on the company\'s own careers page becomes evidence tha
   assert.ok(JOB.includes(e.quote.replace(/\s+/g, ' ').slice(0, 25)) || /Account Executive/.test(e.quote))
 })
 
+// The adapter's own input.companies handling: tested here directly, though no runner path passes a company domain yet (see careers.ts header).
 test('a company with a domain is read as well as a listed page; a repeated site is read once', async () => {
   const asked: string[] = []
   const { items } = await run(site(OPEN, asked), { pages: ['https://www.brightloop.io/careers'], companies: [{ name: 'Brightloop', domain: 'brightloop.io' }] })
@@ -114,6 +115,7 @@ test('registered end to end: selectable, reported as an adapter run, and the mat
   const c = byId('careers')!
   assert.equal(c.status, 'shipped'); assert.equal(availability(c, { workers: new Set() }), 'available'); assert.equal(advertisable(c), false, 'no live source-to-lead evidence yet: not advertised')
   assert.equal(byId('first-party-careers'), undefined)
+  assert.match(c.license, /only the company sites listed in the scan's pages/); assert.doesNotMatch(c.license, /companies with a domain/, 'no runner path passes company domains yet (Hermes-PC 5 at 41a445fa)')
   assert.match(sourceStatusLine(c, 'available', { status: 'skipped_out_of_coverage', evidence: null }), /./)
 })
 
@@ -309,4 +311,30 @@ test('review R4: a job page its host\'s robots.txt disallows is noted robots_dis
     'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private' },
   }))
   assert.deepEqual(r.items, []); assert.equal(r.notes.robots_disallow, 1, JSON.stringify(r.notes))
+})
+
+// ---- Hermes-PC review at 41a445fa ----
+test('review (Hermes-PC 3 at 41a445fa): a job its host\'s robots.txt disallows is unverified (a partial read, noted unreachable), never a closed job (a healthy empty)', async () => {
+  const asked: string[] = []
+  const r = await run(site({ 'brightloop.io/careers': '<ul><li><a href="https://jobs.brightloop.io/private/ae">Account Executive - London</a></li></ul>', 'jobs.brightloop.io/private/ae': JOB }, asked, {
+    'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private' },
+  }))
+  assert.deepEqual(r.items, [])
+  assert.deepEqual(r.notes, { robots_disallow: 1, unreachable: 1 }, 'job_unverified (403) says nothing about hiring; job_closed (404) would leave no unreachable note')
+  assert.ok(!asked.includes('https://jobs.brightloop.io/private/ae'), 'the disallowed job page was never requested')
+})
+
+test('review (Hermes-PC 4 at 41a445fa): a robots.txt cut at the byte cap is unreachable: no request to that host, and the read is noted unreachable', async () => {
+  // the job's host: a truncated robots.txt whose visible part would allow /careers/ae. Taken as complete, the job would be fetched and become evidence.
+  const asked: string[] = []
+  const r = await run(site({ 'brightloop.io/careers': '<ul><li><a href="https://jobs.brightloop.io/careers/ae">Account Executive - London</a></li></ul>', 'jobs.brightloop.io/careers/ae': JOB }, asked, {
+    'jobs.brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private', truncated: true },
+  }))
+  assert.deepEqual(r.items, []); assert.equal(r.notes.unreachable, 1, JSON.stringify(r.notes))
+  assert.deepEqual(asked.filter(u => new URL(u).hostname === 'jobs.brightloop.io'), ['https://jobs.brightloop.io/robots.txt'], 'nothing but the robots.txt itself is requested from that host')
+  // the site's own robots.txt cut at the cap: nothing on the site is read, and the read is partial
+  const own: string[] = []
+  const r2 = await run(site(OPEN, own, { 'brightloop.io/robots.txt': { status: 200, body: 'User-agent: *\nDisallow: /private', truncated: true } }))
+  assert.deepEqual(r2.items, []); assert.equal(r2.notes.unreachable, 1, JSON.stringify(r2.notes))
+  assert.deepEqual(own, ['https://brightloop.io/robots.txt'], 'nothing but the robots.txt itself is requested from the site')
 })
