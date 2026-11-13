@@ -93,7 +93,7 @@ type Json = { [k: string]: unknown }
 const json = (b: string): Json | null => { try { return JSON.parse(b) } catch { return null } }
 // The board's own publish date as a day (ISO string or epoch ms); anything else is unknown, never guessed.
 const boardDay = (v: unknown): string | null => { const t = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null }
-export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
+export type JobVerdict = { ok: true; text: string; title: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null; passages?: string[] } | { ok: false; reason: 'job_closed' | 'job_company_mismatch' | 'job_unverified' | 'job_role_mismatch' }
 // The role comes from the POSTING itself (its JSON title or its own heading), never from the index label. It must be a sales / GTM role and agree with what the index
 // claimed: same role once locations / levels after a dash, pipe, comma or bracket are dropped ("Account Executive - London" ~ "Account Executive"); a different role
 // behind the same link (a Backend Engineer behind "Account Executive") is rejected.
@@ -111,18 +111,22 @@ export function roleAgrees(indexTitle: string, postingTitle: string, accept?: (t
 async function verifyAtsJob(url: URL, get: Get, site: string, company: string | undefined, indexTitle: string, accept?: (title: string) => boolean): Promise<JobVerdict> {
   const host = url.hostname.toLowerCase(), segs = url.pathname.split('/').filter(Boolean), token = (segs[0] ?? '').toLowerCase()
   let title = '', body = '', open = false, posted: string | null = null, postedBoard: 'greenhouse' | 'lever' | 'ashby' | null = null
+  // passages (#767 live check): the posting's OWN text fields, each one contiguous as the verifier's read of the board record renders it
+  // (lib/sources/ats-posting.ts). `body` joins the title (and Greenhouse's company_name) onto the description for the closed / company checks;
+  // that join appears nowhere on the posting, so a quote is never taken from it, only from inside one passage.
+  let passages: string[] = []
   if (host.endsWith('greenhouse.io')) {
     const id = segs[2]; if (!id || segs[1] !== 'jobs') return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://boards-api.greenhouse.io/v1/boards/${token}/jobs/${id}`)
     if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); if (r.status >= 400 || !j || typeof j.title !== 'string') return { ok: false, reason: 'job_unverified' }
-    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; open = true; posted = boardDay(j.first_published); postedBoard = 'greenhouse'
+    title = j.title; body = `${j.title} ${j.company_name ?? ''} ${String(j.content ?? '')}`; passages = [htmlText(String(j.content ?? ''))]; open = true; posted = boardDay(j.first_published); postedBoard = 'greenhouse'
   } else if (host === 'jobs.lever.co') {
     const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://api.lever.co/v0/postings/${token}/${id}`)
     if (!r) return { ok: false, reason: 'job_unverified' }; if (r.status === 404 || r.status === 410) return { ok: false, reason: 'job_closed' }
     const j = json(r.body); if (r.status >= 400 || !j || typeof j.text !== 'string') return { ok: false, reason: 'job_unverified' }
-    title = j.text; body = `${j.text} ${String(j.descriptionPlain ?? j.description ?? '')} ${String(j.additionalPlain ?? '')}`; open = true; posted = boardDay(j.createdAt); postedBoard = 'lever'
+    title = j.text; body = `${j.text} ${String(j.descriptionPlain ?? j.description ?? '')} ${String(j.additionalPlain ?? '')}`; passages = [plainText(j.descriptionPlain), plainText(j.additionalPlain)]; open = true; posted = boardDay(j.createdAt); postedBoard = 'lever'
   } else if (host === 'jobs.ashbyhq.com') {
     const id = segs[1]; if (!id) return { ok: false, reason: 'job_unverified' }
     const r = await get(`https://api.ashbyhq.com/posting-api/job-board/${token}`)
@@ -130,7 +134,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
     const j = json(r.body); const jobs = Array.isArray(j?.jobs) ? j.jobs : null; if (!jobs) return { ok: false, reason: 'job_unverified' }
     const job = jobs.find((x: Json) => typeof x?.jobUrl === 'string' && x.jobUrl.split('/').filter(Boolean).pop() === id)
     if (!job || job.isListed !== true) return { ok: false, reason: 'job_closed' }
-    title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; open = true; posted = boardDay(job.publishedAt); postedBoard = 'ashby'
+    title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; passages = [plainText(job.descriptionPlain)]; open = true; posted = boardDay(job.publishedAt); postedBoard = 'ashby'
   } else return { ok: false, reason: 'job_unverified' }
   if (!open) return { ok: false, reason: 'job_unverified' }
   const plain = decode(body.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ')
@@ -140,8 +144,12 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   const namesCompany = !!company && norm(company).length >= 3 && norm(plain).includes(norm(company))
   if (!ownBoard && !namesCompany) return { ok: false, reason: 'job_company_mismatch' }
   if (!roleAgrees(indexTitle, title, accept)) return { ok: false, reason: 'job_role_mismatch' } // the posting is a different role (or not a sales / GTM one) than the index claimed
-  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null }
+  return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null, passages: passages.filter(p => p.length >= 20) }
 }
+// Only the fields the verifier's read of the board record also renders as text: Ashby / Lever descriptionPlain (and Lever additionalPlain), Greenhouse content
+// (escaped HTML, turned into text the same way). Ashby's descriptionHtml is never read there, so it is never quoted here.
+const plainText = (v: unknown) => typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : ''
+const htmlText = (v: string) => decode(decode(v).replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
 async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }, accept?: (title: string) => boolean): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
   if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company, hit.title, accept)
@@ -183,6 +191,27 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
   }
   return best
 }
+// The quote for a public ATS posting (#767 live check: a quote glued the title onto the description's boilerplate preamble, "Sales Assist Representative AI AT
+// ZAPIER At Zapier ...", which is on no page). It is a window inside ONE passage of the posting's own text, never across the title join, around the passage that states
+// the vacancy: the posting's title (any spacing / hyphenation, "Sales-Assist Representative"), else its core role (before " - London"), else hiring wording
+// ("We're looking for", "we are hiring", "join our team"). A preamble that does neither (company boilerplate, "our hiring process") gives no quote (''),
+// and the callers skip a vacancy without one.
+const HIRING = /\b(?:(?:we(?:'|\u2019)re|we are|is|are) (?:currently |actively |now )?(?:hiring|looking for|seeking|searching for|in search of|recruiting)\b|(?:looking for|seeking|hiring|recruiting) (?:an? |our (?:first|next|new) )|join (?:us|our|the) [^.!?]{0,40}\bteam\b|in this role\b|this role (?:is|will)\b)/i
+const escRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const titleRe = (t: string) => { const w = t.split(/[^\p{L}\p{N}]+/u).filter(Boolean); return w.length ? new RegExp(`(?<![\\p{L}\\p{N}])${w.map(escRe).join('[\\s\\-\u2010-\u2014_/]+')}(?![\\p{L}\\p{N}])`, 'iu') : null }
+export function postingQuote(passages: string[], title: string, company?: string): string {
+  const core = title.split(/\s[-\u2013\u2014|\u00b7]\s|\s*[,(\[]/)[0]?.trim() ?? ''
+  const finders = [titleRe(title), core && core !== title ? titleRe(core) : null, HIRING].filter((r): r is RegExp => !!r)
+  for (const re of finders) for (const p of passages) {
+    const m = re.exec(p); if (!m) continue
+    // start the window at the sentence the match is in when that is close, so it does not open mid-word
+    const s = Math.max(0, ...['. ', '! ', '? ', ': '].map(d => { const i = p.lastIndexOf(d, m.index); return i < 0 ? 0 : i + 2 }))
+    const from = m.index - s <= 60 ? s : 0
+    const q = quoteFor(p.slice(from), m[0], m.index - from, company).trim()
+    if (q.length >= 20 && p.includes(q)) return q
+  }
+  return ''
+}
 // opts.namedQuote (the careers source adapter's evidence): when the posting names opts.company, the quote holds the title and that name or there is no quote;
 // when the posting never names it, the quote is the plain title window. Without namedQuote (the sales-hiring gate) the quote is always the title window.
 export async function careersSalesVacancy(domain: string, get: Get, opts: { now?: number; signal?: AbortSignal; company?: string; roleMatch?: (title: string) => boolean; firstPaths?: string[]; namedQuote?: boolean } = {}): Promise<CareersResult> {
@@ -222,7 +251,7 @@ export async function careersSalesVacancy(domain: string, get: Get, opts: { now?
       const v = await verifyJob(hit, get, site, opts.company, robots, opts.roleMatch)
       if (!v.ok) { verdict = v.reason; continue }
       const shown = v.title, vt = v.text, at = vt.indexOf(shown)
-      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: quoteFor(vt, shown, at, opts.namedQuote ? opts.company : undefined), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
+      const vacancy: CareersVacancy = { url: hit.jobUrl.slice(0, 500), title: shown, quote: v.passages ? postingQuote(v.passages, shown, opts.namedQuote ? opts.company : undefined) : quoteFor(vt, shown, at, opts.namedQuote ? opts.company : undefined), retrievedAt: Math.floor((opts.now ?? Date.now()) / 1000), pageText: `${text} ${v.text}`.slice(0, 6000), posted: v.posted ?? null, postedBoard: v.postedBoard ?? null }
       if (!opts.roleMatch) return { vacancy, reason: 'found', pages, readPages }
       if (opts.roleMatch(shown)) return { vacancy, reason: 'found', pages, readPages, matched: true }
       if (!generic) generic = vacancy

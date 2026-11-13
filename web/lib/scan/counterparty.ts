@@ -1,6 +1,7 @@
 import type { Candidate } from './evidence.ts'
 import { companyKey, norm } from './evidence.ts'
 import type { Page } from './fetch-page.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
 
 // Subject mismatch: the lead is named Company A, but the source is Company B's own
 // marketing page and the evidence is B celebrating A as its customer. That is a fact
@@ -14,7 +15,11 @@ import type { Page } from './fetch-page.ts'
 
 const CUSTOMER_PHRASE = /\b(became|becomes|becoming|is now|are now|joined|joins|joining|chose|chooses|chosen|switched to|runs on|run on|running on|use|uses|using|adopted|adopts|adopting|standardized on|is a customer of|are customers of|as customers?)\b/i
 
+// A public ATS posting (jobs.ashbyhq.com/{org}/..., jobs.lever.co/{org}/..., boards.greenhouse.io/{org}/jobs/...) belongs to the board's org, not to the board
+// host (#767: "jobs" from jobs.ashbyhq.com matched a link like zapier.com/l/jobs/... next to "using AI tools" in Zapier's own posting and held it as a counterparty).
 export function hostBrand(sourceUrl: string): string | null {
+  const ats = atsPostingRef(sourceUrl)
+  if (ats) { const org = ats.org.toLowerCase().replace(/[^a-z0-9]/g, ''); return org.length >= 3 ? org : null }
   let host: string
   try { host = new URL(sourceUrl).hostname.toLowerCase() } catch { return null }
   const labels = host.split('.').filter(l => l && l !== 'www')

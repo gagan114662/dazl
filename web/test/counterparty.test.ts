@@ -33,3 +33,19 @@ test('end to end: counterparty lead goes to review, never lead list, no contact'
   assert.equal(result.review[0].review_reason, 'counterparty_signal')
   assert.equal(result.review[0].contact, null)
 })
+
+// #767: a public ATS posting belongs to the board's org, not to the board host ("jobs" of jobs.ashbyhq.com). A company's own posting that links
+// zapier.com/l/jobs/... next to "using AI tools" is its own vacancy, not a counterparty mention; another company's board still is one.
+test('hostBrand of a public ATS posting is the board org, so a company\'s own posting is never a counterparty', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  assert.equal(hostBrand(`https://jobs.ashbyhq.com/zapier/${id}`), 'zapier')
+  assert.equal(hostBrand(`https://jobs.lever.co/brightloop/${id}`), 'brightloop')
+  assert.equal(hostBrand('https://boards.greenhouse.io/brightloop/jobs/4012345'), 'brightloop')
+  assert.equal(hostBrand('https://jobs.ashbyhq.com/zapier'), 'jobs', 'not a posting shape: the host rule is unchanged')
+  const page = { title: 'Sales Assist Representative @ zapier', text: 'Sales Assist Representative (APAC). Job posting on the zapier Ashby job board. AI AT ZAPIER At Zapier https://zapier.com/about, we build and use automation every day. So if you’re using AI tools while applying here - that’s great! Check out How to Collaborate with AI During Zapier’s Hiring Process https://zapier.com/l/jobs/ai-at-zapier. We’re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Zapier.', retrievedAt: 0 }
+  const own = { name: '', company: 'Zapier', contact: null, signal: 'hiring a Sales Assist Representative', source_url: `https://jobs.ashbyhq.com/zapier/${id}`, score: 80, excerpt: 'We’re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Zapier.', event_date: null }
+  assert.equal(counterpartySignal(own as never, page as never, ''), null)
+  const other = { ...own, company: 'Brightloop', source_url: `https://jobs.ashbyhq.com/zapier/${id}` }
+  const named = { title: 'Sales Assist Representative @ zapier', text: 'Brightloop uses Zapier for its sales workflows, and we are hiring to support customers like it.', retrievedAt: 0 }
+  assert.equal(counterpartySignal(other as never, named as never, ''), 'source_owner:zapier', 'another company named on Zapier\'s own posting is still a counterparty mention')
+})
