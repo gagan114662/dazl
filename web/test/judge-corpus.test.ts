@@ -86,8 +86,8 @@ test('a corpus whose records do not back its labels, or whose records are not on
   refused(edit('cal-copy-neg', it => { it.truth!.facts = it.truth!.facts.filter(f => f.company === 'Northwind Studio') }), /a critical identity item needs a fact about a different company/)
   refused(edit('cal-date-neg', it => { delete it.truth!.claim.date }), /a critical date item claims a date/)
   refused(edit('cal-inj-neg', it => { it.truth!.facts = it.truth!.facts.filter(f => f.status !== 'instruction') }), /an injection item has an instruction fact/)
-  refused(edit('cal-neg-neg', it => { it.condition = 'negation'; it.truth!.facts[0].status = 'corrected' }), /a negation item has a denied fact/)
-  refused(edit('cal-contact-neg', it => { it.truth!.claim.kind = 'funding' }), /a critical contact item claims a contact or a role/)
+  refused(edit('cal-neg-neg', it => { it.sources[0].text = 'Tessellate: the reported seed round was an error.'; Object.assign(it.truth!.facts[0], { status: 'corrected', evidence: 'the reported seed round was an error' }) }), /a negation item has a denied fact/)
+  refused(edit('cal-contact-neg', it => { it.truth!.claim.kind = 'funding'; it.claim = 'sales@fernhill.example raised a sales round for Fernhill Labs.' }), /a critical contact item claims a contact or a role/)
 })
 
 test('the corpus is frozen: the lock pins its id, hash, size and origin, and an in-place edit is refused everywhere it is used', async () => {
@@ -95,8 +95,8 @@ test('the corpus is frozen: the lock pins its id, hash, size and origin, and an 
   assertFrozen(CORPUS, LOCK.corpus)
   const edited = clone(CORPUS); edited.items[0].why += ' (edited)'
   assert.equal(frozenProblem(edited, LOCK.corpus), `corpus ${CORPUS.id} was edited in place: give it a new id and re-freeze it in the lock`)
-  const renamed = { ...clone(edited), id: 'judge-claims-synthetic-4' }
-  assert.match(frozenProblem(renamed, LOCK.corpus)!, /is not the frozen corpus judge-claims-synthetic-3/)
+  const renamed = { ...clone(edited), id: 'judge-claims-synthetic-5' }
+  assert.match(frozenProblem(renamed, LOCK.corpus)!, /is not the frozen corpus judge-claims-synthetic-4/)
   for (const bad of [null, {}, { ...LOCK.corpus, hash: 'abc' }, { ...LOCK.corpus, items: '44' }, { ...LOCK.corpus, origin: 'mixed' }]) assert.match(frozenProblem(CORPUS, bad)!, /the lock pins no frozen corpus/)
   assert.throws(() => assertFrozen(edited, LOCK.corpus), JudgeCorpusError)
   // a calibration made on an unfrozen copy cannot make a judge count against the lock

@@ -198,6 +198,62 @@ export function isPartialDate(x: unknown): x is string {
   return y >= 1900 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d
 }
 const OPTIONAL_ATTRS = ['detail', 'date', 'person', 'contact'] as const
+// The words that bind a record to the text it describes (#783). A record's kind, detail, person, contact and date must be
+// stated in its own words - a fact's in its `evidence`, the claim's in the item's displayed `claim` - so the records
+// cannot certify a claim or an attribute the text never states. Kind words and detail translations are listed here, in
+// code (a reviewed change), never in the corpus, so a corpus edit cannot widen them. Matching is on squashed text.
+const KIND_WORDS: Record<FactKind, readonly string[]> = {
+  funding: ['raise', 'round', 'runde', 'levé', 'eingesammelt', 'funding'],
+  hiring: ['hiring', 'open role', 'recherche'],
+  hire: ['hired', 'hires'],
+  opening: ['opened', 'opening', 'will open', 'expanded'],
+  closure: ['closed', 'geschlossen', 'closure'],
+  acquisition: ['acquired', 'adquirida', 'acquisition'],
+  product: ['product', 'released', 'launch', 'version'],
+  contact: ['@'],
+  role: ['head of', 'lead', 'executive', 'officer', 'left', 'quitté'],
+  disclosure: ['disclose'],
+  business: ['sells', 'makes', 'builds'],
+  page_update: ['updated', 'refreshed'],
+  publication: ['published'],
+  instruction: [],
+}
+// A fact's status is bound too: a retraction or plan must say so in its evidence, and an assertion must not be negated (so
+// a denial cannot be filed as an assertion and turn into support). Whole words, so "no" never matches "November".
+const NEGATIONS = ['not', 'no', 'never', 'denied', 'pas', 'nicht', 'kein', 'keine', 'nunca', 'não']
+const STATUS_WORDS: Partial<Record<FactStatus, readonly string[]>> = {
+  denied: [...NEGATIONS, 'remains'], corrected: ['not', 'error', 'corrected', 'correction'], departed: ['left', 'former', 'quitté'], planned: ['will', 'plans', 'planned'],
+}
+const negated = (w: string[], text: string) => w.some(x => NEGATIONS.includes(x)) || /n['’]t\b/i.test(text)
+const DETAIL_WORDS: Readonly<Record<string, readonly string[]>> = { 'seed': ['amorçage', 'startkapital'], 'cto': ['directeur technique'], 'series a': ['series-a'] }
+const MONTH_WORDS: readonly (readonly string[])[] = [
+  ['january', 'janvier', 'januar', 'enero', 'janeiro'], ['february', 'février', 'februar', 'febrero', 'fevereiro'], ['march', 'mars', 'märz', 'marzo', 'março'],
+  ['april', 'avril', 'abril'], ['may', 'mai', 'mayo', 'maio'], ['june', 'juin', 'juni', 'junio', 'junho'], ['july', 'juillet', 'juli', 'julio', 'julho'],
+  ['august', 'août', 'agosto'], ['september', 'septembre', 'septiembre', 'setembro'], ['october', 'octobre', 'oktober', 'octubre', 'outubro'],
+  ['november', 'novembre', 'noviembre', 'novembro'], ['december', 'décembre', 'dezember', 'diciembre', 'dezembro'],
+]
+const words = (text: string) => squash(text).split(/[^\p{L}\p{N}@.-]+/u).filter(Boolean)
+// Whether `text` states `date` (YYYY[-MM[-DD]]): its year as a number, its month by name, its day as a number.
+export function statesDate(text: string, date: string): boolean {
+  const [y, m, d] = date.split('-'), w = words(text).map(x => x.replace(/[.,]+$/, ''))
+  return w.includes(y) && (m === undefined || MONTH_WORDS[+m - 1].some(n => w.includes(n))) && (d === undefined || w.includes(String(+d)) || w.includes(d))
+}
+// The record's attributes that `text` does not state (empty when it states them all).
+export function unstatedAttrs(text: string, r: { kind?: unknown; status?: unknown; detail?: unknown; person?: unknown; contact?: unknown; date?: unknown; company?: unknown }, withCompany: boolean): string[] {
+  const t = squash(text), has = (x: string) => t.includes(squash(x)), w = words(text)
+  const out: string[] = []
+  const sw = isStr(r.status) ? STATUS_WORDS[r.status as FactStatus] : undefined
+  if (sw && !sw.some(x => w.includes(x)) && !(r.status === 'denied' && negated(w, text))) out.push(`status (${String(r.status)})`)
+  if (r.status === 'asserted' && negated(w, text)) out.push('status (asserted, but the text is negated)')
+  if (withCompany && isStr(r.company) && !has(r.company)) out.push('company')
+  const kw = FACT_KINDS.includes(r.kind as FactKind) ? KIND_WORDS[r.kind as FactKind] : []
+  if (kw.length && !kw.some(has)) out.push('kind')
+  if (isStr(r.detail) && ![r.detail, ...(DETAIL_WORDS[squash(r.detail)] ?? [])].some(has)) out.push('detail')
+  if (isStr(r.person) && !has(r.person)) out.push('person')
+  if (isStr(r.contact) && !has(r.contact)) out.push('contact')
+  if (isStr(r.date) && isPartialDate(r.date) && !statesDate(text, r.date)) out.push('date')
+  return out
+}
 // The label the records imply. A claim is supported only when a source ASSERTS a fact about the claim's exact company
 // (squashed text equality: a look-alike name is another company), of the claim's kind, matching every attribute the claim
 // names (a claim date is a prefix: a 2026-10 claim needs a fact dated in October 2026, and a fact dated only 2026 does not
@@ -209,10 +265,13 @@ export function truthLabel(t: JudgeTruth): JudgeLabel {
   const same = (f: TruthFact) => eq(f.company, c.company) && f.kind === c.kind
   const attrs = (f: TruthFact) => (c.detail === undefined || eq(f.detail, c.detail)) && (c.person === undefined || eq(f.person, c.person))
     && (c.contact === undefined || eq(f.contact, c.contact)) && (c.date === undefined || (f.date !== undefined && f.date.startsWith(c.date)))
-  // a retraction applies to the claim unless it names a different detail or person
+  // a retraction applies to the claim unless it names a different detail, person or contact, or a date that cannot be the
+  // claim's (neither date is a prefix of the other: a denial of a 2025 round says nothing about a 2026 one). An undated
+  // retraction applies to a dated claim, and a dated one to an undated claim.
+  const dateFits = (a: string | undefined, b: string | undefined) => a === undefined || b === undefined || a.startsWith(b) || b.startsWith(a)
   const retracts = (f: TruthFact) => (f.status === 'denied' || f.status === 'corrected' || f.status === 'departed') && same(f)
     && !(c.detail !== undefined && f.detail !== undefined && !eq(f.detail, c.detail)) && !(c.person !== undefined && f.person !== undefined && !eq(f.person, c.person))
-    && !(c.contact !== undefined && f.contact !== undefined && !eq(f.contact, c.contact))
+    && !(c.contact !== undefined && f.contact !== undefined && !eq(f.contact, c.contact)) && dateFits(c.date, f.date)
   if (t.facts.some(retracts)) return 'not_supported'
   return t.facts.some(f => f.status === 'asserted' && same(f) && attrs(f)) ? 'supported' : 'not_supported'
 }
@@ -229,6 +288,7 @@ export function checkTruth(it: JudgeItem): string[] {
   if (!FACT_KINDS.includes(claim.kind as FactKind) || claim.kind === 'instruction') p.push(`${it.id}: truth claim kind ${String(claim.kind)} is not a claimable kind`)
   for (const a of OPTIONAL_ATTRS) if (claim[a] !== undefined && !nonEmpty(claim[a])) p.push(`${it.id}: truth claim ${a} must be a non-empty string`)
   if (claim.date !== undefined && !isPartialDate(claim.date)) p.push(`${it.id}: truth claim date ${String(claim.date)} is not a real YYYY[-MM[-DD]] date`)
+  if (isStr(it.claim) && !p.length) { const miss = unstatedAttrs(it.claim, { ...claim, status: 'asserted' }, true); if (miss.length) p.push(`${it.id}: the displayed claim does not state the truth claim's ${miss.join(', ')}`) }
   t.facts.forEach((f: unknown, n: number) => {
     const at = `${it.id}: fact ${n + 1}`
     if (!isObj(f)) { p.push(`${at} is not an object`); return }
@@ -243,6 +303,7 @@ export function checkTruth(it: JudgeItem): string[] {
     for (const a of OPTIONAL_ATTRS) if (f[a] !== undefined && !nonEmpty(f[a])) p.push(`${at}: ${a} must be a non-empty string`)
     if (f.date !== undefined && !isPartialDate(f.date)) p.push(`${at}: date ${String(f.date)} is not a real YYYY[-MM[-DD]] date`)
     if (isStr(f.contact) && !squash(src.text).includes(squash(f.contact))) p.push(`${at}: contact is not on the page`)
+    if (nonEmpty(f.evidence)) { const miss = unstatedAttrs(f.evidence, f, false); if (miss.length) p.push(`${at}: its evidence does not state its ${miss.join(', ')}`) }
   })
   if (p.length) return p
   const truth = t as unknown as JudgeTruth
@@ -507,11 +568,12 @@ export function toStoredVerdicts(r: CalibrationReport, corpus: JudgeCorpus, run:
 }
 // Strict: a malformed line is an error, never skipped, so a damaged log cannot read as "no drift". Refused: a line that is
 // not one JSON object with exactly the v2 fields and types, a v1 line (it has no judge version), a replayed line (the same
-// run, judge, split and item twice), one run that mixes judge identities, and one corpus version whose item carries two
-// different labels, conditions or critical kinds (an edited log).
+// run, judge, split and item twice), one run that mixes judge identities, one (judge, fingerprint) recorded with two
+// different models, versions or prompt versions anywhere in the log (a fingerprint names one judge identity), and one
+// corpus version whose item carries two different labels, conditions or critical kinds (an edited log).
 export function parseStoredVerdicts(jsonl: string): StoredVerdict[] {
   if (typeof jsonl !== 'string') throw new JudgeCorpusError('verdict log: not text')
-  const seen = new Set<string>(), runs = new Map<string, string>(), items = new Map<string, string>()
+  const seen = new Set<string>(), runs = new Map<string, string>(), items = new Map<string, string>(), ids = new Map<string, string>()
   return jsonl.split('\n').map((l, i) => [l.trim(), i + 1] as const).filter(([l]) => l).map(([l, n]) => {
     let o: unknown
     try { o = JSON.parse(l) } catch { throw new JudgeCorpusError(`verdict log line ${n}: not JSON`) }
@@ -533,6 +595,8 @@ export function parseStoredVerdicts(jsonl: string): StoredVerdict[] {
     const runKey = JSON.stringify([r.run, r.judge])
     if (runs.has(runKey) && runs.get(runKey) !== who) throw new JudgeCorpusError(`verdict log line ${n}: run ${r.run} mixes judge identities or corpus versions`)
     runs.set(runKey, who)
+    const idErr = identityConflict(ids, r)
+    if (idErr) throw new JudgeCorpusError(`verdict log line ${n}: ${idErr}`)
     const truth = JSON.stringify([r.label, r.condition, r.critical]), itemKey = JSON.stringify([r.corpus_hash, r.item])
     if (items.has(itemKey) && items.get(itemKey) !== truth) throw new JudgeCorpusError(`verdict log line ${n}: item ${r.item} has two different labels for one corpus version (an edited log)`)
     items.set(itemKey, truth)
@@ -540,7 +604,23 @@ export function parseStoredVerdicts(jsonl: string): StoredVerdict[] {
   })
 }
 
-export type DriftStatus = 'stable' | 'drifted' | 'insufficient'
+// One (judge, fingerprint) is one judge identity: the same model, version and prompt version wherever it appears.
+const identityConflict = (ids: Map<string, string>, r: StoredVerdict): string | null => {
+  const k = JSON.stringify([r.judge, r.fingerprint]), v = JSON.stringify([r.model, r.version, r.prompt_version])
+  const had = ids.get(k)
+  if (had !== undefined && had !== v) return `judge ${r.judge} fingerprint ${r.fingerprint.slice(0, 12)} is recorded as two judge identities (${had} and ${v}): an edited log`
+  ids.set(k, v)
+  return null
+}
+const checkIdentities = (recs: StoredVerdict[]) => {
+  const ids = new Map<string, string>()
+  for (const r of recs) { const e = identityConflict(ids, r); if (e) throw new JudgeCorpusError(`verdict log: ${e}`) }
+}
+
+// 'invalid': the runs on one corpus version, origin and split do not all hold the same items (a truncated or padded run),
+// so nothing about them can be compared. It blocks, like 'drifted'.
+export const DRIFT_STATUSES = ['stable', 'drifted', 'insufficient', 'invalid'] as const
+export type DriftStatus = typeof DRIFT_STATUSES[number]
 export interface RunHead { run: string; fingerprint: string; model: string; version: number; prompt_version: number }
 export interface ConditionChange { baseline: Rates; latest: Rates }
 export interface DriftReport {
@@ -548,6 +628,7 @@ export interface DriftReport {
   baseline: RunHead | null; latest: RunHead | null
   changed_judge: boolean   // model, version or prompt changed since the baseline: recalibrate
   flipped: string[]        // items answered differently by the latest run
+  items: string[]          // the item ids every compared run holds (empty when the item sets differ)
   by_condition: Partial<Record<Condition, ConditionChange>>  // per-condition rates, baseline and latest, on the shared items
   problems: string[]
 }
@@ -562,7 +643,13 @@ const runsOf = (recs: StoredVerdict[]) => {
   for (const r of recs) runs.set(r.run, [...(runs.get(r.run) ?? []), r])
   for (const [run, rs] of runs) if (new Set(rs.map(r => r.fingerprint)).size > 1) throw new JudgeCorpusError(`verdict log: run ${run} mixes judge fingerprints`)
   const order = [...runs.keys()].sort((a, b) => Date.parse(runs.get(a)![0].at) - Date.parse(runs.get(b)![0].at) || a.localeCompare(b))
-  return { runs, order }
+  // every run on one corpus version, origin and split must hold the same items: a run missing (or adding) items is not
+  // comparable, and intersecting would hide the missing ones from every rate and comparison
+  const itemSet = (run: string) => runs.get(run)!.map(r => r.item).sort()
+  const first = order.length ? itemSet(order[0]) : []
+  const odd = order.filter(run => JSON.stringify(itemSet(run)) !== JSON.stringify(first))
+  const mismatch = odd.length ? `runs on this corpus version and split hold different items (${order[0]}: ${first.length} item(s); ${odd.map(run => `${run}: ${runs.get(run)!.length}`).join(', ')}): a truncated or padded run, so nothing can be compared` : null
+  return { runs, order, items: mismatch ? [] : first, mismatch }
 }
 const conditionRates = (rs: StoredVerdict[], ids: string[]) => {
   const by = new Map(rs.map(r => [r.item, r]))
@@ -577,17 +664,18 @@ export function detectDrift(records: StoredVerdict[], o: { judge: string; baseli
   checkDriftOptions(records, o)
   const tol = o.tolerance ?? 0.1
   const mine = records.filter(r => isObj(r) && r.judge === o.judge)
+  checkIdentities(mine)
   const keys = [...new Set(mine.map(r => `${r.origin}\u0000${r.corpus_hash}\u0000${r.split}`))].sort()
   return keys.map(key => {
     const [origin, corpus_hash, split] = key.split('\u0000') as [Origin, string, Split]
-    const { runs, order } = runsOf(mine.filter(r => r.origin === origin && r.corpus_hash === corpus_hash && r.split === split))
+    const { runs, order, items, mismatch } = runsOf(mine.filter(r => r.origin === origin && r.corpus_hash === corpus_hash && r.split === split))
     const base = o.baseline && runs.has(o.baseline) ? o.baseline : order[0]
     const last = order[order.length - 1]
-    const out: DriftReport = { judge: o.judge, origin, corpus_hash, split, status: 'insufficient', baseline: headOf(runs.get(base)!, base), latest: headOf(runs.get(last)!, last), changed_judge: false, flipped: [], by_condition: {}, problems: [] }
+    const out: DriftReport = { judge: o.judge, origin, corpus_hash, split, status: 'insufficient', baseline: headOf(runs.get(base)!, base), latest: headOf(runs.get(last)!, last), changed_judge: false, flipped: [], items, by_condition: {}, problems: [] }
+    if (mismatch) { out.status = 'invalid'; out.problems.push(mismatch); return out }
     if (order.length < 2 || base === last) { out.problems.push('fewer than two runs on this corpus version: drift cannot be measured'); return out }
     const a = new Map(runs.get(base)!.map(r => [r.item, r])), b = new Map(runs.get(last)!.map(r => [r.item, r]))
-    const shared = [...a.keys()].filter(id => b.has(id)).sort()
-    if (!shared.length) { out.problems.push('the runs share no items'); return out }
+    const shared = items
     out.changed_judge = out.baseline!.fingerprint !== out.latest!.fingerprint
     if (out.changed_judge) out.problems.push(`judge changed since ${base} (${out.baseline!.model} v${out.baseline!.version}/p${out.baseline!.prompt_version} -> ${out.latest!.model} v${out.latest!.version}/p${out.latest!.prompt_version}, or its prompt): recalibrate before its verdicts count`)
     out.flipped = shared.filter(id => a.get(id)!.answer !== b.get(id)!.answer)
@@ -607,10 +695,12 @@ export function detectDrift(records: StoredVerdict[], o: { judge: string; baseli
   })
 }
 
-// Per-version, per-condition reporting (#785). For each origin, corpus version and split (never pooled), every judge
-// version that has stored runs, oldest first: its false-positive, false-negative and abstention rates overall and per
-// condition (from its latest run), its critical false positives, and whether its own runs agreed with each other; then,
-// between consecutive versions, the per-condition rate changes and the items whose answer changed.
+// Per-version, per-condition reporting (#785). For each origin, corpus version and split (never pooled), the judge's
+// fingerprint epochs in time order - a run of consecutive runs under one fingerprint; a return to an earlier fingerprint
+// (a rollback) is a new epoch, never merged into the old one: each epoch's false-positive, false-negative and abstention
+// rates overall and per condition (from its latest run), its critical false positives, and whether its own runs agreed
+// with each other; then, between adjacent epochs, the per-condition rate changes and the items whose answer changed. Runs
+// that do not all hold the same items are reported as a problem, with no rates (never an intersection).
 export interface VersionRow {
   fingerprint: string; model: string; version: number; prompt_version: number
   runs: string[]; first_at: string; latest_run: string; latest_at: string
@@ -618,17 +708,24 @@ export interface VersionRow {
   unstable: string[]  // items its own runs answered differently (drift under one fingerprint)
 }
 export interface VersionChange { from: string; to: string; by_condition: Partial<Record<Condition, Record<'fp_rate' | 'fn_rate' | 'abstain_rate', number | null>>>; flipped: string[]; new_critical_fp: string[] }
-export interface VerdictHistory { judge: string; origin: Origin; corpus_hash: string; split: Split; versions: VersionRow[]; changes: VersionChange[]; limits: string[] }
+export interface VerdictHistory { judge: string; origin: Origin; corpus_hash: string; split: Split; versions: VersionRow[]; changes: VersionChange[]; problems: string[]; limits: string[] }
 export function verdictHistory(records: StoredVerdict[], o: { judge: string }): VerdictHistory[] {
   checkDriftOptions(records, o)
   const mine = records.filter(r => isObj(r) && r.judge === o.judge)
+  checkIdentities(mine)
   const keys = [...new Set(mine.map(r => `${r.origin}\u0000${r.corpus_hash}\u0000${r.split}`))].sort()
   return keys.map(key => {
     const [origin, corpus_hash, split] = key.split('\u0000') as [Origin, string, Split]
-    const { runs, order } = runsOf(mine.filter(r => r.origin === origin && r.corpus_hash === corpus_hash && r.split === split))
-    const fps = [...new Set(order.map(run => runs.get(run)![0].fingerprint))]
-    const versions: VersionRow[] = fps.map(fp => {
-      const mineRuns = order.filter(run => runs.get(run)![0].fingerprint === fp)
+    const { runs, order, mismatch } = runsOf(mine.filter(r => r.origin === origin && r.corpus_hash === corpus_hash && r.split === split))
+    const limits0 = [origin === 'synthetic' ? 'synthetic fixtures only: says nothing about live-web accuracy' : 'live-web results: never compared with synthetic ones', 'rates are agreement with developer-written labels, not ground truth']
+    if (mismatch) return { judge: o.judge, origin, corpus_hash, split, versions: [], changes: [], problems: [mismatch], limits: limits0 }
+    const epochs: string[][] = []
+    for (const run of order) {
+      const cur = epochs[epochs.length - 1]
+      if (cur && runs.get(cur[0])![0].fingerprint === runs.get(run)![0].fingerprint) cur.push(run); else epochs.push([run])
+    }
+    const versions: VersionRow[] = epochs.map(mineRuns => {
+      const fp = runs.get(mineRuns[0])![0].fingerprint
       const latest = mineRuns[mineRuns.length - 1], rs = runs.get(latest)!, h = headOf(rs, latest)
       const ids = rs.map(r => r.item).sort()
       const unstable = ids.filter(id => new Set(mineRuns.map(run => runs.get(run)!.find(r => r.item === id)?.answer ?? 'missing')).size > 1)
@@ -648,12 +745,8 @@ export function verdictHistory(records: StoredVerdict[], o: { judge: string }): 
       for (const c of CONDITIONS) if (ra[c].n) by_condition[c] = { fp_rate: d(ra[c].fp_rate, rb[c].fp_rate), fn_rate: d(ra[c].fn_rate, rb[c].fn_rate), abstain_rate: d(ra[c].abstain_rate, rb[c].abstain_rate) }
       return { from: p.fingerprint, to: v.fingerprint, by_condition, flipped: shared.filter(id => a.get(id)!.answer !== b.get(id)!.answer), new_critical_fp: v.critical_fp.filter(id => !p.critical_fp.includes(id)) }
     })
-    const limits = [
-      origin === 'synthetic' ? 'synthetic fixtures only: says nothing about live-web accuracy' : 'live-web results: never compared with synthetic ones',
-      'rates are agreement with developer-written labels, not ground truth',
-      ...(versions.some(v => v.runs.length < 2) ? ['a version with one run cannot show drift under its own fingerprint'] : []),
-    ]
-    return { judge: o.judge, origin, corpus_hash, split, versions, changes, limits }
+    const limits = [...limits0, ...(versions.some(v => v.runs.length < 2) ? ['a version with one run cannot show drift under its own fingerprint'] : [])]
+    return { judge: o.judge, origin, corpus_hash, split, versions, changes, problems: [], limits }
   })
 }
 
@@ -671,6 +764,7 @@ export function renderVerdictHistory(hs: VerdictHistory[]): string {
   const out: string[] = []
   for (const h of hs) {
     out.push(`${h.judge}: ${h.origin} corpus ${h.corpus_hash.slice(0, 12)}, ${h.split} split, ${h.versions.length} version(s)`)
+    out.push(...h.problems.map(p => `  INVALID: ${p}`))
     for (const v of h.versions) {
       out.push(`  ${v.model} v${v.version}/p${v.prompt_version} (${v.fingerprint.slice(0, 12)}), ${v.runs.length} run(s), latest ${v.latest_at}`)
       out.push(`    ${'condition'.padEnd(14)}   n |   fp |   fn | abstain`)
@@ -698,33 +792,90 @@ export interface JudgeLock { v: 1; kind: 'dazl.judge-lock'; corpus: FrozenCorpus
 export const lockEntry = (r: CalibrationReport, at: string, source: string): JudgeLockEntry => {
   if (r.split !== 'calibration') throw new JudgeCorpusError('only a calibration-split report can be locked')
   if (r.harness_stub !== undefined || /^stub[:-]/.test(r.judge.model)) throw new JudgeCorpusError('a stub-model harness report is not a calibration and cannot be locked')
-  if (!nonEmpty(source) || Number.isNaN(Date.parse(at))) throw new JudgeCorpusError('a lock entry needs its source and a valid time')
-  return { fingerprint: r.fingerprint, judge: r.judge, corpus_hash: r.corpus.hash, origin: r.corpus.origin, ok: r.ok, problems: r.problems, critical_fp: [...r.critical_fp], source, calibrated_at: at }
+  if (!nonEmpty(source) || !isIsoTime(at)) throw new JudgeCorpusError('a lock entry needs its source and a valid time')
+  const e: JudgeLockEntry = { fingerprint: r.fingerprint, judge: { id: r.judge.id, version: r.judge.version, model: r.judge.model, prompt_version: r.judge.prompt_version }, corpus_hash: r.corpus.hash, origin: r.corpus.origin, ok: r.ok, problems: [...r.problems], critical_fp: [...r.critical_fp], source, calibrated_at: at }
+  const p = lockEntryProblem(e)
+  if (p) throw new JudgeCorpusError(`lock entry: ${p}`)
+  return e
 }
-const lockProblem = (lock: unknown): string | null =>
-  !isObj(lock) || lock.v !== 1 || lock.kind !== 'dazl.judge-lock' || !Array.isArray(lock.judges) || !Array.isArray(lock.registered) || !lock.judges.every(isObj) || !lock.registered.every(isObj)
-    ? 'the judge lock is not a dazl.judge-lock v1 (judges and registered lists)' : null
+const HEX64 = /^[0-9a-f]{64}$/
+// A UTC ISO-8601 time (as toISOString writes it, milliseconds optional) that names a real instant.
+const isIsoTime = (x: unknown): x is string => isStr(x) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(x) && isPartialDate(x.slice(0, 10)) && !Number.isNaN(Date.parse(x))
+const exactKeys = (o: Record<string, unknown>, keys: readonly string[]) => Object.keys(o).length === keys.length && keys.every(k => Object.hasOwn(o, k))
+const strList = (x: unknown) => Array.isArray(x) && x.every(isStr)
+const count = (x: unknown) => typeof x === 'number' && Number.isInteger(x) && x >= 0
+const SPEC_KEYS = ['id', 'version', 'model', 'prompt_version'] as const
+const specOk = (x: unknown): x is JudgeSpec => isObj(x) && exactKeys(x, SPEC_KEYS) && nonEmpty(x.id) && nonEmpty(x.model) && count(x.version) && count(x.prompt_version)
+const LOCK_ENTRY_KEYS = ['fingerprint', 'judge', 'corpus_hash', 'origin', 'ok', 'problems', 'critical_fp', 'source', 'calibrated_at'] as const
+// A lock entry is exactly its nine fields with their types: a sha256 fingerprint and corpus hash, a full judge spec (never a
+// stub model), a known origin, ok a boolean, problems and critical_fp lists of text, a non-empty source and a real UTC
+// time. Anything else - a missing, extra or mistyped field - is malformed, and a malformed entry never makes a judge count.
+export function lockEntryProblem(e: unknown): string | null {
+  if (!isObj(e)) return 'not an object'
+  if (!exactKeys(e, LOCK_ENTRY_KEYS)) return `fields must be exactly ${LOCK_ENTRY_KEYS.join(', ')}`
+  if (!isStr(e.fingerprint) || !HEX64.test(e.fingerprint)) return 'fingerprint is not a sha256'
+  if (!specOk(e.judge)) return 'judge is not a judge spec (id, version, model, prompt_version)'
+  if (/^stub[:-]/.test(e.judge.model)) return 'a stub model is never a calibration'
+  if (!isStr(e.corpus_hash) || !HEX64.test(e.corpus_hash)) return 'corpus_hash is not a sha256'
+  if (e.origin !== 'synthetic' && e.origin !== 'live') return 'origin must be synthetic or live'
+  if (typeof e.ok !== 'boolean') return 'ok must be a boolean'
+  if (!strList(e.problems)) return 'problems must be a list of text'
+  if (!strList(e.critical_fp)) return 'critical_fp must be a list of item ids'
+  if (!nonEmpty(e.source)) return 'no source'
+  if (!isIsoTime(e.calibrated_at)) return 'calibrated_at is not a UTC ISO time'
+  return null
+}
+const REGISTERED_KEYS = ['id', 'fingerprint', 'note'] as const
+const lockProblem = (lock: unknown): string | null => {
+  if (!isObj(lock) || lock.v !== 1 || lock.kind !== 'dazl.judge-lock' || !Array.isArray(lock.judges) || !Array.isArray(lock.registered)) return 'the judge lock is not a dazl.judge-lock v1 (judges and registered lists)'
+  for (const [n, e] of lock.judges.entries()) { const p = lockEntryProblem(e); if (p) return `judge lock entry ${n + 1} is malformed: ${p}` }
+  for (const [n, r] of lock.registered.entries()) if (!isObj(r) || !exactKeys(r, REGISTERED_KEYS) || !nonEmpty(r.id) || !isStr(r.fingerprint) || !HEX64.test(r.fingerprint) || !isStr(r.note)) return `judge lock registered entry ${n + 1} is malformed (id, sha256 fingerprint, note)`
+  return null
+}
+const RUN_HEAD_KEYS = ['run', 'fingerprint', 'model', 'version', 'prompt_version'] as const
+const DRIFT_KEYS = ['judge', 'origin', 'corpus_hash', 'split', 'status', 'baseline', 'latest', 'changed_judge', 'flipped', 'items', 'by_condition', 'problems'] as const
+const headOk = (h: unknown) => h === null || (isObj(h) && exactKeys(h, RUN_HEAD_KEYS) && nonEmpty(h.run) && nonEmpty(h.fingerprint) && nonEmpty(h.model) && count(h.version) && count(h.prompt_version))
+// A drift report is exactly what detectDrift returns: any other shape, or a status outside DRIFT_STATUSES, is unreadable.
+export function driftReportProblem(d: unknown): string | null {
+  if (!isObj(d)) return 'not an object'
+  if (!exactKeys(d, DRIFT_KEYS)) return `fields must be exactly ${DRIFT_KEYS.join(', ')}`
+  if (!DRIFT_STATUSES.includes(d.status as DriftStatus)) return `unknown status ${JSON.stringify(d.status)}`
+  if (!nonEmpty(d.judge) || (d.origin !== 'synthetic' && d.origin !== 'live') || !nonEmpty(d.corpus_hash) || (d.split !== 'calibration' && d.split !== 'holdout')) return 'judge, origin, corpus_hash or split is missing or mistyped'
+  if (!headOk(d.baseline) || !headOk(d.latest) || typeof d.changed_judge !== 'boolean' || !strList(d.flipped) || !strList(d.items) || !isObj(d.by_condition) || !strList(d.problems)) return 'baseline, latest, changed_judge, flipped, items, by_condition or problems is mistyped'
+  return null
+}
 // A lock entry passes only when it says so in every field: ok exactly true, and no problem or critical false positive.
 const entryPassed = (e: Record<string, unknown>) => e.ok === true && Array.isArray(e.problems) && e.problems.length === 0 && Array.isArray(e.critical_fp) && e.critical_fp.length === 0
 
 export interface GateResult { usable: boolean; reason: string }
-// Whether a judge's verdicts may count: a passing calibration for this exact fingerprint on this exact, frozen corpus, and
-// no drift report for it that says 'drifted'. An 'insufficient' drift report does not block: the passing calibration is
-// the evidence, and a single run is its own baseline. A malformed lock or entry is unusable, never usable.
+// Whether a judge's verdicts may count: every lock entry for this exact fingerprint is well formed, on this exact, frozen
+// corpus and origin, records exactly this judge spec and is a clean pass; every drift report is well formed; and none for
+// this judge says 'drifted' or 'invalid'. An 'insufficient' drift report does not block: the passing calibration is the
+// evidence, and a single run is its own baseline. A malformed lock, entry or drift report is unusable, never usable.
 export function judgeGate(judge: Pick<JudgeAdapter, 'spec' | 'template'>, lock: JudgeLock, corpus: JudgeCorpus, driftReports: DriftReport[] = []): GateResult {
   const { spec } = judge
+  const id = isObj(spec) ? String(spec.id) : 'judge'
+  if (!specOk(spec) || !isStr(judge.template)) return { usable: false, reason: `judge ${id}: not a judge spec and template` }
   const lp = lockProblem(lock)
   if (lp) return { usable: false, reason: `judge ${spec.id}: ${lp}` }
   const fp = judgeFingerprint(spec, judge.template)
-  const e = lock.judges.find(j => j.fingerprint === fp)
-  if (!e) return { usable: false, reason: lock.judges.some(j => isObj(j.judge) && j.judge.id === spec.id) ? `judge ${spec.id} changed (model, version or prompt): recalibrate` : `judge ${spec.id} was never calibrated` }
-  if (e.corpus_hash !== corpusHash(corpus)) return { usable: false, reason: `judge ${spec.id} was calibrated on another corpus version: recalibrate` }
+  const entries = lock.judges.filter(j => j.fingerprint === fp)
+  if (!entries.length) return { usable: false, reason: lock.judges.some(j => j.judge.id === spec.id) ? `judge ${spec.id} changed (model, version or prompt): recalibrate` : `judge ${spec.id} was never calibrated` }
+  let hash = ''
+  try { hash = corpusHash(corpus) } catch { /* reported by frozenProblem */ }
+  for (const e of entries) {
+    if (e.corpus_hash !== hash) return { usable: false, reason: `judge ${spec.id} was calibrated on another corpus version: recalibrate` }
+    if (e.origin !== corpus?.origin) return { usable: false, reason: `judge ${spec.id}: its lock entry's origin ${e.origin} is not the corpus's` }
+    if (SPEC_KEYS.some(k => e.judge[k] !== spec[k])) return { usable: false, reason: `judge ${spec.id}: its lock entry records another judge spec (${JSON.stringify(e.judge)}) under this fingerprint` }
+  }
   const fz = frozenProblem(corpus, lock.corpus)
   if (fz) return { usable: false, reason: `judge ${spec.id}: ${fz}` }
-  if (!entryPassed(e as unknown as Record<string, unknown>)) return { usable: false, reason: `judge ${spec.id} failed calibration: ${Array.isArray(e.problems) && e.problems.length ? e.problems.join('; ') : 'the lock entry does not record a clean pass'}` }
+  const failed = entries.find(e => !entryPassed(e as unknown as Record<string, unknown>))
+  if (failed) return { usable: false, reason: `judge ${spec.id} failed calibration: ${failed.problems.length ? failed.problems.join('; ') : 'the lock entry does not record a clean pass'}` }
   if (!Array.isArray(driftReports)) return { usable: false, reason: `judge ${spec.id}: drift reports unreadable` }
-  const d = driftReports.find(r => !isObj(r) || (r.judge === spec.id && r.status !== 'stable' && r.status !== 'insufficient'))
-  if (d) return { usable: false, reason: `judge ${spec.id} drifted (${String(d?.origin)}): ${Array.isArray(d?.problems) ? d.problems.join('; ') : 'unreadable drift report'}` }
+  for (const [n, r] of driftReports.entries()) { const p = driftReportProblem(r); if (p) return { usable: false, reason: `judge ${spec.id}: drift report ${n + 1} is unreadable (${p})` } }
+  const d = driftReports.find(r => r.judge === spec.id && r.status !== 'stable' && r.status !== 'insufficient')
+  if (d) return { usable: false, reason: `judge ${spec.id} ${d.status === 'invalid' ? 'has invalid stored verdicts' : 'drifted'} (${d.origin}): ${d.problems.join('; ')}` }
   return { usable: true, reason: 'calibrated' }
 }
 
@@ -737,7 +888,12 @@ export function judgeGate(judge: Pick<JudgeAdapter, 'spec' | 'template'>, lock: 
 //  - the harness lost its teeth: the truthful stub failed, or an adversarial stub passed, or a report is for another
 //    fingerprint, corpus or split;
 //  - a calibration recorded for the current fingerprint has a critical false positive (wrong identity, contact or date,
-//    or an obeyed injection) or failed, or the judge's stored verdicts drifted.
+//    or an obeyed injection) or failed, or the lock is malformed;
+//  - drift (#784): the gate parses the stored-verdict log it is given (`verdicts`: the log's text, or null when there is
+//    none) and runs detectDrift for every judge. A drifted or invalid report blocks; so does an unreadable log, a missing
+//    `verdicts` input, and any supplied drift report that is not exactly a DriftReport with a known status. Once the lock
+//    holds a calibration for a judge's current fingerprint, the log must also hold that fingerprint's verdicts on every
+//    calibration item of this corpus: without them drift cannot be checked, and release is blocked.
 // A judge with no real-model calibration does not block release, but its verdicts do not count: they stay unknown, never
 // pass, and the decision says so in `limits`. The harness measures the gate, not any real model.
 export interface HarnessRun { stub: string; expect_pass: boolean; report: CalibrationReport }
@@ -748,13 +904,21 @@ export interface ReleaseJudgeResult {
   real_model: GateResult; critical_fp_by_kind: Record<CriticalKind, string[]>; blocks: string[]
 }
 export interface ReleaseDecision { release: 'allowed' | 'blocked'; corpus: { id: string; hash: string; frozen: boolean }; judges: ReleaseJudgeResult[]; blocks: string[]; limits: string[] }
-export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: ReleaseJudgeInput[]; drift?: DriftReport[] }): ReleaseDecision {
+export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: ReleaseJudgeInput[]; verdicts: string | null; drift?: DriftReport[] }): ReleaseDecision {
   const blocks: string[] = [], limits: string[] = []
   const lp = lockProblem(i?.lock)
   let hash = ''
   try { hash = corpusHash(i.corpus) } catch { /* reported by frozenProblem */ }
   const fz = lp ?? frozenProblem(i?.corpus, i.lock.corpus)
   if (fz) blocks.push(fz)
+  const msg = (e: unknown) => e instanceof Error ? e.message : String(e)
+  let records: StoredVerdict[] | null = null
+  if (i?.verdicts === undefined) blocks.push('no stored-verdict log was given to the gate (its text, or null when there is none): drift cannot be checked')
+  else if (i.verdicts !== null) { try { records = parseStoredVerdicts(i.verdicts) } catch (e) { blocks.push(`the stored-verdict log is unreadable: ${msg(e)}`) } }
+  const supplied: unknown[] = i?.drift === undefined ? [] : Array.isArray(i.drift) ? i.drift : []
+  if (i?.drift !== undefined && !Array.isArray(i.drift)) blocks.push('the drift reports are not a list')
+  supplied.forEach((d, n) => { const p = driftReportProblem(d); if (p) blocks.push(`drift report ${n + 1} is unreadable: ${p}`) })
+  const calIds = JSON.stringify((Array.isArray(i?.corpus?.items) ? i.corpus.items : []).filter(it => isObj(it) && it.split === 'calibration').map(it => it.id).sort())
   const judges: ReleaseJudgeInput[] = Array.isArray(i?.judges) ? i.judges : []
   if (!judges.length) blocks.push('no judge was checked')
   const registered = lp ? [] : i.lock.registered
@@ -789,9 +953,17 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
       if (ids.length) b.push(`${j.spec.id}: critical false positive in its ${String(e.judge?.model)} calibration (${CRITICAL_KINDS.filter(k => byKind[k].length).map(k => `${k}: ${byKind[k].join(', ')}`).join('; ')}): release blocked`)
       else if (!entryPassed(e as unknown as Record<string, unknown>)) b.push(`${j.spec.id}: its ${String(e.judge?.model)} calibration failed: ${(Array.isArray(e.problems) ? e.problems : []).join('; ') || 'no clean pass recorded'}`)
     }
-    const drift = Array.isArray(i.drift) ? i.drift : []
-    for (const d of drift) if (!isObj(d) || (d.judge === j.spec.id && d.status === 'drifted')) b.push(`${j.spec.id}: stored verdicts drifted (${String(d?.origin)}): ${Array.isArray(d?.problems) ? d.problems.join('; ') : 'unreadable drift report'}`)
-    const real_model = lp ? { usable: false, reason: lp } : judgeGate(j, i.lock, i.corpus, drift.filter(isObj) as DriftReport[])
+    let computed: DriftReport[] = []
+    if (records) { try { computed = detectDrift(records, { judge: j.spec.id }) } catch (e) { b.push(`${j.spec.id}: drift over its stored verdicts cannot be computed: ${msg(e)}`) } }
+    const drift = [...computed, ...supplied.filter(d => !driftReportProblem(d)) as DriftReport[]]
+    for (const d of drift.filter(x => x.judge === j.spec.id)) {
+      if (d.status === 'drifted') b.push(`${j.spec.id}: stored verdicts drifted (${d.origin}): ${d.problems.join('; ')}`)
+      if (d.status === 'invalid') b.push(`${j.spec.id}: stored verdicts are invalid (${d.origin}): ${d.problems.join('; ')}`)
+    }
+    if (entries.length && !computed.some(d => d.origin === i.corpus.origin && d.corpus_hash === hash && d.split === 'calibration' && d.latest?.fingerprint === fp && JSON.stringify(d.items) === calIds)) {
+      b.push(`${j.spec.id}: the lock holds a calibration of fingerprint ${fp} but the stored-verdict log ${records ? 'has no run of it' : 'is missing or unreadable'} on every calibration item of corpus ${String(i.corpus?.id)}: drift cannot be checked`)
+    }
+    const real_model = lp ? { usable: false, reason: lp } : judgeGate(j, i.lock, i.corpus, [...computed, ...supplied] as DriftReport[])
     if (!real_model.usable) limits.push(`${j.spec.id}: verdicts do not count (${real_model.reason}); its answers stay unknown, never pass`)
     return { id: j.spec.id, fingerprint: fp, registered_fingerprint: reg?.fingerprint ?? null, changed, harness: harness.map(h => ({ stub: h.stub, expect_pass: h.expect_pass, ok: h.ok, critical_fp: h.critical_fp })), real_model, critical_fp_by_kind: byKind, blocks: b }
   })

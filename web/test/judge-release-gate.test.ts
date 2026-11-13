@@ -11,14 +11,16 @@ import {
   calibrate, detectDrift, judgeFingerprint, judgeGate, lockEntry, releaseGate, toStoredVerdicts, JudgeCorpusError,
   type JudgeAdapter, type JudgeCorpus, type JudgeLock, type ReleaseJudgeInput,
 } from '../lib/evals/judge.ts'
-import { CLAIM_SUPPORT_SPEC, claimSupportJudge, harnessFor, RELEASE_JUDGES, releaseInputs, scanVerificationJudge, STUB_MODELS, type JudgeBuild } from './helpers/judge-stubs.ts'
+import { CLAIM_SUPPORT_SPEC, claimSupportJudge, harnessFor, readVerdictLog, RELEASE_JUDGES, releaseInputs, scanVerificationJudge, STUB_MODELS, VERDICT_LOG, type JudgeBuild } from './helpers/judge-stubs.ts'
 
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
 const LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
 const AT = '2026-11-10T00:00:00Z', SRC = 'test: simulated real-model calibration'
 const INPUTS = await releaseInputs(CORPUS)
-const gate = (judges: ReleaseJudgeInput[] = INPUTS, lock: JudgeLock = LOCK, corpus: JudgeCorpus = CORPUS, drift = undefined as Parameters<typeof releaseGate>[0]['drift']) => releaseGate({ lock, corpus, judges, drift })
+// The CI path: the committed lock and the committed stored-verdict log, read exactly as scripts/judges.mts --gate reads them.
+const COMMITTED_VERDICTS = readVerdictLog(VERDICT_LOG)
+const gate = (judges: ReleaseJudgeInput[] = INPUTS, lock: JudgeLock = LOCK, corpus: JudgeCorpus = CORPUS, drift = undefined as Parameters<typeof releaseGate>[0]['drift'], verdicts: string | null = COMMITTED_VERDICTS) => releaseGate({ lock, corpus, judges, verdicts, drift })
 const swap = (id: string, input: ReleaseJudgeInput) => INPUTS.map(j => j.spec.id === id ? input : j)
 const claimInput = (build: JudgeBuild = claimSupportJudge, spec = CLAIM_SUPPORT_SPEC) => harnessFor(CORPUS, spec, build)
 // a "real" calibration of the claim judge's current fingerprint, simulated with a stub behind the judge's real spec
@@ -79,8 +81,9 @@ test('critical wrong-identity, wrong-contact, wrong-date and obeyed-injection fa
   // a calibration that fails on rates alone (abstains on every non-English page) blocks too
   const lazy = gate(INPUTS, { ...LOCK, judges: [lockEntry(await realRun('english_only'), AT, SRC)] })
   assert.ok(lazy.blocks.some(b => /^claim_support: its claude-sonnet-4-5 calibration failed: multilingual: abstention rate 1\.00 > 0\.5/.test(b)), lazy.blocks.join('\n'))
-  // a clean calibration releases, and only then do the judge's verdicts count
-  const good = gate(INPUTS, { ...LOCK, judges: [lockEntry(await realRun('truthful'), AT, SRC)] })
+  // a clean calibration, with its verdicts in the stored-verdict log, releases, and only then do the judge's verdicts count
+  const clean = await realRun('truthful')
+  const good = gate(INPUTS, { ...LOCK, judges: [lockEntry(clean, AT, SRC)] }, CORPUS, undefined, toStoredVerdicts(clean, CORPUS, 'run-1', AT).map(r => JSON.stringify(r)).join('\n') + '\n')
   assert.equal(good.release, 'allowed', good.blocks.join('\n'))
   assert.deepEqual(good.judges.find(x => x.id === 'claim_support')!.real_model, { usable: true, reason: 'calibrated' })
 })
@@ -129,15 +132,15 @@ test('an edited or unfrozen corpus blocks release, and so does drift in stored v
 
 test('malformed gate input blocks, never throws and never allows', () => {
   for (const bad of [{ lock: null }, { lock: {} }, { lock: { ...LOCK, judges: null } }, { lock: { ...LOCK, registered: [null] } }]) {
-    const d = releaseGate({ lock: bad.lock as never, corpus: CORPUS, judges: INPUTS })
+    const d = releaseGate({ lock: bad.lock as never, corpus: CORPUS, judges: INPUTS, verdicts: null })
     assert.equal(d.release, 'blocked', JSON.stringify(bad))
     assert.ok(d.judges.every(j => j.real_model.usable === false))
   }
   for (const judges of [null, 'claim_support', [null], [{ spec: null, template: 't', harness: [] }], [{ ...INPUTS[0], harness: null }], [{ ...INPUTS[0], harness: [null, undefined] }]]) {
-    assert.equal(releaseGate({ lock: LOCK, corpus: CORPUS, judges: judges as never }).release, 'blocked', JSON.stringify(judges)?.slice(0, 60))
+    assert.equal(releaseGate({ lock: LOCK, corpus: CORPUS, judges: judges as never, verdicts: null }).release, 'blocked', JSON.stringify(judges)?.slice(0, 60))
   }
-  assert.equal(releaseGate({ lock: LOCK, corpus: null as never, judges: INPUTS }).release, 'blocked')
-  assert.equal(releaseGate({ lock: LOCK, corpus: CORPUS, judges: INPUTS, drift: [null] as never }).release, 'blocked', 'an unreadable drift report is not a clean one')
+  assert.equal(releaseGate({ lock: LOCK, corpus: null as never, judges: INPUTS, verdicts: null }).release, 'blocked')
+  assert.equal(releaseGate({ lock: LOCK, corpus: CORPUS, judges: INPUTS, verdicts: null, drift: [null] as never }).release, 'blocked', 'an unreadable drift report is not a clean one')
   // a lock entry whose critical item is not in the corpus still blocks (it is not silently dropped)
   const ghost = { ...LOCK, judges: [{ fingerprint: INPUTS[1].harness[0].report.fingerprint, judge: CLAIM_SUPPORT_SPEC, corpus_hash: LOCK.corpus.hash, origin: 'synthetic' as const, ok: false, problems: ['x'], critical_fp: ['no-such-item'], source: SRC, calibrated_at: AT }] }
   assert.ok(gate(INPUTS, ghost).blocks.some(b => /critical false positive recorded on no-such-item/.test(b)))
