@@ -231,8 +231,22 @@ test('#1062 a run report body that cannot be parsed holds every lead of its scan
   assert.equal(requiredGateHeld(raw, 'A', 'plain'), 'sales_hiring_check_failed')
   assert.equal(requiredGateHeld(raw, 'A', 'rev'), 'sales_hiring_check_failed')
   assert.deepEqual([...await requiredGateHeldForJob(db, 'A', 'jp')].sort(), ['plain', 'rev'])
+  for (const body of [JSON.stringify({ held_lead_ids: 'plain' }), JSON.stringify({ held_lead_ids: { plain: true } })]) {
+    await db.run('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = 1', [body, 'jp'])
+    assert.equal(requiredGateHeld(raw, 'A', 'plain'), 'sales_hiring_check_failed', `malformed held_lead_ids ${body} fails closed`)
+    assert.ok((await requiredGateHeldForJob(db, 'A', 'jp')).has('plain'), body)
+  }
+  assert.equal(requiredGateHeld(raw, 'A', 'plain') !== null, true)
+  await db.run('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = 1', ['{not json', 'jp'])
   await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 2, ?)', ['jp', JSON.stringify({ held_lead_ids: [] })])
   assert.deepEqual([requiredGateHeld(raw, 'A', 'plain'), (await requiredGateHeldForJob(db, 'A', 'jp')).size], [null, 0], 'a newer readable report replaces it')
+  // releaseHeld skips the unreadable attempt and still clears the readable ones (rows read in any order).
+  await db.run('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = 2', [JSON.stringify({ held_lead_ids: ['plain'] }), 'jp'])
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 0, ?)', ['jp', JSON.stringify({ held_lead_ids: ['plain'] })])
+  assert.equal(requiredGateHeld(raw, 'A', 'plain'), 'sales_hiring_check_failed')
+  releaseHeld(raw, 'A', 'jp', ['plain'])
+  assert.deepEqual([requiredGateHeld(raw, 'A', 'plain'), (await requiredGateHeldForJob(db, 'A', 'jp')).has('plain')], [null, false], 'the gate pass released it despite the unreadable attempt 1')
+  assert.equal((raw.prepare('SELECT report FROM scan_run_report WHERE job_id = ? AND attempt = 0').get('jp') as { report: string }).report, JSON.stringify({ held_lead_ids: [] }), 'attempt 0 (read after attempt 1) was cleared too')
 })
 
 test('#1062 partial store: with the marker and report tables missing, the batch read and the draft guard still agree; a real read error makes the campaign page fail, never render', async () => {

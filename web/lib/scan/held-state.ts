@@ -26,6 +26,7 @@ function reportHeldIds(report: string): Set<unknown> | 'unreadable' {
   let j: unknown
   try { j = JSON.parse(report) } catch { return 'unreadable' }
   const ids = j && typeof j === 'object' ? (j as { held_lead_ids?: unknown }).held_lead_ids : undefined
+  if (ids !== undefined && !Array.isArray(ids)) return 'unreadable'   // present but not the list the run writes: fail closed, never "holds nothing"
   return new Set(Array.isArray(ids) ? ids : [])
 }
 
@@ -46,8 +47,10 @@ export function releaseHeld(db: Database.Database, tenantId: string, jobId: stri
   try {
     const rows = db.prepare('SELECT attempt, report FROM scan_run_report WHERE job_id = ?').all(jobId) as { attempt: number; report: string }[]
     for (const row of rows) {
-      const rep = JSON.parse(row.report) as { held_lead_ids?: unknown }
-      if (!Array.isArray(rep.held_lead_ids)) continue
+      // One unreadable attempt never stops the others being released (#1062): it is skipped, and it no longer holds once a newer readable attempt exists.
+      let rep: { held_lead_ids?: unknown }
+      try { rep = JSON.parse(row.report) as { held_lead_ids?: unknown } } catch { continue }
+      if (!rep || typeof rep !== 'object' || !Array.isArray(rep.held_lead_ids)) continue
       const keep = rep.held_lead_ids.filter(x => !leadIds.includes(String(x)))
       if (keep.length !== rep.held_lead_ids.length) { rep.held_lead_ids = keep; db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(JSON.stringify(rep), jobId, row.attempt) }
     }
