@@ -378,7 +378,12 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
           [delta, delta, ctx.jobId, ctx.tenantId])
       })
       try { await write() } catch {
-        try { await write() } catch (e) { captureError(e, { source: 'worker', where: 'scan-spend-cap:settle', tenantId: ctx.tenantId, ref: ctx.jobId }) }
+        try { await write() } catch (e) {
+          // The accounting did not land (the transaction rolled back, so the row stays 'reserved' at its worst case): same stop as a
+          // maybe-billed call. No further paid request in this attempt, and the scan ends accounting_uncertain, not done.
+          uncertainAttempts.add(ctx)
+          captureError(e, { source: 'worker', where: 'scan-spend-cap:settle', tenantId: ctx.tenantId, ref: ctx.jobId })
+        }
       }
     },
   }
@@ -387,6 +392,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
 // The account path (see AccountSpendCtx): outside a scan, a model call of an account with a context reserves on its
 // day/month windows, or is refused (OWNER_POOL_LIMIT_REASON) before anything is sent. No context: refused
 // ('no_spend_context'), unless the explicit runWithoutAccountSpend escape hatch is open.
+const unsettledAccounts = new WeakSet<AccountSpendCtx>() // an account context whose settle failed twice: it reserves nothing more
 async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
   const a = accountStore.getStore()
   if (!a) {
@@ -395,6 +401,7 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
   }
   if (!a.limits) return null
   const limits = a.limits
+  if (unsettledAccounts.has(a)) throw new SpendRefused('accounting_unsettled')
   const db = asDb(a.db)
   const now = a.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -420,7 +427,11 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
       if (actual === null) return // the worst case stands
       const write = () => db.tx(function* (t: Tx): TxBody<void> { yield* settlePoolWindows(t, a.tenantId, limits, actual - usd, actual, at, now()) })
       try { await write() } catch {
-        try { await write() } catch (e) { captureError(e, { source: 'worker', where: 'account-spend-cap:settle', tenantId: a.tenantId }) } // unsaved: the worst case stands, an over-count only
+        try { await write() } catch (e) {
+          // Unsaved: the worst case stands, but the window may be missing its row. This context makes no further paid request.
+          unsettledAccounts.add(a)
+          captureError(e, { source: 'worker', where: 'account-spend-cap:settle', tenantId: a.tenantId })
+        }
       }
     },
   }

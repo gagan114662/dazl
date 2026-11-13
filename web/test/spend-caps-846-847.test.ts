@@ -203,3 +203,37 @@ bothEngines('#1154 XHawk: release removes the window rows it leaves empty; settl
   await db.tx(function* (t) { yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE ?', [A, 'd%']) })
   await assert.rejects(db.tx(function* (t) { yield* settlePoolWindows(t, A, L, -0.1, 0.2, T0, T0 + 5) }), /spend_pool_window_missing/)
 })
+
+// #1154 XHawk (dcb00cc4): a settle that fails twice must not return as if it landed. Through the transport path (reserve -> call -> settle),
+// the pool window row is deleted between reserve and settle: the failure is captured, the attempt makes no further paid request
+// (accounting_uncertain), and the scan_spend_calls row stays 'reserved' at its worst case (what the reaper reads).
+bothEngines('#1154 XHawk: a scan settle that fails twice is captured and stops the attempt (accounting_uncertain); the call row stays reserved', async ({ db }) => {
+  const { setErrorSinks } = await import('../lib/ops/errors.ts')
+  await job(db, 'j1', A)
+  const ctx = scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 50 } })
+  const h = await runWithScanSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.3))
+  assert.ok(h)
+  await db.tx(function* (t) { yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE ?', [A, 'd%']) })
+  const seen: string[] = []
+  const restore = setErrorSinks([r => { seen.push(r.where) }])
+  try { await runWithScanSpend(ctx, () => h!.settle(0.1)) } finally { restore() }
+  assert.deepEqual(seen, ['scan-spend-cap:settle'], 'the failure is captured')
+  assert.deepEqual((await scanSpendCalls(db, 'j1', A)).map(c => [c.status, c.actual_usd]), [['reserved', null]], 'rolled back: the worst case stands, reserved for the reaper')
+  assert.equal((await scanSpendRow(db, 'j1', A))!.spend_cap_reserved_usd, 0.3)
+  await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('render', () => 0.01)), refusedWith('accounting_uncertain'))
+  await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('accounting_uncertain'))
+  assert.equal((await scanSpendCalls(db, 'j1', A)).length, 1, 'no further reservation was written')
+})
+
+bothEngines('#1154 XHawk: an account-path settle that fails twice is captured and the context reserves nothing more (accounting_unsettled)', async ({ db }) => {
+  const { setErrorSinks } = await import('../lib/ops/errors.ts')
+  const ctx = { db, tenantId: A, limits: { day: 5, month: 50 }, clock: () => T0 }
+  const h = await runWithAccountSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.3))
+  assert.ok(h)
+  await db.tx(function* (t) { yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE ?', [A, 'd%']) })
+  const seen: string[] = []
+  const restore = setErrorSinks([r => { seen.push(r.where) }])
+  try { await runWithAccountSpend(ctx, () => h!.settle(0.1)) } finally { restore() }
+  assert.deepEqual(seen, ['account-spend-cap:settle'])
+  await assert.rejects(runWithAccountSpend(ctx, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('accounting_unsettled'))
+})
