@@ -266,17 +266,34 @@ test('#1062 partial store: with the marker and report tables missing, the batch 
 
 test('#1062 Leads review button: a lead held by BOTH the time window and the required check names the check; a wider window is never offered as the way out', () => {
   const now = new Date('2026-11-13T12:00:00Z')
-  // Hermes-PC's probe (review at 0257cbbb / feeda320), and the same with the other window kinds
-  for (const l of [{ review_reason: 'outside_window', window_held: true, gate_held: true, event_date: '2025-01-01' },
-    { review_reason: 'quote_unconfirmed', window_held: true, gate_held: true, event_date: '2025-01-15' },
-    { review_reason: 'outside_window_undated', window_held: true, gate_held: true, event_date: null },
-    { review_reason: 'outside_window', window_held: true, gate_held: true }]) {
-    const a = reviewAction(l, now)
-    assert.equal(a.label, 'Keep as research', JSON.stringify(l))
-    assert.match(a.hint, /a required check \(the sales-hiring proof\) has not passed/, JSON.stringify(l))
-    assert.doesNotMatch(a.hint, /only a new scan with a wider window can find it/, JSON.stringify(l))
-    assert.match(a.hint, /with the check passing/, JSON.stringify(l))
-  }
+  const R = 'Moves it to your list as confirmed by you, as research only: '
+  const PASSED = 'a required check (the sales-hiring proof) has not passed, which checking the source cannot change, so it stays out of drafting.'
+  const RAN = 'the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting.'
+  const cases: [Record<string, unknown>, string][] = [
+    // Hermes-PC's probe (reviews at 0257cbbb / feeda320): an older event + the gate
+    [{ review_reason: 'outside_window', window_held: true, gate_held: true, event_date: '2025-01-01' },
+      `${R}${PASSED} Its event date is also older than the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
+    [{ review_reason: 'quote_unconfirmed', window_held: true, gate_held: true, event_date: '2025-01-15' },
+      `${R}${PASSED} Its event date is also older than the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
+    // no valid date + the gate: a rescan needs a dated source too, never "the check passing" alone
+    [{ review_reason: 'outside_window_undated', window_held: true, gate_held: true, event_date: null },
+      `${R}${PASSED} It also has no valid event date, which a wider time window does not change. Only running the scan again, with the check passing and a source with a valid event date, can make it usable.`],
+    // window hold with no date supplied (unknown)
+    [{ review_reason: 'quote_unconfirmed', window_held: true, gate_held: true },
+      `${R}${PASSED} It is also outside the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
+    // the check could not run (its stored reason) + an older event
+    [{ review_reason: 'sales_hiring_check_failed', window_held: true, event_date: '2025-01-01' },
+      `${R}${RAN} Its event date is also older than the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
+    // the check could not run + no valid date, and + a window hold with no date supplied
+    [{ review_reason: 'sales_hiring_check_failed', window_held: true, event_date: null },
+      `${R}${RAN} It also has no valid event date, which a wider time window does not change. Only running the scan again, with the check passing and a source with a valid event date, can make it usable.`],
+    [{ review_reason: 'sales_hiring_check_failed', window_held: true },
+      `${R}${RAN} It is also outside the time window you asked for. Only running the scan again, with the check passing and a time window wide enough to include the event (it uses your usual scan budget), can make it usable.`],
+    // the gate alone: no window wording at all
+    [{ review_reason: 'quote_unconfirmed', gate_held: true },
+      `${R}${PASSED} Only running the scan again, with the check passing, can make it usable.`],
+  ]
+  for (const [l, hint] of cases) assert.deepEqual(reviewAction(l, now), { label: 'Keep as research', hint }, JSON.stringify(l))
   // control: the window alone still gives the window advice
   assert.match(reviewAction({ review_reason: 'outside_window', window_held: true, event_date: '2025-01-01' }, now).hint, /only a new scan with a wider window can find it as current/)
 })

@@ -42,7 +42,8 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
     const window = kind === 'no_date' ? ' It also has no valid event date, which a wider time window does not change.'
       : kind === 'older' ? ' Its event date is also older than the time window you asked for.'
       : kind === 'unknown' ? ' It is also outside the time window you asked for.' : ''
-    return { label: 'Keep as research', hint: `${RESEARCH}: ${gate}, which checking the source cannot change, so it stays out of drafting.${window} Only running the scan again, with the check passing${kind === 'older' || kind === 'unknown' ? ' and the event inside your window' : ''}, can make it usable.` }
+    const needs = kind === 'no_date' ? ' and a source with a valid event date' : kind === 'older' || kind === 'unknown' ? ' and a time window wide enough to include the event (it uses your usual scan budget)' : ''
+    return { label: 'Keep as research', hint: `${RESEARCH}: ${gate}, which checking the source cannot change, so it stays out of drafting.${window} Only running the scan again, with the check passing${needs}, can make it usable.` }
   }
   if (kind === 'no_date') return { label: 'Keep as research', hint: `${RESEARCH}: it has no valid event date (missing, invalid or in the future), so it stays out of drafting. A wider time window does not change that.` }
   if (kind === 'older') return { label: 'Keep as research', hint: `${RESEARCH}: its event date is older than the time window you asked for, so it stays out of drafting. Confirming does not change that for this lead; only a new scan with a wider window can find it as current (it uses your usual scan budget).` }
