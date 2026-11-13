@@ -149,15 +149,23 @@ if [ "${1:-}" = --check-env ]; then check_env "${2:?usage: deploy.sh --check-env
 
 # NEVER-AGAIN #1 (docs/NEVER-AGAIN.md; prod down 2026-11-12 20:25 and 2026-11-13 ~09:12, OOM from building on the box):
 # the dazl box (prod + staging, 1.8 GB RAM) never builds. The default BUILD above (npm ci + next build) runs only when
-# STAGING_BUILD is not given, which on the box means dazl-staging-deploy.timer or a hand run: refused. pull-prebuilt.sh
+# STAGING_BUILD is not given (or given empty), which on the box means dazl-staging-deploy.timer or a hand run: refused. pull-prebuilt.sh
 # (the prebuilt path) and the tests always pass STAGING_BUILD. The throwaway-machine e2e test (e2e-test.sh) may build
 # with DAZL_ALLOW_HOST_BUILD=throwaway-machine, and even then never where a dazl box marker exists.
 # Tested by ops/test_never_again.py.
-if [ -z "${STAGING_BUILD+set}" ]; then
+BOX_MARKERS=${DAZL_BOX_MARKERS:-/usr/local/lib/dazl-prod /usr/local/lib/dazl-staging/pull-prebuilt.sh /etc/dazl-staging /var/lib/dazl-staging-deploy}
+# An EMPTY STAGING_BUILD is the default build too (line "BUILD=${STAGING_BUILD:-...}" above uses the same :- expansion), so
+# empty is refused exactly like unset.
+if [ -z "${STAGING_BUILD:-}" ]; then
   [ "${DAZL_ALLOW_HOST_BUILD:-}" = throwaway-machine ] \
     || fail "REFUSED: no on-box build (docs/NEVER-AGAIN.md #1). Deploy staging from the prebuilt build (ops/staging/pull-prebuilt.sh, dazl-staging-prebuilt.timer); nothing fetched, built or changed"
-  for m in ${DAZL_BOX_MARKERS:-/usr/local/lib/dazl-prod /usr/local/lib/dazl-staging/pull-prebuilt.sh /etc/dazl-staging /var/lib/dazl-staging-deploy}; do
+  for m in $BOX_MARKERS; do
     [ ! -e "$m" ] || fail "REFUSED: $m exists, so this is the dazl box: no on-box build even with DAZL_ALLOW_HOST_BUILD (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
+  done
+# A STAGING_BUILD that is itself a build or install command is an on-box build under another name: refused on the box.
+elif printf '%s' "$STAGING_BUILD" | grep -Eqi '(npm|pnpm|yarn|bun)[[:space:]]+(ci|i|install|add|build|run[[:space:]]+build)([^[:alnum:]_-]|$)|next[[:space:]]+build'; then
+  for m in $BOX_MARKERS; do
+    [ ! -e "$m" ] || fail "REFUSED: STAGING_BUILD is a build command and $m exists, so this is the dazl box: no on-box build (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
   done
 fi
 

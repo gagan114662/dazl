@@ -73,6 +73,28 @@ class DeployRefusesOnBoxBuild(unittest.TestCase):
         self.assertIn(f'REFUSED: {marker} exists', r.stderr)
         self.assert_untouched()
 
+    def test_an_empty_build_setting_is_refused_like_an_unset_one(self):
+        # Hermes review 1: STAGING_BUILD='' used to skip the guard and select the default npm ci + next build
+        for extra in ({}, {'DAZL_ALLOW_HOST_BUILD': 'throwaway-machine', 'DAZL_BOX_MARKERS': str(self.marker())}):
+            r = self.run_deploy(STAGING_BUILD='', **extra)
+            self.assertNotEqual(r.returncode, 0, extra); self.assertIn('REFUSED', r.stderr, extra)
+            self.assertIn('NEVER-AGAIN.md #1', r.stderr, extra)
+        self.assert_untouched()
+
+    def test_a_build_command_given_as_the_build_setting_is_refused_on_the_box(self):
+        for cmd in ('npm ci && npx next build', 'npx next build', 'npm install', 'cd web && npm run build', 'pnpm build', 'NPM  CI'):
+            r = self.run_deploy(STAGING_BUILD=cmd, DAZL_BOX_MARKERS=str(self.marker()))
+            self.assertNotEqual(r.returncode, 0, cmd)
+            self.assertIn('REFUSED: STAGING_BUILD is a build command', r.stderr, cmd)
+        self.assert_untouched()
+        # the prebuilt extract command pull-prebuilt.sh passes is not a build: past the guard even on the box
+        for cmd in ('true', "bash /usr/local/lib/dazl-staging/pull-prebuilt.sh --extract /var/lib/x/build.tgz"):
+            r = self.run_deploy(STAGING_BUILD=cmd, DAZL_BOX_MARKERS=str(self.marker()))
+            self.assertNotIn('REFUSED', r.stderr, cmd)
+
+    def marker(self):
+        m = self.t / 'usr-local-lib-dazl-prod'; m.mkdir(exist_ok=True); return m
+
     def test_the_default_markers_name_the_box_paths(self):
         src = DEPLOY.read_text()
         for m in ('/usr/local/lib/dazl-prod', '/etc/dazl-staging', '/var/lib/dazl-staging-deploy'):

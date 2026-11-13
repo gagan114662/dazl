@@ -2,11 +2,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { decide, main, PASS_RE } from './live-check-gate.mjs'
+import { decide, dryRun, main, passProblem, PASS_RE } from './live-check-gate.mjs'
 
 const closed = (extra = {}) => ({ number: 1, state: 'closed', state_reason: 'completed', labels: [], ...extra })
-const c = (body, author_association = 'OWNER') => ({ id: 1, body, author_association })
-const PASS = 'Live check (prod 7f4c9061): PASS - signed in on dazl.ai, Home shows the 30-day tiles'
+const c = (body, author_association = 'OWNER', created_at = '2026-11-13T12:00:00Z') => ({ id: 1, body, author_association, created_at })
+const EVIDENCE = 'Signed in on https://dazl.ai as the test account; /api/health reports this commit; Home shows the 30-day tiles and they match Outreach.'
+const PASS = `Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`
 
 test('closed as completed with no comment is reopened', () => {
   assert.equal(decide(closed(), []).reopen, true)
@@ -50,6 +51,45 @@ test('the pattern needs a commit inside the parentheses', () => {
   assert.ok(!PASS_RE.test('Live check (prod 7f4c9061): PASSED'))
 })
 
+// Hermes review 3: the "commit" must be a commit. Each of these kept an issue closed before.
+test('only a real commit counts: "prod staging", placeholders, branch names and words are rejected', () => {
+  for (const b of ['Live check (prod staging): PASS', 'Live check (prod <deployed commit>): PASS', 'Live check (prod <commit>): PASS', 'Live check (prod <sha8>): PASS',
+    'Live check (prod main): PASS', 'Live check (prod cc/1040-home-results): PASS', 'Live check (prod latest): PASS', 'Live check (prod 7f4c906): PASS',
+    'Live check (prod 7F4C9061): PASS', 'Live check (prod 7f4c9061 staging): PASS', 'Live check (prod  7f4c9061): PASS', 'Live check (prod zzzzzzzz): PASS',
+    'Live check (prod 7f4c9061) PASS', 'Live check (staging f6c697d7): PASS', 'Live check (prod staging f6c697d7): PASS'])
+    assert.equal(decide(closed(), [c(`${b}\n\n${EVIDENCE}`)]).reopen, true, b)
+  for (const sha of ['7f4c9061', '7f4c9069628ad883298f2ac65f8c9ba795976425'])
+    assert.equal(decide(closed(), [c(`Live check (prod ${sha}): PASS\n\n${EVIDENCE}`)]).reopen, false, sha)
+})
+
+test('quoting the rule is not a check: quoted lines, inline code and code blocks do not count; the line must start a line', () => {
+  for (const b of [
+    `Rule: close only with a "Live check (prod 7f4c9061): PASS" comment.\n\n${EVIDENCE}`,
+    `> Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`,
+    `Post \`Live check (prod 7f4c9061): PASS\` when it is checked.\n\n${EVIDENCE}`,
+    `\`\`\`\nLive check (prod 7f4c9061): PASS\n\`\`\`\n\n${EVIDENCE}`,
+    `Not yet: Live check (prod 7f4c9061): PASS is still to come.\n\n${EVIDENCE}`,
+  ]) assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  for (const b of [`## Live check (prod 7f4c9061): PASS\n${EVIDENCE}`, `**Live check (prod 7f4c9061): PASS**\n${EVIDENCE}`, `- Live check (prod 7f4c9061): PASS\n${EVIDENCE}`, `${EVIDENCE}\n\nLive check (prod 7f4c9061): PASS`])
+    assert.equal(decide(closed(), [c(b)]).reopen, false, b)
+})
+
+test('a PASS line with no evidence beside it does not count', () => {
+  for (const b of ['Live check (prod 7f4c9061): PASS', 'Live check (prod 7f4c9061): PASS\n\nlooks fine', 'Live check (prod 7f4c9061): PASS\n\n> ' + EVIDENCE])
+    assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  assert.match(passProblem(c('Live check (prod 7f4c9061): PASS')), /no evidence/)
+})
+
+// Hermes review 4
+test('a PASS from before the last reopen does not count; one after it does', () => {
+  const early = c(PASS, 'OWNER', '2026-11-10T10:00:00Z'), late = c(PASS, 'OWNER', '2026-11-12T10:00:00Z')
+  assert.equal(decide(closed(), [early], '2026-11-11T09:00:00Z').reopen, true, 'the only PASS predates the reopen')
+  assert.match(decide(closed(), [early], '2026-11-11T09:00:00Z').reason, /before the issue was last reopened/)
+  assert.equal(decide(closed(), [early, late], '2026-11-11T09:00:00Z').reopen, false)
+  assert.equal(decide(closed(), [early], null).reopen, false, 'never reopened')
+  assert.equal(decide(closed(), [{ ...early, created_at: undefined }], '2026-11-11T09:00:00Z').reopen, true, 'no date: not after the reopen')
+})
+
 test('the workflow runs this gate on issues: closed with issues: write only', () => {
   const wf = readFileSync(new URL('../workflows/live-check-gate.yml', import.meta.url), 'utf8')
   assert.match(wf, /issues:\s*\n\s*types:\s*\[closed\]/)
@@ -58,31 +98,76 @@ test('the workflow runs this gate on issues: closed with issues: write only', ()
   assert.match(wf, /node \.github\/scripts\/live-check-gate\.mjs/)
 })
 
-test('end to end: main() reopens over the REST API, paginating comments; leaves a passed issue alone', async () => {
+// A mocked REST API: the current issue, paginated comments, events. Returns the calls made.
+async function runMain({ event = {}, current = {}, page2 = [], events = [], fail = {} } = {}) {
   const { writeFileSync, mkdtempSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const dir = mkdtempSync(`${tmpdir()}/lcg-`)
   const api = 'https://api.github.test/repos/o/r/issues/7'
   const realFetch = globalThis.fetch
-  const run = async (page2) => {
-    const calls = []
-    globalThis.fetch = async (url, init = {}) => {
-      calls.push(`${init.method} ${url}${init.body ? ' ' + init.body : ''}`)
-      const json = url.endsWith('?per_page=100') ? [c('first page, no proof')] : url.endsWith('page=2') ? page2 : {}
-      const link = url.endsWith('?per_page=100') ? `<${api}/comments?per_page=100&page=2>; rel="next"` : ''
-      return new Response(JSON.stringify(json), { status: 200, headers: { link } })
-    }
-    const ev = `${dir}/event.json`
-    writeFileSync(ev, JSON.stringify({ issue: { ...closed({ number: 7 }), url: api, comments_url: `${api}/comments` } }))
-    process.env.GITHUB_EVENT_PATH = ev; process.env.GITHUB_TOKEN = 't'
-    try { await main() } finally { globalThis.fetch = realFetch }
-    return calls
+  const calls = []
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push(`${init.method} ${url}${init.body ? ' ' + init.body : ''}`)
+    const key = `${init.method} ${url.replace(api, '')}`
+    for (const [k, status] of Object.entries(fail)) if (key.startsWith(k)) return new Response('boom', { status })
+    if (init.method !== 'GET') return new Response('{}', { status: 200 })
+    if (url === api) return new Response(JSON.stringify({ ...closed({ number: 7 }), ...current }), { status: 200 })
+    if (url === `${api}/events?per_page=100`) return new Response(JSON.stringify(events), { status: 200 })
+    const json = url.endsWith('comments?per_page=100') ? [c('first page, no proof')] : url.endsWith('page=2') ? page2 : []
+    const link = url.endsWith('comments?per_page=100') ? `<${api}/comments?per_page=100&page=2>; rel="next"` : ''
+    return new Response(JSON.stringify(json), { status: 200, headers: { link } })
   }
-  const reopened = await run([c('still nothing')])
-  assert.equal(reopened.length, 4)
-  assert.match(reopened[2], /^POST .*\/issues\/7\/comments .*Reopened by the live-check gate/)
-  assert.equal(reopened[3], `PATCH ${api} {"state":"open"}`)
-  const kept = await run([c(PASS)])
-  assert.equal(kept.length, 2, kept.join('\n'))
-  assert.ok(kept.every(x => x.startsWith('GET')))
+  const ev = `${dir}/event.json`
+  writeFileSync(ev, JSON.stringify({ issue: { ...closed({ number: 7 }), url: api, comments_url: `${api}/comments`, ...event } }))
+  process.env.GITHUB_EVENT_PATH = ev; process.env.GITHUB_TOKEN = 't'
+  try { await main() } finally { globalThis.fetch = realFetch }
+  return { calls, api, writes: calls.filter(x => !x.startsWith('GET')) }
+}
+
+test('end to end: main() reopens over the REST API (reopen first, then the comment), paginating comments; leaves a passed issue alone', async () => {
+  const r = await runMain({ page2: [c('still nothing')] })
+  assert.equal(r.writes.length, 2, r.calls.join('\n'))
+  assert.equal(r.writes[0], `PATCH ${r.api} {"state":"open"}`, 'the reopen comes first')
+  assert.match(r.writes[1], /^POST .*\/issues\/7\/comments .*Reopened by the live-check gate/)
+  assert.ok(r.calls.some(x => x.endsWith('page=2')), 'every page of comments is read')
+  const kept = await runMain({ page2: [c(PASS)] })
+  assert.deepEqual(kept.writes, [], kept.calls.join('\n'))
+})
+
+// Hermes review 5
+test('end to end: the issue is reopened even when the explanatory comment cannot be posted', async () => {
+  const r = await runMain({ fail: { 'POST /comments': 500 } })
+  assert.deepEqual(r.writes.map(x => x.split(' ').slice(0, 2).join(' ')), [`PATCH ${r.api}`, `POST ${r.api}/comments`])
+})
+
+test('end to end: the decision uses the issue as it is now, not the event snapshot', async () => {
+  // re-closed as not planned (or relabelled, or already open) since the event was queued: left alone
+  for (const current of [{ state_reason: 'not_planned' }, { labels: [{ name: 'wontfix' }] }, { state: 'open', state_reason: null }])
+    assert.deepEqual((await runMain({ current })).writes, [], JSON.stringify(current))
+  // the snapshot said not planned, but the issue is now closed as completed with no proof: reopened
+  assert.equal((await runMain({ event: { state_reason: 'not_planned' } })).writes.length, 2)
+})
+
+test('end to end: a PASS that predates the last reopened event does not keep it closed', async () => {
+  const early = c(PASS, 'OWNER', '2026-11-10T10:00:00Z')
+  const events = [{ event: 'closed', created_at: '2026-11-10T11:00:00Z' }, { event: 'reopened', created_at: '2026-11-11T09:00:00Z' }, { event: 'closed', created_at: '2026-11-12T09:00:00Z' }]
+  assert.equal((await runMain({ page2: [early], events })).writes.length, 2)
+  assert.deepEqual((await runMain({ page2: [early], events: [events[0]] })).writes, [], 'never reopened: the PASS stands')
+  assert.deepEqual((await runMain({ page2: [early, c(PASS, 'OWNER', '2026-11-12T08:00:00Z')], events })).writes, [])
+})
+
+test('end to end: comments or events that cannot be read are decided as no proof (reopen), never left closed', async () => {
+  assert.equal((await runMain({ page2: [c(PASS)], fail: { 'GET /events': 502 } })).writes[0].startsWith('PATCH'), true)
+  assert.equal((await runMain({ fail: { 'GET /comments': 502 } })).writes[0].startsWith('PATCH'), true)
+  assert.deepEqual((await runMain({ current: { state_reason: 'duplicate' }, fail: { 'GET /comments': 502 } })).writes, [])
+})
+
+test('the dry run reports and changes nothing', async () => {
+  const realFetch = globalThis.fetch; const calls = [], lines = []
+  process.env.GITHUB_REPOSITORY = 'o/r'; process.env.GITHUB_API_URL = 'https://api.github.test'
+  globalThis.fetch = async (url, init = {}) => { calls.push(init.method)
+    return new Response(JSON.stringify(/\/issues\/\d+$/.test(url) ? closed({ number: 7 }) : url.includes('/comments') && url.includes('/8/') ? [c(PASS)] : []), { status: 200 }) }
+  try { await dryRun(['7', '8'], l => lines.push(l)) } finally { globalThis.fetch = realFetch; delete process.env.GITHUB_API_URL }
+  assert.ok(calls.every(m => m === 'GET'))
+  assert.match(lines[0], /^#7 \[closed\/completed\]: WOULD REOPEN/); assert.match(lines[1], /^#8 \[closed\/completed\]: stays closed/)
 })
