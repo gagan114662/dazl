@@ -16,8 +16,11 @@
 // fingerprint). An artifact whose ok was set by hand, or whose answers do not give its rates, is refused. The recorded
 // answers themselves are bound only by the printed sha256: a file rewritten whole, answers and summary together, is
 // stopped by that check and by nothing else, so the reviewer compares it with the run's console output.
-// Once the claim is consumed, the recorded artifact_sha256 binds the bytes and the re-score is not repeated: a later
-// change to the scoring code or its wording must not turn the one paid result into an error.
+// The re-score is repeated on every later import (the CI consistency test) for as long as this checkout's scoring code
+// is the code the run used: SCORING_FILES hash the same as the artifact recorded. So an artifact committed with its
+// claim consumed by hand, without this importer, is still re-scored by CI. Only once that code has changed, and the
+// claim is consumed, is the re-score skipped: the recorded artifact_sha256 binds the bytes, and a later change to the
+// scoring code or its wording must not turn the one paid result into an error.
 // A run that failed or stopped has no results: it consumes the claim and writes no verdict and no lock entry. The artifact is committed beside the log, and test/judge-validation-import.test.ts
 // re-derives the log and the lock entries from it on every CI run, so neither can be edited by hand.
 // What the entries mean is unchanged: an entry counts for the judge with that exact fingerprint (model included). The
@@ -29,7 +32,7 @@ import {
   calibrate, claimJudge, corpusHash, lockEntry, parseStoredVerdicts, toStoredVerdicts,
   type CalibrationReport, type JudgeAdapter, type JudgeCorpus, type JudgeLock, type JudgeLockEntry, type JudgeOutcome, type Split, type StoredVerdict,
 } from './judge.ts'
-import { APPROVAL, CLAIM_CODE_FILES, FIXED, JUDGE_IDS, KEY_ENV, RUN_RECORD_CONTRACT, SPLITS, STAGING_KEY_ENV, VALIDATION_CONTRACT, judgeSpec, planRun, scanJudgeTemplate, type Artifact, type JudgeId } from './judge-validation-run.ts'
+import { APPROVAL, CLAIM_CODE_FILES, FIXED, codeHashes, JUDGE_IDS, KEY_ENV, RUN_RECORD_CONTRACT, SPLITS, STAGING_KEY_ENV, VALIDATION_CONTRACT, judgeSpec, planRun, scanJudgeTemplate, type Artifact, type JudgeId } from './judge-validation-run.ts'
 
 export const ARTIFACT_FIXTURE = 'test/fixtures/evals/judges/validation-run.result.json'
 export const VERDICT_LOG_FIXTURE = 'test/fixtures/evals/judges/verdicts.jsonl'
@@ -42,7 +45,10 @@ const CONSUMED = ['artifact_sha256', 'ended_at'] as const
 
 // expectSha256: the artifact sha256 the run printed where it ran. Required to consume a claim (the first import); once
 // the claim is consumed, the recorded sha256 is the check and this is optional.
-export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string }
+// currentCode: sha256 of this checkout's runner code files (codeHashes()); tests pass their own.
+export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string; currentCode?: Record<string, string> }
+// The files that decide a report's score: calibrate() and the judges' prompts, and the runner's fixed settings.
+export const SCORING_FILES: readonly string[] = Object.freeze(['lib/evals/judge.ts', 'lib/evals/judge-validation-run.ts', 'lib/scan/runner.ts'])
 export interface ImportResult {
   problems: string[]
   // Set only when problems is empty. `verdictLog` is null and `entries` empty for a run with no results.
@@ -110,9 +116,13 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
   if (i.expectSha256 !== undefined && i.expectSha256 !== artifact_sha256) problems.push('this is not the artifact the run printed (its sha256 is not the expected one)')
   if (!hasA && i.expectSha256 === undefined) problems.push('the claim is not consumed yet: give the artifact sha256 the run printed where it ran (--expect-sha256), so only that file can consume it')
   if (typeof a.ended_at !== 'string' || Number.isNaN(Date.parse(a.ended_at))) problems.push('the artifact has no valid ended_at')
+  // Re-score now? Always when this import consumes the claim; afterwards while the scoring code is still the run's.
+  const current = i.currentCode ?? codeHashes()
+  const sameScoringCode = SCORING_FILES.every(f => typeof code[f] === 'string' && current[f] === code[f])
+  const rescoreNow = !hasA || sameScoringCode
   const keyEnv = isObj(a.run_guard) ? a.run_guard.key_env : undefined
   if (keyEnv !== KEY_ENV && keyEnv !== STAGING_KEY_ENV) problems.push('the artifact does not say which of the two key names paid for the run (run_guard.key_env)')
-  if (!isObj(a.fixed_before_run) || !isDeepStrictEqual(a.fixed_before_run.thresholds, { ...FIXED.thresholds }) || a.fixed_before_run.repeats !== FIXED.repeats || a.fixed_before_run.reverse_sources !== FIXED.reverseSources) problems.push('the artifact was not scored with the thresholds, repeats and source reversal fixed in this code')
+  if (rescoreNow && (!isObj(a.fixed_before_run) || !isDeepStrictEqual(a.fixed_before_run.thresholds, { ...FIXED.thresholds }) || a.fixed_before_run.repeats !== FIXED.repeats || a.fixed_before_run.reverse_sources !== FIXED.reverseSources)) problems.push('the artifact was not scored with the thresholds, repeats and source reversal fixed in this code')
   // The corpus the run used is the frozen one, and the one given here.
   let hash = ''
   try { hash = corpusHash(i.corpus) } catch { problems.push('the corpus is unreadable') }
@@ -135,8 +145,7 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
       if (report.split !== split || report.judge?.id !== judge || report.judge?.model !== a.model.requested || report.fingerprint !== phase!.fingerprint || !HEX64.test(report.fingerprint) || report.corpus?.hash !== hash) {
         problems.push(`the ${judge}/${split} report is not that judge, split, model and corpus`); continue
       }
-      // re-scored when the claim is consumed; afterwards the recorded sha256 binds these bytes (see the header)
-      const off = hasA ? null : await rescore(judge, split, a.model.requested, report, i.corpus)
+      const off = rescoreNow ? await rescore(judge, split, a.model.requested, report, i.corpus) : null
       if (off) { problems.push(`the ${judge}/${split} report ${off}`); continue }
       verdicts.push(...toStoredVerdicts(report, i.corpus, a.run_id, a.ended_at))
       if (split === 'calibration') entries.push(lockEntry(report, a.ended_at, source))

@@ -9,12 +9,13 @@
 // (test/fixtures/evals/judges/validation-run.result.json), the stored-verdict log (verdicts.jsonl) and the calibration
 // entries of judges.lock.json. Commit them together by a reviewed PR; `npm test` then checks them against the artifact.
 // --expect-sha256 is required until the claim is consumed: it is the sha256 the run printed on the machine it ran on, so
-// no other file can consume the claim. Every report in the artifact is re-scored from its recorded answers first.
+// no other file can consume the claim. Each report is re-scored from its recorded answers first (and again by CI for as
+// long as the scoring code is the run's).
 // Every file is written to a temporary file first; only when all are on disk are they renamed into place, the claim's
 // record last. A failure before the renames leaves nothing changed; re-running the same command completes a rename
 // that was cut short.
 // The re-score runs here, at import time, against this checkout's judge code.
-// Exit: 0 ok, 2 refused (nothing written) or incomplete (run again).
+// Exit: 0 ok, 2 refused (nothing written), 3 incomplete (some files moved into place: run the same command again).
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { importValidationArtifact, ARTIFACT_FIXTURE, LOCK_FIXTURE, VERDICT_LOG_FIXTURE } from '../lib/evals/judge-validation-import.ts'
 import { RUN_RECORD_FILE } from '../lib/evals/judge-validation-run.ts'
@@ -35,7 +36,7 @@ console.log(`judge validation import: run ${r.run_id}, artifact sha256 ${r.artif
 if (!r.results) console.log('  the run has NO results (it failed or stopped): the claim is consumed, no verdict and no lock entry is written')
 for (const e of r.entries!) console.log(`  ${e.judge.id} on ${e.judge.model} (${e.fingerprint.slice(0, 12)}): calibration ${e.ok ? 'ok' : `FAILED: ${e.problems.join('; ')}`}${e.critical_fp.length ? `; critical false positives: ${e.critical_fp.join(', ')}` : ''}`)
 if (r.results) console.log(`  ${r.verdicts!.length} stored verdicts (both judges, calibration and holdout)`)
-if (!process.argv.includes('--write')) { console.log('checked only: nothing written. Add --write to write the four files.'); process.exit(0) }
+if (!process.argv.includes('--write')) { console.log('checked only: nothing written. Add --write to write the files.'); process.exit(0) }
 // every file is written beside its target first; only when all are on disk are they renamed into place, the record last
 const files: [string, string][] = [[ARTIFACT_FIXTURE, artifactText], [LOCK_FIXTURE, r.lockText!], ...(r.verdictLog ? [[VERDICT_LOG_FIXTURE, r.verdictLog] as [string, string]] : []), [RUN_RECORD_FILE, r.recordText!]]
 const tmpOf = (f: string) => new URL(`../${f}.import-tmp`, import.meta.url)
@@ -49,6 +50,7 @@ try {
   for (const [f] of files) renameSync(tmpOf(f), at(f))
 } catch (e) {
   // some files are in place and the claim's record (renamed last) may not be: nothing is lost, the same command finishes it
-  console.error(`judge validation import: INCOMPLETE - a file could not be moved into place (${e instanceof Error ? e.message.slice(0, 160) : 'error'}). Run the same command again to finish.`); process.exit(2)
+  for (const [f] of files) rmSync(tmpOf(f), { force: true })
+  console.error(`judge validation import: INCOMPLETE - a file could not be moved into place (${e instanceof Error ? e.message.slice(0, 160) : 'error'}). Run the same command again to finish.`); process.exit(3)
 }
 console.log(`written: ${RUN_RECORD_FILE} (claim consumed), ${ARTIFACT_FIXTURE}, ${LOCK_FIXTURE}${r.results ? `, ${VERDICT_LOG_FIXTURE}` : ''}\ncommit them together by a reviewed PR; then: scripts/judges.mts --gate and --report ${VERDICT_LOG_FIXTURE}`)

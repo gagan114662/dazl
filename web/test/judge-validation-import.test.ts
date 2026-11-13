@@ -285,16 +285,26 @@ test('#784 more refusals: an artifact that does not name one of the two key vari
   assert.deepEqual(r.problems, []); assert.deepEqual((JSON.parse(r.lockText!) as JudgeLock).judges, [])
 })
 
-test('#784 once the claim is consumed the recorded sha256 binds the artifact and it is not re-scored: the committed result still imports when the scoring code\'s wording later changes', async () => {
-  const x = await run()
-  const consumed = (await imp(x)).recordText!
-  // the same artifact as a later checkout would see it relative to its own scoring: a report field worded differently
+test('#784 after consumption: while the scoring code is the run\'s, the committed artifact is still re-scored (a claim consumed by hand around a forged report is refused, as CI would see it); once that code has changed, the recorded sha256 alone binds it and a wording change cannot break the paid result', async () => {
+  const x = await run({ model: 'english_only' })
   const a = JSON.parse(x.artifactText)
-  a.results.claim_support.calibration.report.limits = ['worded differently by an older version of the scoring code']
-  const older = JSON.stringify(a, null, 1)
+  // forged: the failed calibration edited to ok, and the claim consumed BY HAND with the forged file's sha256
+  for (const judge of ['claim_support', 'scan_verification_judge']) Object.assign(a.results[judge].calibration.report, { ok: true, problems: [], critical_fp: [] })
+  const forged = JSON.stringify(a, null, 1)
+  const byHand = JSON.parse(x.recordText); Object.assign(byHand.claims[0], { artifact_sha256: sha(forged), ended_at: a.ended_at })
+  const sameCode = await importValidationArtifact({ artifactText: forged, recordText: JSON.stringify(byHand), lockText: LOCK_TEXT, corpus: CORPUS })
+  assert.match(sameCode.problems.join('\n'), /report does not follow from its own recorded answers/, 'CI re-scores the committed artifact: the scoring code is the run\'s')
+  // the honest artifact, consumed, after the scoring code changed (another hash for judge.ts): not re-scored, still imports
+  const honest = await run()
+  const consumed = (await imp(honest)).recordText!
+  const h = JSON.parse(honest.artifactText)
+  h.results.claim_support.calibration.report.limits = ['worded differently by the version of the scoring code that made the run']
+  const older = JSON.stringify(h, null, 1)
   const rec = JSON.parse(consumed); rec.claims[0].artifact_sha256 = sha(older)
-  const r = await imp({ artifactText: older, recordText: JSON.stringify(rec) }, LOCK_TEXT, null)
-  assert.deepEqual(r.problems, [], 'bound by its recorded sha256: imported without a re-score')
-  // the same file before consumption is re-scored, and refused
-  assert.match((await imp({ artifactText: older, recordText: x.recordText })).problems.join('\n'), /does not follow from its own recorded answers \(re-scored, these fields differ: limits\)/)
+  const drifted = { ...codeHashes(), 'lib/evals/judge.ts': 'f'.repeat(64) }
+  const later = await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS, currentCode: drifted })
+  assert.deepEqual(later.problems, [], 'the scoring code changed since the run: bound by the recorded sha256, not re-scored')
+  // the same file while the code is still the run\'s is re-scored and refused; so is the unconsumed case, whatever the code
+  assert.match((await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS })).problems.join('\n'), /these fields differ: limits/)
+  assert.match((await importValidationArtifact({ artifactText: older, recordText: honest.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(older), currentCode: drifted })).problems.join('\n'), /these fields differ: limits/)
 })
