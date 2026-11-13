@@ -60,9 +60,11 @@ export default function CampaignView({ id }: { id: string }) {
         : <ul className="card divide-y divide-black/10 mb-8" aria-label="Campaign leads">
           {leads.map(l => {
             const s = msgs === null ? null : leadStatus(l, Array.isArray(msgs) ? msgs : [])
-            return <li key={l.id} className="p-3 text-sm flex items-center justify-between gap-3" data-testid="campaign-lead">
-              <span className="min-w-0 truncate">{l.company || l.name || 'Unnamed company'}</span>
-              <span className="text-xs text-[#555] shrink-0" data-testid="lead-status" data-stage={s?.stage ?? ''}>{s ? s.text : 'Loading...'}{msgs === 'failed' && s && !['rejected'].includes(s.stage) ? ' (email status unavailable)' : ''}</span>
+            // The company name always shows: on a phone the status goes under it; from sm it sits beside it, wrapping within
+            // 55% of the row (Hermes-PC review at feeda320: the long research-only status hid the name at 390 px).
+            return <li key={l.id} className="p-3 text-sm flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3" data-testid="campaign-lead">
+              <span className="min-w-0 break-words sm:truncate">{l.company || l.name || 'Unnamed company'}</span>
+              <span className="text-xs text-[#555] sm:text-right sm:max-w-[55%]" data-testid="lead-status" data-stage={s?.stage ?? ''}>{s ? s.text : 'Loading...'}{msgs === 'failed' && s && !['rejected'].includes(s.stage) ? ' (email status unavailable)' : ''}</span>
             </li>
           })}
         </ul>}

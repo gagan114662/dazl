@@ -69,6 +69,13 @@ try {
     assert.match(await page.getByTestId('outcome-detail').textContent(), /cannot make them ready/)
     const rows = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => [e.children[0].textContent, e.children[1].textContent]))
     assert.deepEqual(rows, [['Synthetic Smiles NYC', 'Research only - checking the source cannot make it ready'], ['Example Dental Group', 'Research only - checking the source cannot make it ready']])
+    // Hermes-PC review at feeda320/f65e2a95: on a phone each row keeps its company name and the status stays inside the row
+    const boxes = await page.getByTestId('campaign-lead').evaluateAll(els => els.map(e => { const li = e.getBoundingClientRect(), n = e.children[0].getBoundingClientRect(), st = e.children[1].getBoundingClientRect(); return { li: [li.left, li.right], name: [n.left, n.right, n.width], status: [st.left, st.right] } }))
+    for (const [i, x] of boxes.entries()) {
+      assert.ok(x.name[2] >= 60, `${w}px row ${i}: the company name is visible (${x.name[2]}px)`)
+      assert.ok(x.status[1] <= x.li[1] + 0.5 && x.status[0] >= x.li[0] - 0.5, `${w}px row ${i}: the status stays inside the row (${JSON.stringify(x)})`)
+      assert.ok(x.name[1] <= x.li[1] + 0.5, `${w}px row ${i}: the name stays inside the row`)
+    }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${w}px`)
     await shot(page, `campaign-page-${tag}`)
 
