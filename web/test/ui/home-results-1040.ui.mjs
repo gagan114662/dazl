@@ -61,7 +61,10 @@ async function open(width, results, ready = READY) {
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     // a workspace that has its business details (a brand-new one sees the onboarding wizard, not Home's results)
     if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals: ['opened a new location'], exclude: [] }, new_play_offer: null })
-    if (p === '/api/outreach/inbox') { inboxUrls.push(u.search); return json({ threads: [], counts: { threads: 0, needs_owner: 0, unread: 0, unread_needs_owner: 0 }, next_cursor: null, read_granted: true, account: 'dana@brightsmile.example' }) }
+    // the workspace HAS a thread (an older reply); Home's filters (?sent_since, ?class) match nothing
+    if (p === '/api/outreach/inbox') { inboxUrls.push(u.search); const filtered = /sent_since=|class=/.test(u.search)
+      const thread = { thread_id: 't-old', gmail_id: 'g-old', lead_id: null, job_id: null, from_email: 'pat@older.example', excerpt: 'Thanks, not now.', classification: 'other', received_at: NOW - 50 * 86400, replies: 1, company: 'Older Co', lead_name: null, followups_sent: null, stopped: null, unread: false, needs_owner: false }
+      return json({ threads: filtered ? [] : [thread], counts: { threads: filtered ? 0 : 1, needs_owner: 0, unread: 0, unread_needs_owner: 0 }, next_cursor: null, read_granted: true, consent_accepted: true, account: 'dana@brightsmile.example' }) }
     return json({}, 404)
   })
   const page = await ctx.newPage()
@@ -75,10 +78,10 @@ try {
     const tile = async id => (await page.getByTestId(`tile-${id}`).textContent()).replace(/\s+/g, ' ').trim()
     await page.waitForFunction(() => !/\.\.\./.test(document.querySelector('[data-testid=tile-ready]')?.textContent ?? '...'), null, { timeout: 20000 })
     assert.equal(await tile('ready'), '3Ready leads', 'the Leads page\'s ready count (acceptance 1)'); assert.match(await page.getByTestId('new-leads').textContent(), /\(4 new\)/); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
-    assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), '/app/inbox?status=all')
+    assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), `/app/inbox?status=all&sent_since=${FULL.since}`)
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
     assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), `/app/leads?job_id=${'a'.repeat(24)}`, 'the tile opens the scan its 3 ready leads are in')
-    assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), '/app/inbox?status=all&class=positive')
+    assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), `/app/inbox?status=all&class=positive&sent_since=${FULL.since}`)
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
     assert.equal(rows.reduce((n, r) => n + Number(r[3]), 0), 2, 'the replied column adds up to the Replied tile')
@@ -91,15 +94,24 @@ try {
     if (width === 1280) {   // Interested opens Inbox filtered to interested replies (the API's class filter), with a way back to all
       await page.getByTestId('tile-interested').click()
       await page.getByTestId('class-filter').waitFor({ timeout: 20000 })
-      assert.ok(inboxUrls.some(q => /class=positive/.test(q)), `Inbox asked for interested replies only: ${JSON.stringify(inboxUrls)}`)
-      assert.match(await page.getByTestId('class-filter').textContent(), /all time, not only the last 30 days/, 'the Inbox says how its list differs from the 30-day tile')
+      assert.ok(inboxUrls.some(q => /class=positive/.test(q) && q.includes(`sent_since=${FULL.since}`)), `Inbox asked for the tile's threads (interested, sent in the window): ${JSON.stringify(inboxUrls)}`)
+      assert.match(await page.getByTestId('class-filter').textContent(), /reply from a person to an email sent since .* whose latest reply is interested, as counted on Home/, 'the Inbox says it lists what the tile counts')
+      // Hermes review of #1156 (1): an empty FILTERED list is the filter's, never "No replies yet" (this workspace has one)
+      assert.equal(await page.getByTestId('inbox-empty').textContent(), 'No conversations match this filter.')
       const before = inboxUrls.length
       await page.getByRole('button', { name: 'Show all replies' }).click()
       await page.getByTestId('class-filter').waitFor({ state: 'detached', timeout: 20000 })
-      assert.ok(!new URL(page.url()).searchParams.has('class'), `Show all replies drops ?class from the URL: ${page.url()}`)
-      for (let i = 0; i < 100 && !inboxUrls.slice(before).some(q => !/class=/.test(q)); i++) await page.waitForTimeout(100)
-      assert.ok(inboxUrls.slice(before).some(q => !/class=/.test(q)), `Inbox asked again without the filter: ${JSON.stringify(inboxUrls.slice(before))}`)
-      out.push('Interested opens Inbox filtered; Show all replies clears the filter and the URL')
+      assert.ok(!new URL(page.url()).searchParams.has('class') && !new URL(page.url()).searchParams.has('sent_since'), `Show all replies drops ?class and ?sent_since from the URL: ${page.url()}`)
+      for (let i = 0; i < 100 && !inboxUrls.slice(before).some(q => !/class=|sent_since=/.test(q)); i++) await page.waitForTimeout(100)
+      assert.ok(inboxUrls.slice(before).some(q => !/class=|sent_since=/.test(q)), `Inbox asked again without either filter: ${JSON.stringify(inboxUrls.slice(before))}`)
+      await page.getByText('pat@older.example').first().waitFor({ timeout: 20000 })   // unfiltered: the older thread is listed
+      assert.equal(await page.getByTestId('inbox-empty').count(), 0)
+      out.push('Interested opens Inbox filtered (empty filter says so, not "No replies yet"); Show all replies clears the filter and the URL and lists the older thread')
+      // a hand-edited date filter is said, never silently widened
+      await page.goto(base + '/app/inbox?status=all&sent_since=yesterday', { waitUntil: 'networkidle' })
+      await page.getByTestId('since-bad').waitFor({ timeout: 20000 })
+      assert.match(await page.getByTestId('since-bad').textContent(), /date filter is not valid, so every thread is shown/)
+      out.push('a malformed sent_since is said')
     }
     await ctx.close()
   }

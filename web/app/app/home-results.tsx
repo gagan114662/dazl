@@ -50,8 +50,8 @@ export default function HomeResultsPanel() {
           {ready && ready !== 'failed' && ready.scans_in_window > ready.scans_checked && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">In your {ready.scans_checked} newest scans</div>}
         </Link>
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
-        {tile('Replied', t.replied, '/app/inbox?status=all', 'replied')}
-        {tile('Interested', t.interested, '/app/inbox?status=all&class=positive', 'interested')}
+        {tile('Replied', t.replied, `/app/inbox?status=all&sent_since=${r.since}`, 'replied')}
+        {tile('Interested', t.interested, `/app/inbox?status=all&class=positive&sent_since=${r.since}`, 'interested')}
       </div>
       {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
