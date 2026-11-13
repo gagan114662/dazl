@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, NOUN_FIRST_OPEN } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 
@@ -54,7 +54,8 @@ export function stageOk(clause: string, stage: Stage): boolean {
 }
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
   return clauses(excerpt ?? '').some(c => {
-    if (!fundingAsked) { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+    // a noun-first opening's subject is in front of the opening phrase itself (#878): "Our 5th location is now open" names no other company
+    if (!fundingAsked) { const nf = c.search(NOUN_FIRST_OPEN); const i = nf >= 0 ? nf : c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)

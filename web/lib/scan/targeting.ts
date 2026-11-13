@@ -90,8 +90,13 @@ function techAtoms(q: string, add: (a: Atom) => void): void {
   }
 }
 
-const EVENTS: { event: string; re: RegExp; object?: number }[] = [
-  { event: 'open', re: /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi, object: 1 },
+// object: the capture group(s) naming the event's object; with several, the first one the match filled.
+// #878 (staging, 2026-11-12): openings are as often worded noun-first, as social posts and local press write them
+// ("New dental clinic now open in Parkdale", "our 5th location is officially open", "Grand opening of our new clinic"),
+// as verb-first ("opened a new location"). Both forms name the object; a bare "open" with no new/ordinal/our in front
+// ("the clinic is open on Sundays") is not an opening.
+const EVENTS: { event: string; re: RegExp; object?: number | number[] }[] = [
+  { event: 'open', re: /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b|\b(?:brand\s+)?(?:new|our\s+(?:new|second|third|fourth|fifth|\d+(?:st|nd|rd|th))|(?:second|third|fourth|fifth|\d+(?:st|nd|rd|th)))\s+(?:[a-z]+\s+){0,2}?(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b(?:\s+(?:in|at|on)\s+[^.!?;]{1,60}?)?\s+(?:is\s+|are\s+|has\s+|have\s+)?(?:now\s+|officially\s+|finally\s+)*(?:open|opened)\b|\bgrand\s+opening\s+of\s+(?:our|the|a|its|their)\s+(?:new\s+)?(?:[a-z]+\s+){0,2}?(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi, object: [1, 2, 3] },
   { event: 'launch', re: /\b(?:launched|launching|launches|released|unveiled)\s+(?:(?:a|an|its|their|new|first)\s+)*([a-z][\w-]*)/gi, object: 1 },
   { event: 'expand', re: /\b(?:expanded|expanding|expands|expansion)(?:\s+(?:into|to|in)\s+([a-z][\w-]*))?/gi, object: 1 },
   { event: 'acquire', re: /\b(?:acquired|acquires|acquisitions?|merged|merger)\b/gi },
@@ -164,7 +169,7 @@ function findAtoms(q: string): Atom[] {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
-  for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
+  for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: objectOf(e, m) })
   return atoms.sort((a, b) => a.start - b.start)
 }
 
@@ -379,13 +384,21 @@ export function evaluatePlan(plan: QueryPlan, proofs: Readonly<Record<string, Om
 
 // Whether a text shows the event family (and object, when the request names one) a condition asks for: the same patterns the compiler reads.
 export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean { return eventMatchIndex(event, object, text) >= 0 }
+// The object an event match names (lower case, singular), from the first of the event's object groups that matched.
+function objectOf(e: { object?: number | number[] }, m: RegExpMatchArray): string {
+  const groups = e.object === undefined ? [] : Array.isArray(e.object) ? e.object : [e.object]
+  const g = groups.map(i => m[i]).find(x => typeof x === 'string' && x !== '')
+  return g ? g.toLowerCase().replace(/(?:es|s)$/, '') : ''
+}
 // Where in the text the event (and object) first shows, or -1.
 export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {
   const e = EVENTS.find(x => x.event === event)
   if (!e) return -1
   for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
     if (!object || !e.object) return m.index ?? 0
-    if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return m.index ?? 0
+    const got = objectOf(e, m)
+    // a request for a new "location" is met by any new premises (a clinic, an office, a store ...); a named kind needs that kind
+    if (got === object || (object === 'location' && e.event === 'open' && got !== '')) return m.index ?? 0
   }
   return -1
 }
