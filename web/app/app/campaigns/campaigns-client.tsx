@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import type { Campaign } from '@/lib/outreach/campaigns'
 import type { RunStatus } from '@/lib/run-status'
 import { qualificationLines } from '@/lib/outreach/campaign-view'
+import { runTone } from '@/lib/run-status'
 
 // One view per search, from discovery to the next action. The steps themselves (review, draft, approve, send, reply)
 // stay on their pages with their checks; this page only counts and links.
@@ -28,7 +29,7 @@ export default function CampaignsClient() {
                 <Link className="font-medium truncate block underline-offset-4 hover:underline" title={c.query} href={`/app/campaigns/${c.id}`} data-testid="campaign-link">{c.query}</Link>
                 <div className="text-xs text-[#666] flex flex-wrap items-center gap-2">{new Date(c.created_at * 1000).toLocaleDateString()}
                   {/* How the run ended, in the same words as its page and the Leads history; the full sentence on hover. */}
-                  {c.run && <span className={`pill ${c.run.group === 'technical' ? 'pill-pink' : c.run.group === 'results' ? 'pill-mint' : c.run.group === 'running' ? 'pill-peach' : ''}`} title={c.run.label} data-testid="run-tag" data-group={c.run.group}>{c.run.tag}</span>}
+                  {c.run && <span className={`pill ${runTone(c.run) === 'grey' ? '' : `pill-${runTone(c.run)}`}`} title={c.run.label} data-testid="run-tag" data-group={c.run.group}>{c.run.tag}</span>}
                   {c.run && c.run.group !== 'results' && <span data-testid="run-label">{c.run.label}</span>}
                 </div>
               </div>

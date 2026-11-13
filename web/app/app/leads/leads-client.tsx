@@ -43,7 +43,7 @@ import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
-import { runStatus } from '@/lib/run-status'
+import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { Icon } from '../ui/icons'
@@ -643,10 +643,17 @@ export default function LeadsClient() {
     await loadWatches()
   }
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
+  // #1136: each past scan's current status (the Campaigns card's: leads as they stand now), by scan id; 'failed' = the read
+  // failed, so the cards say their counts are as recorded when the scan finished
+  const [currentRuns, setCurrentRuns] = useState<Map<string, CampaignRun> | 'failed' | null>(null)
   // History: a returning user picks a past scan explicitly - nothing autoselects, so an
   // older job or a test fixture can never silently become the default view.
   useEffect(() => {
     if (jobId) return
+    // a read that hangs is a failed read (the cards then say they are as recorded), never a page stuck on "checking"
+    void fetch('/api/campaigns?limit=20', { signal: AbortSignal.timeout(20000) }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(j => { if (!Array.isArray(j?.campaigns)) throw new Error('shape'); setCurrentRuns(new Map((j.campaigns as CampaignRun[]).map(c => [c.id, c]))) })
+      .catch(() => setCurrentRuns('failed'))
     void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) {
       const jobs: JobSummary[] = j.jobs ?? []
       setPastJobs(jobs)
@@ -1060,15 +1067,21 @@ export default function LeadsClient() {
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          {/* always mounted, so the failure is announced when it is filled in */}
+          <div role="status" className="text-sm">{currentRuns === 'failed' && <p className="mb-3" data-testid="history-recorded">Showing each scan as it was when it finished: its current counts could not be loaded. Refresh to retry.</p>}</div>
           <div className="grid gap-3 md:grid-cols-2">
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
-            // The run's state in the same words as Campaigns and the campaign page (lib/run-status.ts).
-            const run = runStatus(o, j.lead_count), pill = run.tag
-            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : run.group === 'running' ? 'peach' : run.group === 'technical' ? 'pink' : 'grey'
+            // The run's state in the same words as its Campaigns card, counted from the leads as they stand now (#1136,
+            // lib/run-status.ts historyStatus); a scan Campaigns does not list keeps what it recorded
+            const h = historyStatus(j, currentRuns instanceof Map ? currentRuns.get(j.id) : undefined)
+            // until the current counts arrive, no verdict at all: never the scan-time "N need your review" for a moment
+            const pending = currentRuns === null && o.kind !== 'running' && o.kind !== 'enriching'
+            const run = h.run, pill = pending ? 'Checking...' : run.tag
+            const tone: Tone = pending ? 'grey' : runTone(run)
             return (
-              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
+              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind} data-current={pending ? 'pending' : h.current ? 'yes' : 'recorded'}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <a href={`/app/leads?job_id=${j.id}`} className="block min-w-0">
                     <span className="text-xs text-[var(--ink-3)]">Play</span>
@@ -1082,11 +1095,11 @@ export default function LeadsClient() {
                 <dl className="mb-3">
                   <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
                   <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
-                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</dd></div>
+                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]" data-testid="past-scan-result">{pending ? 'Counting its leads as they are now...' : <>{run.label}{run.detail && <InfoTip><span data-testid="outcome-detail">{run.detail}</span></InfoTip>}{!h.current && <span className="block text-xs text-[var(--ink-3)]" data-testid="as-recorded">As recorded when the scan finished{currentRuns instanceof Map ? ' (Campaigns does not list this scan)' : ''}.</span>}</>}</dd></div>
                 </dl>
                 <div className="mt-auto flex flex-wrap gap-2">
                   <a className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.id}`}>Open</a>
-                  {o.next && <a className="btn-ghost btn-sm" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
+                  {!pending && h.next && (h.next.href ? <a className="btn-ghost btn-sm" href={h.next.href} data-testid="next-step">{h.next.text}</a> : <span className="text-xs text-[var(--ink-2)] self-center" data-testid="next-step">{h.next.text}</span>)}
                 </div>
               </div>
             )
