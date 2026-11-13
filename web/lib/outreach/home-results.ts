@@ -3,7 +3,8 @@
 //  - new leads: leads found in the window (by the scan's own row, scan_jobs.user_id = tenant), not rejected;
 //  - contacted: first-touch emails SENT in the window (outreach_messages.status 'sent', never test sends, never to a test-fixture
 //    lead: the verification fixture records a 'sent' message without the test flag);
-//  - replied: of those sent messages, the ones with a person-written reply (a reply matched to the message,
+//  - replied: reply THREADS (the rows the Inbox lists for the tile's link) holding a person-written reply to one of those
+//    sent messages (a reply matched to the message,
 //    inbound_messages.outreach_message_id, classified positive / negative / other / opt_out / uncertain - never an
 //    auto-reply or any bounce notice);
 //  - interested: of those, the ones with a reply thread whose deciding reply is positive - the Inbox's rule
@@ -50,16 +51,27 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const leadRows = await db.all<{ kind: string | null; src: string | null; n: number | string }>(
     `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') GROUP BY l.signal_kind, l.source_kind`, [tenantId, since])
-  // first-touch emails sent in the window, each with whether it got a person-written / positive reply, by the lead's type
-  const sentRows = await db.all<{ kind: string | null; src: string | null; sent: number | string; replied: number | string; interested: number | string }>(
-    `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS sent,
-       SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification IN (${marks})) THEN 1 ELSE 0 END) AS replied,
-       SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages p WHERE p.tenant_id = m.tenant_id AND p.outreach_message_id = m.id AND p.classification IN (${marks})
-                      AND (SELECT d.classification FROM inbound_messages d WHERE d.tenant_id = p.tenant_id AND d.thread_id = p.thread_id AND d.classification NOT IN ${MACHINE}
-                           ORDER BY d.received_at DESC, d.gmail_id DESC LIMIT 1) = 'positive') THEN 1 ELSE 0 END) AS interested
+  // first-touch emails sent in the window, by the lead's type
+  const sentRows = await db.all<{ kind: string | null; src: string | null; sent: number | string }>(
+    `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS sent
      FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
      WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0 AND (l.source_kind IS NULL OR l.source_kind <> 'test')
-     GROUP BY l.signal_kind, l.source_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
+     GROUP BY l.signal_kind, l.source_kind`, [tenantId, since])
+  // Replied and Interested count reply THREADS, one row each, exactly the rows the Inbox lists for ?sent_since (lib/outreach/
+  // inbox.ts): a Gmail thread holding a person-written reply to one of those sends. Two sends can share a thread (#1065) and
+  // one send can be answered in two; either way tile = rows. Each thread counts once, under the lead of its earliest counted
+  // send (rn = 1), so the by-signal column still adds up to the tile. Interested = the thread's deciding reply is positive.
+  const replyRows = await db.all<{ kind: string | null; src: string | null; replied: number | string; interested: number | string | null }>(
+    `SELECT kind, src, COUNT(*) AS replied, SUM(interested) AS interested FROM (
+       SELECT l.signal_kind AS kind, l.source_kind AS src,
+         ROW_NUMBER() OVER (PARTITION BY r.thread_id ORDER BY m.sent_at, m.id, r.received_at, r.gmail_id) AS rn,
+         CASE WHEN (SELECT d.classification FROM inbound_messages d WHERE d.tenant_id = r.tenant_id AND d.thread_id = r.thread_id AND d.classification NOT IN ${MACHINE}
+                    ORDER BY d.received_at DESC, d.gmail_id DESC LIMIT 1) = 'positive' THEN 1 ELSE 0 END AS interested
+       FROM inbound_messages r JOIN outreach_messages m ON m.id = r.outreach_message_id AND m.tenant_id = r.tenant_id
+       LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
+       WHERE r.tenant_id = ? AND r.classification IN (${marks}) AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
+         AND (l.source_kind IS NULL OR l.source_kind <> 'test')
+     ) x WHERE rn = 1 GROUP BY kind, src`, [tenantId, ...PERSON_REPLY, since])
   // A lead's row: its graded signal type; a lead never graded (no stored type: most search leads made without a scoring
   // model, every hiring-feed / CSV / manual lead) is counted under the channel that produced it ("source:<kind>"), never under a
   // type it was not given. 'unknown': a lead with neither field (older rows), or a message whose lead is gone or another tenant's.
@@ -68,7 +80,8 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
   for (const r of leadRows) row(kind(r.kind, r.src)).leads += Number(r.n)
   let interested = 0
-  for (const r of sentRows) { const x = row(kind(r.kind, r.src)); x.contacted += Number(r.sent); x.replied += Number(r.replied); interested += Number(r.interested) }
+  for (const r of sentRows) row(kind(r.kind, r.src)).contacted += Number(r.sent)
+  for (const r of replyRows) { row(kind(r.kind, r.src)).replied += Number(r.replied); interested += Number(r.interested ?? 0) }
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = (await db.all<{ id: string; company: string | null; signal: string | null; job_id: string; created_at: number | string }>(

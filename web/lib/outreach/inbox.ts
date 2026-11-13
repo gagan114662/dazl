@@ -74,9 +74,11 @@ export async function inboxPage(d: DbLike, tenantId: string, q: InboxQuery = {})
   if (q.threadId) { where.push('thread_id = ?'); params.push(q.threadId) }
   if (q.status === 'needs_owner') where.push('needs_owner = 1')
   if (q.status === 'unread') where.push('unread = 1')
-  if (q.classification) { where.push('classification = ?'); params.push(q.classification) }
-  // sentSince narrows the totals too (the tabs then count what the list shows: what Home's tile counted)
+  // sentSince and class narrow the totals too (the tabs then count what the list shows: what Home's tile counted); the
+  // selected status tab and the cursor never do, so the tabs stay navigable
   const scope: string[] = [], scopeParams: Param[] = []
+  // the class filter (Home's Interested tile) is part of the scope too: the tabs count the interested threads the list shows
+  if (q.classification) { scope.push('classification = ?'); scopeParams.push(q.classification) }
   if (q.sentSince !== null && q.sentSince !== undefined) {
     // the send's lead is read only when it is this tenant's own (as Home's tiles do): another tenant's lead never filters a row
     scope.push(`thread_id IN (SELECT r2.thread_id FROM inbound_messages r2

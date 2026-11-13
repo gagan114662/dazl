@@ -132,7 +132,8 @@ export default function InboxClient() {
         ? <p className="text-sm" role="alert">Could not load these conversations. <button className="underline" onClick={() => { setFailedKey(null); setRetryTick(t => t + 1) }} data-testid="inbox-retry">Try again</button></p>
         : <p className="text-sm text-[#555]" data-testid="inbox-loading">Loading...</p>)}
       {current && i.consent_accepted && i.read_granted && current.threads.length === 0 && (
-        <div className="card p-6 text-sm text-[#555]">{status === 'all' && !jobId ? 'No replies yet. When someone answers an outreach email, it shows up here.' : 'No conversations match this filter.'}</div>
+        <div className="card p-6 text-sm text-[#555]">{/* "No replies yet" only when nothing narrows the list: under Home's filters (?sent_since, ?class) an empty list is the filter's, not the workspace's */}
+          <span data-testid="inbox-empty">{status === 'all' && !jobId && !cls && since === null ? 'No replies yet. When someone answers an outreach email, it shows up here.' : 'No conversations match this filter.'}</span></div>
       )}
       {current && current.threads.length > 0 && (
         <ul className="space-y-3">
