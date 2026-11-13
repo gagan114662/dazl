@@ -365,13 +365,20 @@ a lead it calls `contradicts`. It has no send or tool authority.
     - Only the claimed run's artifact is accepted: run id, approval, model, machine, corpus, code hashes and the claim's
       own sha256 must match, and the file's sha256 must be the one the run printed on the box (`--expect-sha256`,
       required until the claim is consumed; after that the recorded `artifact_sha256` is the check).
-    - No report is taken at its word. Each one is re-scored from the answers it recorded, attempt by attempt, through
-      the same `calibrate()` with the runner's fixed repeats, reversal, thresholds and budget, and must come out
-      identical. A report edited to `ok`, or answers edited without their rates, is refused.
-    - A failed or stopped run imports no verdict and no entry; it only consumes the claim.
-    - The lock's calibration entries are exactly the run's (nothing else is carried over), the four files are written
-      all or none, and `test/judge-validation-import.test.ts` re-derives the log and the entries from the committed
-      artifact on every CI run.
+    - A report's summary is not taken at its word. When the claim is consumed (the first import), each report is
+      re-scored from the answers it recorded, attempt by attempt, through the same `calibrate()` with the runner's
+      fixed repeats, reversal, thresholds and budget, against the importing checkout's code, and must come out
+      identical. A report edited to `ok`, or answers edited without their rates, is refused. The recorded answers
+      themselves are bound only by the printed sha256. After consumption the recorded `artifact_sha256` binds the
+      bytes and the re-score is not repeated, so a later change to the scoring code cannot turn the paid result into
+      an error.
+    - A failed or stopped run imports no verdict and no entry (the lock's entries are cleared); it only consumes the
+      claim. The artifact must name which of the two key variables paid (`run_guard.key_env`).
+    - The lock's calibration entries are exactly the run's (nothing else is carried over). The files are written to
+      temporaries first and renamed after, the claim's record last; a rename cut short is finished by running the same
+      command again. Once the run's artifact is committed, `test/judge-validation-import.test.ts` re-derives the log
+      and the entries from it on every CI run; until then that test only checks that there is no log, no entry and no
+      consumed claim.
     - Limits: the printed sha256 is what ties the file to the paid run, so the reviewer of the import PR checks it
       against the run's console output on the box. And an entry counts only for its exact fingerprint: the scan's
       verification judge is registered on the tenant's own provider, so its calibration on `claude-sonnet-4-5` is

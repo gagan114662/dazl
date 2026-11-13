@@ -20,7 +20,7 @@
    "state_dir": "/var/lib/dazl-judge-validation",
    "code_sha256": {
     "lib/evals/judge.ts": "fb36af42d7d2393fffdb266d1ef20606c4202f33c608d12506b70db5111e4561",
-    "lib/evals/judge-validation-run.ts": "f6f9453a454faf94041c47d6098031d010bf2c4ab6f4f618302911d64b07ba8a",
+    "lib/evals/judge-validation-run.ts": "e657c2d2bedce7d2ceb2a978c231e8a68e4b664a78785da56e6dc60360501e6a",
     "lib/scan/runner.ts": "326398c5c2c1479cb1d5c4c318037eb8e7a35c2ce3015b0744d3b3897baabdff",
     "lib/llm/spend-guard.ts": "0667d78f7604a37037ffbdf7b6b0564f0abef15887137736d9e302a466510f49",
     "scripts/judge-validation-run.mts": "82d8dd65b744b7832cc71b0f0e998d3621244f990c311bbcb3d3f80b12874bb3",

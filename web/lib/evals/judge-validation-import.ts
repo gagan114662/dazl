@@ -9,11 +9,15 @@
 // run id, approval, model, corpus, code hashes and the claim's own sha256 must match, and once the claim is consumed the
 // artifact's sha256 must be the one recorded. Before that, the operator gives the sha256 the run printed on the machine
 // it ran on (expectSha256), and any other artifact is refused.
-// Nothing a report says about itself is trusted: every report is re-scored here. The answers it recorded, attempt by
-// attempt, are replayed through the same calibrate() the run used, with the runner's fixed repeats, source reversal,
-// thresholds and call budget and the judge's prompt as this code has it, and the result must equal the report in every
-// field (ok, problems, critical false positives, rates, stability, fingerprint). An artifact whose ok was set by hand,
-// or whose answers do not give its rates, is refused.
+// A report's summary is not taken at its word: when a claim is consumed (the first import), every report is re-scored.
+// The answers it recorded, attempt by attempt, are replayed through the same calibrate() the run used, with the
+// runner's fixed repeats, source reversal, thresholds and call budget and the judge's prompt as this checkout's code has
+// it, and the result must equal the report in every field (ok, problems, critical false positives, rates, stability,
+// fingerprint). An artifact whose ok was set by hand, or whose answers do not give its rates, is refused. The recorded
+// answers themselves are bound only by the printed sha256: a file rewritten whole, answers and summary together, is
+// stopped by that check and by nothing else, so the reviewer compares it with the run's console output.
+// Once the claim is consumed, the recorded artifact_sha256 binds the bytes and the re-score is not repeated: a later
+// change to the scoring code or its wording must not turn the one paid result into an error.
 // A run that failed or stopped has no results: it consumes the claim and writes no verdict and no lock entry. The artifact is committed beside the log, and test/judge-validation-import.test.ts
 // re-derives the log and the lock entries from it on every CI run, so neither can be edited by hand.
 // What the entries mean is unchanged: an entry counts for the judge with that exact fingerprint (model included). The
@@ -107,7 +111,8 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
   if (!hasA && i.expectSha256 === undefined) problems.push('the claim is not consumed yet: give the artifact sha256 the run printed where it ran (--expect-sha256), so only that file can consume it')
   if (typeof a.ended_at !== 'string' || Number.isNaN(Date.parse(a.ended_at))) problems.push('the artifact has no valid ended_at')
   const keyEnv = isObj(a.run_guard) ? a.run_guard.key_env : undefined
-  if (keyEnv !== null && keyEnv !== KEY_ENV && keyEnv !== STAGING_KEY_ENV) problems.push('the artifact does not say which of the two key names paid for the run (run_guard.key_env)')
+  if (keyEnv !== KEY_ENV && keyEnv !== STAGING_KEY_ENV) problems.push('the artifact does not say which of the two key names paid for the run (run_guard.key_env)')
+  if (!isObj(a.fixed_before_run) || !isDeepStrictEqual(a.fixed_before_run.thresholds, { ...FIXED.thresholds }) || a.fixed_before_run.repeats !== FIXED.repeats || a.fixed_before_run.reverse_sources !== FIXED.reverseSources) problems.push('the artifact was not scored with the thresholds, repeats and source reversal fixed in this code')
   // The corpus the run used is the frozen one, and the one given here.
   let hash = ''
   try { hash = corpusHash(i.corpus) } catch { problems.push('the corpus is unreadable') }
@@ -130,7 +135,8 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
       if (report.split !== split || report.judge?.id !== judge || report.judge?.model !== a.model.requested || report.fingerprint !== phase!.fingerprint || !HEX64.test(report.fingerprint) || report.corpus?.hash !== hash) {
         problems.push(`the ${judge}/${split} report is not that judge, split, model and corpus`); continue
       }
-      const off = await rescore(judge, split, a.model.requested, report, i.corpus)
+      // re-scored when the claim is consumed; afterwards the recorded sha256 binds these bytes (see the header)
+      const off = hasA ? null : await rescore(judge, split, a.model.requested, report, i.corpus)
       if (off) { problems.push(`the ${judge}/${split} report ${off}`); continue }
       verdicts.push(...toStoredVerdicts(report, i.corpus, a.run_id, a.ended_at))
       if (split === 'calibration') entries.push(lockEntry(report, a.ended_at, source))

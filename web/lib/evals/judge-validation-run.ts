@@ -235,6 +235,7 @@ export function readKeyFromEnv(env: Record<string, string | undefined>): { key: 
   const k = env[name]
   delete env[KEY_ENV]
   if (staging) delete env[STAGING_KEY_ENV]
+  if (k === '' && name === KEY_ENV) return { problem: `${KEY_ENV} is set but empty${staging ? ` (${STAGING_KEY_ENV} is not used while that name is present: unset it to use the staging key)` : ''}` }
   if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set${name === STAGING_KEY_ENV ? ` (and ${STAGING_KEY_ENV}, read on staging, is not set either)` : ''}: the key is read from the environment only` }
   if (k.length < 20 || /\s/.test(k)) return { problem: `${name} does not look like an API key (too short or contains whitespace)` }
   return { key: k, name }

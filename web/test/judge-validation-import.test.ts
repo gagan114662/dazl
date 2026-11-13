@@ -206,7 +206,8 @@ test('#784 the key: the run\'s own name everywhere; on staging only, and only wh
   for (const e of [{ DAZL_ENV: 'Staging', [STAGING_KEY_ENV]: KEY }, { DAZL_ENV: 'production', [STAGING_KEY_ENV]: KEY }, { DAZL_ENV: 'staging', ANTHROPIC_API_KEY: KEY }, { DAZL_ENV: 'staging', [STAGING_KEY_ENV]: 'short' }]) assert.ok('problem' in readKeyFromEnv({ ...e }), JSON.stringify(Object.keys(e)))
   // the run's own name set but empty on staging: refused, never a silent switch to the staging key
   env = { DAZL_ENV: 'staging', [KEY_ENV]: '', [STAGING_KEY_ENV]: KEY }
-  assert.ok('problem' in readKeyFromEnv(env)); assert.equal(KEY_ENV in env || STAGING_KEY_ENV in env, false)
+  const empty = readKeyFromEnv(env)
+  assert.ok('problem' in empty && /is set but empty/.test(empty.problem) && empty.problem.includes('unset it to use the staging key')); assert.equal(KEY_ENV in env || STAGING_KEY_ENV in env, false)
   const p = readKeyFromEnv({ DAZL_ENV: 'staging' })
   assert.ok('problem' in p && p.problem.includes(KEY_ENV) && p.problem.includes(STAGING_KEY_ENV) && !p.problem.includes(KEY))
 })
@@ -262,4 +263,38 @@ test('#784 only the file the run printed can consume the claim: without the prin
   const copy = { artifactText: JSON.stringify(JSON.parse(x.artifactText)), recordText: x.recordText }
   assert.match((await imp(copy, LOCK_TEXT, x.printedSha!)).problems.join('\n'), /this is not the artifact the run printed/)
   assert.deepEqual((await imp(x, LOCK_TEXT, x.printedSha!)).problems, [])
+})
+
+test('#784 more refusals: an artifact that does not name one of the two key variables, one scored under other thresholds, a report filed under another split or judge; and a run with no results clears a lock entry planted by hand', async () => {
+  const x = await run()
+  const mutate = async (f: (a: Record<string, any>) => void) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const a = JSON.parse(x.artifactText); f(a)
+    return imp({ artifactText: JSON.stringify(a, null, 1), recordText: x.recordText })
+  }
+  assert.match((await mutate(a => { a.run_guard.key_env = 'ANTHROPIC_API_KEY' })).problems.join('\n'), /does not say which of the two key names paid/)
+  assert.match((await mutate(a => { a.run_guard.key_env = null })).problems.join('\n'), /does not say which of the two key names paid/)
+  assert.match((await mutate(a => { delete a.run_guard.key_env })).problems.join('\n'), /does not say which of the two key names paid/)
+  assert.match((await mutate(a => { a.fixed_before_run.thresholds.max_fp_rate = 1 })).problems.join('\n'), /not scored with the thresholds, repeats and source reversal fixed in this code/)
+  assert.match((await mutate(a => { a.results.claim_support.holdout.report = a.results.claim_support.calibration.report })).problems.join('\n'), /claim_support\/holdout report is not that judge, split, model and corpus/)
+  assert.match((await mutate(a => { a.results.scan_verification_judge.calibration.report.judge.id = 'claim_support' })).problems.join('\n'), /scan_verification_judge\/calibration report is not that judge, split, model and corpus/)
+  // a stopped run: no results, and the lock it writes holds no calibration entry at all, whatever was there
+  const stopped = await run({ failAt: 30 })
+  const planted = JSON.parse(LOCK_TEXT) as JudgeLock
+  planted.judges.push((JSON.parse((await imp(x)).lockText!) as JudgeLock).judges[0])
+  const r = await imp(stopped, JSON.stringify(planted))
+  assert.deepEqual(r.problems, []); assert.deepEqual((JSON.parse(r.lockText!) as JudgeLock).judges, [])
+})
+
+test('#784 once the claim is consumed the recorded sha256 binds the artifact and it is not re-scored: the committed result still imports when the scoring code\'s wording later changes', async () => {
+  const x = await run()
+  const consumed = (await imp(x)).recordText!
+  // the same artifact as a later checkout would see it relative to its own scoring: a report field worded differently
+  const a = JSON.parse(x.artifactText)
+  a.results.claim_support.calibration.report.limits = ['worded differently by an older version of the scoring code']
+  const older = JSON.stringify(a, null, 1)
+  const rec = JSON.parse(consumed); rec.claims[0].artifact_sha256 = sha(older)
+  const r = await imp({ artifactText: older, recordText: JSON.stringify(rec) }, LOCK_TEXT, null)
+  assert.deepEqual(r.problems, [], 'bound by its recorded sha256: imported without a re-score')
+  // the same file before consumption is re-scored, and refused
+  assert.match((await imp({ artifactText: older, recordText: x.recordText })).problems.join('\n'), /does not follow from its own recorded answers \(re-scored, these fields differ: limits\)/)
 })

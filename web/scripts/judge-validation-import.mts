@@ -13,7 +13,8 @@
 // Every file is written to a temporary file first; only when all are on disk are they renamed into place, the claim's
 // record last. A failure before the renames leaves nothing changed; re-running the same command completes a rename
 // that was cut short.
-// Exit: 0 ok, 2 refused (nothing written).
+// The re-score runs here, at import time, against this checkout's judge code.
+// Exit: 0 ok, 2 refused (nothing written) or incomplete (run again).
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { importValidationArtifact, ARTIFACT_FIXTURE, LOCK_FIXTURE, VERDICT_LOG_FIXTURE } from '../lib/evals/judge-validation-import.ts'
 import { RUN_RECORD_FILE } from '../lib/evals/judge-validation-run.ts'
@@ -44,5 +45,10 @@ try {
   for (const [f] of files) rmSync(tmpOf(f), { force: true })
   console.error(`judge validation import: REFUSED (nothing written)\n  could not write: ${e instanceof Error ? e.message.slice(0, 160) : 'error'}`); process.exit(2)
 }
-for (const [f] of files) renameSync(tmpOf(f), at(f))
+try {
+  for (const [f] of files) renameSync(tmpOf(f), at(f))
+} catch (e) {
+  // some files are in place and the claim's record (renamed last) may not be: nothing is lost, the same command finishes it
+  console.error(`judge validation import: INCOMPLETE - a file could not be moved into place (${e instanceof Error ? e.message.slice(0, 160) : 'error'}). Run the same command again to finish.`); process.exit(2)
+}
 console.log(`written: ${RUN_RECORD_FILE} (claim consumed), ${ARTIFACT_FIXTURE}, ${LOCK_FIXTURE}${r.results ? `, ${VERDICT_LOG_FIXTURE}` : ''}\ncommit them together by a reviewed PR; then: scripts/judges.mts --gate and --report ${VERDICT_LOG_FIXTURE}`)
