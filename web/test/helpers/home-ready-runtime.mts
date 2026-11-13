@@ -10,7 +10,8 @@ import { heldReason, type PreviewLead } from '../../lib/journey.ts'
 import { companyKey } from '../../lib/scan/evidence.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
-import { homeReady, READY_SCANS_MAX } from '../../lib/outreach/home-ready.ts'
+import { homeReady, READY_LEADS_MAX } from '../../lib/outreach/home-ready.ts'
+const READY_SCANS_MAX = 10   // the old scan bound: the whole window is judged now, so more scans than this must all count
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
 const NOW = Math.floor(Date.now() / 1000), DAY = 86400
@@ -23,9 +24,9 @@ function seed() {
   const job = (id: string, user: string, query: string, at: number, testOnly = false) => db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, ?, 'x', ?, ?, ?, NULL, 'running', 5, ?)")
     .run(id, user, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', query, at + t++)
   // confirmed: the user checked the source themselves (a machine-verified lead also needs a full timing proof to be ready)
-  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string }) => db.prepare(
-    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'verified' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null)
+  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string }) => db.prepare(
+    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain, source_kind) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'verified' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null, o.source ?? null)
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
 }
@@ -122,7 +123,7 @@ test('#1040 Ready tile: ready wins over a newer held lead of the same company; h
   for (let i = 0; i < READY_SCANS_MAX; i++) { const id = `c${String(i).padStart(2, '0')}`.repeat(8); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - DAY + i)
     lead(`h${i}`, id, { machine: true, confirmed: true, date: recent, fit: 1 }); lead(`q${i}`, id, { machine: true, confirmed: true, date: recent, quarantined: true }); lead(`s${i}`, id, { machine: true, confirmed: true, date: recent, seen: true }); done(id) }
   const r = await homeReady('A', NOW)
-  assert.deepEqual([r.scans_checked, r.scans_in_window], [2, 2], 'the ten scans with nothing to judge take no slot')
+  assert.deepEqual([r.scans_checked, r.scans_in_window], [2, 2], 'the ten scans with nothing to judge are not scans to check')
   assert.deepEqual([r.ready, r.judged, r.held], [2, 2, []], 'Same Co is ready (its older lead is), Acme is one company by domain or name')
   assert.deepEqual(r.scans, [{ job_id: OLD, ready: 2 }], 'the tile opens the scan whose Leads page shows them ready')
   const v = await leadsPageVerdicts([NEW, OLD], NOW - 30 * DAY)
@@ -136,9 +137,50 @@ test('#1040 Ready tile: a store that cannot be read answers 503 (never a 0)', as
   assert.equal('ready' in (await res.json() as object), false)
 })
 
-test('#1040 Ready tile: bounded to the newest scans, and it says how many it checked', async () => {
+test('#1040 Ready tile: the whole 30-day window is judged, however many scans (no "newest 10")', async () => {
   const { job, lead, done } = seed()
   for (let i = 0; i < READY_SCANS_MAX + 2; i++) { const id = String(i).padStart(2, '0').repeat(12); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - 20 * DAY + i); lead(`l${i}`, id, { machine: true, confirmed: true, date: recent }); done(id) }
   const r = await homeReady('A', NOW)
-  assert.deepEqual([r.ready, r.scans_checked, r.scans_in_window], [READY_SCANS_MAX, READY_SCANS_MAX, READY_SCANS_MAX + 2])
+  assert.deepEqual([r.ready, r.judged, r.scans_checked, r.scans_in_window, r.capped, r.leads_checked, r.leads_in_window], [12, 12, 12, 12, false, 12, 12])
+  assert.equal(r.companies.length, 12); assert.ok(r.companies.every(c => c.ready))
+  assert.ok(READY_LEADS_MAX >= 600)
+})
+
+// Review (Hermes-PC) at 14037ed4, finding 2: the three limit cases, scaled down through the limits argument. The number is
+// a lower bound and says so (capped), scans_checked counts only scans judged completely, and the counts of leads are true.
+test('#1040 Ready tile: past the lead limit the answer says it stopped, and never counts a scan it did not finish', async () => {
+  { // 3 newest scans of 2 needs-review leads each, an older scan of 2 ready leads; limit 6
+    const { job, lead, done } = seed()
+    for (let i = 0; i < 3; i++) { const id = `n${i}`.repeat(12); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - 5 * DAY + i); for (let k = 0; k < 2; k++) lead(`rv${i}${k}`, id, { review: 'quote_unconfirmed', date: recent }); done(id) }
+    const old = 'o0'.repeat(12); job(old, 'A', 'Dental practices in Ohio that opened a new location', NOW - 20 * DAY); for (let k = 0; k < 2; k++) lead(`rd${k}`, old, { machine: true, confirmed: true, date: recent, at: NOW - 20 * DAY }); done(old)
+    const r = await homeReady('A', NOW, { maxLeads: 6 })
+    assert.deepEqual([r.ready, r.capped, r.scans_checked, r.scans_in_window, r.leads_checked, r.leads_in_window], [0, true, 3, 4, 6, 8], 'the older scan was not reached: capped, 3 of 4 scans')
+    const all = await homeReady('A', NOW)
+    assert.deepEqual([all.ready, all.capped, all.scans_checked], [2, false, 4], 'without the limit the 2 ready leads count') }
+  { // 5 scans of 2 ready leads; limit 6: three scans judged, not four
+    const { job, lead, done } = seed()
+    for (let i = 0; i < 5; i++) { const id = `p${i}`.repeat(12); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - 5 * DAY + i); for (let k = 0; k < 2; k++) lead(`ok${i}${k}`, id, { machine: true, confirmed: true, date: recent }); done(id) }
+    const r = await homeReady('A', NOW, { maxLeads: 6 })
+    assert.deepEqual([r.ready, r.capped, r.scans_checked, r.scans_in_window, r.leads_checked, r.leads_in_window], [6, true, 3, 5, 6, 10]) }
+  { // one scan holding more leads than one read returns: capped, and that scan is not "checked"
+    const { job, lead, done } = seed()
+    const id = 'q0'.repeat(12); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - 5 * DAY); for (let k = 0; k < 5; k++) lead(`big${k}`, id, { machine: true, confirmed: true, date: recent }); done(id)
+    const r = await homeReady('A', NOW, { perScan: 3 })
+    assert.deepEqual([r.ready, r.capped, r.scans_checked, r.scans_in_window, r.leads_checked, r.leads_in_window], [3, true, 0, 1, 3, 5]) }
+})
+
+// finding 4: the required-check hold and fixture leads
+test('#1040 Ready tile: a lead held by a required check is counted under that reason; a fixture lead in a real scan is never counted', async () => {
+  const { db, job, lead, done } = seed()
+  const J = 'a'.repeat(24), L = 'b'.repeat(24)
+  job(J, 'A', 'Dental practices in Ohio that opened a new location', NOW - 3 * DAY)
+  lead('real', J, { machine: true, confirmed: true, date: recent }); lead('fx', J, { machine: true, confirmed: true, date: recent, source: 'test', company: 'Fixture Co' }); done(J)
+  // a sales-hiring request with no pass record for its required check (DEFAULT-DENY, #1062): the confirmed lead is held by it
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', 'Find London UK companies hiring sales account executives.', ?, 'running', 3, ?)").run(L, JSON.stringify({ signals: ['hiring sales account executives'] }), NOW - 2 * DAY)
+  lead('gated', L, { machine: true, confirmed: true, date: recent, company: 'Gated Co' }); done(L)
+  const r = await homeReady('A', NOW)
+  assert.deepEqual([r.ready, r.judged], [1, 2], 'the fixture lead is not judged')
+  assert.deepEqual(r.held, [{ reason: 'a required check has not passed', count: 1, job_id: L, scans: 1 }])
+  assert.deepEqual(r.companies.map(c => [c.lead_id, c.ready, c.reason]), [['gated', false, 'a required check has not passed'], ['real', true, '']])
+  assert.ok(!r.companies.some(c => c.company === 'Fixture Co'))
 })
