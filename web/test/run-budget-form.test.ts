@@ -37,3 +37,15 @@ test('#381 the panel tells a keyless (free-trial) account no extra round, an own
   assert.match(read('../app/app/leads/budget-panel.tsx'), /panelDisclosure\(budget, hasKey\)/, 'the panel renders this disclosure')
   assert.match(read('../app/app/leads/leads-client.tsx'), /<BudgetPanel [^>]*hasKey=\{keyState \? keyState\.has_key : null\}/, 'the leads page passes the key state it already loads')
 })
+
+// preview CI at de03f481 (#381): the disclosure named the operator switch DAZL_ADAPTIVE_DISCOVERY_ENABLED=0, one 33-character
+// word a phone cannot wrap, so the leads page scrolled sideways at 390 px (test/ui/budget.ui.mjs "mobile: no horizontal
+// page scroll"). Every word the budget panel shows must fit a phone line.
+test('the budget disclosure has no word too long to wrap on a phone', () => {
+  for (const [budget, hasKey] of [[null, null], [{ max_usd: 1 }, true], [{ max_usd: 1 }, false], [{ max_usd: 1, paid_fallback: false, judge: false }, true]] as const) {
+    const d = panelDisclosure(budget as never, hasKey)
+    if (!d) continue
+    const words = [d.ceiling, ...d.surfaces.map(s => s.note), ...d.excluded_paths, ...d.limits].join(' ').split(/\s+/)
+    assert.deepEqual(words.filter(w => w.length > 30), [], JSON.stringify(budget))
+  }
+})

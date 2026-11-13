@@ -294,7 +294,7 @@ test('#381 the estimate states the adaptive round in its maxima wherever the rou
   const round = `plus at most ${ADAPTIVE_SEARCHES} searches + ${ADAPTIVE_FETCHES} pages in one more round when the first round verifies no lead`
   for (const [why, note] of [['no budget', sf(null)], ['max_usd', sf({ max_usd: 2 })], ['judge=false', sf({ judge: false })]] as const) {
     assert.ok(note.includes(`${DEFAULT_TINYFISH.searchesPerScan} searches + ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan by default, ${round}`), `${why}: ${note}`)
-    assert.match(note, /never a play's run; off for the deployment with DAZL_ADAPTIVE_DISCOVERY_ENABLED=0/, why)
+    assert.match(note, /never a play's run; unless the operator has turned it off/, why)
   }
   for (const [why, note] of [['paid_fallback=false', sf({ paid_fallback: false })], ['a free-trial scan', sf(null, { trial: true })], ['first5', sf({ first5: true })]] as const)
     assert.ok(!/one more round/.test(note), `${why}: the round cannot run there, so the row does not state it: ${note}`)
