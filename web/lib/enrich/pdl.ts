@@ -13,8 +13,29 @@ const TIMEOUT_MS = PDL_TIMEOUT_MS
 import { formatPlace } from '../scan/contact-agreement.ts'
 import { isMailboxShaped } from './person-name.ts'
 import { latestDay } from '../people/currency.ts'
+import { isStaging } from '../staging.ts'
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 120) : null)
-export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5): Promise<ApolloPerson[]> {
+// TEST-ONLY staging fixture (Hermes 2026-11-12: live checks without signing up for any service). Active ONLY when DAZL_ENV=staging
+// AND DAZL_STAGING_FAKE_PDL=1; inert everywhere else (production never reads the flag). It replaces the HTTP call with a local,
+// deterministic answer in PDL's own response shape, so every gate after it (spend cap, credit pool, claims, company agreement, US
+// rule, role match) runs for real. The person it returns is named "Staging Testperson" so no row can pass for real data. The
+// hints are what the caller already knows about its own lead (never sent anywhere); the real request ignores them.
+export const stagingFakePdl = (env: Record<string, string | undefined> = process.env) => isStaging(env) && env.DAZL_STAGING_FAKE_PDL === '1'
+export interface PdlStagingHints { domain?: string | null; first?: string; last?: string; title?: string | null; linkedin?: string | null }
+function stagingPdlFetch(h: PdlStagingHints): typeof fetch {
+  return (async (u: RequestInfo | URL) => {
+    const url = String(u), domain = h.domain ? h.domain.toLowerCase() : null
+    // No domain known for the caller's lead: no match (PDL's own 'not found' shapes), never an invented domain.
+    // A lead domain containing 'wrongco' gets a person at ANOTHER company: the live check of the company-agreement rejection.
+    if (url.includes('/v5/person/search')) return new Response(JSON.stringify({ status: 200, data: domain ? [{ full_name: 'Staging Testperson', job_title: 'Head of Sales', job_company_website: domain.includes('wrongco') ? 'other-company.example' : domain, job_company_location_locality: domain.includes('wrongco') ? 'nowhere' : null, linkedin_url: null }] : [] }), { status: 200 })
+    if (!domain) return new Response(JSON.stringify({ status: 404, error: { type: 'not_found' } }), { status: 404 })
+    const first = (h.first ?? 'staging').toLowerCase(), last = (h.last ?? 'testperson').toLowerCase()
+    // The address is self-evidently synthetic ('staging-' prefix): never a plausible real person's address at a real company.
+    return new Response(JSON.stringify({ status: 200, likelihood: 8, data: { full_name: `${first} ${last}`, job_title: h.title ?? 'Head of Sales', work_email: `staging-${first}.${last}@${domain}`, location_country: 'united states', job_company_website: domain, linkedin_url: h.linkedin ?? null } }), { status: 200 })
+  }) as typeof fetch
+}
+export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5, staging: { env?: Record<string, string | undefined>; hints?: PdlStagingHints } = {}): Promise<ApolloPerson[]> {
+  if (stagingFakePdl(staging.env)) fetchImpl = stagingPdlFetch(staging.hints ?? {})
   // Inside a scan: PDL bills per profile returned, so the worst case is the size asked for, reserved on the scan's
   // spend cap first (lib/scan/spend-cap.ts); a refusal (SpendRefused) sends nothing.
   const hold = await reserveScanSpend('pdl.people', () => unitCostUsd('pdl.people', max))
@@ -62,7 +83,8 @@ export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl
 // shows its address as checked. On plans without contact access PDL returns `true` instead of the address: that is not
 // an address and reads as null here. Only these fields are read; personal emails and phones never are.
 export interface PdlMatch { name: string | null; title: string | null; email: string | null; country: string | null; orgDomain: string | null; linkedin: string | null }
-export async function pdlPersonEnrich(apiKey: string, q: { first: string; last: string; domain: string }, fetchImpl: typeof fetch = fetch): Promise<{ billed: boolean; match: PdlMatch | null }> {
+export async function pdlPersonEnrich(apiKey: string, q: { first: string; last: string; domain: string }, fetchImpl: typeof fetch = fetch, staging: { env?: Record<string, string | undefined>; hints?: PdlStagingHints } = {}): Promise<{ billed: boolean; match: PdlMatch | null }> {
+  if (stagingFakePdl(staging.env)) fetchImpl = stagingPdlFetch({ domain: q.domain, first: q.first, last: q.last, ...staging.hints })
   const params = new URLSearchParams({ first_name: q.first, last_name: q.last, company: q.domain, required: 'work_email', min_likelihood: '6' })
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
