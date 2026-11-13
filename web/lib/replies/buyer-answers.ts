@@ -168,10 +168,13 @@ const normalizeFragment = (fragment: string) => fragment.trim().replace(/[’‘
 type Resolved = { ok: true; topics: Topic[]; integrations: string[] } | { ok: false; reason: 'not_routine' | 'unknown_integration'; detail?: string }
 // One fragment, one explicit outcome. It is routine when it is wholly one supported question, one supported request, an
 // integration ask whose every name the facts list, or just a known integration's name (the rest of a list).
-function resolveFragment(fragment: string, known: Set<string>): Resolved {
+// known: lower-cased name -> the name as the approved facts spell it. Only the facts' spelling is ever returned, so the
+// inbound text never reaches the reply, not even as the casing of a name (#804).
+function resolveFragment(fragment: string, known: Map<string, string>): Resolved {
   const f = normalizeFragment(fragment)
   if (!f) return { ok: false, reason: 'not_routine' }
-  if (known.has(f.toLowerCase().replace(/^(?:a|an|the)\s+/, ''))) return { ok: true, topics: [], integrations: [f] }
+  const bare = known.get(f.toLowerCase().replace(/^(?:a|an|the)\s+/, ''))
+  if (bare) return { ok: true, topics: [], integrations: [bare] }
   for (const form of SUPPORTED_FORMS) if (form.re.test(f)) return { ok: true, topics: form.topics, integrations: [] }
   for (const form of REQUEST_FORMS) if (form.re.test(f)) return { ok: true, topics: form.topics, integrations: [] }
   for (const re of INTEGRATION_FORMS) {
@@ -180,7 +183,7 @@ function resolveFragment(fragment: string, known: Set<string>): Resolved {
     const names = nameList(m[1])
     const unknown = names.filter(n => !known.has(n.toLowerCase()))
     if (!names.length) return { ok: false, reason: 'not_routine' }
-    return unknown.length ? { ok: false, reason: 'unknown_integration', detail: unknown.join(', ') } : { ok: true, topics: [], integrations: names }
+    return unknown.length ? { ok: false, reason: 'unknown_integration', detail: unknown.join(', ') } : { ok: true, topics: [], integrations: names.map(n => known.get(n.toLowerCase()) as string) }
   }
   return { ok: false, reason: 'not_routine', detail: f }
 }
@@ -212,6 +215,8 @@ function clauses(text: string): string[] {
   return text.split(CLAUSE_JOIN).map(c => c.replace(/^[\s,-]+|[\s,-]+$/g, '')).filter(c => c && !PLEASANTRY.test(c))
 }
 
+// #804: a routine buyer question is a few sentences. A body far longer than this is read by a person.
+const MAX_ROUTINE_CHARS = 4000
 const usableText = (v: unknown) => typeof v === 'string' && v.trim().length >= 3
 const httpsUrl = (v: unknown) => typeof v === 'string' && /^https:\/\/\S+$/.test(v)
 // The approved facts this answer needs, each present and well-formed; anything missing means no automated answer.
@@ -228,24 +233,30 @@ function missingFacts(facts: ProductFacts, topics: Topic[], integrations: string
 export function decide(inbound: Inbound, thread: ThreadState, facts: ProductFacts, policy: AnswerPolicy): Decision {
   const messageId = inbound.messageId
   if (thread.handledMessageIds.includes(messageId)) return { action: 'ignore', messageId }
+  // Untrusted input: a body that is not text cannot be read, so nothing is answered (#804). The classifier holds it too.
+  const text: string = typeof inbound.text === 'string' ? inbound.text : ''
   // An opt-out is a stop, not a send: it is honoured even in a thread the tenant has taken over.
   const cls = classifyReply(inbound.text)
   if (cls === 'opt_out') return { action: 'suppress', messageId }
   if (thread.takenOver) return { action: 'pause', messageId }
+  if (!text.trim()) return { action: 'escalate', messageId, reason: 'not_routine' }
+  // a routine question is a few sentences; anything far longer is read by a person, not by these rules
+  if (text.length > MAX_ROUTINE_CHARS) return { action: 'escalate', messageId, reason: 'not_routine', detail: 'too long' }
   if (policy.acceptedFactsVersion !== undefined && policy.acceptedFactsVersion !== facts.version) return { action: 'escalate', messageId, reason: 'facts_stale' }
   if (!thread.authenticatedSender) return { action: 'escalate', messageId, reason: 'unauthenticated' }
   if (cls === 'negative' || cls === 'uncertain' || cls === 'auto') return { action: 'escalate', messageId, reason: 'negative', detail: cls }
-  if (AUTHORITY.test(inbound.text)) return { action: 'escalate', messageId, reason: 'authority' }
-  if (SENSITIVE.test(inbound.text)) return { action: 'escalate', messageId, reason: 'sensitive' }
+  if (AUTHORITY.test(text)) return { action: 'escalate', messageId, reason: 'authority' }
+  if (SENSITIVE.test(text)) return { action: 'escalate', messageId, reason: 'sensitive' }
   // (b) the subject must be the product or the buyer, never the seller's own account, business, people or finances
-  const seller = sellerScope(inbound.text)
+  const seller = sellerScope(text)
   if (seller) return { action: 'escalate', messageId, reason: 'seller_scope', detail: seller }
   // every integration asked must be one the facts list
-  const known = new Set((Array.isArray(facts.knownIntegrations) ? facts.knownIntegrations : []).map(k => k.toLowerCase()))
-  const unknown = integrationsAsked(inbound.text).filter(a => !known.has(a.toLowerCase()))
+  const known = new Map((Array.isArray(facts.knownIntegrations) ? facts.knownIntegrations : [])
+    .filter((k): k is string => typeof k === 'string' && k.trim().length > 0).map(k => [k.trim().toLowerCase(), k.trim()] as const))
+  const unknown = integrationsAsked(text).filter(a => !known.has(a.toLowerCase()))
   if (unknown.length) return { action: 'escalate', messageId, reason: 'unknown_integration', detail: unknown.join(', ') }
   // (a) every fragment must be wholly one supported form; one fragment outside the forms escalates the whole message
-  const cs = clauses(inbound.text)
+  const cs = clauses(text)
   if (!cs.length) return { action: 'escalate', messageId, reason: 'not_routine' }
   const topicSet = new Set<Topic>(), asked: string[] = []
   for (const c of cs) {
