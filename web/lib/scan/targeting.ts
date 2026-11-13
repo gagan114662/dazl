@@ -15,6 +15,7 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
+import { NOUN_FIRST_OPEN_SRC } from '../search/page-class.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -93,10 +94,10 @@ function techAtoms(q: string, add: (a: Atom) => void): void {
 // object: the capture group(s) naming the event's object; with several, the first one the match filled.
 // #878 (staging, 2026-11-12): openings are as often worded noun-first, as social posts and local press write them
 // ("New dental clinic now open in Parkdale", "our 5th location is officially open", "Grand opening of our new clinic"),
-// as verb-first ("opened a new location"). Both forms name the object; a bare "open" with no new/ordinal/our in front
-// ("the clinic is open on Sundays") is not an opening.
+// as verb-first ("opened a new location"). The noun-first forms are the strict shared pattern in page-class.ts
+// (NOUN_FIRST_OPEN_SRC: never hours, availability, a future or someone else's opening).
 const EVENTS: { event: string; re: RegExp; object?: number | number[] }[] = [
-  { event: 'open', re: /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b|\b(?:brand\s+)?(?:new|our\s+(?:new|second|third|fourth|fifth|\d+(?:st|nd|rd|th))|(?:second|third|fourth|fifth|\d+(?:st|nd|rd|th)))\s+(?:[a-z]+\s+){0,2}?(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b(?:\s+(?:in|at|on)\s+[^.!?;]{1,60}?)?\s+(?:is\s+|are\s+|has\s+|have\s+)?(?:now\s+|officially\s+|finally\s+)*(?:open|opened)\b|\bgrand\s+opening\s+of\s+(?:our|the|a|its|their)\s+(?:new\s+)?(?:[a-z]+\s+){0,2}?(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi, object: [1, 2, 3] },
+  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3] },
   { event: 'launch', re: /\b(?:launched|launching|launches|released|unveiled)\s+(?:(?:a|an|its|their|new|first)\s+)*([a-z][\w-]*)/gi, object: 1 },
   { event: 'expand', re: /\b(?:expanded|expanding|expands|expansion)(?:\s+(?:into|to|in)\s+([a-z][\w-]*))?/gi, object: 1 },
   { event: 'acquire', re: /\b(?:acquired|acquires|acquisitions?|merged|merger)\b/gi },
@@ -388,7 +389,8 @@ export function eventMatches(event: string | undefined, object: string | undefin
 function objectOf(e: { object?: number | number[] }, m: RegExpMatchArray): string {
   const groups = e.object === undefined ? [] : Array.isArray(e.object) ? e.object : [e.object]
   const g = groups.map(i => m[i]).find(x => typeof x === 'string' && x !== '')
-  return g ? g.toLowerCase().replace(/(?:es|s)$/, '') : ''
+  // singular: "offices" -> office, "branches" -> branch (only ch/sh/x/ss + es loses the e)
+  return g ? g.toLowerCase().replace(/(?:(?<=ch|sh|x|ss)es|s)$/, '') : ''
 }
 // Where in the text the event (and object) first shows, or -1.
 export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {

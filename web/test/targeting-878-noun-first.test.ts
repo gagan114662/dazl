@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { compileTargeting, evaluatePlan, eventMatches, planConditions } from '../lib/scan/targeting.ts'
 import { planProofs, type ProofLead } from '../lib/scan/targeting-proof.ts'
 import { quoteShowsEvent } from '../lib/scan/sales-hiring-gate.ts'
+import { needsEventBeyondHiring, showsEventBeyondHiring } from '../lib/search/page-class.ts'
 import { targetingClauseRow } from '../lib/scan/actionable.ts'
 
 const ctx = { query: '', icp: null, salesGatePassed: false, competitors: null, graded: true, now: Date.parse('2026-11-12T16:30:00Z') }
@@ -66,6 +67,21 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'Our new clinic is not open yet'],
     ['Metro City Dentistry', 'Smile Co opened a new clinic nearby'],
     ['Metro City Dentistry', "Smile Co's new clinic is now open in Woodbridge"],
+    // review on #1130: hours, availability, websites, someone else's or a future opening, bare "now open"
+    ['Kailash Dentistry', 'Our new clinic is open on Sundays'],
+    ['Kailash Dentistry', 'The new office is open late on Thursdays'],
+    ['Kailash Dentistry', 'Our new clinic in Parkdale is open Monday to Friday'],
+    ['Kailash Dentistry', 'The new site is open for registration'],
+    ['Kailash Dentistry', 'Our new site is now open, book online'],
+    ['Kailash Dentistry', 'New office opened by Smile Co'],
+    ['Kailash Dentistry', 'Grand opening of the new Smile Co clinic'],
+    ['Kailash Dentistry', 'new clinic in Parkdale run by Smile Co is now open'],
+    ['Kailash Dentistry', 'Grand opening of our new clinic next month'],
+    ['Kailash Dentistry', 'Our 3rd office is now open in May 2027'],
+    ['Kailash Dentistry', 'Now open for bookings'],
+    ['Kailash Dentistry', 'We are now open'],
+    ['Kailash Dentistry', 'New location coming soon'],
+    ['Kailash Dentistry', 'New dental clinic is not yet open'],
   ]
   const shows = (company: string, q: string) => quoteShowsEvent(q, q, false, company) && eventMatches('open', 'location', q)
   for (const [c, q] of yes) assert.equal(shows(c, q), true, q)
@@ -73,4 +89,22 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
   // a named kind still needs that kind: a new clinic is a new location, not a new office
   assert.equal(eventMatches('open', 'office', 'New dental clinic now open in Parkdale'), false)
   assert.equal(eventMatches('open', 'clinic', 'New dental clinic now open in Parkdale'), true)
+})
+
+test('#878 review on #1130: job ads are not openings for the sales-hiring gate, and pure hiring requests do not start needing an event', () => {
+  for (const q of ['Join our new sales office team as an SDR', 'Hiring: Account Executive for our 2nd location', 'Now open: Senior Account Executive role', 'Our new practice manager starts Monday']) {
+    assert.equal(quoteShowsEvent(q, q, false, 'Acme Dental'), false, q)
+    assert.equal(showsEventBeyondHiring(q), false, q)
+  }
+  for (const q of ['dental practices hiring a new practice manager', 'hiring a second office manager', 'companies hiring a 2nd location manager', 'gyms now open 24/7 hiring trainers', 'SaaS hiring SDRs, now open to remote']) assert.equal(needsEventBeyondHiring([], q), false, q)
+})
+
+test('#878 review on #1130: hours and adjective requests compile to no opening condition; plurals keep their stem', () => {
+  for (const q of ['dental clinics in toronto with new patients and offices open Saturdays', 'Clinics with a 2nd location open late', 'Dental clinics whose new clinic is open on weekends']) {
+    const opens = planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'event' && c.event === 'open')
+    assert.deepEqual(opens, [], q)
+  }
+  assert.equal(eventMatches('open', 'office', 'Smile Co opened new offices downtown'), true)
+  const c = planConditions(compileTargeting('dental groups that opened new offices', null).root)[0].cond
+  assert.deepEqual([c.event, c.object], ['open', 'office'])
 })
