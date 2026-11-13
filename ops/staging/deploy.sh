@@ -357,7 +357,12 @@ cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 # Upgrading from a deploy that kept current-sha in STAGING_ROOT: the old file is the service account's and is not read; the
 # validated, complete live release names the deployed commit instead.
 if [ -z "$cur" ]; then l=$(live_release); [ -n "$l" ] && [ -e "$l/.complete" ] && cur=$(basename "$l"); fi
-[ "$new" != "$cur" ] || exit 0
+# Nothing to deploy. A deploy killed between its commit point and the worker's start left the worker stopped: no
+# recovery point is pending here (step 0 finished any), so an enabled worker that is not running is started now.
+if [ "$new" = "$cur" ]; then
+  if worker_installed && [ ! -e "$pending" ] && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
+  exit 0
+fi
 
 # the live release: only when `current` is a symlink (readlink -f of a missing path returns the path itself)
 live=$(live_release)

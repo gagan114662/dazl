@@ -19,6 +19,11 @@ Environment=NODE_ENV=production
 # database; its peak during a real scan is NOT measured yet (read it on the box: systemctl show -p MemoryPeak
 # dazl-staging-worker). The heap cap and MemoryMax keep a runaway scan from taking the box (1.8 GB, shared with
 # production); a worker killed at the cap hands nothing back, so its scan waits for the lease like any hard kill.
+# Never beside a deploy that is not committed: while a recovery point is pending (a deploy between its migration and
+# its commit point, or one a reboot interrupted), the database may still be rolled back, and a paid call recorded by
+# the worker would be erased with it. deploy.sh starts the worker after the commit point; this keeps a boot or a hand
+# start from doing it earlier. (The path is deploy.sh's STAGING_RECOVERY_ROOT default; + runs the check as root.)
+ExecCondition=+/usr/bin/test ! -e /var/lib/dazl-staging-recovery/pending
 ExecStart=/usr/bin/node --experimental-strip-types --no-warnings --max-old-space-size=448 scripts/scan-worker.mts
 Restart=on-failure
 RestartSec=5

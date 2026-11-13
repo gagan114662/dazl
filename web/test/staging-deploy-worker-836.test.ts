@@ -29,6 +29,8 @@ test('#836 the worker unit: the app\'s release, env file and user; the real work
   assert.match(unit, /^WantedBy=multi-user\.target$/m)
   assert.doesNotMatch(unit, /^(Wants|WantedBy|Requires)=.*dazl-staging\.service/m, 'starting the app does not start the worker: deploy.sh starts it after the app')
   assert.match(unit, /^MemoryMax=\d+M$/m)
+  assert.match(unit, /^ExecCondition=\+\/usr\/bin\/test ! -e \/var\/lib\/dazl-staging-recovery\/pending$/m, 'a boot or a hand start never runs it while a recovery point is pending')
+  assert.match(readFileSync(new URL('../../ops/staging/deploy.sh', import.meta.url), 'utf8'), /^RROOT=\$\{STAGING_RECOVERY_ROOT:-\/var\/lib\/dazl-staging-recovery\}$/m, 'the unit names deploy.sh\'s own recovery root')
   assert.match(unit, /^SuccessExitStatus=143$/m, 'the worker\'s SIGTERM exit is a normal stop, so Restart=on-failure does not fight a stop')
   assert.doesNotMatch(unit, /next start|-p \d+/)
 })
@@ -61,6 +63,7 @@ case "$1 $2 $3" in
   "cat $W "*) [ -e ${T}/installed ];;
   "is-enabled --quiet $W") [ -e ${T}/enabled ];;
   "is-active $W "*) if [ -e ${T}/worker-up ]; then echo active; else echo inactive; exit 3; fi;;
+  "is-active --quiet $W") [ -e ${T}/worker-up ];;
   "stop $W "*) [ -e ${T}/fail-stop ] && exit 1; rm -f ${T}/worker-up;;
   "start $W "*) [ -e ${T}/fail-start ] && exit 1; [ -e ${T}/recovery/pending ] && echo "WORKER STARTED WITH A RECOVERY POINT STILL PENDING" >> ${calls}; touch ${T}/worker-up;;
   "stop dazl-staging.service "*) [ -e ${T}/worker-up ] && echo "APP STOPPED WITH THE WORKER RUNNING" >> ${calls}; echo stopped > ${served};;
@@ -164,5 +167,12 @@ esac\n`)
     assert.deepEqual(readFileSync(appLog, 'utf8').trim().split('\n'), ['stop', 'restart'], 'the overrides ran, each with the worker already stopped')
     assert.deepEqual(r.order, [`stop ${W}`, `stop ${W}`, `start ${W}`])
     assert.match(r.out, /scan worker: active/)
+
+    // a deploy killed between its commit point and the worker's start left the worker stopped: the next run, with
+    // nothing to deploy, starts it (and does not when a recovery point is pending, or when it already runs)
+    flag('worker-up', false)
+    r = deploy()
+    assert.equal(r.code, 0, r.out); assert.deepEqual(r.order, [`start ${W}`]); assert.ok(existsSync(path.join(T, 'worker-up')))
+    r = deploy(); assert.deepEqual(r.order.filter(Boolean), [], 'already running: nothing to do')
   } finally { server.kill(); rmSync(T, { recursive: true, force: true }) }
 })

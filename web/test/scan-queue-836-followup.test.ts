@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { DbQueue } from '../lib/queue/db.ts'
-import { kickSharedScanQueue, renewScanLeases, type ClaimedScan } from '../lib/queue/scan-claimer.ts'
+import { kickSharedScanQueue, renewScanLeases, CLOSE_ENDED_AFTER_S, type ClaimedScan } from '../lib/queue/scan-claimer.ts'
 import { createJob, finishJob } from '../lib/scan/store-db.ts'
 import { requeueInFlightForShutdown, trackInFlight, type Job } from '../lib/scan/runner.ts'
 import { MAX_ATTEMPTS } from '../lib/scan/store.ts'
@@ -76,9 +76,9 @@ test('#836 review 2: a live scan keeps its queue claim past the lease (its row\'
   await kickSharedScanQueue(w.deps(hold, { now: () => later }))
   assert.deepEqual([w.item(live)!.status, w.item(live)!.claim_token, w.item(live)!.attempts], ['claimed', token, 1], 'the live scan\'s claim is untouched: not reaped, not re-claimed')
   assert.deepEqual(w.scan(live), { status: 'running', attempts: 1, error: null })
-  assert.notEqual(w.item(dead)!.claim_token, w.item(live)!.claim_token)
-  assert.equal(w.scan(dead).attempts >= 1, true)
-  assert.ok(w.item(dead)!.status !== 'claimed' || w.item(dead)!.attempts === 2, 'the dead scan\'s claim ran out with its lease')
+  // the dead scan's claim ran out with its lease: reaped back to pending (retry backoff), its scan row re-queued
+  assert.deepEqual([w.item(dead)!.status, w.item(dead)!.claim_token, w.item(dead)!.attempts], ['pending', null, 1])
+  assert.deepEqual(w.scan(dead), { status: 'pending', attempts: 1, error: null })
   // a renewal never resurrects a claim that changed hands: compare-and-set on the old lease
   w.raw.prepare("UPDATE work_queue SET lease_expires_at = lease_expires_at + 1 WHERE id = ?").run(live)
   w.raw.prepare('UPDATE scan_jobs SET claimed_at = claimed_at - 5 WHERE id = ?').run(live)
@@ -149,5 +149,51 @@ test('#836 decision 2026-11-13: a graceful stop of a scan on its last attempt en
   assert.equal(requeueInFlightForShutdown(w.raw), 0)
   assert.deepEqual(w.scan(other), { status: 'running', attempts: 2, error: null })
   u3()
+  w.raw.close()
+})
+
+test('#836 decision 2026-11-13: a trial scan ended at a graceful stop has its trial reservation settled then, once: a second stop and the lease reaper change nothing', async () => {
+  const w = world()
+  const id = await w.job(A)
+  w.raw.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(id)
+  w.raw.prepare("INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at, kind) VALUES ('tr-1', ?, ?, 0.5, 1, ?, 'scan')").run(A, id, nowS())
+  const untrack: (() => void)[] = []
+  await kickSharedScanQueue(w.deps(() => new Promise(() => {}), { track: (j, token) => { const u = trackInFlight(j as Job, token); untrack.push(u); return u } }))
+  w.reserve(id, A, 1)
+  const res = () => w.raw.prepare("SELECT settled_at, settled_attempt FROM trial_reservations WHERE id = 'tr-1'").get() as { settled_at: number | null; settled_attempt: number | null }
+  assert.deepEqual(res(), { settled_at: null, settled_attempt: null })
+  requeueInFlightForShutdown(w.raw)
+  assert.deepEqual(w.scan(id), { status: 'failed', attempts: 1, error: 'accounting_uncertain' })
+  const settled = res()
+  assert.ok(settled.settled_at !== null && settled.settled_attempt === 1, 'settled at the stop, for the attempt that was stopped')
+  // again, and then the reaper: already settled, nothing moves
+  w.raw.prepare("UPDATE trial_reservations SET settled_at = settled_at - 100 WHERE id = 'tr-1'").run()
+  const marked = res()
+  requeueInFlightForShutdown(w.raw)
+  for (const u of untrack) u()
+  await kickSharedScanQueue(w.deps())
+  assert.deepEqual(res(), marked, 'settled exactly once')
+  w.raw.close()
+})
+
+test('#836 a claim whose scan already ended is closed by the next kick (the stopping instance could not reach the queue): the account\'s next scan does not wait for the lease', async () => {
+  const w = world()
+  const first = await w.job(A)
+  await kickSharedScanQueue(w.deps(() => new Promise(() => {})))
+  assert.equal(w.item(first)!.status, 'claimed')
+  // what a stop leaves when the queue is not on the stopping process's handle (the queue on Postgres): the scan row ended, the claim still open
+  const t0 = nowS()
+  w.raw.prepare("UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = ?, claimed_at = NULL WHERE id = ?").run(t0, first)
+  const next = await w.job(A)
+  const ran: string[] = []
+  const run = async (j: ClaimedScan) => { ran.push(j.id); return (await finishJob(w.db, j, { status: 'done', error: null })).owned ? 'done' as const : 'failed' as const }
+  // a scan that ended a moment ago is left to its own instance's settle
+  await kickSharedScanQueue(w.deps(run, { now: () => t0 + CLOSE_ENDED_AFTER_S - 1 }))
+  assert.equal(w.item(first)!.status, 'claimed'); assert.deepEqual(ran, [])
+  // nobody came back for it: the next kick closes the claim, and the account's next scan runs on that same kick
+  await kickSharedScanQueue(w.deps(run, { now: () => t0 + CLOSE_ENDED_AFTER_S }))
+  await until(() => ran.length === 1)
+  assert.deepEqual(ran, [next], 'seconds after the scan ended, not after the lease')
+  assert.deepEqual([w.item(first)!.status, w.item(first)!.claim_token], ['done', null])
   w.raw.close()
 })

@@ -2107,7 +2107,11 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
         if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS).changes === 1) {
           // a trial scan's reservation is settled as the reaper settles it; the queue claim is closed by its token, so
           // the account's next scan is claimable at once
-          try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch { /* no trial table in this store */ }
+          try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)
+          // The queue item is closed 'done', as the claimer closes any item whose scan already ended ("nothing to run":
+          // the scan row has the outcome). Only when the queue is on this handle; with the queue on Postgres a later
+          // kick on any instance closes it (renewScanLeases in lib/queue/scan-claimer.ts), so the account waits for
+          // that, not for the lease.
           if (token !== null && queueHere) {
             db.prepare("UPDATE work_queue SET status = 'done', last_error = NULL, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL, dedupe_key = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
               .run(job.id, token)
