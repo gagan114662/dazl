@@ -57,7 +57,7 @@ export async function spendCapsCheck(env: Env = process.env, opts: { tenant?: st
     // Per scan: the hard per-scan cap on the scan's own job row (lib/scan/spend-cap.ts).
     const cfg = scanCapConfig(env)
     const set = (k: string) => env[k] !== undefined && env[k] !== ''
-    raw.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts) VALUES ('check-scan', ?, 'check', 'check', 'check', 'running', 1)").run(SYN_A)
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts) VALUES ('check-scan', ?, 'check', 'check', 'check', 'running', 1)", [SYN_A])
     const scanCtx = { db, jobId: 'check-scan', tenantId: SYN_A, attempt: 1, cap: cfg, accountLimits: null, clock }
     let scanSim: WindowSim
     if (cfg.ok) {

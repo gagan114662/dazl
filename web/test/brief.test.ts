@@ -5,10 +5,11 @@ import { randomBytes } from 'node:crypto'
 import { migrateBriefs, generateBrief, recentBriefs } from '../lib/seo/brief.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { migrateSpendPools, poolRows } from '../lib/llm/spend-pool.ts'
 
 const master = randomBytes(32)
 const LONG = 'TITLE OPTIONS\n1. a\n2. b\n3. c\nTARGET AUDIENCE\nfounders\nSEARCH INTENT\nlearn\nOUTLINE\n- one\n- two\n- three\n- four\n- five\nMETA DESCRIPTION\na description\nFAQS\nq1 q2 q3'
-function setup() { const db = new Database(':memory:'); migrateKeys(db); migrateBriefs(db); return db }
+function setup() { const db = new Database(':memory:'); migrateKeys(db); migrateBriefs(db); migrateSpendPools(db); return db } // #846/#847: the account caps' store
 const anthropicOk = (async (..._args: unknown[]) => new Response(JSON.stringify({ content: [{ type: 'text', text: LONG }] }), { status: 200 })) as unknown as typeof fetch
 
 test('no key -> no_key, no outbound call', async () => {
@@ -28,6 +29,8 @@ test('brief generated on the tenant key, stored, listed', async () => {
   assert.ok(!('error' in r))
   if (!('error' in r)) assert.equal(r.brief, LONG)
   assert.equal(sentKey, 'sk-ant-test-key-1234') // the tenant's own key, never the operator's
+  // #846/#847: the own-key brief ran under the account's default day/month caps (no usage reported: the worst case stands)
+  assert.deepEqual((await poolRows(sqliteDb(db), 'u1')).map(r => [r.period.slice(0, 2), r.calls, r.reserved_usd > 0]), [['d:', 1, true], ['m:', 1, true]])
   const list = (await recentBriefs(sqliteDb(db), 'u1'))
   assert.equal(list.length, 1)
   assert.equal(list[0].topic, 'lead generation for agencies')
