@@ -106,8 +106,12 @@ const HIRING_EN = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bo
 // Lever". Only that WHOLE wording counts (anchored: the signal is the posted role and nothing else), and only when no other
 // kind is stored, so "Raised a Series B and posted a press release on its new CRO role" or "CEO posted an update about
 // leaving her role" never read as hiring.
-// the posted thing is the role itself: a press release, photo, update, note or announcement ABOUT a role is not a posting
-const POSTED_ROLE = /^\s*posted an? (?![^.;!?]*\b(?:press|release|photo|picture|update|note|post|announcement|article|video|story|about|after|naming|named|leaving|left|farewell|congrat\w*)\b)[^.;!?]{1,80}? (?:role|job|position|opening|vacancy)(?: on [a-z][\w .-]{0,30})?\s*\.?\s*$/i
+// A positive grammar, not a word list (review on #1128): the whole signal is "Posted a/an <job title> role|job|position|
+// opening|vacancy on <job board>". The board is required, and the title is title words only: no comma, and none of the
+// words that make it a sentence about something else (and / that / its / the / of / about / affecting ...). So "Posted a
+// layoff notice affecting the sales ops role" or "Posted a record quarter, strengthening its market position" never match.
+const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|of|about|on|in|for|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|notice|quarter|loss|revenue|jump|record|blog|paper|webinar|recording|press|release|photo|update|note|post|article|video|story|farewell|layoff|layoffs'
+const POSTED_ROLE = new RegExp(String.raw`^\s*posted an? (?:(?!(?:${TITLE_STOP})\b)[a-z0-9][\w&/+.'()]*(?:\s*[-–]\s*|\s+)){1,10}(?:role|job|position|opening|vacancy) on (?:ashby|lever|greenhouse|workable|smartrecruiters|bamboohr|recruitee|breezy|jobvite|workday)\s*\.?\s*$`, 'i')
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed
 // trigger is hiring; it is never a funding or other trigger's date.
 export const isHiringTrigger = (signal: string | null | undefined, signalKind?: string | null): boolean =>

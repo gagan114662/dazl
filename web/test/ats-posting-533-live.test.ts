@@ -50,6 +50,8 @@ test('#533 live 1: "Posted a <role> role on Ashby/Lever" is hiring wording; a po
   // review on #1128: only the whole board wording counts, and never under another stored kind
   for (const [no, kind] of [['Raised a Series B and posted a press release on its new CRO role', 'funding'], ['Raised a Series B and posted a press release on its new CRO role', null], ['CEO posted a LinkedIn update about leaving her role', null], ['VP Sales posted a farewell note about leaving her role', 'leadership_change'], ['Jane posted a photo from her new job', null], ['Posted a press release about the new CRO role', null], ['Posted a photo from her new job', null], ['Posted a farewell note about leaving her role', null], ['Posted a Series B announcement naming a new CRO to the role on LinkedIn', null]] as const) assert.equal(isHiringTrigger(no, kind), false, `${no} (${kind})`)
   assert.equal(isHiringTrigger(TEKION_SIGNAL, 'funding'), false, 'a stored non-hiring kind wins over the wording')
+  // review (Hermes-PC) on #1128 at 9947f9bb: a positive grammar, not a word list: none of these is a posted role
+  for (const no of ['Posted a record quarter, strengthening its market position', 'Posted a 40% revenue jump and cemented its leadership position', 'Posted a quarterly loss that weakened its competitive position', 'Posted a layoff notice affecting the sales ops role', 'Posted a blog on the evolving CFO role', 'Posted a white paper explaining the RevOps role', 'Posted a webinar recording describing the sales ops role', 'Posted a strong position', 'Posted a Sales Operations Manager role']) assert.equal(isHiringTrigger(no, null), false, no)
 })
 
 test('#533 live 2: the record text carries the posting page header in page order, so a header quote is found', async () => {
@@ -81,7 +83,7 @@ test('#533 live 1+2+3 through the verifier: both requested-role postings are ver
     assert.deepEqual(o.review.map(r => [r.company, r.review_reason]), [], 'nothing held: not quote_unconfirmed, not event_date_stale')
     assert.deepEqual(o.leads.map(l => [l.company, l.event_date, l.event_date_proof]).sort(), [['Macquarie Technology Group', '2026-10-27', 'ats_structured'], ['Tekion', '2026-11-11', 'ats_structured']])
     // a funding claim cited to the same posting still takes no date from it
-    for (const signal of ['Raised a Series B round', 'Raised a Series B and posted a press release on its new CRO role']) {
+    for (const signal of ['Raised a Series B round', 'Raised a Series B and posted a press release on its new CRO role', 'Posted a layoff notice affecting the sales ops role', 'Posted a record quarter, strengthening its market position']) {
       const f = await verifyLeads([draft({ company: 'Tekion', signal, source_url: TEKION_URL, excerpt: TEKION_QUOTE })], read, NOW)
       assert.ok([...f.leads, ...f.review].every(l => l.event_date_proof !== 'ats_structured'), `${signal}: ${JSON.stringify(f)}`)
     }
@@ -89,5 +91,17 @@ test('#533 live 1+2+3 through the verifier: both requested-role postings are ver
     // glued together, is still dropped as entity_mismatch (never stale, never quote_unconfirmed)
     const glued = await verifyLeads([draft({ company: 'Macquarie Technology Group', signal: MACQ_SIGNAL, source_url: `https://jobs.lever.co/macquarietechnologygroup/${MACQ_ID}`, excerpt: MACQ_QUOTE })], read, NOW)
     assert.deepEqual([glued.leads.length, glued.review.length, glued.dropped], [0, 0, { entity_mismatch: 1 }])
+  } finally { restore() }
+})
+
+test('#533 review on #1128 (finding 2): a Lever posting with many locations keeps its whole header, so a quote from its end is found', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => `City ${i + 1}, NSW 2${String(i).padStart(3, '0')}`)
+  const posting = { ...MACQ_POSTING, categories: { ...MACQ_POSTING.categories, location: many[0], allLocations: many } }
+  const restore = fakeHttps(u => u.includes(MACQ_ID) ? { status: 200, type: 'application/json', body: JSON.stringify(posting) } : { status: 403, type: 'text/html', body: '' })
+  try {
+    const quote = `${many[29]} Government – Sales / Hybrid Apply for this job`
+    const o = await verifyLeads([draft({ company: 'Macquarie Technology Group', signal: MACQ_SIGNAL, source_url: MACQ_URL, excerpt: quote })], read, NOW)
+    assert.deepEqual(o.review.map(r => r.review_reason), [], 'not quote_unconfirmed')
+    assert.deepEqual(o.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-27', 'ats_structured']])
   } finally { restore() }
 })

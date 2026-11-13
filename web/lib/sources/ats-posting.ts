@@ -98,7 +98,8 @@ export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing
     str(job.additionalPlain),
   ].filter(Boolean).join(' ') : ''
   const description = r.kind === 'greenhouse' ? (typeof job.content === 'string' ? job.content : '') : [typeof job.descriptionPlain === 'string' ? job.descriptionPlain : '', lever].filter(Boolean).join(' ')
-  return { title: title.slice(0, 200), location: location.slice(0, 120), header: headerOf(r.kind, job, title, location).slice(0, 600), posted, description: description.slice(0, 200_000), html: r.kind === 'greenhouse', board: BOARD[r.kind], org: r.org }
+  // the whole header is kept (within the page-text budget): a quote is often cut from its END (review on #1128)
+  return { title: title.slice(0, 200), location: location.slice(0, 120), header: headerOf(r.kind, job, title, location).slice(0, 20_000), posted, description: description.slice(0, 200_000), html: r.kind === 'greenhouse', board: BOARD[r.kind], org: r.org }
 }
 
 // The header block the board's own posting page shows above the description, from the record's fields, in page order:
