@@ -1,6 +1,6 @@
 import { reuseSellerDecisions, type DecisionPack } from './intelligence.ts'
 import type Database from 'better-sqlite3'
-import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
+import { inAccount, ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers, ProviderError, type Provider } from '../llm/provider.ts'
 import { fetchPublicHtml, type Lookup, type PublicFetchError } from '../net/public-fetch.ts'
@@ -8,7 +8,7 @@ import { normalizeIcp, type Icp, type IcpResearch } from './icp.ts'
 import { buildResearch, fromStored, jsonOnly, researchLinks, toStored, type FetchedPage } from './seller-research.ts'
 import { pickVendor } from './runner.ts'
 import { guardProvider, researchCostUsd, SpendGuard } from '../llm/spend-guard.ts'
-import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
+import { accountLimits, OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { captureError } from '../ops/errors.ts'
 import { TRIAL_SITE_READ_RESERVE_USD } from '../billing/trial-budget.ts'
 import type { SiteReadAdmission, SiteReadRefusal } from './trial-site-read.ts'
@@ -209,7 +209,8 @@ export async function icpFromWebsite(db: Database.Database, tenantId: string, ra
       await adm.release().catch((e) => captureError(e, { source: 'route', where: '/api/scan/icp-from-url', tenantId }))
       return { ...free, trial: 'spend_unavailable' }
     }
-    const guarded = guardProvider(trialProvider, new SpendGuard(TRIAL_SITE_READ_MAX_USD))
+    // #846/#847 (review R1): the trial-funded read also counts on the account's day/month caps, at the transport.
+    const guarded = guardProvider(inAccount({ db, tenantId, limits: accountLimits(tenantId) }, trialProvider), new SpendGuard(TRIAL_SITE_READ_MAX_USD))
     const homePage = [{ url: page.finalUrl, kind: 'home', title: home.title, text: home.text }]
     try {
       // One guarded call, its usage kept: settles the reservation to what the vendor reported (never a second call).
