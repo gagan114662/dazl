@@ -163,3 +163,12 @@ test('#1036 a spent monthly allowance also hides the check', () => {
   s.db.prepare("INSERT INTO email_verify_usage (verifier, month, n) VALUES ('zerobounce', ?, 100)").run(new Date().toISOString().slice(0, 7))
   assert.equal(workEmailProviders(s.db, 'A', ON).mailboxCheck, false)
 })
+
+test('#1036 staging fake verifier: a check it answers is labelled as the staging test verifier, never as ZeroBounce', async () => {
+  const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, zb: [] }
+  const env = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', DAZL_ENV: 'staging', DAZL_STAGING_FAKE_ZEROBOUNCE: '1' }
+  const r = await run(s, stub(() => { throw new Error('the fake must make no network call') }, calls), env)
+  assert.equal(calls.zb.length, 0)
+  const c = copyOf(r)
+  assert.equal(c.checked, true); assert.match(c.note, /STAGING TEST verifier \(not a real mailbox check\)/); assert.doesNotMatch(c.note, /ZeroBounce confirmed/)
+})

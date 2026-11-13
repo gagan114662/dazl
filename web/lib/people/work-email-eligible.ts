@@ -135,7 +135,7 @@ export const siteSettled = (id: { state: string; site: string | null } | null | 
 // mailbox the free-tier check answered 'valid' (#1036) read as checked;
 // every other state says plainly that it is not, or why nothing is shown.
 export interface WorkEmailView { status: string; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; mailbox_check?: string | null; mailbox_verifier?: string | null; mailbox_checked_at?: number | null }
-const VERIFIER_NAME: Record<string, string> = { zerobounce: 'ZeroBounce' }
+const VERIFIER_NAME: Record<string, string> = { zerobounce: 'ZeroBounce', 'zerobounce-staging-fake': 'the STAGING TEST verifier (not a real mailbox check)' }
 export type WorkEmailTone = 'checked' | 'unchecked' | 'none'
 const PROVIDER_NAME: Record<string, string> = { apollo: 'Apollo', pdl: 'People Data Labs', site: 'the company website' }
 const day = (s: number | null) => s ? new Date(s * 1000).toISOString().slice(0, 10) : 'an unrecorded date'
