@@ -83,27 +83,30 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const place = where ? ` in ${where}` : ''
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
-  // xhawk #1145: a free-form signal ("attended a trade show") the targeting compiler cannot turn into a condition would make a play
-  // that reads as signal-targeted but returns ordinary ICP matches; such a signal is not offered as a play
-  // The signal is compiled ON ITS OWN (xhawk #1145 follow-up): compiled together with the buyer, a buyer role such as "Hiring
-  // manager" would supply the condition itself; it must make at least one positive (not negated) condition
-  const enforceable = (x: string) => planConditions(compileTargeting(x).root).some(c => !c.negated)
+  // Every play is judged on the signal's own compiled plan (lib/scan/targeting.ts), never on its raw words alone (#1145 xhawk +
+  // council): compiled together with the buyer, a buyer such as "Hiring manager" would supply a condition itself.
+  // - a HIRING play: a positive hiring condition with a real role, and no words saying the hiring stopped (the compiler still
+  //   reads "stopped / paused / cancelled hiring", "isn't hiring", a "hiring freeze" as positive); the role is the compiler's;
+  // - a PLAIN play: a signal with any positive condition other than a stopped hiring one, unless it already made a hiring
+  //   play ("raised funding, not hiring a receptionist" is a plain play: the compiler enforces both, the negation too).
+  // A free-form signal the compiler cannot enforce ("attended a trade show") makes no play.
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  // The role of a hiring play comes from the compiled plan: a POSITIVE hiring condition with a role (council #1145: "raised
-  // funding, not hiring a receptionist" has a positive condition, but its hiring one is negated). Words the compiler still
-  // reads as positive ("stopped hiring", "isn't hiring", a "hiring freeze") never make one either.
+  const STOPPED = /\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|frozen|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|cancel(?:led|ed|s|ling|ing)?|defer(?:red|s|ring)?|suspend(?:ed|s|ing)?|no longer|isn['\u2019]?t|is not|aren['\u2019]?t|are not|not|never)\s+(?:currently\s+|actively\s+)?hir/i
+  const stoppedHiring = (x: string) => !/\b(?:not (?:only|just)|never (?:stopped|stops))\b/i.test(x) && (STOPPED.test(x) || /\bhiring\s+(?:freeze|frozen|paused|stopped|on hold)\b/i.test(x))
+  const conds = (x: string) => planConditions(compileTargeting(x).root)
   const hiringRole = (x: string): string | null => {
-    if (/\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|no longer|isn['’]?t|is not|aren['’]?t|are not|not|never)\s+(?:\w+\s+)?hir/i.test(x) || /\bhiring\s+freeze\b/i.test(x)) return null
-    const c = planConditions(compileTargeting(x).root).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
-    const role = c?.cond.role?.replace(/^(?:a|an|their first|new)\s+/i, '').trim().slice(0, 80)
-    return role && role.length >= 2 ? role : null
+    if (stoppedHiring(x)) return null
+    const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
+    const role = c?.cond.role?.replace(/^(?:a|an|the|their first|new)\s+/i, '').trim().slice(0, 80)
+    return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an)$/i.test(role) ? role : null
   }
-  const hiringSig = (x: string) => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.test(x)   // only a signal that yields a hiring play
-  const firstPlain = sig.find(x => !hiringSig(x) && enforceable(x))   // a hiring signal becomes the hiring play below, never also a plain one
+  // a hiring condition backs a plain play only as "hiring" with no role ("Expanding team, hiring"); a junk role ("hiring the")
+  // backs nothing, and one with a real role is the hiring play above
+  const plainOk = (x: string) => !hiringRole(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
+  const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
-  // ...and only from one that says hiring, not "not hiring a receptionist" (a negated signal is never a hiring play)
   for (const h of sig.map(hiringRole).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
   // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
@@ -114,7 +117,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // a query that would be cut (add() keeps 300 characters) would drop a name: no competitor play then, never a partial one
   if (comps.length && compQuery.replace(/\s+/g, ' ').trim().length <= 300) add(`Looking for an alternative to ${named}`, compQuery)
   // a second plain-signal play (hiring signals are already the hiring plays above)
-  const secondPlain = sig.filter(x => !hiringSig(x) && enforceable(x))[1]
+  const secondPlain = sig.filter(plainOk)[1]
   if (buyer && secondPlain) add(`${buyer}${place}: ${secondPlain}`, `${buyer}${place} - ${secondPlain}`)
   return out
 }

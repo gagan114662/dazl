@@ -123,9 +123,17 @@ test('#1043 council: a signal that compiles only to a negated condition makes no
 
 test('#1043 council r2: a hiring play only from a positive hiring condition, never from a negated or stopped one; the 300-character edge', () => {
   const q = (signals: string[], comps: string[] = []) => businessPlays({ buyer: icp({ signals }) }, comps).map(p => p.query)
-  assert.ok(!q(['recently raised funding, not hiring a receptionist']).some(p => /hiring receptionist/.test(p)), 'the funding condition is positive, the hiring one is negated')
-  for (const s of ['stopped hiring SDRs', "isn't hiring a receptionist", 'no longer hiring SDRs', 'paused hiring SDRs', 'hiring freeze']) assert.ok(!q([s]).some(p => / hiring /.test(p)), s)
+  // the funding condition is positive and the compiler enforces the negated hiring one too: a plain play, never "hiring receptionist"
+  assert.deepEqual(q(['recently raised funding, not hiring a receptionist']), ['Practice owner in Ohio - recently raised funding, not hiring a receptionist'])
+  // hiring that stopped makes no play at all (neither a hiring play nor a plain one), with or without a role
+  for (const s of ['stopped hiring SDRs', "isn't hiring a receptionist", 'no longer hiring SDRs', 'paused hiring SDRs', 'cancelled hiring SDRs', 'deferred hiring SDRs',
+    'hiring freeze', 'hiring frozen', 'stopped hiring', 'paused hiring', "isn't hiring", 'not hiring']) assert.deepEqual(q([s]), [], s)
+  // ...while real hiring that merely mentions a negation still makes its play
+  for (const [s, role] of [['not only hiring SDRs', 'SDRs'], ['not just hiring engineers', 'engineers'], ['never stopped hiring SDRs', 'SDRs'], ['not B2C hiring SDRs', 'SDRs']])
+    assert.deepEqual(q([s]), [`Practice owner at companies in Ohio hiring ${role}`], s)
   assert.deepEqual(q(['hiring their first sales rep']), ['Practice owner at companies in Ohio hiring sales rep'])
+  assert.deepEqual(q(['hiring SDRs and AEs']), ['Practice owner at companies in Ohio hiring SDRs'], 'the role the compiler enforces')
+  assert.deepEqual(q(['hiring the']), [], 'no role, no hiring play')
   // exactly 300 characters: offered with every name; 301: not offered
   const prefix = 'Practice owner in Ohio looking for an alternative to ', four = ['A', 'B', 'C', 'D'].map(c => c.repeat(50))
   const fifth = (n: number) => 'E'.repeat(n - (prefix + four.join(', ') + ' or ').length)
