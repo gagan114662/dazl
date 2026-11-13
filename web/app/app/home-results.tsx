@@ -28,6 +28,15 @@ export default function HomeResultsPanel() {
   const t = r.tiles
   const readyScans = ready && ready !== 'failed' ? ready.scans ?? [] : []
   const readyHref = readyScans.length === 1 ? `/app/leads?job_id=${readyScans[0].job_id}` : '/app/leads'
+  // why the other leads the tile looked at are not ready, in the words the Leads page uses for the same holds
+  const heldRows = ready && ready !== 'failed' ? ready.held ?? [] : []
+  const HELD_WORDS: Record<string, [string, string]> = {   // [one, many]
+    'needs your review': ['needs your review', 'need your review'], 'a required check has not passed': ['held by a required check', 'held by a required check'],
+    'source not verified': ['source not verified', 'source not verified'], 'outside your time window or undated': ['outside your time window or undated', 'outside your time window or undated'],
+    'event timing unknown': ['event timing not confirmed', 'event timing not confirmed'], 'no verified date': ['no verified date', 'no verified date'],
+    'company website not confirmed': ['company website not confirmed', 'company website not confirmed'], 'not a fit': ['not a fit', 'not a fit'],
+  }
+  const heldText = (h: { reason: string; count: number }) => `${h.count} ${(HELD_WORDS[h.reason] ?? [h.reason, h.reason])[h.count === 1 ? 0 : 1]}`
   // nothing at all in the window: no counts AND nothing to list (a stored reply is never hidden behind the empty state)
   const empty = t.leads === 0 && t.contacted === 0 && !t.replied && r.latest_leads.length === 0 && r.latest_replies.length === 0
   // null = unknown (reply reading is off): a dash read out as "unknown", never a 0 nobody observed
@@ -53,6 +62,12 @@ export default function HomeResultsPanel() {
         {tile('Replied', t.replied, `/app/inbox?status=all&sent_since=${r.since}`, 'replied')}
         {tile('Interested', t.interested, `/app/inbox?status=all&class=positive&sent_since=${r.since}`, 'interested')}
       </div>
+      {/* Under the tiles: the leads that are not ready, by the hold. Each opens where they are: the one scan holding them, else
+          the list of scans (said in the link). The numbers add up: ready + these = the leads the tile looked at. */}
+      {heldRows.length > 0 && ready && ready !== 'failed' && <p className="text-sm mt-3" data-testid="ready-held">
+        <span className="text-[var(--ink-2)]">Not ready yet ({ready.judged - ready.ready} of {ready.judged} checked): </span>
+        {heldRows.map((h, i) => <span key={h.reason}>{i > 0 && ', '}<Link className="underline" data-testid="held-line" href={h.job_id ? `/app/leads?job_id=${h.job_id}` : '/app/leads'}>{heldText(h)}{h.job_id ? '' : ` (in ${h.scans} scans)`}</Link></span>)}
+      </p>}
       {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">

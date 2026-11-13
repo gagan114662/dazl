@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { previewSplit, type PreviewLead } from '../../lib/journey.ts'
+import { heldReason, type PreviewLead } from '../../lib/journey.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
 import { homeReady, READY_SCANS_MAX } from '../../lib/outreach/home-ready.ts'
@@ -28,19 +28,22 @@ function seed() {
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
 }
-// What a user sees: the REAL GET /api/leads rows (every hold as the Leads page gets it), minus the "seen before" rows Leads
-// hides by default, split by Home's "Leads ready" rule (previewSplit), one per company across scans.
-async function leadsPageReady(jobIds: string[], since: number) {
-  const ids: string[] = [], seen = new Set<string>()
+// What a user sees: the REAL GET /api/leads rows (every hold as the Leads page gets it), minus rejected rows and the
+// "seen before" rows Leads hides by default; one verdict per company (the first time it is met, newest scan first): ready,
+// or Home's own hold reason (heldReason).
+async function leadsPageVerdicts(jobIds: string[], since: number) {
+  const ready: string[] = [], held: Record<string, number> = {}, seen = new Set<string>()
   for (const jobId of jobIds) {
     const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${jobId}`))
     assert.equal(res.status, 200)
-    const rows = (await res.json() as { leads: (PreviewLead & { created_at: number; seen_before?: number; company: string; company_domain?: string | null })[] }).leads
-    for (const l of previewSplit(rows.filter(l => l.created_at >= since && !l.seen_before)).opportunities as unknown as { id: string; company: string; company_domain?: string | null }[]) {
-      const k = (l.company_domain || l.company).toLowerCase(); if (!seen.has(k)) { seen.add(k); ids.push(l.id) }
+    const rows = (await res.json() as { leads: (PreviewLead & { created_at: number; seen_before?: number; quarantined_at?: unknown; source_kind?: string | null; company: string; company_domain?: string | null })[] }).leads
+    for (const l of rows.filter(l => l.created_at >= since && !l.seen_before && !l.quarantined_at && l.source_kind !== 'test')) {
+      const k = (l.company_domain || l.company).toLowerCase(); if (seen.has(k)) continue
+      seen.add(k); const why = heldReason(l)
+      if (why) held[why] = (held[why] ?? 0) + 1; else ready.push(l.id)
     }
   }
-  return ids.sort()
+  return { ready: ready.sort(), held, judged: seen.size }
 }
 
 test('#1040 Ready tile = what the Leads page shows ready, scan by scan (the real /api/leads route and split)', async () => {
@@ -62,20 +65,39 @@ test('#1040 Ready tile = what the Leads page shows ready, scan by scan (the real
   job(JT, 'A', 'a test-only fixture run', NOW - DAY, true); lead('fixture', JT, { machine: true, confirmed: true, date: recent }); done(JT)
   job(JB, 'B', 'Dental practices in Ohio that opened a new location', NOW - DAY); lead('other', JB, { machine: true, confirmed: true, date: recent }); done(JB)
   const since = NOW - 30 * DAY
-  const page = await leadsPageReady([J1, J2], since)
+  // newest scan first, as the tile walks them
+  const v = await leadsPageVerdicts([J2, J1], since), page = v.ready
   const r = await homeReady('A', NOW)
   assert.equal(r.ready, page.length, `Home ${r.ready} vs the Leads page ${JSON.stringify(page)}`)
   assert.ok(page.length >= 1, `the seed has ready leads, so the equality means something: ${JSON.stringify(page)}`)
-  assert.deepEqual(page, ['ok1', 'ok2', 'ok3'], 'the confirmed, dated, in-window leads, each company once, nothing seen before')
-  assert.ok(!page.includes('review') && !page.includes('notiming') && !page.includes('nodate') && !page.includes('rejected') && !page.includes('old') && !page.includes('unverified'))
+  assert.deepEqual(page, ['again', 'ok2', 'ok3'], 'the confirmed, dated, in-window leads, each company once ("again" is ok1\'s company, met first in the newer scan), nothing seen before')
+  assert.ok(!page.includes('ok1') && !page.includes('review') && !page.includes('notiming') && !page.includes('nodate') && !page.includes('rejected') && !page.includes('old') && !page.includes('unverified'))
   assert.deepEqual([r.scans_checked, r.scans_in_window], [2, 2], 'the test-only run and the other tenant\'s scan are not counted')
   // where the counted leads are, newest scan first: ok3 in J2; ok1 and ok2 in J1 ("again" is ok1's company, counted once)
   assert.deepEqual(r.scans, [{ job_id: J2, ready: 2 }, { job_id: J1, ready: 1 }])
   assert.equal(r.scans.reduce((n, x) => n + x.ready, 0), r.ready, 'the per-scan counts add up to the tile')
+  // the breakdown: the same reasons and counts the real Leads route gives, one company once, and it adds up
+  assert.deepEqual(Object.fromEntries(r.held.map(h => [h.reason, h.count])), v.held)
+  assert.deepEqual(v.held, { 'needs your review': 1, 'event timing unknown': 2, 'source not verified': 1 }, 'review; notiming + nodate (machine-verified, no timing proof); unverified')
+  assert.equal(r.ready + r.held.reduce((n, h) => n + h.count, 0), r.judged); assert.equal(r.judged, v.judged)
+  assert.equal(r.judged, 7, 'rejected, older, seen-before, fixture and the other tenant\'s leads are not judged; Co ok1 once')
+  // each line opens where its leads are: one scan -> that scan; several -> null (the page then opens the list of scans)
+  assert.deepEqual(r.held.map(h => [h.reason, h.job_id, h.scans]), [['event timing unknown', J1, 1], ['needs your review', J1, 1], ['source not verified', J2, 1]])
   // the route: 200 no-store with the same answer; 401 signed out
   const ok = await readyGET(); assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'no-store')
   assert.equal((await ok.json() as { ready: number }).ready, r.ready)
   setUser(null); assert.equal((await readyGET()).status, 401)
+})
+
+test('#1040 Ready tile: a held company found by two scans counts once, and its line then spans the scans; another tenant sees none of it', async () => {
+  const { job, lead, done } = seed()
+  const J1 = 'a'.repeat(24), J2 = 'b'.repeat(24)
+  job(J1, 'A', 'Dental practices in Ohio that opened a new location', NOW - 3 * DAY); lead('r1', J1, { review: 'quote_unconfirmed', date: recent, company: 'Same Co' }); lead('r2', J1, { review: 'quote_unconfirmed', date: recent }); done(J1)
+  job(J2, 'A', 'Dental practices in Ohio that opened a new location', NOW - 2 * DAY); lead('r3', J2, { review: 'quote_unconfirmed', date: recent, company: 'Same Co' }); lead('r4', J2, { review: 'quote_unconfirmed', date: recent }); done(J2)
+  const r = await homeReady('A', NOW)
+  assert.deepEqual([r.ready, r.judged], [0, 3]); assert.deepEqual(r.held, [{ reason: 'needs your review', count: 3, job_id: null, scans: 2 }])
+  const b = await homeReady('B', NOW)
+  assert.deepEqual([b.ready, b.judged, b.held, b.scans_in_window], [0, 0, [], 0])
 })
 
 test('#1040 Ready tile: a store that cannot be read answers 503 (never a 0)', async () => {
