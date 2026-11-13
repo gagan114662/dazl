@@ -20,10 +20,10 @@ import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
-// A careers evidence label: its non-empty parts joined by "; ", so a vacancy with no quote (#767: none is offered when the
-// posting never states the role) leaves no dangling separator.
-export const evidenceLabel = (...parts: (string | null | undefined | false)[]): string => parts.map(x => (x || '').trim().replace(/;$/, '').trim()).filter(Boolean).join('; ')
 import { WHY_MAX } from './score.ts'
+// A careers evidence label: its non-empty parts joined by "; ", so a vacancy with no quote (#767: none is offered when the
+// posting never states the role) leaves no dangling separator. The parts (the quote above all) are kept exactly as given.
+export const evidenceLabel = (...parts: (string | null | undefined | false)[]): string => parts.filter((x): x is string => !!x).join('; ')
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
@@ -343,7 +343,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             const pt = posted ? Date.parse(`${posted}T00:00:00Z`) : NaN
             const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= hireDays * 86_400_000)
             const dated = posted ? ` - posted ${posted}` : ''
-            const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting; ` : ''
+            const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting` : ''
             const existingC = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
             // a careers row whose posting id / URL is already stored from an ATS board (or vice versa) is labeled the same posting, counted once
             const careersRow = (kind: 'hiring' | 'hiring-role', value: string, label: string, confidence: number | null) => withRepostHistory([{ connector: 'signals:careers-gtm', kind, value: value.slice(0, 254), label: label.slice(0, 200), confidence, source_url: v.url, source_date: posted ?? day, retrieved_at: v.retrievedAt }], 'careers', existingC)[0]

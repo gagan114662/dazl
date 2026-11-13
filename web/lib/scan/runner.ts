@@ -296,7 +296,6 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 }
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
-// The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
 
 // A job board's structured publish stamp proves the day THIS HIRING POSTING went up - never a funding round or any
 // other company event (#460 contract). Only a hiring-shaped signal may take the ats_structured proof; anything else

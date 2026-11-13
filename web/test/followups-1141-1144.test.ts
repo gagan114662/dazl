@@ -38,12 +38,15 @@ test('#1144 follow-up: neither the verifier nor the recheck keeps its own copy o
 test('#1141 follow-up: a careers evidence label never ends in a dangling "; " when the vacancy has no quote', () => {
   const label = (gate as { evidenceLabel?: (...p: (string | null | undefined | false)[]) => string }).evidenceLabel
   assert.ok(label, 'sales-hiring-gate.ts exports evidenceLabel')
-  const dateLabel = 'Greenhouse first-published date read from the linked posting; '
+  const dateLabel = 'Greenhouse first-published date read from the linked posting'
   assert.equal(label!('Requested role: Account Executive', dateLabel, ''), 'Requested role: Account Executive; Greenhouse first-published date read from the linked posting')
   assert.equal(label!(dateLabel, ''), 'Greenhouse first-published date read from the linked posting')
   assert.equal(label!('', ''), '')
   assert.equal(label!('generic hiring - no requested-role match in the sampled roles', '', 'We are hiring an AE.'), 'generic hiring - no requested-role match in the sampled roles; We are hiring an AE.')
   assert.equal(label!('Long-open: first published 2026-01-01', false, ''), 'Long-open: first published 2026-01-01')
+  // the quote is stored exactly as offered (review on #1148): a trailing ";" or edge spaces in the quote are not touched
+  assert.equal(label!(dateLabel, 'We hire;'), 'Greenhouse first-published date read from the linked posting; We hire;')
+  assert.equal(label!('Requested role: AE', dateLabel, ' We hire '), 'Requested role: AE; Greenhouse first-published date read from the linked posting;  We hire ')
   // and every careers label in the gate is built with it (no template ending in "; ${v.quote}")
   assert.doesNotMatch(src('sales-hiring-gate.ts'), /; \$\{(?:dateLabel\}\$\{)?v\.quote\}`/)
 })
