@@ -140,6 +140,14 @@ the Gmail client is never configured on staging, and the app refuses sign-in on 
    `accounts.google.com` with this client's id, `redirect_uri=https://staging.dazl.ai/api/auth/callback/google`,
    `scope=openid email profile` and `cache-control: no-store`.
 
+## Free trial without Google sign-in (test accounts only, #1037)
+
+The free trial needs a Google sign-in (product truth `google_account`). To live-check a brand-new **password** account's first play
+on staging, list its exact address in `DAZL_STAGING_TRIAL_NO_GOOGLE` (comma-separated, no wildcards) in the staging env file. Only the
+Google prerequisite is skipped for those addresses; every other trial limit still applies. The setting is read only when
+`DAZL_ENV=staging`. It keys on the signup email, which a password signup does not verify, so list only throwaway test addresses
+(whoever registers a listed address first gets the exemption) and remove them after the check.
+
 ## Stripe in test mode (runbook, Instinct)
 Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
 
