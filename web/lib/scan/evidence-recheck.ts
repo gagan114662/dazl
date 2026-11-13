@@ -10,6 +10,8 @@ import {verifyEvidence,type Candidate} from './evidence.ts'
 import {eventDateBound} from './event-date-binding.ts'
 import {counterpartySignal} from './counterparty.ts'
 import {isHiringTrigger} from './scoreboard.ts'
+// the verifier's date rejections (lib/scan/runner.ts DATE_REJECTS): a claimed day the date rules reject never takes the board proof
+const DATE_REJECTS=new Set(['bad_date','stale','future_date'])
 interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;signal_kind:string|null;source_url:string;evidence_excerpt:string|null;event_date:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
 export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=new Date()){
  const d=asDb(db)
@@ -27,9 +29,11 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  const candidate:Candidate={name:lead.name??'',company:lead.company,signal:lead.signal,source_url:lead.source_url,excerpt:lead.evidence_excerpt??'',event_date:lead.event_date,contact:null,score:0}
  const closed=closedJobEvidence(candidate,page),place=ownPlaceAgreement(page,icp.where,lead.company,candidate.excerpt),literal=verifyEvidence(candidate,page,now)
  // #1127: the verifier's rule (lib/scan/runner.ts verifyLeads): a HIRING lead whose saved day is the board's own first-published day for exactly
- // this posting URL (page.postedAt, set only when the page is the board's API record for this URL) is dated by it (ats_structured); any
- // other lead, or another day, is bound by the page text or is undated
- const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&isHiringTrigger(lead.signal,lead.signal_kind)
+ // this posting URL (page.postedAt, set only when the page is the board's API record for this URL) is dated by it (ats_structured), unless the
+ // date rules reject that day (stale, future, malformed: the verifier's DATE_REJECTS, which never take a proof); any other lead, or another
+ // day, is bound by the page text or is undated
+ const dateRejected=!literal.ok&&DATE_REJECTS.has(literal.reason)
+ const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&isHiringTrigger(lead.signal,lead.signal_kind)
  const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')

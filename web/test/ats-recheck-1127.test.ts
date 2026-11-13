@@ -203,3 +203,49 @@ test('#1127 (2): a caller cancelled while queued leaves the queue and never make
     })
   } finally { fake.restore() }
 })
+
+// ---- review on #1144 at 31d006c4
+test('#1127 R1+R3 (review on #1144): an Ashby caller cancelled while its board read is queued leaves at once; a queued read nobody waits for is never sent', async () => {
+  const fake = fakeHttps(u => boardFor(u)!, 300)
+  try {
+    await scan(async () => {
+      const a = new AbortController(), b = new AbortController()
+      const first = [fetchPageDetailed(ashby(1), async () => null), fetchPageDetailed(ashby(2), async () => null)] // take both slots
+      const t0 = Date.now()
+      const gone = fetchPageDetailed(ashby(3), async () => null, a.signal).then(r => ({ r, ms: Date.now() - t0 }))   // its only caller leaves
+      const left = fetchPageDetailed(ashby(4), async () => null, b.signal).then(r => ({ r, ms: Date.now() - t0 }))   // one of two callers leaves...
+      const stays = fetchPageDetailed(ashby(4), async () => null)                                                      // ...the other still waits
+      setTimeout(() => { a.abort(); b.abort() }, 10)
+      for (const x of [await gone, await left]) { assert.deepEqual(x.r, { fail: 'error' }); assert.ok(x.ms < 100, `left after ${x.ms} ms`) }
+      const kept = await stays; assert.ok(!isFail(kept) && kept.postedAt === '2026-11-01', JSON.stringify(kept))
+      await Promise.all(first)
+      assert.deepEqual(fake.seen.map(u => /org\d/.exec(u)![0]), ['org1', 'org2', 'org4'], 'org3 was never requested; org4 once, for the caller still waiting')
+      assert.ok(fake.stats.max <= ATS_RECORD_CONCURRENCY)
+      // the abandoned board is not memoised as a failure: a later caller reads it
+      const later = await fetchPageDetailed(ashby(3), async () => null); assert.ok(!isFail(later))
+    })
+  } finally { fake.restore() }
+})
+
+test('#1127 R2 (review on #1144): ATS record reads outside any scan are not bounded: 8 Ashby reads all start at once', async () => {
+  const fake = fakeHttps(u => boardFor(u)!, 60)
+  try {
+    const pages = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map(n => fetchPageDetailed(ashby(n), async () => null)))
+    assert.ok(pages.every(p => !isFail(p)))
+    assert.equal(fake.stats.max, 8)
+  } finally { fake.restore() }
+})
+
+test('#1127 R4 (review on #1144): a saved day equal to a FUTURE board day is not ats_structured in the recheck, as in the verifier', async () => {
+  const future = { jobs: [job(ID, 'Sales Operations Manager - Deal Desk', '2026-12-20T09:00:00.000+00:00')] }
+  const { db, ids } = sqlite([{ signal: HIRING, kind: null, url: URL1, date: '2026-12-20' }])
+  const fake = fakeHttps(u => u.startsWith('https://api.ashbyhq.com/') ? json(future) : { status: 403, type: 'text/html', body: '' })
+  try {
+    const p = await evidenceRecheck(db, 'u', ids[0], undefined, NOW)
+    const c = p!.checks as { quote: string; event_date_proof?: string | null; window: string }
+    assert.notEqual(c.event_date_proof ?? null, 'ats_structured', JSON.stringify(p))
+    assert.equal(c.quote, 'future_date')
+    const o = await verifyLeads([{ name: '', company: 'Tekion', signal: HIRING, source_url: URL1, excerpt: QUOTE, event_date: '2026-12-20', contact: null, score: 80 } as LeadDraft], u => fetchPageDetailed(u, async () => null), NOW)
+    assert.ok([...o.leads, ...o.review].every(l => l.event_date_proof !== 'ats_structured'), JSON.stringify(o))
+  } finally { fake.restore() }
+})

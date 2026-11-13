@@ -111,27 +111,43 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
 // refusal, an error or a thrown read is dropped, so the next posting asks again). Public data, keyed by the exact API
 // URL; bounded to BOARD_MEMO_BYTES of bodies in total and BOARD_MEMO_MS each. A read in flight is counted once it ends,
 // so concurrent reads of different boards can pass the bound briefly (each read is itself capped at ATS_RECORD_MAX_BYTES).
-// The shared read is not tied to any one caller's abort signal: a cancelled caller stops waiting at once, and the read
-// itself ends within the request timeout.
+// The shared read is not tied to any one caller's abort signal: a caller whose signal fires stops waiting at once (its
+// read fails), and the read goes on for the other callers, ending within the request timeout once it has started. A read
+// still queued for a slot (#1127, lib/scan/ats-read-slots.ts) when its LAST caller has given up is never started.
 const BOARD_MEMO_MS = 120_000, BOARD_MEMO_BYTES = 24_000_000
-const boardMemo = new Map<string, { at: number; read: ReturnType<typeof once>; bytes: number }>()
+type BoardEntry = { at: number; read: ReturnType<typeof once>; bytes: number; waiting: number; idle: () => void }
+const boardMemo = new Map<string, BoardEntry>()
 const memoBytes = () => [...boardMemo.values()].reduce((a, m) => a + m.bytes, 0)
+// One caller's wait on the shared read: a caller with no signal waits for it to settle; one with a signal leaves on abort.
+function awaitBoard(entry: BoardEntry, signal?: AbortSignal): ReturnType<typeof once> {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))
+  entry.waiting++
+  if (!signal) return entry.read
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { if (--entry.waiting === 0) entry.idle(); reject(new Error('aborted')) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    entry.read.then(v => { signal.removeEventListener('abort', onAbort); resolve(v) }, e => { signal.removeEventListener('abort', onAbort); reject(e) })
+  })
+}
 function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
   const k = url.toString(), now = Date.now()
   for (const [key, m] of boardMemo) if (now - m.at > BOARD_MEMO_MS) boardMemo.delete(key)
   const hit = boardMemo.get(k)
-  if (hit) return signal?.aborted ? Promise.reject(new Error('aborted')) : hit.read
-  // shared, so not tied to one caller's abort signal; it is still bounded by the request timeout
-  const read = withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup)) // queued for a slot (#1127); the request timeout starts when the read does
-  const entry = { at: now, read, bytes: 0 }
+  if (hit) return awaitBoard(hit, signal)
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))
+  // shared, so not tied to one caller's abort signal; queued for a slot of this scan (#1127) and left unstarted once no caller
+  // waits any more (idle); the request timeout starts when the read does
+  const queued = new AbortController(), state = { started: false }
+  const read = withAtsReadSlot(() => { state.started = true; return once(url, TIMEOUT_MS, guardedLookup) }, queued.signal)
+  const entry: BoardEntry = { at: now, read, bytes: 0, waiting: 0, idle: () => { if (state.started) return; if (boardMemo.get(k) === entry) boardMemo.delete(k); queued.abort() } }
   boardMemo.set(k, entry)
   read.then(r => {
     if (r.status < 200 || r.status >= 300) { boardMemo.delete(k); return }
     entry.bytes = r.body.length
     // oldest first until the bodies kept fit the bound (this one included: a single board over the bound is not kept)
     for (const key of boardMemo.keys()) { if (memoBytes() <= BOARD_MEMO_BYTES) break; boardMemo.delete(key) }
-  }, () => boardMemo.delete(k))
-  return signal?.aborted ? Promise.reject(new Error('aborted')) : read
+  }, () => { if (boardMemo.get(k) === entry) boardMemo.delete(k) })
+  return awaitBoard(entry, signal)
 }
 export const resetBoardMemo = () => boardMemo.clear()
 
