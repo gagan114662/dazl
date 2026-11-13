@@ -82,27 +82,96 @@ bothEngines('#1082: a share-limited fetch is recorded as capacity (results are t
   assert.ok((summarizeTrace(t2).searches_not_attempted.capacity ?? 0) > 0)
 })
 
-bothEngines('#1082: over 80% of a daily cap used before 18:00 UTC alerts the operator once that day; after 18:00 it does not', async ({ db }) => {
+bothEngines('#1082: over 80% of a daily cap used before 18:00 UTC alerts the operator once that day (not once per call, not once per instance); after 18:00 it does not', async ({ db }) => {
   await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '100', TINYFISH_FETCHES_PER_SCAN: '1' }
+  const T9 = ['A', 'B', 'C', 'D', 'E', 'F', 'H', 'I', 'J']
+  const one = (t: string, now = NOON) => tfFetch(db, t, [`https://${t}${Math.random()}.example/p`], { fetches: 0 }, { env, now, fetchImpl: okFetch })
   const seen: string[] = []
   const off = setErrorSinks([r => { if (r.where === 'tinyfish:budget') seen.push(r.error.message) }])
   try {
-    for (let i = 0; i < 3; i++) await fetchUnits(db, ['A', 'B', 'C'][i], 10) // 30 of 30
-    assert.equal(seen.filter(m => m.includes('fetch')).length, 1, 'one alert, not one per call')
-    assert.doesNotMatch(seen.join(' '), /\b[A-C]\b.*example/, 'counts only')
+    // 9 tenants, single-unit fetches (each one's share is 100 / 10 = 10, room kept for a tenth): up to 90 admitted,
+    // the calls past 80 all above 80% of 100
+    for (let i = 0; i < 95; i++) await one(T9[i % 9])
+    assert.ok(await total(db) > 80, `fixture: over 80% used (${await total(db)})`)
+    assert.equal(seen.filter(m => m.includes('fetch')).length, 1, 'one alert for the day, though several admitted calls were above 80%')
+    assert.doesNotMatch(seen.join(' '), /example/, 'counts only')
   } finally { off() }
-  await resetTinyfishState(db)
+  // another instance (the day's key already written): no second alert
+  await resetTinyfishState(db); await db.run('DELETE FROM tinyfish_usage')
+  const day = new Date(NOON * 1000).toISOString().slice(0, 10)
+  await db.run('INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, ?)', [`tinyfish:alert80:fetch:${day}`, (NOON + 86400) * 1000])
+  const again: string[] = []
+  const off2 = setErrorSinks([r => { if (r.where === 'tinyfish:budget') again.push(r.error.message) }])
+  try { for (let i = 0; i < 95; i++) await one(T9[i % 9]); assert.equal(again.length, 0, 'the day already alerted') } finally { off2() }
+  // after 18:00 UTC: no alert
+  await resetTinyfishState(db); await db.run('DELETE FROM tinyfish_usage')
   const late: string[] = []
-  const off2 = setErrorSinks([r => { if (r.where === 'tinyfish:budget') late.push(r.error.message) }])
-  try {
-    await db.run("DELETE FROM tinyfish_usage")
-    for (let i = 0; i < 3; i++) await fetchUnits(db, ['A', 'B', 'C'][i], 10, ENV, EVENING)
-    assert.equal(late.length, 0)
-  } finally { off2() }
+  const off3 = setErrorSinks([r => { if (r.where === 'tinyfish:budget') late.push(r.error.message) }])
+  try { for (let i = 0; i < 95; i++) await one(T9[i % 9], EVENING); assert.equal(late.length, 0) } finally { off3() }
 })
 
 test('#1082: the run report carries what the platform share left out, so the leads page can say results are thinner', async () => {
   const { buildRunReport } = await import('../lib/scan/run-report.ts')
   assert.deepEqual(buildRunReport({ capacity: { searches: 2, fetches: 5 } }, null, null, 1).capacity, { searches: 2, fetches: 5 })
   assert.equal(buildRunReport({}, null, null, 1).capacity, null, 'a run the share never limited says nothing')
+})
+
+test('#1082: /api/health/scheduler shows today\'s TinyFish use per kind and per tenant as counts only (no tenant ids); an unreadable usage table never changes the health status', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { schedulerHealthResponse } = await import('../lib/ops/scheduler-runs.ts')
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const day = new Date(NOON * 1000).toISOString().slice(0, 10)
+  const ins = raw.prepare('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?)')
+  ins.run(day, 'tenant-secret-aaa', 'search', 5); ins.run(day, 'tenant-secret-aaa', 'fetch', 20); ins.run(day, 'tenant-secret-bbb', 'fetch', 7)
+  ins.run('2000-01-01', 'old', 'fetch', 99) // another day never counts
+  const body = await (await schedulerHealthResponse(raw, NOON)).json() as { ok: boolean; tinyfish_today: Record<string, unknown> & { search: { used: number }; fetch: { used: number } } }
+  assert.equal(body.tinyfish_today.search.used, 5)
+  assert.equal(body.tinyfish_today.fetch.used, 27)
+  assert.equal('per_tenant' in body.tinyfish_today, false, 'the public route shows platform totals only')
+  assert.doesNotMatch(JSON.stringify(body), /tenant-secret/, 'no tenant id leaves the public route')
+  // the operator route's figures (app/api/internal/tinyfish-today): per active tenant, largest first, counts only
+  const { tinyfishToday } = await import('../lib/search/tinyfish.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const ops = await tinyfishToday(sqliteDb(raw), NOON)
+  assert.deepEqual(ops.per_tenant, [25, 7]); assert.doesNotMatch(JSON.stringify(ops), /tenant-secret/)
+  // the operator route needs the shared secret, compared in constant time, like internal/tick
+  const route = (await import('node:fs')).readFileSync(new URL('../app/api/internal/tinyfish-today/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /if \(!secret \|\| got\.length !== want\.length \|\| !timingSafeEqual/)
+  // the usage table missing (an unmigrated store): the field is null, the health answer is the same as without it
+  const bare = new Database(':memory:')
+  const r = await schedulerHealthResponse(bare, NOON)
+  assert.equal(r.status, 200)
+  const j = await r.json() as { tinyfish_today: unknown; operational: { state: string } }
+  assert.equal(j.tinyfish_today, null); assert.equal(j.operational.state, 'never_ran')
+})
+
+test('#1082: the status read sends capacity_note only when the latest run report says the platform share limited the run', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { createQueryJob } = await import('../lib/scan/store.ts')
+  const { buildRunReport, writeRunReport } = await import('../lib/scan/run-report.ts')
+  const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const note = async (capacity: { searches: number; fetches: number } | undefined) => {
+    const job = createQueryJob(raw, 'T', { query: 'q' })
+    writeRunReport(raw, job, 1, buildRunReport(capacity ? { capacity } : {}, null, null, 1), { DAZL_RUN_REPORT: '1' })
+    return ((await readScanStatus(sqliteDb(raw), 'T', job)) as { capacity_note: string | null }).capacity_note
+  }
+  assert.equal(await note({ searches: 0, fetches: 3 }), 'Platform search capacity reached today: results are thinner.')
+  assert.equal(await note({ searches: 2, fetches: 0 }), 'Platform search capacity reached today: results are thinner.')
+  assert.equal(await note({ searches: 0, fetches: 0 }), null)
+  assert.equal(await note(undefined), null, 'a run the share never limited says nothing')
+})
+
+bothEngines('#1082: racing tenants and the growth tenant: the reserve holds under concurrency and the global cap is never passed', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, DAZL_GROWTH_TENANT_ID: 'G', TINYFISH_GROWTH_RESERVE_PCT: '20' } // reserve 6 of 30
+  const order = ['A', 'A', 'A', 'A', 'A', 'A', 'B', 'B', 'B', 'G', 'G', 'G']
+  const got = await Promise.all(order.map(t => fetchUnits(db, t, 10, env)))
+  const g = got.filter((_, i) => order[i] === 'G').reduce((x, y) => x + y, 0)
+  assert.ok(g >= 6, `the growth tenant got its reserve: ${g}`)
+  assert.ok(await total(db) <= 30, 'never past the global cap')
 })

@@ -57,7 +57,7 @@ const bump = (t: Tx, day: string, tenant: string, kind: 'search' | 'fetch', by: 
 //    never more than what is left of the pool.
 // room = units this tenant may still use today; capacity = the platform share (not the per-scan or tenant cap) is the limit.
 const growthTenant = (env: Env) => env.DAZL_GROWTH_TENANT_ID?.trim() || null
-const reservePct = (env: Env) => { const v = Number(env.TINYFISH_GROWTH_RESERVE_PCT); return Number.isFinite(v) && v >= 0 && v <= 90 ? v : 20 }
+const reservePct = (env: Env) => { const raw = env.TINYFISH_GROWTH_RESERVE_PCT?.trim(); const v = raw ? Number(raw) : NaN; return Number.isFinite(v) && v >= 0 && v <= 90 ? v : 20 } // blank = unset (Number('') is 0)
 function* kindUsedBy(t: Tx, day: string, tenant: string, kind: 'search' | 'fetch'): TxBody<number> {
   const r = yield* t.get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND tenant_id = ? AND kind = ?', [day, tenant, kind])
   return Number(r!.n)
@@ -119,7 +119,7 @@ function* lockDay(t: Tx, day: string): TxBody<void> {
 // Checked inside the caps transaction, so on Postgres the day's advisory lock orders them across instances too.
 const MINUTE_KEY = 'tinyfish:minute', BLOCKED_KEY = 'tinyfish:blocked'
 // Kept for tests that share one store between scenarios; the state is in the store, so a fresh store starts clean.
-export const resetTinyfishState = async (db?: DbLike) => { if (db) await asDb(db).run('DELETE FROM rate_limits WHERE key IN (?, ?)', [MINUTE_KEY, BLOCKED_KEY]) }
+export const resetTinyfishState = async (db?: DbLike) => { if (db) { await asDb(db).run('DELETE FROM rate_limits WHERE key IN (?, ?)', [MINUTE_KEY, BLOCKED_KEY]); await asDb(db).run("DELETE FROM rate_limits WHERE key LIKE 'tinyfish:alert80:%'") } }
 function* allow(t: Tx, now: number, perMinute: number): TxBody<boolean> {
   const ms = now * 1000
   const b = yield* t.get<{ reset_at: number }>('SELECT reset_at FROM rate_limits WHERE key = ?', [BLOCKED_KEY])
@@ -239,7 +239,8 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   })
   if (alert) reportHighUse('fetch', alert)
   const batch = gate.batch
-  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: gate.out, pages: null }); return { ok: false, reason: 'cap' } }
+  // a share refusal records the units the share removed (what this scan's own caps would have allowed), not every URL asked
+  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return { ok: false, reason: 'cap' } }
   // a batch the platform share cut short: the pages it left out are recorded as not fetched for capacity
   if (gate.trimmed > 0) d.trace?.fetch({ requested: gate.trimmed, attempted: false, outcome: 'capacity', pages: null })
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }

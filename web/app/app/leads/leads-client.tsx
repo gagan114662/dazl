@@ -515,7 +515,7 @@ export default function LeadsClient() {
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setCapacityNote(null); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -603,7 +603,7 @@ export default function LeadsClient() {
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setCapacityNote(null); setStatus('loading') }
   }, [])
   // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
   // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
@@ -634,7 +634,7 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
-      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setCapacityNote(null); setStatus(active.status) }
       // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
       // finished, non-test scan that saved any. No such scan => stay on Plays.
       else if (new URLSearchParams(window.location.search).get('latest') === '1') {

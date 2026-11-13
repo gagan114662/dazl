@@ -307,8 +307,10 @@ export async function schedulerHealthResponse(d: DbLike, now = nowS()): Promise<
     if (!/no such table|does not exist/i.test(e instanceof Error ? e.message : '')) throw e
     h = { ok: true, operational: { state: 'never_ran', last_started_at: null, last_completed_at: null, last_completed_status: null, last_completed_age_s: null, running_since: null, lease_generation: null, last_error_class: null, unresolved_failure: null }, tenants: { tracked: 0, blocked: 0, held: 0, reply_sync_stale: 0, overdue: 0, oldest_overdue_s: null }, problems: [] }
   }
-  // #1082: today's operator search budget, counts only (no tenant ids); never affects ok/status
-  let tinyfish_today: Awaited<ReturnType<typeof tinyfishToday>> | null = null
-  try { tinyfish_today = await tinyfishToday(d, now) } catch { tinyfish_today = null }
+  // #1082: today's operator search budget, platform totals only. This route is public: per-tenant usage (how many
+  // tenants are active and how much each uses) is served only to the operator (app/api/internal/tinyfish-today).
+  // Never affects ok/status.
+  let tinyfish_today: { search: { used: number; cap: number }; fetch: { used: number; cap: number } } | null = null
+  try { const t = await tinyfishToday(d, now); tinyfish_today = { search: t.search, fetch: t.fetch } } catch { tinyfish_today = null }
   return Response.json({ ...h, tinyfish_today }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
