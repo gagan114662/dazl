@@ -213,7 +213,9 @@ Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it re
 
 ## Automatic deploys from prebuilt builds (the box cannot build)
 The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-deploy.timer` (which builds on the box) stays
-**disabled**. Instead:
+**disabled**, and `deploy.sh` itself refuses its default on-box build (docs/NEVER-AGAIN.md #1): run without
+`STAGING_BUILD` it stops before fetching anything. Only `ops/staging/e2e-test.sh` on a throwaway machine may build
+(`DAZL_ALLOW_HOST_BUILD=throwaway-machine`, refused wherever a dazl box path exists). Instead:
 - **Build, on GitHub:** `.github/workflows/staging-prebuilt.yml` runs on every push to main, on a free GitHub-hosted arm64
   runner (`ubuntu-24.04-arm`, Node 22: the box's architecture and OS), with staging's public settings and no secrets. It
   attaches three assets to the `staging-prebuilt` prerelease: `staging-next-<sha>.tgz` (`.next` + `.build-commit`),
