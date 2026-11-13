@@ -50,16 +50,22 @@ export interface ScanWorkerOpts {
 // whole setup at the same moment is how two processes used to collide. What it does run is what any kick runs, all
 // idempotent: the auth tables on open (getAuthDb), the queue tables (CREATE IF NOT EXISTS) and the runner's own lazy
 // table checks. Until the scan tables exist a pass does nothing and the next one looks again.
+// Table checks are plain SELECTs that fail on a missing table, not catalog reads, so every statement here is one both
+// engines accept (test/pg-sql-audit.test.ts). Only "no such table" means not there; any other error is real.
+function tableThere(db: Database.Database, probe: string): boolean {
+  try { db.prepare(probe).get(); return true } catch (e) { if (/no such table/i.test((e as Error).message)) return false; throw e }
+}
 const storeReady = (db: Database.Database): boolean =>
-  (db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('scan_jobs', 'tenant_llm_keys', 'scan_spend_calls')").get() as { n: number }).n === 3
+  tableThere(db, 'SELECT 1 AS x FROM scan_jobs LIMIT 1') && tableThere(db, 'SELECT 1 AS x FROM tenant_llm_keys LIMIT 1') && tableThere(db, 'SELECT 1 AS x FROM scan_spend_calls LIMIT 1')
 
 // Work for a kick: a pending scan (to claim), a running one (the kick frees it when its worker died), or a scan's queue
 // item still open (a claim whose scan already ended is closed by the next kick). Indexed reads: scan_jobs_status,
-// work_queue_claimable. The queue table appears with the first kick, so before that only scan_jobs is read.
+// work_queue_claimable. The queue table appears with the first kick; before that there is no queue item to close.
 const hasWork = (db: Database.Database): boolean => {
   if (db.prepare("SELECT 1 AS x FROM scan_jobs WHERE status IN ('pending', 'running') LIMIT 1").get() !== undefined) return true
-  if (db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'work_queue'").get() === undefined) return false
-  return db.prepare("SELECT 1 AS x FROM work_queue WHERE status IN ('pending', 'claimed') AND kind = 'scan' LIMIT 1").get() !== undefined
+  try {
+    return db.prepare("SELECT 1 AS x FROM work_queue WHERE status IN ('pending', 'claimed') AND kind = 'scan' LIMIT 1").get() !== undefined
+  } catch (e) { if (/no such table/i.test((e as Error).message)) return false; throw e }
 }
 
 // One pass: kick when the flag is on, the store is set up and there is work. Returns what it did.
