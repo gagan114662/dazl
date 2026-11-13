@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { claimIntent, clearClaim } from '@/lib/invite-return'
 
 // Completes a preview claim after sign-in or sign-up (#416). Claiming is an intentional act: this page confirms
@@ -14,6 +15,7 @@ type Proof = {
 type Intent = { token?: string; proof: Proof }
 const wrap = { maxWidth: 640, margin: '0 auto', padding: '48px 20px', fontFamily: 'system-ui, sans-serif', color: '#1a1a1a' } as const
 export default function ClaimPage() {
+  const router = useRouter()
   const [intent, setIntent] = useState<Intent | 'loading' | { dead: string }>('loading')
   const [state, setState] = useState<{ kind: 'confirm' | 'working' | 'error'; code?: string }>({ kind: 'confirm' })
   useEffect(() => {
@@ -46,7 +48,7 @@ export default function ClaimPage() {
     clearClaim()
     fetch('/api/preview/claim', { method: 'DELETE', headers: { 'content-type': 'application/json' } })
       .catch(() => { /* the cookie also expires on its own */ })
-      .finally(() => { window.location.href = '/app' })
+      .finally(() => { router.push('/app') })
   }
   const copy: Record<string, string> = {
     none: 'There is no preview claim in progress. Open your preview link again.',

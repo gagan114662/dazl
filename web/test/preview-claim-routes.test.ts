@@ -35,5 +35,5 @@ test('the claim page has a way out that clears the intent (#416 review)', () => 
   const src = readFileSync(new URL('../app/preview/claim/page.tsx', import.meta.url), 'utf8')
   assert.match(src, /Not now, go to my workspace/)
   assert.match(src, /method: 'DELETE'/)
-  assert.match(src, /window\.location\.href = '\/app'/)
+  assert.match(src, /router\.push\('\/app'\)/) // the Next router, not a raw location assignment (static-quality)
 })
