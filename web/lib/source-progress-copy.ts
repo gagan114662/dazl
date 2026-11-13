@@ -4,7 +4,7 @@ import type { SourceProgress } from './scan/progress.ts'
 
 const NAMES: Record<string, string> = {
   'search:tinyfish': 'Web search', 'search:news': 'News articles', 'search:anthropic': 'Web research with your AI key', 'search:openai': 'Web research with your AI key',
-  'adapter:jobboards': 'Job postings', 'adapter:github': 'GitHub', 'adapter:youtube': 'YouTube', 'adapter:v2ex': 'V2EX', 'adapter:rss': 'Feeds', 'adapter:pages': 'Web pages', 'adapter:brreg': 'Norway business register', 'adapter:companies-house': 'UK Companies House',
+  'adapter:jobboards': 'Job postings', 'adapter:github': 'GitHub', 'adapter:youtube': 'YouTube', 'adapter:v2ex': 'V2EX', 'adapter:rss': 'Feeds', 'adapter:pages': 'Web pages', 'adapter:brreg': 'Norway business register', 'adapter:careers': 'Company careers pages', 'adapter:companies-house': 'UK Companies House',
   'adapter:reddit': 'Reddit', 'adapter:x': 'X posts', 'adapter:linkedin': 'LinkedIn', 'adapter:facebook': 'Facebook',
 }
 export function sourceName(source: string): string {
