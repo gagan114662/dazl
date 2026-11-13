@@ -76,7 +76,7 @@ test('#899 a "stop" answer (bad key / no credits) ends the run after that one re
   assert.deepEqual(st, [{ verification: 'uncertain', n: 1 }])
 })
 
-test('#899 the daily cap count reads an index; the monthly allowance is an operator ledger (SQLite twin of 0062_email_verify_caps.sql)', () => {
+test('#899 the daily cap count reads an index; the monthly allowance is an operator ledger (SQLite twin of 0063_email_verify_caps.sql)', () => {
   const db = new Database(':memory:'); migrateEmailGuess(db)
   const plan = (sql: string, ...a: unknown[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...a) as { detail: string }[]).map(r => r.detail).join(' | ')
   assert.match(plan('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?', 'A', 0), /email_candidates_tenant_checked/)

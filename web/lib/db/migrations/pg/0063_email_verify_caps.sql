@@ -1,4 +1,4 @@
--- Numbered 0062 (main's highest is 0061). Open PRs also claim 0062/0063: renumber to main's highest + 1 at merge (loader needs 1..n, no gaps).
+-- Numbered 0063 (main's highest is 0062_scan_jobs_fair_claim). Open PRs also claim 0063: renumber to main's highest + 1 at merge (loader needs 1..n, no gaps).
 -- #899: the mailbox check's two caps (lib/people/email-pattern.ts verifyCandidates). The per-tenant daily count reads
 -- email_candidates by (tenant_id, checked_at); the verifier's monthly free allowance is an operator ledger with no tenant data,
 -- so deleting a tenant never frees allowance already spent. SQLite twin: migrateEmailGuess.

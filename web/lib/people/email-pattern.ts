@@ -153,7 +153,7 @@ export function migrateEmailGuess(db: Database.Database): void {
   if (!hasP('runner_up')) db.exec('ALTER TABLE email_patterns ADD COLUMN runner_up INTEGER')
   if (!hasP('evidence')) db.exec('ALTER TABLE email_patterns ADD COLUMN evidence TEXT CHECK (evidence IS NULL OR length(evidence) <= 2000)')
   // #899: the per-tenant daily count reads this index; the verifier's monthly checks are an operator ledger with no tenant data
-  // (lib/tenant/scope.ts: global), so a tenant's deletion never frees allowance already spent. Postgres: 0062_email_verify_caps.sql.
+  // (lib/tenant/scope.ts: global), so a tenant's deletion never frees allowance already spent. Postgres: 0063_email_verify_caps.sql.
   db.exec(`CREATE INDEX IF NOT EXISTS email_candidates_tenant_checked ON email_candidates (tenant_id, checked_at);
     CREATE TABLE IF NOT EXISTS email_verify_usage (
       verifier TEXT NOT NULL CHECK (length(verifier) <= 40), month TEXT NOT NULL CHECK (length(month) = 7),
