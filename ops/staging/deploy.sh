@@ -53,12 +53,13 @@ APP_RESTART=${STAGING_RESTART:-$SYSTEMCTL restart $SERVICE}
 worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
 # Stop the worker first and by name, so the command returns only once it has exited: PartOf alone would stop it too,
 # but without waiting for it before the recovery point is taken.
-# worker_stamp: this script stopped a running worker and has not started it again yet. Only then does a later run with
+# worker_stamp: this script stopped an enabled worker and has not started it again yet. Only then does a later run with
 # nothing to deploy start it; a worker an operator stopped by hand (to free memory) is left stopped.
 worker_stamp() { echo "$STATE/worker-stopped-by-deploy"; }
 stop_worker() {
   worker_installed || return 0
-  if $SYSTEMCTL is-active --quiet "$WORKER"; then : > "$(worker_stamp)"; fi
+  # stamped whenever the worker is meant to run (enabled): running, or between two automatic restarts
+  if $SYSTEMCTL is-enabled --quiet "$WORKER"; then : > "$(worker_stamp)" || return 1; fi
   $SYSTEMCTL stop "$WORKER"
 }
 stop_services() {
@@ -73,10 +74,11 @@ restart_services() {
 # Start the worker when its unit is installed and enabled. A worker that does not start is reported, never a failed
 # deploy: the app still runs every scan itself.
 start_worker() {
-  rm -f "$(worker_stamp)"
   if worker_installed && $SYSTEMCTL is-enabled --quiet "$WORKER"; then
-    $SYSTEMCTL start "$WORKER" || echo "staging-deploy: ALERT scan worker $WORKER did not start; scans run on the app only" >&2
-  fi
+    # the stamp goes only when the worker really started: a failed start is retried by the next run with nothing to deploy
+    if $SYSTEMCTL start "$WORKER"; then rm -f "$(worker_stamp)"
+    else echo "staging-deploy: ALERT scan worker $WORKER did not start; scans run on the app only" >&2; fi
+  else rm -f "$(worker_stamp)"; fi
   return 0
 }
 RESTART=restart_services

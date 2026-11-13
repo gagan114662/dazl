@@ -118,6 +118,11 @@ esac\n`)
     assert.match(r.out, /ALERT scan worker: inactive \(dazl-staging-worker\.service is enabled but not running/)
     assert.match(r.out, new RegExp(`live: ${s3}`))
     flag('fail-start', false)
+    // the failed start is retried by the next run with nothing to deploy (the stamp stayed)
+    assert.ok(existsSync(path.join(T, 'state', 'worker-stopped-by-deploy')), 'a failed start keeps the stamp')
+    r = deploy()
+    assert.equal(r.code, 0, r.out); assert.deepEqual(r.order, [`start ${W}`]); assert.ok(existsSync(path.join(T, 'worker-up')))
+    assert.equal(existsSync(path.join(T, 'state', 'worker-stopped-by-deploy')), false)
 
     // installed but not enabled (the operator switched it off): stopped with the app, not started
     flag('enabled', false); flag('worker-up', true)

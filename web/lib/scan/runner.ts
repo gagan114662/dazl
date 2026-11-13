@@ -2109,10 +2109,19 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
           // the account's next scan is claimable at once
           try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)
           // The queue item is closed 'done', as the claimer closes any item whose scan already ended ("nothing to run":
-          // the scan row has the outcome). Only when the queue is on this handle; with the queue on Postgres a later
-          // kick on any instance closes it (renewScanLeases in lib/queue/scan-claimer.ts), so the account waits for
-          // that, not for the lease.
+          // the scan row has the outcome). Only when the queue is on this handle; with the queue on Postgres the
+          // claim waits for its lease (no kick can tell this row from one whose run is still going).
           if (token !== null && queueHere) {
+            db.prepare("UPDATE work_queue SET status = 'done', last_error = NULL, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL, dedupe_key = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
+              .run(job.id, token)
+          }
+        }
+        // A scan whose row already ended under this attempt (its search finished and its post-finish stage was still
+        // running here, or the runner had marked it failed and was unwinding): the run dies with this process, so its
+        // queue claim is closed too, by token, instead of holding the account's slot until the lease.
+        if (c === 0 && token !== null && queueHere) {
+          const row = db.prepare('SELECT status FROM scan_jobs WHERE id = ? AND attempts = ?').get(job.id, job.attempts) as { status: string } | undefined
+          if (row && row.status !== 'running' && row.status !== 'pending') {
             db.prepare("UPDATE work_queue SET status = 'done', last_error = NULL, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL, dedupe_key = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
               .run(job.id, token)
           }
