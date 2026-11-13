@@ -9,7 +9,7 @@
 // cutover. created_at is an epoch integer in both dialects; count(*) comes back as a string from
 // the pg driver, so both aggregates go through Number().
 export { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, providerIssueText } from './provider-issue-text.ts'
-import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES } from './provider-issue-text.ts'
+import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, SPEND_REFUSAL_PREFIX } from './provider-issue-text.ts'
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
 import { getDb, type Db } from '../db/client.ts'
@@ -43,6 +43,14 @@ export async function readProviderIssues(db: Db, tenantId: string, jobId: string
         const c = row ? parseRefusalLookup(row.lookup) : null
         if (c) i.credit = c
       } catch { /* numbers omitted: the sentence then names no window */ }
+    }
+    // A spend refusal carries the gate's reason on its skip row (SPEND_REFUSAL_PREFIX + reason), never a later re-read.
+    for (const i of issues) {
+      if (i.status !== 'spend_refused') continue
+      try {
+        const row = await db.get<{ lookup: string }>(`SELECT lookup FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = 'spend_refused' ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [tenantId, jobId, i.connector])
+        if (row?.lookup.startsWith(SPEND_REFUSAL_PREFIX)) i.refusal = row.lookup.slice(SPEND_REFUSAL_PREFIX.length)
+      } catch { /* reason omitted: the sentence then says the spend check refused it, without a reason */ }
     }
     return issues
   } catch {

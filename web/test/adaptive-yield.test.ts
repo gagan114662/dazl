@@ -65,15 +65,18 @@ async function scan(o: Opts = {}) {
     return new Response('{}', { status: 200 })
   }) as typeof fetch
   const draft = (h: typeof A) => ({ name: '', company: h.company, contact: null, signal: 'Hiring for the role', source_url: h.url, score: 80, excerpt: h.quote, event_date: recent })
+  const complete = async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
+    if (maxTokens === 300) return JSON.stringify(MODEL_Q)
+    extractions.push(prompt)
+    return JSON.stringify(prompt.includes(B.url) ? [draft(B)] : [draft(A)])
+  }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       configuredModel: () => 'claude-sonnet-4-5',
       research: async () => ({ text: '', citedUrls: [] }),
-      complete: async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
-        if (maxTokens === 300) return JSON.stringify(MODEL_Q)
-        extractions.push(prompt)
-        return JSON.stringify(prompt.includes(B.url) ? [draft(B)] : [draft(A)])
-      },
+      complete: async (k: string, prompt: string, f?: typeof fetch, maxTokens?: number) => complete(k, prompt, f, maxTokens),
+      // A real provider reports usage; a guarded run settles to it. Without usage the guard stops after one call (#850).
+      completeDetailed: async (k: string, prompt: string, f?: typeof fetch, maxTokens?: number) => ({ text: await complete(k, prompt, f, maxTokens), model: 'claude-sonnet-4-5', usage: { input_tokens: 1000, output_tokens: 100 } }),
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }

@@ -99,8 +99,8 @@ test('a bad Apollo key opens only Apollo: later leads skip it visibly and still 
   const { db, jobId, leads } = seed(2); const calls: Calls = { apollo: 0, pdl: 0 }
   const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(async () => new Response('no', { status: 401 }), async () => ok(PDL_OK), calls), master })
   assert.equal(calls.apollo, 1, 'one failed attempt, then the circuit is open'); assert.equal(calls.pdl, 2)
-  assert.deepEqual(r.skipped.filter(s => s.provider === 'apollo').map(s => s.why), ['circuit_open'])
-  assert.ok(statuses(db).includes('apollo:circuit_open') && statuses(db).includes('apollo:auth'))
+  assert.deepEqual(r.skipped.filter(s => s.provider === 'apollo').map(s => s.why), ['key_rejected'])
+  assert.ok(statuses(db).includes('apollo:key_rejected') && statuses(db).includes('apollo:auth'))
   assert.deepEqual(attached(db, 'lead2'), ['enrich:pdl:Pdl Person - Practice Manager'], 'the second lead (no domain) takes PDL\'s record because its employer place agrees with the scan geography')
 })
 
@@ -134,11 +134,11 @@ test('both providers dead (auth): every lead carries an audited reason, circuits
   const r = await enrichLeadContacts(db, 'u1', jobId, leads, { fetchImpl: router(denied, denied, calls), master })
   assert.equal(calls.apollo, 1); assert.equal(calls.pdl, 1, 'each provider billed once, then circuit open')
   assert.deepEqual(attached(db), [])
-  assert.equal(r.skipped.filter(s => s.why === 'circuit_open' && s.provider === 'apollo').length, 2)
-  assert.equal(r.skipped.filter(s => s.why === 'circuit_open' && s.provider === 'pdl').length, 2)
+  assert.equal(r.skipped.filter(s => s.why === 'key_rejected' && s.provider === 'apollo').length, 2)
+  assert.equal(r.skipped.filter(s => s.why === 'key_rejected' && s.provider === 'pdl').length, 2)
   const st = statuses(db)
   assert.ok(st.includes('apollo:auth') && st.includes('pdl:auth'), JSON.stringify(st))
-  assert.ok(st.includes('apollo:circuit_open') && st.includes('pdl:circuit_open'), JSON.stringify(st))
+  assert.ok(st.includes('apollo:key_rejected') && st.includes('pdl:key_rejected'), JSON.stringify(st))
 })
 
 test('a one-off transport failure does NOT open the circuit: the next lead still uses Apollo', async () => {
