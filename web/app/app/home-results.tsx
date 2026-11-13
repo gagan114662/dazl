@@ -5,6 +5,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import type { HomeResults } from '@/lib/outreach/home-results'
+import type { HomeReady } from '@/lib/outreach/home-ready'
 import { signalLabel } from '@/lib/outreach/home-results'
 
 const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
@@ -12,6 +13,12 @@ const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, { da
 
 export default function HomeResultsPanel() {
   const [r, setR] = useState<HomeResults | 'failed' | null>(null)
+  // Ready leads (#1040 acceptance 1) come from their own read: it runs the Leads page's per-lead checks, so it may answer later
+  const [ready, setReady] = useState<HomeReady | 'failed' | null>(null)
+  useEffect(() => {
+    void fetch('/api/home/ready').then(x => x.ok ? x.json() : Promise.reject(new Error(String(x.status))))
+      .then(j => setReady(j && typeof j === 'object' && typeof j.ready === 'number' ? j as HomeReady : 'failed')).catch(() => setReady('failed'))
+  }, [])
   useEffect(() => {
     void fetch('/api/home/results').then(x => x.ok ? x.json() : Promise.reject(new Error(String(x.status))))
       .then(j => setR(j && typeof j === 'object' && j.tiles ? j as HomeResults : 'failed')).catch(() => setR('failed'))
@@ -30,7 +37,13 @@ export default function HomeResultsPanel() {
     <section className="mb-6" aria-labelledby="h-results" data-testid="home-results">
       <h2 id="h-results" className="font-semibold mb-2">Last {r.window_days} days</h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {tile('New leads', t.leads, '/app/leads?latest=1', 'leads')}
+        <Link href="/app/leads?latest=1" className="card p-4 block hover:border-black/30" data-testid="tile-ready">
+          {/* the Leads page's own verdict: every hold clear (lib/outreach/home-ready.ts); a read that fails says so, never a 0 */}
+          <div className="text-2xl font-semibold tabular-nums">{ready === null ? <><span aria-hidden="true">...</span><span className="sr-only">checking</span></> : ready === 'failed' ? <><span aria-hidden="true">-</span><span className="sr-only">could not be checked</span></> : ready.ready}</div>
+          <div className="text-xs text-[var(--ink-2)]">Ready leads</div>
+          {ready === 'failed' && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-unread">Could not check. Refresh to retry.</div>}
+          {ready && ready !== 'failed' && ready.scans_in_window > ready.scans_checked && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">In your {ready.scans_checked} newest scans</div>}
+        </Link>
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
         {tile('Replied', t.replied, '/app/inbox?status=all', 'replied')}
         {tile('Interested', t.interested, '/app/inbox?status=all&class=positive', 'interested')}
@@ -38,7 +51,7 @@ export default function HomeResultsPanel() {
       {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest leads</h3>
+          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest leads <span className="font-normal text-[var(--ink-3)]" data-testid="new-leads">({t.leads} new)</span></h3>
             {r.latest_leads.length === 0 ? <p className="text-sm text-[var(--ink-3)]">No new leads in this period.</p>
               : <ul className="space-y-1 text-sm" data-testid="latest-leads">{r.latest_leads.map(l => <li key={l.id} className="min-w-0"><Link className="underline break-words" href={`/app/leads?job_id=${l.job_id}`}>{l.company}</Link> <span className="text-[var(--ink-3)]">{day(l.created_at)}</span></li>)}</ul>}
           </div>

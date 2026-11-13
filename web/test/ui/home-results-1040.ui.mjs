@@ -45,7 +45,8 @@ const ZERO = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, ti
 const OFF = { ...FULL, reply_reading: false, tiles: { ...FULL.tiles, replied: null, interested: null }, by_signal: FULL.by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })) }
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
-async function open(width, results) {
+const READY = { window_days: 30, ready: 3, scans_checked: 2, scans_in_window: 2 }
+async function open(width, results, ready = READY) {
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = [], inboxUrls = []
@@ -56,6 +57,7 @@ async function open(width, results) {
     if (req.method() !== 'GET') writes.push(p)
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (p === '/api/home/results') return results === 'fail' ? json({ error: 'unavailable' }, 503) : json(results)
+    if (p === '/api/home/ready') return ready === 'fail' ? json({ error: 'unavailable' }, 503) : json(ready)
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     // a workspace that has its business details (a brand-new one sees the onboarding wizard, not Home's results)
     if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals: ['opened a new location'], exclude: [] }, new_play_offer: null })
@@ -71,10 +73,11 @@ try {
     const { ctx, page, writes, inboxUrls } = await open(width, FULL)
     const sec = page.getByTestId('home-results'); await sec.waitFor({ timeout: 20000 })
     const tile = async id => (await page.getByTestId(`tile-${id}`).textContent()).replace(/\s+/g, ' ').trim()
-    assert.equal(await tile('leads'), '4New leads'); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
+    await page.waitForFunction(() => !/\.\.\./.test(document.querySelector('[data-testid=tile-ready]')?.textContent ?? '...'), null, { timeout: 20000 })
+    assert.equal(await tile('ready'), '3Ready leads', 'the Leads page\'s ready count (acceptance 1)'); assert.match(await page.getByTestId('new-leads').textContent(), /\(4 new\)/); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
     assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), '/app/inbox?status=all')
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
-    assert.equal(await page.getByTestId('tile-leads').getAttribute('href'), '/app/leads?latest=1')
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads?latest=1')
     assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), '/app/inbox?status=all&class=positive')
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
@@ -114,6 +117,15 @@ try {
     assert.match(await page.getByTestId('by-signal').textContent(), /unknown/)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390: no horizontal scroll')
     out.push('reply reading off: Replied and Interested unknown, with the way to turn it on'); await ctx.close() }
+  { const { ctx, page } = await open(390, FULL, { window_days: 30, ready: 7, scans_checked: 10, scans_in_window: 12 })
+    await page.getByTestId('ready-partial').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('tile-ready').textContent(), /7Ready leadsIn your 10 newest scans/)
+    out.push('more scans than checked: says how many'); await ctx.close() }
+  { const { ctx, page } = await open(1280, FULL, 'fail')
+    await page.getByTestId('ready-unread').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('tile-ready').textContent(), /could not be checked.*Could not check/)
+    assert.equal(await page.getByTestId('tile-contacted').textContent(), '4Contacted', 'the other tiles still show')
+    out.push('ready check failed: says so, never 0'); await ctx.close() }
   { const { ctx, page } = await open(1280, 'fail')
     await page.getByTestId('results-unread').waitFor({ timeout: 20000 })
     assert.equal(await page.getByTestId('home-results').count(), 0, 'a failed read shows no tiles (never zeros)')
