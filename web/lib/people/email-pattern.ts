@@ -58,7 +58,7 @@ export function personalLocals(html: string, site: string): string[] {
 
 // The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
 // the site printed it, never rebuilt onto another domain.
-// at: where the address is printed on the page (its first 3 places, with the printed length), recorded in this ONE pass so nothing
+// at: where the address is printed on the page (its first 6 places, with the printed length), recorded in this ONE pass so nothing
 // ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
 export function personalAddresses(html: string, site: string): { local: string; address: string; at: { i: number; len: number }[] }[] {
   const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[] }>()
@@ -69,7 +69,7 @@ export function personalAddresses(html: string, site: string): { local: string; 
     if (address.length > 254) continue
     const had = out.get(address)
     if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }] })
-    else if (had.at.length < 3) had.at.push({ i: m.index, len: m[0].length })
+    else if (had.at.length < 6) had.at.push({ i: m.index, len: m[0].length })
   }
   return [...out.values()]
 }
@@ -122,7 +122,7 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 // #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares that name, and the crawl keeps only
 // buyer-role people, so the real owner may not be among `people`. Such an address is attributed only on the page's OWN pairing
 // (`ctx`: every place the crawl saw the address printed, on any page). Fail closed:
-//   - some place must hold this person's first and last name (one middle name allowed) in the SAME attribute value or text node
+//   - some place must hold this person's first and last name (a middle initial allowed) in the SAME attribute value or text node
 //     as the address (a team card's data attribute "Maya Thornton maya@...", or the text "Maya Thornton - maya@..."). Text that is
 //     merely nearby (a neighbouring heading or card) is never a pairing;
 //   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
@@ -131,23 +131,24 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 export interface AddressContext { tight: string; wide: string; attr: boolean }
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
-// The words left once every "first [middle] last" of this person is taken out, and whether one was found.
-function withoutOwnName(words: string[], n: Name): { rest: string[]; found: boolean } {
-  const rest: string[] = []; let found = false
-  for (let i = 0; i < words.length; i++) {
-    if (words[i] === n.first && words[i + 1] === n.last) { found = true; i += 1; continue }
-    if (words[i] === n.first && words[i + 2] === n.last) { found = true; i += 2; continue }
-    rest.push(words[i])
-  }
-  return { rest, found }
+// This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
+// "Maya Ortiz Thornton Realty" must not read as Maya [Ortiz] Thornton), no punctuation between them ("Maya, Thornton Realty" is a
+// first-name-only staffer at a firm named after the owner), and not followed by a company word ("Maya Thornton Realty").
+const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|&|and'
+function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
+  const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  const own = new RegExp(`(?<![A-Za-z])${n.first}(?:[ \\t]+[A-Za-z]\\.?)?[ \\t]+${n.last}(?:['\u2019]s)?(?![A-Za-z])(?![ \\t]+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  let found = false
+  const rest = raw.replace(own, () => { found = true; return ' | ' })
+  return { rest: nameWords(rest), found }
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
   if (!ctx?.length) return false
   let paired = false
   for (const c of ctx) {
-    const tight = withoutOwnName(nameWords(c.tight), n)
+    const tight = withoutOwnName(c.tight, n)
     if (tight.rest.includes(local)) return false                                         // someone else sharing the name, in the same attribute / text
-    if (!c.attr && withoutOwnName(nameWords(c.wide), n).rest.includes(local)) return false // or right around a text-node place
+    if (!c.attr && withoutOwnName(c.wide, n).rest.includes(local)) return false // or right around a text-node place
     if (tight.found) paired = true
   }
   return paired

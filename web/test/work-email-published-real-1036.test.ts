@@ -138,8 +138,8 @@ test('#1036 guard: any other place the address is printed can refuse it, on the 
   assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(pair, '<div data-s="Maya Ortiz maya@x.com"></div>')), null, 'second page')
   assert.equal(publishedFor(who('maya', 'thornton'), seenFrom('<p>Maya Thornton, Broker - maya@x.com</p>', '<div data-s="Maya Ortiz maya@x.com"></div>')), null)
 })
-test('#1036 guard keeps the plain legitimate pairings: middle name, mixed-case address, possessive, another Maya in a neighbouring card', () => {
-  for (const h of ['<div data-s="Maya Grace Thornton maya@x.com"></div>', '<div data-s="Maya Thornton Maya@X.com"></div>', "<p>Maya Thornton's email: maya@x.com</p>", '<div data-s="Maya Thornton maya@x.com"></div><div data-s="Maya Ortiz"></div>'])
+test('#1036 guard keeps the plain legitimate pairings: middle initial, mixed-case address, possessive, another Maya in a neighbouring card', () => {
+  for (const h of ['<div data-s="Maya G. Thornton maya@x.com"></div>', '<div data-s="Maya Thornton Maya@X.com"></div>', "<p>Maya Thornton's email: maya@x.com</p>", '<div data-s="Maya Thornton maya@x.com"></div><div data-s="Maya Ortiz"></div>'])
     assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(h))?.address, 'maya@x.com', h)
   // a full-name address was never subject to this rule
   assert.equal(publishedFor(who('maya', 'thornton'), seenFrom('<h3>Maya Ortiz</h3><a href="mailto:maya.thornton@x.com">mail</a>'))?.address, 'maya.thornton@x.com')
@@ -153,4 +153,19 @@ test('#1036 guard through the real crawl: the buyer\'s card pairs the address on
   assert.notEqual(both.r.status, 'published', JSON.stringify(both.r))
   const swapped = await run({}, `${c3('Maya Thornton', '', OWNER)}${c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT)}`, '<div data-search-string="Maya Thornton maya@bluebonnetrealty.com"></div>')
   assert.notEqual(swapped.r.status, 'published', JSON.stringify(swapped.r))
+})
+
+// Second review pass: a first name next to a company named after the owner's surname is not the owner's full name.
+test('#1036 guard: "Maya, Thornton Realty" / "Maya Ortiz, Thornton Realty" / "Maya | Thornton Realty" never read as Maya Thornton', () => {
+  const buyer = who('maya', 'thornton')
+  for (const h of ['<footer><p>Questions? Ask Maya, Thornton Realty office: maya@x.com</p></footer>', '<div class="c"><p>Maya Ortiz, Thornton Realty: maya@x.com</p></div>', '<p>Maya | Thornton Realty | maya@x.com</p>',
+    '<p>Maya Ortiz Thornton Realty thornton@x.com</p>', '<p>Maya Ortiz Thornton Realty maya@x.com</p>', '<p>Ask Maya Thornton Realty staff: maya@x.com</p>', '<div data-s="Maya Grace Thornton maya@x.com"></div>'])
+    assert.equal(publishedFor(buyer, seenFrom(h)), null, h)
+})
+test('#1036 guard: a header that prints the address 3 times on every page cannot crowd out the other person\'s card on the last page', () => {
+  const header = '<a href="mailto:maya@x.com">a</a><a href="mailto:maya@x.com">b</a><a href="mailto:maya@x.com">c</a>'
+  const pair = '<div data-s="Maya Thornton maya@x.com"></div>'
+  const pagesHtml = [`${header}${pair}`, header, header, header, header, `${header}<div data-s="Maya Ortiz maya@x.com"></div>`]
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(...pagesHtml)), null)
+  assert.equal(publishedFor(who('maya', 'thornton'), seenFrom(`${header}${pair}`, header, header, header, header, header))?.address, 'maya@x.com', 'control: without the other card it is hers')
 })

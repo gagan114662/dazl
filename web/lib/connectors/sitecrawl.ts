@@ -622,12 +622,12 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-// #1036: where a printed address sits on the page, for single-name addresses (email-pattern.ts singleNamePairing). Up to 3 places per
+// #1036: where a printed address sits on the page, for single-name addresses (email-pattern.ts singleNamePairing). Up to 6 places per
 // page. tight: the attribute value holding the address, or its own text node; wide: the text around it (markup turned into spaces,
 // attribute values kept). `at`: the places personalAddresses recorded in its single pass; the page is never searched again here.
 export function addressContexts(html: string, at: { i: number; len: number }[]): AddressContext[] {
   const out: AddressContext[] = []
-  for (const { i, len } of at.slice(0, 3)) {
+  for (const { i, len } of at.slice(0, 6)) {
     const end = i + len
     const back = html.slice(Math.max(0, i - 300), i), fwd = html.slice(end, end + 300)
     let tight = ''
@@ -697,10 +697,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           locals.add(a.local)
           const had = seen.get(a.address)
           if (!had && seen.size >= 200) continue // full: no context is built for an address that will not be kept
-          // Every page's places are kept (up to 12): a later page printing the address beside someone else must be able to refuse it.
-          if (had && (had.ctx?.length ?? 0) >= 12) continue
+          // Every page's places are kept (6 per page x every page a crawl reads): a later page printing the address beside someone
+          // else must be able to refuse it.
+          if (had && (had.ctx?.length ?? 0) >= 36) continue
           const ctx = addressContexts(html, a.at)
-          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 12)
+          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 36)
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
