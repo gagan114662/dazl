@@ -9,6 +9,10 @@
 // Which leads: the run's leads this play had never surfaced before (leads.watch_new, lib/watch.ts), visible the way
 // the Leads list shows them (not quarantined, not the low-fit tier: lib/scan/store-db.ts), best first; at most
 // MAIL_LIST_MAX are listed, with the count of the rest and a link to the run in Leads.
+// #883, once per company across plays: before the list is read, the run claims each of those leads in the tenant's
+// alert record (lib/watch.ts claimWatchAlertsStep, the step the scan runner already took when the run's results became
+// final; repeated here so a run whose worker died before that step is still claimed). A company another play's run
+// already alerted is not new, so it is not listed and not counted; a run left with nothing new mails nothing.
 // To whom: the account's own verified address (the founder of the workspace; never an unverified address).
 // Once only, across ticks, instances and crashes: the run is claimed in the same transaction that reads it, by a
 // reserved row in the play's own memory (watch_seen 'mail:<job id>'; a company key is a domain or [a-z0-9] name and
@@ -18,7 +22,8 @@
 // Delivery is lib/system-mail.ts: SMTP when the host has it configured, otherwise the message stays in the host's
 // outbox (and tests read it there). Nothing is sent to any lead or prospect; this mail goes only to the account.
 import type { Db, Tx, TxBody } from './db/client.ts'
-import type { Fence } from './watch.ts'
+import { claimWatchAlertsStep, type Fence } from './watch.ts'
+import { VISIBLE_LEAD } from './play-alerts.ts'
 import { sendSystemMail } from './system-mail.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { playName, type PlayIcp } from './play-card.ts'
@@ -33,8 +38,7 @@ const nowS = () => Math.floor(Date.now() / 1000)
 const noFence: Fence = function* () { /* not fenced */ }
 export const mailClaimKey = (jobId: string) => `mail:${jobId}`
 
-// The same visibility as the Leads list (lib/scan/store-db.ts): not quarantined, not the low-fit tier.
-export const VISIBLE_LEAD = '(l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL'
+export { VISIBLE_LEAD }
 const DUE_SQL = `SELECT j.id AS job_id, j.user_id, w.id AS watch_id, j.finished_at FROM scan_jobs j JOIN watches w ON w.id = j.watch_id AND w.user_id = j.user_id
   WHERE j.status = 'done' AND j.created_at >= w.created_at AND j.finished_at >= ?
     AND (j.enrich_finished_at IS NOT NULL OR COALESCE(j.enrich_started_at, j.finished_at, 0) <= ?)
@@ -77,13 +81,14 @@ export function composePlayRunMail(o: { userId: string; to: string; jobId: strin
   return { userId: o.userId, to: o.to, subject: `${n} new lead${s} from your play "${name}"`, text }
 }
 
-function* claimRun(t: Tx, d: Due, fence: Fence, base: string): TxBody<PlayRunMail | null> {
+function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBody<PlayRunMail | null> {
   yield* fence(t)
   const claim = yield* t.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING', [d.watch_id, mailClaimKey(d.job_id)])
   if (claim.changes !== 1) return null // another tick or instance has it
   // read under the claim: a play paused or deleted since the list was read mails nothing (the claim stays: once only)
   const w = yield* t.get<{ query: string; icp: string | null; active: number }>('SELECT query, icp, active FROM watches WHERE id = ? AND user_id = ?', [d.watch_id, d.user_id])
   if (!w || Number(w.active) !== 1) return null
+  yield* claimWatchAlertsStep(t, d.watch_id, d.job_id, now) // #883: a company another play already alerted leaves the list
   const total = Number((yield* t.get<{ n: number }>(NEW_COUNT_SQL, [d.job_id]))?.n ?? 0)
   if (!(total > 0)) return null
   const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
@@ -102,7 +107,7 @@ export async function sendPlayRunMails(db: Db, o: { now?: number; fence?: Fence;
   let sent = 0
   for (const d of due) {
     let mail: PlayRunMail | null = null
-    try { mail = await db.tx(t => claimRun(t, d, fence, base)) } catch (e) {
+    try { mail = await db.tx(t => claimRun(t, d, fence, base, now)) } catch (e) {
       if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
       captureError(e, { source: 'worker', where: 'play-mail:claim', tenantId: d.user_id }); continue
     }

@@ -174,7 +174,7 @@ export async function collectMonitorResults(db: Db, o: { fence?: Fence; now?: nu
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments a WHERE a.lead_id = l.id AND a.tenant_id = ? AND a.connector = 'scan:actionable' AND a.kind = 'actionability' AND a.value LIKE 'Actionable:%') THEN 1 ELSE 0 END AS reachable
          FROM leads l WHERE l.scan_job_id = ? ORDER BY l.score DESC, l.id`, [r.user_id, r.job_id]))
         .map(l => ({ ...l, confidence: l.confidence == null ? null : Number(l.confidence), quarantined_at: l.quarantined_at == null ? null : Number(l.quarantined_at), held: Number(l.held) === 1, reachable: Number(l.reachable) === 1 }))
-      const { alerts } = yield* foldRunEvents(t, { userId: r.user_id, monitorId: r.monitor_id, runId: r.id, leads, policy: r.alert_policy, windowDays: monitorWindowDays(r), now })
+      const { alerts } = yield* foldRunEvents(t, { userId: r.user_id, monitorId: r.monitor_id, runId: r.id, jobId: r.job_id, leads, policy: r.alert_policy, windowDays: monitorWindowDays(r), now })
       const n = alerts.length
       yield* t.run('UPDATE monitor_runs SET new_count = ? WHERE id = ?', [n, r.id])
       // Monitor jobs reuse the query pipeline; stamp the producing channel now that the run is recorded.

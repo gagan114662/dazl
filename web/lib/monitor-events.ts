@@ -10,6 +10,11 @@
 // news, future dates), blocked / needs-review / quarantined / held research items, and an event already seen by ANY of
 // the tenant's plays (dedupe across plays). Each event keeps first_seen / occurred / last_checked / actionable / reachable
 // timestamps; each monitor keeps a cursor per source host; each alert keeps its detection latency.
+// #883, across play kinds: the tenant's alert record (lib/play-alerts.ts) also holds what its weekly / daily plays have
+// alerted. A new event for a company such a play already alerted is suppressed as already seen when that play's lead
+// carried the same event (same day and kind) or no date; a different dated event alerts once as new_signal (the
+// company is known to the tenant, so never new_company). Every new_company / new_signal alert claims the company there,
+// so a weekly / daily play does not mail it again.
 // No network and no paid calls: this only reads rows the scan pipeline already wrote and gated, inside the caller's
 // transaction. The scans themselves stay on the scheduler's quota and the runner's spend reservation (lib/monitors.ts).
 // Db layer (SQLite + Postgres); migrateMonitorEvents is the SQLite setup, pg/0046_monitor_events.sql the Postgres one.
@@ -17,6 +22,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { windowStatus } from './scan/window.ts'
+import { alertHolderStep, claimAlertStep, migratePlayAlerts, sameEventAs, type AlertKeys } from './play-alerts.ts'
 
 export function migrateMonitorEvents(db: Database.Database): void {
   db.exec(`
@@ -53,6 +59,7 @@ export function migrateMonitorEvents(db: Database.Database): void {
       PRIMARY KEY (monitor_id, source)
     );
   `)
+  migratePlayAlerts(db)   // #883: the fold reads and writes the tenant's alert record
 }
 
 export type AlertKind = 'new_company' | 'new_signal' | 'now_reachable'
@@ -76,6 +83,12 @@ const slug = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\
 const hostOf = (u: string) => u.toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0]
 export const entityKeyOf = (l: Pick<RunLead, 'company' | 'company_domain'>): string =>
   l.company_domain && hostOf(l.company_domain).includes('.') ? `d:${hostOf(l.company_domain)}` : `n:${slug(l.company)}`
+// #883: the keys a lead is known by in the tenant's alert record (lib/play-alerts.ts): its confirmed domain, when it
+// has one, and its normalized name. One run may store a company without its website and the next with it.
+export const alertKeysOf = (l: Pick<RunLead, 'company' | 'company_domain'>): AlertKeys => {
+  const e = entityKeyOf(l), name = slug(l.company)
+  return { domainKey: e.startsWith('d:') ? e : null, nameKey: name ? `n:${name}` : null }
+}
 // One event = the company, the day it happened and what kind of thing happened. The same news re-found next week, or
 // reported by a second outlet, is the same event; a later dated event for the same company is a new one.
 export const eventKeyOf = (l: RunLead): string => `${entityKeyOf(l)}|${l.event_date}|${l.signal_kind ?? 'signal'}`
@@ -120,7 +133,7 @@ export interface FoldResult { alerts: { kind: AlertKind; company: string; event_
 
 // Fold one finished run into the tenant's event state, in the caller's transaction: records first-seen / occurred /
 // last-checked / actionable / reachable, writes the alerts the policy allows, advances this monitor's source cursors.
-export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; runId: string; leads: RunLead[]; policy: AlertPolicy; windowDays: number; now: number }): TxBody<FoldResult> {
+export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; runId: string; jobId?: string; leads: RunLead[]; policy: AlertPolicy; windowDays: number; now: number }): TxBody<FoldResult> {
   const out: FoldResult = { alerts: [], suppressed: {} }
   const bump = (s: Suppress) => { out.suppressed[s] = (out.suppressed[s] ?? 0) + 1 }
   // the cursors as they stood before this run (this run's own writes below never shrink its backfill)
@@ -136,8 +149,14 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
     const prior = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, ev])
     const known = !!(yield* t.get('SELECT 1 AS x FROM monitor_events WHERE user_id = ? AND entity_key = ? AND event_key <> ? AND actionable_at IS NOT NULL LIMIT 1', [a.userId, ek, ev]))
     const p: PriorEvent | null = prior ? { actionable_at: prior.actionable_at == null ? null : Number(prior.actionable_at), reachable_at: prior.reachable_at == null ? null : Number(prior.reachable_at) } : null
-    const d = decide(l, p, known, a.policy, wd, a.now)
-    const act = 'kind' in d && d.kind !== 'now_reachable', reach = 'kind' in d && l.reachable
+    // #883: the company as a weekly / daily play of this tenant already alerted it (null: no such play did)
+    const keys = alertKeysOf(l), job = a.jobId ?? a.runId
+    const held = yield* alertHolderStep(t, a.userId, keys, job)
+    const byPlay = held && held.play_kind === 'watch' ? held : null
+    let d: Decision = decide(l, p, known || !!byPlay, a.policy, wd, a.now)
+    const fresh = 'kind' in d && d.kind !== 'now_reachable'   // a first actionable sighting of this event
+    if (fresh && byPlay && sameEventAs(byPlay, l)) d = { suppress: 'already_seen' }   // the play's mail was this event
+    const act = fresh, reach = fresh ? l.reachable : 'kind' in d && l.reachable
     yield* t.run(`INSERT INTO monitor_events (user_id, event_key, entity_key, monitor_id, occurred_at, first_seen_at, last_checked_at, actionable_at, reachable_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (user_id, event_key) DO UPDATE SET last_checked_at = excluded.last_checked_at,
         actionable_at = COALESCE(monitor_events.actionable_at, excluded.actionable_at), reachable_at = COALESCE(monitor_events.reachable_at, excluded.reachable_at)`,
@@ -149,6 +168,8 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
       yield* t.run('INSERT INTO monitor_alerts (id, user_id, monitor_id, run_id, event_key, kind, company, latency_s, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [randomBytes(12).toString('hex'), a.userId, a.monitorId, a.runId, ev, d.kind, l.company.slice(0, 150), latency, a.now])
       out.alerts.push({ kind: d.kind, company: l.company, event_key: ev, latency_s: latency })
+      // the company is alerted: no weekly / daily play mails it as new after this (the first holder keeps the row)
+      if (d.kind !== 'now_reachable') yield* claimAlertStep(t, { tenantId: a.userId, keys, playKind: 'monitor', playId: a.monitorId, jobId: job, eventDate: l.event_date, signalKind: l.signal_kind, now: a.now })
     }
     yield* t.run(`INSERT INTO monitor_cursors (monitor_id, source, last_event_at, last_checked_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (monitor_id, source) DO UPDATE SET last_checked_at = excluded.last_checked_at,
