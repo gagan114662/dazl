@@ -334,13 +334,27 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
 // addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
-// Writes nothing when the flag is off or the lead is not shown to be in the US.
+// #1036 (decision 2026-11-12: "checked" = Apollo verified OR an address published on the company's confirmed site; pattern
+// guessing stays off): the PUBLISHED tier is recorded whatever the flag says, anywhere (outside the US dazl uses published
+// addresses only); only pattern GUESSES need EMAIL_GUESS_ENABLED and US evidence. Before this, the flag being off (prod) also
+// dropped every printed address, so Find work email's free tier could never find one.
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
 export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
-  if (!emailGuessEnabled(ctx.env ?? process.env)) return null
   const us = usEvidence(ctx.homeText, ctx.where)
+  const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
+  const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
+  const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  if (!emailGuessEnabled(ctx.env ?? process.env)) {
+    if (!pubAll.length) return null
+    migrateEmailGuess(db)
+    const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
+    let n = 0
+    for (const x of pubAll) n += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.us ? us.basis : null, x.pub.url.slice(0, 500)).changes
+    const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
+    return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
+  }
   if (!us.us) {
     // This crawl no longer shows the company in the US: guesses recorded on earlier US evidence lose it, so none of them can be
     // sent to the mailbox check (verification only selects rows with a country_basis). Checked rows keep their history.

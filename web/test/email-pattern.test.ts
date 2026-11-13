@@ -64,9 +64,13 @@ test('flag on: pattern and unverified candidates go to their own tables; lead_en
   assert.ok(enr.every(e => !e.value.includes('cara.diaz') && !e.value.includes('dana.lee@') && !e.value.includes('ben.ortiz@')), JSON.stringify(enr))
 })
 
-test('flag off (default): no tables, no candidates, crawl output unchanged', async () => {
+test('flag off (default, prod): no pattern and no guesses, but addresses the people PRINTED on the site are recorded as published (#1036 decision 2026-11-12); crawl output unchanged', async () => {
   const db = await crawlFixture({})
-  assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name IN ('email_patterns','email_candidates')").get() as { n: number }).n, 0)
+  const n = (sql: string) => { try { return (db.prepare(sql).get() as { n: number }).n } catch { return 0 } }
+  assert.equal(n('SELECT count(*) n FROM email_patterns'), 0, 'no pattern without the flag')
+  assert.equal(n("SELECT count(*) n FROM email_candidates WHERE tier = 'guessed'"), 0, 'no guesses without the flag (Cara Diaz printed nothing: no address for her)')
+  assert.deepEqual(db.prepare("SELECT person, address, source_url FROM email_candidates WHERE tier = 'published' ORDER BY address").all(),
+    [{ person: 'Ben Ortiz, CFO', address: 'ben.ortiz@acmelogistics.com', source_url: 'https://acmelogistics.com/team' }, { person: 'Dana Lee, CEO', address: 'dana.lee@acmelogistics.com', source_url: 'https://acmelogistics.com/team' }])
   const enr = db.prepare("SELECT kind, value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan') ORDER BY kind, value").all()
   assert.deepEqual(enr, [{ kind: 'email', value: 'hello@acmelogistics.com' }, { kind: 'person', value: 'Ben Ortiz, CFO' }, { kind: 'person', value: 'Cara Diaz, COO' }, { kind: 'person', value: 'Dana Lee, CEO' }])
 })
