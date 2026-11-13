@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {createHash} from 'node:crypto'
 import {preparePrompt,parseQualification,qualifyLead} from '../lib/scan/lead-qualify.ts'
+import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import {anthropicProvider} from '../lib/llm/provider.ts'
 const f=JSON.parse(readFileSync(new URL('./fixtures/qualification-semantic/nettle-real-response.json',import.meta.url),'utf8'))
 function blocks(prompt:string){
@@ -37,7 +38,8 @@ test('both actual responses replay unchanged: bad semantic NO remains unverified
   assert.equal(q.buying_evidence.verdict,'none_seen');assert.equal(q.evidence_scope.any_truncated,false)
  }
 })
-test('real provider serializer captures precisely the approved prompt in one request with no tools or extra instructions',async()=>{
+// #1154: a direct live-provider call outside any scan or account context is refused (no_spend_context): this check uses the test escape hatch
+test('real provider serializer captures precisely the approved prompt in one request with no tools or extra instructions',()=>runWithoutAccountSpend('test',async()=>{
  const model=anthropicProvider.configuredModel!(),prep=preparePrompt(f.input,f.limits);let calls=0
  const fetchImpl=async(url:unknown,init?:RequestInit)=>{
   calls++;assert.equal(url,'https://api.anthropic.com/v1/messages');assert.equal(init?.method,'POST')
@@ -47,4 +49,4 @@ test('real provider serializer captures precisely the approved prompt in one req
  }
  const result=await qualifyLead(anthropicProvider,'synthetic-not-a-real-key',f.input,{vendor:'anthropic',limits:f.limits,approval:{approved_by_user:true,vendor:'anthropic',model,max_usd_estimate:1,prompt_sha256:prep.prompt_sha256,limits:f.limits},fetchImpl:fetchImpl as typeof fetch})
  assert.equal(calls,1);assert.equal(result.status,'done');if(result.status==='done'){assert.equal(result.qualification.company_fit.verdict,'no');assert.equal(result.qualification.use_case.verdict,'unknown')}
-})
+}))

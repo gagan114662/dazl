@@ -1,5 +1,7 @@
 # dazl: notes for Claude Code
 
+**Read `docs/NEVER-AGAIN.md` first, every session:** the mistakes we never repeat, their rules and the gates that enforce them.
+
 Read `docs/PROCESS.md`, `docs/STATUS.md` and `docs/DECISIONS.md` first: roles, the current queue and the product
 decisions. Instinct reviews every change and is the only one who merges and deploys.
 

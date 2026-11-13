@@ -44,6 +44,8 @@ for i in \$(seq 1 40); do (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null || brea
 RS
 chmod +x "$T/restart.sh"
 printf '#!/usr/bin/env bash\npkill -u %s || true\n' "$U" > "$T/stop.sh"; chmod +x "$T/stop.sh" # like systemctl stop (#908: before the recovery point)
+# a real build is the point of this test, on a throwaway machine only (deploy.sh refuses it anywhere else, NEVER-AGAIN #1)
+export DAZL_ALLOW_HOST_BUILD=throwaway-machine
 export STAGING_ROOT="$T/root" STAGING_ENV_FILE="$T/etc/env" STAGING_PORT=$PORT STAGING_USER=$U STAGING_REPO_URL="file://$T/origin.git" STAGING_RESTART="$T/restart.sh" STAGING_STOP="$T/stop.sh" PROD_DB_PATH="$T/prod/app.db"
 mkdir -p "$T/root"; chown "$U" "$T/root"
 # installed as docs/STAGING.md says: root-owned scripts outside the service account's home, a root-only recovery root

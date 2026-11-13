@@ -774,7 +774,7 @@ test('#533 AC4 dedupe: a careers link to an ATS posting already stored from the 
 })
 
 // #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board, with no website domain to find the board.
-// The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the verified quote must name the role.
+// The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the board record's own title must be the requested role (the quote does not decide).
 function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | null; proof?: string | null }) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const query = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'

@@ -20,7 +20,7 @@ import { tfFetch, tfSearch, resetTinyfishState } from '../lib/search/tinyfish.ts
 import { apolloOrgEnrich, apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { pdlPeopleSearch } from '../lib/enrich/pdl.ts'
 import { renderViaService } from '../lib/scan/fetch-page.ts'
-import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
+import { outsideScanSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
 import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
 
@@ -164,7 +164,11 @@ test('inventory: each gated module reserves its kind before its request, and daz
   assert.deepEqual([...new Set(Object.values(PAID).flatMap(p => p.kind))].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
   // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
-  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  // XHawk on #1154: CSV jobs of a named account take the same PooledGuard (its unsettled-accounting marker stops them too)
+  assert.match(runner, /const pooledByRunner = ownerLimits\(job\.user_id\) !== null/)
+  assert.match(runner, /const owner = ownerLimits\(job\.user_id\)\n/)
   assert.equal([...runner.matchAll(/\(deps\.autopilot \?\? runAutopilot\)\(/g)].length, 1)
   assert.match(runner, /outsideScanSpend\(\(\) => \(deps\.autopilot \?\? runAutopilot\)\(/)
   assert.match(SOURCES.find(s => s.rel === 'lib/enrich/index.ts')!.text, /runWithJobSpend\(db, tenantId, lead\.scan_job_id, \(\) => enrichLeadContacts\(/, 'the owner retry draws on its scan')
@@ -298,7 +302,7 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
   }
 })
 
-test('model completions: an unlisted configured model is refused before any request; outside a scan the transport is unchanged', async () => {
+test('model completions: an unlisted configured model is refused before any request; #846 outside a scan and an account the call is refused (no_spend_context) unless the explicit escape hatch is open', async () => {
   const s = scan()
   const sent: string[] = []
   const f = (async (u: string | URL) => { sent.push(String(u)); return ok({ id: 'm', model: 'x', content: [] }) }) as unknown as typeof fetch
@@ -308,7 +312,11 @@ test('model completions: an unlisted configured model is refused before any requ
     await assert.rejects(runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
     assert.deepEqual(sent, [])
     assert.deepEqual((await scanSpendCalls(s.db, 'j1', A)).map(c => [c.status, c.reason]), [['refused', 'model_unpriced']])
-    await anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10) // no scan context: no gate here (other paths keep their own guards)
+    process.env.DAZL_ANTHROPIC_MODEL = 'claude-sonnet-4-5'
+    // #846 review R2: no scan and no account context: refused before any request (fails closed, never uncapped)
+    await assert.rejects(anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10), (e: unknown) => e instanceof SpendRefused && e.reason === 'no_spend_context')
+    assert.equal(sent.length, 0)
+    await runWithoutAccountSpend('test', () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)) // the named escape hatch only
     assert.equal(sent.length, 1)
   } finally { if (prev === undefined) delete process.env.DAZL_ANTHROPIC_MODEL; else process.env.DAZL_ANTHROPIC_MODEL = prev }
 })
