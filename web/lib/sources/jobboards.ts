@@ -103,7 +103,7 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
   const abbr = STATES[region] ? region : Object.keys(STATES).find(k => STATES[k].toLowerCase() === region.toLowerCase())
   if (!abbr) return null
   const city = cityIn.trim(), key = norm(city)
-  if (key.length < 3 || STATES[abbr].toLowerCase() === key) return null
+  if (key.length < 3 || STATES[abbr].toLowerCase() === key || /\bremote\b/i.test(city)) return null
   const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
   // another state is read from the location with the city itself removed ("Kansas City, MO" names no Kansas); a non-US country ("San Jose, Costa Rica")
   // or a remote posting ("Remote - Austin, TX": not located in the city, the same rule as London/NYC) is never this city

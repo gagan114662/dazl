@@ -103,6 +103,7 @@ test('#1095 review at 54953a0a: a capitalised phrase before ", <State>" is not a
     const pl = placeIn(q); assert.equal(pl?.name, state, q)
     assert.equal(pl!.ok(`Somewhere, ${state}`), true, `${q} reads the state's postings`)
   }
+  assert.equal(placeIn('SDRs in Remote, CA'), null, 'Remote is never a city')
 })
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {

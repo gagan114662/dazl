@@ -23,13 +23,16 @@ import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
 // posting body says: a real posting's quotable sentences are company boilerplate, and a Sales Engineer posting can mention Account Executives.
-// A role noun right after the requested title (Manager, Lead, Director ...) makes it another role.
-const ROLE_TAIL = /^(?:\s*-\s*|\s+)(?:manager|lead|director|head|vp|assistant|associate|coordinator|trainer|recruiter|engineer)s?\b/i
+// The requested title must be the vacancy itself, not a mention: another role noun before it ("Sales Engineer for Account Executives",
+// "Team Lead, Account Executive") or after it ("Account Executive Manager", "Account Executive Operations Analyst") makes it another role.
+// A segment or level around it is fine ("SLED Senior Account Executive, Mid Market", "Enterprise Account Executive- TX").
+const OTHER_ROLE = /\b(?:managers?|leads?|directors?|head|vp|assistants?|coordinators?|trainers?|recruiters?|engineers?|analysts?|specialists?|enablement|operations|ops|support|team|interns?)\b/i
 export function titleIsRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
   const m = matchedHiringRole(title, roles); if (!m) return null
   const t = m.term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
   const hit = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
-  return hit && ROLE_TAIL.test(title.slice(hit.index + hit[0].length)) ? null : m
+  if (!hit) return null
+  return OTHER_ROLE.test(title.slice(0, hit.index)) || OTHER_ROLE.test(title.slice(hit.index + hit[0].length)) ? null : m
 }
 // one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
 export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }

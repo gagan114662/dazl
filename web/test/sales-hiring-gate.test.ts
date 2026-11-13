@@ -802,6 +802,10 @@ test('#1095 HELD: the own-posting path needs the board\'s date inside the clock,
     ['a differently titled posting whose body mentions the requested role (XHawk: the wrong vacancy)', { excerpt: 'We are hiring Account Executives to grow the team, and this Sales Engineer will support them' }, 'Sales Engineer'],
     ['another role', {}, 'Senior Software Engineer'],
     ['a different role that starts with the requested title', {}, 'Account Executive Manager'],
+    ['the role only mentioned in another role\'s title', {}, 'Sales Engineer for Account Executives'],
+    ['a director of the role\'s operations', {}, 'Director of Account Executive Operations'],
+    ['a team lead of the role', {}, 'Team Lead, Account Executive'],
+    ['an enablement role', {}, 'Account Executive Enablement'],
     ['no title read for this posting (the quote alone never proves the vacancy)', {}, null],
     ['posted outside the 30-day clock', { date: d(60).slice(0, 10) }, 'Account Executive'],
     ['no board date (proof kind missing)', { proof: null }, 'Account Executive'],
@@ -824,4 +828,11 @@ test('#1095 XHawk: a posting already stored as hiring evidence for the lead is n
     assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1, stored)
     db.close()
   }
+})
+
+test('#1095 review: the real NinjaOne / AlertMedia account-executive titles are the role; segment and level words around it do not change that', async () => {
+  const { titleIsRole } = await import('../lib/scan/sales-hiring-gate.ts'); const { requestedHiringRoles } = await import('../lib/scan/hiring-role-match.ts')
+  const roles = requestedHiringRoles('Austin B2B SaaS companies hiring their first account executive in the last 30 days', JSON.stringify({ signals: ['hiring their first account executive'] }))
+  for (const t of ['Account Executive, MSP', 'Account Executive, SMB', 'SLED Senior Account Executive, Mid Market', 'Account Executive', 'Account Executive, Mid-Market', 'Enterprise Account Executive- TX', 'Enterprise Account Executive, Federal']) assert.ok(titleIsRole(t, roles), t)
+  for (const t of ['Team Lead Account Executive - Italy & Spain', 'Technical Recruiter, Account Executive Team', 'Manager, Account Executive', 'Account Executive Support Specialist']) assert.equal(titleIsRole(t, roles), null, t)
 })
