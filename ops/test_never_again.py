@@ -166,31 +166,32 @@ class NoBuildInAnyDeployScript(unittest.TestCase):
 
 
 # NEVER-AGAIN #12 (docs/NEVER-AGAIN.md): nobody writes to the production database by hand.
-# On 2026-11-13 a verifier lane inserted and then deleted a spend row in the prod database with sqlite3 over ssh. Prod is
-# read and exercised through the product (UI and API) only. In the repo, this holds every script under ops/ and
-# web/scripts that opens a SQLite database WRITABLE to a short list, each with the reason it may: a new script that opens
-# a database for writing fails here until someone classifies it, and none may call the sqlite3 command line with a write
-# statement at all.
-DB_SCRIPT_DIRS = (('ops', ('*.sh', '*.py', '*.ts', '*.mts', '*.mjs', '*.js')), ('web/scripts', ('*.ts', '*.mts', '*.mjs', '*.js', '*.sh', '*.py')))
-SQLITE_CLI_WRITE = re.compile(r'\bsqlite3\b[^\n|]*\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|VACUUM|ATTACH)\b', re.I)
-# kind -> what the test also demands of the file
-#   copy:     it writes only a backup, restore or rehearsal COPY it creates; the live database is opened read-only
-#   new-file: it writes only a file it creates (refuses an existing one) or a temporary database
-#   staging:  it refuses to run unless DAZL_ENV is staging
-#   operator: an owner-run tool that changes the named database through the app's own functions (lib/), never a hand
-#             statement; running one on prod needs the owner's explicit order (docs/NEVER-AGAIN.md #12)
+# On 2026-11-13 a verifier lane inserted and then deleted a spend row in the prod database with sqlite3 over ssh. That was
+# a command typed over ssh: no file in this repo was involved, and NOTHING HERE WOULD HAVE STOPPED IT. What this does is
+# narrower: it keeps the repo from growing a script that does the same thing. Every script that uses a SQLite library is
+# on one of two lists a person reviewed (read-only, or writable with the reason), so a new one fails here until someone
+# classifies it; and no script may run the sqlite3 command line at all. SQLite only: Postgres writes are not scanned.
+DB_SCRIPT_DIRS = ('ops', 'web/scripts', '.github/scripts')
+DB_SCRIPT_EXT = {'.sh', '.bash', '.py', '.ts', '.mts', '.cts', '.tsx', '.mjs', '.cjs', '.js', ''}
+SQLITE_LIB = re.compile(r"""better-sqlite3|node:sqlite|bun:sqlite|^\s*import\s+sqlite3\b|^\s*from\s+sqlite3\b|\bimport\s+sqlite3\b""", re.M)
+# The writable list. The kinds are a reviewed allow-list, not a proof; the test checks only the marker named for each:
+#   copy:     writes a backup, restore or rehearsal copy; the file also opens a database read-only (mode=ro / readonly: true)
+#   new-file: writes a file it creates or a temporary database (it deletes, refuses or makes the path itself)
+#   staging:  refuses to run unless DAZL_ENV is staging (the file has the refusal; staging-send-scenarios is also run below)
+#   operator: an owner-run tool that changes the named database through the app's code in lib/; running one on prod needs
+#             the owner's explicit order (docs/NEVER-AGAIN.md #12)
 WRITABLE_DB_OPENS = {
     'ops/prod/deploy-prod.sh': ('copy', 'the pre-deploy backup: source opened mode=ro, the copy is integrity-checked'),
     'ops/staging/pull-prebuilt.sh': ('copy', 'the pre-deploy backup of the staging database'),
     'ops/backup_preflight.py': ('copy', 'backup and restore rehearsal copies'),
-    'ops/staging/recovery_point.py': ('copy', 'staging recovery point: a verified copy, restored over the staging database only'),
+    'ops/staging/recovery_point.py': ('copy', 'staging recovery point: deploy.sh gives it the staging database; restore replaces that file'),
     'ops/staging/fixture-988/scripts/staging-fixture-988.mts': ('staging', 'staging fixture'),
-    'web/scripts/backup/lib.ts': ('copy', 'backup and restore-check copies; the source is opened readonly'),
+    'web/scripts/backup/lib.ts': ('copy', 'backup and restore-check copies in a work directory; the source is opened readonly'),
     'web/scripts/backup/recovery-drill.mts': ('copy', 'the restored copy of a backup'),
     'web/scripts/pg-migrate/extract-schema.ts': ('new-file', 'a scratch database it deletes and recreates'),
     'web/scripts/pg-migrate/rehearse-full.ts': ('new-file', 'a synthetic rehearsal database'),
     'web/scripts/pg-migrate/rehearse.ts': ('new-file', 'a synthetic rehearsal database in /tmp'),
-    'web/scripts/migration-gate.mts': ('new-file', 'a temporary database for the migration gate'),
+    'web/scripts/migration-gate.mts': ('new-file', 'a database in a temporary directory it makes'),
     'web/scripts/offer-rollback-rehearsal.mts': ('new-file', 'a temporary rehearsal database'),
     'web/scripts/pg-cutover.mts': ('new-file', 'a rollback target, which must be a new file'),
     'web/scripts/staging-fixture-988.mts': ('staging', 'staging fixture'),
@@ -200,71 +201,116 @@ WRITABLE_DB_OPENS = {
     'web/scripts/rewrap-master-key.mts': ('operator', 'master key rotation'),
     'web/scripts/tenant-lifecycle.mts': ('operator', 'tenant export / delete through lib/ functions'),
 }
+# Scripts that use a SQLite library and open nothing writable: read-only opens, an in-memory database, or only a mention.
+READ_ONLY_DB_SCRIPTS = {
+    'ops/safe_launch.py', 'ops/staging/e2e-test.sh', 'ops/staging/fixture-988/fixture-988.sh',
+    'ops/staging/fixture-988/scripts/staging-fixture-988-checks.mts', 'web/scripts/backup/send-gate.mts',
+    'web/scripts/backup/send-safety.mts', 'web/scripts/scoreboard.mts', 'web/scripts/staging-fixture-988-checks.mts',
+}
+KIND_MARKER = {
+    'copy': r'mode=ro|readonly:\s*true',
+    'new-file': r'rmSync|existsSync|mkdtemp|tmpdir\(|/tmp/',
+    'staging': r"isStaging\(|DAZL_ENV !== 'staging'",
+    'operator': r"from '\.\./lib/|from '\.\./\.\./lib/",
+}
 
 
 def db_script_files():
-    for base, pats in DB_SCRIPT_DIRS:
-        for pat in pats:
-            for f in sorted((REPO / base).rglob(pat)):
-                if 'node_modules' in f.parts or f.name.startswith('test_') or '.test.' in f.name:
-                    continue
+    for base in DB_SCRIPT_DIRS:
+        for f in sorted((REPO / base).rglob('*')):
+            if not f.is_file() or 'node_modules' in f.parts or f.name.startswith('test_') or '.test.' in f.name:
+                continue
+            if f.suffix in DB_SCRIPT_EXT and (f.suffix or f.read_bytes()[:2] == b'#!'):
                 yield f
 
 
+def _code(line):
+    """The line without a trailing comment (so a read-only word in a comment does not count)."""
+    return re.split(r'\s(?://|#)\s', line, maxsplit=1)[0]
+
+
 def writable_opens(text):
-    """Every place the text opens a SQLite database without saying read-only."""
+    """Every place the text opens a SQLite database without saying read-only in the call itself."""
     out = []
-    for m in re.finditer(r'sqlite3\.connect\(([^\n]*)', text):
-        if 'mode=ro' not in m.group(1):
+    for line in text.splitlines():
+        code = _code(line)
+        for m in re.finditer(r'(?:sqlite3\.connect|\bconnect)\(([^\n]*)', code) if re.search(r'sqlite3?\b|\bconnect\(', code) else []:
+            if 'sqlite' in code and 'mode=ro' not in m.group(1):
+                out.append(m.group(0)[:90])
+        for m in re.finditer(r'new\s+(?:Database|DatabaseSync)\(([^\n]*)', code):
+            arg = m.group(1)
+            if re.match(r"""\s*['"]:memory:['"]""", arg) or re.search(r'readonly:\s*true|readOnly:\s*true', arg):
+                continue
             out.append(m.group(0)[:90])
-    for m in re.finditer(r'new Database\(([^\n]*)', text):
-        arg = m.group(1)
-        if re.match(r"""\s*['"]:memory:['"]""", arg) or re.search(r'readonly:\s*true', arg):
-            continue
-        out.append(m.group(0)[:90])
     return out
 
 
-def cli_writes(text):
-    return [m.group(0)[:120] for m in SQLITE_CLI_WRITE.finditer(text)
-            if not text[:m.start()].split('\n')[-1].lstrip().startswith(('#', '//', '*'))]
+def cli_uses(text):
+    """Every use of the sqlite3 COMMAND LINE: in a shell command, a heredoc, a pipe or an ssh string. Python's module
+    (import sqlite3, sqlite3.connect, sqlite3.Error) is not the command line."""
+    out = []
+    for line in text.splitlines():
+        code = line.strip()
+        if code.startswith(('#', '//', '*')) or re.search(r'\bimport\s+sqlite3\b|\bfrom\s+sqlite3\b', code):
+            continue
+        if re.search(r"""(?:^|[\s;|&`('"$])sqlite3(?:\s+[-"'$/\w.<]|\s*$)""", code) and not re.search(r'sqlite3\.\w', code):
+            out.append(code[:120])
+    return out
 
 
-class NoHandWritesToTheProdDatabase(unittest.TestCase):
-    def test_every_script_that_opens_a_database_for_writing_is_on_the_list(self):
-        found = {f.relative_to(REPO).as_posix() for f in db_script_files() if writable_opens(f.read_text(errors='replace'))}
-        self.assertEqual(sorted(found - set(WRITABLE_DB_OPENS)), [],
+class ScriptsThatOpenADatabaseAreClassified(unittest.TestCase):
+    def test_every_script_that_uses_sqlite_is_on_one_of_the_two_lists(self):
+        uses, writes = set(), set()
+        for f in db_script_files():
+            text = f.read_text(errors='replace')
+            rel = f.relative_to(REPO).as_posix()
+            if writable_opens(text):
+                writes.add(rel)
+            if SQLITE_LIB.search(text) or writable_opens(text):
+                uses.add(rel)
+        self.assertEqual(sorted(writes - set(WRITABLE_DB_OPENS)), [],
                          'a script opens a SQLite database for writing and is not classified in WRITABLE_DB_OPENS: '
                          'prod is never written outside the app (docs/NEVER-AGAIN.md #12)')
-        self.assertEqual(sorted(set(WRITABLE_DB_OPENS) - found), [], 'listed, but it no longer opens a database for writing: remove it')
+        self.assertEqual(sorted(set(WRITABLE_DB_OPENS) - writes), [], 'listed as writable, but it no longer opens a database for writing: move or remove it')
+        self.assertEqual(sorted(uses - set(WRITABLE_DB_OPENS) - READ_ONLY_DB_SCRIPTS), [],
+                         'a script uses a SQLite library and is on neither list: classify it (docs/NEVER-AGAIN.md #12)')
+        self.assertEqual(sorted(READ_ONLY_DB_SCRIPTS - uses), [], 'listed as read-only, but it no longer uses SQLite: remove it')
+        self.assertEqual(sorted(READ_ONLY_DB_SCRIPTS & writes), [], 'listed as read-only, but it opens a database for writing')
 
-    def test_each_listed_script_keeps_what_its_kind_promises(self):
+    def test_each_writable_script_still_has_the_marker_of_its_kind(self):
         for rel, (kind, _) in WRITABLE_DB_OPENS.items():
-            text = (REPO / rel).read_text(errors='replace')
-            if kind == 'copy':
-                self.assertRegex(text, r'mode=ro|readonly:\s*true', f'{rel}: a copy script opens its source read-only')
-            elif kind == 'staging':
-                self.assertRegex(text, r"isStaging\(|DAZL_ENV !== 'staging'", f'{rel}: must refuse outside staging')
-            elif kind == 'operator':
-                self.assertRegex(text, r"from '\.\./lib/|from '\.\./\.\./lib/", f'{rel}: an operator tool goes through the app code in lib/')
-            else:
-                self.assertEqual(kind, 'new-file', rel)
+            self.assertRegex((REPO / rel).read_text(errors='replace'), KIND_MARKER[kind], f'{rel}: listed as {kind}')
         self.assertEqual(sorted(r for r, (k, _) in WRITABLE_DB_OPENS.items() if k == 'operator'),
                          ['web/scripts/purge-tenant-evidence.mts', 'web/scripts/rewrap-master-key.mts', 'web/scripts/tenant-lifecycle.mts'],
                          'a new operator tool that writes a live database needs the owner: say so in docs/NEVER-AGAIN.md #12 first')
 
-    def test_no_script_runs_the_sqlite3_command_line_with_a_write_statement(self):
+    def test_the_staging_send_scenarios_refuse_outside_staging_in_every_mode(self):
+        # its --child mode opens the database it is given and sends from it: the staging refusal must come first
+        src = (REPO / 'web/scripts/staging-send-scenarios.mts').read_text()
+        main = src[src.index('if (import.meta.url === `file://${process.argv[1]}`)'):]
+        self.assertLess(main.index("process.env.DAZL_ENV !== 'staging'"), main.index("args[0] === '--child'"))
+
+    def test_no_script_runs_the_sqlite3_command_line(self):
         bad = []
         for f in db_script_files():
-            for hit in cli_writes(f.read_text(errors='replace')):
+            for hit in cli_uses(f.read_text(errors='replace')):
                 bad.append(f'{f.relative_to(REPO).as_posix()}: {hit}')
-        self.assertEqual(bad, [], 'no hand statements against a database from a script (docs/NEVER-AGAIN.md #12)')
+        self.assertEqual(bad, [], 'no sqlite3 command line in a script: open the database read-only through a library, '
+                                  'and never write by hand (docs/NEVER-AGAIN.md #12)')
 
     def test_the_scanner_itself(self):
-        self.assertEqual(writable_opens("db = sqlite3.connect('file:x?mode=ro', uri=True)\nd = new Database(p, { readonly: true })\nm = new Database(':memory:')"), [])
-        self.assertEqual(len(writable_opens("c = sqlite3.connect(path)\nconst d = new Database(file)\nconst e = new Database(p, { readonly: ro })")), 3)
-        self.assertEqual(len(cli_writes('sqlite3 /var/lib/dazl/app.db "INSERT INTO spend VALUES (1)"\n# sqlite3 x "DELETE FROM y"\nsqlite3 "$db" "select count(*) from users"')), 1)
-        self.assertEqual(len(cli_writes('ssh box sqlite3 app.db "delete from spend_ledger where id=1"')), 1)
+        ro = "db = sqlite3.connect('file:x?mode=ro', uri=True)\nd = new Database(p, { readonly: true })\nm = new Database(':memory:')"
+        self.assertEqual(writable_opens(ro), [])
+        for w in ("c = sqlite3.connect(path)", "const d = new Database(file)", "const e = new Database(p, { readonly: ro })",
+                  "const f = new DatabaseSync(p)", "const g = new Database(p) // readonly: true", "c = sqlite3.connect(p) # mode=ro"):
+            self.assertEqual(len(writable_opens(w)), 1, w)
+        for c in ('sqlite3 /var/lib/dazl/app.db "INSERT INTO spend VALUES (1)"', 'ssh box sqlite3 app.db "delete from spend_ledger where id=1"',
+                  'sqlite3 "$db" <<EOF', 'echo "DELETE FROM a" | sqlite3 db', 'sqlite3 db < fix.sql', 'sqlite3 db ".import x y"',
+                  'sqlite3 "$db" "select count(*) from users"', 'x=$(sqlite3 $DB .tables)'):
+            self.assertEqual(len(cli_uses(c)), 1, c)
+        for c in ('import sqlite3', 'import os, sqlite3, sys', 'from sqlite3 import connect', 'except sqlite3.Error:', "src = sqlite3.connect('file:%s?mode=ro' % p, uri=True)",
+                  '# sqlite3 x "DELETE FROM y"', "[ -d \"$REL/web/node_modules/better-sqlite3\" ] || fail"):
+            self.assertEqual(cli_uses(c), [], c)
 
 
 if __name__ == '__main__':

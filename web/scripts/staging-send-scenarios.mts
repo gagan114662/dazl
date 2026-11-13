@@ -295,8 +295,10 @@ function commit(): string | null {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
-  if (args[0] === '--child') { await childMain(args[1], args[2], args[3], args[4], args[5], args[6]); process.exit(0) }
+  // the staging refusal comes first: the --child mode opens the database it is given and sends from it, so it must never
+  // run outside staging either (the parent passes its own env to its children) - docs/NEVER-AGAIN.md #12
   if (process.env.DAZL_ENV !== 'staging') refuse('DAZL_ENV must be staging')
+  if (args[0] === '--child') { await childMain(args[1], args[2], args[3], args[4], args[5], args[6]); process.exit(0) }
   const at = args.indexOf('--out'); const outArg = at >= 0 ? args[at + 1] : null
   if (!outArg) refuse('usage: staging-send-scenarios.mts --out DIR (a new or empty directory)')
   const out = path.resolve(outArg)

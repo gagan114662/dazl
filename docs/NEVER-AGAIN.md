@@ -147,15 +147,21 @@ Times are US Eastern unless marked Z.
 - **Rule:** production is read and exercised through the product only: the UI and the API, signed in as the dogfood
   account. Nobody runs a write statement against the production database by hand, over ssh or any other way. If a
   check cannot be reached through the product, stop and report it. Running one of the three owner tools that change a
-  live database through the app's own code (`web/scripts/purge-tenant-evidence.mts`,
+  live database through the app's own code (two of them also run schema migrations when they open the database, even
+  for a listing) (`web/scripts/purge-tenant-evidence.mts`,
   `web/scripts/rewrap-master-key.mts`, `web/scripts/tenant-lifecycle.mts`) on production needs the owner's explicit order.
 - **Enforced by (partly automated):**
-  - In the repo: `ops/test_never_again.py` (`NoHandWritesToTheProdDatabase`) lists every script under `ops/` and
-    `web/scripts/` that opens a SQLite database for writing, with why it may: backup and rehearsal copies, files it
-    creates, staging-only scripts (which must refuse outside staging) and the three owner tools above. A new script
-    that opens a database for writing fails the test until it is classified, and no script may call the `sqlite3`
-    command line with a write statement. It runs on every pull request (`.github/workflows/never-again-gates.yml`).
-    The deploy's backup step (`ops/prod/deploy-prod.sh`) is on the list as a copy: it opens the live database read-only.
+  - **The incident itself is not covered in the repo.** It was a command typed over ssh; no file here was involved, and
+    no test here would have failed. The two items below are what exists.
+  - In the repo, narrower: `ops/test_never_again.py` (`ScriptsThatOpenADatabaseAreClassified`) keeps the repo from
+    growing a script that does the same thing. Every script under `ops/`, `web/scripts/` and `.github/scripts/` that
+    uses a SQLite library is on one of two lists a person reviewed: read-only, or writable with why it may (backup and
+    rehearsal copies, files it creates, staging-only scripts, and the three owner tools above). A new script fails the
+    test until it is classified, and no script may run the `sqlite3` command line at all. The kinds are a reviewed
+    list, not a proof: the test checks one marker per kind (for example that a staging script still has its staging
+    refusal). It scans SQLite only, not Postgres. It runs on every pull request
+    (`.github/workflows/never-again-gates.yml`). The deploy's backup step (`ops/prod/deploy-prod.sh`) is on the list
+    as a copy: it opens the live database read-only.
   - On the coordinator's PC (outside this repo): a wrapper at `~/.local/bin/ssh` refuses an ssh command to the box that
     names `sqlite3` together with a write statement, unless every database it names is a staging one, and logs the
     refusal. **It only sees the command line.** A script piped on stdin, a write made from an interactive shell, or
