@@ -237,7 +237,7 @@ export async function findWorkEmail(
           await settle(db, hold, 1) // Apollo answered: counted as charged (an over-count, never an under-count)
           v = judgeMatch('apollo', m, want, site.site, icpText)
         } else {
-          const r = await pdlPersonEnrich(key, { first: want.first, last: want.last, domain: site.site }, fetchImpl)
+          const r = await pdlPersonEnrich(key, { first: want.first, last: want.last, domain: site.site }, fetchImpl, { env: deps.env, hints: { title: want.title, linkedin: want.linkedin } })
           await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
           v = judgeMatch('pdl', r.match, want, site.site, icpText)
         }

@@ -533,7 +533,7 @@ async function runPdl(c: Ctx, reservationId: string, key: string, maxProfiles: n
   const { db, tenantId, jobId, lead, where, evidence, established, src, today, now, fetchImpl } = c
   const peopleKey = lookupKey('people', lead)
   let found: Awaited<ReturnType<typeof pdlPeopleSearch>>
-  try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles)) }
+  try { found = await pdlPeopleSearch(key, lead.company, fetchImpl, Math.max(1, maxProfiles), { env: c.env, hints: { domain: lead.company_domain } }) }
   catch (e) {
     // A refusal by the scan's hard spend cap sent nothing: the workspace credits go back and the claim is released (#382: it
     // cannot have been charged, so it is never held for an owner retry). Any other error keeps both.
