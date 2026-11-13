@@ -11,8 +11,12 @@ import { recordedEmptyReason, recordedStopRefusalReason } from './outcome-detail
 // On the Db layer: same-second jobs list by id rather than SQLite's insertion order (lib/scan/store-db.ts).
 export async function historyJobs(db: Db, userId: string) {
   const trial = new Set((await db.all<{ id: string }>("SELECT id FROM scan_jobs WHERE user_id = ? AND funded_by = 'trial'", [userId])).map(r => r.id))
+  // A failed read leaves the map empty: no job then claims anything about charges (scan-outcome.ts), and the list still loads.
+  const spend = new Map((await db.all<{ id: string; s: number | string | null }>('SELECT id, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS s FROM scan_jobs WHERE user_id = ?', [userId]).catch(() => [])).map(r => [r.id, r.s]))
   return Promise.all((await listJobs(db, userId)).map(async j => ({
     ...j,
+    // Recorded spend (max_usd reservation + per-job cap ledger: a positive amount in either is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
+    ...(spend.has(j.id) ? { spend_usd: spend.get(j.id) ?? 0 } : {}),
     funded_by: trial.has(j.id) ? 'trial' as const : null,
     status: effectiveStatus(j),
     // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.

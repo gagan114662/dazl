@@ -32,11 +32,12 @@ export const DEGRADED: Record<string, Degraded> = {
   'preview-report': 'closed', // the seller's proof report (#403): a session read of up to a few hundred queries
   // scans, trial admission and paid or shared providers
   scan: 'closed', icp: 'closed', icpurl: 'closed', qualify: 'closed', 'qualify-preview': 'closed', 'evidence-recheck': 'closed', 'hiring-feed': 'closed',
-  'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed',
+  'hiring-feed-retry': 'closed', 'page-signals': 'closed', 'source-review': 'closed', 'play-research': 'closed', 'find-contact': 'closed', 'work-email': 'closed',
   'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   workers: 'closed', // runtime worker runs (app/api/workers): shared host capacity, so no runs while limits cannot be counted
   checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
+  'play-run-now': 'closed', // #1042 Find leads now: queues a real scan on the account's key and monthly scans
   // low risk: the app's own data, or must keep working
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'lead-feedback': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local', 'first-party-cfg': 'local',

@@ -120,7 +120,18 @@ export const utcDay = (nowS: number) => Math.floor(nowS / 86400)
 // The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
 export const TRIAL_BUDGET_REASON = 'trial_budget_reached'
 
-export type TrialRefusal = 'not_configured' | 'google_required' | 'domain_used' | 'attempts_cap' | 'account_total_cap' | 'global_daily_cap'
+// Every reason a free-trial scan can be refused. The copy for each (lib/trial-copy.ts TRIAL_REFUSAL_COPY) is checked
+// against this list, so a new reason cannot ship without words a customer can read (#1095).
+export const TRIAL_REFUSALS = ['not_configured', 'google_required', 'domain_used', 'attempts_cap', 'account_total_cap', 'global_daily_cap'] as const
+export type TrialRefusal = typeof TRIAL_REFUSALS[number]
+// #402: the account setup every free-trial run (scan or website read) needs before admission, as the product truth record's
+// `requires` tokens (lib/product-truth.ts). refusal() below enforces exactly this list, so the record and the gate cannot drift.
+export const TRIAL_REQUIRES = ['google_account'] as const
+// One check per listed prerequisite: a token added to TRIAL_REQUIRES without its check here does not typecheck, so the record can
+// never advertise a prerequisite the gate does not enforce.
+const TRIAL_REQUIREMENT_CHECKS: { [K in typeof TRIAL_REQUIRES[number]]: { refusal: TrialRefusal; sql: string } } = {
+  google_account: { refusal: 'google_required', sql: "SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?" },
+}
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
@@ -129,11 +140,11 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.attempts, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
   WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND COALESCE(r.settled_at, r.created_at + ${READ_GRACE_S}) >= ?)
     OR (r.kind <> 'site_read' AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))))`
-export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; attempts: number | null; spend_reserved_usd: number | null }
+export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null }
 const isRead = (r: LedgerRow) => r.kind === 'site_read'
 // A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported (or its
 // full reserve, for a failed or unreported call). For the day ceiling only, a read that never settled counts as ended
@@ -155,7 +166,19 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
 // failed after any paid step.
-export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && r.status === 'failed' && r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0
+// A scan that STOPPED AFTER AN INTERRUPTION (error accounting_uncertain: a paid step may already have been billed, so its results were
+// discarded) also gives its place back once its run has settled: the person got nothing, and the cost screen promises free scans, not
+// interrupted ones (owner decision 2026-11-11). Only the attempt COUNT is released: a settled scan still costs what it recorded
+// (scan_jobs.spend_reserved_usd, see reservationCost) against the account's dollar total and the day's budget, so the $0.30 / $1 / $10 caps
+// bind exactly as before. The same rule is applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
+// by test/trial-interrupted-attempt.test.ts, and a reaped (dead-worker) scan is settled by lib/billing/trial-reap.ts so it is released too.
+// A free scan that STOPPED AT ITS SPENDING LIMIT before it found any company (status done, error trial_budget_reached, candidates recorded as 0)
+// also gives its place back once its run has settled: the person got nothing, and a free scan that cannot find anything is not a used one.
+// Only the attempt COUNT: its recorded spend still counts as money (reservationCost), so the $0.30 / $1 / $10 caps are unchanged. A stop that
+// kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
+const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
+export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
+  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {
@@ -172,8 +195,10 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
 function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number): TxBody<TrialRefusal | null> {
-  const google = yield* t.get("SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?", [user.id])
-  if (!google) return 'google_required'
+  for (const req of TRIAL_REQUIRES) {
+    const check = TRIAL_REQUIREMENT_CHECKS[req]
+    if (!(yield* t.get(check.sql, [user.id]))) return check.refusal
+  }
   const domain = emailDomain(user.email)
   if (domain && !CONSUMER_DOMAINS.has(domain)) {
     // Another account on this company domain already drew on the trial: a scan, or a website read (#409). A read is paid
@@ -246,6 +271,21 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
   return db.tx(t => refusal(t, user, caps, day, reserveUsd))
+}
+
+// What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total
+// minus what this account's trial work counts as now (the same ledger the admission check uses: settled scans and reads at what they recorded,
+// running or unsettled ones at their full reserve, website reads included). null when the trial is not configured or the ledger cannot be read:
+// the screen then shows no line, never a guessed one. Clamped to 0..total.
+export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<{ left_usd: number; total_usd: number } | null> {
+  const caps = trialWalletCaps(o.env)
+  if (!caps) return null
+  const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
+  try {
+    const l = ledger(await db.all<LedgerRow>(LEDGER_SQL, [tenantId, day, day, day * 86400, day * 86400]), tenantId, day)
+    if (!Number.isFinite(l.account)) return null
+    return { left_usd: Math.min(caps.accountTotalUsd, Math.max(0, caps.accountTotalUsd - l.account)), total_usd: caps.accountTotalUsd }
+  } catch { return null }
 }
 
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment

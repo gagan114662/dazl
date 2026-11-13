@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-test('[sqlite] tick route under tenant load: fair reply checks and scans; the rolled-back claimer starves them (control)', () => {
+test('[sqlite] tick route under tenant load: fair reply checks and scans, with the shared queue and (#1081) with the legacy claimer', () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/tenant-load-tick-loader.mjs', '--test', '--test-reporter=tap', './test/helpers/tenant-load-tick-runtime.mts'],

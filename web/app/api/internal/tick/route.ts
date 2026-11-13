@@ -7,6 +7,8 @@ import { runFollowups } from '@/lib/outreach/followups'
 import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
+import { repeatFirstPlays } from '@/lib/play-repeat'
+import { sendPlayRunMails } from '@/lib/play-mail'
 import { kickRunner } from '@/lib/scan/runner'
 import { sharedScanQueue } from '@/lib/queue/scan-claimer'
 import { getDb, type Tx } from '@/lib/db/client'
@@ -129,6 +131,10 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // Watches and monitors are on the Db layer: each of their transactions takes the lease's fence first.
   const shared = await getDb()
   const fence = (t: Tx) => lease.fence(t)
+  // #1042: a new account's first play gets its weekly repeat (lib/play-repeat.ts) before the due watches are read, so
+  // nothing about it runs early: its first scheduled run is a week after the play finished. Best-effort per account.
+  let firstPlayRepeats = 0
+  try { firstPlayRepeats = (await repeatFirstPlays(shared, { fence })).length } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:first-play-repeat', requestId }) }
   const watches = await runDueWatches(shared, { fence })
   // The scan runner works outside the tick's lease (its own claims), so it gets the raw handle.
   if (watches.ran > 0) after(() => kickRunner(raw))
@@ -140,6 +146,11 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // worker died or whose retry backoff has passed is claimed again within one tick. Off (the default), unchanged.
   else if (watches.ran === 0 && sharedScanQueue()) after(() => kickRunner(raw))
   const monitorAlerts = await collectMonitorResults(shared, { fence })
+  // #1042: one email per finished run of a live weekly play that found new leads, to the account only (lib/play-mail.ts:
+  // claimed once under the lease's fence before it is sent; SMTP when configured, otherwise the host's outbox).
+  await lease.keep()
+  let playRunMails = 0
+  try { playRunMails = await sendPlayRunMails(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:play-run-mail', requestId }) }
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.
   let indexChecked = 0
@@ -182,5 +193,5 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   let firstPartyPurged = 0
   try { firstPartyPurged = await purgeFirstPartyRetention(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:first-party-retention', requestId }) }
   await finishRun(raw, runId, failures ? 'partial' : 'ok')
-  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged, first_party_purged: firstPartyPurged })
+  return NextResponse.json({ ok: true, run: runId, tenants: done, tenant_failures: failures, tenant_holds: holds, first_touches: firstTouches, sequences, watches, first_play_repeats: firstPlayRepeats, monitor_jobs: monitorJobs.length, monitor_alerts: monitorAlerts, play_run_mails: playRunMails, sessions_reaped: sessionsReaped, index_checks: indexChecked, traces_purged: tracesPurged, audit_retention: retention.state === 'on' ? retention.days : retention.state, audit_purged: auditPurged, onboarding_audit_redacted: onboardingAuditRedacted, onboarding_audit_purged: onboardingAuditPurged, first_party_purged: firstPartyPurged })
 }

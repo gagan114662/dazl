@@ -43,7 +43,8 @@ export default function SignIn() {
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <ClaimContextBanner business={claim.business} action="Sign in" />
-        <a href={claim.googleHref} className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition mb-4 text-sm">Continue with Google</a>
+        <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
+        <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -56,7 +57,7 @@ export default function SignIn() {
               className="field" />
           </label>
           <button type="submit" disabled={loading}
-            className="btn-primary mt-1 !py-3">
+            className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition text-sm mt-1 disabled:opacity-50">
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>

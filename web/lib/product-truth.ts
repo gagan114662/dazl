@@ -24,7 +24,7 @@ import { CHANNELS } from './channels.ts'
 import { PLAN_LIMITS, PLAN_PRICE_USD_MONTHLY, PRICE_DISCLOSURE, type PlanId } from './plans.ts'
 import { VENDORS } from './llm/vendors.ts'
 import { CRM_PROVIDERS } from './crm/index.ts'
-import { trialCaps } from './billing/trial-budget.ts'
+import { trialCaps, TRIAL_REQUIRES } from './billing/trial-budget.ts'
 import { TRIAL_SCANS_PER_ACCOUNT } from './scan/trial.ts'
 import { trialSiteReadsPerDay } from './scan/trial-site-read.ts'
 import { ACCOUNT_SEND_CAP } from './outreach/send-budget.ts'
@@ -144,8 +144,8 @@ function capabilities(env: Env, support: PlatformSupport): Capability[] {
   out.push({ id: 'enrichment:apollo', kind: 'enrichment', name: 'Apollo enrichment on your own key', state: 'limited', requires: ['own_key'], aliases: ['apollo(?:\\.io)?'], basis: 'lib/enrich/apollo.ts, tenant key only' })
   out.push({ id: 'enrichment:pdl', kind: 'enrichment', name: 'People Data Labs enrichment on your own key', state: 'limited', requires: ['own_key'], aliases: ['people data labs', 'pdl'], basis: 'lib/enrich/pdl.ts, tenant key only' })
   const trialOn = trialCaps(env) !== null
-  out.push({ id: 'feature:trial_scans', kind: 'feature', name: `Free trial scans on dazl's keys (${TRIAL_SCANS_PER_ACCOUNT} per account)`, state: trialOn ? 'available' : 'unavailable', requires: [], aliases: ['free trial', 'no (?:api |ai )?key (?:needed|required)', 'without (?:an? |your own )?(?:api |ai )?key'], basis: 'lib/billing/trial-budget.ts trialCaps(env)' })
-  out.push({ id: 'feature:trial_site_read', kind: 'feature', name: 'Website read on the free trial', state: trialSiteReadsPerDay(env) !== null ? 'available' : 'unavailable', requires: [], aliases: [], basis: 'DAZL_TRIAL_SITE_READS_PER_DAY' })
+  out.push({ id: 'feature:trial_scans', kind: 'feature', name: `Free trial scans on dazl's keys (${TRIAL_SCANS_PER_ACCOUNT} per account)`, state: trialOn ? 'available' : 'unavailable', requires: [...TRIAL_REQUIRES], aliases: ['free trial', 'no (?:api |ai )?key (?:needed|required)', 'without (?:an? |your own )?(?:api |ai )?key'], basis: 'lib/billing/trial-budget.ts trialCaps(env), TRIAL_REQUIRES' })
+  out.push({ id: 'feature:trial_site_read', kind: 'feature', name: 'Website read on the free trial', state: trialSiteReadsPerDay(env) !== null ? 'available' : 'unavailable', requires: [...TRIAL_REQUIRES], aliases: [], basis: 'DAZL_TRIAL_SITE_READS_PER_DAY; lib/billing/trial-budget.ts TRIAL_REQUIRES' })
   out.push({ id: 'feature:api_mcp', kind: 'feature', name: 'API / MCP access (ChatGPT, Zapier)', state: 'unavailable', requires: [], aliases: ['mcp', 'api access', 'public api', 'zapier', 'chatgpt (?:plugin|app|connector)'], basis: '#392 not built' })
   return out
 }

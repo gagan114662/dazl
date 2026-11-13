@@ -33,6 +33,9 @@ export interface ScanRecord {
   // From the run report's stop block, when recorded: the exact spend-refusal reason that caused the stop. NULL means
   // not recorded (legacy rows) - never proof of any particular reason.
   stop_refusal_reason?: string | null
+  // What the scan recorded as spent (scan_jobs.spend_reserved_usd), read successfully. Omitted (or null) when it could not be read: then no
+  // claim about charges is made. Only a trial stop reads it (trialStopped).
+  spend_usd?: number | string | null
 }
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
@@ -54,11 +57,22 @@ const NONE_EXTRACTED = (open: string, why?: string | null): ScanOutcome => ({ ki
 const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search key had trouble (not your key)', next: { text: 'Try again later', href: NEW_SCAN } }
 // A free scan that reached its spending limit (lib/billing/trial-budget.ts): it stopped early and kept what it found, in
 // the review list, since some checks may not have run.
+// "Nothing was charged" only when the scan's recorded spend is a number (or a numeric string, as Postgres returns it) that is exactly zero.
+// Everything else says nothing about charges: undefined (a reader that could not read the spend), null, '', booleans, NaN, text, any spend,
+// a negative number. A reader that read the row successfully and found the column empty passes 0 itself (the job guard saves its running
+// reserve BEFORE each paid call, so an empty column on a settled scan means no paid call started); a failed read passes nothing.
+const NOT_CHARGED = 'Nothing was charged.'
+const nothingCharged = (j: ScanRecord) => {
+  const s = j.spend_usd as unknown
+  if (typeof s === 'number') return s === 0
+  return typeof s === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(s) && Number(s) === 0
+}
 function trialStopped(j: ScanRecord, open: string): ScanOutcome {
   const review = j.needs_review ?? 0
+  const free = nothingCharged(j) ? ` ${NOT_CHARGED}` : ''
   return review > 0
-    ? { kind: 'stopped', label: `Stopped early: this free scan reached its spending limit. It kept ${review} result${review === 1 ? '' : 's'} found before it stopped.`, detail: 'They are in your review list, because some checks may not have run on them before the scan stopped.', next: { text: `Review ${review === 1 ? 'it' : 'them'}`, href: open } }
-    : { kind: 'stopped', label: 'Stopped early: this free scan reached its spending limit before it found any companies.', detail: 'This is not an empty search: the scan stopped before it could finish looking.', next: { text: 'Try a narrower search', href: NEW_SCAN } }
+    ? { kind: 'stopped', label: `Stopped early: this free scan reached its spending limit. It kept ${review} result${review === 1 ? '' : 's'} found before it stopped.${free}`, detail: 'They are in your review list, because some checks may not have run on them before the scan stopped.', next: { text: `Review ${review === 1 ? 'it' : 'them'}`, href: open } }
+    : { kind: 'stopped', label: `Stopped early: this free scan reached its spending limit before it found any companies.${free}`, detail: 'This is not an empty search: the scan stopped before it could finish looking.', next: { text: 'Try a narrower search', href: NEW_SCAN } }
 }
 
 const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']

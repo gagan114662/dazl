@@ -10,39 +10,43 @@ const monitor = (o: Partial<MonitorRow> = {}): MonitorRow => ({ id: 'c'.repeat(2
 const UTC = 'UTC'
 
 test('a weekly watch shows who, signal, schedule, last and next run, status and a link to its last results', () => {
-  const [p] = savedPlays([watch()], [], UTC)
+  const [p] = savedPlays([watch()], [], UTC, T)
   assert.deepEqual({ ...p, name: undefined }, {
     id: 'a'.repeat(24), kind: 'watch', name: undefined, sentence: 'Dental practices in Leeds opening a second location',
     audience: 'Independent dental practices · Leeds, UK', signal: 'opening a second location, hiring a practice manager', schedule: 'Weekly',
-    lastRun: '26 Oct 2026, 3 new', lastHref: `/app/leads?job_id=${'b'.repeat(24)}`, nextRun: '2 Nov 2026',
-    status: { tone: 'live', label: 'Live' }, active: true,
+    lastRun: '26 Oct 2026, 12:00, 3 new', lastHref: `/app/leads?job_id=${'b'.repeat(24)}`, nextRun: '2 Nov 2026, 12:00',
+    status: { tone: 'live', label: 'Live' }, active: true, note: null,
   })
   assert.ok(p.name.length > 0 && p.name.length <= 60)
 })
 
 test('status: paused (with why), running now, last run failed; a paused play has no next run', () => {
-  const s = (o: Partial<WatchRow>) => savedPlays([watch(o)], [], UTC)[0]
+  const s = (o: Partial<WatchRow>) => savedPlays([watch(o)], [], UTC, T)[0]
   assert.deepEqual([s({ active: false }).status, s({ active: false }).nextRun], [{ tone: 'paused', label: 'Paused' }, 'Paused: resume to schedule it'])
   assert.equal(s({ active: false, paused_reason: 'quota' }).status.label, "Paused: this month's scans are used up")
   assert.equal(s({ active: false, paused_reason: 'no_key' }).status.label, 'Paused: no AI key to run it')
+  // the reasons the scheduler actually writes (lib/watch.ts runDueWatches) are named, not a bare "Paused" (#1042)
+  assert.equal(s({ active: false, paused_reason: 'no_api_key' }).status.label, 'Paused: no AI key to run it')
+  assert.equal(s({ active: false, paused_reason: 'quota_exceeded' }).status.label, "Paused: this month's scans are used up")
+  assert.match(s({ active: false, paused_reason: 'trial_used' }).status.label, /free searches are used up/)
   assert.deepEqual(s({ last_status: 'running' }).status, { tone: 'running', label: 'Running now' })
   assert.deepEqual(s({ last_status: 'failed' }).status, { tone: 'failed', label: 'Live, last run failed' })
-  assert.equal(s({ last_status: 'failed' }).lastRun, '26 Oct 2026', 'a failed run claims no new leads')
+  assert.equal(s({ last_status: 'failed' }).lastRun, '26 Oct 2026, 12:00', 'a failed run claims no new leads')
   assert.deepEqual([s({ last_run_at: null, last_job_id: null }).lastRun, s({ last_run_at: null, last_job_id: null }).lastHref], ['Not run yet', null])
 })
 
 test('scheduled monitors join the list with their own cadence and pause state', () => {
-  const [m] = savedPlays(null, [monitor()], UTC)
-  assert.deepEqual([m.kind, m.audience, m.signal, m.schedule, m.lastRun, m.nextRun, m.status.label, m.active], ['monitor', 'Accounting firms', 'hiring', 'Daily', 'Not run yet', '27 Oct 2026', 'Live', true])
-  const off = savedPlays(null, [monitor({ enabled: 0, paused_reason: 'quota', last_run_at: T, last_new_count: 2, last_job_id: 'd'.repeat(24) })], UTC)[0]
-  assert.deepEqual([off.status.label, off.nextRun, off.lastRun, off.lastHref], ["Paused: this month's scans are used up", 'Paused: resume to schedule it', '26 Oct 2026, 2 new', `/app/leads?job_id=${'d'.repeat(24)}`])
+  const [m] = savedPlays(null, [monitor()], UTC, T)
+  assert.deepEqual([m.kind, m.audience, m.signal, m.schedule, m.lastRun, m.nextRun, m.status.label, m.active], ['monitor', 'Accounting firms', 'hiring', 'Daily', 'Not run yet', '27 Oct 2026, 12:00', 'Live', true])
+  const off = savedPlays(null, [monitor({ enabled: 0, paused_reason: 'quota', last_run_at: T, last_new_count: 2, last_job_id: 'd'.repeat(24) })], UTC, T)[0]
+  assert.deepEqual([off.status.label, off.nextRun, off.lastRun, off.lastHref], ["Paused: this month's scans are used up", 'Paused: resume to schedule it', '26 Oct 2026, 12:00, 2 new', `/app/leads?job_id=${'d'.repeat(24)}`])
   assert.deepEqual([168, 336, 24, 72, 12].map(scheduleOf), ['Weekly', 'Every 2 weeks', 'Daily', 'Every 3 days', 'Every 12 hours'])
 })
 
 test('no saved profile, a bad profile or no lists: nothing invented', () => {
   assert.equal(audienceOf(null), null)
-  const [p] = savedPlays([watch({ icp: null })], null, UTC)
+  const [p] = savedPlays([watch({ icp: null })], null, UTC, T)
   assert.deepEqual([p.audience, p.signal], [null, null])
-  assert.equal(savedPlays(null, [monitor({ icp: '{not json' })], UTC)[0].audience, null)
+  assert.equal(savedPlays(null, [monitor({ icp: '{not json' })], UTC, T)[0].audience, null)
   assert.deepEqual(savedPlays(null, null), [])
 })

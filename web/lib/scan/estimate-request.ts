@@ -12,6 +12,7 @@ import { ownerLimits, ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
+import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
 
 export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string; message?: string; loss?: IcpLoss[] }
 // What the owner's shared spend pools (tenant_spend_pools, the same store the guard reserves in) have reserved this UTC day and month, so the estimate agrees with the guard.
@@ -32,7 +33,7 @@ export async function keyedModel(db: Db, tenantId: string): Promise<string | nul
   const r = await db.get<{ vendor: string }>('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1', [tenantId]).catch(() => undefined)
   return r?.vendor === 'openai' ? openaiProvider.configuredModel!() : r?.vendor === 'anthropic' ? anthropicProvider.configuredModel!() : null
 }
-export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; enrichmentVendors: string[]; /** the model the run's own key would use (provider.configuredModel()), when known */ model?: string | null }): Promise<EstimateResult> {
+export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; /** why this keyless account would be refused a trial run now (the estimate route reads it; POST /api/scan refuses at confirm time on its own) */ trialRefusal?: string | null; trialUsed?: number | null; /** what is left of this trial account's dollar allowance (display only) */ trialAllowance?: { left_usd: number; total_usd: number } | null; enrichmentVendors: string[]; /** the model the run's own key would use (provider.configuredModel()), when known */ model?: string | null }): Promise<EstimateResult> {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
   const first5 = b.mode === 'first5'
   if (b.mode !== undefined && b.mode !== 'first5') return { ok: false, status: 400, error: 'unknown_mode' }
@@ -58,8 +59,12 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
+    // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).
+    firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
+    trialTinyfishSearchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishSearchUsd ?? null,
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
+    trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
     ownerCapUsd: ownerMaxUsd(ctx.tenantId), ownerMonthCapUsd: ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', ctx.tenantId, process.env),
   })
   // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
