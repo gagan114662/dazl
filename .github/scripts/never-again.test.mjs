@@ -83,7 +83,8 @@ test('docs/STAGING.md never starts or enables the on-box-build units, and its re
   assert.match(reset, /npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts\/staging-seed\.mts/, 'reseeds with the migrate + seed command')
   // the same command deploy.sh runs (its STAGING_MIGRATE default), so the recipe cannot drift from a deploy's seed
   assert.ok(read('ops/staging/deploy.sh').includes("MIGRATE=${STAGING_MIGRATE:-'npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}"))
-  assert.match(reset, /systemctl start dazl-staging &&/, 'and starts the service again')
+  assert.match(reset, /scripts\/staging-seed\.mts' \) \\\n\s+&& systemctl start dazl-staging &&/, 'starts the service only when the seed worked')
+  assert.match(reset, /systemctl is-active dazl-staging-prebuilt\.service/, 'checks no deploy is running')
   // what the recipe says about current-sha is what deploy.sh does: with no current-sha it takes the live release's name
   assert.match(read('ops/staging/deploy.sh'), /if \[ -z "\$cur" \]; then l=\$\(live_release\); \[ -n "\$l" \] && \[ -e "\$l\/\.complete" \] && cur=\$\(basename "\$l"\); fi\n\[ "\$new" != "\$cur" \] \|\| exit 0/)
   for (const f of ['ops/staging/pull-prebuilt.sh', 'ops/staging/dazl-staging-prebuilt.service', 'ops/staging/dazl-staging-prebuilt.timer']) assert.ok(existsSync(path.join(repo, f)), f)

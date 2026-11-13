@@ -220,7 +220,8 @@ Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it re
 ## Automatic deploys from prebuilt builds (the box cannot build)
 The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-deploy.timer` (which builds on the box) stays
 **disabled**, and `deploy.sh` itself refuses its default on-box build (docs/NEVER-AGAIN.md #1): run without
-`STAGING_BUILD` it stops before fetching anything. Only `ops/staging/e2e-test.sh` on a throwaway machine may build
+`STAGING_BUILD` (or with an empty one) it stops before fetching anything, and on the box the only `STAGING_BUILD` it accepts
+is `pull-prebuilt.sh`'s own unpack step. Only `ops/staging/e2e-test.sh` on a throwaway machine may build
 (`DAZL_ALLOW_HOST_BUILD=throwaway-machine`, refused wherever a dazl box path exists). Instead:
 - **Build, on GitHub:** `.github/workflows/staging-prebuilt.yml` runs on every push to main, on a free GitHub-hosted arm64
   runner (`ubuntu-24.04-arm`, Node 22: the box's architecture and OS), with staging's public settings and no secrets. It
@@ -271,12 +272,14 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
 - **Reset the data.** This recreates the database in the release that is already live: the same migrate + seed command
   a deploy runs (`deploy.sh`'s `STAGING_MIGRATE`), as the service user with staging's env. Nothing is downloaded or built.
   ```sh
-  systemctl stop dazl-staging-prebuilt.timer        # no deploy starts halfway through
+  systemctl stop dazl-staging-prebuilt.timer        # no new deploy starts
+  systemctl is-active dazl-staging-prebuilt.service # must print "inactive": if a deploy is running, wait for it to end
+                                                    # (a deploy mid-migration could restore the old database over the reset)
   systemctl stop dazl-staging
   rm /var/lib/dazl-staging/app.db*
   ( set -a; . /etc/dazl-staging/env; set +a
-    runuser -u dazl-staging -- bash -c 'cd "$(readlink -f /srv/dazl-staging/current)/web" && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts' )
-  systemctl start dazl-staging && curl -s localhost:3200/api/health    # {"ok":true,...}
+    runuser -u dazl-staging -- bash -c 'cd "$(readlink -f /srv/dazl-staging/current)/web" && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts' ) \
+    && systemctl start dazl-staging && curl -s localhost:3200/api/health    # {"ok":true,...}; a failed seed starts nothing
   systemctl start dazl-staging-prebuilt.timer
   ```
   Do **not** use the deploy services for a reset. Deleting `/var/lib/dazl-staging-deploy/current-sha` does not redeploy the

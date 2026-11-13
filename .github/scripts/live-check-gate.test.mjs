@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { decide, dryRun, main, passProblem, PASS_RE } from './live-check-gate.mjs'
+import { decide, dryRun, EXAMPLE_SHA, main, passProblem, PASS_RE, REOPEN_BODY } from './live-check-gate.mjs'
 
 const closed = (extra = {}) => ({ number: 1, state: 'closed', state_reason: 'completed', labels: [], ...extra })
 const c = (body, author_association = 'OWNER', created_at = '2026-11-13T12:00:00Z') => ({ id: 1, body, author_association, created_at })
@@ -80,6 +80,22 @@ test('a PASS line with no evidence beside it does not count', () => {
   assert.match(passProblem(c('Live check (prod 7f4c9061): PASS')), /no evidence/)
 })
 
+// Independent review R1/R2: text the page shows as code or not at all, a line that goes on after PASS, and the example commit
+test('hidden or code text, a PASS line that continues, and the instructions\' own example commit do not count', () => {
+  const L = 'Live check (prod 7f4c9061): PASS'
+  for (const [name, b] of Object.entries({
+    indented4: `    ${L}\n\n${EVIDENCE}`, tab_indented: `\t${L}\n\n${EVIDENCE}`, html_comment: `<!-- ${L} -->\n\n${EVIDENCE}`,
+    html_comment_multiline: `<!--\n${L}\n-->\n${EVIDENCE}`, html_comment_unclosed: `${EVIDENCE}\n<!--\n${L}`, unclosed_fence: `${EVIDENCE}\n\`\`\`\n${L}`,
+    inline_double_bt: `\`\`${L}\`\`\n\n${EVIDENCE}`, pass_then_fail: `${L} - actually FAIL, still broken\n\n${EVIDENCE}`,
+    pass_then_prose: `${L} is the line to post once checked on prod. Staging only so far.\n${EVIDENCE}`,
+    zero_width: `Live check (prod 7f4c\u200b9061): PASS\n\n${EVIDENCE}`.replace('7f4c\u200b9061', '7f4c\u200b906'),
+    example_sha: `Live check (prod ${EXAMPLE_SHA}): PASS\n\n${EVIDENCE}`, fence4: `\`\`\`\`\n${L}\n\`\`\`\`\n${EVIDENCE}`, tilde: `~~~\n${L}\n~~~\n${EVIDENCE}`,
+  })) assert.equal(decide(closed(), [c(b)]).reopen, true, name)
+  assert.match(passProblem(c(`Live check (prod ${EXAMPLE_SHA}): PASS\n\n${EVIDENCE}`)), /example/)
+  assert.ok(REOPEN_BODY.includes(EXAMPLE_SHA), 'the example the gate shows is the one it refuses')
+  for (const b of [`${L}\n\n${EVIDENCE}`, `   ${L}  \n${EVIDENCE}`, `**${L}**\n${EVIDENCE}`, `${L}\r\n\r\n${EVIDENCE}`]) assert.equal(decide(closed(), [c(b)]).reopen, false, b)
+})
+
 // Hermes review 4
 test('a PASS from before the last reopen does not count; one after it does', () => {
   const early = c(PASS, 'OWNER', '2026-11-10T10:00:00Z'), late = c(PASS, 'OWNER', '2026-11-12T10:00:00Z')
@@ -109,7 +125,7 @@ async function runMain({ event = {}, current = {}, page2 = [], events = [], fail
   globalThis.fetch = async (url, init = {}) => {
     calls.push(`${init.method} ${url}${init.body ? ' ' + init.body : ''}`)
     const key = `${init.method} ${url.replace(api, '')}`
-    for (const [k, status] of Object.entries(fail)) if (key.startsWith(k)) return new Response('boom', { status })
+    for (const [k, status] of Object.entries(fail)) if (k.endsWith('$') ? key === k.slice(0, -1) : key.startsWith(k)) return new Response('boom', { status })
     if (init.method !== 'GET') return new Response('{}', { status: 200 })
     if (url === api) return new Response(JSON.stringify({ ...closed({ number: 7 }), ...current }), { status: 200 })
     if (url === `${api}/events?per_page=100`) return new Response(JSON.stringify(events), { status: 200 })
@@ -160,6 +176,11 @@ test('end to end: comments or events that cannot be read are decided as no proof
   assert.equal((await runMain({ page2: [c(PASS)], fail: { 'GET /events': 502 } })).writes[0].startsWith('PATCH'), true)
   assert.equal((await runMain({ fail: { 'GET /comments': 502 } })).writes[0].startsWith('PATCH'), true)
   assert.deepEqual((await runMain({ current: { state_reason: 'duplicate' }, fail: { 'GET /comments': 502 } })).writes, [])
+  assert.deepEqual((await runMain({ current: { labels: [{ name: 'wontfix' }] }, fail: { 'GET /events': 502 } })).writes, [], 'an exempt label is still exempt')
+  // independent review R3: the issue itself cannot be read -> the event's own copy decides: closed as completed, so reopen
+  const r = await runMain({ page2: [c(PASS)], fail: { 'GET $': 502 } })
+  assert.equal(r.writes[0], `PATCH ${r.api} {"state":"open"}`)
+  assert.deepEqual((await runMain({ event: { state_reason: 'not_planned' }, fail: { 'GET $': 502 } })).writes, [], 'the event says not planned: left closed')
 })
 
 test('the dry run reports and changes nothing', async () => {

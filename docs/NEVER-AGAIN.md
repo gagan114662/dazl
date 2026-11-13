@@ -22,8 +22,8 @@ Times are US Eastern unless marked Z.
   - Staging: `ops/staging/pull-prebuilt.sh` deploys the build from `.github/workflows/staging-prebuilt.yml`.
     `ops/staging/deploy.sh` now REFUSES its old default on-box build (what `dazl-staging-deploy.timer` or a hand run
     would do) before it fetches or changes anything. An empty `STAGING_BUILD` is refused like an unset one, and on
-    the box a `STAGING_BUILD` that is itself a build or install command (`npm ci`, `next build`, `npm run build`...) is
-    refused too. Only the throwaway-machine e2e test may build, and never where a dazl box path exists.
+    the box the only `STAGING_BUILD` accepted is the prebuilt unpack step `pull-prebuilt.sh` passes; any other command
+    (`npm ci`, `yarn`, `make build`, a wrapper script) is refused. Only the throwaway-machine e2e test may build, and never where a dazl box path exists.
     `docs/STAGING.md` installs and runs only the prebuilt units (a test keeps it from starting the refused ones).
   - `ops/test_never_again.py` tests that refusal and scans every deploy script (`ops/**/deploy*`, `ops/**/pull*`,
     systemd units) for build commands. It runs in `.github/workflows/release-preflight.yml` and
@@ -45,13 +45,13 @@ Times are US Eastern unless marked Z.
 - **Mistake:** issues were closed after a staging check (or a merged PR) while prod still showed the bug: #914, #915,
   #846, #847.
 - **Date:** found 2026-11-13 (listed in the owner's brief that day).
-- **Rule:** an issue closes only with a comment that has, on a line of its own, `Live check (prod 1a2b3c4d): PASS` - the
-  deployed commit from https://dazl.ai/api/health (8 to 40 hex characters) in place of `1a2b3c4d` - and says what was
-  checked on dazl.ai and what it showed.
+- **Rule:** an issue closes only with a comment that has, on a line of its own, `Live check (prod 1a2b3c4d): PASS` and nothing
+  after it - the deployed commit from https://dazl.ai/api/health (8 to 40 lowercase hex characters) in place of
+  `1a2b3c4d`, which is only an example and is refused - and says what was checked on dazl.ai and what it showed.
 - **Enforced by (automated):** `.github/workflows/live-check-gate.yml` runs on every `issues: closed` event and
   reopens the issue (first), then comments why, unless a repo owner/member/collaborator posted that line **with a real
   commit** ("prod staging", a placeholder or a branch name is refused), **with evidence beside it**, **as their own text**
-  (not inside a quote or code, so citing this rule does not count) and **after the issue was last reopened**. It decides
+  (not inside a quote, code or an HTML comment, so citing this rule does not count) and **after the issue was last reopened**. It decides
   on the issue as it is when the check runs, and anything it cannot read counts as no proof. Closing as "not planned"
   or "duplicate", or a `wontfix` / `duplicate` / `not-planned` label, is exempt. Logic and tests:
   `.github/scripts/live-check-gate.mjs`, `.github/scripts/live-check-gate.test.mjs`. Limit: the builder posts as the

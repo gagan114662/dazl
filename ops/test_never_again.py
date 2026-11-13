@@ -81,16 +81,29 @@ class DeployRefusesOnBoxBuild(unittest.TestCase):
             self.assertIn('NEVER-AGAIN.md #1', r.stderr, extra)
         self.assert_untouched()
 
-    def test_a_build_command_given_as_the_build_setting_is_refused_on_the_box(self):
-        for cmd in ('npm ci && npx next build', 'npx next build', 'npm install', 'cd web && npm run build', 'pnpm build', 'NPM  CI'):
+    def test_on_the_box_only_the_prebuilt_unpack_step_is_accepted_as_the_build_setting(self):
+        # Hermes review 1 + independent review R4: a list of known build commands is never complete, so on the box anything
+        # that is not pull-prebuilt.sh's own extract step is refused
+        for cmd in ('npm ci && npx next build', 'npx next build', 'npm install', 'cd web && npm run build', 'pnpm build', 'NPM  CI',
+                    'yarn', 'npm --loglevel=error install', 'npm --prefix . ci', 'npx --yes next@15 build', 'npm run build-prod',
+                    'npm run-script build', 'make build', 'N=npm; $N ci', 'sh -c "npm ci"', 'true', '   ', './build.sh',
+                    "bash '/usr/local/lib/dazl-staging/pull-prebuilt.sh' --extract '/x'; npm ci",
+                    "bash '/usr/local/lib/dazl-staging/pull-prebuilt.sh' --extract '/x' && npx next build",
+                    "bash '/tmp/evil.sh' --extract '/x'", "bash '/x/pull-prebuilt.sh' --extract '$(npm ci)'"):
             r = self.run_deploy(STAGING_BUILD=cmd, DAZL_BOX_MARKERS=str(self.marker()))
             self.assertNotEqual(r.returncode, 0, cmd)
-            self.assertIn('REFUSED: STAGING_BUILD is a build command', r.stderr, cmd)
+            self.assertIn('REFUSED', r.stderr, cmd)
         self.assert_untouched()
-        # the prebuilt extract command pull-prebuilt.sh passes is not a build: past the guard even on the box
-        for cmd in ('true', "bash /usr/local/lib/dazl-staging/pull-prebuilt.sh --extract /var/lib/x/build.tgz"):
-            r = self.run_deploy(STAGING_BUILD=cmd, DAZL_BOX_MARKERS=str(self.marker()))
-            self.assertNotIn('REFUSED', r.stderr, cmd)
+        # the exact command pull-prebuilt.sh passes (ops/staging/pull-prebuilt.sh: build="bash '$self' --extract '$DL'") gets
+        # past the guard on the box, and fails later on this sandbox's missing env file
+        src = (OPS / 'staging' / 'pull-prebuilt.sh').read_text()
+        self.assertIn("""build="bash '$self' --extract '$DL'\"""", src)
+        r = self.run_deploy(STAGING_BUILD="bash '/usr/local/lib/dazl-staging/pull-prebuilt.sh' --extract '/var/lib/dazl-staging-prebuilt'",
+                            DAZL_BOX_MARKERS=str(self.marker()))
+        self.assertNotIn('REFUSED', r.stderr); self.assertNotEqual(r.returncode, 0)
+        # off the box (tests, CI, the throwaway machine) any command is allowed past the guard
+        r = self.run_deploy(STAGING_BUILD='true')
+        self.assertNotIn('REFUSED', r.stderr)
 
     def marker(self):
         m = self.t / 'usr-local-lib-dazl-prod'; m.mkdir(exist_ok=True); return m

@@ -10,14 +10,24 @@
 // commit from https://dazl.ai/api/health). "prod staging", a placeholder (<sha8>, <commit>), a branch name or a word is not
 // a commit. It must start a line of the comment's own text (a heading, list or bold marker may precede it): the same words
 // inside a quote (">"), inline code or a code block are someone citing the rule, not a check.
-export const PASS_RE = /^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?Live check \(prod ([0-9a-f]{8,40})\): PASS\b/m
+// The whole line: nothing may follow PASS ("PASS - actually FAIL" is not a PASS), and at most 3 leading spaces (4 or a tab
+// is a markdown code block).
+export const PASS_RE = /^ {0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?Live check \(prod ([0-9a-f]{8,40})\): PASS(?:\*\*|__)?[ \t]*$/m
+// The commit the reopen comment and docs/NEVER-AGAIN.md show as the example: copying the example is not a check.
+export const EXAMPLE_SHA = '1a2b3c4d'
 export const MIN_EVIDENCE = 80   // characters of the comment besides the PASS line: what was checked on dazl.ai and what it showed
 export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
 export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
 export const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
 // The comment's own text: fenced code blocks, inline code and quoted lines removed.
-const ownText = body => body.replace(/\r/g, '').replace(/^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1[^\n]*$/gm, '').replace(/`[^`\n]*`/g, '').split('\n').filter(l => !/^[ \t]*>/.test(l)).join('\n')
+// Also removed: HTML comments (never shown on the page), a fence that is never closed (code to the end), inline code in
+// any number of backticks, and indented code lines (4 spaces or a tab).
+const ownText = body => body.replace(/\r/g, '').replace(/[​-‍⁠﻿]/g, '')
+  .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+  .replace(/^[ \t]*(```+|~~~+)[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm, '')
+  .replace(/(`+)[^\n]*?\1/g, '')
+  .split('\n').filter(l => !/^[ \t]*>/.test(l) && !/^(?: {4}|\t)/.test(l)).join('\n')
 
 // null, or why the comment is not a prod live check PASS. Exported for the tests and the dry run.
 export function passProblem(c, after = null) {
@@ -26,6 +36,7 @@ export function passProblem(c, after = null) {
   const text = ownText(c.body)
   const m = PASS_RE.exec(text)
   if (!m) return 'no line "Live check (prod <8-40 hex commit>): PASS"'
+  if (m[1] === EXAMPLE_SHA) return `the commit is the example from the instructions (${EXAMPLE_SHA}), not a deployed commit`
   const rest = text.replace(PASS_RE, '').replace(/\s+/g, ' ').trim()
   if (rest.length < MIN_EVIDENCE) return `no evidence beside the PASS line (${rest.length} of ${MIN_EVIDENCE} characters)`
   if (after !== null && !(Date.parse(c.created_at) > Date.parse(after))) return `posted before the issue was last reopened (${after})`
@@ -54,8 +65,9 @@ export const REOPEN_BODY = [
   'Reopened by the live-check gate (docs/NEVER-AGAIN.md #3, `.github/workflows/live-check-gate.yml`).',
   '',
   'An issue closes only after the fix is deployed to production and checked there. Post a new comment that has, on a',
-  'line of its own, `Live check (prod 1a2b3c4d): PASS` - with the deployed commit from https://dazl.ai/api/health (8 to 40',
-  'hex characters) in place of 1a2b3c4d - and says what was checked on dazl.ai and what it showed. Then close it again.',
+  `line of its own with nothing after it, \`Live check (prod ${EXAMPLE_SHA}): PASS\` - with the deployed commit from`,
+  `https://dazl.ai/api/health (8 to 40 lowercase hex characters) in place of ${EXAMPLE_SHA}, which is only an example and is`,
+  'refused - and says what was checked on dazl.ai and what it showed. Then close it again.',
   'A check posted before the issue was last reopened does not count. Closing as "not planned" or "duplicate" (or',
   'labelling it wontfix / duplicate / not-planned) is exempt.',
 ].join('\n')
@@ -82,15 +94,21 @@ async function allPages(token, url) {
 
 // The current issue, its comments and its last reopen, decided. Anything that cannot be read is decided as "no proof"
 // (reopen): the gate fails toward open, never toward a close nobody checked.
-async function check(token, issueUrl) {
-  const issue = await (await gh(token, 'GET', issueUrl)).json()
-  let comments = [], reopenedAt = null, unread = null
-  try {
+const exempt = issue => EXEMPT_REASONS.has(issue?.state_reason) || (issue?.labels || []).some(l => EXEMPT_LABELS.has(String(typeof l === 'string' ? l : l?.name ?? '').toLowerCase()))
+
+// The current issue, its comments and its last reopen, decided. Anything that cannot be read is decided as "no proof"
+// (reopen): the gate fails toward open, never toward a close nobody checked. If the issue itself cannot be read, the
+// event's own copy (fallback) stands in for it.
+async function check(token, issueUrl, fallback = null) {
+  let issue, comments = [], reopenedAt = null, unread = null
+  try { issue = await (await gh(token, 'GET', issueUrl)).json() }
+  catch (e) { if (!fallback) throw e; issue = fallback; unread = `the issue: ${String(e?.message ?? e).slice(0, 160)}` }
+  if (!unread) try {
     comments = await allPages(token, `${issueUrl}/comments`)
     reopenedAt = (await allPages(token, `${issueUrl}/events`)).filter(e => e?.event === 'reopened').map(e => e.created_at).sort().pop() ?? null
   } catch (e) { unread = String(e?.message ?? e).slice(0, 200) }
-  const d = unread && issue.state === 'closed' && !issue.pull_request && !EXEMPT_REASONS.has(issue.state_reason)
-    ? { reopen: true, reason: `the comments or events could not be read (${unread})` } : decide(issue, comments, reopenedAt)
+  const d = unread && issue.state === 'closed' && !issue.pull_request && !exempt(issue)
+    ? { reopen: true, reason: `could not be read, so there is no proof (${unread})` } : unread ? { reopen: false, reason: 'exempt or not a closed issue' } : decide(issue, comments, reopenedAt)
   return { issue, ...d }
 }
 
@@ -100,7 +118,7 @@ export async function main() {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'))
   // decided on the issue as it is NOW (state, reason, labels), not the event's snapshot: a queued run must not reopen an
   // issue since re-closed as not planned
-  const { issue, reopen, reason } = await check(token, event.issue.url)
+  const { issue, reopen, reason } = await check(token, event.issue.url, event.issue)
   console.log(`#${issue.number}: ${reopen ? 'REOPEN' : 'ok'} (${reason})`)
   if (!reopen) return
   // reopen FIRST: the explanation is not a precondition (a failed comment is logged, the issue is still open again)

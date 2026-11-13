@@ -162,11 +162,20 @@ if [ -z "${STAGING_BUILD:-}" ]; then
   for m in $BOX_MARKERS; do
     [ ! -e "$m" ] || fail "REFUSED: $m exists, so this is the dazl box: no on-box build even with DAZL_ALLOW_HOST_BUILD (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
   done
-# A STAGING_BUILD that is itself a build or install command is an on-box build under another name: refused on the box.
-elif printf '%s' "$STAGING_BUILD" | grep -Eqi '(npm|pnpm|yarn|bun)[[:space:]]+(ci|i|install|add|build|run[[:space:]]+build)([^[:alnum:]_-]|$)|next[[:space:]]+build'; then
-  for m in $BOX_MARKERS; do
-    [ ! -e "$m" ] || fail "REFUSED: STAGING_BUILD is a build command and $m exists, so this is the dazl box: no on-box build (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
-  done
+# On the box, a non-empty STAGING_BUILD may be ONE thing: the prebuilt unpack step pull-prebuilt.sh passes
+# (bash '<...>/pull-prebuilt.sh' --extract '<dir>'). Anything else - npm ci, yarn, make build, a wrapper script - could be
+# an on-box build under another name, and no list of build commands is complete: refused. Off the box (tests, CI, the
+# throwaway machine) any command is allowed.
+else
+  case "$STAGING_BUILD" in
+    "bash '"*"/pull-prebuilt.sh' --extract '"*"'") case "$STAGING_BUILD" in *[\;\&\|\`\$\<\>]*|*"'"*"'"*"'"*"'"*"'"*) prebuilt=0 ;; *) prebuilt=1 ;; esac ;;
+    *) prebuilt=0 ;;
+  esac
+  if [ "$prebuilt" = 0 ]; then
+    for m in $BOX_MARKERS; do
+      [ ! -e "$m" ] || fail "REFUSED: STAGING_BUILD is not the prebuilt unpack step and $m exists, so this is the dazl box: no on-box build (docs/NEVER-AGAIN.md #1); nothing fetched, built or changed"
+    done
+  fi
 fi
 
 check_env "$ENV_FILE"
