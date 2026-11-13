@@ -53,8 +53,9 @@ APP_RESTART=${STAGING_RESTART:-$SYSTEMCTL restart $SERVICE}
 worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
 # Stop the worker first and by name, so the command returns only once it has exited: PartOf alone would stop it too,
 # but without waiting for it before the recovery point is taken.
-# worker_stamp: this script stopped an enabled worker and has not started it again yet. Only then does a later run with
-# nothing to deploy start it; a worker an operator stopped by hand (to free memory) is left stopped.
+# worker_stamp: this script stopped an enabled worker and has not (successfully) started it again yet. Only then does a
+# later run with nothing to deploy start it. A worker an operator stopped by hand is not touched by such a run; the next
+# real deploy starts it again, as it always did.
 worker_stamp() { echo "$STATE/worker-stopped-by-deploy"; }
 stop_worker() {
   worker_installed || return 0
