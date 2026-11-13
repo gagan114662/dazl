@@ -108,7 +108,7 @@ bothEngines('#1082: over 80% of a daily cap used before 18:00 UTC alerts the ope
   await resetTinyfishState(db); await db.run('DELETE FROM tinyfish_usage')
   const late: string[] = []
   const off3 = setErrorSinks([r => { if (r.where === 'tinyfish:budget') late.push(r.error.message) }])
-  try { for (let i = 0; i < 95; i++) await one(T9[i % 9], EVENING); assert.equal(late.length, 0) } finally { off3() }
+  try { for (let i = 0; i < 95; i++) await one(T9[i % 9], EVENING); assert.ok(await total(db) > 80, 'fixture: over 80% used after 18:00'); assert.equal(late.length, 0) } finally { off3() }
 })
 
 test('#1082: the run report carries what the platform share left out, so the leads page can say results are thinner', async () => {
@@ -117,7 +117,7 @@ test('#1082: the run report carries what the platform share left out, so the lea
   assert.equal(buildRunReport({}, null, null, 1).capacity, null, 'a run the share never limited says nothing')
 })
 
-test('#1082: /api/health/scheduler shows today\'s TinyFish use per kind and per tenant as counts only (no tenant ids); an unreadable usage table never changes the health status', async () => {
+test('#1082: /api/health/scheduler shows today\'s TinyFish platform totals only (no per-tenant use, no tenant ids); an unreadable usage table never changes the health status', async () => {
   const Database = (await import('better-sqlite3')).default
   const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
   const { schedulerHealthResponse } = await import('../lib/ops/scheduler-runs.ts')
@@ -136,9 +136,7 @@ test('#1082: /api/health/scheduler shows today\'s TinyFish use per kind and per 
   const { sqliteDb } = await import('../lib/db/client.ts')
   const ops = await tinyfishToday(sqliteDb(raw), NOON)
   assert.deepEqual(ops.per_tenant, [25, 7]); assert.doesNotMatch(JSON.stringify(ops), /tenant-secret/)
-  // the operator route needs the shared secret, compared in constant time, like internal/tick
-  const route = (await import('node:fs')).readFileSync(new URL('../app/api/internal/tinyfish-today/route.ts', import.meta.url), 'utf8')
-  assert.match(route, /if \(!secret \|\| got\.length !== want\.length \|\| !timingSafeEqual/)
+  // the operator route's auth is tested through its real handler: test/tinyfish-today-route-1082.test.ts
   // the usage table missing (an unmigrated store): the field is null, the health answer is the same as without it
   const bare = new Database(':memory:')
   const r = await schedulerHealthResponse(bare, NOON)
@@ -174,4 +172,12 @@ bothEngines('#1082: racing tenants and the growth tenant: the reserve holds unde
   const g = got.filter((_, i) => order[i] === 'G').reduce((x, y) => x + y, 0)
   assert.ok(g >= 6, `the growth tenant got its reserve: ${g}`)
   assert.ok(await total(db) <= 30, 'never past the global cap')
+})
+
+bothEngines('#1082: a blank TINYFISH_GROWTH_RESERVE_PCT keeps the default 20% reserve (Number(\'\') would be 0)', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, DAZL_GROWTH_TENANT_ID: 'G', TINYFISH_GROWTH_RESERVE_PCT: '  ' }
+  for (const t of ['A', 'A', 'A', 'A', 'A', 'A', 'B', 'B', 'B']) await fetchUnits(db, t, 10, env)
+  assert.ok(await total(db) <= 24, 'others stop at the pool: the 6-unit reserve is kept')
+  assert.ok((await fetchUnits(db, 'G', 10, env)) >= 6, 'the growth tenant still gets its reserve')
 })

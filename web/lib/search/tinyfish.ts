@@ -232,7 +232,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
     const batch = urls.slice(0, Math.max(0, room))
     const trimmed = Math.max(0, own) - batch.length
     if (batch.length === 0) return { out: own > 0 ? 'capacity' : 'cap', batch, trimmed }
-    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch, trimmed: 0 }
+    if (!(yield* allow(t, now, L.perMinute))) return { out: 'rate', batch, trimmed }
     spent.fetches += batch.length; yield* bump(t, day, tenant, 'fetch', batch.length)
     alert = yield* earlyHighUse(t, day, now, 'fetch', L)
     return { out: 'go', batch, trimmed }

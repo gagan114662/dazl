@@ -10,6 +10,8 @@ export async function GET(req: NextRequest) {
   const secret = process.env.AUTOPILOT_TICK_SECRET
   const got = req.headers.get('authorization') ?? ''
   const want = `Bearer ${secret}`
-  if (!secret || got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // compare BYTES: a non-ASCII header can match the string length but not the byte length (timingSafeEqual would throw)
+  const a = Buffer.from(got), b = Buffer.from(want)
+  if (!secret || a.length !== b.length || !timingSafeEqual(a, b)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json(await tinyfishToday(await getDb(), Math.floor(Date.now() / 1000)), { headers: { 'Cache-Control': 'no-store' } })
 }
