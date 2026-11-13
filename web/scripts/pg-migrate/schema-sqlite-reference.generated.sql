@@ -87,7 +87,7 @@ CREATE TABLE calcom_bookings (
       attendee_email TEXT NOT NULL,
       attendee_name  TEXT,
       lead_id        TEXT,
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'ended', 'held', 'no_show', 'cancelled', 'rescheduled')), start_at INTEGER, end_at INTEGER, ical_uid TEXT, ical_seq INTEGER, detail_ms INTEGER, attendees TEXT, cancelled_ms INTEGER, rescheduled_to TEXT, rescheduled_from TEXT, ended_at INTEGER, no_show_marks TEXT, manual_outcome TEXT CHECK (manual_outcome IS NULL OR manual_outcome IN ('held', 'no_show', 'cancelled')), manual_at INTEGER, manual_by TEXT, last_event_ms INTEGER, lead_prev_stage TEXT,
       PRIMARY KEY (tenant_id, booking_uid)
     );
 
@@ -1228,6 +1228,8 @@ CREATE INDEX autopilot_audit_lead ON autopilot_audit (tenant_id, lead_id, action
 CREATE INDEX autopilot_audit_tenant ON autopilot_audit (tenant_id, created_at);
 
 CREATE INDEX autopilot_work_due ON autopilot_work (tenant_id, next_at);
+
+CREATE INDEX calcom_bookings_tenant_lead ON calcom_bookings (tenant_id, lead_id, booking_uid);
 
 CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 
