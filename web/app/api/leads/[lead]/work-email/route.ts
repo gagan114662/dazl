@@ -4,6 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { findWorkEmail, workEmailProviders, workEmailsFor } from '@/lib/people/work-email'
+import { isWorkEmailFixtureLead } from '@/lib/people/work-email-eligible'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -18,9 +19,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!LEAD_ID.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const db = getScanDb()
-  const own = db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId)
+  const own = db.prepare('SELECT l.company, l.source_kind FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null } | undefined
   if (!own) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ providers: workEmailProviders(db, user.tenantId), lookups: workEmailsFor(db, user.tenantId, lead) })
+  // The test-only work-email fixture lead never calls Apollo (lib/people/work-email.ts), so the panel does not offer it.
+  const providers = workEmailProviders(db, user.tenantId)
+  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead) })
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
