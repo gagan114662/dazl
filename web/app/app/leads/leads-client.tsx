@@ -850,7 +850,7 @@ export default function LeadsClient() {
           <PlanViewCard plan={draftPlan} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
-            {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">Left out of this profile: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
+            {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
