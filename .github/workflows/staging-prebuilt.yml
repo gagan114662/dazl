@@ -1,0 +1,141 @@
+name: staging-prebuilt
+# Staging auto-deploy, build half (docs/STAGING.md, "Automatic deploys from prebuilt builds"). The staging box cannot run
+# `next build` (1.8 GB RAM), so every push to main builds web/ here, on a free GitHub-hosted arm64 runner (the box is
+# arm64, Ubuntu 24.04, Node 22), with staging's public settings and no secrets. The publish job attaches the build to the
+# `staging-prebuilt` prerelease as public assets:
+#   staging-next-<sha>.tgz      .next plus .build-commit (the commit it was built from)
+#   staging-modules-<sha>.tgz   node_modules (the box uses it only when the lockfile changed)
+#   staging-prebuilt-<sha>.json the manifest (commit, arch, Node ABI, lockfile sha256, each file's sha256 and size),
+#                               uploaded LAST, so a manifest always means a complete set
+# and keeps the assets of the newest 3 commits. The box (ops/staging/pull-prebuilt.sh, on a 2-minute timer) downloads the
+# set for main's head, verifies it and runs deploy.sh with it; it needs no token. Pull requests that change this
+# workflow run the build and manifest steps only (nothing is published).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['.github/workflows/staging-prebuilt.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # only main's newest commit matters to the box: a newer push cancels an older build
+  group: staging-prebuilt-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  TAG: staging-prebuilt
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build (staging settings, no secrets)
+        working-directory: web
+        env:
+          DAZL_ENV: staging
+          PUBLIC_BASE_URL: https://staging.dazl.ai
+          NEXT_TELEMETRY_DISABLED: '1'
+          SHA: ${{ github.sha }}
+        run: |
+          npm ci --no-audit --no-fund --loglevel=error
+          echo "$SHA" > .build-commit
+          NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          rm -rf .next/cache
+          test -f .next/BUILD_ID
+          node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
+          mkdir -p ../prebuilt
+          tar -czf "../prebuilt/staging-next-$SHA.tgz" .next .build-commit
+          tar -czf "../prebuilt/staging-modules-$SHA.tgz" node_modules
+      - name: Manifest
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          node - <<'JS'
+          const fs = require('fs'), crypto = require('crypto'), path = require('path')
+          const sha = process.env.SHA, dir = 'prebuilt'
+          const hash = (f) => new Promise((ok, no) => {
+            const h = crypto.createHash('sha256')
+            fs.createReadStream(f).on('data', (d) => h.update(d)).on('end', () => ok(h.digest('hex'))).on('error', no)
+          })
+          const entry = async (file) => ({ file, sha256: await hash(path.join(dir, file)), bytes: fs.statSync(path.join(dir, file)).size })
+          ;(async () => {
+            const m = {
+              commit: sha,
+              arch: process.arch,
+              node_abi: process.versions.modules,
+              node: process.version,
+              lock_sha256: await hash('web/package-lock.json'),
+              next: await entry(`staging-next-${sha}.tgz`),
+              modules: await entry(`staging-modules-${sha}.tgz`),
+              run: `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            }
+            fs.writeFileSync(path.join(dir, `staging-prebuilt-${sha}.json`), JSON.stringify(m, null, 2) + '\n')
+            console.log(JSON.stringify(m, null, 2))
+          })().catch((e) => { console.error(e); process.exit(1) })
+          JS
+          # the build must say which commit it is
+          test "$(tar -xzOf "prebuilt/staging-next-$SHA.tgz" .build-commit)" = "$SHA"
+          ls -l prebuilt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staging-prebuilt-${{ github.sha }}
+          path: prebuilt/
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # release assets of the staging-prebuilt prerelease, nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-prebuilt-${{ github.sha }}
+          path: prebuilt
+      - name: Publish to the staging-prebuilt prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd prebuilt
+          gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 || gh release create "$TAG" -R "$REPO" --prerelease --target "$SHA" \
+            --title "Staging prebuilt builds (automatic)" \
+            --notes "Built by .github/workflows/staging-prebuilt.yml on every push to main and deployed to staging by ops/staging/pull-prebuilt.sh. Assets are named by commit; the newest 3 commits are kept. Not a product release."
+          # A rerun for the same commit: remove that commit's manifest FIRST, so no box ever pairs an old manifest with
+          # new archive bytes (and a run that dies before the manifest leaves no manifest, i.e. "not built yet", never a
+          # permanently mismatched set) - #1061 review finding 8.
+          rid=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          mid=$(gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq ".[] | select(.name == \"staging-prebuilt-$SHA.json\") | .id")
+          if [ -n "$mid" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$mid"; fi
+          gh release upload "$TAG" -R "$REPO" --clobber "staging-next-$SHA.tgz" "staging-modules-$SHA.tgz"
+          # the manifest last: the box acts only once it exists, so it never sees a half-uploaded set
+          gh release upload "$TAG" -R "$REPO" --clobber "staging-prebuilt-$SHA.json"
+      - name: Keep the newest 3 commits' assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rid=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq '.[] | {id, name, created_at}' | jq -s . > assets.json
+          keep=$(jq -r '[.[] | select(.name | test("^staging-prebuilt-[0-9a-f]{40}\\.json$"))] | sort_by(.created_at) | reverse | .[0:3] | .[].name | capture("(?<s>[0-9a-f]{40})").s' assets.json | tr '\n' ' ')
+          keep="$keep $SHA"
+          jq -r '.[] | "\(.id) \(.name)"' assets.json | while read -r id name; do
+            s=$(printf '%s' "$name" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)
+            [ -n "$s" ] || continue # not one of ours: never deleted
+            case " $keep " in *" $s "*) continue ;; esac
+            echo "deleting $name"
+            gh api -X DELETE "repos/$REPO/releases/assets/$id"
+          done

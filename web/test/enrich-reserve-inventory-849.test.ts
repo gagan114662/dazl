@@ -127,6 +127,8 @@ function reservers(sf: ts.SourceFile, rel: string): Reservers {
     const decl = s.parent.parent.parent
     if (s.isTypeOnly || decl.importClause?.isTypeOnly || !ts.isStringLiteral(decl.moduleSpecifier)) continue
     if ((s.propertyName ?? s.name).text === 'reserveCredits' && resolveSpec(rel, decl.moduleSpecifier.text) === 'lib/enrich/credit-pool') reserve.add(s.name.text)
+    // #1036: Find work email's mailbox check reserves through the verifier module's own reserveVerifySlot (checked below to be one)
+    if ((s.propertyName ?? s.name).text === 'reserveVerifySlot' && resolveSpec(rel, decl.moduleSpecifier.text) === 'lib/people/email-pattern') reserve.add(s.name.text)
   }
   // #899: the mailbox verifier's reservation is the operator free-tier ledger, not the workspace credit pool (dazl's own free account,
   // no tenant credits). It counts as a reservation only as the module's own reserveVerifySlot, and only while that function still
@@ -324,7 +326,14 @@ function unreservedVerifier(rel: string, text: string): string[] {
 const VERIFIER_NAMES = /\b(MailboxVerifier|verifierFromEnv|verifyCandidates)\b/
 // Inventoried users (#899): the adapter (implements MailboxVerifier, makes no reservation-free call of its own: verifierFromEnv
 // is the only constructor), and the scan runner (calls verifyJobCandidates, which reserves inside the verifier module).
-const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts']
+const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts']
+// Modules besides the verifier module that call .verify themselves: every such call must be reserved (the same guard rules).
+const VERIFY_CALLERS = ['lib/people/work-email.ts']
+function unreservedVerifyCalls(rel: string, text: string): string[] {
+  const sf = parse(rel, text), rs = reservers(sf, rel)
+  const calls = all(sf, n => ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'verify') as ts.CallExpression[]
+  return calls.filter(c => { const f = enclosingFn(c); return !f || guards(f, c, null, rs).length === 0 }).map(c => `${rel}:${lineOf(sf, c)} verify`)
+}
 const verifierUsers = (srcs: Src[]) => srcs.filter(s => s.rel !== VERIFIER_MODULE && !VERIFIER_USERS.includes(s.rel) && VERIFIER_NAMES.test(s.text)).map(s => s.rel)
 
 test('#849 inventory: only the known enrichment entry points call the Apollo / People Data Labs functions', () => {
@@ -363,6 +372,19 @@ test('#849 inventory: mailbox verification cannot run a provider call without a 
   assert.ok(src, `${VERIFIER_MODULE} exists`)
   assert.deepEqual(unreservedVerifier(VERIFIER_MODULE, src!), [], 'a wired verifierFromEnv needs a reserveCredits before each .verify call')
   assert.deepEqual(verifierUsers(SOURCES), [], 'a new verifier caller must be inventoried here')
+})
+
+test('#1036 inventory: Find work email\'s mailbox check is reserved before its .verify call', () => {
+  for (const rel of VERIFY_CALLERS) {
+    const src = SOURCES.find(s => s.rel === rel)?.text
+    assert.ok(src && /\.verify\(/.test(src), `${rel} still calls .verify (else the list is stale)`)
+    assert.deepEqual(unreservedVerifyCalls(rel, src!), [], `${rel}: a .verify call needs an awaited reserveVerifySlot before it`)
+  }
+  const imp = "import { reserveVerifySlot } from './email-pattern.ts'\n"
+  const fn = (body: string) => `async function checkMailbox(db: D, v: V, a: string) { ${body} }`
+  assert.equal(unreservedVerifyCalls('lib/people/work-email.ts', imp + fn('await v.verify(a)')).length, 1, 'unreserved is caught')
+  assert.equal(unreservedVerifyCalls('lib/people/work-email.ts', fn('await reserveVerifySlot(db, s, m); await v.verify(a)')).length, 1, 'not the verifier module import')
+  assert.deepEqual(unreservedVerifyCalls('lib/people/work-email.ts', imp + fn('try { await reserveVerifySlot(db, s, m) } catch (e) { return }\n  await v.verify(a)')), [], 'reserved (try / exiting catch)')
 })
 
 test('#849 inventory: a wired verifier with no reservation is caught (the check is not vacuous)', () => {

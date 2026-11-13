@@ -1121,7 +1121,7 @@ CREATE TABLE work_email_lookups (
       detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
       source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
       checked_at INTEGER,
-      updated_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL, mailbox_check TEXT CHECK (mailbox_check IS NULL OR mailbox_check IN ('pending','valid','catch_all','undeliverable','uncertain','refused')), mailbox_verifier TEXT CHECK (mailbox_verifier IS NULL OR length(mailbox_verifier) <= 40), mailbox_checked_at INTEGER,
       CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
       CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
       CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
@@ -1370,6 +1370,8 @@ CREATE INDEX warm_user_paths_insert_seq_idx ON warm_user_paths (insert_seq);
 CREATE INDEX warm_user_paths_lead ON warm_user_paths (tenant_id, lead_id);
 
 CREATE INDEX watches_due ON watches (active, next_run_at);
+
+CREATE INDEX work_email_lookups_mailbox_checked ON work_email_lookups (tenant_id, mailbox_checked_at);
 
 CREATE INDEX work_queue_claimable
         ON work_queue(status, not_before, created_at);
