@@ -123,3 +123,13 @@ test('#1168 item 1: the count behind the cost line is this tenant\'s model calls
   assert.equal(await readRefusedModelCalls(db, 'u', 'j'), null)
   assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: await readRefusedModelCalls(db, 'u', 'j') }).summary, /^Actual model cost was not recorded/)
 })
+
+// The real run for this PR found the production build broken at 0f6a7c1d: lib/llm/spend-guard.ts is bundled for the browser (the
+// estimate panel prices with it: app/app/leads/estimate-confirm.tsx -> price-estimate.ts -> spend-guard.ts), and it had gained an
+// import of the server's error recorder (lib/ops/errors.ts -> emitted.ts -> node:fs). It must import nothing server-only.
+test('spend-guard.ts stays browser-safe: no import from lib/ops, lib/db or lib/scan, and no node: module but crypto', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../lib/llm/spend-guard.ts', import.meta.url), 'utf8')
+  const imports = [...src.matchAll(/^import\s+(?!type\b)[^'"]*['"]([^'"]+)['"]/gm)].map(m => m[1])
+  assert.deepEqual(imports.filter(i => /\/(ops|db|scan)\//.test(i) || (i.startsWith('node:') && i !== 'node:crypto')), [], JSON.stringify(imports))
+})

@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { CompletionUsage, DetailedCompletion, Provider } from './provider.ts'
 import type { SharedPool } from './spend-pool.ts'
-import { captureError } from '../ops/errors.ts'
 
 // A run-scoped spend guard. It RESERVES the worst case of every paid call before the call is made and refuses a call
 // that would pass the limit. It is a bound from what the code sends and allows, not a bill:
@@ -242,6 +241,9 @@ export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, 
 // counts) counts the rest of the limit as spent (for a pool: its shortest window). complete() then goes through completeDetailed so its usage is seen too.
 // If that accounting cannot be saved (retried once), the call's result is withheld and SpendAccountingFailed is thrown.
 // Without it, completions keep their worst-case reservation (the scan runner today).
+// Where a failed release of an unsent call's reservation is reported. This module is also bundled for the browser (the estimate
+// panel prices with it), so it cannot import the server's error recorder: the server side (lib/scan/spend-cap.ts) sets it on load.
+export const releaseFailure: { report: (e: unknown) => void } = { report: () => {} }
 export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter, research?: { reserveUsd: number }, settle = false): Provider {
   const g = Array.isArray(gs) ? gs : [gs]
   const inputTokens = async (k: string, prompt: string, f?: typeof fetch) => {
@@ -275,7 +277,7 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
     // failure is recorded: a charge kept for a call never sent must not be silent (review at b8eef37e).
     const giveBack = async () => {
       try { await settleAll(g, -held.usd, 0, held) } catch {
-        try { await settleAll(g, -held.usd, 0, held) } catch (e) { captureError(e, { source: 'worker', where: 'spend-guard:release-unsent' }) }
+        try { await settleAll(g, -held.usd, 0, held) } catch (e) { releaseFailure.report(e) }
       }
     }
     if (!settle) { try { return await call() } catch (e) { if (unsent(e)) await giveBack(); throw e } }

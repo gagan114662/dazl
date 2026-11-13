@@ -57,7 +57,7 @@ import type Database from 'better-sqlite3'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
-import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
+import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, releaseFailure, SpendRefused } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
 import { accountLimits, ownerLimits, OWNER_POOL_LIMIT_REASON, poolWindowsFull, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
@@ -186,6 +186,8 @@ export interface ScanSpendCtx {
   clock?: () => number
 }
 const store = new AsyncLocalStorage<ScanSpendCtx>()
+// a release of an unsent call's reservation that could not be saved (lib/llm/spend-guard.ts guardProvider) is recorded here
+releaseFailure.report = e => { captureError(e, { source: 'worker', where: 'spend-guard:release-unsent', tenantId: store.getStore()?.tenantId, ref: store.getStore()?.jobId }) }
 // #1167 (owner decision): an account at its day or month cap sends NOTHING. Once the account limit refused a paid step of this
 // attempt, every later paid step of the attempt (search, fetch, render, enrichment, model) is refused before it is sent.
 const accountStopped = new WeakSet<ScanSpendCtx>()
