@@ -15,6 +15,11 @@
 //   - A monitor's alert claims the company the same way, and a monitor does not alert an event for a company a
 //     weekly / daily play already alerted when that play's lead carried the same event (same day and kind) or no date
 //     at all; a different dated event still alerts once, as a new signal (lib/monitor-events.ts foldRunEvents).
+// What "alerted" means: the run's mail went out, or (the first play only) the leads were that play's own results on
+// screen. A run whose mail will never be sent releases its hold (releaseRunAlertsStep): a lost alert is as bad as a
+// repeated one. Known limits: a run that holds a company by name only takes the first website any later lead gives
+// that name (a different company with the same name and a website is then treated as already alerted); a monitor's
+// later "now reachable" alert for an event a play mailed is a state change, not a repeat, and still goes out.
 // Identity (found on production's own data, 2026-11-13: OpenRelay and Photon were stored without a website by one run
 // and with openrelay.com / photon.codes by the next, and were mailed twice): a lead is known by its confirmed domain
 // AND by its normalized name (lib/monitor-events.ts alertKeysOf), one row per key. A lead is held when its domain is
@@ -57,6 +62,18 @@ export const ALERT_ROW_SQL = 'SELECT entity_key, play_kind, play_id, job_id, eve
 const ALERT_CLAIM_SQL = 'INSERT INTO play_alerts (tenant_id, entity_key, play_kind, play_id, job_id, event_date, signal_kind, domain_key, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, entity_key) DO NOTHING'
 // a name alerted before any domain was known takes the first domain seen for it
 const BIND_DOMAIN_SQL = 'UPDATE play_alerts SET domain_key = ? WHERE tenant_id = ? AND entity_key = ? AND domain_key IS NULL'
+
+// One claim pass at a time per tenant. On Postgres two passes that claim the same companies in different orders would
+// otherwise wait on each other's uncommitted rows (a deadlock one of them loses); SQLite's write transaction is already
+// exclusive. Taken first by every pass that claims (a play's run, the mail pass, a monitor's fold).
+export function* lockAlertsStep(t: Tx, tenantId: string): TxBody<void> {
+  if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('play_alerts:' || ?, 0)) AS x", [tenantId])
+}
+// A play's run that will never be mailed (the play was paused or deleted before the mail pass, or the account has no
+// confirmed address) gives up what it holds, so another play that finds those companies still mails them.
+export function* releaseRunAlertsStep(t: Tx, tenantId: string, jobId: string): TxBody<number> {
+  return (yield* t.run("DELETE FROM play_alerts WHERE tenant_id = ? AND job_id = ? AND play_kind = 'watch'", [tenantId, jobId])).changes
+}
 
 // Pure: who holds this company, given the rows found under its domain key and its name key. The name row counts unless
 // both sides carry a domain and the domains differ. A row of another run wins over this run's own (so of two runs that

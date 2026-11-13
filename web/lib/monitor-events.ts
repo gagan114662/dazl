@@ -22,7 +22,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { windowStatus } from './scan/window.ts'
-import { alertHolderStep, claimAlertStep, migratePlayAlerts, sameEventAs, type AlertKeys } from './play-alerts.ts'
+import { alertHolderStep, claimAlertStep, lockAlertsStep, migratePlayAlerts, sameEventAs, type AlertKeys } from './play-alerts.ts'
 
 export function migrateMonitorEvents(db: Database.Database): void {
   db.exec(`
@@ -136,6 +136,7 @@ export interface FoldResult { alerts: { kind: AlertKind; company: string; event_
 export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; runId: string; jobId?: string; leads: RunLead[]; policy: AlertPolicy; windowDays: number; now: number }): TxBody<FoldResult> {
   const out: FoldResult = { alerts: [], suppressed: {} }
   const bump = (s: Suppress) => { out.suppressed[s] = (out.suppressed[s] ?? 0) + 1 }
+  yield* lockAlertsStep(t, a.userId)   // #883: one claim pass per tenant at a time (lib/play-alerts.ts)
   // the cursors as they stood before this run (this run's own writes below never shrink its backfill)
   const cursors = new Map((yield* t.all<{ source: string; last_checked_at: number }>('SELECT source, last_checked_at FROM monitor_cursors WHERE monitor_id = ?', [a.monitorId]))
     .map(c => [c.source, Number(c.last_checked_at)] as const))

@@ -12,7 +12,8 @@
 // #883, once per company across plays: before the list is read, the run claims each of those leads in the tenant's
 // alert record (lib/watch.ts claimWatchAlertsStep, the step the scan runner already took when the run's results became
 // final; repeated here so a run whose worker died before that step is still claimed). A company another play's run
-// already alerted is not new, so it is not listed and not counted; a run left with nothing new mails nothing.
+// already alerted is not new, so it is not listed and not counted; a run left with nothing new mails nothing. A run
+// that will never be mailed (paused play, no confirmed address) releases what it holds.
 // To whom: the account's own verified address (the founder of the workspace; never an unverified address).
 // Once only, across ticks, instances and crashes: the run is claimed in the same transaction that reads it, by a
 // reserved row in the play's own memory (watch_seen 'mail:<job id>'; a company key is a domain or [a-z0-9] name and
@@ -23,7 +24,7 @@
 // outbox (and tests read it there). Nothing is sent to any lead or prospect; this mail goes only to the account.
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { claimWatchAlertsStep, type Fence } from './watch.ts'
-import { VISIBLE_LEAD } from './play-alerts.ts'
+import { lockAlertsStep, releaseRunAlertsStep, VISIBLE_LEAD } from './play-alerts.ts'
 import { sendSystemMail } from './system-mail.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { playName, type PlayIcp } from './play-card.ts'
@@ -87,12 +88,16 @@ function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBo
   if (claim.changes !== 1) return null // another tick or instance has it
   // read under the claim: a play paused or deleted since the list was read mails nothing (the claim stays: once only)
   const w = yield* t.get<{ query: string; icp: string | null; active: number }>('SELECT query, icp, active FROM watches WHERE id = ? AND user_id = ?', [d.watch_id, d.user_id])
-  if (!w || Number(w.active) !== 1) return null
+  const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
+  if (!w || Number(w.active) !== 1 || typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) {
+    // #883: this run will never be mailed, so it gives up the companies it holds: another play still mails them
+    yield* lockAlertsStep(t, d.user_id)
+    yield* releaseRunAlertsStep(t, d.user_id, d.job_id)
+    return null
+  }
   yield* claimWatchAlertsStep(t, d.watch_id, d.job_id, now) // #883: a company another play already alerted leaves the list
   const total = Number((yield* t.get<{ n: number }>(NEW_COUNT_SQL, [d.job_id]))?.n ?? 0)
   if (!(total > 0)) return null
-  const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
-  if (typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) return null
   const leads = yield* t.all<{ company: unknown; signal: unknown }>(NEW_LEADS_SQL, [d.job_id, MAIL_LIST_MAX])
   const daily = yield* isFirstPlayRepeatStep(t, d.user_id, d.watch_id)
   return composePlayRunMail({ userId: d.user_id, to, jobId: d.job_id, query: w.query, icp: w.icp, total, leads, base, daily })

@@ -18,7 +18,7 @@ import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmiss
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
 import { alertKeysOf } from './monitor-events.ts'
-import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, migratePlayAlerts, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
+import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
 import { cappedRunBudget, DAY_S, PLAY_SKIPPED, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
@@ -101,7 +101,16 @@ export async function listWatches(db: Db, userId: string) {
 // duplicate an active query. A refused resume leaves the watch paused with its reason and schedule untouched; resuming
 // an already-active watch is a no-op that keeps its next_run_at.
 export async function watchAction(db: Db, userId: string, id: string, action: 'pause' | 'resume' | 'delete', now = nowS()): Promise<boolean | WatchRefusal> {
-  if (action === 'delete') return (await db.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
+  if (action === 'delete') return db.tx(function* (t): TxBody<boolean> {
+    // #883: a run of this play that was never picked up by the mail pass (no 'mail:' marker; the first play's own run,
+    // older than the play, is not such a run) will now never be mailed: it gives up the companies it holds, so another
+    // play that finds them still mails them. What its sent mails alerted stays held.
+    yield* lockAlertsStep(t, userId)
+    yield* t.run(`DELETE FROM play_alerts WHERE tenant_id = ? AND play_kind = 'watch' AND play_id = ? AND job_id IN (
+      SELECT j.id FROM scan_jobs j JOIN watches w ON w.id = j.watch_id WHERE w.id = ? AND w.user_id = ? AND j.created_at >= w.created_at
+        AND NOT EXISTS (SELECT 1 FROM watch_seen s WHERE s.watch_id = w.id AND s.seen_key = 'mail:' || j.id))`, [userId, id, id, userId])
+    return (yield* t.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
+  })
   if (action === 'pause') return (await db.run('UPDATE watches SET active = 0 WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
   return db.tx(function* (t): TxBody<boolean | WatchRefusal> {
     // lock first, then read the watch, so a concurrent resume of the same or a sibling watch is seen
@@ -184,6 +193,7 @@ type AlertLead = WatchLead & { event_date: string | null; signal_kind: string | 
 export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now: number): TxBody<number> {
   const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
   if (!tenant) return 0 // the play was deleted: nothing of it is mailed or listed any more
+  yield* lockAlertsStep(t, tenant)
   let kept = 0
   for (const l of yield* t.all<AlertLead>(SHOWN_SQL, [jobId, watchId, tenant])) {
     const keys = alertKeysOf(l)

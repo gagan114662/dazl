@@ -207,12 +207,75 @@ bothEngines('#883 a company first stored without its website and then with it is
   assert.deepEqual(await newFlags(db, j3), { 'Open Relay, Inc.': 0 })
   assert.equal((await outbox(db, A)).length, 1)
   assert.deepEqual((await alerts(db, A)).map(a => [a.entity_key, a.play_id]), [['d:openrelay.com', seed], ['d:photon.codes', seed], ['n:open relay', seed], ['n:openrelay', seed], ['n:photon', seed]])
+  // documented limit: Ngenaire is held by name only (no website was ever stored), so a later "Ngenaire" with any
+  // website is taken as the same company (the first website binds the name)
+  await runJob(db, A, seed, Q_SEED, NOW + 2.5 * 3600, [NGENAIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 2.5 * 3600 + 60 }), 1)
+  const j5 = await runJob(db, A, sdr, Q_SDR, NOW + 2.75 * 3600, [{ ...NGENAIRE, domain: 'ngenaire.example' }])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 2.75 * 3600 + 60 }), 0)
+  assert.deepEqual(await newFlags(db, j5), { Ngenaire: 0 })
   // another company that is also called Photon, with a different website: a different company, mailed once
   const j4 = await runJob(db, A, sdr, Q_SDR, NOW + 3 * 3600, [{ ...PHOTON_2, domain: 'photon.io' }])
   assert.equal(await sendPlayRunMails(db, { now: NOW + 3 * 3600 + 60 }), 1)
   assert.deepEqual(await newFlags(db, j4), { Photon: 1 })
   assert.deepEqual((await alerts(db, A)).filter(a => /photon/.test(a.entity_key)).map(a => [a.entity_key, a.play_id]), [['d:photon.codes', seed], ['d:photon.io', sdr], ['n:photon', seed]])
 })
+
+bothEngines('#883 no lost alert: a run that will never be mailed (play paused or deleted before the mail pass, no confirmed address) gives up what it holds', async ({ db }) => {
+  const { claimWatchAlerts } = await import('../lib/watch.ts') as unknown as { claimWatchAlerts: (db: Db, watchId: string, jobId: string, now?: number) => Promise<number> }
+  await account(db, A, 'founder@a.example')
+  const sdr = await play(db, A, Q_SDR, NOW - 3 * DAY)
+  const agencies = await play(db, A, Q_AGENCIES, NOW - 3 * DAY)
+  // play 1's run ends (the runner's claim), then the person pauses it before the next tick: its mail is never sent
+  const j1 = await runJob(db, A, sdr, Q_SDR, NOW, PROD_RUN)
+  assert.equal(await claimWatchAlerts(db, sdr, j1, NOW + 5), 3)
+  assert.equal((await alerts(db, A)).length, 3)
+  assert.equal(await watchAction(db, A, sdr, 'pause'), true)
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 60 }), 0)
+  assert.deepEqual(await alerts(db, A), [], 'nothing was mailed, so nothing is held')
+  // so the other play, finding Campfire, mails it
+  await runJob(db, A, agencies, Q_AGENCIES, NOW + 3600, [CAMPFIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 3660 }), 1)
+  assert.deepEqual(listed((await outbox(db, A))[0].body), ['Campfire'])
+
+  // deleted before the mail pass: the same
+  const london = await play(db, A, Q_LONDON, NOW + 2 * 3600)
+  const j3 = await runJob(db, A, london, Q_LONDON, NOW + 3 * 3600, [SMILE])
+  assert.equal(await claimWatchAlerts(db, london, j3, NOW + 3 * 3600 + 5), 1)
+  assert.equal(await watchAction(db, A, london, 'delete'), true)
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 3 * 3600 + 60 }), 0)
+  assert.deepEqual((await alerts(db, A)).map(a => a.entity_key), ['n:campfire'], 'Smile Avenue Dental is free again; Campfire, which WAS mailed, stays held')
+  await runJob(db, A, agencies, Q_AGENCIES, NOW + 5 * 3600, [SMILE, CAMPFIRE])
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 5 * 3600 + 60 }), 1)
+  assert.deepEqual((await outbox(db, A)).map(m => listed(m.body)), [['Campfire'], ['Smile Avenue Dental']])
+
+  // an account with no confirmed address is never mailed: its runs hold nothing
+  await account(db, B, 'founder@b.example')
+  await db.run('UPDATE users SET email_verified_at = NULL WHERE id = ?', [B])
+  const b1 = await play(db, B, Q_SDR, NOW - 3 * DAY)
+  const jb = await runJob(db, B, b1, Q_SDR, NOW, [CAMPFIRE])
+  assert.equal(await claimWatchAlerts(db, b1, jb, NOW + 5), 1)
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 5 * 3600 + 120 }), 0)
+  assert.deepEqual(await alerts(db, B), [])
+})
+
+bothEngines('#883 two claim passes at the same moment over the same companies in opposite orders: each company is held by exactly one run', async ({ db }) => {
+  const { claimWatchAlerts } = await import('../lib/watch.ts') as unknown as { claimWatchAlerts: (db: Db, watchId: string, jobId: string, now?: number) => Promise<number> }
+  await account(db, A, 'founder@a.example')
+  const sdr = await play(db, A, Q_SDR, NOW - 3 * DAY)
+  const agencies = await play(db, A, Q_AGENCIES, NOW - 3 * DAY)
+  // the claim walks a run's leads best first: the two runs score the same four companies in opposite orders
+  const four = [CAMPFIRE, { ...NGENAIRE }, SMILE, ZENITHON]
+  const j1 = await runJob(db, A, sdr, Q_SDR, NOW, four.map((l, i) => ({ ...l, score: 90 - i })))
+  const j2 = await runJob(db, A, agencies, Q_AGENCIES, NOW, four.map((l, i) => ({ ...l, score: 60 + i })))
+  const [k1, k2] = await Promise.all([claimWatchAlerts(db, sdr, j1, NOW + 10), claimWatchAlerts(db, agencies, j2, NOW + 10)])
+  assert.equal(k1 + k2, 4, `each company stays new in exactly one run (${k1} + ${k2})`)
+  const f1 = await newFlags(db, j1), f2 = await newFlags(db, j2)
+  for (const c of Object.keys(f1)) assert.equal(f1[c] + f2[c], 1, c)
+  assert.equal(await sendPlayRunMails(db, { now: NOW + 60 }), [k1, k2].filter(k => k > 0).length)
+  const named = (await outbox(db, A)).flatMap(m => listed(m.body)).sort()
+  assert.deepEqual(named, ['Campfire', 'Ngenaire', 'Smile Avenue Dental', 'Zenithon'])
+}, { pgMax: 4 })
 
 // One scheduled run of a monitor that stored `leads` (dated and verified, as the detector needs), then the tick's fold.
 async function monitorRun(db: Db, t: string, mon: string, at: number, leads: L[]) {
@@ -273,7 +336,7 @@ bothEngines('#883 the first play\'s own leads are held by its automatic repeat: 
   await runJob(db, A, agencies, Q_AGENCIES, NOW + 2 * 3600, [CAMPFIRE, SMILE])
   assert.equal(await sendPlayRunMails(db, { now: NOW + 2 * 3600 + 60 }), 1)
   assert.deepEqual(listed((await outbox(db, A))[0].body), ['Smile Avenue Dental'])
-  assert.equal(first.length, 24)
+  assert.deepEqual(await newFlags(db, first), { Campfire: 1, Chesky: 1, Clark: 1, LeanPBX: 1, Mercury: 1, Ngenaire: 1, beehiiv: 1 })
 })
 
 // The wiring, through the real scan runner (in-memory SQLite, stub provider, stub TinyFish, stub page read; the fixture
