@@ -57,7 +57,7 @@ test('a single condition with two windows becomes an explicit plan gate (other g
   const p = compileTargeting('startups hiring SDRs within 90 days, specifically within 30 days')
   const [c] = conds(p)
   assert.deepEqual([c.kind, c.within_days, c.window_source, p.explicit], ['hiring', 30, 'narrowest', true])
-  const rows = (date: string): ProofRow[] => [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'SDR - posted', source_url: 'https://boards.example/brightloop/sdr', source_date: date }]
+  const rows = (date: string): ProofRow[] => [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR - posted ${date}`, source_url: 'https://boards.example/brightloop/sdr', source_date: date }]
   assert.equal(conditionProof(c, lead('', null), rows(ago(45)), ctx).truth, 'unknown', 'a posting 45 days old is outside the 30-day clock')
   assert.deepEqual([conditionProof(c, lead('', null), rows(ago(10)), ctx).truth, conditionProof(c, lead('', null), rows(ago(10)), ctx).date], ['pass', ago(10)])
   // the same window stated twice is one clock, not an ambiguity
@@ -109,7 +109,7 @@ test('a clock relative to another event is checked for every condition kind, not
   const p = compileTargeting('startups hiring SDRs within 30 days of the raise that raised a seed round')
   const [hiring, seed] = conds(p)
   assert.deepEqual([hiring.kind, hiring.relative_to, hiring.within_days, seed.kind], ['hiring', 'C2', 30, 'funding'])
-  const rows: ProofRow[] = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'SDR - posted', source_url: 'https://boards.example/brightloop/sdr', source_date: ago(5) }]
+  const rows: ProofRow[] = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR - posted ${ago(5)}`, source_url: 'https://boards.example/brightloop/sdr', source_date: ago(5) }]
   // Before #878 this passed on the posting's own now-clock alone, whatever the raise date.
   const old = conditionProof(hiring, lead('', null), rows, ctx, { C2: ago(200) })
   assert.equal(old.truth, 'unknown'); assert.match(old.reason, /not within 30 days after C2/)
@@ -125,7 +125,7 @@ test('two anchor events for one condition: the clock is unresolved, recorded, an
   assert.equal(p.explicit, true)
   assert.match(p.ambiguities[0].chosen, /^neither/)
   assert.match(describePlan(p.root), /clock unresolved/)
-  const rows: ProofRow[] = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'SDR - posted', source_url: 'https://boards.example/b/sdr', source_date: ago(5) }]
+  const rows: ProofRow[] = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR - posted ${ago(5)}`, source_url: 'https://boards.example/b/sdr', source_date: ago(5) }]
   const r = conditionProof(c, lead('', null), rows, ctx, { C2: ago(10), C3: ago(8) })
   assert.deepEqual([r.truth, r.reason], ['unknown', c.clock_conflict])
 })

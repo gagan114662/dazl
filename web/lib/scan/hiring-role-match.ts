@@ -1,8 +1,12 @@
 import { isGtmRole } from '../signals/ats-gtm.ts'
 // Requested POSTING titles, never the buyer personas in ICP.who. Deliberately bounded synonyms:
-// sales ops <-> sales operations, revops <-> revenue operations, admin <-> administrator.
+// sales ops <-> sales operations, revops <-> revenue operations, admin <-> administrator, SDR / BDR / AE <-> the full title.
 // CRM administrator is NOT business systems administrator, Salesforce developer or AE.
-const normal = (s: string): string => s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)).replace(/[^a-z0-9]+/g, ' ').trim()
+// #879: the three sales titles requests and boards both abbreviate (production's own play asks for "their first SDR"; boards post
+// "Sales Development Representative"): SDR(s), BDR(s) and AE(s) read as the full title, and "representatives" as its singular.
+const normal = (s: string): string => s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator')
+  .replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative').replace(/\baes?\b/g, 'account executive')
+  .replace(/\b(?:managers|administrators|executives|engineers|directors|representatives)\b/g, w => w.slice(0, -1)).replace(/[^a-z0-9]+/g, ' ').trim()
 export interface RequestedHiringRole { term: string; normalized: string }
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
