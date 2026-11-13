@@ -31,9 +31,11 @@ const CAUSE: Record<string, ResearchCause> = {
 // added to exactly one of them (test/lead-state.test.ts pins this against the Leads view's reason labels), or it fails closed to research on Home.
 export const RESEARCH_REASONS: ReadonlySet<string> = new Set(['outside_window', 'outside_window_undated', 'counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
 
-// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening. A person's check of the source cannot change it, so a lead
-// confirmed out of one of these stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable (currentnessHeld, lib/outreach/currentness.ts).
-const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed'])
+// Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening, or a failed
+// REQUIRED check (sales_hiring_check_failed, #683 round 2). A person's check of the source cannot change any of these, so
+// a lead confirmed out of one stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable
+// (currentnessHeld, lib/outreach/currentness.ts).
+const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
 export function uncheckableCause(reason: string | null | undefined): ResearchCause | null {
   return reason && UNCHECKABLE.has(reason) ? CAUSE[reason] : null
 }
@@ -44,9 +46,19 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   // A date problem outranks any other reason: a blocked page with no usable date is still undated research.
   if (r === 'outside_window_undated' || (l.window_held && !date)) return 'undated'
   if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
+  if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries
   if (l.window_held) return 'older'
   if (l.currentness_held || !date || l.date_status !== 'verified') return 'undated'
   return 'unsupported'
+}
+
+// A lead in the review list (it carries a review_reason): can a person's check of the source still make it usable? The ONE verdict Home's
+// journey (heldState), the Campaigns funnel, a campaign's page and the Home checklist all count by (#683), so no page calls a research-only
+// lead a review item. A time-window hold survives confirmation; an unknown, empty or non-string reason fails closed to research.
+// A REQUIRED check that has not passed (gate_held: lib/scan/held-state.ts requiredGateHeld, the draft guard's own verdict) survives it too (#1062).
+export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown; gate_held?: unknown }): boolean {
+  const r = l.review_reason
+  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held && !l.gate_held
 }
 
 export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
@@ -56,7 +68,7 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   const r = l.review_reason ?? ''
   const cause = researchCause(l)
   // A hold a look at the source can resolve is reviewable unless a time window holds the lead: confirming lifts the first, never the second.
-  if (REVIEWABLE.has(r) && !l.window_held) return { state: 'review', cause: null }
+  if (reviewIsActionable(l)) return { state: 'review', cause: null }
   if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
   return { state: 'research', cause }
 }

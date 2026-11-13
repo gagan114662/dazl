@@ -38,13 +38,50 @@ test('a run with results is restated from its leads as they stand now', () => {
   const found = runStatusOf(job({ candidates: 3, verified: 3, lead_count: 3 }) as never)
   const row = (o: Record<string, unknown> = {}) => ({ evidence_excerpt: 'quoted', confidence: 80, human_confirmed_at: null, review_reason: null, quarantined_at: null, ...o })
   const q = currentQual([row(), row({ evidence_excerpt: null, confidence: null, review_reason: 'quote_unconfirmed' }), row({ quarantined_at: 1 })])
-  assert.deepEqual(q, { leads: 3, sourceChecked: 1, confirmedByYou: 0, needsReview: 1, unverified: 0, rejected: 1 })
+  assert.deepEqual(q, { leads: 3, sourceChecked: 1, confirmedByYou: 0, needsReview: 1, research: 0, unverified: 0, rejected: 1 })
   assert.equal(currentRun(found, q).label, '3 leads found: 1 source-checked, 0 confirmed by you, 1 needs your review, 1 rejected', 'not the scan-time 3 source-checked')
-  const reviewOnly = currentRun(found, currentQual([row({ evidence_excerpt: null, confidence: null, review_reason: 'x' }), row({ quarantined_at: 1 })]))
+  const reviewOnly = currentRun(found, currentQual([row({ evidence_excerpt: null, confidence: null, review_reason: 'quote_unconfirmed' }), row({ quarantined_at: 1 })]))
   assert.deepEqual([reviewOnly.group, reviewOnly.tag], ['results', 'Needs your review'])
+  // #683: an unknown reason fails closed to research, never a review item.
+  const unknownOnly = currentRun(found, currentQual([row({ evidence_excerpt: null, confidence: null, review_reason: 'x' }), row({ quarantined_at: 1 })]), 'Dentists in Ohio')
+  assert.deepEqual([unknownOnly.group, unknownOnly.tag, unknownOnly.next], ['results', 'Research only', { text: 'Change the search', href: '/app/leads?q=Dentists%20in%20Ohio' }])
   const none = currentRun(found, currentQual([row({ quarantined_at: 1 }), row({ quarantined_at: 2 })]), 'Dentists in Ohio')
   assert.deepEqual([none.group, none.tag, none.label, none.next], ['no_match', 'None passed', 'None passed: you rejected all 2 leads this search found', { text: 'Try a broader search', href: '/app/leads?q=Dentists%20in%20Ohio' }])
   // Not a run with results (failed, running, nothing extracted): left as recorded.
   const failed = runStatusOf(job({ status: 'failed', error: 'key_rejected' }) as never)
   assert.deepEqual(currentRun(failed, currentQual([row({ quarantined_at: 1 })])), failed)
+})
+
+test('#683: a lead confirmed OUT of a hold a check cannot resolve stays research, never passed', () => {
+  const row = (o: Record<string, unknown> = {}) => ({ evidence_excerpt: null, confidence: null, human_confirmed_at: null, review_reason: null, quarantined_at: null, ...o })
+  // "Keep as research" clears review_reason and sets human_confirmed_from; a window hold can also stand with no review_reason at all.
+  const w1 = row({ human_confirmed_at: 5, human_confirmed_from: 'outside_window_undated', window_held: true })
+  const c1 = row({ human_confirmed_at: 5, human_confirmed_from: 'counterparty_signal' })
+  const q = currentQual([w1, c1])
+  assert.deepEqual(q, { leads: 2, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 2, unverified: 0, rejected: 0 }, 'neither counts as confirmedByYou')
+  const found = runStatusOf(job({ candidates: 2, verified: 0, needs_review: 2, lead_count: 2 }) as never)
+  const run = currentRun(found, q, 'Dentists in Ohio')
+  assert.deepEqual([run.group, run.tag, run.next], ['results', 'Research only', { text: 'Change the search', href: '/app/leads?q=Dentists%20in%20Ohio' }])
+  assert.doesNotMatch(run.next!.text, /review/i)
+  // A confirm-from reason a check CAN resolve stays passed: confirming it was the fix, so it counts toward confirmedByYou.
+  const fixed = row({ human_confirmed_at: 5, human_confirmed_from: 'quote_unconfirmed' })
+  assert.deepEqual(currentQual([fixed]), { leads: 1, sourceChecked: 0, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 0, rejected: 0 })
+  // Confirmed OUT of a failed REQUIRED check ("Keep as research", #683 round 2): stays research, never confirmedByYou.
+  const gateFailed = row({ human_confirmed_at: 5, human_confirmed_from: 'sales_hiring_check_failed' })
+  assert.deepEqual(currentQual([gateFailed]), { leads: 1, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 1, unverified: 0, rejected: 0 })
+})
+
+// #683 round 2: a lead this check cannot release ("research only") must not drown out a different lead that is still
+// plainly actionable by checking its source - "search again" would be wrong advice for the unverified one.
+test('#683 round 2: a mixed research-only + unverified result still offers to review, never "search again"', () => {
+  // candidates/verified on the job itself only decide the group ('results'); the restated label below comes from q.
+  const found = runStatusOf(job({ candidates: 2, verified: 1, needs_review: 0, lead_count: 2 }) as never)
+  const q = { leads: 2, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 1, unverified: 1, rejected: 0 }
+  const run = currentRun(found, q, 'Dentists in Ohio')
+  assert.doesNotMatch(run.label + ' ' + (run.next?.text ?? ''), /change the search|search again/i, 'the unverified lead can still be checked - this must not tell the user to search again')
+  assert.match(run.label, /1 research only/)
+  assert.match(run.label, /1 unverified/)
+  // #683 round 3 (haiku): the tag must agree with the label/next-action guard above - 'Research only' would wrongly
+  // imply nothing here can be changed, while the unverified lead can still be checked.
+  assert.equal(run.tag, 'Not verified yet')
 })
