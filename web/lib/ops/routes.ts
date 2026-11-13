@@ -18,6 +18,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/billing/portal',
   '/api/billing/webhook',
   '/api/campaigns',
+  '/api/home/results',
   '/api/campaigns/[id]',
   '/api/client-errors',
   '/api/crm',
