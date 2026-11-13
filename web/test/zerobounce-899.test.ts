@@ -139,7 +139,6 @@ test('#899 job check: the guessed (not the published) address is checked; only t
   assert.deepEqual({ leads: v.leads, checked: v.checked, verified: v.verified }, { leads: 1, checked: 1, verified: 1 })
   assert.deepEqual(db.prepare("SELECT address, verification, verifier FROM email_candidates WHERE tier = 'guessed'").all(), [{ address: 'cara.diaz@acmelogistics.com', verification: 'verified', verifier: 'zerobounce' }])
   assert.deepEqual(db.prepare("SELECT value FROM lead_enrichments WHERE value LIKE '%cara.diaz%'").all(), [], 'a verified guess is still not a contact')
-  assert.equal((await verifyJobCandidates(db, 'B', job, zeroBounceVerifier('k', (async () => { throw new Error('must not call') }) as unknown as typeof fetch), { env: ON, now: NOW })).leads, 0, 'another tenant cannot check this job\'s candidates')
 })
 
 test('#899 job check: a stop (no credits) ends the whole job after one request; the key never reaches a stored row', async () => {
@@ -295,4 +294,22 @@ test('#899 staging fake verifier: only with DAZL_ENV=staging AND DAZL_STAGING_FA
   assert.deepEqual(Object.values(out), ['deliverable', 'undeliverable', 'catch_all', 'unknown', 'refused'])
   await assert.rejects(fake.verify('nocredits@acme.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'stop')
   assert.equal(verifierFromEnv({ DAZL_ENV: 'staging' }), null, 'staging without the flag and without a key: no verifier')
+})
+
+test('#899 ZeroBounce "valid" on a catch-all domain is a catch-all, never verified (accept_all, role_based_accept_all, catchall_domain)', async () => {
+  for (const body of [{ status: 'valid', sub_status: 'accept_all' }, { status: 'valid', sub_status: 'role_based_accept_all' }, { status: 'valid', sub_status: '', catchall_domain: true }])
+    assert.equal((await zeroBounceVerifier('k', answer(body)).verify('a@b.example')).outcome, 'catch_all', JSON.stringify(body))
+  assert.equal((await zeroBounceVerifier('k', answer({ status: 'valid', sub_status: '', catchall_domain: false })).verify('a@b.example')).outcome, 'deliverable')
+})
+
+test('#899 tenant scoping: another tenant gets no lead and sends nothing while this tenant\'s guess is still unchecked', async () => {
+  const { db, job } = await crawl(ON)
+  assert.deepEqual(db.prepare("SELECT tenant_id, verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ tenant_id: 'A', verification: 'none' }])
+  let calls = 0
+  const v = await verifyJobCandidates(db, 'B', job, zeroBounceVerifier('k', (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch), { env: ON, now: NOW })
+  assert.equal(calls, 0); assert.equal(v.leads, 0)
+  assert.deepEqual(db.prepare("SELECT verification, verifier FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'none', verifier: null }])
+  let callsLead = 0
+  const r = await verifyCandidates(db, 'B', 'L1', zeroBounceVerifier('k', (async () => { callsLead++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch), { env: ON, now: NOW })
+  assert.equal(callsLead, 0); assert.equal(r.checked, 0)
 })

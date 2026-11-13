@@ -7,7 +7,7 @@
 // verifyMonthlyCap). ZeroBounce documents that an "unknown" result never consumes a credit.
 //
 // Mapping (fail closed: only an explicit 'valid' is deliverable):
-//   valid -> deliverable; catch-all -> catch_all (never verified: DECISIONS 2026-10-26); invalid -> undeliverable;
+//   valid -> deliverable (but valid + sub_status accept_all / role_based_accept_all or catchall_domain -> catch_all); catch-all -> catch_all (never verified: DECISIONS 2026-10-26); invalid -> undeliverable;
 //   unknown -> unknown; spamtrap / abuse / do_not_mail -> refused (dazl will not use the address);
 //   an error body (bad key, no credits), a non-200, an unreadable body or any other status -> thrown, which the caller records
 //   as 'uncertain' and never as verified.
@@ -44,7 +44,9 @@ export function zeroBounceVerifier(apiKey: string, fetchImpl: typeof fetch = fet
         const status = typeof j?.status === 'string' ? j.status : ''
         const sub = typeof j?.sub_status === 'string' && j.sub_status ? ` (${j.sub_status.slice(0, 40)})` : ''
         switch (status) {
-          case 'valid': return { outcome: 'deliverable', detail: `zerobounce valid${sub}` }
+          // ZeroBounce answers 'valid' with sub_status accept_all / role_based_accept_all (or catchall_domain: true) for a domain that
+          // accepts every recipient: that proves nothing about this mailbox, so it is a catch-all, never verified (DECISIONS 2026-10-26).
+          case 'valid': return (j.catchall_domain === true || /^(?:role_based_)?accept_all$/.test(String(j.sub_status ?? ''))) ? { outcome: 'catch_all', detail: `zerobounce valid${sub}, catch-all domain` } : { outcome: 'deliverable', detail: `zerobounce valid${sub}` }
           case 'catch-all': case 'catch_all': return { outcome: 'catch_all', detail: `zerobounce catch-all${sub}` }
           case 'invalid': return { outcome: 'undeliverable', detail: `zerobounce invalid${sub}` }
           case 'unknown': return { outcome: 'unknown', detail: `zerobounce unknown${sub}` }
