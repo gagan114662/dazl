@@ -58,13 +58,18 @@ export function personalLocals(html: string, site: string): string[] {
 
 // The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
 // the site printed it, never rebuilt onto another domain.
-export function personalAddresses(html: string, site: string): { local: string; address: string }[] {
-  const out = new Map<string, { local: string; address: string }>()
+// at: where the address is printed on the page (its first 6 places, with the printed length), recorded in this ONE pass so nothing
+// ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
+export function personalAddresses(html: string, site: string): { local: string; address: string; at: { i: number; len: number }[] }[] {
+  const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[] }>()
   for (const m of html.matchAll(/([A-Z0-9._%+-]{2,64})@([A-Z0-9.-]+\.[A-Z]{2,})/gi)) {
     const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
     if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue
     const address = `${local}@${domain}`
-    if (address.length <= 254) out.set(address, { local, address })
+    if (address.length > 254) continue
+    const had = out.get(address)
+    if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }] })
+    else if (had.at.length < 6) had.at.push({ i: m.index, len: m[0].length })
   }
   return [...out.values()]
 }
@@ -114,12 +119,50 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 // the known formats of their name). Stored as printed (lower-cased), with the page it was printed on. Not a guess.
 // Attribution needs the page evidence to identify the person unambiguously: when another named person (people) could own
 // the same printed address, it is attributed to no one. A published address is never proof of a verified mailbox.
-export function publishedFor(name: Name, seen: { address: string; url: string }[], people: Name[] = [name]): { address: string; url: string } | null {
+// #1036: a local part that is ONE name alone ('nora@', 'wall@') names whoever on the site shares that name, and the crawl keeps only
+// buyer-role people, so the real owner may not be among `people`. Such an address is attributed only on the page's OWN pairing
+// (`ctx`: every place the crawl saw the address printed, on any page). Fail closed:
+//   - some place must hold this person's first and last name (a middle initial allowed) in the SAME attribute value or text node
+//     as the address (a team card's data attribute "Maya Thornton maya@...", or the text "Maya Thornton - maya@..."). Text that is
+//     merely nearby (a neighbouring heading or card) is never a pairing;
+//   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
+//     around a text-node place, or in the attribute / text node of ANY other place the address is printed ("Maya Ortiz", "maya",
+//     "Michael Jordan" for jordan@). Otherwise it is nobody's.
+export interface AddressContext { tight: string; wide: string; attr: boolean }
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
+// This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
+// "Maya Ortiz Thornton Realty" must not read as Maya [Ortiz] Thornton), no punctuation between them ("Maya, Thornton Realty" is a
+// first-name-only staffer at a firm named after the owner), and not followed by a company word ("Maya Thornton Realty").
+const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|&|and'
+function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
+  const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  const own = new RegExp(`(?<![A-Za-z])${n.first}(?:[ \\t]+[A-Za-z]\\.?)?[ \\t]+${n.last}(?:['\u2019]s)?(?![A-Za-z])(?![ \\t]+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  let found = false
+  const rest = raw.replace(own, () => { found = true; return ' | ' })
+  return { rest: nameWords(rest), found }
+}
+export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
+  if (!ctx?.length) return false
+  let paired = false
+  for (const c of ctx) {
+    const tight = withoutOwnName(c.tight, n)
+    if (tight.rest.includes(local)) return false                                         // someone else sharing the name, in the same attribute / text
+    // ... or in the text around the place. Only an attribute that ITSELF pairs the address with this person (a card's own data
+    // attribute) stands on its own; a bare mailto in someone else's card is judged by the text around it.
+    if (!(c.attr && tight.found) && withoutOwnName(c.wide, n).rest.includes(local)) return false
+    if (tight.found) paired = true
+  }
+  return paired
+}
+export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
+  const single = new Set([localFor('first', name), localFor('last', name)])
   const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
   return seen.find(s => {
     const local = s.address.split('@')[0]
     if (!mine.has(local)) return false
+    if (single.has(local) && !singleNamePairing(local, name, s.ctx)) return false
     const owners = ownersOf(local, all)
     return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
   }) ?? null
@@ -334,13 +377,32 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
 // addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
-// Writes nothing when the flag is off or the lead is not shown to be in the US.
+// #1036 (decision 2026-11-12: "checked" = Apollo verified OR an address published on the company's confirmed site; pattern
+// guessing stays off): the PUBLISHED tier is recorded whatever the flag says (US evidence still required, as for every recorded
+// address); only pattern GUESSES also need EMAIL_GUESS_ENABLED. Before this, the flag being off (prod) also
+// dropped every printed address, so Find work email's free tier could never find one.
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
-  if (!emailGuessEnabled(ctx.env ?? process.env)) return null
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; ctx?: AddressContext[] }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   const us = usEvidence(ctx.homeText, ctx.where)
+  const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
+  const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
+  const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  // The published tier first, flag on or off (one insert for both paths). US-only like every recorded address (DECISIONS 2026-10-26):
+  // a non-US site records nothing, so no non-US person's address is ever kept at rest.
+  let pubWritten = 0
+  if (pubAll.length && us.us) {
+    migrateEmailGuess(db)
+    const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
+    for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+  }
+  if (!emailGuessEnabled(ctx.env ?? process.env)) {
+    if (!pubWritten && !(pubAll.length && us.us)) return null
+    const n = pubWritten
+    const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
+    return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
+  }
   if (!us.us) {
     // This crawl no longer shows the company in the US: guesses recorded on earlier US evidence lose it, so none of them can be
     // sent to the mailbox check (verification only selects rows with a country_basis). Checked rows keep their history.
@@ -362,9 +424,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const pattern = rankPattern(locals, allNames)
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
-  let pub = 0, n = 0
-  const insPub = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
-  for (const x of published) pub += insPub.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+  const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
   if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
   const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
   const evidence: { person: string; address: string; url: string | null }[] = []
