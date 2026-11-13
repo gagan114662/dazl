@@ -36,11 +36,13 @@ if (!up) { srv.kill(); rmSync(tmp, { recursive: true, force: true }); throw new 
 
 
 const NOW = Math.floor(Date.now() / 1000)
-const FULL = { window_days: 30, since: NOW - 30 * 86400, tiles: { leads: 4, contacted: 4, replied: 2, interested: 1 },
+const FULL = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, tiles: { leads: 4, contacted: 4, replied: 2, interested: 1 },
   by_signal: [{ signal: 'hiring', leads: 2, contacted: 2, replied: 1 }, { signal: 'raised_funding', leads: 1, contacted: 2, replied: 1 }, { signal: 'unknown', leads: 1, contacted: 0, replied: 0 }],
   latest_leads: [{ id: 'l1', company: 'Bright Smile Dental', signal: 'hiring', job_id: 'a'.repeat(24), created_at: NOW - 86400 }],
   latest_replies: [{ thread_id: 't1', company: 'Lakeview Dental Group', classification: 'positive', received_at: NOW - 3600 }] }
-const ZERO = { window_days: 30, since: NOW - 30 * 86400, tiles: { leads: 0, contacted: 0, replied: 0, interested: 0 }, by_signal: [], latest_leads: [], latest_replies: [] }
+const ZERO = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, tiles: { leads: 0, contacted: 0, replied: 0, interested: 0 }, by_signal: [], latest_leads: [], latest_replies: [] }
+// reply reading off (the API's null): unknown, never 0
+const OFF = { ...FULL, reply_reading: false, tiles: { ...FULL.tiles, replied: null, interested: null }, by_signal: FULL.by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })) }
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
 async function open(width, results) {
@@ -102,7 +104,16 @@ try {
     await page.getByTestId('results-empty').waitFor({ timeout: 20000 })
     assert.match(await page.getByTestId('results-empty').textContent(), /Run your first play/)
     assert.equal(await page.getByTestId('results-empty').getByRole('link', { name: 'Run your first play' }).getAttribute('href'), '/app/leads')
-    out.push('new workspace: zeros + Run your first play'); await ctx.close() }
+    out.push('nothing in 30 days (business saved, no plays): zeros + Run your first play'); await ctx.close() }
+  { const { ctx, page } = await open(390, OFF)
+    await page.getByTestId('reading-off').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('reading-off').textContent(), /unknown, not zero/)
+    assert.equal(await page.getByTestId('reading-off').getByRole('link').getAttribute('href'), '/app/settings#gmail')
+    for (const id of ['replied', 'interested']) assert.match(await page.getByTestId(`tile-${id}`).textContent(), /unknown/, `${id}: unknown, not a number`)
+    assert.equal(await page.getByTestId('tile-contacted').textContent(), '4Contacted')
+    assert.match(await page.getByTestId('by-signal').textContent(), /unknown/)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390: no horizontal scroll')
+    out.push('reply reading off: Replied and Interested unknown, with the way to turn it on'); await ctx.close() }
   { const { ctx, page } = await open(1280, 'fail')
     await page.getByTestId('results-unread').waitFor({ timeout: 20000 })
     assert.equal(await page.getByTestId('home-results').count(), 0, 'a failed read shows no tiles (never zeros)')

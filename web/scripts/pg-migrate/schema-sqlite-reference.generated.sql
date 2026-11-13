@@ -1287,6 +1287,8 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
+CREATE INDEX leads_job_created ON leads (scan_job_id, created_at);
+
 CREATE INDEX lifecycle_events_email ON lifecycle_events (email);
 
 CREATE INDEX memberships_member ON memberships (member_id);

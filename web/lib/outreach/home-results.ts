@@ -5,9 +5,12 @@
 //  - replied: of those sent messages, the ones with a person-written reply (a reply matched to the message,
 //    inbound_messages.outreach_message_id, classified positive / negative / other / opt_out / uncertain - never an
 //    auto-reply or any bounce notice);
-//  - interested: of those, the ones whose deciding reply is positive - the Inbox's rule (lib/outreach/inbox.ts): the
-//    newest reply that is not an auto-reply or soft bounce, so "yes" then "no" (or a bounce notice) is not interested.
-// New leads are the ones the Leads page shows: not rejected, not hidden as a poor fit (fit <= 1), not test fixtures.
+//  - interested: of those, the ones with a reply thread whose deciding reply is positive - the Inbox's rule
+//    (lib/outreach/inbox.ts): per Gmail thread, the newest message that is not an auto-reply or soft bounce, so "yes"
+//    then "no" (or a delivery notice in the same thread) is not interested, and a notice in a thread of its own does not
+//    undo the yes. The tile's Inbox link (?class=positive) lists those same threads, over all time.
+// New leads are the ones the Leads list shows: not rejected, not hidden as a poor fit (fit <= 1; lib/play-mail.ts
+// VISIBLE_LEAD), not test fixtures (lib/scan/store.ts and store-db.ts list reads leave out source_kind 'test').
 // The latest replies are replies to those same messages (sent in the window), so the list never shows a reply the tiles
 // do not count. A sent message whose lead row is gone still counts, under no signal type.
 // Per signal type, each lead counts under its own stored type (leads.signal_kind), so a reply is counted once, under the
@@ -23,17 +26,22 @@ export const RESULTS_WINDOW_DAYS = 30
 const PERSON_REPLY = ['positive', 'negative', 'other', 'opt_out', 'uncertain']
 // The Inbox's deciding reply (lib/outreach/inbox.ts): the newest message that is not a machine's (NOT_A_PERSON)
 const MACHINE = sqlList(NOT_A_PERSON)
+// A message's lead labels it only when the lead's scan is the same tenant's (outreach_messages.lead_id has no tenant
+// binding): another workspace's lead never lends its company or signal type; that message counts under no type.
+const OWN_LEAD = 'EXISTS (SELECT 1 FROM scan_jobs lj WHERE lj.id = l.scan_job_id AND lj.user_id = m.tenant_id)'
 
 export interface HomeResults {
   window_days: number
   since: number
-  tiles: { leads: number; contacted: number; replied: number; interested: number }
-  by_signal: { signal: string; leads: number; contacted: number; replied: number }[]
+  // false: Gmail reply reading is off, so a missing reply is unobserved: replied / interested are null (unknown), not 0
+  reply_reading: boolean
+  tiles: { leads: number; contacted: number; replied: number | null; interested: number | null }
+  by_signal: { signal: string; leads: number; contacted: number; replied: number | null }[]
   latest_leads: { id: string; company: string; signal: string; job_id: string; created_at: number }[]
   latest_replies: { thread_id: string; company: string; classification: string; received_at: number }[]
 }
 
-export async function homeResults(db: Db, tenantId: string, now: number = Math.floor(Date.now() / 1000)): Promise<HomeResults> {
+export async function homeResults(db: Db, tenantId: string, now: number = Math.floor(Date.now() / 1000), replyReading = true): Promise<HomeResults> {
   const since = now - RESULTS_WINDOW_DAYS * 86400
   const marks = PERSON_REPLY.map(() => '?').join(', ')
   // leads found in the window, by type (the tenant's own scans only)
@@ -44,11 +52,12 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const sentRows = await db.all<{ kind: string | null; sent: number | string; replied: number | string; interested: number | string }>(
     `SELECT l.signal_kind AS kind, COUNT(*) AS sent,
        SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification IN (${marks})) THEN 1 ELSE 0 END) AS replied,
-       SUM(CASE WHEN (SELECT r.classification FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id AND r.classification NOT IN ${MACHINE}
-                      ORDER BY r.received_at DESC, r.gmail_id DESC LIMIT 1) = 'positive' THEN 1 ELSE 0 END) AS interested
-     FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id
+       SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages p WHERE p.tenant_id = m.tenant_id AND p.outreach_message_id = m.id AND p.classification IN (${marks})
+                      AND (SELECT d.classification FROM inbound_messages d WHERE d.tenant_id = p.tenant_id AND d.thread_id = p.thread_id AND d.classification NOT IN ${MACHINE}
+                           ORDER BY d.received_at DESC, d.gmail_id DESC LIMIT 1) = 'positive') THEN 1 ELSE 0 END) AS interested
+     FROM outreach_messages m LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
      WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
-     GROUP BY l.signal_kind`, [...PERSON_REPLY, tenantId, since])
+     GROUP BY l.signal_kind`, [...PERSON_REPLY, ...PERSON_REPLY, tenantId, since])
   const kind = (k: string | null) => k || 'unknown'
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
@@ -63,11 +72,18 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
     .map(r => ({ id: r.id, company: r.company || 'Unnamed company', signal: r.signal || '', job_id: r.job_id, created_at: Number(r.created_at) }))
   const latest_replies = (await db.all<{ thread_id: string; company: string | null; classification: string; received_at: number | string }>(
     `SELECT r.thread_id, l.company, r.classification, r.received_at FROM inbound_messages r
-     JOIN outreach_messages m ON m.id = r.outreach_message_id AND m.tenant_id = r.tenant_id LEFT JOIN leads l ON l.id = m.lead_id
+     JOIN outreach_messages m ON m.id = r.outreach_message_id AND m.tenant_id = r.tenant_id LEFT JOIN leads l ON l.id = m.lead_id AND ${OWN_LEAD}
      WHERE r.tenant_id = ? AND r.classification IN (${marks}) AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0
      ORDER BY r.received_at DESC, r.gmail_id DESC LIMIT 5`, [tenantId, ...PERSON_REPLY, since]))
     .map(r => ({ thread_id: r.thread_id, company: r.company || 'Unknown company', classification: r.classification, received_at: Number(r.received_at) }))
-  return { window_days: RESULTS_WINDOW_DAYS, since, tiles: { leads: sum('leads'), contacted: sum('contacted'), replied: sum('replied'), interested }, by_signal, latest_leads, latest_replies }
+  const tiles = { leads: sum('leads'), contacted: sum('contacted'), replied: sum('replied') as number | null, interested: interested as number | null }
+  // reading off: replies to what was sent are unobserved (nothing sent: zero is still certain); the replies already
+  // stored stay listed as what was seen
+  if (!replyReading && tiles.contacted > 0) {
+    tiles.replied = null; tiles.interested = null
+    return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: false, tiles, by_signal: by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })), latest_leads, latest_replies }
+  }
+  return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, latest_leads, latest_replies }
 }
 
 // The signal ids (lib/scan/score.ts SIGNALS, plus commenter imports' competitor_complaint) in plain words.

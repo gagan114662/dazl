@@ -50,7 +50,7 @@ bothEngines('#1040: the last 30 days - new leads, contacted, replied, interested
   assert.deepEqual(r.tiles, { leads: 4, contacted: 5, replied: 2, interested: 0 })
   assert.deepEqual(r.by_signal.map(s => [s.signal, s.leads, s.contacted, s.replied]),
     [['hiring', 2, 3, 1], ['raised_funding', 1, 2, 1], ['unknown', 1, 0, 0]])
-  for (const k of ['leads', 'contacted', 'replied'] as const) assert.equal(r.by_signal.reduce((n, s) => n + s[k], 0), r.tiles[k], `by signal adds up to the ${k} tile`)
+  for (const k of ['leads', 'contacted', 'replied'] as const) assert.equal(r.by_signal.reduce((n, s) => n + (s[k] ?? 0), 0), r.tiles[k], `by signal adds up to the ${k} tile`)
   assert.equal(r.latest_leads.length, 4); assert.ok(r.latest_leads.every(l => l.company.startsWith('Co a')), 'only this tenant\'s leads')
   assert.deepEqual(r.latest_replies.map(x => [x.company, x.classification]), [['Co a1', 'other'], ['Co a3', 'negative'], ['Co a1', 'positive']], 'person-written replies to messages sent in the window only, newest first (same time: the newest gmail id first)')
   // another tenant sees only its own
@@ -83,6 +83,50 @@ bothEngines('#1040 round 2: Leads-page leads only (no poor fit, no test fixture)
   assert.ok(!inbox.includes('t-m12') && !inbox.includes('t-m1'), 'm12 opted out after yes, m1 wrote again: neither is interested on either page')
 })
 
+bothEngines('#1040 round 3: Interested decides per Gmail thread like the Inbox; another tenant\'s lead never labels a message; reading off is unknown', async ({ db }) => {
+  await seed(db)
+  const J = 'j'.repeat(24)
+  for (const id of ['a15', 'a16']) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, signal_kind, created_at) VALUES (?, ?, ?, 'x', 'https://news.example/a', 'hiring', ?)", [id, J, `Co ${id}`, OLD])
+  const msg = (id: string, tenant: string, leadId: string) => db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES (?, ?, ?, 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, 0)", [id, tenant, leadId, IN, IN])
+  const reply = (gid: string, tenant: string, thread: string, msgId: string | null, cls: string, at: number) => db.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, NULL, 'p@co.example', 'hi', ?, ?, ?)", [gid, tenant, thread, cls, at, msgId])
+  // a yes, then a delivery notice for the same send in a thread of its own: the Inbox lists the yes thread as interested
+  await msg('m15', 'A', 'a15'); await reply('g15a', 'A', 't-m15', 'm15', 'positive', IN + DAY); await reply('g15b', 'A', 'tb-m15', 'm15', 'bounce_review', IN + 2 * DAY)
+  // a yes, then an unmatched notice (no send id) in the same thread: that thread's deciding row is the notice
+  await msg('m16', 'A', 'a16'); await reply('g16a', 'A', 't-m16', 'm16', 'positive', IN + DAY); await reply('g16b', 'A', 't-m16', null, 'bounce_unmatched', IN + 2 * DAY)
+  // tenant B's message pointing at tenant A's lead a1 (no tenant-binding key on lead_id)
+  await msg('m17', 'B', 'a1'); await reply('g17', 'B', 't-m17', 'm17', 'other', IN + DAY)
+  const r = await homeResults(db, 'A', NOW)
+  assert.equal(r.tiles.interested, 1, 'm15 only')
+  const inbox = (await inboxPage(db, 'A', { status: 'all', classification: 'positive' })).threads.map(t => t.thread_id)
+  assert.ok(inbox.includes('t-m15') && !inbox.includes('t-m16'), `the Inbox agrees: ${inbox}`)
+  const b = await homeResults(db, 'B', NOW)
+  assert.deepEqual(b.by_signal.map(s => [s.signal, s.contacted]), [['hiring', 1], ['unknown', 1]], 'B\'s own lead keeps its type; the message to A\'s lead counts under no type')
+  assert.ok(!b.latest_replies.some(x => x.company === 'Co a1'), 'A\'s company name never shows in B\'s replies')
+  // reply reading off: replies to what was sent are unknown, not zero; a workspace that sent nothing still reads zero
+  const off = await homeResults(db, 'A', NOW, false)
+  assert.equal(off.reply_reading, false); assert.equal(off.tiles.replied, null); assert.equal(off.tiles.interested, null)
+  assert.equal(off.tiles.contacted, r.tiles.contacted)
+  assert.ok(off.by_signal.every(s => s.contacted > 0 ? s.replied === null : s.replied === 0))
+  assert.deepEqual((await homeResults(db, 'nobody', NOW, false)).tiles, { leads: 0, contacted: 0, replied: 0, interested: 0 })
+})
+
+bothEngines('#1040 round 3: reply reading is on only with the current consent and an active account that granted read', async ({ db }) => {
+  const { replyReadingOn } = await import('../lib/outreach/reply-reading.ts')
+  const { READ_CONSENT_VERSION } = await import('../lib/outreach/read-consent.ts')
+  assert.equal(await replyReadingOn(db, 'A'), false, 'nothing connected')
+  await db.run("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, read_granted, status) VALUES ('A', 'me@a.example', 'ct', 1, 'active')")
+  assert.equal(await replyReadingOn(db, 'A'), false, 'no consent')
+  await db.run('INSERT INTO mail_read_consent (tenant_id, version) VALUES (?, ?)', ['A', 'an-older-version'])
+  assert.equal(await replyReadingOn(db, 'A'), false, 'an older consent')
+  await db.run('UPDATE mail_read_consent SET version = ? WHERE tenant_id = ?', [READ_CONSENT_VERSION, 'A'])
+  assert.equal(await replyReadingOn(db, 'A'), true)
+  await db.run("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = 'A'")
+  assert.equal(await replyReadingOn(db, 'A'), false, 'the account needs reconnecting')
+  await db.run("UPDATE gmail_accounts SET status = 'active', read_granted = 0 WHERE tenant_id = 'A'")
+  assert.equal(await replyReadingOn(db, 'A'), false, 'read access not granted')
+  assert.equal(await replyReadingOn(db, 'B'), false, 'another tenant')
+})
+
 test('#1040: signal types read as words', () => {
   assert.equal(signalLabel('raised_funding'), 'Raised funding'); assert.equal(signalLabel('unknown'), 'No signal type')
 })
@@ -95,13 +139,14 @@ test('#1040: the 30-day reads use indexes (messages and replies by tenant and da
   const sent = plan("SELECT COUNT(*) FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.tenant_id = ? AND m.status = 'sent' AND m.sent_at >= ? AND COALESCE(m.test, 0) = 0", 'A', 0)
   const replies = plan("SELECT r.thread_id FROM inbound_messages r WHERE r.tenant_id = ? AND r.received_at >= ? ORDER BY r.received_at DESC LIMIT 5", 'A', 0)
   const matched = plan("SELECT 1 FROM inbound_messages r WHERE r.tenant_id = ? AND r.outreach_message_id = ? AND r.classification = 'positive'", 'A', 'm')
-  const leads = plan('SELECT COUNT(*) FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.created_at >= ?', 'A', 0)
+  const leads = plan("SELECT l.signal_kind, COUNT(*) FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') GROUP BY l.signal_kind", 'A', 0)
   for (const [name, p] of [['sent', sent], ['replies', replies], ['matched', matched], ['leads', leads]] as const) {
-    assert.doesNotMatch(p, /\bSCAN (m|r|outreach_messages|inbound_messages)\b(?! USING)/, `${name}: ${p}`)
+    assert.doesNotMatch(p, /\bSCAN (m|r|l|outreach_messages|inbound_messages|leads)\b(?! USING)/, `${name}: ${p}`)
     assert.match(p, /USING (COVERING )?INDEX/, `${name}: ${p}`)
   }
   assert.match(replies, /inbound_messages_tenant_received/, replies)
   assert.match(matched, /inbound_messages_outreach/, matched)
+  assert.match(leads, /leads_job_created \(scan_job_id=\? AND created_at>\?\)/, `a scan's leads since the date are a range seek: ${leads}`)
 })
 
 test('#1040 route: the real handler answers 401 / 503 / 200 no-store (child process, its own session and Db)', async () => {

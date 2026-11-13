@@ -1,5 +1,5 @@
 'use client'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import GmailGate from '../gmail-gate'
 import ConversionPanel from './conversion-panel'
@@ -35,8 +35,11 @@ export default function InboxClient() {
   const asked = q?.get('status') as Status | null
   const [status, setStatus] = useState<Status>(asked && FILTERS.some(f => f[0] === asked) ? asked : 'all')
   const [jobId, setJobId] = useState<string | null>(/^[a-f0-9]{24}$/.test(q?.get('job_id') ?? '') ? q!.get('job_id') : null)
-  // ?class=positive (Home's Interested tile, #1040): only threads whose deciding reply is interested; the API filters it
-  const [cls, setCls] = useState<string | null>(q?.get('class') === 'positive' ? 'positive' : null)
+  // ?class=positive (Home's Interested tile, #1040): only threads whose deciding reply is interested; the API filters it.
+  // Read from the URL on every navigation (a plain Inbox link turns it off); Show all replies removes it from the URL.
+  const router = useRouter()
+  const cls = q?.get('class') === 'positive' ? 'positive' : null
+  const showAll = () => { const u = new URLSearchParams(q?.toString() ?? ''); u.delete('class'); const s = u.toString(); router.replace(`/app/inbox${s ? `?${s}` : ''}`, { scroll: false }) }
   const key = queryKey(status, jobId, cls)
   const [list, setList] = useState<Listed | null>(null) // the newest page that arrived, for whichever query it answers
   const [failedKey, setFailedKey] = useState<string | null>(null)
@@ -101,7 +104,7 @@ export default function InboxClient() {
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
       <p className="text-[#555] text-sm mb-6">Replies in the email threads dazl started for you, plus delivery-failure notices checked for those sends.</p>
       <ConversionPanel />
-      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply is interested (all time, not only the last 30 days). <button type="button" className="underline" onClick={() => { setCls(null); const u = new URL(window.location.href); u.searchParams.delete('class'); window.history.replaceState(null, '', u) }}>Show all replies</button></p>}
+      {cls === 'positive' && <p className="text-sm mb-4" data-testid="class-filter">Showing threads whose latest reply from a person is interested (all time, not only the last 30 days). <button type="button" className="underline" onClick={showAll}>Show all replies</button></p>}
       {i.read_granted && i.account && (
         <p className="text-xs text-[#555] mb-4">Reading replies to your outreach as <span className="font-medium">{i.account}</span>. With your consent, dazl also checks delivery-failure notices for its sends. Unmatched notices are not kept as replies.</p>
       )}
