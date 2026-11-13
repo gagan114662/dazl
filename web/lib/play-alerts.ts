@@ -156,19 +156,16 @@ const SEED_PLAY_SQL = `SELECT q.company, q.company_domain, q.event_date, q.signa
     WHERE w.user_id = ? AND j.status = 'done' AND l.watch_new = 1 AND ${VISIBLE_LEAD}
       AND (j.created_at < w.created_at OR EXISTS (SELECT 1 FROM watch_seen s WHERE s.watch_id = w.id AND s.seen_key = 'mail:' || j.id))
     ORDER BY at DESC, j.id DESC, l.score DESC, l.id LIMIT ${SEED_MAX}) q ORDER BY q.at, q.job_id, q.score DESC, q.lead_id`
+// monitor_alerts carries its own tenant column; the run id stands for the run (an alert of a deleted monitor went with the monitor)
 const SEED_MONITOR_SQL = `SELECT q.company, q.event_key, q.play_id, q.job_id, q.at FROM (
-    SELECT a.company, a.event_key, a.monitor_id AS play_id, r.job_id AS job_id, a.at AS at, a.id AS id
-    FROM monitors m JOIN monitor_alerts a ON a.monitor_id = m.id JOIN monitor_runs r ON r.id = a.run_id
-    WHERE m.user_id = ? AND a.kind IN ('new_company', 'new_signal') ORDER BY a.at DESC, a.id LIMIT ${SEED_MAX}) q ORDER BY q.at, q.id`
+    SELECT a.company, a.event_key, a.monitor_id AS play_id, a.run_id AS job_id, a.at AS at, a.id AS id
+    FROM monitor_alerts a WHERE a.user_id = ? AND a.kind IN ('new_company', 'new_signal') ORDER BY a.at DESC, a.id LIMIT ${SEED_MAX}) q ORDER BY q.at, q.id`
 type SeedPlay = { company: string; company_domain: string | null; event_date: string | null; signal_kind: string | null; job_id: string; play_id: string; at: number }
 type SeedMonitor = { company: string; event_key: string; play_id: string; job_id: string; at: number }
 export function* seedPlayAlertsStep(t: Tx, tenantId: string, keysOf: (l: { company: string; company_domain: string | null }) => AlertKeys): TxBody<boolean> {
   if (yield* t.get(ALERT_ROW_SQL, [tenantId, SEEDED])) return false
-  // A SQLite store set up by one module alone (some tests) may lack the other kind's tables: nothing of that kind was alerted there.
-  // Postgres always has every table (numbered migrations).
-  const has = function* (table: string): TxBody<boolean> { return t.kind !== 'sqlite' || !!(yield* t.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?", [table])) }
-  const plays = (yield* has('watches')) && (yield* has('watch_seen')) ? yield* t.all<SeedPlay>(SEED_PLAY_SQL, [tenantId]) : []
-  const mons = (yield* has('monitors')) && (yield* has('monitor_alerts')) ? yield* t.all<SeedMonitor>(SEED_MONITOR_SQL, [tenantId]) : []
+  const plays = yield* t.all<SeedPlay>(SEED_PLAY_SQL, [tenantId])
+  const mons = yield* t.all<SeedMonitor>(SEED_MONITOR_SQL, [tenantId])
   const items: { keys: AlertKeys; owner: Pick<PlayAlert, 'play_kind' | 'play_id' | 'job_id' | 'event_date' | 'signal_kind'>; at: number }[] = []
   for (const r of plays) items.push({ keys: keysOf(r), owner: { play_kind: 'watch', play_id: r.play_id, job_id: r.job_id, event_date: r.event_date ?? null, signal_kind: r.signal_kind ?? null }, at: Number(r.at) })
   for (const r of mons) {

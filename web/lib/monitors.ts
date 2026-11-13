@@ -11,7 +11,7 @@ import { readPlan, readScanQuota } from './plans.ts'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { lockScanAdmission } from './play-funding.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
-import type { Fence } from './watch.ts'
+import { migrateWatch, type Fence } from './watch.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { jobWindowDays } from './scan/window.ts'
 import { DEFAULT_EVENT_WINDOW_DAYS, foldRunEvents, migrateMonitorEvents, missedRuns, type AlertPolicy, type RunLead } from './monitor-events.ts'
@@ -61,6 +61,7 @@ export function migrateMonitors(db: Database.Database): void {
   // how many scheduled runs this (late) run stands in for: missed-run recovery is reported, never replayed as extra scans
   if (!has(db.prepare('PRAGMA table_info(monitor_runs)').all(), 'missed_runs')) db.exec('ALTER TABLE monitor_runs ADD COLUMN missed_runs INTEGER NOT NULL DEFAULT 0')
   migrateMonitorEvents(db)
+  migrateWatch(db)   // #883: the once-per-account backfill of the alert record also reads the plays' mailed runs
 }
 
 // The play's own window ("in the past 30 days") else the default: events older than it are old news, never alerted.

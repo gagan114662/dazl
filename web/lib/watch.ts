@@ -17,7 +17,7 @@ import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
-import { alertKeysOf } from './monitor-events.ts'
+import { alertKeysOf, migrateMonitorEvents } from './monitor-events.ts'
 import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, seedPlayAlertsStep, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
 import { cappedRunBudget, DAY_S, PLAY_SKIPPED, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
@@ -45,6 +45,7 @@ export function migrateWatch(db: Database.Database): void {
     PRIMARY KEY (watch_id, seen_key)
   )`)
   migratePlayAlerts(db)
+  migrateMonitorEvents(db)   // #883: the once-per-account backfill of the alert record also reads the monitors' alerts
 }
 
 export interface Watch { run_budget?: string | null; id: string; user_id: string; query: string; icp: string; active: number; next_run_at: number; last_run_at: number | null; paused_reason: string | null; created_at: number }
