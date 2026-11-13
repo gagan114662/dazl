@@ -437,7 +437,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // The model's quote does not match the fetched text (paraphrase, or snippet-vs-page
       // drift), but when the page really is about this company the signal may still be real.
       // Show it as needs-review - labeled unconfirmed, never emailed - instead of vanishing.
-      if (['bad_date', 'stale', 'future_date'].includes(v.reason)) {
+      if (DATE_REJECTS.has(v.reason)) {
         toReview(c, `event_date_${v.reason}`); continue
       }
       if (v.reason === 'excerpt_not_on_page') {

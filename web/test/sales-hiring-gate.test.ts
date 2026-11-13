@@ -772,3 +772,24 @@ test('#533 AC4 dedupe: a careers link to an ATS posting already stored from the 
   assert.equal((s.db.prepare("SELECT value FROM lead_enrichments WHERE id = 'G1'").get() as { value: string }).value, `CRM Administrator - posted ${posted}`, 'the stored board row is never rewritten')
   s.db.close()
 })
+
+// Review (Hermes-PC) on #1148: what the gate actually STORES as the careers evidence label. Unquoted vacancy (the posting's text never
+// states the role, #767): the label is just the board-date note, with no dangling "; ". Quoted vacancy: byte-identical to main's
+// "<date note>; <quote>" (main built it as `${dateLabel}${v.quote}` with dateLabel ending in "; ").
+test('#1148 careers gate: the stored hiring label has no dangling "; " when unquoted, and is "<date note>; <quote>" (main\'s exact text) when quoted', async () => {
+  const NOTE = 'Ashby first-published date read from the linked posting'
+  const u = seed()
+  await applySalesHiringGate(u.db, u.job, serve({}), { now: NOW, careersGet: ashby767(PREAMBLE_767 + 'ABOUT YOU\n\n - You live in the UK.') })
+  const eu = careersEvidence(u.db)
+  assert.equal(eu.length, 1)
+  assert.equal(eu[0].label, NOTE, 'unquoted: the date note alone')
+  assert.doesNotMatch(eu[0].label, /;\s*$/, 'no dangling separator')
+  u.db.close()
+  const QUOTE = 'We’re looking for a new Sales-Assist Representative to join the Sales-Assist team at Brightloop in London.'
+  const q = seed()
+  await applySalesHiringGate(q.db, q.job, serve({}), { now: NOW, careersGet: ashby767(PREAMBLE_767 + 'Hi there!\n\n' + QUOTE) })
+  const eq = careersEvidence(q.db)
+  assert.equal(eq.length, 1)
+  assert.equal(eq[0].label, `${NOTE}; ${QUOTE}`, 'quoted: main\'s exact "<date note>; <quote>"')
+  q.db.close()
+})
