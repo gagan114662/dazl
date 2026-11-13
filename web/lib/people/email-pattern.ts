@@ -137,12 +137,13 @@ const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normal
 const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|mortgage|financial|&|and'
 function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
   const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-  // #1173: spaces only (never a tab or newline: "Ana Maya<tab>Thornton Lee" is two other people), and no hyphen on either side
-  // ("Maya Thornton-Ortiz" and "Anna-Maya Thornton" are someone else).
+  // #1173: only spaces between the first and the last name (a tab or newline kept from an attribute or a <pre> separates two
+  // records: "Ana Maya<tab>Thornton Lee"), and no hyphen or dash of any kind on either side ("Maya Thornton-Ortiz", "Anna-Maya
+  // Thornton" are someone else).
   // Known limits, stated rather than guessed at: a preceding name word cannot be told from a label ("Tom Maya Thornton" reads like
   // "Contact Maya Thornton"), and a firm word not on the list below ("Maya Thornton Staffing") is not recognised. Up to 12 places per
   // page are read (72 per site); a page that prints the address more often than that before another person's card is not fully seen.
-  const own = new RegExp(`(?<![A-Za-z-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z-])(?! +(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?! +(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
   let found = false
   const rest = raw.replace(own, () => { found = true; return ' | ' })
   return { rest: nameWords(rest), found }

@@ -43,6 +43,22 @@ test('#1173 row 6: firm words "Mortgage" / "Financial" after the name are not he
   assert.equal(pub('<p>Ask Maya Thornton Mortgage staff: maya@x.com</p>'), null)
   assert.equal(pub('<p>Maya Thornton Financial: maya@x.com</p>'), null)
 })
+test('#1173 review: an ordinary agent card (own data record + photo + profile link + mailto) still publishes; URL slugs and file names are not a second person', () => {
+  const cardHtml = (first: string, last: string) => `<div class="team-member__container" data-search-string="${first} ${last} ${first.toLowerCase()}@x.com" data-tags="[]" > <a class="team-member__link" href="/agent/${first.toLowerCase()}-${last.toLowerCase()}"> <div class="team-member__image"><img src="/wp-content/uploads/${first.toLowerCase()}-${last.toLowerCase()}-headshot.jpg" alt="${first} ${last}"></div> <span class="team-member__name">${first} ${last}</span> <a href="mailto:${first.toLowerCase()}@x.com">Email</a></a></div>`
+  assert.equal(pub(cardHtml('Maya', 'Thornton')), 'maya@x.com')
+  assert.equal(pub(`<div data-s="Maya Thornton maya@x.com"><img src="/uploads/maya.jpg"><span class="maya">Maya Thornton</span><a href="mailto:maya@x.com">Email</a></div>`), 'maya@x.com')
+})
+test('#1173 review: a name that wraps across a source line in ordinary text is one name, as the browser shows it; in an attribute it is not', () => {
+  assert.equal(pub('<p>Maya\n      Thornton, Broker/Owner: maya@x.com</p>'), 'maya@x.com')
+  assert.equal(pub('<h3>Maya\n  Thornton</h3><p>Maya Thornton: maya@x.com</p>'), 'maya@x.com')
+  assert.equal(pub('<div data-s="Ana Maya\nThornton Lee maya@x.com"></div>'), null)
+})
+test('#1173 review: a Unicode hyphen or en dash is a hyphen; only a data-* attribute pairs on its own', () => {
+  assert.equal(pub('<div data-s="Maya Thornton\u2010Ortiz maya@x.com"></div>'), null)
+  assert.equal(pub('<div data-s="Maya Thornton\u2013Ortiz maya@x.com"></div>'), null)
+  assert.equal(pub('<div class="card"><h3>Maya Ortiz</h3><a title="Email maya@x.com, assistant to Maya Thornton" href="#">x</a></div>'), null)
+  assert.equal(pub('<h3>Maya Ortiz</h3><a href="https://wa.me/?text=Maya Thornton recommends maya@x.com">share</a>'), null)
+})
 test('#1173 the legitimate rows still publish: her own card, text pairing with a title, a middle initial; a full-name address was never under this rule', () => {
   assert.equal(pub('<div data-s="Maya Thornton maya@x.com"></div><div data-s="Maya Ortiz"></div>'), 'maya@x.com')
   assert.equal(pub('<p>Maya Thornton, Broker/Owner: maya@x.com</p>'), 'maya@x.com')
