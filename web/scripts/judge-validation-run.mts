@@ -43,7 +43,7 @@ const k = readKeyFromEnv(process.env)
 if ('problem' in k) refuse([k.problem])
 const { key, name: keyName } = k as { key: string; name: string }
 console.log(`key read from ${keyName} (the name only; the value is never printed)`)
-const r = await runValidation(args.inputs, { transport: anthropicTransport(key), secrets: [key], corpus })
+const r = await runValidation(args.inputs, { transport: anthropicTransport(key), secrets: [key], corpus, keyEnv: keyName })
 if (r.status === 'refused') refuse(r.problems)
 if (r.status !== 'refused') {
   const a = r.artifact
@@ -53,6 +53,6 @@ if (r.status !== 'refused') {
   console.log(r.artifact_error ? `  RESULT NOT WRITTEN: ${r.artifact_error}` : `  result: ${r.artifact_path} (sha256 ${r.artifact_sha256})`)
   console.log(`  consume the claim: add "artifact_sha256" and "ended_at": "${a.ended_at}" to it in ${RUN_RECORD_FILE} by a reviewed PR`)
   console.log(`  (${keyName} was read from the environment and is redacted from every file written)`)
-  console.log('  then turn the result into the verdict log and the lock: scripts/judge-validation-import.mts --artifact <result> --write (no key, no network)')
+  if (!r.artifact_error) console.log(`  then, in a checkout of main (no key, no network): scripts/judge-validation-import.mts --artifact <a copy of ${r.artifact_path}> --expect-sha256 ${r.artifact_sha256} --write`)
   process.exit(r.status === 'completed' && !r.artifact_error ? 0 : 1)
 }

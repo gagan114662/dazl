@@ -358,16 +358,24 @@ a lead it calls `contradicts`. It has no send or tool authority.
   - The claim for the approved run (`jv-396-20261113`, the staging box) is committed. It binds the sha256 of six files,
     one of them `lib/scan/runner.ts`: any merge that changes one of them before the run makes `--execute` refuse, and
     plan-only says which file. Re-print the claim then.
-  - After the run, `scripts/judge-validation-import.mts --artifact <result.json> --write` (no key, no network;
-    `lib/evals/judge-validation-import.ts`) turns the run's redacted artifact into what the gate and the reports read:
-    the claim's consumption, `test/fixtures/evals/judges/verdicts.jsonl` (every answer, both judges, both splits) and
-    one calibration entry per judge in `judges.lock.json`, `ok` exactly as measured. It accepts only the claimed run's
-    artifact (run id, model, corpus, code hashes, the claim's own sha256), a failed or stopped run imports no verdict
-    and no entry, and `test/judge-validation-import.test.ts` re-derives the log and the entries from the committed
-    artifact on every CI run. Limits: before the claim is consumed nothing in the repo binds the artifact's content,
-    so the reviewer compares the PR's `artifact_sha256` with the sha256 the run printed on the box. And an entry counts
-    only for its exact fingerprint: the scan's verification judge is registered on the tenant's own provider, so its
-    calibration on `claude-sonnet-4-5` is recorded and reported but does not make the registered scan judge count.
+  - After the run, `scripts/judge-validation-import.mts --artifact <result.json> --expect-sha256 <sha the run printed>
+    --write` (no key, no network; `lib/evals/judge-validation-import.ts`) turns the run's redacted artifact into what
+    the gate and the reports read: the claim's consumption, `test/fixtures/evals/judges/verdicts.jsonl` (every answer,
+    both judges, both splits) and one calibration entry per judge in `judges.lock.json`.
+    - Only the claimed run's artifact is accepted: run id, approval, model, machine, corpus, code hashes and the claim's
+      own sha256 must match, and the file's sha256 must be the one the run printed on the box (`--expect-sha256`,
+      required until the claim is consumed; after that the recorded `artifact_sha256` is the check).
+    - No report is taken at its word. Each one is re-scored from the answers it recorded, attempt by attempt, through
+      the same `calibrate()` with the runner's fixed repeats, reversal, thresholds and budget, and must come out
+      identical. A report edited to `ok`, or answers edited without their rates, is refused.
+    - A failed or stopped run imports no verdict and no entry; it only consumes the claim.
+    - The lock's calibration entries are exactly the run's (nothing else is carried over), the four files are written
+      all or none, and `test/judge-validation-import.test.ts` re-derives the log and the entries from the committed
+      artifact on every CI run.
+    - Limits: the printed sha256 is what ties the file to the paid run, so the reviewer of the import PR checks it
+      against the run's console output on the box. And an entry counts only for its exact fingerprint: the scan's
+      verification judge is registered on the tenant's own provider, so its calibration on `claude-sonnet-4-5` is
+      recorded and reported but does not make the registered scan judge count.
   - Before each request, the worst case is reserved and persisted.
   - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
     as failed.

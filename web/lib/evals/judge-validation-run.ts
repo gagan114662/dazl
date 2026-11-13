@@ -229,11 +229,13 @@ export function anthropicTransport(key: string, fetchImpl: typeof fetch = fetch)
 export const STAGING_KEY_ENV = 'DAZL_TRIAL_ANTHROPIC_KEY'
 export function readKeyFromEnv(env: Record<string, string | undefined>): { key: string; name: string } | { problem: string } {
   const staging = env.DAZL_ENV === 'staging'
-  const name = typeof env[KEY_ENV] === 'string' && env[KEY_ENV] ? KEY_ENV : staging ? STAGING_KEY_ENV : KEY_ENV
+  // KEY_ENV present at all (even empty) is the operator's choice of name: an empty value is refused below, never a
+  // silent switch to the staging key.
+  const name = Object.hasOwn(env, KEY_ENV) && env[KEY_ENV] !== undefined ? KEY_ENV : staging ? STAGING_KEY_ENV : KEY_ENV
   const k = env[name]
   delete env[KEY_ENV]
   if (staging) delete env[STAGING_KEY_ENV]
-  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set${staging ? ` (and ${STAGING_KEY_ENV}, read on staging, is not set either)` : ''}: the key is read from the environment only` }
+  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set${name === STAGING_KEY_ENV ? ` (and ${STAGING_KEY_ENV}, read on staging, is not set either)` : ''}: the key is read from the environment only` }
   if (k.length < 20 || /\s/.test(k)) return { problem: `${name} does not look like an API key (too short or contains whitespace)` }
   return { key: k, name }
 }
@@ -566,6 +568,9 @@ export interface RunDeps {
   // Code-level only (tests): the CLI never sets these, so no flag, env var or file can move the run-once records or
   // change the machine fingerprint and code hashes the claim is checked against.
   hostClaim?: string; runRecord?: string; machineFingerprint?: () => string
+  // The NAME of the environment variable the key was read from (readKeyFromEnv), for the artifact: which key paid.
+  // Never the value. Anything but the two fixed names is recorded as null.
+  keyEnv?: string
 }
 export interface PhaseResult { fingerprint: string; report: CalibrationReport | null; note: string | null }
 export interface Artifact {
@@ -575,7 +580,7 @@ export interface Artifact {
   model: { requested: string; served: string[] }
   cap: { usd: number; micro: number; fx_cad_per_usd: number; fx_date: string; fee_rate: number; cad_equivalent: number; approved_cad: number
     fx: { source: 'Bank of Canada'; cad_per_usd: number; date: string; url: string }; fee: { rate: number; basis: string } }
-  run_guard: { state_dir: string; host_claim: string; committed_record: string; claim_sha256: string; machine_fingerprint: string; max_refusals: number }
+  run_guard: { state_dir: string; host_claim: string; committed_record: string; claim_sha256: string; machine_fingerprint: string; max_refusals: number; key_env: string | null }
   plan: { calls: number; worst_case_usd: number; by_phase: Record<string, number> }
   fixed_before_run: { thresholds: typeof FIXED.thresholds; thresholds_sha256: string; repeats: number; reverse_sources: boolean; max_output_tokens: Record<JudgeId, number>; request_timeout_ms: number; max_retries: number; input_margin_tokens: number; temperature: string }
   corpus: { id: string; origin: string; hash: string; items: number; calibration: number; holdout: number }
@@ -695,7 +700,7 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
       usd: i.capUsd, micro: capMicro, fx_cad_per_usd: i.fxCadPerUsd, fx_date: i.fxDate, fee_rate: i.feeRate, cad_equivalent: Number(capCad(i).toFixed(6)), approved_cad: APPROVED_CAD,
       fx: { source: 'Bank of Canada', cad_per_usd: i.fxCadPerUsd, date: i.fxDate, url: i.fxSource }, fee: { rate: i.feeRate, basis: i.feeBasis },
     },
-    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, claim_sha256, machine_fingerprint: fingerprint, max_refusals: MAX_REFUSALS },
+    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, claim_sha256, machine_fingerprint: fingerprint, max_refusals: MAX_REFUSALS, key_env: deps.keyEnv === KEY_ENV || deps.keyEnv === STAGING_KEY_ENV ? deps.keyEnv : null },
     plan: { calls: plan.calls.length, worst_case_usd: usd(plan.worst_case_micro), by_phase: plan.by_phase },
     fixed_before_run: { thresholds: FIXED.thresholds, thresholds_sha256, repeats: FIXED.repeats, reverse_sources: FIXED.reverseSources, max_output_tokens: { ...MAX_OUTPUT_TOKENS }, request_timeout_ms: deps.timeoutMs ?? REQUEST_TIMEOUT_MS, max_retries: MAX_RETRIES, input_margin_tokens: INPUT_MARGIN_TOKENS, temperature: 'provider default (not sent)' },
     corpus: { id: deps.corpus.id, origin: deps.corpus.origin, hash: corpusHash(deps.corpus), items: deps.corpus.items.length, calibration: deps.corpus.items.filter(x => x.split === 'calibration').length, holdout: deps.corpus.items.filter(x => x.split === 'holdout').length },

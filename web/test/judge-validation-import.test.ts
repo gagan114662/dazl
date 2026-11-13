@@ -34,7 +34,7 @@ const reply = (text: string, req: TransportRequest): TransportResponse => ({ sta
   usage: { input_tokens: Math.ceil(Buffer.byteLength(req.prompt) / 4), output_tokens: Math.min(req.maxTokens, Math.max(1, Math.ceil(text.length / 4))) } })) })
 
 // One run of the real runner under a committed claim, with a stub model. failAt: the request that gets an HTTP 500.
-async function run(o: { model?: keyof typeof STUB_MODELS; failAt?: number; runId?: string } = {}) {
+async function run(o: { model?: keyof typeof STUB_MODELS; failAt?: number; runId?: string; keyEnv?: string } = {}) {
   const dir = tmp(), inp = inputs(dir, o.runId)
   const claim = claimFor(inp, FP, codeHashes(), CREATED)
   const record = join(tmp(), 'runs.json')
@@ -47,20 +47,25 @@ async function run(o: { model?: keyof typeof STUB_MODELS; failAt?: number; runId
     if (o.failAt === n) return { status: 500, body: new TextEncoder().encode('{}') }
     return reply(req.prompt.startsWith('You check whether public sources') ? await claimA(req.prompt) : await scanA(req.prompt), req)
   }
-  const r = await runValidation(inp, { transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, hostClaim: join(tmp(), 'host-claim'), machineFingerprint: () => FP, runRecord: record })
+  const r = await runValidation(inp, { transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, hostClaim: join(tmp(), 'host-claim'), machineFingerprint: () => FP, runRecord: record, keyEnv: o.keyEnv ?? STAGING_KEY_ENV })
   assert.notEqual(r.status, 'refused', JSON.stringify(r.problems))
   const file = readdirSync(join(dir, 'runs')).find(x => x.endsWith('.result.json'))!
   const artifactText = readFileSync(join(dir, 'runs', file), 'utf8')
   assert.equal(artifactText.includes(KEY), false, 'the key is not in the artifact')
   return { artifactText, recordText, claim, inp, requests: n, printedSha: r.status === 'refused' ? null : r.artifact_sha256 }
 }
-const imp = (x: { artifactText: string; recordText: string }, lockText = LOCK_TEXT) => importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText, corpus: CORPUS })
+// expect: the sha256 the run printed (by default this artifact's own); null = not given
+const imp = (x: { artifactText: string; recordText: string }, lockText = LOCK_TEXT, expect: string | null = sha(x.artifactText)) =>
+  importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText, corpus: CORPUS, ...(expect === null ? {} : { expectSha256: expect }) })
+type Imported = Awaited<ReturnType<typeof imp>>
 
 test('#784 #785 a completed run imports into the claim\'s consumption, a stored-verdict log of every answer and one calibration entry per judge; the gate then counts the claim judge and the report shows both judges per condition', async () => {
   const x = await run()
-  const r = imp(x)
+  const r = await imp(x)
   assert.deepEqual(r.problems, [])
   assert.equal(r.results, true); assert.equal(r.artifact_sha256, sha(x.artifactText)); assert.equal(r.artifact_sha256, x.printedSha, 'the sha the run printed')
+  assert.equal(JSON.parse(x.artifactText).run_guard.key_env, STAGING_KEY_ENV, 'the artifact names the variable the key came from, never the key')
+  assert.equal(JSON.parse((await run({ keyEnv: 'ANTHROPIC_API_KEY' })).artifactText).run_guard.key_env, null, 'any other name is not recorded')
   // the claim is consumed: the runner refuses it from now on
   const consumed = JSON.parse(r.recordText!).claims
   assert.equal(consumed.length, 1); assert.equal(consumed[0].artifact_sha256, r.artifact_sha256); assert.equal(consumed[0].ended_at, JSON.parse(x.artifactText).ended_at)
@@ -96,14 +101,20 @@ test('#784 #785 a completed run imports into the claim\'s consumption, a stored-
     assert.ok(detectDrift(stored, { judge }).every(x => x.status !== 'invalid'))
   }
   // importing the same artifact again, now against the consumed record, gives the same files (idempotent)
-  const again = imp({ artifactText: x.artifactText, recordText: r.recordText! })
+  const again = await imp({ artifactText: x.artifactText, recordText: r.recordText! })
   assert.deepEqual([again.problems, again.recordText, again.verdictLog], [[], r.recordText, r.verdictLog])
-  assert.equal(imp({ artifactText: x.artifactText, recordText: r.recordText! }, r.lockText!).lockText, r.lockText, 'and the lock does not grow')
+  assert.equal((await imp({ artifactText: x.artifactText, recordText: r.recordText! }, r.lockText!)).lockText, r.lockText, 'and the lock does not grow')
+  // a calibration entry added by hand to the lock (another fingerprint, ok: true) does not survive an import
+  const planted = JSON.parse(LOCK_TEXT) as JudgeLock
+  planted.judges.push({ ...lock.judges[0], fingerprint: planted.registered[0].fingerprint, judge: { ...lock.judges[0].judge, id: planted.registered[0].id, model: 'tenant-provider' } })
+  assert.equal((await imp(x, JSON.stringify(planted))).lockText, r.lockText)
+  // once consumed, the recorded sha256 is the check: the printed one need not be given again
+  assert.deepEqual((await imp({ artifactText: x.artifactText, recordText: r.recordText! }, LOCK_TEXT, null)).problems, [])
 })
 
 test('#784 a gullible model (it believes what the page says about itself) completes the run and fails calibration: the entry is recorded as failed with its critical false positives, the gate blocks the release, and nothing counts', async () => {
   const x = await run({ model: 'gullible' })
-  const r = imp(x)
+  const r = await imp(x)
   assert.deepEqual(r.problems, [])
   const lock = JSON.parse(r.lockText!) as JudgeLock
   assert.ok(lock.judges.length === 2 && lock.judges.every(e => e.ok === false && e.problems.length > 0))
@@ -117,7 +128,7 @@ test('#784 a gullible model (it believes what the page says about itself) comple
 test('#784 a run that stopped (a failed request) has no results: the claim is consumed, no verdict and no lock entry is written', async () => {
   const x = await run({ failAt: 30 })
   assert.equal(x.requests, 30, 'nothing is sent after the stop')
-  const r = imp(x)
+  const r = await imp(x)
   assert.deepEqual(r.problems, [])
   assert.equal(r.results, false); assert.equal(r.verdictLog, null); assert.deepEqual(r.entries, [])
   assert.deepEqual((JSON.parse(r.lockText!) as JudgeLock).judges, [])
@@ -127,27 +138,27 @@ test('#784 a run that stopped (a failed request) has no results: the claim is co
 
 test('#784 only the claimed run\'s artifact is accepted: another run, another claim, other code, another machine, a second claim, or a different artifact once consumed are all refused with nothing produced', async () => {
   const x = await run(), other = await run({ runId: 'val-2' })
-  const refused = (r: ReturnType<typeof imp>, re: RegExp) => { assert.match(r.problems.join('\n'), re); assert.equal(r.recordText, undefined); assert.equal(r.verdictLog, undefined); assert.equal(r.lockText, undefined) }
-  refused(imp({ artifactText: other.artifactText, recordText: x.recordText }), /the artifact is run val-2, the claim is for val-1/)
+  const refused = (r: Imported, re: RegExp) => { assert.match(r.problems.join('\n'), re); assert.equal(r.recordText, undefined); assert.equal(r.verdictLog, undefined); assert.equal(r.lockText, undefined) }
+  refused(await imp({ artifactText: other.artifactText, recordText: x.recordText }), /the artifact is run val-2, the claim is for val-1/)
   const withClaim = (f: (c: Record<string, unknown>) => void) => { const rec = JSON.parse(x.recordText); f(rec.claims[0]); return JSON.stringify(rec) }
-  refused(imp({ artifactText: x.artifactText, recordText: withClaim(c => { c.cap_usd = 2 }) }), /not made under this claim \(claim_sha256 differs\)/)
-  refused(imp({ artifactText: x.artifactText, recordText: withClaim(c => { (c.code_sha256 as Record<string, string>)[CLAIM_CODE_FILES[0]] = 'a'.repeat(64) }) }), /code hash for lib\/evals\/judge\.ts is not the claimed one/)
-  refused(imp({ artifactText: x.artifactText, recordText: withClaim(c => { c.machine_fingerprint = 'b'.repeat(64) }) }), /another machine than the claim names/)
-  refused(imp({ artifactText: x.artifactText, recordText: JSON.stringify({ contract: RUN_RECORD_CONTRACT, note: 't', claims: [x.claim, x.claim] }) }), /exactly one claim \(it holds 2\)/)
-  refused(imp({ artifactText: x.artifactText, recordText: JSON.stringify({ contract: RUN_RECORD_CONTRACT, note: 't', claims: [] }) }), /exactly one claim \(it holds 0\)/)
-  refused(imp({ artifactText: 'not json', recordText: x.recordText }), /the artifact is not JSON/)
-  refused(imp({ artifactText: JSON.stringify({ contract: 'something-else' }), recordText: x.recordText }), /is not a dazl\.judge-validation\/1 result/)
+  refused(await imp({ artifactText: x.artifactText, recordText: withClaim(c => { c.cap_usd = 2 }) }), /not made under this claim \(claim_sha256 differs\)/)
+  refused(await imp({ artifactText: x.artifactText, recordText: withClaim(c => { (c.code_sha256 as Record<string, string>)[CLAIM_CODE_FILES[0]] = 'a'.repeat(64) }) }), /code hash for lib\/evals\/judge\.ts is not the claimed one/)
+  refused(await imp({ artifactText: x.artifactText, recordText: withClaim(c => { c.machine_fingerprint = 'b'.repeat(64) }) }), /another machine than the claim names/)
+  refused(await imp({ artifactText: x.artifactText, recordText: JSON.stringify({ contract: RUN_RECORD_CONTRACT, note: 't', claims: [x.claim, x.claim] }) }), /exactly one claim \(it holds 2\)/)
+  refused(await imp({ artifactText: x.artifactText, recordText: JSON.stringify({ contract: RUN_RECORD_CONTRACT, note: 't', claims: [] }) }), /exactly one claim \(it holds 0\)/)
+  refused(await imp({ artifactText: 'not json', recordText: x.recordText }), /the artifact is not JSON/)
+  refused(await imp({ artifactText: JSON.stringify({ contract: 'something-else' }), recordText: x.recordText }), /is not a dazl\.judge-validation\/1 result/)
   // once consumed, the recorded sha is the only artifact: an edited copy (one answer flipped) is refused
-  const consumed = imp(x).recordText!
+  const consumed = (await imp(x)).recordText!
   const edited = x.artifactText.replace('"not_supported"', '"supported"') // one "not supported" answer rewritten as a pass
   assert.notEqual(edited, x.artifactText, 'the edit changed the artifact')
-  refused(imp({ artifactText: edited, recordText: consumed }), /already consumed by another artifact \(artifact_sha256 differs\)/)
+  refused(await imp({ artifactText: edited, recordText: consumed }), /already consumed by another artifact \(artifact_sha256 differs\)/)
   // a corpus other than the frozen one
-  const r = importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: { ...CORPUS, items: CORPUS.items.slice(1) } })
+  const r = await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: { ...CORPUS, items: CORPUS.items.slice(1) }, expectSha256: sha(x.artifactText) })
   refused(r, /do not name the same corpus/)
 })
 
-test('#784 #785 the committed files agree with each other: with the run\'s artifact committed, the verdict log, the lock entries and the consumed claim are exactly what the artifact gives; without it there is no log, no entry and an unconsumed claim', () => {
+test('#784 #785 the committed files agree with each other: with the run\'s artifact committed, the verdict log, the lock entries and the consumed claim are exactly what the artifact gives; without it there is no log, no entry and an unconsumed claim', async () => {
   const record = JSON.parse(read('lib/evals/judge-validation-runs.json')) as { claims: Record<string, unknown>[] }
   const lock = JSON.parse(LOCK_TEXT) as JudgeLock
   const artifact = new URL(ARTIFACT_FIXTURE, WEB), log = new URL(VERDICT_LOG_FIXTURE, WEB)
@@ -158,11 +169,12 @@ test('#784 #785 the committed files agree with each other: with the run\'s artif
     return
   }
   const artifactText = readFileSync(artifact, 'utf8')
-  const r = importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS })
+  const r = await importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS })
   assert.deepEqual(r.problems, [])
   assert.equal(record.claims[0].artifact_sha256, sha(artifactText), 'the claim is consumed by this artifact')
   assert.equal(read('lib/evals/judge-validation-runs.json'), r.recordText)
-  assert.equal(LOCK_TEXT, r.lockText, 'the lock entries are the artifact\'s')
+  assert.equal(LOCK_TEXT, r.lockText, 'the lock is the artifact\'s')
+  assert.deepEqual(lock.judges, r.entries, 'the lock\'s calibration entries are exactly the artifact\'s: none added by hand')
   if (r.results) assert.equal(readFileSync(log, 'utf8'), r.verdictLog, 'the stored-verdict log is the artifact\'s')
   else assert.equal(existsSync(log), false)
 })
@@ -192,6 +204,9 @@ test('#784 the key: the run\'s own name everywhere; on staging only, and only wh
   assert.deepEqual(readKeyFromEnv(env), { key: own, name: KEY_ENV }, 'the run\'s own name wins')
   assert.equal(KEY_ENV in env || STAGING_KEY_ENV in env, false, 'both are removed')
   for (const e of [{ DAZL_ENV: 'Staging', [STAGING_KEY_ENV]: KEY }, { DAZL_ENV: 'production', [STAGING_KEY_ENV]: KEY }, { DAZL_ENV: 'staging', ANTHROPIC_API_KEY: KEY }, { DAZL_ENV: 'staging', [STAGING_KEY_ENV]: 'short' }]) assert.ok('problem' in readKeyFromEnv({ ...e }), JSON.stringify(Object.keys(e)))
+  // the run's own name set but empty on staging: refused, never a silent switch to the staging key
+  env = { DAZL_ENV: 'staging', [KEY_ENV]: '', [STAGING_KEY_ENV]: KEY }
+  assert.ok('problem' in readKeyFromEnv(env)); assert.equal(KEY_ENV in env || STAGING_KEY_ENV in env, false)
   const p = readKeyFromEnv({ DAZL_ENV: 'staging' })
   assert.ok('problem' in p && p.problem.includes(KEY_ENV) && p.problem.includes(STAGING_KEY_ENV) && !p.problem.includes(KEY))
 })
@@ -202,8 +217,49 @@ test('#784 #785 the import command: checks only by default, writes nothing on a 
   const cli = (args: string[]) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/judge-validation-import.mts', ...args], { cwd: WEB, encoding: 'utf8' })
   // the test run's artifact is not the committed claim's run: refused, exit 2, nothing written
   const before = [read('lib/evals/judge-validation-runs.json'), LOCK_TEXT]
-  const r = cli(['--artifact', f, '--write'])
+  const r = cli(['--artifact', f, '--expect-sha256', sha(x.artifactText), '--write'])
   assert.equal(r.status, 2); assert.match(r.stderr, /REFUSED \(nothing written\)/); assert.match(r.stderr, /the artifact is run val-1, the claim is for jv-396-20261113/)
+  const noSha = cli(['--artifact', f, '--write']); assert.equal(noSha.status, 2); assert.match(noSha.stderr, /give the artifact sha256 the run printed/)
+  assert.equal(cli(['--artifact', f, '--expect-sha256', 'not-a-sha']).status, 2)
+  assert.deepEqual(readdirSync(new URL('test/fixtures/evals/judges/', WEB)).filter(n => n.endsWith('.import-tmp')), [], 'no temporary file is left behind')
   assert.deepEqual([read('lib/evals/judge-validation-runs.json'), read(LOCK_FIXTURE)], before)
   assert.equal(cli([]).status, 2); assert.equal(cli(['--artifact', join(tmp(), 'missing.json')]).status, 2); assert.equal(cli(['--artifact', f, '--force']).status, 2)
+})
+
+test('#784 a report is never taken at its word: an artifact whose failed calibration was edited to ok (problems and critical false positives emptied), or whose answers were edited without its rates, is refused; nothing counts', async () => {
+  for (const model of ['english_only', 'flaky', 'gullible'] as const) {
+    const x = await run({ model })
+    const honest = await imp(x)
+    assert.deepEqual(honest.problems, [], model)
+    assert.ok(honest.entries!.some(e => !e.ok), `${model}: the run itself fails calibration`)
+    const a = JSON.parse(x.artifactText)
+    for (const judge of ['claim_support', 'scan_verification_judge']) Object.assign(a.results[judge].calibration.report, { ok: true, problems: [], critical_fp: [] })
+    const forged = { artifactText: JSON.stringify(a, null, 1), recordText: x.recordText }
+    const r = await imp(forged)
+    assert.match(r.problems.join('\n'), /report does not follow from its own recorded answers \(re-scored, these fields differ: [a-z_, ]*\bok\b/, model)
+    assert.equal(r.lockText, undefined); assert.equal(r.verdictLog, undefined); assert.equal(r.recordText, undefined)
+  }
+  // the other direction: the summary untouched, one recorded attempt rewritten from "not supported" to "supported"
+  const x = await run()
+  const a = JSON.parse(x.artifactText)
+  const items = a.results.claim_support.calibration.report.items as Record<string, { answer: string; attempts: { answer: string }[] }>
+  const id = Object.keys(items).find(k => items[k].attempts[0].answer === 'not_supported')!
+  items[id].attempts[0].answer = 'supported'
+  const r = await imp({ artifactText: JSON.stringify(a, null, 1), recordText: x.recordText })
+  assert.match(r.problems.join('\n'), /claim_support\/calibration report does not follow from its own recorded answers/)
+  // an attempt removed (fewer answers than the plan asks)
+  const b = JSON.parse(x.artifactText)
+  const first = Object.keys(b.results.scan_verification_judge.holdout.report.items)[0]
+  b.results.scan_verification_judge.holdout.report.items[first].attempts.pop()
+  assert.match((await imp({ artifactText: JSON.stringify(b, null, 1), recordText: x.recordText })).problems.join('\n'), /scan_verification_judge\/holdout report does not follow from its own recorded answers/)
+})
+
+test('#784 only the file the run printed can consume the claim: without the printed sha256, or with another, an otherwise valid artifact is refused', async () => {
+  const x = await run()
+  assert.match((await imp(x, LOCK_TEXT, null)).problems.join('\n'), /the claim is not consumed yet: give the artifact sha256 the run printed/)
+  assert.match((await imp(x, LOCK_TEXT, 'a'.repeat(64))).problems.join('\n'), /this is not the artifact the run printed/)
+  // a re-serialised copy of the same result (same content, other bytes) is not the printed file either
+  const copy = { artifactText: JSON.stringify(JSON.parse(x.artifactText)), recordText: x.recordText }
+  assert.match((await imp(copy, LOCK_TEXT, x.printedSha!)).problems.join('\n'), /this is not the artifact the run printed/)
+  assert.deepEqual((await imp(x, LOCK_TEXT, x.printedSha!)).problems, [])
 })

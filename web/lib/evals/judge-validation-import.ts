@@ -7,18 +7,25 @@
 //     calibration-split report, `ok` exactly as the run measured it (a failed calibration is recorded as failed).
 // No network, no key, no model call. It accepts only the artifact of the run the committed claim names: the contract,
 // run id, approval, model, corpus, code hashes and the claim's own sha256 must match, and once the claim is consumed the
-// artifact's sha256 must be the one recorded. A run that failed or stopped has no results: it consumes the claim and
-// writes no verdict and no lock entry. The artifact is committed beside the log, and test/judge-validation-import.test.ts
+// artifact's sha256 must be the one recorded. Before that, the operator gives the sha256 the run printed on the machine
+// it ran on (expectSha256), and any other artifact is refused.
+// Nothing a report says about itself is trusted: every report is re-scored here. The answers it recorded, attempt by
+// attempt, are replayed through the same calibrate() the run used, with the runner's fixed repeats, source reversal,
+// thresholds and call budget and the judge's prompt as this code has it, and the result must equal the report in every
+// field (ok, problems, critical false positives, rates, stability, fingerprint). An artifact whose ok was set by hand,
+// or whose answers do not give its rates, is refused.
+// A run that failed or stopped has no results: it consumes the claim and writes no verdict and no lock entry. The artifact is committed beside the log, and test/judge-validation-import.test.ts
 // re-derives the log and the lock entries from it on every CI run, so neither can be edited by hand.
 // What the entries mean is unchanged: an entry counts for the judge with that exact fingerprint (model included). The
 // scan's verification judge is registered as the product runs it (the tenant's own provider), so a calibration of it on
 // one named model is recorded here and does not by itself make the registered judge count.
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
-  corpusHash, lockEntry, parseStoredVerdicts, toStoredVerdicts,
-  type CalibrationReport, type JudgeCorpus, type JudgeLock, type JudgeLockEntry, type StoredVerdict,
+  calibrate, claimJudge, corpusHash, lockEntry, parseStoredVerdicts, toStoredVerdicts,
+  type CalibrationReport, type JudgeAdapter, type JudgeCorpus, type JudgeLock, type JudgeLockEntry, type JudgeOutcome, type Split, type StoredVerdict,
 } from './judge.ts'
-import { APPROVAL, CLAIM_CODE_FILES, JUDGE_IDS, RUN_RECORD_CONTRACT, SPLITS, VALIDATION_CONTRACT, type Artifact } from './judge-validation-run.ts'
+import { APPROVAL, CLAIM_CODE_FILES, FIXED, JUDGE_IDS, KEY_ENV, RUN_RECORD_CONTRACT, SPLITS, STAGING_KEY_ENV, VALIDATION_CONTRACT, judgeSpec, planRun, scanJudgeTemplate, type Artifact, type JudgeId } from './judge-validation-run.ts'
 
 export const ARTIFACT_FIXTURE = 'test/fixtures/evals/judges/validation-run.result.json'
 export const VERDICT_LOG_FIXTURE = 'test/fixtures/evals/judges/verdicts.jsonl'
@@ -29,7 +36,9 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 const HEX64 = /^[0-9a-f]{64}$/
 const CONSUMED = ['artifact_sha256', 'ended_at'] as const
 
-export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus }
+// expectSha256: the artifact sha256 the run printed where it ran. Required to consume a claim (the first import); once
+// the claim is consumed, the recorded sha256 is the check and this is optional.
+export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string }
 export interface ImportResult {
   problems: string[]
   // Set only when problems is empty. `verdictLog` is null and `entries` empty for a run with no results.
@@ -37,10 +46,37 @@ export interface ImportResult {
   entries?: JudgeLockEntry[]; verdicts?: StoredVerdict[]; artifact_sha256?: string; run_id?: string; results?: boolean
 }
 
+// The judge the run asked, as this code builds it (spec and prompt template), answering from the report's own record:
+// each ask() returns the next recorded attempt of the item being asked, in the order calibrate() asks them.
+function replayAdapter(judge: JudgeId, model: string, report: CalibrationReport, corpus: JudgeCorpus, split: Split): JudgeAdapter {
+  const spec = judgeSpec(judge, model)
+  const real = judge === 'claim_support' ? claimJudge(spec, async () => '') : null
+  const template = real ? real.template : scanJudgeTemplate()
+  const items = corpus.items.filter(it => it.split === split)
+  let at = 0, attempt = 0
+  const ask = async (): Promise<JudgeOutcome> => {
+    while (at < items.length && attempt >= (report.items?.[items[at].id]?.attempts?.length ?? 0)) { at++; attempt = 0 }
+    const rec = at < items.length ? report.items[items[at].id].attempts[attempt++] : undefined
+    // a missing record answers as nothing calibrate() accepts, so the replay cannot equal the report
+    return (rec ? { answer: rec.answer, quote: null, source: null, reason: rec.reason } : { answer: 'missing' }) as JudgeOutcome
+  }
+  return { spec, template, quotes: real ? real.quotes : false, ask }
+}
+// Re-score one report from its recorded attempts. Null when the replay equals it; otherwise why not.
+async function rescore(judge: JudgeId, split: Split, model: string, report: CalibrationReport, corpus: JudgeCorpus): Promise<string | null> {
+  let replayed: CalibrationReport
+  try {
+    replayed = await calibrate(replayAdapter(judge, model, report, corpus, split), corpus, { split, thresholds: { ...FIXED.thresholds }, repeats: FIXED.repeats, reverseSources: FIXED.reverseSources, maxCalls: planRun(corpus, model).by_phase[`${judge}/${split}`] })
+  } catch (e) { return `cannot be re-scored: ${e instanceof Error ? e.message : String(e)}` }
+  const plain = JSON.parse(JSON.stringify(replayed)) as Record<string, unknown>, given = report as unknown as Record<string, unknown>
+  const differs = [...new Set([...Object.keys(plain), ...Object.keys(given)])].filter(k => !isDeepStrictEqual(plain[k], given[k]))
+  return differs.length ? `does not follow from its own recorded answers (re-scored, these fields differ: ${differs.join(', ')})` : null
+}
+
 // The committed claim with its consumption fields removed: the object the runner hashed into the artifact (claim_sha256).
 const preCallClaim = (c: Record<string, unknown>) => Object.fromEntries(Object.entries(c).filter(([k]) => !(CONSUMED as readonly string[]).includes(k)))
 
-export function importValidationArtifact(i: ImportInput): ImportResult {
+export async function importValidationArtifact(i: ImportInput): Promise<ImportResult> {
   const problems: string[] = []
   const fail = (p: string): ImportResult => ({ problems: [...problems, p] })
   if (typeof i?.artifactText !== 'string' || !i.artifactText) return fail('no artifact text')
@@ -67,7 +103,11 @@ export function importValidationArtifact(i: ImportInput): ImportResult {
   if (hasA !== hasE) problems.push('the claim carries only one of artifact_sha256 and ended_at')
   if (hasA && claim.artifact_sha256 !== artifact_sha256) problems.push('the claim is already consumed by another artifact (artifact_sha256 differs): this is not the recorded run\'s result')
   if (hasE && claim.ended_at !== a.ended_at) problems.push('the claim\'s ended_at is not the artifact\'s')
+  if (i.expectSha256 !== undefined && i.expectSha256 !== artifact_sha256) problems.push('this is not the artifact the run printed (its sha256 is not the expected one)')
+  if (!hasA && i.expectSha256 === undefined) problems.push('the claim is not consumed yet: give the artifact sha256 the run printed where it ran (--expect-sha256), so only that file can consume it')
   if (typeof a.ended_at !== 'string' || Number.isNaN(Date.parse(a.ended_at))) problems.push('the artifact has no valid ended_at')
+  const keyEnv = isObj(a.run_guard) ? a.run_guard.key_env : undefined
+  if (keyEnv !== null && keyEnv !== KEY_ENV && keyEnv !== STAGING_KEY_ENV) problems.push('the artifact does not say which of the two key names paid for the run (run_guard.key_env)')
   // The corpus the run used is the frozen one, and the one given here.
   let hash = ''
   try { hash = corpusHash(i.corpus) } catch { problems.push('the corpus is unreadable') }
@@ -79,7 +119,7 @@ export function importValidationArtifact(i: ImportInput): ImportResult {
   const source = `judge validation run ${a.run_id} (${a.model.requested}), artifact sha256 ${artifact_sha256}, ${ARTIFACT_FIXTURE}`
   // No results: a failed or stopped run. Its partial rates are not results; only the consumption is recorded.
   if (a.status !== 'completed' || a.results_valid !== true) {
-    return { problems: [], recordText, lockText: JSON.stringify(lock, null, 1) + '\n', verdictLog: null, entries: [], verdicts: [], artifact_sha256, run_id: a.run_id, results: false }
+    return { problems: [], recordText, lockText: JSON.stringify({ ...lock, judges: [] }, null, 1) + '\n', verdictLog: null, entries: [], verdicts: [], artifact_sha256, run_id: a.run_id, results: false }
   }
   const entries: JudgeLockEntry[] = [], verdicts: StoredVerdict[] = []
   try {
@@ -90,6 +130,8 @@ export function importValidationArtifact(i: ImportInput): ImportResult {
       if (report.split !== split || report.judge?.id !== judge || report.judge?.model !== a.model.requested || report.fingerprint !== phase!.fingerprint || !HEX64.test(report.fingerprint) || report.corpus?.hash !== hash) {
         problems.push(`the ${judge}/${split} report is not that judge, split, model and corpus`); continue
       }
+      const off = await rescore(judge, split, a.model.requested, report, i.corpus)
+      if (off) { problems.push(`the ${judge}/${split} report ${off}`); continue }
       verdicts.push(...toStoredVerdicts(report, i.corpus, a.run_id, a.ended_at))
       if (split === 'calibration') entries.push(lockEntry(report, a.ended_at, source))
     }
@@ -97,8 +139,7 @@ export function importValidationArtifact(i: ImportInput): ImportResult {
   if (problems.length) return { problems }
   const verdictLog = verdicts.map(v => JSON.stringify(v)).join('\n') + '\n'
   try { parseStoredVerdicts(verdictLog) } catch (e) { return { problems: [`the verdict log this artifact gives does not parse: ${e instanceof Error ? e.message : String(e)}`] } }
-  // The lock keeps every entry of other fingerprints; this run's fingerprints get exactly this run's entries.
-  const fps = new Set(entries.map(e => e.fingerprint))
-  const lockText = JSON.stringify({ ...lock, judges: [...lock.judges.filter(e => !fps.has(e.fingerprint)), ...entries] }, null, 1) + '\n'
+  // There is one approved run, so the lock's calibration entries are exactly this run's: nothing else is carried over.
+  const lockText = JSON.stringify({ ...lock, judges: entries }, null, 1) + '\n'
   return { problems: [], recordText, lockText, verdictLog, entries, verdicts, artifact_sha256, run_id: a.run_id, results: true }
 }

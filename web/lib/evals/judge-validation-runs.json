@@ -20,10 +20,10 @@
    "state_dir": "/var/lib/dazl-judge-validation",
    "code_sha256": {
     "lib/evals/judge.ts": "fb36af42d7d2393fffdb266d1ef20606c4202f33c608d12506b70db5111e4561",
-    "lib/evals/judge-validation-run.ts": "bcde8db2293f157f9ee1565bc7d049073c5b627dc83e66af5753562ead90b95a",
+    "lib/evals/judge-validation-run.ts": "f6f9453a454faf94041c47d6098031d010bf2c4ab6f4f618302911d64b07ba8a",
     "lib/scan/runner.ts": "326398c5c2c1479cb1d5c4c318037eb8e7a35c2ce3015b0744d3b3897baabdff",
     "lib/llm/spend-guard.ts": "0667d78f7604a37037ffbdf7b6b0564f0abef15887137736d9e302a466510f49",
-    "scripts/judge-validation-run.mts": "ec27263b700d0fe7bb6586fb73e8f7e3c3ce8d92ecd2bd560a5a0deef1a6e7ae",
+    "scripts/judge-validation-run.mts": "82d8dd65b744b7832cc71b0f0e998d3621244f990c311bbcb3d3f80b12874bb3",
     "test/fixtures/evals/judges/corpus.synthetic.json": "099046bf063f39608174b38c8defdfb11bb583eac5581db63c004615e5db178f"
    },
    "created_at": "2026-11-13T21:29:36.888Z",

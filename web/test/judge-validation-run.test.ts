@@ -629,7 +629,7 @@ test('the committed record is valid and holds the one claim for the approved run
   assert.match(cliSrc, /readKeyFromEnv\(process\.env\)/)
   assert.doesNotMatch(cliSrc, /hostClaim|runRecord|machineFingerprint|homedir/, 'the CLI cannot move the run-once records or the fingerprint')
   assert.equal([...cliSrc.matchAll(/runValidation\(/g)].length, 1)
-  assert.match(cliSrc, /runValidation\(args\.inputs, \{ transport: anthropicTransport\(key\), secrets: \[key\], corpus \}\)/, 'the CLI passes no code hashes, fingerprint or record path')
+  assert.match(cliSrc, /runValidation\(args\.inputs, \{ transport: anthropicTransport\(key\), secrets: \[key\], corpus, keyEnv: keyName \}\)/, 'the CLI passes no code hashes, fingerprint or record path (the key\'s NAME is recorded, never its value)')
 })
 
 test('a refusal from the model is a billed, well-formed answer: recorded and settled, read by the judge as unknown, the run goes on', async () => {
