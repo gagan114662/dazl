@@ -45,9 +45,10 @@ export function scanMessages(msgs: ViewMsg[], leads: { id: string }[]): ViewMsg[
 // no check can release (heldResearch: the time window, an uncheckable hold, a required check that has not passed - #1062) is research only, never
 // also "source-checked" or "confirmed by you": heldResearchSourceChecked is the source-checked slice of it, the rest was confirmed by you.
 export interface QualCounts { sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; held: number; heldResearch?: number; heldResearchSourceChecked?: number; rejected: number }
-export function qualificationLines(q: QualCounts, leads: number): [string, string?] {
-  if (leads > 0 && q.rejected >= leads) return [`None passed: ${q.rejected} rejected`]
+export function qualificationLines(q: QualCounts, leads: number): [string, string] {
   const l = listQual(q), heldResearch = Math.max(0, q.heldResearch ?? 0)   // the same split as the run pill (lib/run-status.ts listQual)
-  return [`${l.sourceChecked} source-checked, ${l.confirmedByYou} confirmed by you, ${q.needsReview} to review`,
-    `${q.held - heldResearch} timing not confirmed, ${l.research} research only, ${q.unverified} unverified, ${q.rejected} rejected`]
+  // The detail line is always shown, also under "None passed" (as on main before #683/#1062)
+  const detail = `${Math.max(0, q.held - heldResearch)} timing not confirmed, ${l.research} research only, ${q.unverified} unverified, ${q.rejected} rejected`
+  if (leads > 0 && q.rejected >= leads) return [`None passed: ${q.rejected} rejected`, detail]
+  return [`${l.sourceChecked} source-checked, ${l.confirmedByYou} confirmed by you, ${q.needsReview} to review`, detail]
 }

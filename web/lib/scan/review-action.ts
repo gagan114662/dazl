@@ -34,16 +34,19 @@ const RESEARCH = 'Moves it to your list as confirmed by you, as research only'
 
 export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewAction {
   const kind = heldKind(l, now)
+  // A REQUIRED check that has not passed is named first, whatever else holds the lead (#1062, Hermes-PC review): a wider-window
+  // scan alone cannot release it, so the window is only ever mentioned alongside it, never as the way out.
+  const failedRun = REQUIRED_GATE_REASONS.has(l.review_reason ?? '')   // the check could not run (its stored reason)
+  if (failedRun || l.gate_held) {
+    const gate = failedRun ? 'the required sales-hiring check could not run' : 'a required check (the sales-hiring proof) has not passed'
+    const window = kind === 'no_date' ? ' It also has no valid event date, which a wider time window does not change.'
+      : kind === 'older' ? ' Its event date is also older than the time window you asked for.'
+      : kind === 'unknown' ? ' It is also outside the time window you asked for.' : ''
+    return { label: 'Keep as research', hint: `${RESEARCH}: ${gate}, which checking the source cannot change, so it stays out of drafting.${window} Only running the scan again, with the check passing${kind === 'older' || kind === 'unknown' ? ' and the event inside your window' : ''}, can make it usable.` }
+  }
   if (kind === 'no_date') return { label: 'Keep as research', hint: `${RESEARCH}: it has no valid event date (missing, invalid or in the future), so it stays out of drafting. A wider time window does not change that.` }
   if (kind === 'older') return { label: 'Keep as research', hint: `${RESEARCH}: its event date is older than the time window you asked for, so it stays out of drafting. Confirming does not change that for this lead; only a new scan with a wider window can find it as current (it uses your usual scan budget).` }
   if (kind === 'unknown') return { label: 'Keep as research', hint: `${RESEARCH}: it is outside the time window you asked for, so it stays out of drafting.` }
-  // Checked before uncheckableCause: a failed REQUIRED gate is now also in that set (#683 round 2, so Home and the
-  // campaign views treat it as research too), but this specific cause gets its own, more actionable wording here -
-  // only a fresh scan with the check passing clears it, which the generic text below does not say.
-  // gate_held (#1062): the same hold read from the draft guard's own verdict, whatever reviewable reason the row carries.
-  if (REQUIRED_GATE_REASONS.has(l.review_reason ?? '')) return { label: 'Keep as research', hint: `${RESEARCH}: the required sales-hiring check could not run, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
-  // The draft guard's verdict alone (#1062): the check may have failed, never run, or have no pass record - say only that it has not passed.
-  if (l.gate_held) return { label: 'Keep as research', hint: `${RESEARCH}: a required check (the sales-hiring proof) has not passed, which checking the source cannot change, so it stays out of drafting. Only running the scan again, with the check passing, can make it usable.` }
   const cause = uncheckableCause(l.review_reason)
   if (cause) return { label: 'Keep as research', hint: `${RESEARCH}: ${CAUSE_TEXT[cause]}, which checking the source cannot change, so it stays out of drafting.` }
   // #390: a first-party signal has no third-party source to check (it is the tenant's own signed, consented event) and

@@ -155,7 +155,8 @@ test('#1062 qualificationLines: pure counts - none passed, a held source-checked
   const base = { sourceChecked: 3, confirmedByYou: 2, needsReview: 1, research: 1, unverified: 0, held: 3, heldResearch: 2, heldResearchSourceChecked: 1, rejected: 0 }
   assert.deepEqual(qualificationLines(base, 7), ['2 source-checked, 1 confirmed by you, 1 to review', '1 timing not confirmed, 3 research only, 0 unverified, 0 rejected'])
   assert.deepEqual(qualificationLines({ ...base, heldResearchSourceChecked: 9 }, 7)[0], '1 source-checked, 2 confirmed by you, 1 to review', 'a slice larger than heldResearch is clamped to it')
-  assert.deepEqual(qualificationLines({ ...base, rejected: 7 }, 7), ['None passed: 7 rejected'])
+  // the detail line stays under "None passed", as on main (Hermes-PC review at 0257cbbb / feeda320)
+  assert.deepEqual(qualificationLines({ ...base, rejected: 7 }, 7), ['None passed: 7 rejected', '1 timing not confirmed, 3 research only, 0 unverified, 7 rejected'])
 })
 
 test('#1062 route seam: GET /api/leads carries gate_held and Home / Leads count a gate-held lead as research (real handler, no network)', () => {
@@ -261,4 +262,21 @@ test('#1062 partial store: with the marker and report tables missing, the batch 
   const batch = await requiredGateHeldForJob(db, 'A', 'js')
   for (const id of ids) assert.equal(batch.has(id), requiredGateHeld(raw, 'A', id) !== null, id)
   assert.ok(batch.has('deny') && batch.has('pass'), 'with no pass records left, DEFAULT-DENY holds every machine-verified lead of the sales request')
+})
+
+test('#1062 Leads review button: a lead held by BOTH the time window and the required check names the check; a wider window is never offered as the way out', () => {
+  const now = new Date('2026-11-13T12:00:00Z')
+  // Hermes-PC's probe (review at 0257cbbb / feeda320), and the same with the other window kinds
+  for (const l of [{ review_reason: 'outside_window', window_held: true, gate_held: true, event_date: '2025-01-01' },
+    { review_reason: 'quote_unconfirmed', window_held: true, gate_held: true, event_date: '2025-01-15' },
+    { review_reason: 'outside_window_undated', window_held: true, gate_held: true, event_date: null },
+    { review_reason: 'outside_window', window_held: true, gate_held: true }]) {
+    const a = reviewAction(l, now)
+    assert.equal(a.label, 'Keep as research', JSON.stringify(l))
+    assert.match(a.hint, /a required check \(the sales-hiring proof\) has not passed/, JSON.stringify(l))
+    assert.doesNotMatch(a.hint, /only a new scan with a wider window can find it/, JSON.stringify(l))
+    assert.match(a.hint, /with the check passing/, JSON.stringify(l))
+  }
+  // control: the window alone still gives the window advice
+  assert.match(reviewAction({ review_reason: 'outside_window', window_held: true, event_date: '2025-01-01' }, now).hint, /only a new scan with a wider window can find it as current/)
 })

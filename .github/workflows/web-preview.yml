@@ -164,6 +164,19 @@ jobs:
           set -o pipefail
           SHOTS=preview/scan-outcomes node test/ui/scan-outcomes.ui.mjs | tee /tmp/scan-outcomes.out
           ! grep -q '^NOT RUN' /tmp/scan-outcomes.out
+      # #683 / #1062: the Campaigns cards (run pill, Qualification stage incl. "None passed" + its detail line, next step),
+      # the campaign page and Home agree for research-only and gate-held leads; Home's checklist steps. Real build, real
+      # routes over seeded throwaway databases. pipefail: a failure or a silent NOT RUN fails the job.
+      - name: Campaigns, research-only leads and Home checklist steps (#683, #1062)
+        run: |
+          set -o pipefail
+          mkdir -p preview/campaigns preview/research-not-review preview/readiness-steps
+          SHOTS=preview/campaigns node test/ui/campaigns.ui.mjs | tee /tmp/cmp.out
+          ! grep -q '^NOT RUN' /tmp/cmp.out
+          SHOTS=preview/research-not-review node test/ui/research-not-review.ui.mjs | tee /tmp/rnr.out
+          ! grep -q '^NOT RUN' /tmp/rnr.out
+          SHOTS=preview/readiness-steps node test/ui/readiness-steps.ui.mjs | tee /tmp/rds.out
+          ! grep -q '^NOT RUN' /tmp/rds.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
