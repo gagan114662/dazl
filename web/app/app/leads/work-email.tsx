@@ -3,12 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
-// with the workspace's own Apollo / People Data Labs keys). Only a checked address (verified by the provider, or printed
-// on the company website) is labelled checked; an unchecked one says so; nothing here drafts or sends.
+// with the workspace's own Apollo / People Data Labs keys). Only a checked address (verified by the provider, printed on the
+// company website, or confirmed by the free-tier mailbox check) is labelled checked; an unchecked one says so; nothing here drafts or sends.
 // Rows from the server are MERGED by updated_at (mergeLookups): a slow first read never erases a newer result, and a
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
-type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }
+type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
@@ -42,7 +42,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
   }, [load])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
-  const waiting = Object.values(lookups).some(l => l.status === 'pending' && !busy[l.target])
+  const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])
   useEffect(() => {
     if (!waiting || reads >= PENDING_POLL_MAX) return
     const t = setTimeout(() => { setReads(n => n + 1); load() }, PENDING_POLL_MS)
@@ -76,13 +76,15 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
         const l = lookups[t.key]
         const v = l ? workEmailCopy(l) : null
         const retry = !l || l.status === 'error' || l.status === 'uncertain'
+        // #1036: a found address whose mailbox was never checked (caps used up, or the check was off) can be checked later: no provider credit again
+        const checkLater = !!providers?.mailboxCheck && !!l && l.status === 'unverified' && !!l.address && (l.mailbox_check ?? null) === null
         return (
           <div key={t.key} className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="work-email-row" data-status={l?.status ?? 'none'}>
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
             {v && v.showAddress && l?.address && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border ${v.checked ? 'border-green-600/40 text-green-800 bg-green-50' : 'border-amber-500/40 text-amber-800 bg-amber-50'}`} data-testid="work-email-address" data-checked={v.checked ? 'true' : 'false'}>
                 <span className="font-mono">{l.address}</span>
-                <span className="text-[10px] uppercase tracking-wide">{v.checked ? (l.status === 'published' ? 'published' : 'verified') : 'not checked'}</span>
+                <span className="text-[10px] uppercase tracking-wide">{v.checked ? (l.status === 'published' ? 'published' : l.status === 'unverified' ? 'checked' : 'verified') : 'not checked'}</span>
               </span>
             )}
             {v && v.showAddress && l?.address && v.checked && <button type="button" className="underline text-[#111]" onClick={() => void copy(l.address!)}>{copied === l.address ? 'Copied' : 'Copy'}</button>}
@@ -91,6 +93,12 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
               <button type="button" disabled={!!busy[t.key]} onClick={() => void find(t.key)} data-testid="work-email-find"
                 className="border border-[#111] px-2 py-0.5 text-[#111] bg-white hover:bg-[#111] hover:text-white disabled:opacity-50">
                 {busy[t.key] ? 'Looking...' : l ? 'Try again' : 'Find work email'}
+              </button>
+            )}
+            {checkLater && (
+              <button type="button" disabled={!!busy[t.key]} onClick={() => void find(t.key)} data-testid="work-email-check"
+                className="border border-[#111] px-2 py-0.5 text-[#111] bg-white hover:bg-[#111] hover:text-white disabled:opacity-50">
+                {busy[t.key] ? 'Checking...' : 'Check mailbox'}
               </button>
             )}
             {v && <span className={v.tone === 'checked' ? 'text-green-800' : v.tone === 'unchecked' ? 'text-amber-800' : 'text-gray-600'} data-testid="work-email-status"><span className="font-medium">{v.headline}.</span> {v.note}</span>}
