@@ -12,6 +12,17 @@
 // 'user_confirmed'): the address a provider returns must be on that domain, so an unsettled site means no lookup.
 import { contactsFromEnrichments, roleContradicted, type ContactEnrichment, type RankedPerson } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
+import { companySearchEligible } from '../scan/find-contact-eligible.ts'
+
+// #1036 live check: the ONE test-only lead that may show Find work email although it is a fixture row (source_kind 'test',
+// which companySearchEligible refuses). Only the work-email fixture (lib/scan/work-email-fixture.ts) creates a 'test' lead with
+// this company; the server also requires the test tenant AND the staging fake PDL before any lookup on it (work-email.ts).
+export const WORK_EMAIL_FIXTURE_COMPANY = 'dazl work-email fixture company (test only)'
+export const isWorkEmailFixtureLead = (l: { source_kind?: string | null; company?: string | null }): boolean =>
+  l.source_kind === 'test' && l.company === WORK_EMAIL_FIXTURE_COMPANY
+// Which lead rows may offer Find work email at all: a company row (the Find-contact rule), or the work-email fixture lead.
+export const workEmailLeadEligible = (l: { human_confirmed_from?: string | null; source_kind?: string | null; company?: string | null }): boolean =>
+  companySearchEligible(l) || isWorkEmailFixtureLead(l)
 
 export const DECISION_MAKER = /\b(?:founder|co-?founder|owner|ceo|cto|cfo|coo|cmo|cro|chief|president|vp|vice president|head|director|partner|principal|general manager|managing director|gm)\b/i
 
@@ -164,7 +175,8 @@ export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline
   }
 }
 export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }): string {
-  if (!p.apollo && !p.pdl) return 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment to look up work emails.'
+  // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
+  if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'
   const parts = [p.apollo ? 'up to 1 credit on your Apollo key' : null, p.pdl ? `${p.apollo ? 'then, only if Apollo has none, ' : ''}1 People Data Labs credit, only on a match` : null].filter(Boolean)
   return `Free if the company website prints it; otherwise ${parts.join(', ')}. US contacts only.${p.pdlNeedsOptIn ? ' People Data Labs fallback is off (Settings > Enrichment).' : ''}`
 }
