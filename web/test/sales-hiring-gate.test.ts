@@ -611,15 +611,15 @@ test('#533 direct-career AC3: a non-matching verified careers vacancy under a ro
   s.db.close()
 })
 
-// #767 live check: a careers link to a public Ashby posting is quoted from the posting's own descriptionPlain, never "<title> <description>"; a posting whose
-// text is only boilerplate (it never names the role or the hiring) gives no quote, and the gate then records no careers hiring evidence (fail closed, audited -1).
+// #767 live check: a careers link to a public Ashby posting is quoted from the posting's own descriptionPlain, never "<title> <description>". A posting whose
+// text is only boilerplate gives no quote, and the gate keeps main's result for the verified vacancy (no yield lost): only the quote is left out.
 const ASHBY_767 = 'https://jobs.ashbyhq.com/brightloop/6adee270-03bf-4b1b-915b-eba5fb56d1b6'
 const PREAMBLE_767 = 'AI AT BRIGHTLOOP\n\nAt Brightloop https://brightloop.io/about, we build and use automation every day to make work more efficient, creative, and human. Check out our guidance on How to Collaborate with AI During Brightloop\u2019s Hiring Process https://brightloop.io/l/jobs/ai-at-brightloop.\n\nJob Posted: June 2026\n\nLocation: London, UK\n\n'
 const ashby767 = (desc: string) => cGet({
   '/': '<a href="/careers">Careers</a>',
   '/careers': `<h2>Open roles at Brightloop</h2><ul><li><a href="${ASHBY_767}">Sales Assist Representative</a></li></ul>`,
 }, { '/posting-api/job-board/brightloop': { status: 200, body: JSON.stringify({ jobs: [{ id: '6adee270-03bf-4b1b-915b-eba5fb56d1b6', title: 'Sales Assist Representative', location: 'London', isListed: true, publishedAt: d(9), jobUrl: ASHBY_767, descriptionPlain: desc }] }) } })
-test('#767 careers gate: an Ashby posting is quoted from its own descriptionPlain (the sentence naming the role); a boilerplate-only posting gives no quote and no hiring evidence', async () => {
+test('#767 careers gate: an Ashby posting is quoted from its own descriptionPlain (the sentence naming the role); a boilerplate-only posting keeps main\'s gate result with no quote', async () => {
   const s = seed()
   await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: ashby767(PREAMBLE_767 + 'Hi there!\n\nWe\u2019re looking for a new Sales-Assist Representative to join the Sales-Assist team at Brightloop in London.') })
   assert.equal(lead(s.db).review_reason, null, 'the verified posting with a quote from its own text carries the hiring half')
@@ -628,9 +628,11 @@ test('#767 careers gate: an Ashby posting is quoted from its own descriptionPlai
   s.db.close()
   const b = seed()
   await applySalesHiringGate(b.db, b.job, serve({}), { now: NOW, careersGet: ashby767(PREAMBLE_767 + 'ABOUT YOU\n\n - You live in the UK.') })
-  assert.equal(lead(b.db).review_reason, 'no_sales_hiring_evidence', 'no quote from the posting: fail closed, the lead is held')
-  assert.equal(careersEvidence(b.db).length, 0, 'no careers hiring evidence is recorded without a quote')
-  assert.deepEqual(careersRows(b.db).map(r => [r.status, r.results]), [['checked_vacancy_no_quote', -1]])
+  assert.equal(lead(b.db).review_reason, null, 'the verified vacancy still carries the hiring half, as on main')
+  const evb = careersEvidence(b.db)
+  assert.equal(evb.length, 1); assert.equal(evb[0].value, `Open sales role on its careers page: Sales Assist Representative - posted ${d(9).slice(0, 10)}`)
+  assert.doesNotMatch(evb[0].label, /Sales Assist Representative AI AT|AI AT BRIGHTLOOP|automation every day/, 'no glued title + preamble text is saved as a quote')
+  assert.deepEqual(careersRows(b.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
   b.db.close()
 })
 

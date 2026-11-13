@@ -325,12 +325,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         // (page read, no open sales role / closed marker / no careers page) gets results 0; anything uncertain (fetch failed,
         // robots unreachable, unverified job, wrong domain, rejected) is -1 - never reported as 'none found'.
         if (c === null) audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'fetch_failed', results: -1 })
-        else if (c.vacancy && c.vacancy.quote.trim() === '') {
-          // #767: a vacancy with NO quote from the posting's own text (only a public ATS posting can have none: one whose text never states the vacancy) is not
-          // recorded as hiring evidence: fail closed, audited as uncertain (-1), never 'none found'
-          audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'checked_vacancy_no_quote', results: -1 })
-          careersNote = `its careers page links ${c.vacancy.title}, but that posting's own text never states the role or the hiring, so it is not recorded as hiring evidence. `
-        } else if (c.vacancy) {
+        else if (c.vacancy) {
           const v = c.vacancy
           const established = domainRelationship(db, job.user_id, l.id, l.company_domain) === 'established'
           const namesCompany = norm(v.pageText).includes(norm(l.company).replace(/\s/g, '')) || norm(v.pageText).replace(/\s/g, '').includes(norm(l.company).replace(/\s/g, ''))

@@ -33,6 +33,7 @@ function sourceBrand(sourceUrl: string): { brand: string; ats: boolean } | null 
   return brand.length >= 3 ? { brand, ats: false } : null
 }
 
+const ATS_ORG_SUFFIX = new Set(['hq', 'inc', 'labs', 'io', 'app', 'team', 'careers', 'jobs'])
 export function counterpartySignal(c: Candidate, page: Page, passage: string): string | null {
   const src = sourceBrand(c.source_url)
   if (!src) return null
@@ -40,10 +41,11 @@ export function counterpartySignal(c: Candidate, page: Page, passage: string): s
   const company = companyKey(c.company)
   if (!company) return null
   if (src.ats) {
-    // a board org is the lead's own when it IS the company's whole key (spaces dropped), or one starts with the other and both are at least 4 characters
-    // ("brightloophq" / "Brightloop"); a short key inside a longer slug ("ai" in "retail") is not the same company
+    // a board org is the lead's own when it IS the company's whole key (spaces dropped), or that key plus a known board-slug suffix ("brightloophq",
+    // "acmelabs"); a short key inside a longer slug ("ai" in "retail") or a mere prefix ("ramp" / "rampart") is not the same company
     const whole = company.replace(/ /g, '')
-    if (whole === brand || (Math.min(whole.length, brand.length) >= 4 && (brand.startsWith(whole) || whole.startsWith(brand)))) return null
+    const suffixed = (long: string, short: string) => short.length >= 3 && long.startsWith(short) && ATS_ORG_SUFFIX.has(long.slice(short.length))
+    if (whole === brand || suffixed(brand, whole) || suffixed(whole, brand)) return null
   } else if (company.includes(brand) || brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
   const hay = norm(passage || `${page.title} ${page.text.slice(0, 3000)}`)
   if (!hay.includes(brand)) return null

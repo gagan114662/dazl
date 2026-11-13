@@ -58,3 +58,11 @@ test('an ATS org brand is matched on the whole company key: "AI Corp" on the ret
   const own = { ...ai, company: 'Brightloop', source_url: `https://jobs.ashbyhq.com/brightloophq/${id}` }
   assert.equal(counterpartySignal(own as never, { ...page, title: 'x @ brightloophq', text: 'Brightloop uses Brightloophq tooling; we are hiring an Account Executive.' } as never, ''), null)
 })
+// round 2 R4: a prefix is not enough ("Ramp" is not "rampart"); equality or the name plus a known board-slug suffix is
+test('an ATS org brand is the lead\'s own only when equal or the name plus a known suffix: "Ramp" on the rampart board is a counterparty', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  const page = { title: 'Account Executive @ rampart', text: 'Ramp uses Rampart for security reviews, and we are hiring an Account Executive.', retrievedAt: 0 }
+  const lead = (company: string, org: string) => ({ name: '', company, contact: null, signal: 'x', source_url: `https://jobs.ashbyhq.com/${org}/${id}`, score: 80, excerpt: 'Ramp uses Rampart for security reviews', event_date: null })
+  assert.equal(counterpartySignal(lead('Ramp', 'rampart') as never, page as never, ''), 'source_owner:rampart')
+  for (const org of ['ramp', 'ramphq', 'ramplabs', 'rampio', 'rampcareers']) assert.equal(counterpartySignal(lead('Ramp', org) as never, { ...page, text: `Ramp uses ${org} tooling.` } as never, ''), null, org)
+})
