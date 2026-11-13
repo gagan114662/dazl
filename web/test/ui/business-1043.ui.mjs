@@ -95,7 +95,7 @@ try {
     const q = (await play.textContent()).trim()
     const before = posts.length
     await play.click()
-    await page.waitForURL(/\/app\/leads\?q=/, { timeout: 20000 })
+    await page.waitForURL(/\/app\/leads\?q=.*&fresh=1/, { timeout: 20000 })
     await page.waitForFunction(v => document.querySelector('#play')?.value === v, q, { timeout: 20000 }).catch(() => {})
     assert.equal(await page.locator('#play').inputValue(), q, 'Leads opens with the play filled in')
     await page.waitForTimeout(500)
@@ -107,6 +107,16 @@ try {
     assert.ok(est, 'Find leads asked for the estimate')
     assert.equal(est.body.query, q)
     assert.notEqual(est.body.icp?.summary, 'OLD REVIEWED PROFILE', 'the older reviewed play profile is not carried onto the new sentence')
+    // every OTHER ?q= link (Home's widen/recover paths) still carries the reviewed profile, as before
+    if (width === 1280) {
+      const mark = posts.length
+      await page.goto(`${base}/app/leads?q=${encodeURIComponent('An older dental play')}`, { waitUntil: 'networkidle' })
+      await page.waitForFunction(v => document.querySelector('#play')?.value === v, 'An older dental play', { timeout: 20000 })
+      await page.getByRole('button', { name: /Find leads/ }).first().click()
+      await page.waitForTimeout(800)
+      const est2 = posts.slice(mark).find(x => x.p === '/api/scan/estimate')
+      assert.equal(est2?.body?.icp?.summary, 'OLD REVIEWED PROFILE', 'a plain ?q= link keeps carrying the reviewed profile')
+    }
     out.push(`${width}: 7 sections, site link, empty sections, save keeps research, play prefilled "${q}"`)
     await ctx.close()
   }
@@ -121,12 +131,13 @@ try {
       if (req.method() !== 'GET') writes.push(p)
       const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
       if (p === '/api/settings/profile' || p === '/api/settings/memory') return json({ error: 'unavailable' }, 500)
-      if (p === '/api/settings/competitors') return json({ competitors: ['Zocdoc'] })
+      if (p === '/api/settings/competitors') return json({})   // 200 without its key: a failed read, never "empty"
       return json({}, 404)
     })
     const page = await ctx.newPage()
     await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
     await page.getByTestId('load-failed').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('no-plays').textContent(), /Could not load your profile/)
     for (const id of ['company', 'customer', 'roles', 'signals']) {
       const sec = page.getByTestId(`section-${id}`)
       assert.match(await sec.textContent(), /Could not load your profile/); assert.doesNotMatch(await sec.textContent(), /dazl did not find this/)
@@ -134,9 +145,36 @@ try {
     }
     assert.match(await page.getByTestId('section-voice').textContent(), /Could not load Memory/)
     assert.doesNotMatch(await page.getByTestId('section-voice').textContent(), /dazl did not find this/)
-    assert.match(await page.getByTestId('section-competitors').textContent(), /Zocdoc/)
+    assert.match(await page.getByTestId('section-competitors').textContent(), /Could not load Competitors/)
+    assert.doesNotMatch(await page.getByTestId('section-competitors').textContent(), /dazl did not find this/)
     assert.deepEqual(writes, [])
     out.push('failed reads: "Could not load", no profile editor')
+    await ctx.close()
+  }
+  {
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    let profileGets = 0; const writes = []
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname; const m = req.method()
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (m !== 'GET') { writes.push(p); return json({ ok: true, buyer }) }
+      if (p === '/api/settings/profile') return ++profileGets === 1 ? json({ business_name: 'Bright Smile', sells: 'Online booking', website: 'https://brightsmile.example', buyer, new_play_offer: null }) : json({ error: 'unavailable' }, 500)
+      if (p === '/api/settings/memory') return json({ memory: { icp: '', positioning: '', tone: '', exclusions: [], objections: [] } })
+      if (p === '/api/settings/competitors') return json({ competitors: [] })
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    const company = page.getByTestId('section-company')
+    await company.getByRole('button', { name: 'Edit Company & offer' }).click()
+    await company.getByRole('button', { name: 'Save' }).click()
+    await company.getByText(/Could not load your profile/).waitFor({ timeout: 10000 })   // the reload after the save failed
+    assert.equal(await page.locator('#edit-company').count(), 0, 'no editor over a profile that did not reload')
+    assert.equal(writes.length, 1, 'only the one save; nothing posted from a blank form')
+    out.push('a failed reload after a save removes the editor')
     await ctx.close()
   }
   console.log(`business page UI check passed (real build): ${out.join('; ')}`)

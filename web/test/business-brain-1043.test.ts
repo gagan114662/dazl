@@ -87,3 +87,7 @@ test('#1043 council: "from your site" needs the quote found on the page and rese
   assert.ok(!moved.some(i => i.source.kind === 'site'))
   assert.ok(!moved.some(i => i.text === 'Office manager'), 'research about another site is not shown as known')
 })
+
+test('#1043 council r2: a signal mentioning hiring with no role to hire still makes a plain play (it is not lost)', () => {
+  assert.deepEqual(businessPlays({ buyer: icp({ signals: ['Expanding team, hiring'] }) }, []).map(p => p.query), ['Practice owner in Ohio - Expanding team, hiring'])
+})

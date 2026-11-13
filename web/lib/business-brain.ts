@@ -13,7 +13,7 @@ export interface BrainProfile { business_name?: string | null; sells?: string | 
 export interface BrainMemory { icp?: string; positioning?: string; tone?: string; exclusions?: string[]; objections?: { q: string; a: string }[] }
 export type Source = { kind: 'site'; url: string } | { kind: 'profile' } | { kind: 'memory' } | { kind: 'competitors' }
 export interface BrainItem { label?: string; text: string; source: Source }
-export interface BrainSection { id: 'company' | 'customer' | 'roles' | 'signals' | 'competitors' | 'objections' | 'voice'; title: string; items: BrainItem[]; edit: 'profile' | 'memory' | 'competitors' }
+export interface BrainSection { id: 'company' | 'customer' | 'roles' | 'signals' | 'competitors' | 'objections' | 'voice'; title: string; items: BrainItem[]; edit: 'profile' | 'memory' | 'competitors'; reads: ('profile' | 'memory' | 'competitors')[] }
 
 const clean = (s: unknown) => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : ''
 const list = (a: unknown) => Array.isArray(a) ? a.map(clean).filter(Boolean) : []
@@ -49,23 +49,23 @@ export function businessSections(p: BrainProfile | null, m: BrainMemory | null, 
   const each = (label: string, a: unknown): BrainItem[] => list(a).map(text => ({ label, text, source: prof }))
   const site = httpsUrl(p?.website)
   return [
-    { id: 'company', title: 'Company & offer', edit: 'profile', items: merge(
+    { id: 'company', reads: ['profile', 'memory'], title: 'Company & offer', edit: 'profile', items: merge(
       field('Company', p?.business_name), field('What you sell', p?.sells),
       site ? [{ label: 'Website', text: site, source: prof }] : [],   // the address the user saved, not a page dazl read
       siteItems(b?.research, ['offer'], p?.website).map(i => ({ ...i, label: 'Offer' })),
       field('Positioning', m?.positioning, mem)) },
-    { id: 'customer', title: 'Ideal customer', edit: 'profile', items: merge(
+    { id: 'customer', reads: ['profile', 'memory'], title: 'Ideal customer', edit: 'profile', items: merge(
       field('Summary', b?.summary), each('Industry', b?.industries), each('Company size', b?.sizes), each('Where', b?.where),
       siteItems(b?.research, ['industry'], p?.website).map(i => ({ ...i, label: 'Industry' })), siteItems(b?.research, ['size'], p?.website).map(i => ({ ...i, label: 'Company size' })),
       siteItems(b?.research, ['location'], p?.website).map(i => ({ ...i, label: 'Where' })),
       each('Not a fit', b?.exclude), siteItems(b?.research, ['disqualifier'], p?.website).map(i => ({ ...i, label: 'Not a fit' })),
       field('In your words', m?.icp, mem), list(m?.exclusions).map(text => ({ label: 'Skip', text, source: mem }))) },
-    { id: 'roles', title: 'Buyer roles', edit: 'profile', items: merge(each('Role', b?.who), siteItems(b?.research, ['persona'], p?.website).map(i => ({ ...i, label: 'Role' }))) },
-    { id: 'signals', title: 'Buying signals', edit: 'profile', items: merge(each('Signal', b?.signals), siteItems(b?.research, ['pain'], p?.website).map(i => ({ ...i, label: 'Need' }))) },
-    { id: 'competitors', title: 'Competitors', edit: 'competitors', items: list(competitors).map(text => ({ text, source: { kind: 'competitors' } })) },
-    { id: 'objections', title: 'Objections & answers', edit: 'memory', items: (Array.isArray(m?.objections) ? m!.objections : [])
+    { id: 'roles', reads: ['profile'], title: 'Buyer roles', edit: 'profile', items: merge(each('Role', b?.who), siteItems(b?.research, ['persona'], p?.website).map(i => ({ ...i, label: 'Role' }))) },
+    { id: 'signals', reads: ['profile'], title: 'Buying signals', edit: 'profile', items: merge(each('Signal', b?.signals), siteItems(b?.research, ['pain'], p?.website).map(i => ({ ...i, label: 'Need' }))) },
+    { id: 'competitors', reads: ['competitors'], title: 'Competitors', edit: 'competitors', items: list(competitors).map(text => ({ text, source: { kind: 'competitors' } })) },
+    { id: 'objections', reads: ['memory'], title: 'Objections & answers', edit: 'memory', items: (Array.isArray(m?.objections) ? m!.objections : [])
       .filter(o => clean(o?.q)).map(o => ({ label: clean(o.q), text: clean(o.a) || '(no answer saved yet)', source: mem })) },
-    { id: 'voice', title: 'Voice', edit: 'memory', items: field('Tone', m?.tone, mem) },
+    { id: 'voice', reads: ['memory'], title: 'Voice', edit: 'memory', items: field('Tone', m?.tone, mem) },
   ]
 }
 
@@ -81,7 +81,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  const hiringSig = (x: string) => /\bhir(?:e|es|ing)\b/i.test(x)
+  const hiringSig = (x: string) => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.test(x)   // only a signal that yields a hiring play
   const firstPlain = sig.find(x => !hiringSig(x))   // a hiring signal becomes the hiring play below, never also a plain one
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the

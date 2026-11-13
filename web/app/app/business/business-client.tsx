@@ -62,23 +62,31 @@ function ProfileEditor({ profile, onSaved }: { profile: BrainProfile | null; onS
 // second save undo the first. Closing an editor reloads the page's data; reopening rebuilds the form from it.
 function Section({ s, data, onSaved, open, setOpen }: { s: BrainSection; data: Load; onSaved: () => void; open: boolean; setOpen: (v: boolean) => void }) {
   // a section whose own source failed to load never claims "dazl did not find this"
-  const unread = s.edit === 'memory' && data.failed.includes('Memory') ? 'Memory' : s.edit === 'competitors' && data.failed.includes('Competitors') ? 'Competitors' : s.edit === 'profile' && data.failed.includes('profile') ? 'your profile' : null
+  // every source this section draws on that failed to load: said above what did load, and the section never claims
+  // "dazl did not find this" while any of its sources is unread
+  const names = { profile: 'your profile', memory: 'Memory', competitors: 'Competitors' } as const
+  const failedKey = { profile: 'profile', memory: 'Memory', competitors: 'Competitors' } as const
+  const unreadList = s.reads.filter(r => data.failed.includes(failedKey[r])).map(r => names[r])
+  const unread = unreadList.length ? unreadList.join(' and ') : null
+  const editable = !(s.edit === 'profile' && data.failed.includes('profile'))
   return (
     <section className="card p-5 mb-4" aria-labelledby={`h-${s.id}`} data-testid={`section-${s.id}`}>
       <div className="flex items-start justify-between gap-3">
         <h2 id={`h-${s.id}`} className="font-semibold">{s.title}</h2>
         {/* a profile that did not load is never edited from a blank form (saving it would overwrite what is stored) */}
-        {s.edit === 'profile' && data.failed.includes('profile') ? <span className="text-xs text-[#555] shrink-0" data-testid="edit-unavailable">Refresh to edit</span>
+        {!editable ? <span className="text-xs text-[#555] shrink-0" data-testid="edit-unavailable">Refresh to edit</span>
           : <button type="button" className="btn-ghost btn-sm shrink-0" aria-expanded={open} aria-controls={`edit-${s.id}`} aria-label={`${open ? 'Done editing' : 'Edit'} ${s.title}`} onClick={() => { if (open) onSaved(); setOpen(!open) }}>{open ? 'Done' : 'Edit'}</button>}
       </div>
-      {unread ? <p className="text-sm mt-2" role="alert" data-testid="unread">Could not load {unread}. Refresh to retry; nothing here is known to be empty.</p>
+      {unread && <p className="text-sm mt-2" role="alert" data-testid="unread">Could not load {unread}. Refresh to retry; nothing here is known to be empty.</p>}
+      {unread ? (s.items.length > 0 && <ul className="mt-2 space-y-2">{s.items.map((it, i) => (
+          <li key={i} className="text-sm min-w-0" data-testid="item">{it.label && <span className="text-[#555]">{it.label}: </span>}<span className="break-words">{it.text}</span><div><SourceTag s={it.source} /></div></li>))}</ul>)
         : s.items.length === 0 ? <p className="text-sm text-[#555] mt-2" data-testid="empty">dazl did not find this. {s.edit === 'profile' ? 'Add it with Edit.' : `Add it with Edit (saved in ${s.edit === 'memory' ? 'Memory' : 'Competitors'}).`}</p>
         : <ul className="mt-2 space-y-2">{s.items.map((it, i) => (
           <li key={i} className="text-sm min-w-0" data-testid="item">
             {it.label && <span className="text-[#555]">{it.label}: </span>}<span className="break-words">{it.text}</span>
             <div><SourceTag s={it.source} /></div>
           </li>))}</ul>}
-      {open && (s.edit === 'profile' ? <div id={`edit-${s.id}`}><ProfileEditor profile={data.profile} onSaved={onSaved} /></div>
+      {open && editable && (s.edit === 'profile' ? <div id={`edit-${s.id}`}><ProfileEditor profile={data.profile} onSaved={onSaved} /></div>
         : <div id={`edit-${s.id}`} className="mt-3 border-t border-black/10 pt-3">{s.edit === 'memory' ? <MemoryPanel /> : <CompetitorsPanel />}</div>)}
     </section>)
 }
@@ -89,9 +97,9 @@ export default function BusinessClient() {
   const load = useCallback(async () => {
     const failed: string[] = []
     const [p, m, c] = await Promise.all([
-      getJson('/api/settings/profile').catch(() => { failed.push('profile'); return null }),
-      getJson('/api/settings/memory').then(j => j?.memory ?? null).catch(() => { failed.push('Memory'); return null }),
-      getJson('/api/settings/competitors').then(j => Array.isArray(j?.competitors) ? j.competitors : null).catch(() => { failed.push('Competitors'); return null }),
+      getJson('/api/settings/profile').then(j => { if (!j || typeof j !== 'object') throw new Error('shape'); return j }).catch(() => { failed.push('profile'); return null }),
+      getJson('/api/settings/memory').then(j => { if (!j || typeof j.memory !== 'object' || j.memory === null) throw new Error('shape'); return j.memory }).catch(() => { failed.push('Memory'); return null }),
+      getJson('/api/settings/competitors').then(j => { if (!Array.isArray(j?.competitors)) throw new Error('shape'); return j.competitors }).catch(() => { failed.push('Competitors'); return null }),
     ])
     setData({ profile: p, memory: m, competitors: c, failed })
   }, [])
@@ -106,8 +114,8 @@ export default function BusinessClient() {
       {data.failed.length > 0 && <p className="text-sm mb-4" role="alert" data-testid="load-failed">Could not load your {data.failed.join(', ')}. Those sections may be incomplete; refresh to retry.</p>}
       <section className="card p-5 mb-6" aria-labelledby="h-plays" data-testid="plays">
         <h2 id="h-plays" className="font-semibold mb-2">Suggested plays</h2>
-        {plays.length === 0 ? <p className="text-sm text-[#555]">Add buyer roles and a buying signal below and dazl will suggest plays from them.</p>
-          : <><ul className="space-y-2">{plays.map(p => <li key={p.query}><Link className="underline break-words" href={`/app/leads?q=${encodeURIComponent(p.query)}`} data-testid="play">{p.query}</Link></li>)}</ul>
+        {plays.length === 0 ? <p className="text-sm text-[#555]" data-testid="no-plays">{data.failed.includes('profile') ? 'Could not load your profile, so no plays yet. Refresh to retry.' : 'Add buyer roles and a buying signal below and dazl will suggest plays from them.'}</p>
+          : <><ul className="space-y-2">{plays.map(p => <li key={p.query}><Link className="underline break-words" href={`/app/leads?q=${encodeURIComponent(p.query)}&fresh=1`} data-testid="play">{p.query}</Link></li>)}</ul>
             <p className="text-xs text-[#555] mt-2">Opens Leads with this search filled in. Nothing runs until you press Find leads and see the cost.</p></>}
       </section>
       {sections.map(s => <Section key={s.id} s={s} data={data} onSaved={() => void load()} open={openId === s.id} setOpen={v => setOpenId(v ? s.id : null)} />)}
