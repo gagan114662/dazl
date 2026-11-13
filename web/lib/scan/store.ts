@@ -423,6 +423,8 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 // genuine company whose name happens to contain '(test only)' is never hidden.
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
+// Same-second ties in insertion order (insert_seq), as the Db store (store-db.ts): never the query plan's order, which an index
+// such as leads (scan_job_id, created_at) (#1040) changes.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
   const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
@@ -432,7 +434,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-       ORDER BY l.created_at DESC LIMIT ?`
+       ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`
   return allWithHeldFallback(db, withHeld(plain.replace('l.score, l.confidence, l.event_date, l.date_status, l.review_reason,', 'l.score, l.confidence, l.event_date, l.date_status, l.review_reason,'), 'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`), jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
