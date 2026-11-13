@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { bothEngines } from './helpers/engines.ts'
 import type { Db, Tx } from '../lib/db/client.ts'
-import { createWatch, listWatches, pullInWeeklyRepeats, runDueWatches, watchAction, type Fence } from '../lib/watch.ts'
+import { createWatch, listWatches, pullInWeeklyRepeats, runDueWatches, watchAction, WEEKLY_REPEAT_CUTOFF, type Fence } from '../lib/watch.ts'
 import { firstRepeatAt, repeatFirstPlays, REPEAT_INTERVAL_S } from '../lib/play-repeat.ts'
 import { runPlayNow } from '../lib/play-now.ts'
 import { runNowMessage } from '../lib/play-new-view.ts'
@@ -22,6 +22,9 @@ const DAY = 86400, H = 3600
 const D0 = utcDayStart(Math.floor(Date.now() / 1000)) - 5 * DAY
 const T0 = D0 + 15 * H
 const FIN = T0 + 300
+// the weekly pull-in's cutoff for these tests (lib/watch.ts WEEKLY_REPEAT_CUTOFF): after every watch they create, and it
+// retires after every time they use, so they never depend on the real date
+const CUT = D0 + 30 * DAY
 let n = 0
 const id24 = () => (++n).toString(16).padStart(24, '0')
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
@@ -82,13 +85,13 @@ bothEngines('#1042 daily: the first play\'s repeat says "next search tomorrow" a
   // three consecutive days, each a run one day after the last (keyed, free plan: one scan a day)
   for (const d of [0, 1, 2]) {
     const at = due1 + d * DAY
-    assert.deepEqual(await runDueWatches(db, { now: at, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 }, `day ${d + 1}`)
+    assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: at, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 }, `day ${d + 1}`)
     assert.equal(Number((await watch(db, w))!.next_run_at), at + DAY)
     for (const j of await jobsAt(db, A, at)) await finishJob(db, j.id, at + 300)
   }
   // pausing stops it; resuming schedules the next run a day out (a week on main)
   assert.equal(await watchAction(db, A, w, 'pause'), true)
-  assert.deepEqual(await runDueWatches(db, { now: due1 + 10 * DAY, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1 + 10 * DAY, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 })
   assert.equal(await watchAction(db, A, w, 'resume', due1 + 10 * DAY), true)
   assert.equal(Number((await watch(db, w))!.next_run_at), due1 + 11 * DAY)
   // a watch made by hand ("Watch this weekly") is unchanged: weekly on create, run and resume (A paused: this part
@@ -97,7 +100,7 @@ bothEngines('#1042 daily: the first play\'s repeat says "next search tomorrow" a
   await account(db, B, 'b@b.example'); await giveKey(db, B)
   const hand = (await createWatch(db, B, 'Roofers in Ohio', '{"summary":"Roofers"}', null, D0)).watch!
   assert.equal(Number(hand.next_run_at), D0 + WEEK_S)
-  assert.deepEqual(await runDueWatches(db, { now: D0 + WEEK_S, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: D0 + WEEK_S, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal(Number((await watch(db, hand.id))!.next_run_at), D0 + 2 * WEEK_S)
   assert.equal((await jobsAt(db, B, D0 + WEEK_S))[0].run_budget, null, 'a hand-made watch carries no added budget')
   const [hp] = savedPlays((await listWatches(db, B)) as never, null, 'UTC', D0 + WEEK_S)
@@ -111,13 +114,13 @@ bothEngines('#1042 free plan: a scan already started today skips that day\'s run
   await account(db, B, 'b@b.example'); await scan(db, B, utcDayStart(due1) + H)
   // a search the person ran in Leads this morning (a different request) is today's one scan
   const other = await scan(db, A, utcDayStart(due1) + 8 * H, { query: 'Roofers in Ohio' })
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   assert.deepEqual(await jobsAt(db, A, due1), [], 'no scan queued')
   assert.deepEqual([Number((await watch(db, w))!.next_run_at), (await watch(db, w))!.active], [due1 + DAY, 1], 'still live; moved to the same time tomorrow')
   const [ev] = await skips(db, A)
   assert.deepEqual([ev.resource_id, Number(ev.at), ev.actor_kind, JSON.parse(ev.summary)], [w, due1, 'service', { reason: 'free_daily_cap', due_at: due1, next_run_at: due1 + DAY, daily_runs: 1 }])
   // the next tick that day: not due any more, nothing more written
-  assert.deepEqual(await runDueWatches(db, { now: due1 + 600, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1 + 600, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 })
   assert.equal((await skips(db, A)).length, 1)
   // Plays and Home say why
   const [row] = await listWatches(db, A)
@@ -134,14 +137,14 @@ bothEngines('#1042 free plan: a scan already started today skips that day\'s run
   // the next day it runs on the account's own key, with the play's own budget (none: Autopilot and research are not
   // turned off for it), and the notice goes away
   const due2 = due1 + DAY
-  assert.deepEqual(await runDueWatches(db, { now: due2, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due2, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   const [job] = await jobsAt(db, A, due2)
   assert.equal(job.run_budget, null)
   assert.equal((await listWatches(db, A))[0].skipped, null)
   // a paused play shows no skip line
   await scan(db, A, utcDayStart(due2 + DAY) + H)
   await finishJob(db, job.id, due2 + 300)
-  assert.deepEqual(await runDueWatches(db, { now: due2 + DAY, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due2 + DAY, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   await watchAction(db, A, w, 'pause')
   assert.equal((await listWatches(db, A))[0].skipped, null)
 })
@@ -150,10 +153,10 @@ bothEngines('#1042 free plan, no key of its own: a capped day reserves nothing f
   const w = await firstPlay(db, A, 'a@a.example', { key: false })
   const due1 = FIN + DAY
   await scan(db, A, utcDayStart(due1) + H)
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: TRIAL_ENV }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: TRIAL_ENV }), { ran: 0, paused: 0, skipped: 1 })
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?', [A]), 0)
   // next day: a trial run, its reserve $0.30 and its own budget $0.30
-  assert.deepEqual(await runDueWatches(db, { now: due1 + DAY, env: TRIAL_ENV }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1 + DAY, env: TRIAL_ENV }), { ran: 1, paused: 0, skipped: 0 })
   const [job] = await jobsAt(db, A, due1 + DAY)
   assert.equal(job.funded_by, 'trial')
   assert.deepEqual(JSON.parse(job.run_budget!), { max_usd: FREE_RUN_MAX_USD }, "dazl's money: held to $0.30")
@@ -173,7 +176,7 @@ bothEngines('#1042 the daily cap is re-checked inside the run\'s transaction: a 
   // the job's transaction sees a scan a click started after the pre-check passed
   let calls = 0
   const click: Fence = function* (t: Tx) { if (++calls === 3) yield* t.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, ?, 'x', '-', '-', 'q', 'done', ?)", [id24(), A, due1 - 60]) }
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: NO_TRIAL, fence: click }), { ran: 0, paused: 0, skipped: 1 })
   assert.deepEqual(await jobsAt(db, A, due1), [])
   assert.equal(Number((await watch(db, w))!.next_run_at), due1 + DAY)
 })
@@ -182,7 +185,7 @@ bothEngines('#1042 the free daily cap is hard: a failed run that day still uses 
   const w = await firstPlay(db, A, 'a@a.example')
   const due1 = FIN + DAY
   await scan(db, A, utcDayStart(due1) + 2 * H, { status: 'failed', error: 'no_candidates' })
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   const click = due1 + 2 * H
   assert.deepEqual(await runPlayNow(db, A, 'watch', w, click, NO_TRIAL), { error: 'daily_cap', retry_at: utcDayStart(click) + DAY })
 })
@@ -196,7 +199,7 @@ bothEngines('#1042 one account\'s failed skip write never stops the other accoun
   let calls = 0
   // the first transaction of a pass is the weekly pull-in (lib/watch.ts pullInWeeklyRepeats); count from the next one
   const flaky: Fence = function* () { if (++calls === 2) throw new Error('audit write refused') }
-  assert.deepEqual(await runDueWatches(db, { now: due, env: NO_TRIAL, fence: flaky }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due, env: NO_TRIAL, fence: flaky }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal(Number((await watch(db, wa))!.next_run_at), FIN + DAY, 'A untouched: retried by the next tick')
   assert.equal((await jobsAt(db, B, due)).length, 1, 'B ran')
   assert.ok(wb)
@@ -207,7 +210,7 @@ bothEngines('#1042 one account\'s failed skip write never stops the other accoun
   await db.run('UPDATE watches SET next_run_at = ? WHERE id IN (?, ?)', [next, wb, wc])
   let n2 = 0
   const failsInRun: Fence = function* () { if (++n2 === 3) throw new Error('job write refused') }
-  assert.deepEqual(await runDueWatches(db, { now: next, env: NO_TRIAL, fence: failsInRun }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: next, env: NO_TRIAL, fence: failsInRun }), { ran: 1, paused: 0, skipped: 0 })
   assert.deepEqual((await db.all<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE created_at = ?', [next])).map(x => x.user_id), [C3])
   assert.equal(Number((await watch(db, wa))!.next_run_at), FIN + DAY, 'A untouched: due again on the next tick')
 })
@@ -216,7 +219,7 @@ bothEngines('#1042 review 2: the skip notice stays until the play runs again, ev
   const w = await firstPlay(db, A, 'a@a.example')
   const due1 = FIN + DAY
   await scan(db, A, utcDayStart(due1) + H)
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   // no tick since (outage): three days later the play has still not run, so Home and Plays still say why
   const [row] = await listWatches(db, A)
   assert.deepEqual(row.skipped, { at: due1, reason: 'free_daily_cap', next_run_at: due1 + DAY })
@@ -226,7 +229,7 @@ bothEngines('#1042 review 2: the skip notice stays until the play runs again, ev
   assert.equal((await listWatches(db, A))[0].skipped, null)
   await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [due1 + DAY, w]) // back to the skip's next run for the rest of this test
   // once it runs, the notice is gone
-  assert.deepEqual(await runDueWatches(db, { now: due1 + 3 * DAY, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1 + 3 * DAY, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal((await listWatches(db, A))[0].skipped, null)
   assert.ok(w)
 })
@@ -236,10 +239,10 @@ bothEngines('#1042 review 4: a skip a late tick put two days out is not pulled b
   const due1 = FIN + DAY                     // 15:05 on D1
   const late = utcDayStart(due1) + DAY + 600 // the tick runs at 00:10 on D2 (an outage)
   await scan(db, A, utcDayStart(late) + 60)  // a search already ran on D2
-  assert.deepEqual(await runDueWatches(db, { now: late, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: late, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 1 })
   const next = Number((await watch(db, w))!.next_run_at)
   assert.equal(next, due1 + 2 * DAY, 'the skip put it on D3 at 15:05, more than a day and an hour away')
-  for (const t of [late + 60, late + 3600, late + 4 * 3600]) assert.deepEqual(await runDueWatches(db, { now: t, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 }, String(t))
+  for (const t of [late + 60, late + 3600, late + 4 * 3600]) assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: t, env: NO_TRIAL }), { ran: 0, paused: 0, skipped: 0 }, String(t))
   assert.equal(Number((await watch(db, w))!.next_run_at), next)
   assert.equal((await skips(db, A)).length, 1, 'one skip, not one per tick')
 })
@@ -248,14 +251,14 @@ bothEngines('#1042 review 4: the pull-in threshold (a day and an hour): 24 h 50 
   const w = await firstPlay(db, A, 'a@a.example')
   const t = FIN + 2 * H
   await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [t + 24 * H + 50 * 60, w])
-  assert.equal(await pullInWeeklyRepeats(db, t), 0)
+  assert.equal(await pullInWeeklyRepeats(db, t, undefined, CUT), 0)
   await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [t + 25 * H + 10 * 60, w])
-  assert.equal(await pullInWeeklyRepeats(db, t), 1)
+  assert.equal(await pullInWeeklyRepeats(db, t, undefined, CUT), 1)
   assert.equal(Number((await watch(db, w))!.next_run_at), T0 + DAY)
   // through the scheduler: the pull-in's lost lease rejects the pass and nothing runs
   await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [FIN + WEEK_S, w])
   const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
-  await assert.rejects(runDueWatches(db, { now: T0 + DAY, env: NO_TRIAL, fence: lost }), LeaseLost)
+  await assert.rejects(runDueWatches(db, { weeklyCutoff: CUT, now: T0 + DAY, env: NO_TRIAL, fence: lost }), LeaseLost)
   assert.equal(Number((await watch(db, w))!.next_run_at), FIN + WEEK_S)
   assert.deepEqual(await jobsAt(db, A, T0 + DAY), [])
 })
@@ -264,7 +267,7 @@ bothEngines('#1042 review 4: a failed pull-in never stops the due runs', async (
   await firstPlay(db, A, 'a@a.example')
   let n = 0
   const pullFails: Fence = function* () { if (++n === 1) throw new Error('pull-in refused') }
-  assert.deepEqual(await runDueWatches(db, { now: FIN + DAY, env: NO_TRIAL, fence: pullFails }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: FIN + DAY, env: NO_TRIAL, fence: pullFails }), { ran: 1, paused: 0, skipped: 0 })
 })
 
 bothEngines('#1042 review 3: a repeat created by a late tick keeps the first play\'s time of day', async ({ db }) => {
@@ -288,35 +291,35 @@ bothEngines('#1042 review 4: a first-play repeat created weekly before the deplo
   const hand = (await createWatch(db, B, 'Roofers in Ohio', '{"summary":"Roofers"}', null, T0)).watch!
   // a lost lease writes nothing
   const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
-  await assert.rejects(pullInWeeklyRepeats(db, FIN + 2 * H, lost), LeaseLost)
+  await assert.rejects(pullInWeeklyRepeats(db, FIN + 2 * H, lost, CUT), LeaseLost)
   assert.equal(Number((await watch(db, w))!.next_run_at), FIN + WEEK_S)
   // the next tick, two hours after the deploy: pulled in to a day after its last run (the first play, T0)
-  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H), 1)
+  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H, undefined, CUT), 1)
   assert.equal(Number((await watch(db, w))!.next_run_at), T0 + DAY)
-  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H + 60), 0, 'idempotent')
+  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H + 60, undefined, CUT), 0, 'idempotent')
   // never touched: a daily repeat a skip, a resume or a late creation put up to a day and a minute ahead; a paused one
   for (const [ahead, active] of [[DAY - 1, 1], [DAY, 1], [DAY + 60, 1], [WEEK_S, 0]] as const) {
     const t = FIN + 5 * H
     await db.run('UPDATE watches SET next_run_at = ?, active = ? WHERE id = ?', [t + ahead, active, w])
-    assert.equal(await pullInWeeklyRepeats(db, t), 0, `ahead ${ahead}, active ${active}`)
+    assert.equal(await pullInWeeklyRepeats(db, t, undefined, CUT), 0, `ahead ${ahead}, active ${active}`)
     assert.equal(Number((await watch(db, w))!.next_run_at), t + ahead)
   }
   // no last run recorded: a day after the repeat was created
   await db.run('UPDATE watches SET next_run_at = ?, active = 1, last_run_at = NULL WHERE id = ?', [FIN + WEEK_S, w])
   const created = Number((await db.get<{ c: number }>('SELECT created_at AS c FROM watches WHERE id = ?', [w]))!.c)
-  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H), 1)
+  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H, undefined, CUT), 1)
   assert.equal(Number((await watch(db, w))!.next_run_at), created + DAY)
   await db.run('UPDATE watches SET next_run_at = ?, last_run_at = ? WHERE id = ?', [T0 + DAY, T0, w])
   assert.equal(Number((await watch(db, hand.id))!.next_run_at), T0 + WEEK_S, 'a hand-made watch is untouched')
   // and it runs within the day; afterwards it is daily
   const at = T0 + DAY
-  assert.deepEqual(await runDueWatches(db, { now: at, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: at, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal(Number((await watch(db, w))!.next_run_at), at + DAY)
   // a repeat whose day-after-last-run has already passed is due now (runDueWatches pulls it in itself)
   const C3 = 'c'.repeat(32); const wc = await firstPlay(db, C3, 'c@c.example')
   await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [FIN + WEEK_S, wc])
   const late = T0 + 3 * DAY
-  assert.deepEqual(await runDueWatches(db, { now: late, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: late, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal((await jobsAt(db, C3, late)).length, 1)
 })
 
@@ -325,7 +328,7 @@ bothEngines('#1042 paid plan: no daily cap; the plan\'s quota decides and the pl
   await savePlan(db, A, 'pro')
   const due1 = FIN + DAY
   await scan(db, A, utcDayStart(due1) + H)
-  assert.deepEqual(await runDueWatches(db, { now: due1, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await runDueWatches(db, { weeklyCutoff: CUT, now: due1, env: NO_TRIAL }), { ran: 1, paused: 0, skipped: 0 })
   assert.equal((await jobsAt(db, A, due1))[0].run_budget, null)
   assert.equal(Number((await watch(db, w))!.next_run_at), due1 + DAY)
   assert.deepEqual(await skips(db, A), [])
@@ -377,4 +380,29 @@ test('#1042 cadence helpers: a skipped run keeps its time of day; the free budge
   assert.deepEqual(JSON.parse(cappedRunBudget('{"max_usd":0.1}')), { max_usd: 0.1 })
   assert.deepEqual(JSON.parse(cappedRunBudget('not json')), { max_usd: 0.3 })
   assert.deepEqual(JSON.parse(cappedRunBudget('[1]')), { max_usd: 0.3 })
+})
+
+bothEngines('#1042 review (0cfc1629) 2: the weekly pull-in is a one-time fix-up: only watches created before the cutoff, and no statement at all once it retires', async ({ db }) => {
+  const w = await firstPlay(db, A, 'a@a.example')
+  await db.run('UPDATE watches SET next_run_at = ? WHERE id = ?', [FIN + WEEK_S, w])
+  // a watch created after the cutoff is never touched
+  const before = FIN // the cutoff falls before this repeat was created
+  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H, undefined, before), 0)
+  assert.equal(Number((await watch(db, w))!.next_run_at), FIN + WEEK_S)
+  // retired: a week and a day after the cutoff, no transaction is opened (a fence that would throw is never called) and nothing changes
+  const lost: Fence = function* () { throw new LeaseLost('scheduler', 'fixture') }
+  const after = FIN + 2 * H - WEEK_S - DAY - 1
+  assert.equal(await pullInWeeklyRepeats(db, FIN + 2 * H, lost, after), 0)
+  assert.equal(Number((await watch(db, w))!.next_run_at), FIN + WEEK_S)
+  // through the scheduler: nothing is due and the pull-in is retired, so the pass opens no transaction at all
+  let calls = 0
+  const count: Fence = function* () { calls++ }
+  assert.deepEqual(await runDueWatches(db, { now: FIN + 2 * H, env: NO_TRIAL, fence: count, weeklyCutoff: after }), { ran: 0, paused: 0, skipped: 0 })
+  assert.equal(calls, 0)
+  // still active (cutoff after the watch, not yet retired): one pull-in transaction, and the repeat moves
+  assert.deepEqual(await runDueWatches(db, { now: FIN + 2 * H, env: NO_TRIAL, fence: count, weeklyCutoff: CUT }), { ran: 0, paused: 0, skipped: 0 })
+  assert.equal(calls, 1)
+  assert.equal(Number((await watch(db, w))!.next_run_at), T0 + DAY)
+  // the shipped cutoff is a fixed instant, so the step retires on its own (2026-11-20 + 8 days)
+  assert.equal(WEEKLY_REPEAT_CUTOFF, Date.UTC(2026, 10, 20) / 1000)
 })

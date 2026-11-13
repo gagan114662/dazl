@@ -185,17 +185,26 @@ const noFence: Fence = function* () { /* not fenced */ }
 // in would only be skipped again on every tick, so a skipped repeat is left on the day its skip chose. A weekly repeat
 // created before this change has no skip (skips came with it). Idempotent (a pulled-in repeat no longer matches) and
 // fenced like every scheduler write.
+// Self-retiring (review on #1114): this is a one-time fix-up, so it only looks at watches created before
+// WEEKLY_REPEAT_CUTOFF, and once the cutoff is more than a week and a day in the past it runs no query at all: by then
+// every repeat created weekly has run at least once and is daily on its own. Until then it is ONE global UPDATE over the
+// active watches due more than a day away (watches_due), each checked with two correlated lookups (scan_jobs_user,
+// audit_events_tenant_at), so its cost grows with the number of watches; that is why it retires. The cutoff is a margin
+// after this change's deploy: a weekly repeat the old code created after it (a later deploy) is not pulled in, and
+// becomes daily after its next run.
+export const WEEKLY_REPEAT_CUTOFF = Date.UTC(2026, 10, 20) / 1000 // 2026-11-20 00:00 UTC
 const PULL_IN_SQL = `UPDATE watches SET next_run_at = CASE WHEN COALESCE(last_run_at, created_at) + ${DAY_S} > ? THEN COALESCE(last_run_at, created_at) + ${DAY_S} ELSE ? END
-  WHERE active = 1 AND next_run_at > ?
+  WHERE active = 1 AND next_run_at > ? AND created_at < ?
     AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.user_id = watches.user_id AND j.created_at < watches.created_at AND j.watch_id = watches.id)
     AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.tenant_id = watches.user_id AND a.at > COALESCE(watches.last_run_at, 0) AND a.action = ? AND a.resource_type = 'watch' AND a.resource_id = watches.id)`
-export async function pullInWeeklyRepeats(db: Db, now: number, fence: Fence = noFence): Promise<number> {
-  return db.tx(function* (t) { yield* fence(t); return (yield* t.run(PULL_IN_SQL, [now, now, now + DAY_S + 3600, PLAY_SKIPPED])).changes })
+export async function pullInWeeklyRepeats(db: Db, now: number, fence: Fence = noFence, cutoff: number = WEEKLY_REPEAT_CUTOFF): Promise<number> {
+  if (now > cutoff + WEEK_S + DAY_S) return 0 // retired: nothing is read or written
+  return db.tx(function* (t) { yield* fence(t); return (yield* t.run(PULL_IN_SQL, [now, now, now + DAY_S + 3600, cutoff, PLAY_SKIPPED])).changes })
 }
 
-export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined> } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
+export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined>; weeklyCutoff?: number } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence
-  try { await pullInWeeklyRepeats(db, now, fence) } catch (e) {
+  try { await pullInWeeklyRepeats(db, now, fence, o.weeklyCutoff) } catch (e) {
     // a failed pull-in leaves those repeats on their old schedule this tick; it never stops the due runs
     if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
     captureError(e, { source: 'worker', where: 'watch:pull-in-weekly-repeats' })
