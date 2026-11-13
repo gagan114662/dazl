@@ -90,10 +90,13 @@ test('#533 live 1+2+3 through the verifier: both requested-role postings are ver
       const f = await verifyLeads([draft({ company: 'Tekion', signal, source_url: TEKION_URL, excerpt: TEKION_QUOTE })], read, NOW)
       assert.ok([...f.leads, ...f.review].every(l => l.event_date_proof !== 'ats_structured'), `${signal}: ${JSON.stringify(f)}`)
     }
-    // Identity is a separate open issue (#1126): a quote that never names the company, on a board whose slug is the name
-    // glued together, is still dropped as entity_mismatch (never stale, never quote_unconfirmed)
+    // #1126 (owner decision): a board slug that is the whole company key glued together ("macquarietechnologygroup") names
+    // "Macquarie Technology Group", as a domain label does; Lever states no company name, so the slug is the identity. A
+    // slug that is only part of the name names nothing: the same quote on "macquarie" is dropped as entity_mismatch.
     const glued = await verifyLeads([draft({ company: 'Macquarie Technology Group', signal: MACQ_SIGNAL, source_url: `https://jobs.lever.co/macquarietechnologygroup/${MACQ_ID}`, excerpt: MACQ_QUOTE })], read, NOW)
-    assert.deepEqual([glued.leads.length, glued.review.length, glued.dropped], [0, 0, { entity_mismatch: 1 }])
+    assert.deepEqual([glued.review.length, glued.dropped, glued.leads.map(l => [l.event_date, l.event_date_proof])], [0, {}, [['2026-10-27', 'ats_structured']]])
+    const part = await verifyLeads([draft({ company: 'Macquarie Technology Group', signal: MACQ_SIGNAL, source_url: `https://jobs.lever.co/macquarie/${MACQ_ID}`, excerpt: MACQ_QUOTE })], read, NOW)
+    assert.deepEqual([part.leads.length, part.review.length, part.dropped], [0, 0, { entity_mismatch: 1 }])
   } finally { restore() }
 })
 
