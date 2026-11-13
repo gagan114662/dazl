@@ -21,6 +21,9 @@ import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
+// A careers evidence label: its non-empty parts joined by "; ", so a vacancy with no quote (#767: none is offered when the
+// posting never states the role) leaves no dangling separator. The parts (the quote above all) are kept exactly as given.
+export const evidenceLabel = (...parts: (string | null | undefined | false)[]): string => parts.filter((x): x is string => !!x).join('; ')
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
 export const NO_EVENT = 'no_event_evidence'
@@ -340,27 +343,27 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             const pt = posted ? Date.parse(`${posted}T00:00:00Z`) : NaN
             const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= hireDays * 86_400_000)
             const dated = posted ? ` - posted ${posted}` : ''
-            const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting; ` : ''
+            const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting` : ''
             const existingC = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]
             // a careers row whose posting id / URL is already stored from an ATS board (or vice versa) is labeled the same posting, counted once
             const careersRow = (kind: 'hiring' | 'hiring-role', value: string, label: string, confidence: number | null) => withRepostHistory([{ connector: 'signals:careers-gtm', kind, value: value.slice(0, 254), label: label.slice(0, 200), confidence, source_url: v.url, source_date: posted ?? day, retrieved_at: v.retrievedAt }], 'careers', existingC)[0]
             audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: `${roleMatch ? 'checked_vacancy_requested_role' : 'checked_vacancy'}${longOpen ? '_long_open' : ''}`, results: 1 })
             if (longOpen) {
               // Stored as an audit row (kind hiring-role, unscored), never as a hiring signal: a long-open posting is not renewed demand.
-              addEnrichment(db, job.user_id, l.id, careersRow('hiring-role', `Open ${roleMatch || roles.length ? '' : 'sales '}role on its careers page: ${v.title}${dated}`, `Long-open: first published ${posted}, older than the last ${hireDays} days (repost history unknown, not renewed demand)${roleMatch ? `; requested role: ${roleMatch.term}` : ''}; ${v.quote}`, null))
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring-role', `Open ${roleMatch || roles.length ? '' : 'sales '}role on its careers page: ${v.title}${dated}`, evidenceLabel(`Long-open: first published ${posted}, older than the last ${hireDays} days (repost history unknown, not renewed demand)`, roleMatch && `requested role: ${roleMatch.term}`, v.quote), null))
               careersNote = `its careers page links ${v.title}${roleMatch ? ` (requested: ${roleMatch.term})` : ''}, but that ${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} posting was first published ${posted}, older than the last ${hireDays} days (long-open; repost history unknown) - not current hiring evidence. `
             } else if (roleMatch) {
               setWhy.run((`Hiring for ${v.title} (requested: ${roleMatch.term}) on its careers page (${l.company_domain}), ${posted ? `posted ${posted}` : `checked ${day}`}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open role on its careers page: ${v.title}${dated}`, `Requested role: ${roleMatch.term}; ${dateLabel}${v.quote}`, 60))
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open role on its careers page: ${v.title}${dated}`, evidenceLabel(`Requested role: ${roleMatch.term}`, dateLabel, v.quote), 60))
               passed++; passedIds.push(l.id); continue
             } else if (!roles.length) {
               setWhy.run((`Hiring sales: ${v.title} listed on its careers page (${l.company_domain}), ${posted ? `posted ${posted}` : `checked ${day}`}. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
-              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, `${dateLabel}${v.quote}`, 60))
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, evidenceLabel(dateLabel, v.quote), 60))
               passed++; passedIds.push(l.id); continue
             } else {
               // AC3: requested roles were named and this verified vacancy matched none - generic careers hiring is recorded as
               // generic (never role-qualified) and the lead is still demoted below for the missing role match.
-              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, `generic hiring - no requested-role match in the sampled roles; ${dateLabel}${v.quote}`, 60))
+              addEnrichment(db, job.user_id, l.id, careersRow('hiring', `Open sales role on its careers page: ${v.title}${dated}`, evidenceLabel('generic hiring - no requested-role match in the sampled roles', dateLabel, v.quote), 60))
               careersNote = `its careers page lists ${v.title}, a sales/GTM role; no requested-role match among the sampled open roles (up to 3 verified per page across ${c.readPages ?? c.pages} page${(c.readPages ?? c.pages) === 1 ? '' : 's'} read - a match outside the sample is not excluded). `
             }
           } else {

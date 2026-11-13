@@ -23,6 +23,10 @@ export type Verdict =
 
 export const MAX_AGE_DAYS = Number(process.env.SCAN_MAX_AGE_DAYS || 365)
 export const MIN_CONFIDENCE = 55
+// The verdict reasons that mean the claimed DAY fails the date rules (malformed, too old, in the future). A day rejected for
+// one of these never takes a structured proof (the board's own day, ats_structured): the verifier (runner.ts) and the
+// evidence recheck (evidence-recheck.ts) share this one set, so a new date reason can't split them.
+export const DATE_REJECTS: ReadonlySet<string> = new Set(['bad_date', 'stale', 'future_date'])
 
 // Letters, their combining marks and digits of ANY script are kept (Devanagari, Arabic, Han, kana, Cyrillic, Greek ... as well as Latin with its accents folded). Before, everything outside a-z was erased, so a Hindi,
 // Arabic or Japanese quote normalized to "" and was dropped as no_excerpt: a business that does not write in Latin script could never be verified.
