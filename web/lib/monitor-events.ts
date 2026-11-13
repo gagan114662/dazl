@@ -165,13 +165,41 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
   const cursors = new Map((yield* t.all<{ source: string; last_checked_at: number }>('SELECT source, last_checked_at FROM monitor_cursors WHERE monitor_id = ?', [a.monitorId]))
     .map(c => [c.source, Number(c.last_checked_at)] as const))
   const latest = cursors.size ? Math.max(...cursors.values()) : null
+  // One run can return several leads for ONE event (two postings a company published on the same day, the same news from two outlets).
+  // They are folded as one: the event is decided once per run, from its best lead (a ready, shown one before a held one; reachable when
+  // any ready lead of the event is). Without this, the first lead made the event actionable and a second, reachable one then read that
+  // as an earlier alert and raised now_reachable in the same run: two alerts for one event.
+  const eventsThisRun = new Map<string, RunLead>()
   for (const l of a.leads) {
+    if (!l.event_date || !dated(l, a.now)) continue
+    const ev = eventKeyOf(l), first = eventsThisRun.get(ev)
+    if (!first) { eventsThisRun.set(ev, l); continue }
+    const best = !verified(first) && verified(l) ? l : first
+    eventsThisRun.set(ev, { ...best, reachable: (verified(first) && first.reachable) || (verified(l) && l.reachable) })
+  }
+  const decided = new Set<string>()
+  for (const lead of a.leads) {
+    let l = lead
     const wd = backfillWindowDays(a.windowDays, cursors.get(sourceOf(l)) ?? latest, a.now)
     const proven = !!l.event_date && dated(l, a.now)
     if (!proven || !l.event_date || windowStatus(l.event_date, wd, new Date(a.now * 1000)) !== 'inside') {
       bump(proven ? 'out_of_window' : 'undated'); continue   // never stored, never surfaced
     }
-    const ek = entityKeyOf(l), ev = eventKeyOf(l), occ = dayStartS(l.event_date)
+    const eventDay: string = l.event_date
+    if (decided.has(eventKeyOf(l))) {
+      // a further lead of an event this run already decided: only its source cursor moves
+      bump('already_seen')
+      yield* t.run(`INSERT INTO monitor_cursors (monitor_id, source, last_event_at, last_checked_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT (monitor_id, source) DO UPDATE SET last_checked_at = excluded.last_checked_at,
+          last_event_at = CASE WHEN monitor_cursors.last_event_at IS NULL OR excluded.last_event_at > monitor_cursors.last_event_at THEN excluded.last_event_at ELSE monitor_cursors.last_event_at END`,
+        [a.monitorId, sourceOf(l), dayStartS(eventDay), a.now])
+      continue
+    }
+    decided.add(eventKeyOf(l))
+    // decide the event from its best lead of this run; the cursor below still moves for THIS lead's source
+    const src = sourceOf(lead)
+    l = eventsThisRun.get(eventKeyOf(l)) ?? l
+    const ek = entityKeyOf(l), ev = eventKeyOf(l), occ = dayStartS(eventDay)
     const prior = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, ev])
     const known = !!(yield* t.get('SELECT 1 AS x FROM monitor_events WHERE user_id = ? AND entity_key = ? AND event_key <> ? AND actionable_at IS NOT NULL LIMIT 1', [a.userId, ek, ev]))
     const p: PriorEvent | null = prior ? { actionable_at: prior.actionable_at == null ? null : Number(prior.actionable_at), reachable_at: prior.reachable_at == null ? null : Number(prior.reachable_at) } : null
@@ -192,7 +220,7 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
     yield* t.run(`INSERT INTO monitor_cursors (monitor_id, source, last_event_at, last_checked_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (monitor_id, source) DO UPDATE SET last_checked_at = excluded.last_checked_at,
         last_event_at = CASE WHEN monitor_cursors.last_event_at IS NULL OR excluded.last_event_at > monitor_cursors.last_event_at THEN excluded.last_event_at ELSE monitor_cursors.last_event_at END`,
-      [a.monitorId, sourceOf(l), occ, a.now])
+      [a.monitorId, src, occ, a.now])
   }
   return out
 }

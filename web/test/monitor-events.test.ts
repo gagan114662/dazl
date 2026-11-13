@@ -258,6 +258,24 @@ bothEngines('#882 detected once: the same posting returned by five runs under fi
   assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u2' ORDER BY event_key")).map(e => e.event_key), ['d:kestrel.example|2026-10-21|event', 'd:kestrel.example|2026-11-15|event'])
 })
 
+bothEngines('#882 detected once in one run: two postings of one company on the same day, one reachable and one not, are one event and ONE alert', async ({ db }) => {
+  const mon = await play(db, 'u1')
+  const a: L = { company: 'Flexport', domain: 'flexport.com', url: 'https://job-boards.greenhouse.io/flexport/jobs/1', date: '2026-10-28', proof: 'ats_structured', kind: 'hiring', signal: 'Flexport is hiring an Account Executive' }
+  const b: L = { ...a, url: 'https://jobs.lever.co/flexport/2', signal: 'Flexport is hiring a Sales Manager', reachable: true }
+  // before: A made the event actionable (new_company) and B then read that as an earlier alert (now_reachable): 2 alerts in one run
+  assert.deepEqual(await run(db, 'u1', mon, NOW, [a, b]), { newCount: 1, kinds: ['new_company'] })
+  const ev = await db.all<{ event_key: string; actionable_at: number | null; reachable_at: number | null }>("SELECT event_key, actionable_at, reachable_at FROM monitor_events WHERE user_id = 'u1'")
+  assert.deepEqual(ev.map(e => [e.event_key, e.actionable_at != null, e.reachable_at != null]), [['d:flexport.com|2026-10-28|hiring', true, true]], 'one event, actionable and reachable at first sight')
+  assert.deepEqual((await db.all<{ source: string }>('SELECT source FROM monitor_cursors WHERE monitor_id = ? ORDER BY source', [mon])).map(c => c.source), ['job-boards.greenhouse.io', 'jobs.lever.co'], 'both sources keep their cursor')
+  // the same pair again: nothing; and a held posting beside a ready one does not hide the ready one
+  assert.deepEqual(await run(db, 'u1', mon, NOW + 7 * DAY, [b, a]), { newCount: 0, kinds: [] })
+  const mon2 = await play(db, 'u2')
+  assert.deepEqual(await run(db, 'u2', mon2, NOW, [{ ...a, review: 'quote_unconfirmed', conf: null }, { ...b, reachable: false }]), { newCount: 1, kinds: ['new_company'] })
+  // policy 'reachable': the event alerts when ANY ready lead of it is reachable
+  const mon3 = await play(db, 'u3', { policy: 'reachable' })
+  assert.deepEqual(await run(db, 'u3', mon3, NOW, [a, b]), { newCount: 1, kinds: ['new_company'] })
+})
+
 test('#882 every grader signal id is in exactly one of the monitor\'s groups (another dated event / hiring-type / ambient)', () => {
   for (const id of SIGNALS) assert.equal([OTHER_EVENT_KINDS, HIRING_SIGNALS, AMBIENT_SIGNALS].filter(g => g.has(id)).length, 1, id)
   // nothing in the groups that the grader cannot store, except the legacy 'funding' label older rows carry
