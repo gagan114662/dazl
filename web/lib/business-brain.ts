@@ -91,7 +91,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   //   play ("raised funding, not hiring a receptionist" is a plain play: the compiler enforces both, the negation too).
   // A free-form signal the compiler cannot enforce ("attended a trade show") makes no play.
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  const STOPPED = /\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|frozen|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|cancel(?:led|ed|s|ling|ing)?|defer(?:red|s|ring)?|suspend(?:ed|s|ing)?|no longer|isn['\u2019]?t|is not|aren['\u2019]?t|are not|not|never)\s+(?:currently\s+|actively\s+)?hir/i
+  const STOPPED = /\b(?:stop(?:ped|s|ping)?|paus(?:ed|es|ing)|froze|frozen|freez(?:e|es|ing)|ceas(?:ed|es|ing)|quit|halt(?:ed|s|ing)?|cancel(?:led|ed|s|ling|ing)?|defer(?:red|s|ring)?|suspend(?:ed|s|ing)?|no longer|isn['\u2019]?t|is not|aren['\u2019]?t|are not|\w+n['\u2019]t|not|never|nobody|none|zero|lack(?:s|ing)?(?:\s+of)?|fail(?:s|ed|ing)?\s+to)\s+(?:currently\s+|actively\s+)?hir/i
   const stoppedHiring = (x: string) => !/\b(?:not (?:only|just)|never (?:stopped|stops))\b/i.test(x) && (STOPPED.test(x) || /\bhiring\s+(?:freeze|frozen|paused|stopped|on hold)\b/i.test(x))
   const conds = (x: string) => planConditions(compileTargeting(x).root)
   const hiringRole = (x: string): string | null => {
@@ -102,12 +102,13 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   }
   // a hiring condition backs a plain play only as "hiring" with no role ("Expanding team, hiring"); a junk role ("hiring the")
   // backs nothing, and one with a real role is the hiring play above
-  // Words that turn a signal against its condition ("Business rejecting venture capital funding", a real saved signal: the
-  // compiler reads a positive funding condition, so the play would look for funded companies). When the text says one of
-  // them, a plain play is offered only if the compiler understood the negation (it marked a condition negated); otherwise none.
-  const NEGATING = /\b(?:not|never|no|without|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?)\b/i
-  const understood = (x: string) => !NEGATING.test(x) || conds(x).some(c => c.negated)
-  const plainOk = (x: string) => !hiringRole(x) && understood(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
+  // A PLAIN play is never offered from a signal whose words negate anything (fail closed, #1145 Hermes + review): the compiler
+  // reads some negations the wrong way round ("Business rejecting venture capital funding", a real saved signal, compiles to a
+  // POSITIVE funding condition; so do "didn't raise funding", "nobody hiring"), and a play that searches for the opposite of
+  // what the user saved is worse than no play. Such a signal still shows on the page; it just makes no play. Cost, accepted:
+  // a mixed signal ("raised funding, not hiring a receptionist", "hiring freeze lifted, now hiring SDRs") makes no plain play.
+  const NEGATING = /(?:n['\u2019]t\b|\b(?:not|never|no|nobody|none|nothing|zero|without|lack(?:s|ing)?|fail(?:s|ed|ing)? to|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer)\b)/i
+  const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
   const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the

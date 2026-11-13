@@ -123,8 +123,8 @@ test('#1043 council: a signal that compiles only to a negated condition makes no
 
 test('#1043 council r2: a hiring play only from a positive hiring condition, never from a negated or stopped one; the 300-character edge', () => {
   const q = (signals: string[], comps: string[] = []) => businessPlays({ buyer: icp({ signals }) }, comps).map(p => p.query)
-  // the funding condition is positive and the compiler enforces the negated hiring one too: a plain play, never "hiring receptionist"
-  assert.deepEqual(q(['recently raised funding, not hiring a receptionist']), ['Practice owner in Ohio - recently raised funding, not hiring a receptionist'])
+  // a signal with a negation makes no plain play (fail closed, documented cost), and never "companies hiring receptionist"
+  assert.deepEqual(q(['recently raised funding, not hiring a receptionist']), [])
   // hiring that stopped makes no play at all (neither a hiring play nor a plain one), with or without a role
   for (const s of ['stopped hiring SDRs', "isn't hiring a receptionist", 'no longer hiring SDRs', 'paused hiring SDRs', 'cancelled hiring SDRs', 'deferred hiring SDRs',
     'hiring freeze', 'hiring frozen', 'stopped hiring', 'paused hiring', "isn't hiring", 'not hiring']) assert.deepEqual(q([s]), [], s)
@@ -154,4 +154,15 @@ test('#1043 Hermes: a negated hiring signal in real prod wording never makes a h
   assert.deepEqual(q(['Opened a new location', 'hiring front-desk staff', 'hiring an office manager']),
     ['Practice owner - Opened a new location', 'Practice owner at companies hiring front-desk staff', 'Practice owner at companies hiring office manager'])
   assert.deepEqual(q(['Opened a new office', 'hiring recruiters'], ['Agency owner']), ['Agency owner - Opened a new office', 'Agency owner at companies hiring recruiters'])
+})
+
+test('#1043 review: no play from any negated wording the compiler may read the wrong way round; the fail-closed cost is pinned', () => {
+  const q = (signals: string[]) => businessPlays({ buyer: icp({ who: ['Practice owner'], where: [], signals }) }, []).map(p => p.query)
+  for (const s of ["didn't raise funding", 'failed to raise funding', 'nobody raised funding', 'nobody hiring', 'zero hiring', 'lack of hiring',
+    'hiring but not SDRs', 'lacking a CMO, raised funding', 'downsizing, raised funding', "hasn't hired SDRs", 'failed to hire SDRs', 'nobody hiring SDRs'])
+    assert.deepEqual(q([s]), [], s)
+  // accepted cost: a mixed signal that is really positive makes no play rather than risk the opposite one
+  for (const s of ['hiring freeze lifted, now hiring SDRs', 'not yet profitable']) assert.deepEqual(q([s]), [], `fail closed: ${s}`)
+  // plain positive signals are unaffected
+  assert.deepEqual(q(['raised a Series A', 'opened a new location']), ['Practice owner - raised a Series A', 'Practice owner - opened a new location'])
 })
