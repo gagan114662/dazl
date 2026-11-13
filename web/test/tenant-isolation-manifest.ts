@@ -101,6 +101,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/verification-fixture', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'leads/verification-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'leads/verification-fixture', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'leads/tech-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'leads/tech-fixture', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'monitors/[id]', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
   { path: 'monitors/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'monitors/[id]', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
