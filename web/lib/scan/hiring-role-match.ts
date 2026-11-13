@@ -7,23 +7,21 @@ import { isGtmRole } from '../signals/ats-gtm.ts'
 // sales titles requests and boards abbreviate (production's own play asks for "their first SDR"; boards post "Sales Development
 // Representative"): a REQUEST's SDR(s) / BDR(s) / AE(s) also read as the full title, and a posting TITLE's SDR / BDR too.
 // The letters in another trade's title are not the sales role ("RF Engineer, SDR (Software Defined Radio)", "Motion Designer (After
-// Effects / AE)"): after another trade's name they are ignored, unless the title is a sales one ("Sales Engineer / SDR").
+// Effects / AE)"): a title that spells out that other meaning does not count.
 const base = (s: string): string => s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator')
-  .replace(/\bsales\s+reps?\b/g, 'sales representative').replace(/\bvice[ -]+president\b/g, 'vp').replace(/\bvp\s*(?:,|of|-)\s*/g, 'vp ')
+  .replace(/\bsales\s+reps?\b/g, 'sales representative').replace(/\bvice[ -]+president\b/g, 'vp').replace(/\bvp\s*(?:,|of\b|-)\s*/g, 'vp ')
   .replace(/\b(?:managers|administrators|executives|engineers|directors|representatives)\b/g, w => w.slice(0, -1))
 const squeeze = (s: string): string => s.replace(/[^a-z0-9]+/g, ' ').trim()
 // The reading main had before #879, kept beside the new ones so a pair it matched still matches.
 const plain = (s: string): string => squeeze(s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)))
-const OTHER_TRADE = /\b(?:engineer|developer|technician|scientist|designer|radio)\b/
 const expandSdrBdr = (s: string): string => s.replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative')
 const normal = (s: string): string => squeeze(expandSdrBdr(base(s)).replace(/\baes?\b/g, 'account executive'))
-// The readings of a posting title: as written, and with SDR / BDR spelled out. When another trade is named BEFORE the letters and the
-// title is not a sales one ("RF Engineer, SDR (Software Defined Radio)", "Motion Designer (After Effects / AE)"), the letters are dropped;
-// a sales title that names what it sells to ("SDR - Developer Platform") keeps them.
-const ABBR = /\b(?:sdrs?|bdrs?|ae)\b/
+// The readings of a posting title: as written, with SDR / BDR spelled out, and as main read it. Only when the title itself spells out
+// the other meaning of the letters ("RF Engineer, SDR (Software Defined Radio)", "Motion Designer (After Effects / AE)") are they dropped.
+const OTHER_MEANING = /\bsoftware[ -]+defined[ -]+radio\b|\bafter[ -]+effects\b/
 const titleForms = (title: string): string[] => {
-  const b = base(title), at = b.search(ABBR)
-  if (at >= 0 && OTHER_TRADE.test(b.slice(0, at)) && !/\bsales\b/.test(b)) return [` ${squeeze(b.replace(new RegExp(ABBR.source, 'g'), ' '))} `]
+  const b = base(title)
+  if (OTHER_MEANING.test(b)) return [` ${squeeze(b.replace(/\b(?:sdrs?|bdrs?|ae)\b/g, ' '))} `]
   return [` ${squeeze(b)} `, ` ${squeeze(expandSdrBdr(b))} `, ` ${plain(title)} `]
 }
 // literal: the term as written (no abbreviation expanded), kept when it differs, so a title that carries the same letters the
@@ -58,7 +56,8 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
         // Do not infer a role from free prose. An unparseable explicit request is not a verified match.
         // Unsupported/long explicit terms stay required and unmatched, never silently generic.
         const lit = plain(term)
-        roles.set(n, { term, normalized: n, ...(lit && lit !== n ? { literal: lit } : {}) })
+        // keyed on both readings: "AE or Account Executive" keeps the AE term's own letters beside the spelled-out title
+        roles.set(`${n}|${lit !== n ? lit : ''}`, { term, normalized: n, ...(lit && lit !== n ? { literal: lit } : {}) })
       }
     }
   }

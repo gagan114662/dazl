@@ -195,6 +195,11 @@ test('#879 the role matcher: abbreviations a request uses are read as the title;
   assert.ok(m('Senior AE - EMEA', 'an AE or SDR'))
   assert.ok(m('SDR - Developer Platform', 'an SDR'), 'a sales title that names what it sells to')
   assert.ok(m('BDR - Technician Services', 'a BDR'))
+  assert.ok(m('Developer Platform SDR', 'an SDR'))
+  assert.ok(m('Solutions Engineer / BDR', 'a BDR'))
+  assert.ok(m('Developer Tools AE', 'an AE'))
+  assert.ok(m('Senior AE', 'AE or Account Executive'), 'the abbreviation keeps its own letters when the same request also spells the title out')
+  assert.ok(m('Senior AE', 'Account Executive or AE'))
   // a bare "reps" is not "sales reps": it stays as written and matches no "... Representative" title
   assert.equal(m('Customer Service Representative', 'reps'), false)
   assert.equal(m('Patient Representative', 'a rep'), false)
