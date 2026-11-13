@@ -24,18 +24,29 @@ instead, and the box only downloads, verifies and unpacks it.
   `prod-modules-<sha>.tgz` (`node_modules`) and, last, the manifest `prod-prebuilt-<sha>.json` (commit, arch, Node ABI,
   lockfile sha256, each archive's sha256, size and unpacked size) as assets of the `prod-prebuilt` prerelease, keeping the
   newest 5 commits. An older commit (a rollback beyond that): run the workflow by hand with `sha=<commit>`.
-- **Deploy (the ops door, as root):** `ops/prod/deploy-prod.sh <sha>`. It checks free disk, copies the live process's
+- **Install (once, as root):** the deploy runs as root, so it only runs root-owned copies it alone can change:
+  `install -d -o root -g root -m 755 /usr/local/lib/dazl-prod && install -o root -g root -m 755 ops/prod/deploy-prod.sh
+  ops/prod/pull-release.sh /usr/local/lib/dazl-prod/` (both refuse to run from anywhere a non-root account can write,
+  e.g. a checkout under /home/ubuntu). The app and `db:migrate` now run as `ubuntu`, never as root: give it the database
+  once, `chown -R ubuntu:ubuntu /home/ubuntu/dazl-data /home/ubuntu/dazl-*-prod` (the database, its directory for the
+  WAL files, and existing releases a root-run app wrote into; the deploy refuses, changing nothing, while the database or
+  its directory is not writable by `ubuntu`). The run env file (`/home/ubuntu/dazl-pr16-run.env`) is read as plain
+  `KEY=value` lines (one level of quotes; nothing is expanded or executed).
+- **Deploy (the ops door, as root):** `/usr/local/lib/dazl-prod/deploy-prod.sh <sha>`; one deploy or rollback at a time. It checks free disk, copies the live process's
   environment for the new release, then `ops/prod/pull-release.sh fetch <sha>` (as root: the manifest must name exactly
   that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads and the unpacked
   build**; both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
   source as `ubuntu` in a new `/home/ubuntu/dazl-<sha8>-prod` and runs `pull-release.sh extract` there: the checkout's
   `package-lock.json` must be the one the build was made from; it unpacks `.next`, and hard-links `node_modules` from the
   live release when the lockfile is unchanged (else unpacks the built one). Then, as before: back up the database, `npm run
-  db:migrate` (a script, no build), start on the spare port (3104/3105), wait for `/api/health` to report the commit,
+  db:migrate` as `ubuntu` (a script, no build), after a verified backup (online backup API, `integrity_check` ok, of
+  the release's own `DB_PATH`; newest 10 kept in `/var/lib/dazl-prod-backups`), start `next start` as `ubuntu` on the
+  spare port (3104/3105), wait for `/api/health` to report the commit,
   switch Caddy, and check `https://dazl.ai/api/health` (a mismatch switches straight back). Release directories other than
   the live and the previous one are removed afterwards.
-- **Rollback:** `ops/prod/deploy-prod.sh --rollback` points Caddy back at the previous release, which is still running on
-  the other port, after checking it still answers `/api/health` (it refuses otherwise). For an older commit, deploy it:
+- **Rollback:** `deploy-prod.sh --rollback` points Caddy back at the previous release, which is still running on the
+  other port, only if it still answers `/api/health` with the commit recorded for it (it refuses otherwise; a deploy that
+  had to stop it clears the target). For an older commit, deploy it:
   its prebuilt build is downloaded again (or rebuilt on GitHub by hand), never built on the box.
 - **Disk:** the deploy refuses with less than 3 GiB free, and `pull-release.sh fetch` refuses when the downloads plus the
   unpacked build would take free space below 3 GiB (`ALERT low_disk`); keeping only the live and previous releases keeps it there.

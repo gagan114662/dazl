@@ -84,10 +84,11 @@ jobs:
   publish:
     needs: build
     if: github.event_name != 'pull_request'
-    # one publish at a time across all commits: the keep-newest-5 step must never delete another run's archives
-    # between its archive and manifest uploads
+    # one publish per commit (a global group keeps only ONE pending job: a burst of pushes would drop the middle commit).
+    # Concurrent publishes of different commits are safe because the prune below never touches an asset younger than
+    # 60 minutes, so it can never delete another run's archives between its archive and manifest uploads.
     concurrency:
-      group: prod-prebuilt-publish
+      group: prod-prebuilt-publish-${{ needs.build.outputs.sha }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -130,7 +131,8 @@ jobs:
           gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq '.[] | {id, name, created_at}' | jq -s . > assets.json
           keep=$(jq -r '[.[] | select(.name | test("^prod-prebuilt-[0-9a-f]{40}\\.json$"))] | sort_by(.created_at) | reverse | .[0:5] | .[].name | capture("(?<s>[0-9a-f]{40})").s' assets.json | tr '\n' ' ')
           keep="$keep $SHA"
-          jq -r '.[] | "\(.id) \(.name)"' assets.json | while read -r id name; do
+          cutoff=$(date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          jq -r --arg cutoff "$cutoff" '.[] | select(.created_at < $cutoff) | "\(.id) \(.name)"' assets.json | while read -r id name; do
             s=$(printf '%s' "$name" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)
             [ -n "$s" ] || continue
             case " $keep " in *" $s "*) continue ;; esac

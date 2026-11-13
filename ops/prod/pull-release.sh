@@ -139,8 +139,11 @@ extract() {
   rm -rf -- "$web/.next" "$web/node_modules"
   tar -xzf "$next" -C "$web" --no-same-owner --no-same-permissions .next .build-commit
   if [ -n "$live" ] && [ -d "$live/node_modules" ] && [ -f "$live/package-lock.json" ] && [ "$(sha256 "$live/package-lock.json")" = "$want" ]; then
-    cp -al -- "$live/node_modules" "$web/node_modules"
-    log "node_modules hard-linked from the live release (same lockfile)"
+    if cp -al -- "$live/node_modules" "$web/node_modules" 2>/dev/null; then log "node_modules hard-linked from the live release (same lockfile)"
+    else # e.g. a live release owned by another user (protected_hardlinks): the verified archive instead
+      rm -rf -- "$web/node_modules"; tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
+      log "node_modules could not be hard-linked from the live release; unpacked from the verified build"
+    fi
   else
     tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
   fi

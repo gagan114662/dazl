@@ -289,14 +289,88 @@ class ProdPrebuiltTest(unittest.TestCase):
 
     # --- the independent review of c51687fd: root never runs what the app user controls; verified backup; rollback ---
     def test_run_env_is_parsed_as_data_never_executed_by_root(self):
-        # R1: a run.env line like X=$(cmd) must stay text; root never sources the app user's file
+        # R1/R17: a run.env line is data: an unquoted command substitution is refused (never run); a single-quoted one
+        # stays literal text; quoted values keep one level of quotes; the app user's file is read, never sourced by root
         self.publish()
-        (self.t / 'run.env').write_text('DAZL_X=$(touch "$FAKE_T/pwned")\nexport DAZL_Y="quoted value"\n')
+        (self.t / 'run.env').write_text('DAZL_X=$(touch "$FAKE_T/pwned")\n')
+        self.assert_untouched(self.deploy(B), 'not KEY=value data')
+        self.assertFalse((self.t / 'pwned').exists(), 'a command in run.env ran')
+        (self.t / 'run.env').write_text("# a comment\nDAZL_X='$(touch pwned)'\nexport DAZL_Y=\"quoted value\"\nDAZL_Z=plain\n")
         r = self.deploy(B)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse((self.t / 'pwned').exists(), 'a command in run.env ran')
+        self.assertFalse((self.t / 'pwned').exists())
         env = (self.t / 'ops/prod.env').read_text()
-        self.assertIn("DAZL_X='$(touch \"$FAKE_T/pwned\")'", env); self.assertIn("DAZL_Y='quoted value'", env)
+        self.assertIn("DAZL_X='$(touch pwned)'", env); self.assertIn("DAZL_Y='quoted value'", env); self.assertIn('DAZL_Z=plain', env)
+
+    def test_unparseable_or_missing_run_env_is_refused(self):
+        # R17: never guess at a line the old shell format would have read differently, and never run without the file
+        self.publish()
+        (self.t / 'run.env').write_text('DAZL_A="x" # note\n')
+        self.assert_untouched(self.deploy(B), 'not KEY=value data')
+        (self.t / 'run.env').unlink()
+        self.assert_untouched(self.deploy(B), 'run env .* is missing')
+
+    def test_root_identity_never_reaches_the_release_env(self):
+        # R16: HOME/USER/LOGNAME/SUDO_* of the (root) live process are not carried into the app user's release
+        self.proc.kill(); self.proc.wait()
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live, env={'PATH': f"{self.t / 'bin'}:{os.environ['PATH']}", 'FAKE_T': str(self.t),
+                                     'DB_PATH': str(self.db), 'HOME': '/root', 'USER': 'root', 'LOGNAME': 'root', 'SUDO_USER': 'x', 'DAZL_KEEP': '1'})
+        (self.t / 'listen/3104').write_text(str(self.proc.pid))
+        self.publish()
+        r = self.deploy(B)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        env = (self.t / 'ops/prod.env').read_text()
+        for k in ('HOME=', 'USER=', 'LOGNAME=', 'SUDO_USER='): self.assertNotIn('\n' + k, '\n' + env, k)
+        self.assertIn('DAZL_KEEP=1', env)
+
+    def test_disk_floor_counts_the_backup_with_the_release(self):
+        # R7: downloads + unpacked release + database backup together must leave the floor (same filesystem). Here the
+        # deploy's own pre-check (floor + backup) passes and the release (400 MB unpacked) on top of the backup does not;
+        # with the floor checked separately for each (before), this deploy went ahead.
+        import shutil
+        self.publish(edit=lambda m: {**m, 'modules': {**m['modules'], 'unpacked_bytes': 400 * 10 ** 6}})
+        with open(self.db, 'ab') as f: f.truncate(600 * 10 ** 6)  # a 600 MB (sparse) database
+        free = shutil.disk_usage(self.t).free
+        r = self.deploy(B, PROD_MIN_FREE_BYTES=free - 600 * 10 ** 6 - 200 * 10 ** 6)
+        self.assert_untouched(r, 'ALERT low_disk')
+        self.assertNotIn('.tgz', self.log('curl.log'))
+
+    def test_database_directory_must_be_writable_by_the_app_user(self):
+        # R14: WAL files are created beside the database
+        self.publish()
+        (self.t / 'data').chmod(0o555)
+        try: self.assert_untouched(self.deploy(B), 'database directory .* not writable')
+        finally: (self.t / 'data').chmod(0o755)
+        self.assertFalse((self.t / 'backups').exists())
+
+    def test_node_modules_falls_back_to_the_verified_archive_when_it_cannot_be_hard_linked(self):
+        # R13b: a live release the app user cannot hard-link from (e.g. root-owned under protected_hardlinks)
+        self.publish()
+        (self.live / 'node_modules/next').chmod(0o000)
+        try:
+            r = self.deploy(B)
+        finally: (self.live / 'node_modules/next').chmod(0o755)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('unpacked from the verified build', r.stdout)
+        self.assertEqual((self.t / 'rel' / f'dazl-{B[:8]}-prod' / 'web/node_modules/next/package.json').read_text(), '{"name":"next"}')
+
+    def test_an_old_release_that_cannot_be_removed_does_not_fail_a_done_deploy(self):
+        # R13a: a stuck prune is logged; the deploy (already switched and recorded) still succeeds
+        self.publish()
+        stuck = self.t / 'rel/dazl-0ld0ld00-prod/web/cache'; stuck.mkdir(parents=True); (stuck / 'f').write_text('x'); stuck.chmod(0o555)
+        try:
+            r = self.deploy(B)
+        finally: stuck.chmod(0o755)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('could not remove all of', r.stdout); self.assertEqual(self.live_port(), '3105')
+
+    def test_caddy_refusing_the_new_config_switches_nothing(self):
+        # R18: the new config is validated before it replaces the live one
+        self.publish()
+        (self.t / 'bin/caddy').write_text('#!/usr/bin/env bash\nexit 1\n')
+        r = self.deploy(B)
+        self.assertNotEqual(r.returncode, 0); self.assertIn('caddy refused the new config', r.stdout)
+        self.assertEqual(self.live_port(), '3104'); self.assertFalse((self.t / 'Caddyfile.next').exists())
 
     def test_untrusted_script_location_is_refused(self):
         # R2: root runs deploy-prod.sh and pull-release.sh: refused unless root-owned and root-writable only

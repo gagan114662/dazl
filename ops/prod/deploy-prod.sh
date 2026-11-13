@@ -65,17 +65,20 @@ import re, sys
 print(re.search(r'dazl\.ai, www\.dazl\.ai \{[^}]*?reverse_proxy localhost:(\d+)', open(sys.argv[1]).read()).group(1))
 PY
 }
-switch_caddy() {  # $1 = new port
-  cp -a "$CADDY" "$CADDY.bak-ops-$(date +%Y%m%dT%H%M%S)"
-  python3 - "$CADDY" "$1" <<'PY'
+switch_caddy() {  # $1 = new port: the new file is validated BEFORE it replaces the live one; a failed reload restores it
+  local bak; bak="$CADDY.bak-ops-$(date +%Y%m%dT%H%M%S)"
+  cp -a "$CADDY" "$bak"
+  python3 - "$CADDY" "$1" "$CADDY.next" <<'PY'
 import re, sys
-p = sys.argv[1]; t = open(p).read()
+t = open(sys.argv[1]).read()
 n = re.sub(r'(dazl\.ai, www\.dazl\.ai \{[^}]*?reverse_proxy localhost:)\d+', r'\g<1>' + sys.argv[2], t, count=1)
 assert n != t, 'caddy block not changed'
-open(p, 'w').write(n)
+open(sys.argv[3], 'w').write(n)
 PY
-  caddy validate --config "$CADDY" --adapter caddyfile >/dev/null
-  systemctl reload caddy
+  caddy validate --config "$CADDY.next" --adapter caddyfile >/dev/null || { rm -f -- "$CADDY.next"; die "caddy refused the new config; nothing switched"; }
+  chmod --reference="$CADDY" "$CADDY.next" 2>/dev/null || true
+  mv -f -- "$CADDY.next" "$CADDY"
+  systemctl reload caddy || { cp -a "$bak" "$CADDY"; systemctl reload caddy || true; die "caddy did not reload; the previous config is restored"; }
 }
 listener_cwds() { ss -ltnpH | grep -oP 'pid=\K[0-9]+' | sort -u | while read -r p; do readlink "/proc/$p/cwd" 2>/dev/null || true; done; }
 port_pid() { ss -ltnpH "sport = :$1" | grep -oP 'pid=\K[0-9]+' | head -1 || true; }
@@ -96,8 +99,11 @@ if [ "${1:-}" = "--rollback" ]; then
   got=$(health_sha "http://127.0.0.1:$PREV_PORT")
   [ "$got" = "$PREV_SHA" ] || die "previous port $PREV_PORT answers '${got:-nothing}', not the recorded $PREV_SHA; refusing"
   switch_caddy "$PREV_PORT"
+  sleep "${PROD_SWITCH_SLEEP:-2}"
+  pub=$(health_sha "$PUBLIC_URL")
+  [ "$pub" = "$PREV_SHA" ] || { switch_caddy "$cur"; die "public health shows '$pub', not $PREV_SHA after the rollback: switched back to :$cur"; }
   write_state "$cur" "$NEW_SHA" "$PREV_SHA"
-  sleep "${PROD_SWITCH_SLEEP:-2}"; curl -s "$PUBLIC_URL/api/health"; echo; exit 0
+  log "rolled back: dazl.ai now $PREV_SHA on :$PREV_PORT"; exit 0
 fi
 
 SHA=${1:?usage: deploy-prod.sh <40-hex sha> | --rollback}
@@ -114,6 +120,8 @@ log "live port $LIVE (pid $LIVE_PID, ${LIVE_WEB:-unknown dir}), new port $NEW, s
 [ -f "$DB" ] && [ ! -L "$DB" ] || die "the database $DB is missing or not a regular file; nothing done"
 [ "$(stat -c %h -- "$DB")" = 1 ] || die "the database $DB has another hard link; nothing done"
 as_app test -w "$DB" || die "the database $DB is not writable by $APP_USER (the app and migrate run as $APP_USER: chown it once, web/docs/DEPLOY.md); nothing done"
+# SQLite in WAL mode creates -wal/-shm beside the database: the directory must be writable by the app user too
+as_app test -w "$(dirname -- "$DB")" || die "the database directory $(dirname -- "$DB") is not writable by $APP_USER (WAL files are created there: chown it once, web/docs/DEPLOY.md); nothing done"
 db_bytes=$(stat -c %s -- "$DB")
 for fs in "$RELEASE_ROOT" "$(dirname "$BACKUPS")"; do
   [ "$(df --output=avail -B1 "$fs" | tail -1)" -gt $(( PROD_MIN_FREE_BYTES + db_bytes )) ] || die "less than $PROD_MIN_FREE_BYTES bytes plus the backup ($db_bytes) free on $fs; refusing"
@@ -121,29 +129,31 @@ done
 
 # 1. the new release's environment: the live process's environment plus the run env, parsed as DATA (never sourced by
 #    root: a value like $(cmd) stays text) and shell-quoted, minus PORT; root-only.
-python3 - "$LIVE_PID" "$RUN_ENV" > "$OPS/prod.env.next" <<'PY'
-import os, re, shlex, sys
+[ -n "$(as_app bash -c '[ -f "$1" ] && echo yes' _ "$RUN_ENV")" ] || die "the run env $RUN_ENV is missing; nothing done"
+# read as the app user (root never opens a file in that account's home: a symlink there could expose a root-only file),
+# parsed strictly as KEY=value data: an unparseable line refuses the deploy rather than being guessed at
+as_app cat -- "$RUN_ENV" > "$OPS/run.env.read" || die "the run env $RUN_ENV could not be read as $APP_USER; nothing done"
+python3 - "$LIVE_PID" "$OPS/run.env.read" > "$OPS/prod.env.next" <<'PY' || { rm -f -- "$OPS/run.env.read" "$OPS/prod.env.next"; die "the run env $RUN_ENV has a line that is not KEY=value data (see above); nothing done"; }
+import re, shlex, sys
 env = {}
 for kv in open(f'/proc/{sys.argv[1]}/environ', 'rb').read().split(b'\0'):
     if b'=' in kv:
         k, v = kv.decode(errors='replace').split('=', 1); env[k] = v
-try:
-    lines = open(sys.argv[2], encoding='utf-8', errors='replace').read().splitlines()
-except FileNotFoundError:
-    lines = []
-for line in lines:
-    m = re.match(r'^(?:export\s+)?([A-Z][A-Z0-9_]*)=(.*)$', line)
-    if not m:
+for n, line in enumerate(open(sys.argv[2], encoding='utf-8', errors='strict').read().splitlines(), 1):
+    if not line.strip() or line.lstrip().startswith('#'):
         continue
-    v = m.group(2)
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in '\'"':
-        v = v[1:-1]  # one level of quotes, nothing expanded
-    env[m.group(1)] = v
+    m = re.match(r"""^(?:export\s+)?([A-Z][A-Z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([^\s'"$`\\#]*))\s*$""", line)
+    if not m:
+        print(f'prod deploy: run env line {n} is not KEY=value data', file=sys.stderr); sys.exit(1)
+    env[m.group(1)] = next(g for g in m.groups()[1:] if g is not None)
+# the release runs as the app user: never carry over the root process's identity or sudo's bookkeeping
+drop = {'PORT', '_', 'PWD', 'OLDPWD', 'SHLVL', 'HOME', 'USER', 'LOGNAME', 'MAIL'}
 for k, v in env.items():
-    if k in ('PORT', '_', 'PWD', 'OLDPWD', 'SHLVL') or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+    if k in drop or k.startswith('SUDO_') or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
         continue
     print(f'{k}={shlex.quote(v)}')
 PY
+rm -f -- "$OPS/run.env.read"
 envdb=$(python3 - "$OPS/prod.env.next" <<'PY'
 import shlex, sys
 for line in open(sys.argv[1]):
@@ -161,7 +171,11 @@ if [ -d "$DIR" ] && listener_cwds | grep -q "^$DIR"; then
   log "$DIR is live and a complete build of $SHA: reusing it"; reuse=1
 fi
 if [ $reuse = 0 ]; then
-  bash "$PULL" fetch "$SHA"  # verified download + disk floor; fails before anything on the box changes
+  # verified download + disk floor; fails before anything on the box changes. When the backup lands on the release's
+  # filesystem, the floor it checks includes the backup, so downloads + release + backup together leave 3 GiB free.
+  fetch_floor=$PROD_MIN_FREE_BYTES
+  [ "$(stat -c %d -- "$RELEASE_ROOT")" != "$(stat -c %d -- "$(dirname "$BACKUPS")")" ] || fetch_floor=$(( PROD_MIN_FREE_BYTES + db_bytes ))
+  PROD_MIN_FREE_BYTES=$fetch_floor PROD_RELEASE_ROOT=$RELEASE_ROOT bash "$PULL" fetch "$SHA"
   as_app rm -rf -- "$DIR"
   as_app git clone -q --filter=blob:none "$REPO_URL" "$DIR"
   as_app git -C "$DIR" checkout -q "$SHA"
@@ -218,6 +232,6 @@ for d in "$RELEASE_ROOT"/dazl-*-prod; do
   [ -d "$d" ] && [ ! -L "$d" ] || continue
   case "$keep" in *" $d "*) continue ;; esac
   listener_cwds | grep -q "^$d" && continue
-  log "removing old release $d"; as_app rm -rf -- "$d"
+  log "removing old release $d"; as_app rm -rf -- "$d" || log "could not remove all of $d (files owned by another user? chown -R $APP_USER it); the deploy itself is done"
 done
 log "DONE: dazl.ai now $SHA on :$NEW. Previous $OLD_SHA still running on :$LIVE (deploy-prod.sh --rollback to switch back)."
