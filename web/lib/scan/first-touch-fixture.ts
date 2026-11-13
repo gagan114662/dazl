@@ -63,13 +63,15 @@ export function createFirstTouchFixture(db: Database.Database, tenantId: string,
 }
 
 // Removes the fixture play and lead, and the outreach rows the real paths attached to that lead (draft, held work,
-// sequence and its steps, follow-up thread and its messages). The autopilot audit is kept: autopilot's own daily and
-// domain caps read it. The account-wide rolling cap (accountSendCount, send-budget.ts) reads the delivery rows
-// themselves, so cleanup refuses (FixtureError 'recent_send') while any message to the fixture lead was sent inside
-// that 24 h window, and never gives the test account a send slot back early. It also refuses (FixtureError
-// 'send_in_flight') while any message to the fixture lead (first touch, sequence step or follow-up) is being sent or its
-// outcome is uncertain, so a cleanup never erases the row that pauses the tenant's sends (anyUncertainSend) until the
-// user resolves it. Both checks and every delete run in one immediate transaction.
+// sequence and its steps, follow-up thread with its messages and re-opens). The autopilot audit is kept, but it covers
+// only part of the limits: the account-wide rolling cap (accountSendCount, send-budget.ts) reads the delivery rows over
+// 24 h, and the one-email-per-company-per-7-days rule in autopilot's run, drain and drain authority
+// (domainSentRecently, drainAuthorize) reads outreach_messages.claimed_at over 7 days. So cleanup refuses (FixtureError
+// 'recent_send') while a first touch to the fixture lead was sent with claimed_at inside 7 days, or any message to it
+// (first touch, sequence step, follow-up, re-open) is still inside the 24 h window: it never hands a send slot back
+// early. It also refuses (FixtureError 'send_in_flight') while any message to the fixture lead is being sent or its
+// outcome is uncertain (a re-open's in-flight claim is 'approved'), so a cleanup never erases the row that pauses the
+// tenant's sends (anyUncertainSend) until the user resolves it. Every check and delete runs in one immediate transaction.
 export function deleteFirstTouchFixture(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): { deleted: boolean } {
   if (typeof tenantId !== 'string' || !tenantId || !fixtureAvailable(db, tenantId)) throw new FixtureError('test_tenant_only')
   return db.transaction((): { deleted: boolean } => {
@@ -79,21 +81,27 @@ export function deleteFirstTouchFixture(db: Database.Database, tenantId: string,
     const seq = has('sequence_steps') && has('sequences'), fup = has('followup_messages') && has('followup_threads')
     const SEQ_OF_LEAD = 'sequence_id IN (SELECT id FROM sequences WHERE tenant_id = ? AND lead_id = ?)'
     const THREAD_OF_LEAD = 'thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND lead_id = ?)'
+    const rop = has('reopen_messages')
     const any = (sql: string, ...args: unknown[]) => !!db.prepare(sql).get(...args)
     const inFlight = (has('outreach_messages') && any("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status IN ('sending','uncertain')", tenantId, ids.leadId))
       || (seq && any(`SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND status IN ('sending','uncertain') AND ${SEQ_OF_LEAD}`, tenantId, tenantId, ids.leadId))
       || (fup && any(`SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status IN ('sending','uncertain') AND ${THREAD_OF_LEAD}`, tenantId, tenantId, ids.leadId))
+      // A re-open has no 'uncertain' state: 'approved' is its in-flight claim (reopen.ts), and anyUncertainSend stops
+      // the tenant on it. Deleting its thread would hide it from listReopens (inner join) while sends stay paused.
+      || (rop && any("SELECT 1 FROM reopen_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'approved'", tenantId, ids.leadId))
     if (inFlight) throw new FixtureError('send_in_flight')
-    // The same time columns accountSendCount reads, so no row it still counts is removed.
+    // The same time columns accountSendCount (24 h) and the 7-day domain rule read, so no row they still count is removed.
     const since = now - 86400
-    const recent = (has('outreach_messages') && any("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'sent' AND COALESCE(claimed_at,sent_at,created_at) >= ?", tenantId, ids.leadId, since))
+    const recent = (has('outreach_messages') && any("SELECT 1 FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'sent' AND (COALESCE(claimed_at,sent_at,created_at) >= ? OR claimed_at >= ?)", tenantId, ids.leadId, since, now - 7 * 86400))
       || (seq && any(`SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND status = 'sent' AND COALESCE(claimed_at,sent_at,created_at) >= ? AND ${SEQ_OF_LEAD}`, tenantId, since, tenantId, ids.leadId))
       || (fup && any(`SELECT 1 FROM followup_messages WHERE tenant_id = ? AND status = 'sent' AND created_at >= ? AND ${THREAD_OF_LEAD}`, tenantId, since, tenantId, ids.leadId))
+      || (rop && any("SELECT 1 FROM reopen_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'sent' AND COALESCE(sent_at,created_at) >= ?", tenantId, ids.leadId, since))
     if (recent) throw new FixtureError('recent_send')
     if (has('autopilot_work')) db.prepare('DELETE FROM autopilot_work WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (seq) db.prepare(`DELETE FROM sequence_steps WHERE tenant_id = ? AND ${SEQ_OF_LEAD}`).run(tenantId, tenantId, ids.leadId)
     if (has('sequences')) db.prepare('DELETE FROM sequences WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (fup) db.prepare(`DELETE FROM followup_messages WHERE tenant_id = ? AND ${THREAD_OF_LEAD}`).run(tenantId, tenantId, ids.leadId)
+    if (rop) db.prepare('DELETE FROM reopen_messages WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (has('followup_threads')) db.prepare('DELETE FROM followup_threads WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (has('outreach_messages')) db.prepare('DELETE FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)
     if (has('lead_enrichments')) db.prepare('DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ?').run(tenantId, ids.leadId)

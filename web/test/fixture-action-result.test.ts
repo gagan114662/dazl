@@ -18,11 +18,16 @@ test('after a successful first-touch create the control opens /app/leads?job_id=
 })
 
 test('a refused cleanup shows a status line: explicit for send_in_flight and recent_send, generic otherwise', () => {
+  // also what a plain "remove the verification fixture" gets: it names the first-touch fixture and says nothing was removed
+  for (const code of ['send_in_flight', 'recent_send']) {
+    const m = fixtureFailureMessage(403, { error: code })
+    assert.match(m, /^Nothing was removed/, code); assert.match(m, /first-touch fixture/, code)
+  }
   assert.match(fixtureFailureMessage(403, { error: 'send_in_flight' }), /still sending or its outcome is uncertain/)
-  assert.match(fixtureFailureMessage(403, { error: 'recent_send' }), /last 24 hours/)
+  assert.match(fixtureFailureMessage(403, { error: 'recent_send' }), /7 days for a first touch/)
   for (const [status, body] of [[403, { error: 'test_tenant_only' }], [400, { error: 'unknown_action' }], [500, null], [403, { error: 'Bad origin' }]] as const) {
     const m = fixtureFailureMessage(status, body)
-    assert.match(m, new RegExp(`error ${status}`)); assert.doesNotMatch(m, /uncertain|24 hours/)
+    assert.match(m, new RegExp(`error ${status}`)); assert.doesNotMatch(m, /uncertain|24 hours|first-touch/)
   }
   assert.match(fixtureFailureMessage(429, { error: 'Too many requests' }), /Too many requests/)
   assert.match(fixtureFailureMessage(null, null), /no response/)

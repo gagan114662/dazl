@@ -17,20 +17,22 @@ import { denied } from '@/lib/workspace-access'
 // action 'first_touch' (#411): ONE labelled test-only lead addressed to the allowlisted test inbox that the real
 // autopilot may draft to once the user confirms it. Lead only: the draft, hold, scheduler drain and send run through the
 // real code. DELETE with action 'first_touch' removes only that fixture; a DELETE with no action removes it with the
-// others; any other action (misspelled, wrong-typed, or a body that is not an object) is a 400 on POST and DELETE.
+// others; any other body (a misspelled or wrong-typed action or key, null, a non-object or invalid JSON) is a 400 on
+// POST and DELETE.
 
-// The body's action. No body, an empty body or an object without an action is no action (the legacy whole-fixture
-// request). Anything else that is not a plain object with one of the method's known string actions is malformed: a
-// misspelled or wrong-typed action is refused, never read as "no action" (on DELETE that would remove every fixture).
+// The body's action. Only an empty body or exactly {} is "no action" (the legacy whole-fixture request, which on DELETE
+// removes every fixture). An object carrying one of the method's known string actions is that action (other keys are
+// ignored, e.g. a forged tenant_id). Everything else is malformed and refused: a misspelled or wrong-typed action, a
+// misspelled key ({"acton": ...}), a JSON null, a non-object body, invalid JSON or a body that could not be read.
 const NO_ACTION = Symbol('no action')
 async function actionOf(req: NextRequest, known: readonly string[]): Promise<string | typeof NO_ACTION | null> {
-  const text = await req.text().catch(() => null)
-  if (text === null || text.trim() === '') return NO_ACTION
+  let text: string
+  try { text = await req.text() } catch { return null }
+  if (text.trim() === '') return NO_ACTION
   let body: unknown
   try { body = JSON.parse(text) } catch { return null }
-  if (body === null) return NO_ACTION
-  if (typeof body !== 'object' || Array.isArray(body)) return null
-  if (!Object.prototype.hasOwnProperty.call(body, 'action') || (body as { action?: unknown }).action === undefined) return NO_ACTION
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  if (!Object.prototype.hasOwnProperty.call(body, 'action')) return Object.keys(body).length === 0 ? NO_ACTION : null
   const a = (body as { action?: unknown }).action
   return typeof a === 'string' && known.includes(a) ? a : null
 }

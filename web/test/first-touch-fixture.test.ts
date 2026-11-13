@@ -17,6 +17,7 @@ import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists, FIRST_TOUCH_FIXTURE_COMPANY } from '../lib/scan/first-touch-fixture.ts'
 import { createVerificationFixture } from '../lib/scan/verification-fixture.ts'
 import { accountSendCount, anyUncertainSend } from '../lib/outreach/send-budget.ts'
+import { listReopens } from '../lib/outreach/reopen.ts'
 
 const T = 'first-touch-fixture-tenant'
 const master = randomBytes(32)
@@ -213,6 +214,7 @@ const sentCases: [string, (db: Database.Database, leadId: string, at: number) =>
   ['first touch', (db, leadId, at) => db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES (?, ?, ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(hex(), T, leadId, TEST_INBOX, at, at)],
   ['sequence step', (db, leadId, at) => { attachSequence(db, leadId, { status: 'sent', at }) }],
   ['follow-up', (db, leadId, at) => { attachFollowup(db, leadId, { status: 'sent', at }) }],
+  ['re-open', (db, leadId, at) => { const th = attachFollowup(db, leadId, { status: 'sent', at: at - 30 * 86400 }); db.prepare("INSERT INTO reopen_messages (tenant_id, thread_id, lead_id, to_email, body, status, sent_at) VALUES (?, ?, ?, ?, 'a synthetic re-open body for the fixture', 'sent', ?)").run(T, th, leadId, TEST_INBOX, at) }],
 ]
 for (const [name, attach] of sentCases) {
   test(`cleanup never lowers the account-wide rolling send count (${name}): refused while it was sent inside the 24 h window, allowed once it ages out`, async () => {
@@ -224,10 +226,55 @@ for (const [name, attach] of sentCases) {
     assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /recent_send/, name)
     assert.equal(accountSendCount(db, T, NOW), before, `${name}: accountSendCount unchanged across the refused cleanup`)
     assert.ok(db.prepare('SELECT 1 FROM leads WHERE id = ?').get(f.leadId), `${name}: lead kept`)
-    // once the send has left the window, cleanup goes ahead and the count it reads is still unchanged
-    const later = NOW - 60 + 86401
+    // once the send has left every window (7 days for a first touch's domain rule), cleanup goes ahead, the count it
+    // reads is still unchanged, and the autopilot audit survives
+    capUsed(db)
+    const auditBefore = (db.prepare('SELECT count(*) n FROM autopilot_audit WHERE tenant_id = ?').get(T) as { n: number }).n
+    const later = NOW - 60 + 7 * 86400 + 1
     const beforeLater = accountSendCount(db, T, later)
     assert.deepEqual(deleteFirstTouchFixture(db, T, later), { deleted: true }, name)
     assert.equal(accountSendCount(db, T, later), beforeLater, `${name}: accountSendCount unchanged across cleanup`)
+    assert.equal((db.prepare('SELECT count(*) n FROM autopilot_audit WHERE tenant_id = ?').get(T) as { n: number }).n, auditBefore, `${name}: autopilot_audit rows survive`)
   })
 }
+
+test('cleanup refuses while a re-open to the fixture lead is approved (its in-flight claim): the thread and the re-open stay listed and the tenant stays stopped', async () => {
+  const db = await setup()
+  const f = createFirstTouchFixture(db, T, NOW)
+  const threadId = attachFollowup(db, f.leadId, { status: 'sent', at: NOW - 30 * 86400 })
+  db.prepare("INSERT INTO reopen_messages (tenant_id, thread_id, lead_id, to_email, body, status, sent_at) VALUES (?, ?, ?, ?, 'a synthetic re-open body for the fixture', 'approved', ?)").run(T, threadId, f.leadId, TEST_INBOX, NOW - 30 * 86400)
+  assert.equal(anyUncertainSend(db, T), true)
+  assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /send_in_flight/)
+  assert.ok(db.prepare('SELECT 1 FROM followup_threads WHERE thread_id = ?').get(threadId), 'thread kept')
+  assert.deepEqual(listReopens(db, T).map(r => r.thread_id), [threadId], 'the approved re-open is still listed')
+  assert.equal(anyUncertainSend(db, T), true)
+})
+
+// The exact edge of accountSendCount's window: a send at now - 86400 still counts (>=), so cleanup is refused; one
+// second older it no longer counts and cleanup goes ahead without changing the count.
+for (const [name, attach] of sentCases.filter(([n]) => n !== 'first touch')) {
+  test(`24 h boundary (${name}): sent at exactly now - 86400 still counts and refuses cleanup; one second older does not`, async () => {
+    const db = await setup()
+    const f = createFirstTouchFixture(db, T, NOW)
+    attach(db, f.leadId, NOW - 86400)
+    assert.equal(accountSendCount(db, T, NOW), 1, `${name}: counted at the edge`)
+    assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /recent_send/, name)
+    assert.equal(accountSendCount(db, T, NOW + 1), 0, `${name}: out of the window one second later`)
+    assert.deepEqual(deleteFirstTouchFixture(db, T, NOW + 1), { deleted: true }, name)
+    assert.equal(accountSendCount(db, T, NOW + 1), 0)
+  })
+}
+
+// The one-email-per-company-per-7-days rule (autopilot domainSentRecently / drainAuthorize) reads
+// outreach_messages.claimed_at over 7 days: a first touch sent 2 days ago (outside the 24 h cap) still holds the domain.
+test('cleanup refuses while a first touch to the fixture lead was claimed inside the 7-day domain window (2 days ago, and at the exact edge), allowed one second after', async () => {
+  for (const age of [2 * 86400, 7 * 86400]) {
+    const db = await setup()
+    const f = createFirstTouchFixture(db, T, NOW)
+    db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES (?, ?, ?, ?, 's', 'bodybodybodybodybodybody', 'sent', ?, ?)").run(hex(), T, f.leadId, TEST_INBOX, NOW - age, NOW - age)
+    assert.equal(accountSendCount(db, T, NOW), 0, 'outside the 24 h cap already')
+    assert.throws(() => deleteFirstTouchFixture(db, T, NOW), /recent_send/, `claimed ${age}s ago`)
+    assert.equal((db.prepare("SELECT count(*) n FROM outreach_messages WHERE tenant_id = ? AND lead_id = ? AND status = 'sent'").get(T, f.leadId) as { n: number }).n, 1, 'the row the domain rule reads is kept')
+    assert.deepEqual(deleteFirstTouchFixture(db, T, NOW - age + 7 * 86400 + 1), { deleted: true })
+  }
+})

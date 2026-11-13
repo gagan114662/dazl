@@ -96,3 +96,33 @@ test('DELETE: a misspelled or wrong-typed action is a 400 and removes nothing; o
   assert.equal(fixtureJobs(db), 0, 'a DELETE with no action still removes every fixture')
   assert.equal(fetches, 0)
 })
+
+test('a misspelled key, a JSON null, invalid JSON or an unreadable body is a 400 on POST and DELETE: nothing created, nothing removed; only "{}" or an empty body is no action', async () => {
+  const fixtureJobs = (db: Database.Database) => (db.prepare("SELECT count(*) n FROM scan_jobs WHERE user_id = 'A' AND business_name LIKE 'dazl %fixture%'").get() as { n: number }).n
+  const raw = (method: 'POST' | 'DELETE', body: BodyInit) =>
+    (method === 'POST' ? POST : DELETE)(new NextRequest('http://localhost/api/leads/verification-fixture', { method, body, headers: hdr, duplex: 'half' } as ConstructorParameters<typeof NextRequest>[1]))
+  const broken = () => new ReadableStream({ start(c) { c.error(new Error('read failed')) } })
+  const bodies: [string, () => BodyInit][] = [
+    ['{"acton":"first_touch"}', () => '{"acton":"first_touch"}'], ['{"Action":"first_touch"}', () => '{"Action":"first_touch"}'],
+    ['null', () => 'null'], ['{', () => '{'], ['unreadable', broken],
+  ]
+  process.env.OUTREACH_TEST_TENANT_ID = 'A'
+  setUser(A)
+  for (const method of ['POST', 'DELETE'] as const) {
+    const db = build()
+    if (method === 'DELETE') { assert.equal((await call('POST', {})).status, 200); assert.equal((await call('POST', { action: 'first_touch' })).status, 200) }
+    const n = fixtureJobs(db)
+    for (const [label, body] of bodies) {
+      const res = await raw(method, body())
+      assert.equal(res.status, 400, `${method} ${label}`); assert.deepEqual(await res.json(), { error: 'unknown_action' })
+      assert.equal(fixtureJobs(db), n, `${method} ${label}: nothing created or removed`)
+    }
+  }
+  // the controls' own "no action" body ({action: undefined} serialises to {}) and an empty body still remove everything
+  const db = build()
+  await call('POST', {}); await call('POST', { action: 'first_touch' })
+  assert.equal(fixtureJobs(db), 2)
+  assert.equal((await raw('DELETE', '')).status, 200)
+  assert.equal(fixtureJobs(db), 0)
+  assert.equal(fetches, 0)
+})
