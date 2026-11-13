@@ -228,7 +228,7 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
   return { ok: true, hits }
 }
 
-export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number }> {
+export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent: { fetches: number }, d: TfDeps = {}): Promise<{ ok: true; pages: { url: string; title: string; text: string }[] } | { ok: false; reason: Fail; status?: number; capacity?: true }> {
   const env = d.env ?? process.env; const now = d.now ?? Math.floor(Date.now() / 1000); const L = limits(env)
   if (!tinyfishEnabled(env)) { d.trace?.fetch({ requested: urls.length, attempted: false, outcome: 'disabled', pages: null }); return { ok: false, reason: 'disabled' } }
   const day = dayOf(now)
@@ -249,7 +249,7 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   if (alert) reportHighUse('fetch', alert)
   const batch = gate.batch
   // a share refusal records the units the share removed (what this scan's own caps would have allowed), not every URL asked
-  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return { ok: false, reason: 'cap' } }
+  if (gate.out === 'cap' || gate.out === 'capacity') { d.trace?.fetch({ requested: gate.out === 'capacity' ? gate.trimmed : urls.length, attempted: false, outcome: gate.out, pages: null }); return gate.out === 'capacity' ? { ok: false, reason: 'cap', capacity: true } : { ok: false, reason: 'cap' } }
   // a batch the platform share cut short: the pages it left out are recorded as not fetched for capacity
   if (gate.trimmed > 0) d.trace?.fetch({ requested: gate.trimmed, attempted: false, outcome: 'capacity', pages: null })
   if (gate.out === 'rate') { d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'rate', pages: null }); return { ok: false, reason: 'rate' } }
@@ -332,7 +332,14 @@ export async function tfFetchMany(db: DbLike, tenant: string, urls: string[], sp
   let first: Fail | null = null; let firstStatus: number | undefined; let anyOk = false
   for (let i = 0; i < todo.length; i += 10) {
     const r = await tfFetch(db, tenant, todo.slice(i, i + 10), spent, d)
-    if (!r.ok) { first = first ?? r.reason; firstStatus = firstStatus ?? r.status; break }
+    if (!r.ok) {
+      first = first ?? r.reason; firstStatus = firstStatus ?? r.status
+      // #1082: the platform share refused this batch, so it would refuse the ones not tried either: those pages are left
+      // out for capacity too, and are recorded as such (the run report's count, not only the first batch's 10)
+      const rest = todo.length - (i + 10)
+      if (r.capacity && rest > 0) d.trace?.fetch({ requested: rest, attempted: false, outcome: 'capacity', pages: null })
+      break
+    }
     anyOk = true; pages.push(...r.pages)
   }
   if (!anyOk) return firstStatus === undefined ? { ok: false, reason: first ?? 'cap' } : { ok: false, reason: first ?? 'cap', status: firstStatus }

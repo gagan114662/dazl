@@ -204,11 +204,18 @@ test('#1082 the platform search budget exhausted by round one: the adaptive roun
   const saved = process.env.TINYFISH_GLOBAL_SEARCH_DAILY
   process.env.TINYFISH_GLOBAL_SEARCH_DAILY = '8' // half (the fair-share room kept for one more tenant) is round one's four
   try {
-    const s = await scan()
+    const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+    const s = await scan({ env: { DAZL_RUN_REPORT: '1' }, prepare: db => migrateAllSqlite(db) })
     assert.equal(s.r, 'done')
     assert.equal(s.searched.length, 4, `round one used this tenant's share: ${JSON.stringify(s.searched)}`)
     assert.equal(s.adaptive?.status, 'search_cap', JSON.stringify(s.adaptive))
     assert.ok(!s.searched.some(q => /front desk/i.test(q)), 'the refused search was never sent')
+    // the adaptive round's own capacity report (council on the f144ccf1 fixes): the run report and the status note say so
+    const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+    const { sqliteDb } = await import('../lib/db/client.ts')
+    const st = await readScanStatus(sqliteDb(s.db), 'A', s.jobId) as { run_report: { capacity: { searches: number } | null }[]; capacity_note: string | null }
+    assert.ok((st.run_report.at(-1)?.capacity?.searches ?? 0) > 0, JSON.stringify(st.run_report.at(-1)?.capacity))
+    assert.equal(st.capacity_note, 'Platform search capacity reached today: results are thinner.')
   } finally { if (saved === undefined) delete process.env.TINYFISH_GLOBAL_SEARCH_DAILY; else process.env.TINYFISH_GLOBAL_SEARCH_DAILY = saved }
 })
 

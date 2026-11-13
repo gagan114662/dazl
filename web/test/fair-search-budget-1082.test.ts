@@ -190,7 +190,7 @@ bothEngines('#1082: a share-refused fetch with 2 fetches left on the scan record
   assert.equal(await fetchUnits(db, 'A', 10, env), 7, 'A uses its whole share (room kept for one more tenant)')
   const trace = new SearchTrace()
   const r = await tfFetch(db, 'A', urls(10, 'A2'), { fetches: 8 }, { env, now: NOON, fetchImpl: okFetch, trace })   // 8 of 10 per scan spent: 2 left
-  assert.deepEqual(r, { ok: false, reason: 'cap' })
+  assert.equal(r.ok, false); assert.equal(!r.ok && r.reason, 'cap')
   assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 2)
 })
 
@@ -230,5 +230,19 @@ bothEngines('#1082: TINYFISH_GROWTH_RESERVE_PCT=0 keeps no reserve; unset keeps 
   await db.run('DELETE FROM tinyfish_usage'); await resetTinyfishState(db)
   const unset = { ...ENV, DAZL_GROWTH_TENANT_ID: 'G' }
   for (const t of ['A', 'A', 'A', 'A', 'B', 'B', 'B', 'B', 'C', 'C', 'C', 'C']) await fetchUnits(db, t, 10, unset)
-  assert.ok(await total(db) <= 24, 'unset: the 6-unit (20%) reserve is kept')
+  const t = await total(db)
+  assert.ok(t <= 24 && t >= 18, `unset: the 6-unit (20%) reserve is kept and the others still get their shares (${t})`)
+})
+
+// council (haiku) on the f144ccf1 fixes: a multi-batch fetch the share refuses records every page it left out, not
+// only the first batch's 10
+bothEngines('#1082: tfFetchMany refused by the share records all 16 pages a scan would have read as capacity', async ({ db }) => {
+  await resetTinyfishState(db)
+  const env = { ...ENV, TINYFISH_GLOBAL_FETCH_DAILY: '15', TINYFISH_FETCHES_PER_SCAN: '16' }
+  for (let i = 0; i < 4; i++) await fetchUnits(db, 'A', 10, env)   // A uses its whole share
+  const { tfFetchMany } = await import('../lib/search/tinyfish.ts')
+  const trace = new SearchTrace()
+  const r = await tfFetchMany(db, 'A', urls(16, 'A3'), { fetches: 0 }, { env, now: NOON, fetchImpl: okFetch, trace })
+  assert.equal(r.ok, false)
+  assert.equal(summarizeTrace(trace).fetch_capacity_trimmed, 16)
 })

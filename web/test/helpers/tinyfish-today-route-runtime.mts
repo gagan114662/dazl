@@ -29,6 +29,7 @@ test('#1082: the operator ops-status route needs the shared secret and shows cou
   assert.doesNotMatch(text, /tenant-secret/, 'never a tenant id')
   const j = JSON.parse(text) as { search: { used: number }; fetch: { used: number }; per_tenant: number[] }
   assert.deepEqual(j.per_tenant, [25, 7]); assert.equal(j.search.used, 5); assert.equal(j.fetch.used, 27)
+  assert.equal((j as unknown as { active_tenants: number }).active_tenants, 2)
   assert.match(ok.headers.get('cache-control') ?? '', /no-store/)
   console.log('TINYFISH TODAY ROUTE ok')
 })
