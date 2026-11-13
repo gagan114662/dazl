@@ -45,6 +45,10 @@ test('#769 tech fixture route refusals: 404 outside staging for a signed-in owne
   const off = await call('POST', { page: 'plain' })
   assert.equal(off.status, 503); assert.deepEqual(await off.json(), { error: 'crawl_disabled' })
   process.env.SITECRAWL_ENABLED = '1'
+  process.env.TECH_SCAN_ENABLED = '0'
+  const noTech = await call('POST', { page: 'plain' })
+  assert.equal(noTech.status, 503); assert.deepEqual(await noTech.json(), { error: 'tech_scan_disabled' })
+  delete process.env.TECH_SCAN_ENABLED
   assert.equal(jobs(db), 0)
   assert.equal(fetches, 0)
 })

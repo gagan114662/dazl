@@ -18,7 +18,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { isStaging } from '../staging.ts'
-import { crawlJob, sitecrawlEnabled, TECH_AUDIT, type Get } from '../connectors/sitecrawl.ts'
+import { crawlJob, sitecrawlEnabled, techScanEnabled, TECH_AUDIT, type Get } from '../connectors/sitecrawl.ts'
 import { audit } from '../connectors/store.ts'
 import { FixtureError } from '../outreach/test-fixture.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, decodeScan, day } from '../signals/tech-observations.ts'
@@ -140,6 +140,8 @@ export async function crawlTechFixture(db: Database.Database, tenantId: string, 
   if (typeof tenantId !== 'string' || !tenantId || !techFixtureOn(env)) throw new FixtureError('staging_only')
   if (!isTechFixturePage(p)) throw new FixtureError('unknown_page')
   if (!sitecrawlEnabled(env)) throw new FixtureError('crawl_disabled')
+  // With the technology branch switched off the crawl would run and record nothing: that is not "nothing changed".
+  if (!techScanEnabled(env)) throw new FixtureError('tech_scan_disabled')
   // One fixture crawl per workspace at a time (in this process): two at once could date their observations to the same second,
   // where one is silently ignored, and would read each other's ledger rows.
   if (inFlight.has(tenantId)) throw new FixtureError('crawl_in_flight')
@@ -160,7 +162,9 @@ async function crawlOnce(db: Database.Database, tenantId: string, p: TechFixture
   if (Math.floor(nowMs / 1000) <= last) throw new FixtureError('clock_not_advancing')
   const changesBefore = new Set(changeRows(db, tenantId, ids.leadId).map(c => c.value))
   const mark = (db.prepare('SELECT COALESCE(MAX(insert_seq), 0) AS n FROM connector_audit').get() as { n: number }).n
-  await crawlJob(db, tenantId, ids.jobId, { get: deps.get ?? techFixtureGet(p), gapMs: 0, env, now: nowMs, signal: deps.signal, leads: [{ id: ids.leadId, company: TECH_FIXTURE_COMPANY, source_url: HOME }] })
+  // The email finder is kept out of the fixture crawl (EMAIL_GUESS_ENABLED off for this call): it has nothing to find on these pages
+  // and its rows live in a table the cleanup does not own.
+  await crawlJob(db, tenantId, ids.jobId, { get: deps.get ?? techFixtureGet(p), gapMs: 0, env: { ...env, EMAIL_GUESS_ENABLED: '0' }, now: nowMs, signal: deps.signal, leads: [{ id: ids.leadId, company: TECH_FIXTURE_COMPANY, source_url: HOME }] })
   const ledger = db.prepare('SELECT connector, status FROM connector_audit WHERE insert_seq > ? AND tenant_id = ? AND scan_job_id = ? AND lookup = ? AND connector IN (?, ?) ORDER BY insert_seq').all(mark, tenantId, ids.jobId, TECH_FIXTURE_SITE, 'sitecrawl', TECH_AUDIT) as { connector: string; status: string }[]
   // A crawl that was cut short or failed inside writes no ledger row for the site (crawlJob returns early on an abort and only logs its
   // own errors). That is not an outage the site served: refuse it, never report it as "nothing changed".

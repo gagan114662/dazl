@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 test('#769 tech fixture route: staging only, session + operate role, own workspace; adoption, outage and removal through the real crawl; cleanup (real handlers)', () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
-  delete env.DAZL_ENV
+  delete env.DAZL_ENV; delete env.TECH_SCAN_ENABLED
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/tenant-route-loader.mjs', '--test', './test/helpers/tech-fixture-route-runtime.mts'],
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })

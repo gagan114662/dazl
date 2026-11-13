@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   try {
     return NextResponse.json(await crawlTechFixture(getScanDb(), user.tenantId, body.page, { signal: AbortSignal.timeout(30_000) }), { headers: { 'Cache-Control': 'no-store' } })
   } catch (e) {
-    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: e.code === 'crawl_disabled' || e.code === 'clock_not_advancing' || e.code === 'crawl_incomplete' ? 503 : e.code === 'crawl_in_flight' ? 409 : 403 })
+    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: e.code === 'crawl_disabled' || e.code === 'tech_scan_disabled' || e.code === 'clock_not_advancing' || e.code === 'crawl_incomplete' ? 503 : e.code === 'crawl_in_flight' ? 409 : 403 })
     throw e
   }
 }

@@ -19,13 +19,14 @@ function setup() {
 }
 const values = (r: { changes: { value: string }[] }) => r.changes.map(c => c.value)
 
-test('#769 fixture is staging-only: refused in production and without DAZL_ENV, and when the site crawl is off', async () => {
+test('#769 fixture is staging-only: refused in production and without DAZL_ENV, and when the site crawl or its technology branch is off', async () => {
   const { db } = setup()
   for (const env of [{}, { DAZL_ENV: 'production', SITECRAWL_ENABLED: '1' }, { DAZL_ENV: 'Staging' }, { DAZL_STAGING_TECH_FIXTURE: '1' }] as Record<string, string>[]) {
     await assert.rejects(crawlTechFixture(db, 'A', 'plain', { env }), /staging_only/)
     assert.throws(() => deleteTechFixture(db, 'A', env), /staging_only/)
   }
   await assert.rejects(crawlTechFixture(db, 'A', 'plain', { env: { DAZL_ENV: 'staging', SITECRAWL_ENABLED: '0' } }), /crawl_disabled/)
+  await assert.rejects(crawlTechFixture(db, 'A', 'hubspot', { env: { ...STAGING, TECH_SCAN_ENABLED: '0' } }), /tech_scan_disabled/)
   await assert.rejects(crawlTechFixture(db, 'A', 'nope' as TechFixturePage, { env: STAGING }), /unknown_page/)
   assert.equal((db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, 0)
 })
