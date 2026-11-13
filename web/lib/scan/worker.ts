@@ -7,8 +7,10 @@
 // second process never runs the in-process claimers. It runs no tick work (replies, follow-ups, watches, monitors) and
 // listens on no port.
 //
-// A pass with no pending or running scan is one indexed read (scan_jobs_status) and no write, so an idle worker does
-// not churn the store. A running scan counts as work because the kick also frees scans whose worker died (the lease).
+// A pass with no pending or running scan and no open scan queue item is indexed reads and no write. While any scan is
+// running (here or in the app) a pass is a kick, and a kick is one small write transaction (the claim takes a fencing
+// token before it knows whether anything is claimable), so every 5 s for as long as a scan runs. A running scan
+// counts as work because the kick also frees scans whose worker died (the lease).
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { sharedScanQueue } from '../queue/scan-claimer.ts'
@@ -43,9 +45,11 @@ export interface ScanWorkerOpts {
   log?: (line: string) => void
 }
 
-// The store is set up when the tables a kick reads exist. The worker never creates or changes schema: the deploy's
-// migrate-and-seed step (ops/staging/deploy.sh) and the app do, and a second process running the same setup at the
-// same moment is how two processes used to collide. Until then a pass does nothing and the next one looks again.
+// The store is set up when the tables a kick reads exist. The worker runs no scan-table migrations of its own: the
+// deploy's migrate-and-seed step (ops/staging/deploy.sh) and the app create them, and a second process running that
+// whole setup at the same moment is how two processes used to collide. What it does run is what any kick runs, all
+// idempotent: the auth tables on open (getAuthDb), the queue tables (CREATE IF NOT EXISTS) and the runner's own lazy
+// table checks. Until the scan tables exist a pass does nothing and the next one looks again.
 const storeReady = (db: Database.Database): boolean =>
   (db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('scan_jobs', 'tenant_llm_keys', 'scan_spend_calls')").get() as { n: number }).n === 3
 
@@ -88,24 +92,31 @@ export function startScanWorker(o: ScanWorkerOpts): { stop: () => void; done: Pr
   return { stop: () => { stopped = true; wake?.() }, done }
 }
 
-// The worker process (scripts/scan-worker.mts): names this instance, opens the app's store (DB_PATH; it changes no
-// schema, see storeReady), installs the exit
+// The worker process (scripts/scan-worker.mts): names this instance, opens the app's store (DB_PATH; no scan-table
+// migrations, see storeReady), installs the exit
 // hook that hands running scans back, and runs the loop until SIGTERM or SIGINT. deps: the runner's own injection
 // point, for tests; the script passes none.
-//   DAZL_INSTANCE_ID  this worker's name in work_queue.claimed_by and the journal; default worker-<8 hex>
+//   SCAN_WORKER_ID  this worker's name: work_queue.claimed_by and the journal say worker-<name>; default 8 random hex
 // Stopping: process.exit runs the exit hook (lib/scan/shutdown-hook.ts), which returns this worker's running scans and
 // their queue claims, so the app or the restarted worker takes them at once. SIGKILL has no exit: the lease returns them.
 export function scanWorkerMain(o: { deps?: RunDeps; log?: (line: string) => void } = {}): { stop: () => void; done: Promise<void> } {
   const log = o.log ?? ((line: string) => console.log(line))
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(process.env.DAZL_INSTANCE_ID ?? '')) process.env.DAZL_INSTANCE_ID = 'worker-' + randomBytes(4).toString('hex')
+  // Always worker-<name>: the env file is shared with the app, so an id set there for the app would otherwise make both
+  // processes write the same claimed_by. SCAN_WORKER_ID names this worker; unset or malformed, 8 random hex.
+  const named = process.env.SCAN_WORKER_ID
+  process.env.DAZL_INSTANCE_ID = 'worker-' + (named && /^[A-Za-z0-9._-]{1,48}$/.test(named) ? named : randomBytes(4).toString('hex'))
+  // With DATABASE_URL the queue would be on Postgres while the scan rows stay in this process's SQLite file: not this
+  // worker's setup (staging's env check refuses DATABASE_URL). It stays idle and says so.
+  const split = !!process.env.DATABASE_URL
   process.env.SCAN_MAX_CONCURRENT = String(workerConcurrency())
   const db = getAuthDb()
   installShutdownRequeue()
   recordProcessErrors()
-  const on = sharedScanQueue()
+  const on = sharedScanQueue() && !split
   log(`[scan-worker] started instance=${instanceId()} shared_queue=${on ? 'on' : 'off'} concurrency=${workerConcurrency()} interval_ms=${workerIntervalMs()}`)
-  if (!on) log('[scan-worker] DAZL_SCAN_SHARED_QUEUE is not 1: idle, no scan is claimed by this process')
-  const worker = startScanWorker({ db, kick: kickRunner, deps: o.deps, log })
+  if (split) log('[scan-worker] DATABASE_URL is set: this worker is for the one-file store only: idle, no scan is claimed by this process')
+  else if (!on) log('[scan-worker] DAZL_SCAN_SHARED_QUEUE is not 1: idle, no scan is claimed by this process')
+  const worker = startScanWorker({ db, kick: kickRunner, deps: o.deps, log, env: split ? {} : undefined })
   for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     process.once(sig, () => { log(`[scan-worker] ${sig}: stopping instance=${instanceId()}`); worker.stop(); process.exit(sig === 'SIGTERM' ? 143 : 130) })
   }

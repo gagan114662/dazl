@@ -40,8 +40,8 @@ RUN_AS=${STAGING_USER:-dazl-staging}
 REPO_URL=${STAGING_REPO_URL:-https://github.com/gagan114662/dazl.git}
 # The scan worker (#836, ops/staging/dazl-staging-worker.service): a second process on the same release and database.
 # When its unit is installed, it is stopped with the app (before a recovery point, a restore or a migration: nothing
-# else may write) and never left running an old release beside a new one; it is started again after the app, when
-# enabled. Not installed: nothing below touches it. Tests replace SYSTEMCTL, or STOP and RESTART whole.
+# else may write) and never left running an old release beside a new one; it is started again after the app's restart
+# command returns, when enabled (the unit is not pulled in by the app's start: this script and the operator start it). Not installed: nothing below touches it. Tests replace SYSTEMCTL, or STOP and RESTART whole.
 WORKER=${STAGING_WORKER_SERVICE:-dazl-staging-worker.service}
 SYSTEMCTL=${STAGING_SYSTEMCTL:-systemctl}
 worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
@@ -411,6 +411,9 @@ if ! $STOP 9>&-; then
   cleanup
   restart_prev && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") restarted unchanged"
   [ -n "$prev" ] || fail "could not stop the service for a recovery point; nothing migrated, release removed (first deployment: NO LIVE STAGING SERVICE)"
+  # The stop can fail before the app was touched (#836: the scan worker is stopped first, and it would not stop). Say what
+  # is true: when the previous release still answers healthy it is live, not gone.
+  healthy "$(basename "$prev")" && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") is still live (it was not restarted)"
   fail "could not stop the service for a recovery point; nothing migrated, release removed, and $(basename "$prev") did not come back healthy: NO LIVE STAGING SERVICE"
 fi
 mh=

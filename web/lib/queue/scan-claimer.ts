@@ -167,7 +167,7 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
         log(`[shared-queue] nothing to run scan=${claim.item.id} token=${claim.token} scan_status=${row?.status ?? 'missing'} instance=${owner}`)
       } else {
         await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
-        log(`[shared-queue] not taken scan=${claim.item.id} token=${claim.token} scan_status=${row.status} instance=${owner} (another attempt holds it; retried later)`)
+        log(`[shared-queue] not taken scan=${claim.item.id} token=${claim.token} scan_status=${row.status} instance=${owner} (${row.status === 'running' ? 'another attempt holds it' : 'the scan changed between the claim and the bind'}; retried later)`)
       }
       continue
     }

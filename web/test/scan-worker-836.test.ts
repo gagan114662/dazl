@@ -17,6 +17,9 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { DbQueue } from '../lib/queue/db.ts'
 import { stagingScanHoldMs } from '../lib/queue/scan-claimer.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
+import { migrateOnboardingPolicy } from '../lib/outreach/onboarding-policy.ts'
+import { migrateEvidenceCopies } from '../lib/scan/evidence-copies.ts'
+import { migrateTenantLifecycle } from '../lib/db/tenant-guard.ts'
 import { createJob, STALE_RUNNING_S } from '../lib/scan/store.ts'
 import { workerPass, workerIntervalMs, workerConcurrency } from '../lib/scan/worker.ts'
 
@@ -38,7 +41,7 @@ function world(tenants: string[]) {
   }
   const workers: { name: string; proc: ChildProcess; out: () => string }[] = []
   const start = (name: string, env: Record<string, string> = {}) => {
-    const e: NodeJS.ProcessEnv = { ...process.env, DB_PATH: path, W_NAME: name, W_MASTER: master.toString('base64'), W_MODE: 'answer', DAZL_SCAN_SHARED_QUEUE: '1',
+    const e: NodeJS.ProcessEnv = { ...process.env, DB_PATH: path, W_NAME: name.replace(/^worker-/, ''), W_MASTER: master.toString('base64'), W_MODE: 'answer', DAZL_SCAN_SHARED_QUEUE: '1',
       SCAN_WORKER_INTERVAL_MS: '250', SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_ENV: 'test', ...env }
     delete e.NODE_TEST_CONTEXT; delete e.DATABASE_URL
     const proc = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', './test/helpers/scan-worker-child.mts'], { cwd: web, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -125,7 +128,7 @@ test('#836 a worker restarted mid-scan (SIGTERM) with no paid request in flight 
   } finally { await w.close() }
 })
 
-test('#836 a worker restarted (SIGTERM) while a paid request is in flight: the scan is NOT handed back and never run again; after the lease it ends failed accounting_uncertain at attempt 1 and its queue item is closed without a second run', async () => {
+test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its ledger reservation written by the test: the stub provider records none): the scan is NOT handed back and never run again; after the lease it ends failed accounting_uncertain at attempt 1 and its queue item is closed without a second run', async () => {
   const w = world(['t1'])
   try {
     const id = w.scan('t1')
@@ -184,15 +187,17 @@ test('#836 a worker killed mid-scan (SIGKILL) keeps its claim until the lease ru
   } finally { await w.close() }
 })
 
-test('#836 the worker script: with the flag off it idles and claims nothing; started by its real command line it names itself and stops on SIGTERM', async () => {
+test('#836 the worker script: with the flag off, or with DATABASE_URL set, it idles and claims nothing; started by its real command line it names itself worker-<id> and stops on SIGTERM', async () => {
   const w = world(['t1'])
   try {
     const id = w.scan('t1')
-    const run = (flag: string | undefined) => new Promise<string>((res, rej) => {
-      const e: NodeJS.ProcessEnv = { ...process.env, DB_PATH: w.db.name, SCAN_WORKER_INTERVAL_MS: '250', NODE_ENV: 'test' }
-      delete e.NODE_TEST_CONTEXT; delete e.DATABASE_URL; delete e.DAZL_INSTANCE_ID; delete e.DAZL_SCAN_SHARED_QUEUE
+    // pgUrl: started without the test fence (which removes DATABASE_URL); the worker must stay idle, so nothing connects
+    const run = (flag: string | undefined, pgUrl?: string) => new Promise<string>((res, rej) => {
+      const e: NodeJS.ProcessEnv = { ...process.env, DB_PATH: w.db.name, SCAN_WORKER_INTERVAL_MS: '250', NODE_ENV: 'test', DAZL_INSTANCE_ID: 'the-app' }
+      delete e.NODE_TEST_CONTEXT; delete e.DATABASE_URL; delete e.SCAN_WORKER_ID; delete e.DAZL_SCAN_SHARED_QUEUE
       if (flag !== undefined) e.DAZL_SCAN_SHARED_QUEUE = flag
-      const p = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/scan-worker.mts'], { cwd: web, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
+      if (pgUrl) e.DATABASE_URL = pgUrl
+      const p = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', ...(pgUrl ? [] : ['--import', './test/helpers/net-fence.ts']), 'scripts/scan-worker.mts'], { cwd: web, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''; p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d })
       p.once('error', rej)
       p.once('exit', code => code === 143 ? res(out) : rej(new Error(`exit ${code}: ${out}`)))
@@ -206,6 +211,11 @@ test('#836 the worker script: with the flag off it idles and claims nothing; sta
       assert.deepEqual(w.job(id), { status: 'pending', attempts: 0 }, 'flag off: the scan is left to the app')
       assert.equal((w.db.prepare('SELECT count(*) AS n FROM work_queue').get() as { n: number }).n, 0)
     }
+    // DATABASE_URL set (the queue would be on Postgres, the scan rows in this file): idle even with the flag on
+    const split = await run('1', 'postgres://127.0.0.1:1/none')
+    assert.match(split, /\[scan-worker\] started instance=worker-[0-9a-f]{8} shared_queue=off/, 'and an instance id set for the app in the shared env file is never the worker\'s')
+    assert.match(split, /DATABASE_URL is set: this worker is for the one-file store only: idle/)
+    assert.deepEqual(w.job(id), { status: 'pending', attempts: 0 })
   } finally { await w.close() }
 })
 
@@ -320,4 +330,20 @@ test('#836 four processes opening one store at the same instant all finish its s
     const triggers = (w.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'tomb_%'").get() as { n: number }).n
     assert.ok(triggers > 50, `guard triggers present (${triggers})`)
   } finally { await w.close() }
+})
+
+test('#836 every DROP TRIGGER the store setup issues runs inside a transaction (deterministic: each statement is checked as it is issued)', () => {
+  // better-sqlite3 calls `verbose` with each SQL text before running it; db.inTransaction then says whether a
+  // transaction is open. A DROP TRIGGER issued outside one is the cross-process race this change closed.
+  const outside: string[] = []; let drops = 0
+  const db: Database.Database = new Database(':memory:', { verbose: (sql?: unknown) => {
+    if (typeof sql !== 'string' || !/DROP TRIGGER/i.test(sql)) return
+    drops++
+    if (!db.inTransaction) outside.push(sql.replace(/\s+/g, ' ').slice(0, 90))
+  } })
+  migrateAllSqlite(db)
+  migrateOnboardingPolicy(db); migrateEvidenceCopies(db); migrateTenantLifecycle(db)
+  assert.ok(drops >= 3, `the setup replaces triggers (${drops} DROP statements seen)`)
+  assert.deepEqual(outside, [])
+  db.close()
 })
