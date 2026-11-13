@@ -78,3 +78,18 @@ test('work_email fixture on staging: one lead; the real Find work email route an
   assert.equal(fetches, 0, 'no network call')
   setEnv(false)
 })
+
+test('work_email_real (#1036 live check): staging test tenant only; malformed input is a 400; nothing written', async () => {
+  const db = build(); setUser(A)
+  setEnv(false)
+  const off = await call('POST', { action: 'work_email_real', company: 'Bluebonnet Realty', url: 'https://bluebonnetrealty.com/', who: 'Owner' })
+  assert.equal(off.status, 403); assert.deepEqual(await off.json(), { error: 'staging_only' })
+  setEnv(true)
+  const bad = await call('POST', { action: 'work_email_real', company: 'Bluebonnet Realty', url: 'http://10.0.0.1/', who: 'Owner' })
+  assert.equal(bad.status, 400); assert.deepEqual(await bad.json(), { error: 'bad_input' })
+  const g = await (await GET()).json() as { realCheckAvailable: boolean }
+  assert.equal(g.realCheckAvailable, true)
+  assert.equal((db.prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n, 0)
+  assert.equal(fetches, 0)
+  setEnv(false)
+})

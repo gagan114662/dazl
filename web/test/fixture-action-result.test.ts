@@ -48,3 +48,9 @@ test('#1036 a successful work-email fixture create opens its play (the lead with
   assert.equal(fixtureNextUrl('POST', 'work_email', false, { jobId: id }), null)
   assert.equal(fixtureNextUrl('POST', 'work_email', true, { jobId: '../x' }), null)
 })
+
+test('#1036 a real-company check opens its play; a bad-input refusal says what to enter', () => {
+  const id = 'b'.repeat(24)
+  assert.equal(fixtureNextUrl('POST', 'work_email_real', true, { jobId: id }), `/app/leads?job_id=${id}`)
+  assert.match(fixtureFailureMessage(400, { error: 'bad_input' }), /company name, its website/)
+})
