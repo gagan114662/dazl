@@ -146,6 +146,7 @@ try {
     assert.match(await page.getByTestId('section-voice').textContent(), /Could not load Memory/)
     assert.doesNotMatch(await page.getByTestId('section-voice').textContent(), /dazl did not find this/)
     assert.match(await page.getByTestId('section-competitors').textContent(), /Could not load Competitors/)
+    for (const id of ['competitors', 'voice', 'objections']) assert.equal(await page.getByTestId(`section-${id}`).getByRole('button', { name: /^Edit / }).count(), 0, `${id}: no editor over a source that did not load`)
     assert.doesNotMatch(await page.getByTestId('section-competitors').textContent(), /dazl did not find this/)
     assert.deepEqual(writes, [])
     out.push('failed reads: "Could not load", no profile editor')
@@ -175,6 +176,52 @@ try {
     assert.equal(await page.locator('#edit-company').count(), 0, 'no editor over a profile that did not reload')
     assert.equal(writes.length, 1, 'only the one save; nothing posted from a blank form')
     out.push('a failed reload after a save removes the editor')
+    await ctx.close()
+  }
+  {
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    const writes = []
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      if (req.method() !== 'GET') writes.push(p)
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (p === '/api/settings/profile') return json({})   // 200 without the profile: a failed read, never a blank profile to save over
+      if (p === '/api/settings/memory') return json({ memory: { icp: '', positioning: '', tone: '', exclusions: [], objections: [] } })
+      if (p === '/api/settings/competitors') return json({ competitors: [] })
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByTestId('load-failed').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('section-company').getByRole('button', { name: /^Edit / }).count(), 0)
+    assert.match(await page.getByTestId('section-company').textContent(), /Could not load your profile/)
+    assert.deepEqual(writes, [])
+    out.push('a 200 without the profile is a failed read')
+    await ctx.close()
+  }
+  {
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (p === '/api/settings/profile') return json({ business_name: 'NewCo', sells: '', website: null, buyer: null, new_play_offer: null })
+      if (p === '/api/settings/memory') return json({ memory: null })   // what the route sends when nothing is saved yet
+      if (p === '/api/settings/competitors') return json({ competitors: [] })
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByTestId('section-voice').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('load-failed').count(), 0, 'a new workspace with no Memory is not a failed read')
+    assert.match(await page.getByTestId('section-voice').textContent(), /dazl did not find this/)
+    assert.equal(await page.getByTestId('section-voice').getByRole('button', { name: 'Edit Voice' }).count(), 1)
+    out.push('a new workspace (memory: null) reads as empty, editable')
     await ctx.close()
   }
   console.log(`business page UI check passed (real build): ${out.join('; ')}`)
