@@ -161,7 +161,7 @@ test('#1062 qualificationLines: pure counts - none passed, a held source-checked
 
 test('#1062 route seam: GET /api/leads carries gate_held and Home / Leads count a gate-held lead as research (real handler, no network)', () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
-  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test', './test/helpers/leads-route-gate-1062-runtime.mts'],
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/leads-route-gate-1062-runtime.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
