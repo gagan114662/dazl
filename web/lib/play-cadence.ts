@@ -80,16 +80,16 @@ export function* skipWatchRunStep(t: Tx, w: { id: string; user_id: string; next_
   return true
 }
 
-// The skip a play's page should still mention: its latest skip, if the play has not run since (a run, scheduled or
-// "Find leads now", sets last_run_at). Reads audit_events_tenant_at (tenant_id, at), bounded to the last two days.
+// The skip a play's page should still mention: its latest skip after the play's last run (a run, scheduled or "Find
+// leads now", sets last_run_at), however long ago, so the notice stays until the play runs again even through a
+// scheduler outage. Reads audit_events_tenant_at (tenant_id, at) from the last run on, LIMIT 1.
 export type SkipNotice = { at: number; reason: string; next_run_at: number | null }
-export async function skipNotice(db: Db, userId: string, watch: { id: string; last_run_at: number | null }, now: number): Promise<SkipNotice | null> {
+export async function skipNotice(db: Db, userId: string, watch: { id: string; last_run_at: number | null }): Promise<SkipNotice | null> {
   const r = await db.get<{ at: number; summary: string }>(
-    'SELECT at, summary FROM audit_events WHERE tenant_id = ? AND at >= ? AND action = ? AND resource_type = ? AND resource_id = ? ORDER BY at DESC, seq DESC LIMIT 1',
-    [userId, now - 2 * DAY_S, PLAY_SKIPPED, 'watch', watch.id])
+    'SELECT at, summary FROM audit_events WHERE tenant_id = ? AND at > ? AND action = ? AND resource_type = ? AND resource_id = ? ORDER BY at DESC, seq DESC LIMIT 1',
+    [userId, watch.last_run_at == null ? 0 : Number(watch.last_run_at), PLAY_SKIPPED, 'watch', watch.id])
   if (!r) return null
   const at = Number(r.at)
-  if (watch.last_run_at !== null && Number(watch.last_run_at) >= at) return null
   let s: Record<string, unknown> = {}
   try { s = JSON.parse(r.summary) as Record<string, unknown> } catch { /* reason unknown */ }
   return { at, reason: typeof s.reason === 'string' ? s.reason : SKIP_DAILY_CAP, next_run_at: typeof s.next_run_at === 'number' ? s.next_run_at : null }

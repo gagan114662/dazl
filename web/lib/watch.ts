@@ -16,7 +16,7 @@ import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
-import { cappedRunBudget, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
+import { cappedRunBudget, DAY_S, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
 
@@ -76,7 +76,7 @@ export async function createWatch(db: Db, userId: string, query: string, icp: st
   return { watch: await db.get<Watch>('SELECT * FROM watches WHERE id = ? AND user_id = ?', [id, userId]) }
 }
 
-export async function listWatches(db: Db, userId: string, now = nowS()) {
+export async function listWatches(db: Db, userId: string) {
   // created_at is whole seconds: id breaks ties so watches made in the same second always list in the same order
   const rows = await db.all<Watch>('SELECT * FROM watches WHERE user_id = ? ORDER BY created_at DESC, id DESC', [userId])
   return Promise.all(rows.map(async w => {
@@ -86,7 +86,7 @@ export async function listWatches(db: Db, userId: string, now = nowS()) {
     // #1042: the automatic repeat of the account's first play (lib/play-repeat.ts: its only job older than the watch)
     const auto = !!(await db.get('SELECT 1 AS x FROM scan_jobs WHERE watch_id = ? AND user_id = ? AND created_at < ? LIMIT 1', [w.id, userId, w.created_at]))
     // #1042: a run the free plan's daily cap skipped, until the play runs again (lib/play-cadence.ts)
-    const skipped = auto && w.active === 1 ? await skipNotice(db, userId, { id: w.id, last_run_at: w.last_run_at == null ? null : Number(w.last_run_at) }, now) : null
+    const skipped = auto && w.active === 1 ? await skipNotice(db, userId, { id: w.id, last_run_at: w.last_run_at == null ? null : Number(w.last_run_at) }) : null
     return { id: w.id, query: w.query, icp: JSON.parse(w.icp) as unknown, active: w.active === 1, next_run_at: w.next_run_at, last_run_at: w.last_run_at, paused_reason: w.paused_reason, last_job_id: last?.id ?? null, last_status: last?.status ?? null, new_leads: newCount, auto, interval_s: watchIntervalS(auto), skipped }
   }))
 }
@@ -174,8 +174,26 @@ const noFence: Fence = function* () { /* not fenced */ }
 // plan it starts only while the account has started no scan this UTC day; otherwise that day's run is skipped (moved to
 // the same time tomorrow, with an audit event Home and Plays read), and each trial-funded run carries max_usd $0.30.
 // The cap is checked before any trial reservation and again inside the job's transaction, under the admission lock.
+// #1042: a first-play repeat created while the cadence was weekly still has its next run up to a week out. Before the
+// due watches are read, every such repeat is pulled in to a day after its last run (or now, if that has passed). Only
+// auto repeats (lib/play-funding.ts FIRST_PLAY_REPEAT_SQL: a job of the account older than the watch, read on the
+// scan_jobs_user index) whose next run is more than a day and an hour away: a daily repeat is never that far out (a run,
+// a resume, a skip or its creation set it at most a day and a minute ahead), so this never pulls a skipped day back in.
+// Idempotent (a pulled-in repeat no longer matches) and fenced like every scheduler write.
+const PULL_IN_SQL = `UPDATE watches SET next_run_at = CASE WHEN COALESCE(last_run_at, created_at) + ${DAY_S} > ? THEN COALESCE(last_run_at, created_at) + ${DAY_S} ELSE ? END
+  WHERE active = 1 AND next_run_at > ?
+    AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.user_id = watches.user_id AND j.created_at < watches.created_at AND j.watch_id = watches.id)`
+export async function pullInWeeklyRepeats(db: Db, now: number, fence: Fence = noFence): Promise<number> {
+  return db.tx(function* (t) { yield* fence(t); return (yield* t.run(PULL_IN_SQL, [now, now, now + DAY_S + 3600])).changes })
+}
+
 export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined> } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence
+  try { await pullInWeeklyRepeats(db, now, fence) } catch (e) {
+    // a failed pull-in leaves those repeats on their old schedule this tick; it never stops the due runs
+    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
+    captureError(e, { source: 'worker', where: 'watch:pull-in-weekly-repeats' })
+  }
   const due = await db.all<Watch>('SELECT * FROM watches WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at, id', [now])
   let ran = 0, paused = 0, skipped = 0
   for (const w of due) {

@@ -43,6 +43,14 @@ const CANDIDATES_SQL = `SELECT j.id, j.user_id, j.query, j.icp, j.run_budget, j.
   ORDER BY j.finished_at, j.id LIMIT ${BATCH}`
 type Candidate = { id: string; user_id: string; query: string; icp: string | null; run_budget: string | null; created_at: number; finished_at: number }
 
+// The repeat's first run: the next time of day the first play finished at, at least a minute from now. A tick that
+// creates the repeat late (the window is FIRST_PLAY_WINDOW_S, longer than a day) keeps that time of day, never "now".
+export function firstRepeatAt(finishedAt: number, now: number): number {
+  let next = finishedAt + Math.max(1, Math.ceil((now - finishedAt) / REPEAT_INTERVAL_S)) * REPEAT_INTERVAL_S
+  while (next < now + 60) next += REPEAT_INTERVAL_S
+  return next
+}
+
 // The profile the repeat runs with: the one the first run used, normalized exactly as "Watch this weekly" normalizes it
 // (app/api/watch/route.ts). A run with no usable profile gets no repeat (the runner would infer a different one).
 export function repeatIcp(raw: string | null): string | null {
@@ -62,7 +70,7 @@ function* createRepeat(t: Tx, c: Candidate, now: number, fence: Fence): TxBody<s
   const id = randomBytes(12).toString('hex')
   const link = yield* t.run("UPDATE scan_jobs SET watch_id = ? WHERE id = ? AND user_id = ? AND watch_id IS NULL AND status = 'done'", [id, c.id, c.user_id])
   if (link.changes !== 1) return null
-  const next = Math.max(Number(c.finished_at), now - REPEAT_INTERVAL_S + 60) + REPEAT_INTERVAL_S
+  const next = firstRepeatAt(Number(c.finished_at), now)
   yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, c.user_id, query, icp, next, Number(c.created_at), c.run_budget ?? null, now])
   yield* watchLeadsStep(t, id, c.id)
   return id
