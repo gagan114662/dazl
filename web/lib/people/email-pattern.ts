@@ -262,7 +262,11 @@ export class VerifySlotRefused extends Error {
 export async function reserveVerifySlot(db: Database.Database, s: { tenantId: string; verifier: string; nowS: number; dailyCap: number; monthCap: number }, mark: () => boolean): Promise<void> {
   const dayStart = s.nowS - (s.nowS % 86_400), monthKey = new Date(s.nowS * 1000).toISOString().slice(0, 7), vname = s.verifier.slice(0, 40)
   const r = db.transaction((): 'ok' | 'cap' | 'lost' => {
-    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(s.tenantId, dayStart) as { n: number }).n
+    // The tenant's daily cap counts every mailbox check: the scan's guesses and Find work email's checks (#1036) alike.
+    let lookupChecks = 0
+    try { lookupChecks = (db.prepare('SELECT count(*) AS n FROM work_email_lookups WHERE tenant_id = ? AND mailbox_checked_at >= ?').get(s.tenantId, dayStart) as { n: number }).n }
+    catch (e) { if (!/no such (?:table|column)/i.test(String((e as Error)?.message))) throw e }
+    const used = (db.prepare('SELECT count(*) AS n FROM email_candidates WHERE tenant_id = ? AND checked_at >= ?').get(s.tenantId, dayStart) as { n: number }).n + lookupChecks
     if (used >= s.dailyCap) return 'cap'
     const month = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(vname, monthKey) as { n: number } | undefined)?.n ?? 0
     if (month >= s.monthCap) return 'cap'
