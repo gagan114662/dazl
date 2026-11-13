@@ -52,6 +52,9 @@ test('#533 live 1: "Posted a <role> role on Ashby/Lever" is hiring wording; a po
   assert.equal(isHiringTrigger(TEKION_SIGNAL, 'funding'), false, 'a stored non-hiring kind wins over the wording')
   // review (Hermes-PC) on #1128 at 9947f9bb: a positive grammar, not a word list: none of these is a posted role
   for (const no of ['Posted a record quarter, strengthening its market position', 'Posted a 40% revenue jump and cemented its leadership position', 'Posted a quarterly loss that weakened its competitive position', 'Posted a layoff notice affecting the sales ops role', 'Posted a blog on the evolving CFO role', 'Posted a white paper explaining the RevOps role', 'Posted a webinar recording describing the sales ops role', 'Posted a strong position', 'Posted a Sales Operations Manager role']) assert.equal(isHiringTrigger(no, null), false, no)
+  // review (Hermes-PC) on #1128 at ec98b436: a title word never ends a sentence, and a non-hire state is not a title
+  for (const no of ['Posted a VP Sales. Announced bankruptcy. Sales role on Lever', 'Posted a quarterly results. Cut 200 staff. Sales role on Greenhouse', 'Posted a VP Sales.Announced bankruptcy. Sales role on Lever', 'Posted a hiring freeze position on Lever', 'Posted a filled Sales Ops role on Lever', 'Posted a closed Sales Ops role on Ashby', 'Posted an expired Sales Ops role on Ashby', 'Posted a paused AE role on Greenhouse', 'Announced a hiring freeze for sales', 'Hiring paused across the sales team']) assert.equal(isHiringTrigger(no, null), false, no)
+  for (const yes of ['Posted a Sr. Account Executive role on Lever', 'Posted a Sr.Mgr Sales Ops role on Ashby', 'Posted a U.S. Enterprise AE role on Greenhouse', 'Posted a VP. Sales role on Lever', 'Posted a Sales Ops (EMEA) Mgr. role on Lever']) assert.equal(isHiringTrigger(yes, null), true, yes)
 })
 
 test('#533 live 2: the record text carries the posting page header in page order, so a header quote is found', async () => {
@@ -83,7 +86,7 @@ test('#533 live 1+2+3 through the verifier: both requested-role postings are ver
     assert.deepEqual(o.review.map(r => [r.company, r.review_reason]), [], 'nothing held: not quote_unconfirmed, not event_date_stale')
     assert.deepEqual(o.leads.map(l => [l.company, l.event_date, l.event_date_proof]).sort(), [['Macquarie Technology Group', '2026-10-27', 'ats_structured'], ['Tekion', '2026-11-11', 'ats_structured']])
     // a funding claim cited to the same posting still takes no date from it
-    for (const signal of ['Raised a Series B round', 'Raised a Series B and posted a press release on its new CRO role', 'Posted a layoff notice affecting the sales ops role', 'Posted a record quarter, strengthening its market position']) {
+    for (const signal of ['Raised a Series B round', 'Raised a Series B and posted a press release on its new CRO role', 'Posted a layoff notice affecting the sales ops role', 'Posted a record quarter, strengthening its market position', 'Posted a VP Sales. Announced bankruptcy. Sales Operations Manager - Deal Desk role on Ashby', 'Posted a quarterly results. Cut 200 staff. Sales Operations Manager role on Ashby']) {
       const f = await verifyLeads([draft({ company: 'Tekion', signal, source_url: TEKION_URL, excerpt: TEKION_QUOTE })], read, NOW)
       assert.ok([...f.leads, ...f.review].every(l => l.event_date_proof !== 'ats_structured'), `${signal}: ${JSON.stringify(f)}`)
     }
