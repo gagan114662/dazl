@@ -101,6 +101,9 @@ const LINE = 'Live check (prod 7f4c9061): PASS'
 test('a line right after a ">" line is still inside the quote (no ">" of its own): does not count', () => {
   for (const b of [`> The rule says:\n${LINE}\n\n${EVIDENCE}`, `> ${EVIDENCE}\n${LINE}\nmore of the quote`, `>quoted\n   ${LINE}\n\n${EVIDENCE}`])
     assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  // independent review R1: a quote opened inside a list item
+  for (const b of [`- > q\n${LINE}\n${EVIDENCE}`, `* > issue says\n${LINE}\n${EVIDENCE}`, `1. > q\n   ${LINE}\n${EVIDENCE}`, `- - > nested\n${LINE}\n${EVIDENCE}`])
+    assert.equal(decide(closed(), [c(b)]).reopen, true, b)
   // a blank line ends the quote: the reply under it is the commenter's own text
   assert.equal(decide(closed(), [c(`> ${EVIDENCE}\n\n${LINE}\n\n${EVIDENCE}`)]).reopen, false)
 })

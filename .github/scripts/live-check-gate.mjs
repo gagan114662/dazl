@@ -36,7 +36,8 @@ const ownText = body => {
   const out = []
   let quoted = false
   for (const l of text.split('\n')) {
-    if (/^[ \t]*>/.test(l)) { quoted = true; continue }
+    // a quote can open inside a list item ("- > ...", "1. > ..."): the lines after it are inside that quote too
+    if (/^[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+)*>/.test(l)) { quoted = true; continue }
     if (quoted && l.trim() !== '') continue          // still inside the quote
     quoted = false
     if (!/^(?: {4}|\t)/.test(l)) out.push(l)
