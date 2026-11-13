@@ -101,11 +101,19 @@ export function currentRun(run: RunStatus, q: CurrentQual, query?: string | null
 // A campaign row's status and next action. A run that produced no leads gets its own next step from the recorded
 // outcome instead of a generic "Search failed"; a run with results keeps the pipeline's next action, unless the user
 // has since rejected all of them. Without a record (not in the history read), the row is left as it was.
-type CampaignLike = { next: { label: string; href: string | null }; query?: string | null; discovery?: { leads: number }; qualification?: Omit<CurrentQual, 'leads'> }
+// The Campaigns funnel (lib/outreach/campaigns.ts) keeps a held lead no check can release in sourceChecked / confirmedByYou and reports
+// it through heldResearch (heldResearchSourceChecked = its source-checked slice). Every reader that splits passed from research moves it
+// out first, so the card's run pill, its Qualification stage and the campaign page count it once, as research (#683 review, finding 1).
+export type ListQual = Omit<CurrentQual, 'leads'> & { heldResearch?: number; heldResearchSourceChecked?: number }
+export function listQual(q: ListQual): Omit<CurrentQual, 'leads'> & { research: number } {
+  const held = Math.max(0, q.heldResearch ?? 0), heldSc = Math.min(Math.max(0, q.heldResearchSourceChecked ?? 0), held)
+  return { ...q, sourceChecked: Math.max(0, q.sourceChecked - heldSc), confirmedByYou: Math.max(0, q.confirmedByYou - (held - heldSc)), research: (q.research ?? 0) + held }
+}
+type CampaignLike = { next: { label: string; href: string | null }; query?: string | null; discovery?: { leads: number }; qualification?: ListQual }
 export function campaignStatus<C extends CampaignLike>(c: C, job: ScanRecord | null): C & { run: RunStatus | null } {
   if (!job) return { ...c, run: null }
   let run = runStatusOf(job)
-  if (c.discovery && c.qualification) run = currentRun(run, { ...c.qualification, leads: c.discovery.leads }, c.query)
+  if (c.discovery && c.qualification) run = currentRun(run, { ...listQual(c.qualification), leads: c.discovery.leads }, c.query)
   if (run.group === 'results') return { ...c, run }
   return { ...c, run, next: run.next ? { label: run.next.text, href: run.next.href } : c.next }
 }

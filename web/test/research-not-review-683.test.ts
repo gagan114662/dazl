@@ -16,6 +16,10 @@ import { readyItems } from '../lib/ready-card.ts'
 import type { ReadinessInput } from '../lib/readiness.ts'
 import { reviewIsActionable, heldState } from '../lib/lead-state.ts'
 import { previewSplit, type PreviewLead } from '../lib/journey.ts'
+import { qualificationLines } from '../lib/outreach/campaign-view.ts'
+import { recentPlays } from '../lib/readiness.ts'
+import { requiredGateHeld } from '../lib/scan/held-state.ts'
+import { currentnessHeld } from '../lib/outreach/currentness.ts'
 
 const DAY = 86_400_000
 const recent = new Date(Date.now() - 10 * DAY).toISOString().slice(0, 10)
@@ -139,4 +143,45 @@ test('the shared verdict: malformed reasons and window flags fail closed to rese
     assert.equal(reviewIsActionable({ review_reason: r, window_held: w }), home, `${r} window=${w}`)
     assert.equal(currentQual([{ evidence_excerpt: null, confidence: null, human_confirmed_at: null, review_reason: r, quarantined_at: null, window_held: w }]).needsReview, home ? 1 : 0, `campaign page ${r} window=${w}`)
   }
+})
+
+// Hermes-PC review at a3b64f05, findings 1 and 2: for ONE held source-checked lead, every surface tells the same story -
+// the Campaigns card's run pill and label, its funnel next step and Qualification stage, the campaign page's tag, label and
+// rows, and Home's plays. (1) a window-held, undated, machine-verified lead; (2) the London Test B shape: a sales-hiring
+// request, a dated machine-verified lead, no gate pass record (DEFAULT-DENY).
+async function agree(db: Database.Database, jobId: string, query: string) {
+  const rec = { id: jobId, status: 'done', error: null, candidates: 5, verified: 1, needs_review: 0, dropped: 4, lead_count: 1 } as never
+  const [c] = listCampaigns(db, 'A')
+  const card = campaignStatus(c, rec)
+  const d = (await campaignDetail(sqliteDb(db), 'A', jobId))!
+  const page = currentRun(runStatusOf(rec), currentQual(d.leads), query)
+  assert.equal(card.run?.tag, page.tag, 'card pill = campaign page tag')
+  assert.equal(card.run?.label, page.label, 'card label = campaign page label')
+  assert.equal(page.tag, 'Research only')
+  assert.equal(page.label, '1 lead found: 0 source-checked, 0 confirmed by you, 0 need your review, 1 research only, 0 rejected')
+  assert.match(card.next.label, /^1 research-only lead: checking it cannot make it ready\. Change the search$/)
+  const [value, detail] = qualificationLines(c.qualification, c.discovery.leads)
+  assert.equal(value, '0 source-checked, 0 confirmed by you, 0 to review'); assert.match(detail ?? '', /, 1 research only, /)
+  assert.deepEqual(d.leads.map(l => leadStatus(l, []).text), ['Research only - checking the source cannot make it ready'])
+  const [play] = recentPlays([{ id: jobId, status: 'done', error: null, query, csv_domain: null, created_at: 1, lead_count: 1, candidates: 5, verified: 1, needs_review: 0, dropped: 4 }], 1, [{ ...c, id: jobId }])
+  assert.match(play.outcome, /^0 source-checked, 0 need your review, 1 research-only$/)
+}
+
+test('#683 review finding 1: a window-held source-checked lead reads research only on the card pill, its label, the funnel, the campaign page and Home', async () => {
+  const db = setup()
+  job(db, 'A', 'jw', NYC, 90)
+  lead(db, 'jw', 'w1', { machine: true })   // machine-verified, undated: the 90-day window holds it
+  finish(db, 'jw')
+  assert.equal(currentnessHeld(db, 'A', 'w1'), true, 'the draft gate holds it')
+  await agree(db, 'jw', NYC)
+})
+
+test('#683 review finding 2: a DEFAULT-DENY required-gate hold (London Test B shape) reads research only on every surface', async () => {
+  const db = setup()
+  const LONDON = 'Find London UK companies hiring sales account executives.'
+  job(db, 'A', 'jl', LONDON, null)
+  lead(db, 'jl', 'l1', { machine: true, date: recent })   // dated, machine-verified, no gate pass record
+  finish(db, 'jl')
+  assert.equal(requiredGateHeld(db, 'A', 'l1'), 'sales_hiring_check_failed'); assert.equal(currentnessHeld(db, 'A', 'l1'), true)
+  await agree(db, 'jl', LONDON)
 })

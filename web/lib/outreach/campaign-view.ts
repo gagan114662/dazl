@@ -2,6 +2,7 @@
 // client-safe: it reads the existing GET /api/leads (all=1) and GET /api/outreach responses and decides nothing a
 // server gate enforces. Statuses are what is stored now; "Sent" is not "delivered".
 import { evidenceStateOf } from './evidence-state.ts'
+import { listQual } from '../run-status.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 
 export interface ViewLead { id: string; company?: string | null; name?: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; window_held?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
@@ -46,8 +47,7 @@ export function scanMessages(msgs: ViewMsg[], leads: { id: string }[]): ViewMsg[
 export interface QualCounts { sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; held: number; heldResearch?: number; heldResearchSourceChecked?: number; rejected: number }
 export function qualificationLines(q: QualCounts, leads: number): [string, string?] {
   if (leads > 0 && q.rejected >= leads) return [`None passed: ${q.rejected} rejected`]
-  const heldResearch = q.heldResearch ?? 0, heldSc = Math.min(q.heldResearchSourceChecked ?? 0, heldResearch)
-  const sourceChecked = Math.max(0, q.sourceChecked - heldSc), confirmed = Math.max(0, q.confirmedByYou - (heldResearch - heldSc))
-  return [`${sourceChecked} source-checked, ${confirmed} confirmed by you, ${q.needsReview} to review`,
-    `${q.held - heldResearch} timing not confirmed, ${(q.research ?? 0) + heldResearch} research only, ${q.unverified} unverified, ${q.rejected} rejected`]
+  const l = listQual(q), heldResearch = Math.max(0, q.heldResearch ?? 0)   // the same split as the run pill (lib/run-status.ts listQual)
+  return [`${l.sourceChecked} source-checked, ${l.confirmedByYou} confirmed by you, ${q.needsReview} to review`,
+    `${q.held - heldResearch} timing not confirmed, ${l.research} research only, ${q.unverified} unverified, ${q.rejected} rejected`]
 }
