@@ -175,6 +175,12 @@ function addColumns(db: Database.Database): void {
   add('scan_jobs', 'batch_id', 'TEXT')
   add('scan_jobs', 'enrich_started_at', 'INTEGER') // lib/scan/enrichment.ts: the contact/people/fit stage that runs after the rows are written
   add('scan_jobs', 'enrich_finished_at', 'INTEGER')
+  // #1081 fair claiming (runner.ts claimKeyedJob): each tenant's last claim and last finish, and the jobs still in
+  // post-finish enrichment (they hold a run slot), are index seeks, not table scans (the claim query's plan is pinned by
+  // test/fair-legacy-claimer-1081.test.ts: no arm may walk the 'done' history).
+  db.exec(`CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
+    CREATE INDEX IF NOT EXISTS scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
+    CREATE INDEX IF NOT EXISTS scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL`)
   // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
   // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
@@ -280,6 +286,7 @@ export function parkPendingReservedJobs(db: Database.Database): void {
     `UPDATE scan_jobs SET status = 'running', claimed_at = 0 WHERE status = 'pending' AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
   ).run()
 }
+import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 export function reapStaleRunningJobs(db: Database.Database): void {
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
@@ -289,6 +296,7 @@ export function reapStaleRunningJobs(db: Database.Database): void {
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
+  try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(Math.floor(Date.now() / 1000)) } catch { /* no trial table in this store */ } // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
 }
 export function reapStaleJobs(db: Database.Database): void {
   parkPendingReservedJobs(db)

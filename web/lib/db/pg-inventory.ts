@@ -50,6 +50,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/scan/countries.ts:BY_NAME': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/countries.ts:ALPHA3': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/held-state.ts:inProcess': { share: 'must share', note: 'last-resort hold when no write succeeded; another instance would not see the hold' },
+  'lib/scan/fetch-page.ts:boardMemo': { share: 'safe to lose', note: 'public ATS board reads shared for 2 minutes (#533)' },
   'lib/sources/github.ts:cache': { share: 'safe to lose', note: 'response cache' },
   'lib/sources/jina.ts:cache': { share: 'safe to lose', note: 'response cache' },
   'lib/sources/v2ex.ts:cache': { share: 'safe to lose', note: 'response cache' },
@@ -77,7 +78,7 @@ const AREAS: [RegExp, string][] = [
   [/outreach|crm/, 'drafts & CRM'],
   [/memory/, 'profile & memory'],
   [/enrich|people|find-contact|contact|sitecrawl|email-pattern|page-signals|hiring-feed|job-feed|qualify/, 'enrichment'],
-  [/watch|monitor|competitor-reddit|tick/, 'monitors'],
+  [/watch|monitor|competitor-reddit|tick|app\/api\/plays\//, 'monitors'],
   [/scan|leads|search\/|signals\/|advanced|lookalike|campaigns|connectors|events/, 'scans'],
   [/queue|lease|ops\/|health/, 'platform'],
 ]

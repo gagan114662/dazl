@@ -91,7 +91,7 @@ test('sync: positive reply grants consent; opt-out suppresses and revokes; hard 
   const th = {
     [p.thread]: [msg('m1', 'Pat <p@one.example>', 'Sounds good, send me more info', NOW - 2 * DAY)],
     [o.thread]: [msg('m2', 'o@two.example', 'Please unsubscribe me', NOW - 2 * DAY)],
-    [b.thread]: [sameThreadDsn('m3', { recipient: 'b@three.example', at: NOW - 3 * DAY })],
+    [b.thread]: [sameThreadDsn('m3', { recipient: 'b@three.example', at: NOW - 3 * DAY, ref: `<dazl.${b.mid}@acme.example>` })],
     [sb.thread]: [msg('m4', 'postmaster@four.example', 'Mailbox full 4.2.2', NOW - 3 * DAY)],
   }
   const r = await syncReplies(db, 'A', { env: genv, master, now: NOW, fetchImpl: gmail(th) })

@@ -84,16 +84,22 @@ async function block(db: DbLike, untilS: number): Promise<void> {
 export type Fail = 'disabled' | 'cap' | 'rate' | 'auth' | 'quota' | 'unavailable'
 // charge: called once the caps admit a paid call and before it is made (kind, number of units: 1 search, or the URLs of
 // one fetch). It throws to stop the call: a free-trial scan counts every paid step against its budget this way.
-export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace; charge?: (kind: 'search' | 'fetch', units: number) => void | Promise<void> }
+export interface TfDeps { env?: Env; fetchImpl?: typeof fetch; now?: number; trace?: SearchTrace; charge?: (kind: 'search' | 'fetch', units: number) => void | Promise<void>; signal?: AbortSignal }
+// signal (optional): a caller that loses its right to spend (job reclaimed/cancelled, pass deadline) aborts the request in flight; it joins the transport timeout.
 // date = the date the SOURCE states for the event/post. A discovery index's own timestamp is NOT that: it goes in
 // `observed` (context only) and `date` stays null. via marks which index surfaced the hit (attribution).
 export interface SearchHit { url: string; title: string; snippet: string; date: string | null; observed?: string | null; via?: 'gdelt' }
 
-async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean; status?: number }> {
+// A call priced $0 (inside TinyFish's free allowance, lib/scan/spend-cap.ts unitCostUsd) that FAILED (timeout, dropped connection, 5xx, unreadable
+// body) cannot have cost anything we could account for: it ends as one failed page or search (settled at $0), not as accounting_uncertain, which
+// discarded a whole scan's results (owner-approved 2026-11-11). Only free TinyFish search/fetch: a priced call, any other kind and a 402 (billing
+// error) keep the maybe-billed rule, and every spend cap stays on.
+function freeFailure(hold: { usd: number }, r: { ok: boolean; maybeBilled?: boolean; status?: number }): boolean { return !r.ok && r.maybeBilled === true && hold.usd === 0 && r.status !== 402 }
+async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number, outer?: AbortSignal): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean; status?: number }> {
   // maybeBilled (#363): the request may have been processed (timeout/dropped connection, 5xx, 402, unlisted status, unreadable body). The caller then
   // leaves its spend row 'reserved' so no automatic retry re-sends it. 401/403/429 are documented rejections (assumption, see lib/llm/provider.ts).
   try {
-    const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: AbortSignal.timeout(TINYFISH_TIMEOUT_MS) })
+    const res = await f(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'X-API-Key': key }, redirect: 'error', signal: outer ? AbortSignal.any([outer, AbortSignal.timeout(TINYFISH_TIMEOUT_MS)]) : AbortSignal.timeout(TINYFISH_TIMEOUT_MS) })
     if (res.status === 401 || res.status === 403) { await block(db, now + 600); return { ok: false, reason: 'auth', status: res.status } }
     if (res.status === 402) { const t = new Date(now * 1000); t.setUTCHours(24, 0, 0, 0); await block(db, Math.floor(t.getTime() / 1000)); return { ok: false, reason: 'quota', maybeBilled: true, status: res.status } }
     if (res.status === 429) { await block(db, now + 60); return { ok: false, reason: 'rate', status: 429 } }
@@ -123,12 +129,12 @@ export async function tfSearch(db: DbLike, tenant: string, query: string, opts: 
     // A refusal by the SCAN'S OWN budget (reserveScanSpend) stops the scan - the runner records its exact provenance
     // (skipped_hold before any send, partial_hold after work ran). It is NOT the daily-allowance 'cap' above: swallowing
     // it here made a hold-stopped source read as a clean "no results" (unavailable) and let the scan keep spending.
-    if (e instanceof SpendRefused) d.trace?.search({ query, attempted: false, outcome: 'cap', hits: null })
+    if (e instanceof SpendRefused) d.trace?.search({ query, attempted: false, outcome: 'spend_refused', hits: null }) // money, not a count cap (never search_cap)
     throw e
   }
   const q = new URLSearchParams({ query: query.slice(0, QUERY_CAP), ...(opts.afterDate ? { after_date: opts.afterDate } : {}), ...(opts.location ? { location: opts.location } : {}), ...(opts.language ? { language: opts.language } : {}) })
-  const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  const r = await call(db, `${SEARCH_URL}?${q}`, { method: 'GET' }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now, d.signal)
+  if (hold) { if (!r.ok && r.maybeBilled && !freeFailure(hold, r)) hold.uncertain(); else { await hold.settle(r.ok || freeFailure(hold, r) ? hold.usd : null); if (!r.ok && !freeFailure(hold, r)) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
   if (!r.ok) { d.trace?.search({ query, attempted: true, outcome: r.reason, hits: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown } | null)?.results
   // 200 with `{}`, null or no `results` array is a malformed answer, not an empty result list: a failed search (unavailable), never a counted zero.
@@ -163,11 +169,11 @@ export async function tfFetch(db: DbLike, tenant: string, urls: string[], spent:
   let hold: SpendHold | null
   try { hold = await reserveScanSpend('tinyfish.fetch', () => unitCostUsd('tinyfish.fetch', batch.length, env)) } catch (e) {
     // Same rule as the search reserve above: the scan's own budget refusal propagates; the daily-allowance gate stays 'cap'.
-    if (e instanceof SpendRefused) d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'cap', pages: null })
+    if (e instanceof SpendRefused) d.trace?.fetch({ requested: batch.length, attempted: false, outcome: 'spend_refused', pages: null }) // money, not a count cap
     throw e
   }
-  const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now)
-  if (hold) { if (!r.ok && r.maybeBilled) hold.uncertain(); else { await hold.settle(r.ok ? hold.usd : null); if (!r.ok) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
+  const r = await call(db, FETCH_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ urls: batch, format: 'markdown' }) }, env.TINYFISH_API_KEY!, d.fetchImpl ?? fetch, now, d.signal)
+  if (hold) { if (!r.ok && r.maybeBilled && !freeFailure(hold, r)) hold.uncertain(); else { await hold.settle(r.ok || freeFailure(hold, r) ? hold.usd : null); if (!r.ok && !freeFailure(hold, r)) hold.rejected(r.status ?? (r.reason === 'rate' ? 429 : 401)) } } // maybe billed: stays 'reserved', the attempt stops paying; a rejection keeps its ACTUAL status
   if (!r.ok) { d.trace?.fetch({ requested: batch.length, attempted: true, outcome: r.reason, pages: null }); return r.status === undefined ? { ok: false, reason: r.reason } : { ok: false, reason: r.reason, status: r.status } }
   const arr = (r.json as { results?: unknown })?.results
   const pages: { url: string; title: string; text: string }[] = []

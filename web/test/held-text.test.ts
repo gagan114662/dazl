@@ -198,6 +198,22 @@ test('HeldText: bound to one attempt, only requested URLs, eligible failures onl
   pages[0].text = 'mutated after sealing'
   const again = h.copyFor('job1:1', URL_, 'blocked_by_site'); assert.ok(again.ok && again.page.text === BODY, 'later changes to the caller\'s array do not reach the held copy')
 })
+
+test('HeldText.merge (#381 D3): a lead from one round can be checked against a page only the OTHER round fetched', () => {
+  const other = 'https://jobs.example/other'
+  const a = HeldText.seal('job1:1', [URL_], [{ url: URL_, title: 't', text: BODY }])
+  const b = HeldText.seal('job1:1', [other], [{ url: other, title: 't2', text: BODY }])
+  assert.deepEqual(a.copyFor('job1:1', other, 'blocked_by_site'), { ok: false, refusal: 'no_copy' }, 'round one alone cannot answer for round two\'s page')
+  const merged = HeldText.merge(a, b)!
+  assert.equal(merged.size, 2)
+  assert.equal(merged.attempt, 'job1:1')
+  assert.ok(merged.copyFor('job1:1', URL_, 'blocked_by_site').ok, 'round one\'s page is still answered')
+  assert.ok(merged.copyFor('job1:1', other, 'blocked_by_site').ok, 'round two\'s page is now answered too')
+  assert.equal(HeldText.merge(a, undefined), a, 'merging with nothing returns the other side unchanged')
+  assert.equal(HeldText.merge(undefined, b), b)
+  assert.equal(HeldText.merge(undefined, undefined), undefined)
+  assert.throws(() => HeldText.merge(a, HeldText.seal('job1:2', [other], [{ url: other, title: 't2', text: BODY }])), /attempt mismatch/, 'a retry\'s seal is never merged into an earlier attempt\'s')
+})
 test('wall and truncation detectors', () => {
   assert.equal(looksLikeWall('Please log in to continue. ' + 'x'.repeat(100)), true)
   assert.equal(looksLikeWall(BODY), false)

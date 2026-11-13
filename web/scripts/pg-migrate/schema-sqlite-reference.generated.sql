@@ -603,7 +603,7 @@ CREATE TABLE outreach_messages (
       sent_at        INTEGER,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR length(error) <= 200),
-      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, insert_seq INTEGER,
+      created_at     INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)), thread_id TEXT, test INTEGER NOT NULL DEFAULT 0, reply_checked_at INTEGER, words_rev INTEGER NOT NULL DEFAULT 0, insert_seq INTEGER,
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -1107,6 +1107,24 @@ CREATE TABLE watches (
     created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   , run_budget TEXT);
 
+CREATE TABLE work_email_lookups (
+      tenant_id  TEXT NOT NULL,
+      lead_id    TEXT NOT NULL,
+      target     TEXT NOT NULL CHECK (length(target) <= 200),
+      status     TEXT NOT NULL CHECK (status IN ('pending','verified','published','unverified','not_found','not_us','rejected','error','uncertain')),
+      provider   TEXT CHECK (provider IS NULL OR provider IN ('site','apollo','pdl')),
+      address    TEXT CHECK (address IS NULL OR length(address) <= 254),
+      detail     TEXT CHECK (detail IS NULL OR length(detail) <= 300),
+      source_url TEXT CHECK (source_url IS NULL OR length(source_url) <= 500),
+      checked_at INTEGER,
+      updated_at INTEGER NOT NULL,
+      CHECK ((address IS NOT NULL) = (status IN ('verified','published','unverified'))),
+      CHECK (status <> 'verified' OR (COALESCE(provider, '') = 'apollo' AND checked_at IS NOT NULL)),
+      CHECK (status <> 'published' OR (COALESCE(provider, '') = 'site' AND source_url IS NOT NULL)),
+      CHECK (status <> 'unverified' OR COALESCE(provider, '') IN ('apollo','pdl')),
+      PRIMARY KEY (tenant_id, lead_id, target)
+    );
+
 CREATE TABLE work_queue (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
@@ -1287,11 +1305,17 @@ CREATE INDEX rate_limits_reset ON rate_limits (reset_at);
 
 CREATE INDEX reply_threads_tenant ON reply_threads (tenant_id, created_at);
 
+CREATE INDEX scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL;
+
 CREATE INDEX scan_jobs_insert_seq_idx ON scan_jobs (insert_seq);
 
 CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
+
+CREATE INDEX scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
+
+CREATE INDEX scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
@@ -1393,6 +1417,11 @@ CREATE TRIGGER outreach_sent_is_final
     BEFORE UPDATE OF status ON outreach_messages
     WHEN OLD.status IN ('sent','skipped') AND NEW.status <> OLD.status
     BEGIN SELECT RAISE(ABORT, 'final outreach status'); END;
+
+CREATE TRIGGER outreach_words_need_rev
+    BEFORE UPDATE OF subject, body ON outreach_messages
+    WHEN (NEW.subject IS NOT OLD.subject OR NEW.body IS NOT OLD.body) AND NEW.words_rev = OLD.words_rev
+    BEGIN SELECT RAISE(ABORT, 'words_rev not bumped'); END;
 
 CREATE TRIGGER scan_jobs_insert_seq AFTER INSERT ON scan_jobs WHEN NEW.insert_seq IS NULL BEGIN UPDATE scan_jobs SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM scan_jobs) WHERE rowid = NEW.rowid; END;
 
@@ -1818,6 +1847,8 @@ CREATE TRIGGER tomb_upd_watch_seen BEFORE UPDATE OF watch_id ON watch_seen BEGIN
 
 CREATE TRIGGER tomb_upd_watches BEFORE UPDATE OF user_id ON watches BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
+CREATE TRIGGER tomb_upd_work_email_lookups BEFORE UPDATE OF tenant_id ON work_email_lookups BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
 CREATE TRIGGER tomb_upd_work_queue BEFORE UPDATE OF tenant_id ON work_queue BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_worker_grants BEFORE UPDATE OF tenant_id ON worker_grants BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
@@ -1831,6 +1862,8 @@ CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths BEGIN SELEC
 CREATE TRIGGER tomb_watch_seen BEFORE INSERT ON watch_seen BEGIN SELECT (SELECT user_id FROM watches WHERE id = NEW.watch_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'watches' AND key = NEW.watch_id) OR EXISTS (SELECT 1 FROM watches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.watch_id); END;
 
 CREATE TRIGGER tomb_watches BEFORE INSERT ON watches BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
+CREATE TRIGGER tomb_work_email_lookups BEFORE INSERT ON work_email_lookups BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 

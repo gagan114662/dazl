@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
-import { admitTrialScan, settleTrialReservation } from '../../lib/billing/trial-budget.ts'
+import { admitTrialScan, settleTrialReservation, trialRefusal } from '../../lib/billing/trial-budget.ts'
 import { trialStatus } from '../../lib/scan/trial.ts'
 import { POST } from '../../app/api/scan/route.ts'
 
@@ -71,6 +71,27 @@ test('a cancelled trial scan that reserved nothing still uses its attempt; a sca
   const f = await start('10.0.1.6')
   assert.equal(f.status, 402, JSON.stringify(f))
   assert.deepEqual(await admitTrialScan(sqliteDb(db), { id, email: 'sam@gmail.com' }), { ok: false, reason: 'attempts_cap' })
+})
+
+// #1053 (Hermes-PC review): three scans that stopped after an interruption give their free scans back on the REAL route path: the estimate's refusal, the
+// route's first check (trialStatus) and the usage counter all agree, so a fourth request starts instead of being refused after the screen offered it.
+test('three settled interruptions: the fourth POST /api/scan starts (202), the counter shows 3 left, the first check and admission agree', async () => {
+  const { db, id } = account('quinn@gmail.com')
+  for (let i = 0; i < 3; i++) {
+    const r = await start(`10.0.3.${i + 1}`)
+    assert.equal(r.status, 202, JSON.stringify(r))
+    await end(db, r.job_id!, 'failed', 'accounting_uncertain', 0.03)   // the runner's own ending for "Stopped after an interruption", settled
+  }
+  assert.equal(trialStatus(db, id, '10.0.3.9').remaining, 3, 'usage counter: nothing used')
+  assert.deepEqual(await trialRefusal(sqliteDb(db), { id, email: 'quinn@gmail.com' }), null, 'admission would admit')
+  const fourth = await start('10.0.3.9')
+  assert.equal(fourth.status, 202, `the route must not refuse what the screen offered: ${JSON.stringify(fourth)}`)
+})
+test('a paid failure after the same three still uses the attempts (control for the interruption rule)', async () => {
+  const { db, id } = account('rowan@gmail.com')
+  for (let i = 0; i < 3; i++) { const r = await start(`10.0.4.${i + 1}`); await end(db, r.job_id!, 'failed', 'provider_error', 0.03) }
+  assert.equal(trialStatus(db, id, '10.0.4.9').remaining, 0)
+  assert.equal((await start('10.0.4.9')).status, 402)
 })
 
 // #409 port (the hold on stale #444): the scan trial's principal is the workspace founder's own account, read on the

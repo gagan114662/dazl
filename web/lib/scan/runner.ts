@@ -52,7 +52,7 @@ import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
 import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
-import { beginEnrichment, endEnrichment } from './enrichment.ts'
+import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
@@ -70,9 +70,12 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
-import { findPeople } from '../people/people-search.ts'
+import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
+// #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
+export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
+import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
 import { recordTimingProof } from './timing-proof.ts'
@@ -358,8 +361,17 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // A claimed day the verifier's date rules reject (stale, future, malformed) is left as it is: verifyEvidence below sends it to review,
     // exactly as before. Unbinding it first would launder it into a verified undated lead.
     const claimedRejected = (() => { if (!page || isFail(page) || !cIn.event_date) return false; const v = verifyEvidence(cIn, page, now); return !v.ok && DATE_REJECTS.has(v.reason) })()
-    if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
-      if (isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null) && structuredDates?.get(canonUrl(cIn.source_url)) === cIn.event_date) {
+    // #533: the board's own first-published day for exactly this posting URL, from the job-board source or from the board's API record the page was read from
+    // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
+    const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
+    const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
+    if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
+      // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
+      // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A
+      // claimed day the date rules reject (stale, future, malformed) is never replaced: it keeps the hold, as on any page
+      c0 = { ...cIn, event_date: boardDay, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
+    } else if (page && !isFail(page) && cIn.event_date && !claimedRejected) {
+      if (hiringCand && boardDay === cIn.event_date) {
         // A job board's own structured publish date for exactly this posting URL: proves THIS hiring posting's day only, never funding or another event.
         c0 = { ...cIn, event_date_proof: 'ats_structured', event_date_proof_note: "the job board's own structured publish date for exactly this posting URL" }
       } else {
@@ -491,6 +503,18 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
 // Atomically claims one pending job whose owner has a key stored, or a trial-funded
 // job from a keyless account (those run on the shared operator key). Keyless non-trial
 // jobs are left alone (a worker such as Hermes can take them).
+// Fair across tenants (#1081): the tenant with the fewest busy jobs (running, or still in post-finish enrichment, which
+// holds a run slot), then the fewest jobs finished in the last hour (evens out turns even when finish times tie at the
+// second), then the one served least recently (its latest claim or finish: finish() clears claimed_at), then the
+// oldest job - so one tenant's backlog (a 50-domain CSV import) never queues every other tenant behind it.
+// An enrichment row whose end mark never landed (a crash) stops counting as busy when the UI calls it interrupted.
+// Claim cost (#1081 review): every arm is an index seek bounded by the queue, never by history.
+//  - the enrichment arm must use the partial index scan_jobs_enriching: `+status` keeps the planner off
+//    scan_jobs_status, which would visit every 'done' job ever written (392 ms at 2M rows vs ~0.5 ms);
+//  - `served` is MATERIALIZED so its per-tenant subqueries run once per tenant, not once per pending job.
+// test/fair-legacy-claimer-1081.test.ts pins both with EXPLAIN QUERY PLAN.
+const ENRICHING_HOLDS_SLOT_S = ENRICH_STALE_S
+const RECENT_SERVED_S = 3600
 export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTenants?: string[]): Job | null {
   // excludeTenants: tenant-scoped queue rollout - listed tenants are claimed
   // by the queue bridge instead, so the legacy claimer must skip them
@@ -499,11 +523,25 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
   return db.transaction(() => {
     const row = db
       .prepare(
-        `SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd FROM scan_jobs
-         WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
-           AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
-           ${excl}
-         ORDER BY created_at, rowid LIMIT 1`,
+        `WITH eligible AS MATERIALIZED (
+           SELECT id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd, created_at, rowid AS rid
+           FROM scan_jobs
+           WHERE status = 'pending' ${jobId ? 'AND id = ?' : ''}
+             AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial')
+             ${excl}),
+         running AS (SELECT user_id, COUNT(*) AS n FROM (
+                       SELECT user_id FROM scan_jobs WHERE status = 'running'
+                       UNION ALL
+                       SELECT user_id FROM scan_jobs WHERE enrich_finished_at IS NULL AND enrich_started_at > CAST(strftime('%s','now') AS INTEGER) - ${ENRICHING_HOLDS_SLOT_S} AND +status = 'done')
+                     GROUP BY user_id),
+         served AS MATERIALIZED (SELECT t.user_id, MAX(COALESCE((SELECT MAX(s.claimed_at) FROM scan_jobs s WHERE s.user_id = t.user_id), 0),
+                                          COALESCE((SELECT MAX(f.finished_at) FROM scan_jobs f WHERE f.user_id = t.user_id), 0)) AS at,
+                           (SELECT COUNT(*) FROM scan_jobs h WHERE h.user_id = t.user_id AND h.finished_at >= CAST(strftime('%s','now') AS INTEGER) - ${RECENT_SERVED_S}) AS recent
+                    FROM (SELECT DISTINCT user_id FROM eligible) t)
+         SELECT e.id, e.user_id, e.business_name, e.industry, e.location, e.attempts, e.query, e.icp, e.sources, e.funded_by, e.watch_id, e.csv_domain, e.run_budget, e.spend_reserved_usd
+         FROM eligible e LEFT JOIN running r ON r.user_id = e.user_id LEFT JOIN served v ON v.user_id = e.user_id
+         ORDER BY COALESCE(r.n, 0), COALESCE(v.recent, 0), COALESCE(v.at, 0), e.created_at, e.rid
+         LIMIT 1`,
       )
       .get(...(jobId ? [jobId] : []), ...(excludeTenants ?? [])) as Job | undefined
     if (!row) return null
@@ -876,7 +914,20 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 }
 
 // diag (optional) receives what this collector really did: every query sent, per-call outcomes, hit and page counts.
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet): Promise<LeadDraft[] | null> {
+// Adaptive discovery (#381): when round one verified no lead at all, ONE more TinyFish round with genuinely different
+// queries (lib/scan/retry-plan.ts: unused profile signals, hosts round one could not read excluded, nothing round one
+// already asked), on pages round one never saw. Bounded: ADAPTIVE_SEARCHES searches, ADAPTIVE_FETCHES pages and one
+// extraction call, all through the same per-tenant/day caps, trial charges and spend guards as round one; the request,
+// profile and geography never widen, and every candidate goes through the same verifier. It is skipped (and says why)
+// when the run disabled paid steps, a budget already refused a call, or too little of the scan's time budget is left.
+// Its outcome is the 'search:adaptive' source row: ok / empty / skipped:<why> / budget_stopped / search_cap, so a
+// bounded stop is never reported as an exhausted market.
+export const ADAPTIVE_SEARCHES = 3
+export const ADAPTIVE_FETCHES = 6
+export const ADAPTIVE_MIN_REMAINING_MS = 120_000
+interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
+
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -900,20 +951,28 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // Hiring-board queries are reserved first, but at most HALF the per-scan search budget: they target the public applicant
   // tracking hosts (Greenhouse, Ashby, Lever), which small local businesses (dental practices, shops) rarely use, and with
   // three places they used to take 6 of the 8 searches and leave the open searches 2.
-  const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
-  // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
-  // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
-  // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
-  const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
-  const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
-  const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
-  if (diag) diag.info.query_source = plan.source
-  const q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+  // An adaptive round (#381) asks exactly the queries planRetry chose (already sanitized, geography named, never asked
+  // in round one): no query-planning model call.
+  let q: string[]
+  if (round) q = round.queries.slice(0, ADAPTIVE_SEARCHES)
+  else {
+    const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(tfLimits().searchesPerScan / 2))
+    // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
+    // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
+    // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
+    const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, tfLimits().searchesPerScan - direct.length - 2))
+    const modelQueries = Math.min(6, Math.max(2, tfLimits().searchesPerScan - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
+    const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
+    if (diag) diag.info.query_source = plan.source
+    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, tfLimits().searchesPerScan)
+  }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
   // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
   const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (diag?.tfFlags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { diag.tfFlags.attempted = true; if (!r.ok) diag.tfFlags.failed = true } if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
+  // An adaptive round reads only pages round one never saw: a page already read cannot change the result, and is not paid for twice.
+  if (round) { const seen = new Set([...round.skipUrls].map(u => canonicalUrl(u) ?? u)); for (let i = hits.length - 1; i >= 0; i--) if (seen.has(canonicalUrl(hits[i].url) ?? hits[i].url)) hits.splice(i, 1) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
   if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
@@ -931,7 +990,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
-  const urls = pickFetchUrls(hits.map(h => h.url), tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
+  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
@@ -1223,6 +1282,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
     let leads: LeadDraft[] | null = null
     let budgetRefused = false // the run budget refused a call in the TinyFish path
+    let tfCandidates = 0 // candidates TinyFish round one extracted (the adaptive round only follows a round that ran)
     let budgetRefusal: string | null = null // the spend guard's exact reason for that refusal (diagnostics only)
     // Free news search: on unless NEWS_SEARCH_ENABLED=0 (npm test sets it, like SITECRAWL_ENABLED); an injected
     // deps.newsHttp always turns it on, so tests that exercise news do so explicitly.
@@ -1236,6 +1296,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         leads = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag, newsOn ? deps.newsHttp ?? safeGet : undefined)
         if (leads?.length) partial.candidates = leads
+        tfCandidates = leads?.length ?? 0
         // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
         ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? 'unavailable' : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
@@ -1500,6 +1561,71 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const seenKeys = new Set(fallbackNotes.map(n => n.key))
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
     }
+    // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
+    // Gated OFF by default: one round costs up to ADAPTIVE_SEARCHES searches + ADAPTIVE_FETCHES fetches + 1 extraction
+    // on top of round one, for every paid non-trial scan that verified nothing, and that extra spend has no owner
+    // approval. DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 opts in; OFF behaves exactly as without the feature (no round, no
+    // calls, no ledger row). Trial scans skip the round on their own policy (paidFallback=false) even when enabled.
+    if (process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED === '1' && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+      const stop = (status: string) => ledger.record('search:adaptive', status)
+      const left = jobDeadlines.get(job)
+      const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
+      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      else if (budgetRefused) stop('budget_stopped')
+      else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
+      else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)
+      else {
+        const diag2 = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: diag.recordFetch }
+        try {
+          ledger.record('search:adaptive', 'started')
+          assertOwned(db, job)
+          const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
+          const st = summarizeTrace(diag2.trace)
+          ledger.stats('search:adaptive', { ...st, ...diag2.info })
+          diag.tfTextUrls.push(...diag2.tfTextUrls) // verify_provenance at the end of the run counts round-two pages too (D3)
+          const seen = new Set(leads.map(l => `${l.source_url}|${companyKey(l.company)}`))
+          const fresh = (more ?? []).filter(l => !seen.has(`${l.source_url}|${companyKey(l.company)}`))
+          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : st.searches_not_attempted.cap ? 'search_cap' : 'empty') // money vs count: a budget refusal is never the search-cap status (D1)
+          else {
+            ledger.candidates('search:adaptive', fresh)
+            assertOwned(db, job)
+            leads.push(...fresh); verifiedUrls.push(...fresh.map(l => l.source_url))
+            // D2: round two passes the same pre-verify gates as round one before anything is fetched again:
+            // feedback memory first (a rejected company costs no fetch), then the memory exclusions, so an
+            // excluded or previously-rejected company is dropped and audited here instead of after cost.
+            let gated = await forget(fresh)
+            try {
+              const mem = deps.memory === undefined ? getMemory(db, job.user_id) : deps.memory
+              if (mem && mem.exclusions.length > 0) {
+                const kept = gated.filter(l => !isExcluded(mem, l))
+                const excl = gated.filter(l => isExcluded(mem, l))
+                if (excl.length > 0) { outcome.dropped['excluded'] = (outcome.dropped['excluded'] ?? 0) + excl.length; auditDrop(audit)(excl, 'excluded') }
+                gated = kept
+              }
+            } catch { /* memory table may predate this deploy: hold everything, the post-verify gate still applies */ }
+            if (gated.length === 0) stop('empty') // the round's candidates were all gated out before any fetch
+            else {
+              // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
+              // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
+              const held = HeldText.merge(diag.held, diag2.held)
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+              const seenKeys = new Set(outcome.leads.map(dedupKey))
+              for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
+              const seenReview = new Set(outcome.review.map(dedupKey))
+              for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
+              for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
+              if (o2.quotes) { outcome.quotes ??= new Map(); for (const [k, v] of o2.quotes) outcome.quotes.set(k, [...(outcome.quotes.get(k) ?? []), ...v]) }
+              stop('ok')
+            }
+          }
+        } catch (e) {
+          if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+          if (e instanceof ProviderError && e.kind === 'auth') throw e
+          if (e instanceof SpendRefused) { budgetRefused = true; budgetRefusal ??= e.reason; stop('budget_stopped') } // a bounded stop: never "nothing found"
+          else stop('error')
+        }
+      }
+    }
     // First-scan killer: the model's stale memory returns only old news and the verifier
     // honestly drops all of it. One bounded retry with the date spelled out a second time
     // and an explicit freshness instruction; a failed retry never fails the scan.
@@ -1605,6 +1731,21 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // a walled hiring post with no pain in its snippet is capped below 50 like any job ad.
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
     outcome.review.push(...walledRows)
+    // #1037: a free-trial scan's people searches (run after finish, below) are reserved HERE, while the job is still
+    // 'running' - the trial reserve is only written for a running job. One search per verified lead, at most
+    // firstPlayPeopleCap(), and never into the last FIRST_PLAY_TRIAL_KEEP of the reserve (left for the checks after it).
+    // A search reserved but not made stays reserved: the trial ledger over-counts, never under.
+    let trialPeoplePrepaid = 0
+    if (trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
+      // One search per distinct company (the pass searches each company once), at most the cap.
+      const want = Math.min(firstPlayPeopleCap(), new Set(outcome.leads.map(l => companyKey(l.company))).size), price = trial.tinyfishSearchUsd
+      // An unusable price (not a finite number >= 0) makes no search at all: never an unpriced trial search.
+      const room = !(Number.isFinite(price) && price >= 0) ? 0 : price > 0 ? Math.floor((trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd) / price + 1e-9) : want
+      const k = Math.max(0, Math.min(want, Number.isFinite(room) ? room : 0))
+      if (k > 0 && price > 0) {
+        try { await trialCharges.get(job)!('search', k); trialPeoplePrepaid = k } catch (e) { if (!(e instanceof SpendRefused)) throw e; console.error('trial people-search reservation refused', e.reason) }
+      } else trialPeoplePrepaid = k
+    }
     const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length + selfDescribedLeads.length, ledger)
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
     // must be skipped too - a re-claimed job belongs to the newer attempt.
@@ -1625,10 +1766,30 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
-    if (deps.first5) trace.note('people_search', 'skipped', 'first5: free search sources only; people search is a paid TinyFish search')
-    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
-    else if (trial) trace.note('people_search', 'skipped', 'a free trial scan makes no search outside its budget')
-    else try { const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl }); trace.note('people_search', n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : 'no profile results named a role-matching person at a verified company, or no search key/quota', { people_stored: n }) } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #1037: the first play (first5) and free-trial scans run it too, so the first leads a new user sees name who to
+    // contact: one search per ready lead that names nobody yet, at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
+    // lowers it, 0 = off). A trial scan pays each search from its own reserve (trialCharges) and stops searching while less
+    // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
+    const firstPlay = !!deps.first5 || !!trial
+    const peopleCap = firstPlay ? firstPlayPeopleCap() : null
+    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
+    else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
+    else try {
+      const stopped: { why: string | null } = { why: null }
+      // The first play's free sources never touched TinyFish, so its usage tables may not exist yet (as the lead search does).
+      migrateTinyfish(db)
+      // A trial scan spends only the searches it reserved before finish (trialPeoplePrepaid, above): canSearch is false once
+      // they are used up, and nothing is reserved after finish. Every other scan's searches are counted by TinyFish's own
+      // per-scan / tenant / global caps, as before.
+      const prepaid = { left: trialPeoplePrepaid }
+      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, onStop: why => { stopped.why ??= why }, alive: () => postFinishAlive(db, job),
+        ...(firstPlay ? { maxCompanies: peopleCap!, skipNamed: true } : {}),
+        ...(trial ? { canSearch: () => prepaid.left > 0, charge: async () => { if (prepaid.left <= 0) throw new SpendRefused(TRIAL_BUDGET_REASON); prepaid.left-- } } : {}) })
+      const detail = { people_stored: n, ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
+      const status = peopleTraceStatus(n, stopped.why)
+      trace.note('people_search', status, peopleTraceMessage(n, stopped.why), detail)
+    } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.

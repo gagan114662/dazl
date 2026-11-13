@@ -74,7 +74,7 @@ try {
     await page.waitForTimeout(600)
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${kind}-demo.png`) })
     // 3. Steps, proof, pricing, footer.
-    assert.deepEqual((await page.getByTestId('step').locator('h3').allInnerTexts()), ['Paste your website', 'Get new leads every week', 'Approve and send'])
+    assert.deepEqual((await page.getByTestId('step').locator('h3').allInnerTexts()), ['Paste your website', 'Get new leads every day', 'Approve and send'])
     assert.match(await page.getByTestId('proof').innerText(), /Quoted and linked[\s\S]*Company and date checked/)
     // Every proof heading and body stays inside the card's padded content box (Instinct #338, 390px): element bounds,
     // not only the document width.

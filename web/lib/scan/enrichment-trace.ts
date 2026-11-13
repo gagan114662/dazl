@@ -90,11 +90,19 @@ export function mergeIntoRunReport(db: Database.Database, jobId: string, attempt
 // (same connector, same identity key) before it stops counting as a lookup, never matched by reason text across identities.
 // Records that cannot be read, or that cannot be told apart, stay unknown: they are never turned into a success.
 export const PAID_ENRICH_CONNECTORS = ['enrich:apollo', 'enrich:pdl'] as const
+// The pass itself records its own failures under the SHARED connector 'enrich' (lib/enrich/index.ts setupFailed 'pass setup':
+// master key / scan setup unreadable; lib/signals/index.ts 'contact pass': the pass threw). Such a row is never a provider
+// lookup and never a success, whatever its status says: it means the pass did not finish, so it is reported as a failure
+// (pass_failed), never as "no key configured".
+export const PAID_ENRICH_PASS_CONNECTOR = 'enrich'
+// Audit statuses the writer records BEFORE any provider request (a key or lead record that could not be read).
+const PRE_CALL_SETUP = /^setup (?:unreadable|failed)\b/
 const HELD = new Set<string>([...ENRICH_SKIP_STATUSES, 'reserved', 'skipped', 'held'])
 const NO_DOMAIN = 'contact rejected: no domain to confirm the company'
 export interface PaidEnrichmentOutcomes {
   ok: number; empty: number; held: number; failed: number; total: number; unconfirmed: number; unreadable: boolean
   basis: 'claims' | 'audit_rows'
+  passFailed: number // shared-connector 'enrich' rows: the pass failed in setup or threw (also counted in failed)
   company: { ok: number; empty: number; rejected: number }
   byProvider: { apollo: number; pdl: number }
 }
@@ -111,12 +119,16 @@ const identityOf = (lookup: string): string | null => {
 }
 const providerOf = (connector: string): 'apollo' | 'pdl' => connector === 'enrich:pdl' ? 'pdl' : 'apollo'
 export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, jobId: string): PaidEnrichmentOutcomes {
-  const out: PaidEnrichmentOutcomes = { ok: 0, empty: 0, held: 0, failed: 0, total: 0, unconfirmed: 0, unreadable: false, basis: 'claims', company: { ok: 0, empty: 0, rejected: 0 }, byProvider: { apollo: 0, pdl: 0 } }
+  const out: PaidEnrichmentOutcomes = { ok: 0, empty: 0, held: 0, failed: 0, total: 0, unconfirmed: 0, unreadable: false, passFailed: 0, basis: 'claims', company: { ok: 0, empty: 0, rejected: 0 }, byProvider: { apollo: 0, pdl: 0 } }
   const marks = PAID_ENRICH_CONNECTORS.map(() => '?').join(',')
   let audit: { connector: string; lookup: string; status: string; results: number }[]
   let claims: { connector: string; lookup: string; status: string; memo: string | null }[]
   try {
     audit = db.prepare(`SELECT connector, lookup, status, results FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector IN (${marks}) ORDER BY rowid`).all(tenantId, jobId, ...PAID_ENRICH_CONNECTORS) as typeof audit
+  } catch { out.unreadable = true; return out }
+  try { // the pass's own failure rows (shared connector): read with the same tenant + job scope
+    const pass = db.prepare('SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ?').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR) as { n: number } | undefined
+    out.passFailed = Number(pass?.n ?? 0); out.failed += out.passFailed
   } catch { out.unreadable = true; return out }
   // A claims table that cannot be read is NOT "no claims": the audit rows alone cannot tell a matched company from a contact, so
   // the stage is unknown rather than guessed.
@@ -131,6 +143,13 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
     out.basis = 'audit_rows'
     const seen = new Set<string>()
     for (const r of audit) {
+      // A hold (budget, credits, circuit) or a setup row that could not read a key / lead was written BEFORE any request: it is
+      // an outcome of its own, never a provider lookup (a new job whose every lead was held also has no claims and lands here).
+      if (HELD.has(r.status)) { out.held++; continue }
+      // #382: a lookup the scan's spend gate refused BEFORE sending (its claim released, lib/enrich/index.ts unsentStatus). Not a
+      // lookup and not a failure; the provider's 'spend_refused' skip row above already reports the hold once.
+      if (r.status.startsWith('not sent: ')) continue
+      if (PRE_CALL_SETUP.test(r.status)) { out.failed++; continue }
       const org = /^(?:step:)?org /.test(r.lookup)
       const dedupe = `${r.connector}\u0000${org ? 'org ' + r.lookup.replace(/^(?:step:)?org /, '') : r.lookup}\u0000${r.status}\u0000${r.results}`
       if (org) { if (seen.has(dedupe)) continue; seen.add(dedupe) }
@@ -164,7 +183,8 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   for (const c of claims) {
     const a = statusOf.get(key(c.connector, c.lookup))
     const reserved = c.status === 'reserved'
-    const unsettled = () => { out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible
+    // 'not sent:' = an owner retry the spend gate refused before sending, kept held (#382): proven unsent, so a hold, not unconfirmed
+    const unsettled = () => { if (a?.startsWith('not sent: ')) { out.held++; return } out.unconfirmed++; if (a && !HELD.has(a)) out.failed++ } // may have been sent / charged; a recorded failure code stays visible
     if (c.lookup.startsWith('step:org ')) {
       if (reserved) { unsettled(); continue }
       out.total++; out.byProvider[providerOf(c.connector)]++
@@ -192,6 +212,7 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   // compatibility 'org X' rows land here too (they only ever repeat an org claim) and are not events of their own.
   for (const r of audit) {
     if (claimed.has(key(r.connector, r.lookup)) || r.status === 'ok' || r.status === 'empty') continue
+    if (r.status.startsWith('not sent: ')) continue // #382: refused by the spend gate before sending, claim released; its 'spend_refused' skip row is the hold
     if (HELD.has(r.status)) out.held++; else out.failed++
   }
   return out
@@ -200,13 +221,15 @@ export function notePaidEnrichment(trace: EnrichmentTrace, db: Database.Database
   const o = paidEnrichmentOutcomes(db, tenantId, jobId)
   // lookups = steps that settled; unconfirmed = claimed but never settled; with_results = people lookups that attached a contact
   // (a matched company is company_ok, not a result). basis says whether this came from claims or, for old jobs, audit rows only.
-  const detail = { lookups: o.total, unconfirmed: o.unconfirmed, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed, company_ok: o.company.ok, company_empty: o.company.empty, company_rejected: o.company.rejected, apollo_lookups: o.byProvider.apollo, pdl_lookups: o.byProvider.pdl, basis: o.basis }
+  const detail = { pass_failed: o.passFailed, lookups: o.total, unconfirmed: o.unconfirmed, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed, company_ok: o.company.ok, company_empty: o.company.empty, company_rejected: o.company.rejected, apollo_lookups: o.byProvider.apollo, pdl_lookups: o.byProvider.pdl, basis: o.basis }
   if (o.unreadable) trace.note('paid_enrichment', 'failed', 'the paid-enrichment records could not be read, so what the paid lookups did is unknown', detail)
   else if (o.total === 0 && o.unconfirmed === 0 && o.held === 0 && o.failed === 0) trace.note('paid_enrichment', 'unavailable', 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
   else if (o.ok > 0) {
-    const also = [o.failed > 0 ? `${o.failed} ${o.failed === 1 ? 'was' : 'were'} rejected or failed` : '', o.unconfirmed > 0 ? `${o.unconfirmed} did not finish, so whether a request was sent is not confirmed` : ''].filter(Boolean)
+    const lookupFailed = o.failed - o.passFailed
+    const also = [o.passFailed > 0 ? 'the paid-enrichment pass failed before finishing' : '', lookupFailed > 0 ? `${lookupFailed} ${lookupFailed === 1 ? 'was' : 'were'} rejected or failed` : '', o.unconfirmed > 0 ? `${o.unconfirmed} did not finish, so whether a request was sent is not confirmed` : ''].filter(Boolean)
     trace.note('paid_enrichment', 'ok', also.length ? `${o.ok} lookup${o.ok === 1 ? '' : 's'} returned a contact; ${also.join('; ')}` : null, detail)
   }
+  else if (o.passFailed > 0) trace.note('paid_enrichment', 'failed', o.unconfirmed > 0 || o.failed > o.passFailed ? 'the paid-enrichment pass failed before finishing, and other lookups failed or did not finish; none returned a contact' : 'the paid-enrichment pass failed before finishing (setup could not be read, or the pass stopped); none returned a contact', detail)
   else if (o.failed > 0) trace.note('paid_enrichment', 'failed', o.unconfirmed > 0 ? 'paid lookups were rejected or failed or did not finish; none returned a contact' : 'paid lookups were rejected or failed; none returned a contact', detail)
   else if (o.unconfirmed > 0) trace.note('paid_enrichment', 'failed', 'a paid lookup did not finish, so whether a request was sent or charged is not confirmed; none returned a contact', detail)
   else if (o.empty > 0 || o.company.ok > 0 || o.company.empty > 0) trace.note('paid_enrichment', 'attempted_no_result', o.company.ok > 0 ? 'the company matched but no contact was found' : 'paid lookups ran and found no contact', detail)

@@ -22,7 +22,8 @@ let chromium
 try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.split('\n')[0]) }
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 
-const TRIAL_LINE = /New accounts may get 3 trial scans first/
+// #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
+const TRIAL_LINE = /Sign in with Google \(or link it later\) for 3 free trial scans first/
 const FALLBACK_LINE = /Free plan: 50 scans a month with your own AI key\. Upgrade any time\./
 
 async function withServer(env, fn) {

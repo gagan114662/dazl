@@ -4,5 +4,6 @@
   { "id": "toronto-dental", "query": "Dental clinics in Toronto opening a new location or expanding", "seller": "Dental clinic fit-out and renovation contractor" },
   { "id": "lisbon-sales", "query": "Companies in Lisbon hiring a head of sales or sales manager", "seller": "Sales training and coaching for B2B teams" },
   { "id": "pune-schools", "query": "Schools and coaching institutes in Pune hiring teachers or expanding", "seller": "School management software" },
-  { "id": "gurugram-offices", "query": "Companies in Gurugram expanding their team or opening a new office", "seller": "Grade A commercial office space for lease or sale in Gurugram" }
+  { "id": "gurugram-offices", "query": "Companies in Gurugram expanding their team or opening a new office", "seller": "Grade A commercial office space for lease or sale in Gurugram" },
+  { "id": "norway-dental-registry", "query": "Newly registered dental clinics in Norway", "seller": "Dental clinic fit-out and equipment supplier for new practices", "sources": { "adapters": ["brreg"], "feeds": [] }, "post_freeze": "Added after benchmark task set v1 was frozen (#763): not part of v1" }
 ]

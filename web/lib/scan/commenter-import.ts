@@ -325,14 +325,20 @@ export function commenterBatchStatus(db: Database.Database, userId: string, batc
   return { batch_id: batch.id, context: batch.context, total: batch.total, note: batch.note, created_at: batch.created_at, job_id: batch.job_id, rows }
 }
 
-// Delete a batch and everything it made: enrichments on its leads first (explicit, per
-// the approved design), then the leads, rows, owning job and batch. Tenant-scoped.
+// Delete a batch and everything it made: enrichments and work-email lookups (#1036) on its
+// leads first (explicit, per the approved design), then the leads, rows, owning job and batch. Tenant-scoped.
 export function deleteCommenterBatch(db: Database.Database, userId: string, batchId: string): boolean {
   const batch = db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, userId) as { job_id: string | null } | undefined
   if (!batch) return false
   db.transaction(() => {
     if (batch.job_id) {
       db.prepare('DELETE FROM lead_enrichments WHERE lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)').run(batch.job_id)
+      // work_email_lookups exists wherever migrateAllSqlite ran (every app DB); only a bare test DB without that table
+      // (nothing to remove) is tolerated, any other failure still aborts the whole delete.
+      let dropLookups: Database.Statement | null = null
+      try { dropLookups = db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)') }
+      catch (e) { if (!(e instanceof Error && /no such table: work_email_lookups/.test(e.message))) throw e }
+      dropLookups?.run(userId, batch.job_id)
       db.prepare('DELETE FROM leads WHERE scan_job_id = ?').run(batch.job_id)
     }
     db.prepare('DELETE FROM commenter_rows WHERE batch_id = ?').run(batchId)

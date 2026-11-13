@@ -15,7 +15,7 @@ test('site read reason copy: each refusal says the real reason, the account coun
   assert.doesNotMatch(siteKeyReason('domain_used'), /used up/)
   assert.equal(siteKeyReason('not_configured'), `The free trial isn't available here right now. ${OWN}`)
   assert.equal(siteKeyReason('workspace_not_eligible'), `The free trial belongs to the account that created this workspace. ${OWN}`)
-  assert.equal(siteKeyReason('google_required'), `The free trial needs an account that signs in with Google. ${OWN}`)
+  assert.equal(siteKeyReason('google_required'), `Free website reads need a Google account: link Google to this account to read it free (no card). ${OWN}`)
   for (const r of ['attempts_cap', 'account_cap']) assert.equal(siteKeyReason(r), `Your free trial is used up. ${OWN}`, r)
   // The money ceiling names the reads (council round 3): the same note lib/trial-copy.ts gives the usage line.
   assert.equal(siteKeyReason('account_total_cap'), `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${OWN}`)

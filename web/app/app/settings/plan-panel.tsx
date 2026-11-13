@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { trialCopy, type TrialBlock } from '@/lib/trial-copy'
+import { usageLine } from '@/lib/plan-usage-copy'
 
 type Usage = { plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
 
@@ -59,7 +60,7 @@ export default function PlanPanel() {
           : 'No confirmed subscription yet. If you just finished checkout it can take a minute to show here; refresh this page. Your plan stays as shown until Stripe confirms it.'}</p>}
       {back === 'cancelled' && <p className="text-sm text-[#555] mb-2" data-testid="billing-return">{`Checkout was not completed. Your plan is still ${u.plan === 'pro' ? 'Pro' : 'Free'}.`}</p>}
       {note && <p className="text-sm mb-2" data-testid="billing-status">{note}</p>}
-      <p className={`text-[#555] text-sm ${u.trial ? 'mb-1' : 'mb-4'}`}>{u.scan_limit === null ? `${u.scans_used} scans this month, unlimited.` : `${u.scans_used} of ${u.scan_limit} scans used this month.`}</p>
+      <p className={`text-[#555] text-sm ${u.trial ? 'mb-1' : 'mb-4'}`}>{usageLine(u)}</p>
       {/* The trial line follows the server's reason (lib/trial-copy.ts): unavailable or throttled is never "used up". */}
       {u.trial && (() => { const t = trialCopy(u.trial); return (
         <p className="text-[#555] text-sm mb-4" data-testid="trial-status" data-state={t.state}>

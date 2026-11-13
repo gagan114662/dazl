@@ -37,7 +37,8 @@ export async function createQueryJob(db: Db, userId: string, input: QueryInput, 
 // createQueryJob as a transaction step, for a caller that records the job with other writes in one transaction (a
 // watch or monitor run: the job and the schedule that queued it commit together, or neither does).
 export function* queryJobStep(t: Tx, userId: string, input: QueryInput, now = nowS()): TxBody<string> {
-  const id = randomBytes(12).toString('hex')
+  // a caller may fix the id first (a trial reservation is linked to it before the job exists, #1042)
+  const id = input.id ?? randomBytes(12).toString('hex')
   yield* t.run(QUERY_JOB_SQL, queryJobParams(id, userId, input, now))
   return id
 }
@@ -57,14 +58,17 @@ export async function parkPendingReservedJobs(db: Db): Promise<void> {
 // Jobs stuck in 'running' past the timeout go back to 'pending', or to 'failed' ('timeout') after MAX_ATTEMPTS. ANY
 // attempt's reserved (sent, unsettled, possibly billed) call ends the job closed - an unsettled call of a dead EARLIER
 // attempt is exactly the maybe-billed case (attempt correlation would re-queue it to be billed twice).
+import { settleReapedTrial } from '../billing/trial-reap.ts'
 export async function reapStaleRunningJobs(db: Db, now = nowS()): Promise<number> {
-  return (await db.run(
+  const changes = (await db.run(
     `UPDATE scan_jobs SET status = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN 'failed' ELSE 'pending' END,
        error = CASE WHEN ${RESERVED_CALL} THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
        finished_at = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN ? ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - STALE_RUNNING_S])).changes
+  if (changes > 0) await settleReapedTrial(db, now) // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
+  return changes
 }
 export async function reapStaleJobs(db: Db, now = nowS()): Promise<number> {
   await parkPendingReservedJobs(db)
@@ -83,8 +87,13 @@ export function getJob(db: Db, userId: string, id: string): Promise<JobRow | und
 
 // CSV import jobs do not count; a just-cancelled scan keeps its slot for CANCEL_HOLD_S (its in-flight provider phase
 // may still be running and billed).
+const ACTIVE_JOBS_SQL = "SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > ?) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))"
 export async function countActiveJobs(db: Db, userId: string, now = nowS()): Promise<number> {
-  return Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM scan_jobs WHERE user_id = ? AND csv_domain IS NULL AND (status IN ('pending','running') OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL AND enrich_started_at > ?) OR (status = 'failed' AND error = 'cancelled' AND finished_at >= ?))", [userId, now - ENRICH_STALE_S, now - CANCEL_HOLD_S]))!.n)
+  return Number((await db.get<{ n: number }>(ACTIVE_JOBS_SQL, [userId, now - ENRICH_STALE_S, now - CANCEL_HOLD_S]))!.n)
+}
+// countActiveJobs as a transaction step: the same count, read inside the write that admits a new job (#1042 Find leads now).
+export function* countActiveJobsStep(t: Tx, userId: string, now = nowS()): TxBody<number> {
+  return Number((yield* t.get<{ n: number }>(ACTIVE_JOBS_SQL, [userId, now - ENRICH_STALE_S, now - CANCEL_HOLD_S]))!.n)
 }
 
 // A lead a REQUIRED gate failed on whose review write was rejected still reads verified in leads.review_reason. The gate leaves a marker beside it (lead_enrichments, connector

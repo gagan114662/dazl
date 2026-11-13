@@ -8,10 +8,11 @@
 // Stored as a 'person' enrichment labelled "public search result, not verified as current"; never an address, never
 // emailed by itself. TinyFish searches count against the same per-tenant daily cap. Kill switch: PEOPLE_SEARCH_ENABLED=0.
 import type Database from 'better-sqlite3'
-import { tfSearch, tinyfishEnabled, type SearchHit } from '../search/tinyfish.ts'
+import { tfSearch, tinyfishEnabled, limits, TINYFISH_TIMEOUT_MS, type SearchHit } from '../search/tinyfish.ts'
 import { addEnrichment } from '../connectors/store.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
+import { leadPerson } from './lead-person.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -21,6 +22,8 @@ export const MAX_PEOPLE = 3    // kept per company
 export const DEADLINE_MS = 30_000 // whole people pass; the awaited searches run after bounded post-processing, so they get their own wall
 export const CONNECTOR = 'search:people'
 export const LABEL = 'public search result (profile title), not verified as current staff'
+export { FIRST_PLAY_MAX, firstPlayPeopleCap } from './first-play-cap.ts'
+import { FIRST_PLAY_MAX } from './first-play-cap.ts'
 
 const PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]{3,100}\/?$/
 // A role the result itself marks as past, in any of the title line's languages we search. Such a person is not a buyer now.
@@ -62,11 +65,58 @@ export function parseProfileHit(h: SearchHit, company: string): { name: string; 
 }
 
 type Lead = { id: string; company: string }
-// Runs after a scan finishes. Never throws; returns how many people were stored.
-export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number } = {}): Promise<number> {
+// First-play options (#1037). maxCompanies: searches allowed in this pass (one per company), replacing MAX_COMPANIES.
+// skipNamed: leads that already have a titled person stored (e.g. listed on their own site) get no search.
+// charge: the free-trial scan's per-search charge (runner trialCharges); canSearch: checked before every search, false
+// stops the pass (a trial scan keeps budget for the checks that run after it). onStop records why the pass stopped early.
+// alive: the job attempt still owns the run (runner postFinishAlive); checked before every search and before writing its result.
+// drainMs: how long the pass waits, after its deadline, for the search still in flight (default: the TinyFish transport timeout
+// plus 1 s, by which the real transport has given up; a fetch stub that ignores its abort signal is abandoned after it).
+export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; drainMs?: number; aliveEveryMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; alive?: () => boolean; onStop?: (why: string) => void }
+// The first play's own lead list (lib/scan/first5.ts first5LeadSql): not graded out (fit 0-1) and not held by a failed required gate.
+const FIRST_PLAY_ELIGIBLE = "AND (fit IS NULL OR fit > 1) AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = leads.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
+// The people step's trace status: a stop the pass did not choose (an error, a lost job, or the search provider refusing it:
+// auth = the key was rejected, quota = the provider's quota is used up) wins over a partial count, so a pass cut short is
+// never reported as a clean success (people_stored stays in the detail). Our own limits (deadline = the pass's time budget,
+// cap = the per-scan / daily search cap, budget_kept = a trial scan keeping its reserve) are planned stops: the status
+// follows the count, and peopleTraceMessage names the stop.
+const FAILED_STOPS: Record<string, string> = {
+  error: 'the people search stopped on an error (logged)',
+  ownership_lost: 'the job was cancelled or re-claimed during the people search: it stopped',
+  auth: 'the search provider refused the people search (its key was rejected): it stopped',
+  quota: 'the search provider refused the people search (its quota is used up): it stopped',
+}
+const failedStop = (stopped: unknown): stopped is string => typeof stopped === 'string' && Object.hasOwn(FAILED_STOPS, stopped)
+export function peopleTraceStatus(stored: number, stopped: string | null): 'ok' | 'failed' | 'attempted_no_result' {
+  if (failedStop(stopped)) return 'failed'
+  return Number.isSafeInteger(stored) && stored > 0 ? 'ok' : 'attempted_no_result'
+}
+// The trace message for peopleTraceStatus: every stop, failed or planned, is named with the count stored before it, so a
+// cut-short pass never reads as complete. null only for a pass that ran to its end and stored at least one person.
+export function peopleTraceMessage(stored: number, stopped: string | null): string | null {
+  const n = Number.isSafeInteger(stored) && stored > 0 ? stored : 0
+  const count = `${n} person(s) stored before it stopped`
+  if (failedStop(stopped)) return `${FAILED_STOPS[stopped]}; ${count}`
+  if (stopped === 'deadline') return `the people search stopped at its time budget; ${count}`
+  if (stopped === 'cap') return `the people search stopped at the search limit (per-scan or daily cap); ${count}`
+  if (stopped === 'budget_kept') return `the trial scan kept its remaining budget for the checks after this step; ${count}`
+  if (stopped !== null && stopped !== undefined) return `the people search stopped early (${String(stopped).slice(0, 40)}); ${count}`
+  return n > 0 ? null : 'no profile results named a role-matching person at a verified company'
+}
+// A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
+// search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
+const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact') ORDER BY insert_seq LIMIT 500"
+// Runs after a scan finishes. Never throws; returns how many people were stored (also when it stopped on an error).
+export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: PeopleOpts = {}): Promise<number> {
+  let stored = 0
   try {
     const env = deps.env ?? process.env
     if (!peopleSearchEnabled(env)) return 0
+    // Default: the ordinary scan's MAX_COMPANIES. A first-play cap must be a positive safe integer, at most FIRST_PLAY_MAX; anything else is 0 (no search).
+    let cap = deps.maxCompanies === undefined ? MAX_COMPANIES : Number.isSafeInteger(deps.maxCompanies) && deps.maxCompanies > 0 ? Math.min(deps.maxCompanies, FIRST_PLAY_MAX) : 0
+    // An operator's own per-scan TinyFish search limit, when set, still binds this pass (it can only lower the cap).
+    if (env.TINYFISH_SEARCHES_PER_SCAN !== undefined) cap = Math.min(cap, limits(env).searchesPerScan)
+    if (cap === 0) return 0
     // Job ownership first: the job id alone must never let one tenant read or write another's leads.
     const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
     const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown; country?: unknown; language?: unknown; where?: unknown }) : null
@@ -75,25 +125,48 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     if (roles.length === 0) return 0 // no buyer roles: nothing to search for
     const roleText = roles.join('; ')
     const geo = { ...(typeof who?.country === 'string' ? { location: who.country } : {}), ...(typeof who?.language === 'string' ? { language: who.language } : {}) }
-    const leads = db.prepare("SELECT id, company FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND quarantined_at IS NULL AND company <> '' ORDER BY COALESCE(fit, 0) DESC, score DESC LIMIT ?").all(jobId, MAX_COMPANIES) as Lead[]
+    const leads = (deps.skipNamed
+      ? db.prepare(`SELECT id, company FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND quarantined_at IS NULL AND company <> '' ${FIRST_PLAY_ELIGIBLE} ORDER BY COALESCE(fit, 0) DESC, score DESC LIMIT 200`).all(jobId)
+      : db.prepare("SELECT id, company FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND quarantined_at IS NULL AND company <> '' ORDER BY COALESCE(fit, 0) DESC, score DESC LIMIT ?").all(jobId, cap)) as Lead[]
     const now = Math.floor((deps.now ?? Date.now()) / 1000); const today = new Date(now * 1000).toISOString().slice(0, 10)
     const spent = { searches: 0 }
-    let stored = 0
     const seenCompany = new Set<string>()
     const deadline = Date.now() + (deps.deadlineMs ?? DEADLINE_MS)
+    // This pass's own TinyFish count: the per-scan search count starts at 0 here and allows exactly `cap` searches (already
+    // no more than an operator-set TINYFISH_SEARCHES_PER_SCAN; the tenant / global daily caps and per-minute rate still apply).
+    const tfEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(cap) }
+    const rowsOf = deps.skipNamed ? db.prepare(ROWS_SQL) : null
+    let searched = 0
     for (const l of leads) {
-      if (Date.now() >= deadline) break
+      if (Date.now() >= deadline) { deps.onStop?.('deadline'); break }
+      if (searched >= cap) break
+      if (rowsOf && leadPerson(rowsOf.all(l.id, tenantId), roleText, now * 1000)) continue // already names its person: no search spent on it
       const ck = companyKey(l.company); if (seenCompany.has(ck)) continue; seenCompany.add(ck)
       const q = peopleQuery(l.company, roles); if (!q) continue
+      if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break }
+      if (deps.canSearch && !deps.canSearch()) { deps.onStop?.('budget_kept'); break }
+      searched++
       // tfSearch has no abort signal: race it against what is left of the deadline so a hung search cannot stall the scan.
       // The tenant daily/global caps and per-minute rate inside tfSearch are shared with the main scan's searches.
+      // On the deadline the in-flight search is still AWAITED (its transport gives up after TINYFISH_TIMEOUT_MS) and its
+      // result dropped: the pass never returns, and the runner never settles a trial ledger, while a paid call is in flight.
       let timer: ReturnType<typeof setTimeout> | undefined
+      // The request itself is aborted when the pass deadline hits or the job is no longer ours (polled while it is in flight),
+      // so a reclaimed/cancelled job stops spending instead of waiting out the transport timeout.
+      const ctl = new AbortController()
+      const watch = deps.alive ? setInterval(() => { try { if (!deps.alive!()) ctl.abort() } catch { ctl.abort() } }, deps.aliveEveryMs ?? 500) : undefined
+      const pending = tfSearch(db, tenantId, q, geo, spent, { env: tfEnv, signal: ctl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.charge ? { charge: deps.charge } : {}) })
       const r = await Promise.race([
-        tfSearch(db, tenantId, q, geo, spent, { env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) }),
+        pending,
         new Promise<null>(res => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())) }),
-      ]).finally(() => clearTimeout(timer))
-      if (!r) break // deadline hit
-      if (!r.ok) { if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') break; continue }
+      ]).finally(() => { clearTimeout(timer); if (watch) clearInterval(watch) })
+      if (!r) { ctl.abort() // deadline hit: wait for the search in flight (bounded), drop its result
+        let drain: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([pending.catch(() => null), new Promise<null>(res => { drain = setTimeout(() => res(null), Math.max(0, deps.drainMs ?? TINYFISH_TIMEOUT_MS + 1_000)) })]).finally(() => clearTimeout(drain))
+        deps.onStop?.('deadline'); break
+      }
+      if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
+      if (!r.ok) { if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth') { deps.onStop?.(r.reason); break } continue }
       const refused = new Set<string>()
       const people = r.hits.map(h => ({ h, p: parseProfileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => !!x.p && titleMatches(x.p.title, roleText).length > 0)
@@ -104,7 +177,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
           const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
           if (v === 'agrees' || v === 'no_geography') return true
           const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
-          if (!refused.has(reason)) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }
+          if (!refused.has(reason) && !(deps.alive && !deps.alive())) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }
           return false
         })
         .sort((a, b) => titleMatches(b.p.title, roleText).length - titleMatches(a.p.title, roleText).length)
@@ -112,6 +185,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       for (const { h, p } of people) {
         if (seen.has(p.name.toLowerCase()) || seen.size >= MAX_PEOPLE) continue
         seen.add(p.name.toLowerCase())
+        if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); return stored } // re-checked before EVERY write: another process may reclaim the job mid-loop
         addEnrichment(db, tenantId, l.id, { connector: CONNECTOR, kind: 'person', value: `${p.name}, ${p.title}`.slice(0, 120), label: LABEL, confidence: null, source_url: h.url.split('?')[0].slice(0, 500), source_date: h.date ?? today, retrieved_at: now })
         stored++
       }
@@ -119,6 +193,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     return stored
   } catch (e) {
     console.error('people search failed', e instanceof Error ? e.message : 'error')
-    return 0
+    deps.onStop?.('error')
+    return stored
   }
 }

@@ -98,7 +98,7 @@ test('PUBLICATION DATE is not the EVENT date: a lead with only a published_at ke
   const l = verifiedLeads(r.db, 'A', jobId)[0]; assert.deepEqual([l.event_date, l.published_at], [null, '2026-10-01'])
   r.db.prepare("UPDATE leads SET event_date = '2026-09-20' WHERE scan_job_id = ?").run(jobId); const l2 = verifiedLeads(r.db, 'A', jobId)[0]; assert.deepEqual([l2.event_date, l2.published_at], ['2026-09-20', '2026-10-01'])
 })
-test('FIRST5 makes NO post-finish TinyFish people search (real runner, tinyfish tables initialised so a missing table cannot hide it); an ordinary scan still does', async () => {
+test('#1037 (replaces the earlier first5 no-people-search rule): FIRST5 makes the capped post-finish people search, at most DAZL_FIRST_PLAY_PEOPLE_SEARCHES (default 10); 0 turns it off; an ordinary scan still does', async () => {
   const prev = process.env.PEOPLE_SEARCH_ENABLED; process.env.PEOPLE_SEARCH_ENABLED = '1'
   try {
     const run = async (runBudget?: string) => {
@@ -107,12 +107,14 @@ test('FIRST5 makes NO post-finish TinyFish people search (real runner, tinyfish 
       await runFixture(fx({ runBudget, onVerify: db => migrateTinyfish(db), deps: { fetchImpl, newsHttp: async () => ({ status: 200, body: gdelt }) } }))
       return reqs.filter(u => u.startsWith('https://api.search.tinyfish.ai') && /linkedin/i.test(decodeURIComponent(u))).length
     }
-    assert.equal(await run(BUDGET), 0, 'first5: zero profile-search requests after finish')
+    const n = await run(BUDGET); assert.ok(n >= 1 && n <= 10, `first5: the people search runs, capped (${n} requests)`)
+    const prevCap = process.env.DAZL_FIRST_PLAY_PEOPLE_SEARCHES; process.env.DAZL_FIRST_PLAY_PEOPLE_SEARCHES = '0'
+    try { assert.equal(await run(BUDGET), 0, 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: zero profile-search requests after finish (the earlier behaviour)') } finally { if (prevCap === undefined) delete process.env.DAZL_FIRST_PLAY_PEOPLE_SEARCHES; else process.env.DAZL_FIRST_PLAY_PEOPLE_SEARCHES = prevCap }
     assert.ok(await run(JSON.stringify({ paid_fallback: false, credit_enrichment: false })) >= 1, 'control: without first5 the people search does run (so the zero above is the gate, not a broken probe)')
   } finally { if (prev === undefined) delete process.env.PEOPLE_SEARCH_ENABLED; else process.env.PEOPLE_SEARCH_ENABLED = prev }
 })
-test('first5 budget disclosure reports TinyFish search/fetch/people search as OFF, not not_covered, and does not call model calls free', () => {
+test('first5 budget disclosure: no TinyFish lead search or fetch, but the capped people searches are not_covered (#1037), and model calls are not called free', () => {
   const d = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false })
-  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'off'); assert.match(s.note, /not free/)
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'not_covered'); assert.match(s.note, /no TinyFish lead search or page fetch/); assert.match(s.note, /not free/)
   assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'not_covered')
 })
