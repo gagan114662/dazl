@@ -22,12 +22,10 @@
 // "Ready" leads are not counted here: that verdict needs the per-request gate checks of the Leads page (the draft guard,
 // the time window, timing), so Home says "new leads" and links to Leads, never a "ready" number it cannot back.
 import type { Db } from '../db/client.ts'
-import { NOT_A_PERSON, sqlList } from './needs-owner.ts'
+import { NOT_A_PERSON, PERSON_REPLY as PERSON_REPLY_CLASSES, sqlList } from './needs-owner.ts'
 
 export const RESULTS_WINDOW_DAYS = 30
-// 'uncertain' counts: the classifier gives it to hedged answers a person wrote ("Not really interested", "maybe later")
-// and to bodies it could not read; auto-replies and bounces have their own classes and never count
-const PERSON_REPLY = ['positive', 'negative', 'other', 'opt_out', 'uncertain']
+const PERSON_REPLY: readonly string[] = PERSON_REPLY_CLASSES
 // The Inbox's deciding reply (lib/outreach/inbox.ts): the newest message that is not a machine's (NOT_A_PERSON)
 const MACHINE = sqlList(NOT_A_PERSON)
 // A message's lead labels it only when the lead's scan is the same tenant's (outreach_messages.lead_id has no tenant

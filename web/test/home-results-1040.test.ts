@@ -194,3 +194,25 @@ bothEngines('#1040 real-data shape: ungraded leads count under the channel that 
   assert.ok(!r.by_signal.some(s => s.signal === 'unknown'), 'no lead of this account reads "No signal type": each has the channel that found it')
   assert.deepEqual(r.latest_replies.map(x => x.classification), ['other'], 'replies matched to no send are not results of a play; the matched one is')
 })
+
+// #1040 follow-up (acceptance 2): Replied and Interested open the Inbox filtered to the threads they count (?sent_since)
+bothEngines('#1040: the Inbox filtered by sent_since lists exactly the threads the Replied and Interested tiles count', async ({ db }) => {
+  await seed(db)
+  const r = await homeResults(db, 'A', NOW)
+  const threads = async (q: Record<string, unknown>) => (await inboxPage(db, 'A', { status: 'all', sentSince: r.since, ...q })).threads.map(t => t.thread_id).sort()
+  assert.deepEqual(await threads({}), ['t-m1', 't-m3'], 'm1 and m3 got person replies; m2 only an auto-reply, m4 bounces, m8 a test send, m5 was sent before the window')
+  assert.equal((await threads({})).length, r.tiles.replied)
+  assert.deepEqual(await threads({ classification: 'positive' }), [], 'Interested 0: m1 wrote again after the yes')
+  assert.equal(r.tiles.interested, 0)
+  // unfiltered, the Inbox still lists every thread (the filter only applies when asked)
+  assert.ok((await inboxPage(db, 'A', { status: 'all' })).threads.length > 2)
+  // another tenant's threads never come back through the filter
+  assert.deepEqual((await inboxPage(db, 'B', { status: 'all', sentSince: r.since })).threads.map(t => t.thread_id), ['t-m7'])
+})
+
+test('#1040: ?sent_since must be a whole number of seconds, or the Inbox refuses it', async () => {
+  const { parseInboxQuery, InboxQueryError } = await import('../lib/outreach/inbox.ts')
+  assert.equal(parseInboxQuery(new URLSearchParams('sent_since=1797408000')).sentSince, 1797408000)
+  assert.equal(parseInboxQuery(new URLSearchParams('')).sentSince, null)
+  for (const bad of ['x', '-5', '1.5', '']) assert.throws(() => parseInboxQuery(new URLSearchParams(`sent_since=${bad}`)), InboxQueryError, bad)
+})

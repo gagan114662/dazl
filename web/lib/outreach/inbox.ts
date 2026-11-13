@@ -10,7 +10,7 @@
 // On the Db layer (both engines). Tenant scope: every row is the tenant's own inbound_messages; the lead and play come
 // from leads joined through the tenant's own scan_jobs, so another tenant's lead id never labels or filters a row.
 import { asDb, type DbLike, type Param } from '../db/client.ts'
-import { NEEDS_OWNER_CLASSES, NOT_A_PERSON, SETTLED_STOPS, sqlList } from './needs-owner.ts'
+import { NEEDS_OWNER_CLASSES, NOT_A_PERSON, PERSON_REPLY, SETTLED_STOPS, sqlList } from './needs-owner.ts'
 import { displayStopReason } from './lifecycle.ts'
 
 // Owner-facing states. needs_owner is the one rule in lib/outreach/needs-owner.ts, shared with lib/outcomes.ts.
@@ -26,7 +26,9 @@ export interface InboxThread {
 }
 export interface InboxCounts { threads: number; needs_owner: number; unread: number; unread_needs_owner: number }
 export interface InboxPage { threads: InboxThread[]; next_cursor: string | null; counts: InboxCounts }
-export interface InboxQuery { jobId?: string | null; threadId?: string | null; status?: InboxStatus; classification?: string | null; cursor?: string | null; limit?: number }
+// sentSince (#1040, Home's Replied / Interested tiles): only threads holding a person-written reply to a first email SENT at or
+// after that time - never a test send or a send to a test-fixture lead - the same messages the tiles count.
+export interface InboxQuery { jobId?: string | null; threadId?: string | null; status?: InboxStatus; classification?: string | null; cursor?: string | null; limit?: number; sentSince?: number | null }
 
 // Cursor: the last row's (received_at, thread_id), opaque to the client. Anything malformed is refused, never guessed.
 export function encodeCursor(at: number, threadId: string): string { return Buffer.from(JSON.stringify([at, threadId])).toString('base64url') }
@@ -73,6 +75,13 @@ export async function inboxPage(d: DbLike, tenantId: string, q: InboxQuery = {})
   if (q.status === 'needs_owner') where.push('needs_owner = 1')
   if (q.status === 'unread') where.push('unread = 1')
   if (q.classification) { where.push('classification = ?'); params.push(q.classification) }
+  if (q.sentSince !== null && q.sentSince !== undefined) {
+    where.push(`thread_id IN (SELECT r2.thread_id FROM inbound_messages r2
+      JOIN outreach_messages om ON om.id = r2.outreach_message_id AND om.tenant_id = r2.tenant_id LEFT JOIN leads ol ON ol.id = om.lead_id
+      WHERE r2.tenant_id = ? AND r2.classification IN ${sqlList(PERSON_REPLY)} AND om.status = 'sent' AND om.sent_at >= ? AND COALESCE(om.test, 0) = 0
+        AND (ol.source_kind IS NULL OR ol.source_kind <> 'test'))`)
+    params.push(tenantId, q.sentSince)
+  }
   if (q.cursor) {
     const c = decodeCursor(q.cursor)
     if (!c) throw new InboxQueryError('bad_cursor')
@@ -104,8 +113,8 @@ export async function markThreadRead(d: DbLike, tenantId: string, threadId: stri
 }
 
 export class InboxQueryError extends Error {
-  code: 'bad_cursor' | 'bad_status'
-  constructor(code: 'bad_cursor' | 'bad_status') { super(code); this.code = code }
+  code: 'bad_cursor' | 'bad_status' | 'bad_since'
+  constructor(code: 'bad_cursor' | 'bad_status' | 'bad_since') { super(code); this.code = code }
 }
 
 // Query-string parsing for the route; refuses rather than guesses.
@@ -113,7 +122,10 @@ export function parseInboxQuery(sp: URLSearchParams): InboxQuery {
   const status = (sp.get('status') ?? 'all') as InboxStatus
   if (!INBOX_STATUSES.includes(status)) throw new InboxQueryError('bad_status')
   const limit = Number(sp.get('limit') ?? 50)
+  const sinceRaw = sp.get('sent_since'), since = sinceRaw === null ? null : Number(sinceRaw)
+  if (sinceRaw !== null && !(/^\d{1,12}$/.test(sinceRaw) && Number.isInteger(since))) throw new InboxQueryError('bad_since')
   return {
+    sentSince: since,
     jobId: sp.get('job_id') || null, threadId: sp.get('thread') || null, status, classification: sp.get('class') || null, cursor: sp.get('cursor') || null,
     limit: Number.isFinite(limit) ? limit : 50,
   }
