@@ -68,7 +68,9 @@ const BOARD: Record<AtsKind, string> = { ashby: 'Ashby', greenhouse: 'Greenhouse
 // The record for exactly this posting: its title, location, first-published day (null when the record states none:
 // an undated page, judged by the normal rules) and description (html: Greenhouse sends escaped HTML; the caller turns it
 // into text). Null when the body is not this posting's record (another id, no title): read as a failed read.
-export interface AtsRecord { title: string; location: string; posted: string | null; description: string; html: boolean; board: string; org: string }
+// header: the posting page's own header fields, in the order the board's page shows them (#533 live check: candidate
+// quotes are cut from that header, e.g. "<title> Location <x> Employment Type Full time")
+export interface AtsRecord { title: string; location: string; header: string; posted: string | null; description: string; html: boolean; board: string; org: string }
 // 'missing': an Ashby board that answered but does not list this posting (closed or unlisted).
 export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing' | null {
   let job: Record<string, unknown> | null = null
@@ -96,13 +98,38 @@ export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing
     str(job.additionalPlain),
   ].filter(Boolean).join(' ') : ''
   const description = r.kind === 'greenhouse' ? (typeof job.content === 'string' ? job.content : '') : [typeof job.descriptionPlain === 'string' ? job.descriptionPlain : '', lever].filter(Boolean).join(' ')
-  return { title: title.slice(0, 200), location: location.slice(0, 120), posted, description: description.slice(0, 200_000), html: r.kind === 'greenhouse', board: BOARD[r.kind], org: r.org }
+  // the whole header is kept (within the page-text budget): a quote is often cut from its END (review on #1128)
+  return { title: title.slice(0, 200), location: location.slice(0, 120), header: headerOf(r.kind, job, title, location).slice(0, 20_000), posted, description: description.slice(0, 200_000), html: r.kind === 'greenhouse', board: BOARD[r.kind], org: r.org }
 }
 
-// The page text the verifier reads: one line naming the posting and its board, then the posting's own text. The
-// first-published day is NOT written into the text: it travels only as the page's postedAt, so it can date a hiring
-// candidate for exactly this posting and can never be bound by the text rules to any other claim (a funding round).
+// The header block the board's own posting page shows above the description, from the record's fields, in page order:
+//   Ashby:      <title> Location <location> Employment Type <Full time> Location Type <Remote> Department <department>
+//   Lever:      <title> <all locations, " / "> <department> – <team> / <commitment> / <Workplace> Apply for this job
+//   Greenhouse: <title> <location>
+// Only fields the record states are written; nothing is invented.
+const EMPLOYMENT: Record<string, string> = { FullTime: 'Full time', PartTime: 'Part time', Intern: 'Intern', Contract: 'Contract', Temporary: 'Temporary' }
+const WORKPLACE: Record<string, string> = { hybrid: 'Hybrid', remote: 'Remote', onsite: 'On-site', 'on-site': 'On-site' } // Ashby workplaceType: Remote / Hybrid / OnSite
+function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, location: string): string {
+  if (kind === 'ashby') {
+    const et = str(job.employmentType), dept = str(job.department), wt = str(job.workplaceType)
+    return [title, location && `Location ${location}`, et && `Employment Type ${EMPLOYMENT[et] ?? et}`, wt && `Location Type ${WORKPLACE[wt.toLowerCase()] ?? wt}`, dept && `Department ${dept}`].filter(Boolean).join(' ')
+  }
+  if (kind === 'lever') {
+    const cat = isObj(job.categories) ? job.categories : {}
+    const all = Array.isArray(cat.allLocations) ? cat.allLocations.map(str).filter(Boolean) : []
+    const locs = all.length ? all : location ? [location] : []
+    const dt = [str(cat.department), str(cat.team)].filter(Boolean).join(' – ')
+    const wt = str(job.workplaceType).toLowerCase()
+    const meta = [dt, str(cat.commitment), WORKPLACE[wt] ?? ''].filter(Boolean).join(' / ')
+    return [title, locs.join(' / '), meta, 'Apply for this job'].filter(Boolean).join(' ')
+  }
+  return [title, location].filter(Boolean).join(' ')
+}
+
+// The page text the verifier reads: the posting page's header block (headerOf), the posting's own text, then one line
+// naming the board. The first-published day is NOT written into the text: it travels only as the page's postedAt, so it
+// can date a hiring candidate for exactly this posting and can never be bound by the text rules to any other claim.
 export function atsPageText(rec: AtsRecord, descriptionText: string): { text: string; title: string } {
-  const head = `${rec.title}${rec.location ? ` (${rec.location})` : ''}. Job posting on the ${rec.org} ${rec.board} job board.`
-  return { text: `${head} ${descriptionText.replace(/\s+/g, ' ').trim()}`.trim().slice(0, 100_000), title: `${rec.title} @ ${rec.org}`.slice(0, 300) }
+  const body = descriptionText.replace(/\s+/g, ' ').trim()
+  return { text: [rec.header || rec.title, body, `Job posting on the ${rec.org} ${rec.board} job board.`].filter(Boolean).join(' ').slice(0, 100_000), title: `${rec.title} @ ${rec.org}`.slice(0, 300) }
 }
