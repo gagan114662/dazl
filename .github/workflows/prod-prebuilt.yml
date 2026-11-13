@@ -1,0 +1,149 @@
+name: prod-prebuilt
+# Production deploys, build half (web/docs/DEPLOY.md, "Deploying a prebuilt release"). The production box (1.8 GB RAM)
+# must never run `npm ci`, tsc or `next build`: a deploy that did was OOM-killed mid-build and dazl.ai answered 502
+# (2026-11-12). So every push to main (and any commit on request) is built here, on a free GitHub-hosted arm64 runner
+# (the box is arm64, Ubuntu 24.04, Node 22), with production's public settings and no secrets, and attached to the
+# `prod-prebuilt` prerelease as public assets:
+#   prod-next-<sha>.tgz      .next plus .build-commit (the commit it was built from)
+#   prod-modules-<sha>.tgz   node_modules
+#   prod-prebuilt-<sha>.json the manifest (commit, arch, Node ABI, lockfile sha256, each file's sha256, size and
+#                            unpacked size), uploaded LAST, so a manifest always means a complete set
+# The newest 5 commits are kept (rollback window). ops/prod/pull-release.sh downloads, verifies and unpacks a set on the
+# box; ops/prod/deploy-prod.sh uses it in place of building. Pull requests that change this workflow or ops/prod build
+# and check the manifest only (nothing is published).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['.github/workflows/prod-prebuilt.yml', 'ops/prod/**']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full commit to build (default: the selected ref). Use it to rebuild an older commit for a rollback.'
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: prod-prebuilt-${{ github.ref }}-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+env:
+  TAG: prod-prebuilt
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          WANT: ${{ inputs.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          s=${WANT:-$HEAD_SHA}
+          [[ $s =~ ^[0-9a-f]{40}$ ]] || { echo "not a full commit: $s"; exit 1; }
+          echo "sha=$s" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          persist-credentials: false
+      # The tools come from THIS workflow's own commit, never from the commit being built: a commit from before
+      # ops/prod existed (every release older than #1061) must still be rebuildable for a rollback.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .prod-tools
+          sparse-checkout: ops/prod
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build (production settings, no secrets)
+        working-directory: web
+        env:
+          PUBLIC_BASE_URL: https://dazl.ai
+          NEXT_TELEMETRY_DISABLED: '1'
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          test -z "${DAZL_ENV:-}"   # a production build is never a staging build (staging adds noindex at build time)
+          npm ci --no-audit --no-fund --loglevel=error
+          echo "$SHA" > .build-commit
+          NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          rm -rf .next/cache
+          test -f .next/BUILD_ID
+          node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"
+          mkdir -p ../prebuilt
+          tar -czf "../prebuilt/prod-next-$SHA.tgz" .next .build-commit
+          tar -czf "../prebuilt/prod-modules-$SHA.tgz" node_modules
+      - name: Manifest
+        env:
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          node .prod-tools/ops/prod/prebuilt-manifest.mjs prebuilt "$SHA" web/package-lock.json
+          test "$(tar -xzOf "prebuilt/prod-next-$SHA.tgz" .build-commit)" = "$SHA"
+          ls -l prebuilt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prod-prebuilt-${{ steps.sha.outputs.sha }}
+          path: prebuilt/
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request'
+    # one publish per commit (a global group keeps only ONE pending job: a burst of pushes would drop the middle commit).
+    # Concurrent publishes of different commits are safe because the prune below never touches an asset younger than
+    # 60 minutes, so it can never delete another run's archives between its archive and manifest uploads.
+    concurrency:
+      group: prod-prebuilt-publish-${{ needs.build.outputs.sha }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # release assets of the prod-prebuilt prerelease, nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: prod-prebuilt-${{ needs.build.outputs.sha }}
+          path: prebuilt
+      - name: Publish to the prod-prebuilt prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.build.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd prebuilt
+          # only a commit on main is ever published for production (a hand-run build of any other commit is refused)
+          st=$(gh api "repos/$REPO/compare/$SHA...main" --jq .status)
+          case "$st" in ahead|identical) ;; *) echo "$SHA is not on main (compare: $st); nothing published"; exit 1 ;; esac
+          gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 || gh release create "$TAG" -R "$REPO" --prerelease --target "$SHA" \
+            --title "Production prebuilt builds (automatic)" \
+            --notes "Built by .github/workflows/prod-prebuilt.yml; unpacked on the production box by ops/prod/pull-release.sh. Assets are named by commit; the newest 5 commits are kept. Not a product release."
+          # A rerun for the same commit: remove that commit's manifest FIRST, so the box never pairs an old manifest with
+          # new archive bytes; the manifest is uploaded last (a manifest always means a complete, matching set).
+          rid=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          mid=$(gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq ".[] | select(.name == \"prod-prebuilt-$SHA.json\") | .id")
+          if [ -n "$mid" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$mid"; fi
+          gh release upload "$TAG" -R "$REPO" --clobber "prod-next-$SHA.tgz" "prod-modules-$SHA.tgz"
+          gh release upload "$TAG" -R "$REPO" --clobber "prod-prebuilt-$SHA.json"
+      - name: Keep the newest 5 commits' assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.build.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rid=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          gh api --paginate "repos/$REPO/releases/$rid/assets?per_page=100" --jq '.[] | {id, name, created_at}' | jq -s . > assets.json
+          keep=$(jq -r '[.[] | select(.name | test("^prod-prebuilt-[0-9a-f]{40}\\.json$"))] | sort_by(.created_at) | reverse | .[0:5] | .[].name | capture("(?<s>[0-9a-f]{40})").s' assets.json | tr '\n' ' ')
+          keep="$keep $SHA"
+          cutoff=$(date -u -d '60 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          jq -r --arg cutoff "$cutoff" '.[] | select(.created_at < $cutoff) | "\(.id) \(.name)"' assets.json | while read -r id name; do
+            s=$(printf '%s' "$name" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)
+            [ -n "$s" ] || continue
+            case " $keep " in *" $s "*) continue ;; esac
+            echo "deleting $name"
+            gh api -X DELETE "repos/$REPO/releases/assets/$id"
+          done
