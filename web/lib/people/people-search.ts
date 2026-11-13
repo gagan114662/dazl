@@ -88,6 +88,7 @@ const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE
 export interface PeopleStats { eligible: number; held: number; already_named: number; searched: number; results: number; profiles: number; refused: Record<string, number>; failed: Record<string, number>; no_roles?: boolean }
 const FAILED_SEARCH: readonly string[] = ['unavailable', 'rate', 'cap', 'quota', 'auth', 'disabled']
 const failedSearches = (s: PeopleStats): number => { let t = 0; for (const k of [...FAILED_SEARCH, 'other']) { const v = s.failed?.[k]; if (Number.isSafeInteger(v) && v > 0) t += v } return t }
+const failedCauses = (s: PeopleStats): string => [...FAILED_SEARCH, 'other'].filter(k => Number.isSafeInteger(s.failed?.[k]) && s.failed[k] > 0).map(k => `${k} x${s.failed[k]}`).join(', ')
 export const newPeopleStats = (): PeopleStats => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {}, failed: {} })
 // The flat detail the trace stores (numbers only; a cause with no refusal is left out).
 export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
@@ -149,7 +150,7 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
   if (n > 0) return null
   if (!(stats && stats.searched > 0)) return 'no profile results named a role-matching person at a verified company'
   const failed = failedSearches(stats)
-  if (failed >= stats.searched) return `${stats.searched} search(es) sent, none answered (the search provider was unavailable or rate-limited): nothing was learned about who to contact`
+  if (failed >= stats.searched) return `${stats.searched} search(es) attempted, none got an answer (${failedCauses(stats)}): nothing was learned about who to contact`
   return `${stats.searched} search(es) run${failed > 0 ? ` (${failed} got no answer)` : ''}, ${stats.results > 0 ? stats.results : 0} result(s): none named a role-matching person at the lead's company`
 }
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play

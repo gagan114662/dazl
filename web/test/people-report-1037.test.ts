@@ -10,8 +10,8 @@ import { addEnrichment } from '../lib/connectors/store.ts'
 import { HELD_ICP as ICP, HELD_RESULTS as RESULTS, env, setup, stub } from './helpers/people-held-fixture.ts'
 
 test('#1037 run report: which holds the pass may search is one fail-closed list', () => {
-  for (const r of ['counterparty_signal', 'location_mismatch', 'location_unconfirmed', 'self_description', 'first_party_signal', 'some_future_reason', '']) assert.equal(peopleSearchable(r), false, r)
-  for (const r of [null, undefined, 'trial_budget_reached', 'quote_unconfirmed', 'blocked_by_site', 'outside_window_undated', 'needs_javascript', 'no_sales_hiring_evidence']) assert.equal(peopleSearchable(r), true, String(r))
+  for (const r of ['counterparty_signal', 'location_mismatch', 'location_unconfirmed', 'self_description', 'first_party_signal', 'trial_budget_reached', 'some_future_reason', '']) assert.equal(peopleSearchable(r), false, r)
+  for (const r of [null, undefined, 'quote_unconfirmed', 'blocked_by_site', 'outside_window_undated', 'needs_javascript', 'no_sales_hiring_evidence']) assert.equal(peopleSearchable(r), true, String(r))
   for (const r of SEARCHABLE_HOLDS) assert.match(r, /^[a-z_]+$/, 'reasons are inlined into SQL: plain identifiers only')
 })
 
@@ -79,7 +79,7 @@ test('#1037 free trial: the searches reserved before finish count only the rows 
     { company: 'Freightwise', review_reason: null, fit: 0 },                   // graded out of the list: reserves nothing
     { company: 'Surveyhive', review_reason: null, fit: 1 },                    // graded out
     { company: 'Meshgate', review_reason: 'counterparty_signal' },            // company in doubt
-    { company: 'Tracewell', review_reason: 'legacy_currentness_review' },     // not on the list
+    { company: 'Tracewell', review_reason: 'trial_budget_reached' },          // a budget-stopped free scan: its company may never have been checked
     { company: '', review_reason: null, fit: 5 },                              // no company to search for
     { company: 'Corvane', fit: 2 },                                            // ready (no reason), fit 2 is on the list: 2
     { company: 'Helpwell', review_reason: 'some_future_reason' },             // unknown hold: fail closed
@@ -97,8 +97,12 @@ test('#1037 run report: a search that got no answer is counted as failed, never 
     assert.equal(stats.searched, 2); assert.deepEqual(stats.failed, { unavailable: 2 }); assert.equal(stats.results, 0)
     assert.equal(peopleStatsDetail(stats).search_failed_unavailable, 2)
     const msg = String(peopleTraceMessage(0, null, stats))
-    assert.equal(msg, '2 search(es) sent, none answered (the search provider was unavailable or rate-limited): nothing was learned about who to contact')
+    assert.equal(msg, '2 search(es) attempted, none got an answer (unavailable x2): nothing was learned about who to contact')
     assert.doesNotMatch(msg, /none named a role-matching person/) }
+  // Our own per-minute gate refuses the search before anything is sent: counted as rate, and the sentence does not say "sent".
+  { const st = { ...newPeopleStats(), eligible: 1, searched: 1, failed: { rate: 1 } }
+    assert.equal(peopleTraceMessage(0, null, st), '1 search(es) attempted, none got an answer (rate x1): nothing was learned about who to contact')
+    assert.equal(peopleStatsDetail(st).search_failed_rate, 1) }
   // One of two answered, with nobody: the sentence says how many got no answer.
   { const { db, job } = setup([['L-corvane', 'Corvane', 'quote_unconfirmed', 50], ['L-helpwell', 'Helpwell', null, 40]]); const stats = newPeopleStats(); let n = 0
     const f = (async () => ++n === 1 ? new Response('{}', { status: 503 }) : new Response(JSON.stringify({ results: [] }))) as unknown as typeof fetch

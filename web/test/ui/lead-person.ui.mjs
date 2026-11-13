@@ -55,6 +55,8 @@ const HELD = [
   lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'counterparty_signal' }),
   // no company (a person row, e.g. an imported commenter): no line either
   lead('8'.repeat(24), '', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'quote_unconfirmed', name: 'Nobody Corp Person' }),
+  // held when a free scan ran out of budget (its company may never have been checked): no line, even with a person stored
+  lead('a'.repeat(24), 'Suds Ledger POS', [ppl('search:people', 'Anya Braun, Head of Sales', 'https://www.linkedin.com/in/anya-braun-test')], { review_reason: 'trial_budget_reached' }),
   // rejected by the user: no line
   lead('9'.repeat(24), 'Tracewell', [], { review_reason: 'quote_unconfirmed', quarantined_at: 1 }),
 ]
@@ -108,7 +110,8 @@ async function leadsPage(width, height, tag) {
   }
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
   // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
-  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 5)
+  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 6)
+  assert.equal(await held.filter({ hasText: 'Suds Ledger POS' }).getByTestId('lead-person').count(), 0, 'a budget-held row shows no person line')
   assert.equal(await held.getByTestId('lead-person').count(), 2, 'only the two searchable held company rows carry a line')
   assert.equal(await held.filter({ hasText: 'Nobody Corp Person' }).getByTestId('lead-person').count(), 0, 'a row with no company shows no person line')
   assert.equal(await held.filter({ hasText: 'Tracewell' }).getByTestId('lead-person').count(), 0, 'a rejected lead shows no person line')

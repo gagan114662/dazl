@@ -85,6 +85,7 @@ test('#1037 held leads: a hold that puts the company itself in doubt, an unknown
     ['L5', 'Helpwell', 'first_party_signal', 90],
     ['L6', 'Freightwise', 'some_future_reason', 90],     // not on the list: fail closed
     ['L7', 'Boardlane', 'quote_unconfirmed', 90, true], // rejected by the user
+    ['L9', 'Suds Ledger POS', 'trial_budget_reached', 90], // a budget-stopped free scan may hold candidates whose company was never checked
     ['L8', 'Tracewell', 'outside_window_undated', 10],
   ]
   const { db, job } = setup(rows); const s = stub(); const stats = newPeopleStats()
