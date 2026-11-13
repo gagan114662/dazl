@@ -1289,6 +1289,8 @@ CREATE INDEX monitor_alerts_monitor ON monitor_alerts (monitor_id, at);
 
 CREATE INDEX monitor_events_entity ON monitor_events (user_id, entity_key);
 
+CREATE INDEX monitor_runs_job ON monitor_runs (job_id);
+
 CREATE INDEX monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
 
 CREATE INDEX monitors_due ON monitors (enabled, next_run_at);

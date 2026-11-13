@@ -869,7 +869,7 @@ export default function LeadsClient() {
       {draft && (
         <div className="card p-4 mb-6 text-sm">
           {/* Above BOTH Run buttons: the spend limit and what it does not cover are read before anything starts. */}
-          <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
+          <BudgetPanel form={budgetForm} setForm={setBudgetForm} hasKey={keyState ? keyState.has_key : null} />
           <PlanViewCard plan={draftPlan} />
           <div className="flex items-center justify-between gap-3 mb-3">
             <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
