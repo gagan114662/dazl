@@ -135,7 +135,7 @@ test('PDL saved without the paid-fallback opt-in is never called, and the result
   const r = await run(s, DANA, stub(() => json({ person: null }), never, calls))
   assert.equal(r.status, 'not_found'); assert.ok('row' in r); assert.match(r.row.detail ?? '', /fallback is off/)
   assert.equal(calls.pdl, 0)
-  assert.deepEqual(workEmailProviders(s.db, 'A'), { apollo: true, pdl: false, pdlNeedsOptIn: true })
+  assert.deepEqual(workEmailProviders(s.db, 'A', {}), { apollo: true, pdl: false, pdlNeedsOptIn: true, mailboxCheck: false })
   assert.match(workEmailCostNote(workEmailProviders(s.db, 'A')), /People Data Labs fallback is off/)
 })
 
