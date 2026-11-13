@@ -46,6 +46,7 @@ export function migrateMonitors(db: Database.Database): void {
       new_count  INTEGER
     );
     CREATE INDEX IF NOT EXISTS monitor_runs_monitor ON monitor_runs (monitor_id, ran_at);
+    CREATE INDEX IF NOT EXISTS monitor_runs_job ON monitor_runs (job_id); -- #381 runner: is this job a monitor run? (a seek)
     CREATE TABLE IF NOT EXISTS monitor_seen (
       monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
       dedup_key  TEXT NOT NULL,
