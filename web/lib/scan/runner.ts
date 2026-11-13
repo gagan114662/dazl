@@ -15,7 +15,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { heldCopyBoard } from '../sources/ats-posting.ts'
-import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
+import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, DATE_REJECTS } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -297,7 +297,6 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
 
 // (shown to the user, never emailed) instead of vanishing. Dedup by company keeps the best.
 // The verifier's date rejections (verifyEvidence): a held copy whose claimed day is one of these stays held.
-const DATE_REJECTS = new Set(['bad_date', 'stale', 'future_date'])
 
 // A job board's structured publish stamp proves the day THIS HIRING POSTING went up - never a funding round or any
 // other company event (#460 contract). Only a hiring-shaped signal may take the ats_structured proof; anything else

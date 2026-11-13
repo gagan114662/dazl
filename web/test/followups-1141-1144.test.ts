@@ -1,0 +1,49 @@
+// Follow-ups from Hermes-PC's reviews of #1144 and #1141.
+// (1) #1144: the verifier (runner.ts) and the evidence recheck (evidence-recheck.ts) each kept their own copy of the date
+//     rejections (DATE_REJECTS); a new date reason added to one would split them again. Now one set, in evidence.ts.
+// (2) #1141: a careers vacancy offered with no quote (the posting never states the role) wrote an evidence label ending
+//     in a dangling "; " (sales-hiring-gate.ts). Labels are now joined from their non-empty parts.
+// Namespace imports, so each test fails on its own assertion (not at import) against the code before this change.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import * as evidence from '../lib/scan/evidence.ts'
+import * as gate from '../lib/scan/sales-hiring-gate.ts'
+
+const src = (p: string) => readFileSync(fileURLToPath(new URL(`../lib/scan/${p}`, import.meta.url)), 'utf8')
+const page = { text: 'Acme raised a seed round to grow its sales team.', title: 'Acme news', retrievedAt: Math.floor(Date.parse('2026-11-13T12:00:00Z') / 1000) }
+const cand = (event_date: string) => ({ name: '', company: 'Acme', contact: null, signal: 'Raised a seed round', source_url: 'https://acme.example/news', excerpt: 'Acme raised a seed round to grow its sales team.', event_date, score: 80 }) as never
+
+test('#1144 follow-up: one DATE_REJECTS set, exported by evidence.ts, holds every reason verifyEvidence gives a day that fails the date rules', () => {
+  const set = (evidence as { DATE_REJECTS?: ReadonlySet<string> }).DATE_REJECTS
+  assert.ok(set, 'evidence.ts exports DATE_REJECTS')
+  const now = new Date('2026-11-13T12:00:00Z')
+  for (const [day, why] of [['2026-13-45', 'malformed'], ['2019-01-01', 'too old'], ['2027-06-01', 'in the future']] as const) {
+    const v = evidence.verifyEvidence(cand(day), page as never, now)
+    assert.equal(v.ok, false, `${day} (${why}) is rejected`)
+    assert.ok(set!.has((v as { reason: string }).reason), `${day} (${why}): reason ${(v as { reason: string }).reason} is a DATE_REJECTS reason`)
+  }
+  assert.deepEqual([...set!].sort(), ['bad_date', 'future_date', 'stale'])
+})
+
+test('#1144 follow-up: neither the verifier nor the recheck keeps its own copy of the date rejections', () => {
+  for (const f of ['runner.ts', 'evidence-recheck.ts']) {
+    const s = src(f)
+    assert.doesNotMatch(s, /new Set\(\s*\[\s*'bad_date'/, `${f} defines no DATE_REJECTS of its own`)
+    assert.match(s, /import \{[^}]*\bDATE_REJECTS\b[^}]*\} from '\.\/evidence\.ts'/, `${f} imports the shared set`)
+  }
+})
+
+test('#1141 follow-up: a careers evidence label never ends in a dangling "; " when the vacancy has no quote', () => {
+  const label = (gate as { evidenceLabel?: (...p: (string | null | undefined | false)[]) => string }).evidenceLabel
+  assert.ok(label, 'sales-hiring-gate.ts exports evidenceLabel')
+  const dateLabel = 'Greenhouse first-published date read from the linked posting; '
+  assert.equal(label!('Requested role: Account Executive', dateLabel, ''), 'Requested role: Account Executive; Greenhouse first-published date read from the linked posting')
+  assert.equal(label!(dateLabel, ''), 'Greenhouse first-published date read from the linked posting')
+  assert.equal(label!('', ''), '')
+  assert.equal(label!('generic hiring - no requested-role match in the sampled roles', '', 'We are hiring an AE.'), 'generic hiring - no requested-role match in the sampled roles; We are hiring an AE.')
+  assert.equal(label!('Long-open: first published 2026-01-01', false, ''), 'Long-open: first published 2026-01-01')
+  // and every careers label in the gate is built with it (no template ending in "; ${v.quote}")
+  assert.doesNotMatch(src('sales-hiring-gate.ts'), /; \$\{(?:dateLabel\}\$\{)?v\.quote\}`/)
+})

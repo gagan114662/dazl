@@ -6,12 +6,11 @@ import {parseIcp} from './icp.ts'
 import {parseWindowDays,windowStatus} from './window.ts'
 import {ownPlaceAgreement} from './own-block.ts'
 import {closedJobEvidence} from './closed-job.ts'
-import {verifyEvidence,type Candidate} from './evidence.ts'
+import {verifyEvidence,type Candidate, DATE_REJECTS } from './evidence.ts'
 import {eventDateBound} from './event-date-binding.ts'
 import {counterpartySignal} from './counterparty.ts'
 import {isHiringTrigger} from './scoreboard.ts'
-// the verifier's date rejections (lib/scan/runner.ts DATE_REJECTS): a claimed day the date rules reject never takes the board proof
-const DATE_REJECTS=new Set(['bad_date','stale','future_date'])
+// the verifier's date rejections (DATE_REJECTS, shared from evidence.ts): a claimed day the date rules reject never takes the board proof
 interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;signal_kind:string|null;source_url:string;evidence_excerpt:string|null;event_date:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
 export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=new Date()){
  const d=asDb(db)
