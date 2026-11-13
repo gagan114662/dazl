@@ -199,8 +199,30 @@ export function readLaunchPolicy(db: Database.Database, tenantId: string): Store
 }
 // What the settings page shows: the accepted policy, or that the stored row cannot be read (it is not a launch either:
 // launchGate throws on the same failure and autopilot stops). The page never fails because one row is corrupt.
-export function launchPolicyView(db: Database.Database, tenantId: string): { accepted: StoredPolicy | null; problem?: 'policy_unreadable' } {
-  try { return { accepted: readLaunchPolicy(db, tenantId) } } catch { return { accepted: null, problem: 'policy_unreadable' } }
+export function launchPolicyView(db: Database.Database, tenantId: string): { accepted: StoredPolicy | null; problem?: 'policy_unreadable'; paused_because?: string; reaccept_action?: 'reaccept_product_truth' } {
+  let accepted: StoredPolicy | null
+  try { accepted = readLaunchPolicy(db, tenantId) } catch { return { accepted: null, problem: 'policy_unreadable' } }
+  // #402: a launch bound to an older product truth record is paused (launchGate). The owner gets one line saying why and the
+  // one action that resumes it (POST {action:'reaccept_product_truth'}); this tenant only - no other tenant's policy is read.
+  const stale = staleTruth(accepted)
+  if (!stale) return { accepted }
+  return { accepted, paused_because: `Autopilot is paused: what dazl ships changed since you accepted your launch policy (record ${stale.accepted} is now ${stale.current}). Re-accept the current record to resume.`, reaccept_action: 'reaccept_product_truth' }
+}
+// The bound record and the current one, when they differ (null: nothing bound, or still current).
+export function staleTruth(s: StoredPolicy | null): { accepted: string; current: string } | null {
+  const v = s?.policy.claims.productTruthVersion
+  if (v === undefined) return null
+  const current = productTruth().version
+  return v === current ? null : { accepted: v, current }
+}
+// One-click re-accept (#402): the tenant's OWN stored policy, unchanged except that it now binds the current record. Like any
+// acceptance it needs a passing preflight before it launches again (the route runs it right after). Never touches another tenant.
+export function reacceptCurrentTruth(db: Database.Database, tenantId: string, nowS: number): { ok: true } | { ok: false; reason: 'no_launch_policy' | 'not_stale' } | { ok: false; problems: PolicyProblem[] } {
+  const s = readLaunchPolicy(db, tenantId)
+  if (!s) return { ok: false, reason: 'no_launch_policy' }
+  const stale = staleTruth(s)
+  if (!stale) return { ok: false, reason: 'not_stale' }
+  return acceptLaunchPolicy(db, tenantId, { ...s.policy, claims: { ...s.policy.claims, productTruthVersion: stale.current } }, nowS)
 }
 
 // What the copy may claim under the policy: no price unless allowed; links only to https benchmarks it lists, the
@@ -242,7 +264,8 @@ export function recordPreflight(db: Database.Database, tenantId: string, accepte
 }
 
 // What autopilot reads before each send. Calibrated only while the accepted policy is the current version, still valid,
-// launched by a passing preflight, and the connected mailbox is the policy's sender.
+// launched by a passing preflight, bound (when it binds one) to the CURRENT product truth record, and the connected mailbox is
+// the policy's sender.
 // accepted: a launch policy row exists for the tenant (accepted, stale, re-accepted, invalid) but is not a launch right now.
 // Autopilot must then STOP, not run the warmup: past the warmup's first sends the warmup is unrestricted, and the tenant's
 // last word was a policy. Only a tenant with no row at all is on the warmup.
@@ -253,6 +276,10 @@ export function launchGate(db: Database.Database, tenantId: string, connectedMai
   const s = readLaunchPolicy(db, tenantId)
   if (!s) return { calibrated: false, accepted: false }
   if (s.launchedAt === null || s.version !== LAUNCH_POLICY_VERSION || policyProblems(s.policy).length) return { calibrated: false, accepted: true }
+  // #402: a policy bound to a product truth record that has since changed (a capability, price or prerequisite moved) is no
+  // longer a launch: autopilot stops until the owner re-accepts the current record. Generic copy that names no capability is
+  // otherwise never re-checked against the change.
+  if (s.policy.claims.productTruthVersion !== undefined && s.policy.claims.productTruthVersion !== productTruth().version) return { calibrated: false, accepted: true }
   if (!connectedMailbox || connectedMailbox.trim().toLowerCase() !== s.policy.sender) return { calibrated: false, accepted: true }
   return { calibrated: true, policy: s.policy, cap: calibratedDailyCap(s.policy, s.launchedAt, nowS), launchedAt: s.launchedAt, acceptanceId: s.acceptanceId }
 }

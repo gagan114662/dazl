@@ -275,3 +275,18 @@ test('accounts that existed before keep sessions and password sign-in with mail 
   assert.deepEqual({ ...(raw.prepare("SELECT email_confirmation_required AS f, email_verified_at AS v FROM users WHERE id = 'E1'").get() as object) }, { f: 0, v: null }, 'not marked verified')
   console.log('SIGNUP LEGACY ok')
 })
+
+test('#1095 login CSRF: sign-up and sign-in refuse a cross-site request (a foreign Origin, or a text/plain form body), create nothing and set no session', async () => {
+  const users = () => count('SELECT count(*) AS n FROM users')
+  const before = users()
+  for (const [route, path] of [[signup, '/api/auth/signup'], [signin, '/api/auth/signin']] as const) {
+    const body = { email: `csrf-${path.slice(10)}@example.test`, password: 'correct horse battery 9', name: 'X', business_name: 'X' }
+    for (const headers of [{ origin: 'https://evil.example' }, { origin: 'null' }, { 'content-type': 'text/plain' }] as Record<string, string>[]) {
+      const r = await route.POST(req(path, body, headers))
+      assert.equal(r.status, 400, `${path} ${JSON.stringify(headers)}`)
+      assert.ok(!r.headers.getSetCookie().some(c => /^dazl_session=[0-9a-f]/.test(c)), `${path}: no session`)
+    }
+  }
+  assert.equal(users(), before, 'no account was created')
+  console.log('SIGNUP LOGIN-CSRF ok')
+})
