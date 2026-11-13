@@ -2,7 +2,8 @@
 // on must come from ITS block: the sentences that name it (plus an own-address sentence that continues them), never another company's address on the
 // same page. A page whose title names the company is about that company alone, so its whole text counts. A company the page never names in a sentence
 // has no block, and no block is "unconfirmed", never a mismatch it did not earn.
-import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { companyKey, hasPhrase, norm, pageHeadingNames } from './evidence.ts'
+import type { BoardIdentity } from '../sources/ats-posting.ts'
 import { placeAgreement, type PlaceVerdict } from './place-agreement.ts'
 
 // A sentence about someone ELSE ("its competitor Acme is headquartered in Manchester", "it competes with Acme in Manchester") is never joined to, or continued from, the lead's block.
@@ -28,10 +29,12 @@ const CONTINUES = /^(?:our|we|its|located|based|address|visit|find|come|headquar
 // A title that names the company is about it alone only when it does not look like a list or a pairing ("Seed round-up: Brightloop and Acme").
 const MULTI_TITLE = /,|;|\band\b|&|\bvs\.?\b|\bversus\b|\bplus\b|\+|\b(?:round-?ups?|roundup|list|best|top|\d+\s+\w+)\b|\bwho\b|\bthis\s+week\b/i
 
-export function ownBlock(text: string, company: string, title = '', excerpt = ''): string | null {
+// board: a posting read through its board's record (#1126): the page is this company's when the board's identity names
+// it, never because the posting's job title happens to contain the name.
+export function ownBlock(text: string, company: string, title = '', excerpt = '', board?: BoardIdentity): string | null {
   const key = companyKey(company)
   if (key.length < 2) return null
-  if (hasPhrase(norm(title), key) && !MULTI_TITLE.test(title)) return text // the page is about this company alone
+  if (pageHeadingNames({ title, board }, key) && (board || !MULTI_TITLE.test(title))) return text // the page is about this company alone
   const ex = norm(excerpt).slice(0, 50)
   const ss = sentences(text), out: string[] = []
   ss.forEach((s, i) => {
@@ -44,10 +47,10 @@ export function ownBlock(text: string, company: string, title = '', excerpt = ''
 }
 
 // Place agreement on the candidate's own block only. `no_geography` when the request names no place.
-export function ownPlaceAgreement(page: { title: string; text: string }, where: string[], company: string, excerpt = ''): PlaceVerdict {
+export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = ''): PlaceVerdict {
   const probe = placeAgreement('', where, company)
   if (probe === 'no_geography') return probe
-  const block = ownBlock(page.text, company, page.title, excerpt)
+  const block = ownBlock(page.text, company, page.title, excerpt, page.board)
   if (block === null) return 'unconfirmed'
   return placeAgreement(`${page.title} ${block}`, where, company)
 }
