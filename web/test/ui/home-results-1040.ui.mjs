@@ -45,7 +45,7 @@ const ZERO = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, ti
 const OFF = { ...FULL, reply_reading: false, tiles: { ...FULL.tiles, replied: null, interested: null }, by_signal: FULL.by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })) }
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
-const READY = { window_days: 30, ready: 3, judged: 25, scans_checked: 2, scans_in_window: 2, scans: [{ job_id: 'a'.repeat(24), ready: 3 }],
+const READY = { window_days: 30, ready: 3, judged: 25, capped: false, scans_checked: 2, scans_in_window: 2, scans: [{ job_id: 'a'.repeat(24), ready: 3 }],
   held: [{ reason: 'needs your review', count: 12, job_id: null, scans: 2 }, { reason: 'a required check has not passed', count: 9, job_id: 'b'.repeat(24), scans: 1 }, { reason: 'no verified date', count: 1, job_id: 'b'.repeat(24), scans: 1 }] }
 async function open(width, results, ready = READY) {
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
@@ -135,7 +135,7 @@ try {
     out.push('reply reading off: Replied and Interested unknown, with the way to turn it on'); await ctx.close() }
   { const { ctx, page } = await open(390, FULL, { window_days: 30, ready: 7, judged: 7, held: [], scans_checked: 10, scans_in_window: 12, scans: [{ job_id: 'a'.repeat(24), ready: 4 }, { job_id: 'b'.repeat(24), ready: 3 }] })
     await page.getByTestId('ready-partial').waitFor({ timeout: 20000 })
-    assert.match(await page.getByTestId('tile-ready').textContent(), /7Ready leadsIn 2 scans: opens your scansIn your 10 newest scans/)
+    assert.match(await page.getByTestId('tile-ready').textContent(), /7Ready leadsIn 2 scansIn your 10 newest scans/)
     assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads', 'ready leads in two scans: the tile opens the list of scans, not one scan with fewer rows')
     out.push('more scans than checked: says how many'); await ctx.close() }
   // the real state on prod today: 0 ready, and the breakdown says why (one lead: singular wording)

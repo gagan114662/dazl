@@ -7,6 +7,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { heldReason, type PreviewLead } from '../../lib/journey.ts'
+import { companyKey } from '../../lib/scan/evidence.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
 import { homeReady, READY_SCANS_MAX } from '../../lib/outreach/home-ready.ts'
@@ -22,9 +23,9 @@ function seed() {
   const job = (id: string, user: string, query: string, at: number, testOnly = false) => db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, ?, 'x', ?, ?, ?, NULL, 'running', 5, ?)")
     .run(id, user, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', query, at + t++)
   // confirmed: the user checked the source themselves (a machine-verified lead also needs a full timing proof to be ready)
-  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean }) => db.prepare(
-    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, fit, created_at, quarantined_at, human_confirmed_at, seen_before) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'verified' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0)
+  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string }) => db.prepare(
+    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'verified' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null)
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
 }
@@ -32,18 +33,24 @@ function seed() {
 // "seen before" rows Leads hides by default; one verdict per company (the first time it is met, newest scan first): ready,
 // or Home's own hold reason (heldReason).
 async function leadsPageVerdicts(jobIds: string[], since: number) {
-  const ready: string[] = [], held: Record<string, number> = {}, seen = new Set<string>()
+  // every judged lead's own verdict from the real route, then one per company (same domain or same normalised name):
+  // ready when any of its leads is, else the reason of the first one met
+  const groups: { keys: Set<string>; ready: string | null; reason: string }[] = []
   for (const jobId of jobIds) {
     const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${jobId}`))
     assert.equal(res.status, 200)
     const rows = (await res.json() as { leads: (PreviewLead & { created_at: number; seen_before?: number; quarantined_at?: unknown; source_kind?: string | null; company: string; company_domain?: string | null })[] }).leads
     for (const l of rows.filter(l => l.created_at >= since && !l.seen_before && !l.quarantined_at && l.source_kind !== 'test')) {
-      const k = (l.company_domain || l.company).toLowerCase(); if (seen.has(k)) continue
-      seen.add(k); const why = heldReason(l)
-      if (why) held[why] = (held[why] ?? 0) + 1; else ready.push(l.id)
+      const keys = [l.company_domain ? `d:${l.company_domain.toLowerCase()}` : '', `n:${companyKey(l.company)}`].filter(k => k.length > 2)
+      let g = groups.find(x => keys.some(k => x.keys.has(k)))
+      const why = heldReason(l)
+      if (!g) { g = { keys: new Set(), ready: why ? null : l.id, reason: why ?? '' }; groups.push(g) } else if (!why && !g.ready) g.ready = l.id
+      for (const k of keys) g.keys.add(k)
     }
   }
-  return { ready: ready.sort(), held, judged: seen.size }
+  const held: Record<string, number> = {}
+  for (const g of groups) if (!g.ready) held[g.reason] = (held[g.reason] ?? 0) + 1
+  return { ready: groups.filter(g => g.ready).map(g => g.ready as string).sort(), held, judged: groups.length }
 }
 
 test('#1040 Ready tile = what the Leads page shows ready, scan by scan (the real /api/leads route and split)', async () => {
@@ -98,6 +105,28 @@ test('#1040 Ready tile: a held company found by two scans counts once, and its l
   assert.deepEqual([r.ready, r.judged], [0, 3]); assert.deepEqual(r.held, [{ reason: 'needs your review', count: 3, job_id: null, scans: 2 }])
   const b = await homeReady('B', NOW)
   assert.deepEqual([b.ready, b.judged, b.held, b.scans_in_window], [0, 0, [], 0])
+})
+
+// independent review of d92adb00: R1 (ready wins), R2 (scans with nothing to judge take no slot), R4 (domain or name)
+test('#1040 Ready tile: ready wins over a newer held lead of the same company; hidden-only scans take no slot; one company by domain or name', async () => {
+  const { job, lead, done } = seed()
+  const OLD = 'a'.repeat(24), NEW = 'b'.repeat(24)
+  job(OLD, 'A', 'Dental practices in Ohio that opened a new location', NOW - 20 * DAY)
+  lead('old-ready', OLD, { machine: true, confirmed: true, date: recent, company: 'Same Co', at: NOW - 20 * DAY })
+  lead('acme1', OLD, { machine: true, confirmed: true, date: recent, company: 'Acme', domain: 'acme.com', at: NOW - 20 * DAY })
+  lead('acme2', OLD, { machine: true, confirmed: true, date: recent, company: 'Acme', at: NOW - 20 * DAY })
+  lead('acme3', OLD, { machine: true, confirmed: true, date: recent, company: 'Acme, Inc.', domain: 'acme.com', at: NOW - 20 * DAY })
+  done(OLD)
+  job(NEW, 'A', 'Dental practices in Ohio that opened a new location', NOW - 2 * DAY); lead('new-review', NEW, { review: 'quote_unconfirmed', date: recent, company: 'Same Co' }); done(NEW)
+  // ten newer scans whose only leads are hidden as a poor fit, rejected, or seen before: nothing the tile can judge
+  for (let i = 0; i < READY_SCANS_MAX; i++) { const id = `c${String(i).padStart(2, '0')}`.repeat(8); job(id, 'A', 'Dental practices in Ohio that opened a new location', NOW - DAY + i)
+    lead(`h${i}`, id, { machine: true, confirmed: true, date: recent, fit: 1 }); lead(`q${i}`, id, { machine: true, confirmed: true, date: recent, quarantined: true }); lead(`s${i}`, id, { machine: true, confirmed: true, date: recent, seen: true }); done(id) }
+  const r = await homeReady('A', NOW)
+  assert.deepEqual([r.scans_checked, r.scans_in_window], [2, 2], 'the ten scans with nothing to judge take no slot')
+  assert.deepEqual([r.ready, r.judged, r.held], [2, 2, []], 'Same Co is ready (its older lead is), Acme is one company by domain or name')
+  assert.deepEqual(r.scans, [{ job_id: OLD, ready: 2 }], 'the tile opens the scan whose Leads page shows them ready')
+  const v = await leadsPageVerdicts([NEW, OLD], NOW - 30 * DAY)
+  assert.deepEqual([v.ready.length, v.judged, v.held], [r.ready, r.judged, {}])
 })
 
 test('#1040 Ready tile: a store that cannot be read answers 503 (never a 0)', async () => {

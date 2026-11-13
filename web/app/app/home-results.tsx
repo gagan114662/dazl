@@ -55,8 +55,8 @@ export default function HomeResultsPanel() {
           <div className="text-2xl font-semibold tabular-nums">{ready === null ? <><span aria-hidden="true">...</span><span className="sr-only">checking</span></> : ready === 'failed' ? <><span aria-hidden="true">-</span><span className="sr-only">could not be checked</span></> : ready.ready}</div>
           <div className="text-xs text-[var(--ink-2)]">Ready leads</div>
           {ready === 'failed' && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-unread">Could not check. Refresh to retry.</div>}
-          {readyScans.length > 1 && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-scans">In {readyScans.length} scans: opens your scans</div>}
-          {ready && ready !== 'failed' && ready.scans_in_window > ready.scans_checked && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">In your {ready.scans_checked} newest scans</div>}
+          {readyScans.length > 1 && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-scans">In {readyScans.length} scans</div>}
+          {ready && ready !== 'failed' && (ready.scans_in_window > ready.scans_checked || ready.capped) && <div className="text-xs text-[var(--ink-3)] mt-1" data-testid="ready-partial">In your {ready.scans_checked} newest scans</div>}
         </Link>
         {tile('Contacted', t.contacted, '/app/outreach', 'contacted')}
         {tile('Replied', t.replied, `/app/inbox?status=all&sent_since=${r.since}`, 'replied')}
