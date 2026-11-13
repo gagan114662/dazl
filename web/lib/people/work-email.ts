@@ -179,7 +179,12 @@ export async function findWorkEmail(
 
   const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
   const prior = read()
-  if (prior && isFinal(prior.status)) return { status: prior.status, row: prior, replayed: true }
+  if (prior && isFinal(prior.status)) {
+    // A found-but-unverified address whose mailbox check never ran (the caps were used up, or the key or flag came later) gets it
+    // now: no provider credit is spent again, only one free-tier check under the same caps.
+    if (prior.status === 'unverified' && prior.address && (prior.mailbox_check ?? null) === null) { await checkMailbox(db, tenantId, lead.id, target, prior.address, deps); return { status: prior.status, row: read() ?? prior, replayed: true } }
+    return { status: prior.status, row: prior, replayed: true }
+  }
   if (prior?.status === 'pending' && prior.updated_at >= now - PENDING_STALE_S) return { status: 'busy', detail: 'a lookup for this person is already running' }
 
   const save = (status: WorkEmailStatus, f: { provider?: string | null; address?: string | null; detail?: string | null; source_url?: string | null; checked_at?: number | null }, claimedAt?: number): boolean => {
@@ -287,7 +292,8 @@ async function checkMailbox(db: Database.Database, tenantId: string, leadId: str
       const a = await verifier.verify(address)
       out = a?.outcome === 'deliverable' ? 'valid' : a?.outcome === 'catch_all' ? 'catch_all' : a?.outcome === 'undeliverable' ? 'undeliverable' : a?.outcome === 'refused' ? 'refused' : 'uncertain'
     } catch { out = 'uncertain' }
-    db.prepare("UPDATE work_email_lookups SET mailbox_check = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, tenantId, leadId, target)
+    // updated_at moves so another open tab's merge (mergeLookups) takes the checked row
+    db.prepare("UPDATE work_email_lookups SET mailbox_check = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, Math.max(Math.floor(Date.now() / 1000), (deps.now ?? 0) + 1), tenantId, leadId, target)
   } catch (e) { console.error('[work-email] mailbox check not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
 }
 

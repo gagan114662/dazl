@@ -131,7 +131,8 @@ export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unkno
 export const siteSettled = (id: { state: string; site: string | null } | null | undefined): id is { state: 'fact' | 'user_confirmed'; site: string } =>
   !!id && !!id.site && (id.state === 'fact' || id.state === 'user_confirmed')
 
-// What the lead panel says for one lookup (shared by the UI and tests). Only 'verified' and 'published' read as checked;
+// What the lead panel says for one lookup (shared by the UI and tests). Only 'verified', 'published' and a provider address whose
+// mailbox the free-tier check answered 'valid' (#1036) read as checked;
 // every other state says plainly that it is not, or why nothing is shown.
 export interface WorkEmailView { status: string; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; mailbox_check?: string | null; mailbox_verifier?: string | null; mailbox_checked_at?: number | null }
 const VERIFIER_NAME: Record<string, string> = { zerobounce: 'ZeroBounce' }
@@ -147,9 +148,10 @@ export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline
       const from = PROVIDER_NAME[v.provider ?? ''] ?? 'The provider', by = VERIFIER_NAME[v.mailbox_verifier ?? ''] ?? 'a mailbox check'
       // #1036: only the verifier's explicit "valid" makes it checked; a catch-all domain accepts every address, so it proves nothing.
       if (v.mailbox_check === 'valid') return { tone: 'checked', checked: true, showAddress: !!v.address, headline: 'Checked work email', note: `Found by ${from}; ${by} confirmed the mailbox accepts mail on ${day(v.mailbox_checked_at ?? null)}.` }
+      if (v.mailbox_check === 'refused') return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: flagged as do-not-mail', note: `${from} had an address, but ${by} flagged it as one not to email (a spam trap, abuse or do-not-mail address).` }
       if (v.mailbox_check === 'undeliverable') return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: mailbox does not exist', note: `${from} had an address, but ${by} found no such mailbox.` }
-      const after = v.mailbox_check === 'catch_all' ? ` ${by}: the domain accepts every address (catch-all), so the mailbox is not confirmed.` : v.mailbox_check === 'refused' ? ` ${by} flagged the address as one not to email.` : v.mailbox_check === 'uncertain' || v.mailbox_check === 'pending' ? ` ${by} could not confirm the mailbox.` : ''
-      return { tone: 'unchecked', checked: false, showAddress: !!v.address && v.mailbox_check !== 'refused', headline: 'Found, not checked', note: `${from} has this address but nothing confirmed the mailbox.${after} Check it before you send; dazl does not treat it as checked.` }
+      const after = v.mailbox_check === 'catch_all' ? ` ${by}: the domain accepts every address (catch-all), so the mailbox is not confirmed.` : v.mailbox_check === 'uncertain' || v.mailbox_check === 'pending' ? ` ${by} could not confirm the mailbox.` : ''
+      return { tone: 'unchecked', checked: false, showAddress: !!v.address, headline: 'Found, not checked', note: `${from} has this address but nothing confirmed the mailbox.${after} Check it before you send; dazl does not treat it as checked.` }
     }
     case 'not_found': return { tone: 'none', checked: false, showAddress: false, headline: 'No work email found', note: `Nothing usable came back${why}. This does not prove none exists.` }
     case 'not_us': return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: outside the US', note: `Outside the US dazl only uses addresses the person or company published${why}.` }
