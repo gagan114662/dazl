@@ -94,13 +94,16 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
-  for (const h of sig.map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
+  // ...and only from one that says hiring, not "not hiring a receptionist" (a negated signal is never a hiring play)
+  for (const h of sig.filter(enforceable).map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
   // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
   // lib/signals/competitor-reddit.ts; pinned by test), so the play never leaves out a competitor whose complaints it surfaces
   const comps = list(competitors).slice(0, COMPLAINT_COMPETITORS)
   const named = comps.length > 1 ? `${comps.slice(0, -1).join(', ')} or ${comps[comps.length - 1]}` : comps[0]
-  if (comps.length) add(`Looking for an alternative to ${named}`, `${buyer || 'Companies'}${place} looking for an alternative to ${named}`)
+  const compQuery = `${buyer || 'Companies'}${place} looking for an alternative to ${named}`
+  // a query that would be cut (add() keeps 300 characters) would drop a name: no competitor play then, never a partial one
+  if (comps.length && compQuery.replace(/\s+/g, ' ').trim().length <= 300) add(`Looking for an alternative to ${named}`, compQuery)
   // a second plain-signal play (hiring signals are already the hiring plays above)
   const secondPlain = sig.filter(x => !hiringSig(x) && enforceable(x))[1]
   if (buyer && secondPlain) add(`${buyer}${place}: ${secondPlain}`, `${buyer}${place} - ${secondPlain}`)

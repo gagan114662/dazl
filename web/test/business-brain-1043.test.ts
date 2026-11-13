@@ -111,3 +111,12 @@ test('#1043 xhawk follow-up: the signal alone must be enforceable (a buyer role 
   const six = businessPlays({ buyer: icp({ signals: [] }) }, ['A1', 'B2', 'C3', 'D4', 'E5', 'F6']).map(p => p.query)
   assert.deepEqual(six, ['Practice owner in Ohio looking for an alternative to A1, B2, C3, D4 or E5'], 'the sixth is not read by the scan either')
 })
+
+test('#1043 council: a signal that compiles only to a negated condition makes no play (plain or hiring); a competitor play that would be cut is not offered', () => {
+  const q = (signals: string[], comps: string[] = []) => businessPlays({ buyer: icp({ signals }) }, comps).map(p => p.query)
+  assert.deepEqual(q(['not hiring']), [], '"not hiring" is a negated condition only')
+  assert.deepEqual(q(['not hiring a receptionist']), [], 'never "companies hiring receptionist" from a signal that says not hiring')
+  assert.deepEqual(q(['hiring a receptionist']), ['Practice owner at companies in Ohio hiring receptionist'])
+  const long = ['A', 'B', 'C', 'D', 'E'].map(c => c.repeat(60))
+  assert.deepEqual(q([], long), [], 'five 60-character names do not fit: no play that leaves one out')
+})
