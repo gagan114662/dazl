@@ -102,7 +102,7 @@ export const isCalendarDay = (d: string): boolean => {
 // rule uses the stored signal kind plus strict hiring wording only. A non-English hiring signal with
 // no kind is held unconfirmed (conservative), never upgraded.
 // a hiring freeze / pause / halt is the opposite of hiring (review at ec98b436)
-const HIRING_EN = /\bhiring\b(?!\s+(?:freeze|frozen|pause|paused|halt|halted|stop|stopped)\b)|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(?:y|ies)\b|\bis (recruiting|looking for an? )/i
+const HIRING_EN = /(?<!\b(?:paused|halted|stopped|froze|frozen|no longer|not)\s+)\bhiring\b(?!(?:-|\s+|\s*\()(?:freeze|frozen|pause|paused|halt|halted|stop|stopped)\b)(?!\s+(?:is|was|has been|have been|remains|remain)\s+(?:frozen|paused|halted|stopped|on hold|suspended)\b)|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(?:y|ies)\b|\bis (recruiting|looking for an? )/i
 // #533 live: the model words a board posting candidate exactly "Posted a <role> role on Ashby" / "Posted a <role> role on
 // Lever". Only that WHOLE wording counts (anchored: the signal is the posted role and nothing else), and only when no other
 // kind is stored, so "Raised a Series B and posted a press release on its new CRO role" or "CEO posted an update about
@@ -114,8 +114,8 @@ const HIRING_EN = /\bhiring\b(?!\s+(?:freeze|frozen|pause|paused|halt|halted|sto
 // A title word never ends a sentence (review at ec98b436: "Posted a VP Sales. Announced bankruptcy. Sales role on Lever"):
 // a "." only inside a word ("Sr.Mgr"), in a dotted acronym ("U.S."), or ending a fixed abbreviation ("Sr.", "Mgr.").
 // A state word that makes the posted role a non-hire (a freeze, a filled / closed / expired role) is not a title word.
-const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|of|about|on|in|for|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|notice|quarter|loss|revenue|jump|record|blog|paper|webinar|recording|press|release|photo|update|note|post|article|video|story|farewell|layoff|layoffs|freeze|frozen|filled|closed|expired|cancelled|canceled|paused|withdrawn'
-const TITLE_WORD = String.raw`(?:(?:sr|jr|mgr|assoc|asst|dir|exec|eng|mktg|intl|govt|dept|snr|vp|svp|evp|avp)\.|(?:[a-z]\.){2,}|\(?[a-z0-9][\w&/+'()]*(?:\.[a-z0-9][\w&/+'()]*)*)`
+const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|of|about|on|in|for|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|notice|quarter|loss|revenue|jump|record|blog|paper|webinar|recording|press|release|photo|update|note|post|article|video|story|farewell|layoff|layoffs|freeze|frozen|filled|closed|expired|cancelled|canceled|paused|withdrawn|suspended|former|ex|on-hold|hold'
+const TITLE_WORD = String.raw`(?:(?:sr|jr|mgr|assoc|asst|dir|exec|eng|mktg|intl|govt|dept|snr|vp|svp|evp|avp|rep|dev|st|mgmt|admin|acct|coord|spec|rep)\.|(?:[a-z]\.){2,}|\(?[a-z0-9][\w&/+'()]*(?:\.[a-z0-9][\w&/+'()]*)*)`
 const POSTED_ROLE = new RegExp(String.raw`^\s*posted an? (?:(?!(?:${TITLE_STOP})\b)${TITLE_WORD}(?:\s*[-–]\s*|\s+)){1,10}(?:role|job|position|opening|vacancy) on (?:ashby|lever|greenhouse|workable|smartrecruiters|bamboohr|recruitee|breezy|jobvite|workday)\s*\.?\s*$`, 'i')
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed
 // trigger is hiring; it is never a funding or other trigger's date.
