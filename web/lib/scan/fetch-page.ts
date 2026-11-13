@@ -4,6 +4,7 @@ import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl } from '../sources/ats-posting.ts'
+import { withAtsReadSlot } from './ats-read-slots.ts' // #1127: at most ATS_RECORD_CONCURRENCY board record reads at a time per scan
 
 // published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD. postedAt (#533): set only when the
 // page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
@@ -121,7 +122,7 @@ function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
   const hit = boardMemo.get(k)
   if (hit) return signal?.aborted ? Promise.reject(new Error('aborted')) : hit.read
   // shared, so not tied to one caller's abort signal; it is still bounded by the request timeout
-  const read = once(url, TIMEOUT_MS, guardedLookup)
+  const read = withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup)) // queued for a slot (#1127); the request timeout starts when the read does
   const entry = { at: now, read, bytes: 0 }
   boardMemo.set(k, entry)
   read.then(r => {
@@ -249,7 +250,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
       if (signal?.aborted) return { fail: 'error' }
-      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
+      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : posting ? await withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup, signal), signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
       if (r.status >= 300 && r.status < 400) {
         if (!r.location) return { fail: 'error' }
         url = new URL(r.location, url)
