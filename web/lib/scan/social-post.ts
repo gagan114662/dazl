@@ -211,7 +211,7 @@ const ws = (s: string) => s.replace(/\s+/g, ' ').trim()
 // own time (or none we can read), so the post day is not taken: the text binding alone decides, as on any page. Fail closed.
 const MONTH = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i
 const MAY = /\bMay\b/   // "may" the verb is not a month: only the capitalised word counts (in any position)
-const WHEN = /\b(?:(?:mon|tues|wednes|thurs|fri|satur|sun)days?|weekends?|today|tonight|tomorrow|yesterday|(?:this|last|next|past|coming|previous|following|same|that)\s+(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|week|weekend|month|year|season|morning|afternoon|evening|night|day|time|spring|summer|fall|autumn|winter|quarter)|spring|summer|fall|autumn|winter|ago|since|recent(?:ly)?|earlier|later|back\s+in|for\s+(?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|many|a\s+few|over|more\s+than|nearly|almost)\b[^.!?]{0,20}?\b(?:days?|weeks?|months?|years?|decades?)|years?\s+(?:of|in\s+business)|anniversary|throwback|flashback|tbt|opening|opens|will|shall|going\s+to|coming|soon|upcoming|plan(?:s|ned|ning)?|next)\b/i
+const WHEN = /\b(?:(?:mon|tues|wednes|thurs|fri|satur|sun)days?|weekends?|today|tonight|tomorrow|yesterday|(?:this|last|next|past|coming|previous|following|same|that)\s+(?:(?:mon|tues|wednes|thurs|fri|satur|sun)day|week|weekend|month|year|season|morning|afternoon|evening|night|day|time|spring|summer|fall|autumn|winter|quarter)|spring|summer|fall|autumn|winter|ago|since|recent(?:ly)?|earlier|later|back\s+in|for\s+(?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|many|a\s+few|over|more\s+than|nearly|almost)\b[^.!?]{0,20}?\b(?:days?|weeks?|months?|years?|decades?)|years?\s+(?:of|in\s+business)|anniversary|throwback|flashback|tbt|opening|opens|will|shall|going\s+to|coming|soon|upcoming|plan(?:s|ning)?\s+to|planned|next|holidays?|christmas|xmas|easter|thanksgiving|hanukk?ah|diwali|eid|ramadan|halloween|valentine'?s?|new\s+year'?s?|the\s+other\s+(?:day|week|month)|one\s+day|a\s+while|a\s+few\s+(?:days|weeks|months|years)|before|after|during|until|till|throughout|around\s+the|by\s+the\s+end|in\s+time\s+for|decades?|centur(?:y|ies))\b|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+Day\b/i
 const YEAR = /\b(?:19|20)\d\d\b/
 function statesTime(s: string): string | null {
   if (datePositions(s).length) return 'a stated day'
@@ -229,34 +229,80 @@ function thirdParty(sentence: string, company: string): boolean {
   if (!at.length) return false
   if (/\b(?:congrat\w*|kudos|thanks?|thank\s+you|shout\s*-?\s*out|cheers|proud\s+of|happy\s+for|excited\s+for)\b/i.test(sentence.slice(0, at[0]))) return true
   // every mention is an object ("at / to / for / with / from / of / by" right before it): the company is never the one speaking
-  return at.every(i => /\b(?:at|to|for|with|from|of|by)\s+(?:(?:our|the|my|your)\s+)?(?:(?:friends?|neighbou?rs?|team|folks|people|partners?|clients?)\s+(?:at|from)\s+)?$/i.test(sentence.slice(0, i)))
+  return at.every(i => !/\bwelcome\s+to\s+$/i.test(sentence.slice(0, i)) && /\b(?:at|to|for|with|from|of|by)\s+(?:(?:our|the|my|your)\s+)?(?:(?:friends?|neighbou?rs?|team|folks|people|partners?|clients?)\s+(?:at|from)\s+)?$/i.test(sentence.slice(0, i)))
 }
 
-// Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text, neither
-// the quote nor the post's sentence that carries it states any time (statesTime) or reads as another party's post (thirdParty),
-// and the existing binding rule (eventDateBound) ties the day to this company and event when the post's day stands as the
-// dateline of the post's statement: "<day> - <the post's text from the quote on>".
-export function socialPostBound(post: SocialPost | null | undefined, quote: string, company: string): { bound: boolean; why: string } {
+// #878 review round 2 (8e38655d): a blocklist of time words always leaks ("is set to open", "on the 25th", "in Q3", any other
+// language), so the post day is taken only on an ALLOW-LIST; anything else is undated (fail closed). For the quote's own sentence
+// (the post's sentences that the quote overlaps; a line break, ". ", "! ", "? " or ": " ends one):
+//  (a) the sentence that names the company states a COMPLETED event in English, from a fixed list for the kind the claim needs;
+//  (b) no digits, except a street address after "at" / "on" (a number and a street word) and a postcode;
+//  (c) no time or future wording (statesTime, the round-1 list, kept as a second guard);
+//  (d) English: no non-English function words, and non-ASCII letters do not dominate.
+// Other sentences of the caption ("open late Mondays", "you will love our team", "at 2050 Queen St E") never block.
+export const POST_OPEN_PREDICATES = /\b(?:(?:has|have)\s+(?:just\s+|officially\s+|finally\s+)?opened|(?:just|officially|finally)\s+opened|opened\s+our\s+doors|opened|(?:is|are)\s+(?:now\s+|officially\s+)?open|now\s+open|officially\s+open|our\s+doors\s+are\s+(?:now\s+)?open|open\s+for\s+business)\b/i
+export const POST_HIRING_PREDICATES = /\b(?:we['’]re\s+(?:now\s+)?hiring|we\s+are\s+(?:now\s+)?hiring|(?:is|are)\s+(?:now\s+)?hiring|now\s+hiring|joined\s+our\s+team|(?:has|have)\s+joined)\b/i
+const STREET = String.raw`(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Way|Lane|Ln|Cres|Crescent|Pl|Place|Ct|Court|Pkwy|Parkway|Sq|Square|Terrace|Trail|Line|Sideroad|Concession)`
+const ADDRESS = new RegExp(String.raw`\b(?:at|on)\s+(?:(?:unit|suite|ste)\s*\d{1,5}[A-Za-z]?\s*[,-]?\s*)?\d{1,6}[A-Za-z]?(?:-\d{1,6})?\s+(?:[A-Z][\w'’.-]*\s+){0,4}${STREET}\b\.?(?:\s+(?:N|S|E|W|North|South|East|West)\b\.?)?|\b(?:at|on)\s+(?:Hwy|Highway|Route|Regional\s+Road)\s+\d{1,4}\b`, 'g')
+const NAMED_STREET = new RegExp(String.raw`\b(?:[A-Z][\w'’-]*\s+){1,3}${STREET}\b\.?(?:\s+(?:N|S|E|W|North|South|East|West)\b\.?)?`, 'g')
+const POSTCODE = /\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b|\b(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\s+\d{5}(?:-\d{4})?\b/g
+const FOREIGN_STRONG = /\b(?:abri[óo]|abre|abrimos|nueva|nuevo|cl[ií]nica|semana|pr[óo]xim[oa]|ouvre|ouvert|ouverture|nouvelle|nouveau|bient[ôo]t|clinique|semaine|er[öo]ffnet|er[öo]ffnung|n[äa]chste|neue|praxis|woche|aperto|apre|nuova|apriamo|abriu|aberta|inaugur\w+)\b/i
+const FOREIGN_WEAK = /\b(?:el|la|los|las|del|una|un|y|con|por|para|est[áa]|le|les|des|une|et|à|au|aux|est|dans|pour|avec|der|die|das|und|ein|eine|mit|ist|im|zur|zum|il|di|che|della|nel|e|o|em|os|da|do|uma)\b/gi
+function englishEnough(s: string): boolean {
+  if (FOREIGN_STRONG.test(s)) return false
+  const weak = new Set((s.match(FOREIGN_WEAK) ?? []).map(w => w.toLowerCase()).filter(w => w !== 'a' && w !== 'e' && w !== 'o'))
+  if (weak.size >= 2) return false
+  const letters = [...s.matchAll(/\p{L}/gu)].length, other = [...s.matchAll(/[^\x00-\x7F]/gu)].filter(m => /\p{L}/u.test(m[0])).length
+  return letters === 0 || other / letters <= 0.15
+}
+// sentences as [start, end) spans; "St." / "Ave." / "Dr." and the like do not end one
+function sentenceSpans(t: string): [number, number][] {
+  const out: [number, number][] = []; let start = 0
+  for (const m of t.matchAll(/\n+|[.!?:]+(?=\s)/g)) {
+    if (m[0][0] === '.' && /\b(?:St|Ave|Rd|Dr|Blvd|Cres|Pl|Ct|Ln|Mr|Mrs|Ms|Dr|Inc|Ltd|Co|No|Ste|N|S|E|W)$/.test(t.slice(Math.max(0, m.index! - 5), m.index!))) continue
+    const end = m.index! + m[0].length
+    if (end > start) out.push([start, end])
+    start = end
+  }
+  if (start < t.length) out.push([start, t.length])
+  return out
+}
+
+// Does the post's own publish time date THIS company's event in THIS quote? Only when the quote is in the post's own text, its
+// sentences pass the allow-list above, the post is not another party's (thirdParty), and the existing binding rule (eventDateBound)
+// ties the day to this company and event when the post's day stands as the dateline of that sentence.
+// kind: the claim the lead makes ('hiring' reads the hiring predicates, anything else the opening predicates).
+export function socialPostBound(post: SocialPost | null | undefined, quote: string, company: string, kind: 'event' | 'hiring' = 'event'): { bound: boolean; why: string } {
   if (!post) return { bound: false, why: 'no social post record' }
-  const q = ws(quote).replace(/^(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+$/, '')
+  const q = ws(quote).replace(/^(?:\.{3,}|…)+\s*/, '').replace(/\s*(?:\.{3,}|…)+$/, '')
   if (q.length < 20) return { bound: false, why: 'no quote' }
   const raw = post.texts.find(t => ws(t).toLowerCase().includes(q.toLowerCase()))
   if (raw === undefined) return { bound: false, why: "the quote is not in the post's own text" }
-  const own = ws(raw)
-  // the sentence(s) of the post that carry the quote: line breaks and . ! ? end a sentence (captions break lines without punctuation)
-  const lines = raw.replace(/[ \t\r\f\v]+/g, ' ')
-  const re = new RegExp(q.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'i')
-  const m = re.exec(lines)
+  if (/\b(?:anniversary|throwback|flashback|tbt)\b/i.test(raw)) return { bound: false, why: 'the post looks back at an earlier time' }
+  const text = raw.replace(/[ \t\r\f\v]+/g, ' ')
+  const m = new RegExp(q.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'i').exec(text)
   if (!m) return { bound: false, why: "the quote is not in the post's own text" }
-  const startAt = Math.max(...['\n', '. ', '! ', '? '].map(b => { const k = lines.lastIndexOf(b, m.index); return k < 0 ? 0 : k + b.length }))
-  const ends = ['\n', '. ', '! ', '? '].map(b => lines.indexOf(b, m.index + m[0].length)).filter(k => k >= 0)
-  const sentence = ws(lines.slice(startAt, ends.length ? Math.min(...ends) + 1 : lines.length))
-  const when = statesTime(q) ?? statesTime(sentence)
-  if (when) return { bound: false, why: `the quote or its sentence states its own time (${when}), so the post's day is not its event's day` }
-  if (/\b(?:anniversary|throwback|flashback|tbt)\b/i.test(own)) return { bound: false, why: 'the post looks back at an earlier time' }
-  if (thirdParty(sentence, company)) return { bound: false, why: "the post speaks about this company from someone else's side" }
-  const at = own.toLowerCase().indexOf(q.toLowerCase())
-  const b = eventDateBound(post.day, `${post.day} - ${own.slice(at)}`, q, company)
+  const qs = m.index, qe = m.index + m[0].length
+  const spans = sentenceSpans(text).filter(([a, b]) => a < qe && b > qs)
+  const name = ws(company).toLowerCase()
+  const PRED = kind === 'hiring' ? POST_HIRING_PREDICATES : POST_OPEN_PREDICATES
+  let main: { sentence: string } | null = null
+  for (const [a, b] of spans) {
+    const sentence = ws(text.slice(a, b))
+    if (!englishEnough(sentence)) return { bound: false, why: 'the sentence is not English, so its wording cannot be read' }
+    // a street address ("at 2050 Queen St E", "on Spring Garden Road") and a postcode are places, not times
+    const place = sentence.replace(ADDRESS, ' ').replace(POSTCODE, ' ').replace(NAMED_STREET, ' ')
+    if (/\d/.test(place)) return { bound: false, why: "the quote's sentence carries a number that is not a street address, so it may state its own time" }
+    const when = statesTime(place)
+    if (when) return { bound: false, why: `the quote's sentence states its own time (${when}), so the post's day is not its event's day` }
+    if (!main && sentence.toLowerCase().includes(name) && PRED.test(sentence)) main = { sentence }
+  }
+  if (!main) return { bound: false, why: `the quote's sentence naming this company states no completed ${kind === 'hiring' ? 'hiring' : 'opening'} event from the allowed wording` }
+  if (thirdParty(main.sentence, company)) return { bound: false, why: "the post speaks about this company from someone else's side" }
+  // the post's day stands as the dateline of the statement about the company: from its first mention in that sentence (what comes
+  // before it, a greeting such as "Welcome to", was judged by thirdParty above)
+  const from = main.sentence.slice(main.sentence.toLowerCase().indexOf(name))
+  const b = eventDateBound(post.day, `${post.day} - ${from}`, from, company)
   return b.bound
     ? { bound: true, why: `the ${post.platform} post's own structured publish time for exactly this post URL, as the dateline of its own text` }
     : { bound: false, why: `the post's day is not tied to this company and event by its own text (${b.why})` }

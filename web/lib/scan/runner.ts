@@ -372,7 +372,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // #878: a public social post's own structured publish time (page.post: exactly the post this URL names) dates the claim only when the quote is the
     // post's own text and the binding rule ties the day to this company and event there (lib/scan/social-post.ts). A day the page TEXT binds to the
     // claim keeps that day; a claimed day the date rules reject keeps the hold, as on any page.
-    const postBound = page && !isFail(page) && page.post && !claimedRejected ? socialPostBound(page.post, cIn.excerpt, cIn.company) : null
+    const postBound = page && !isFail(page) && page.post && !claimedRejected ? socialPostBound(page.post, cIn.excerpt, cIn.company, hiringCand ? 'hiring' : 'event') : null
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
       // none or another acceptable day (the board's day is the posting's); the window and date rules below judge it as any date, so a stale posting stays held. A

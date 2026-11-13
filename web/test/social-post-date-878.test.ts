@@ -315,3 +315,77 @@ test('#878 review R5: another party\'s post about the company (congratulations, 
   const own = socialPostOf(IG, IG, igPage({ caption: 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team!' }), NOW)
   assert.equal(socialPostBound(own, 'Northwind Dental opened a new location in Leslieville, thanks to our amazing team', 'Northwind Dental').bound, true)
 })
+
+// ---- review round 2 at 8e38655d: an ALLOW-LIST, not a blocklist. Every caption below leaked through the round-1 word list.
+const LEAKED: string[] = [
+  'Northwind Dental is set to open a new location in Leslieville, our second clinic.',
+  'Northwind Dental is about to open a new location in Leslieville, our second clinic.',
+  'Northwind Dental is launching a new location in Leslieville, our second clinic.',
+  'Northwind Dental is expanding into a new location in Leslieville, our second clinic.',
+  'Northwind Dental new location in Leslieville is under construction, stay tuned.',
+  'Northwind Dental opened a new location in Leslieville on 10/25, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville on the 25th, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville in Q3, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville in the 90s, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville the other day, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville over the holidays, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville before Christmas, our second clinic.',
+  'Northwind Dental opened a new location in Leslieville on Canada Day, our second clinic.',
+  'Northwind Dental has served Leslieville after 10 years downtown, our second clinic.',
+  'Northwind Dental abrió una nueva clínica en Leslieville la semana pasada.',
+  'Northwind Dental ouvre une nouvelle clinique à Leslieville bientôt.',
+  'Northwind Dental eröffnet nächste Woche eine neue Praxis in Leslieville.',
+]
+// R6: these in ANOTHER sentence of the caption never block the quote's own sentence
+const OTHER_SENTENCES = ['Visit us at 2050 Queen St E.', 'Most insurance plans accepted.', 'Right next to the Loblaws.', 'Find us on Spring Garden Road.', 'You will love our team!', 'Open late Mondays.']
+// R5 nit: a greeting before the company's name, and ":" ending a sentence
+const R5_DATED = ['Welcome to Northwind Dental Parkdale, our second clinic, now open for patients.', 'Huge thanks to our team: Northwind Dental opened a new location in Parkdale.']
+
+test('#878 review round 2: captions that leaked through the word list are undated, through socialPostBound and the verifier (claimed day none)', async () => {
+  for (const caption of LEAKED) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    assert.equal(post?.day, '2026-10-20', caption)
+    const r = socialPostBound(post, quoteOf(caption), 'Northwind Dental')
+    assert.equal(r.bound, false, `${caption}: ${r.why}`)
+    const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption }) }))
+    try {
+      const o = await verifyLeads([draft({ excerpt: quoteOf(caption) })], read, new Date(NOW))
+      const all = [...o.leads, ...o.review]
+      for (const l of all) assert.ok(l.event_date !== '2026-10-20' && l.event_date_proof !== 'page_bound', `${caption}: ${JSON.stringify([l.event_date, l.event_date_proof])}`)
+    } finally { restore() }
+  }
+})
+
+test('#878 review round 2 (R6, R5): other sentences never block; a greeting or ":" before the company still dates its completed opening', async () => {
+  for (const other of OTHER_SENTENCES) {
+    const caption = `${QUOTE}\n${other}`
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    const r = socialPostBound(post, QUOTE, 'Northwind Dental')
+    assert.equal(r.bound, true, `${other}: ${r.why}`)
+  }
+  // the same through the verifier, all six other sentences in one caption
+  const restore = fakeHttps(() => ({ status: 200, type: 'text/html; charset="utf-8"', body: igPage({ caption: [QUOTE, ...OTHER_SENTENCES].join('\n') }) }))
+  try {
+    const o = await verifyLeads([draft()], read, new Date(NOW))
+    assert.deepEqual(o.leads.map(l => [l.event_date, l.event_date_proof]), [['2026-10-20', 'page_bound']])
+  } finally { restore() }
+  for (const caption of R5_DATED) {
+    const post = socialPostOf(IG, IG, igPage({ caption }), NOW)
+    const r = socialPostBound(post, quoteOf(caption), 'Northwind Dental')
+    assert.equal(r.bound, true, `${caption}: ${r.why}`)
+  }
+  // a street address in the quote's own sentence is a place, not a time
+  const addr = socialPostOf(IG, IG, igPage({ caption: 'Northwind Dental opened a new location at 2050 Queen St E, our second clinic.' }), NOW)
+  assert.equal(socialPostBound(addr, 'Northwind Dental opened a new location at 2050 Queen St E, our second clinic', 'Northwind Dental').bound, true)
+})
+
+test('#878 review round 2 (a): only a completed event of the kind the claim needs, from the fixed English wording', () => {
+  const hiring = socialPostOf(IG, IG, igPage({ caption: "Northwind Dental is hiring a front desk coordinator for our Leslieville clinic, apply in the link in bio." }), NOW)
+  const q = 'Northwind Dental is hiring a front desk coordinator for our Leslieville clinic'
+  assert.equal(socialPostBound(hiring, q, 'Northwind Dental', 'hiring').bound, true)
+  assert.equal(socialPostBound(hiring, q, 'Northwind Dental', 'event').bound, false, 'hiring wording does not date an opening claim')
+  assert.equal(socialPostBound(socialPostOf(IG, IG, igPage(), NOW), QUOTE, 'Northwind Dental', 'hiring').bound, false, 'opening wording does not date a hiring claim')
+  for (const caption of ['Grand opening of our new clinic: Northwind Dental in Parkdale welcomes patients.', 'Come visit Northwind Dental at our new clinic in Parkdale, now accepting new patients.']) {
+    assert.equal(socialPostBound(socialPostOf(IG, IG, igPage({ caption }), NOW), quoteOf(caption), 'Northwind Dental').bound, false, `acknowledged loss: ${caption}`)
+  }
+})

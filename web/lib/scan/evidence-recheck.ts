@@ -38,7 +38,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  // #878: as the verifier, a day the page text does not bind is still bound when it is the public social post's own publish day for exactly this post URL
  // (page.post) and the post's own text ties it to this company and event (socialPostBound)
  const textBound=lead.event_date&&!boardDated?eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company):null
- const postDated=!!textBound&&!textBound.bound&&!dateRejected&&page.post?.day===lead.event_date&&socialPostBound(page.post,candidate.excerpt,lead.company).bound
+ const postDated=!!textBound&&!textBound.bound&&!dateRejected&&page.post?.day===lead.event_date&&socialPostBound(page.post,candidate.excerpt,lead.company,isHiringTrigger(lead.signal,lead.signal_kind)?'hiring':'event').bound
  const date=boardDated?{bound:true,proof:'ats_structured' as const}:textBound?{...(postDated?{bound:true,why:'social post'}:textBound),proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')
