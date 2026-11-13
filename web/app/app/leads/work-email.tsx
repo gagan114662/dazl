@@ -58,7 +58,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
       const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string }
       if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
       if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
-      else if (r.ok && j.status === 'no_key') text = 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment.'
+      else if (r.ok && j.status === 'no_key') text = 'The company website does not print an address for this person, and no Apollo or People Data Labs key is set to look further. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
     setMsg(m => ({ ...m, [key]: text })); setBusy(b => ({ ...b, [key]: false }))
