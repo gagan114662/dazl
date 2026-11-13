@@ -13,6 +13,7 @@ import { migrateReplies } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE, GmailSendError } from '../lib/gmail/oauth.ts'
 import { approve, createDraft, OutreachError, saveSettings, sendMessage, suppress, type Deps } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, auditAt, CONSENT_VERSION, disable, drainFirstTouch, enable, getState, migrateAutopilot, offerHashFor, pause, recentAutopilotAudit, runAutopilot, withdrawLaunch } from '../lib/outreach/autopilot.ts'
+import { reacceptCurrentTruth, staleTruth } from '../lib/outreach/launch-policy.ts'
 import { acceptLaunchPolicy, calibratedStop, launchGate, launchPolicyView, parsePolicy, readLaunchPolicy, reserveLaunchSpend, LAUNCH_POLICY_VERSION, ROLLOUT_DAILY_CAP, ROLLOUT_DAYS } from '../lib/outreach/launch-policy.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { callCostUsd } from '../lib/llm/spend-guard.ts'
@@ -1032,4 +1033,32 @@ test('drain boundary: a pause during the token refresh is refused by the service
   const { r, g } = await drainRun(db, d => pause(d, 'A'), '')
   assert.deepEqual([g.sent.length, r.stopped ?? null], [0, 'paused'])
   assert.deepEqual(msgRow(db, id), { status: 'approved', error: 'paused' })
+})
+
+test('#402 a product truth change: the owner gets ONE line saying why and a one-click re-accept that resumes; per tenant only', async () => {
+  const db = await setup(); const job = play(db); for (const c of ['a@one.example', 'b@two.example', 'c@three.example']) lead(db, job, c)
+  assert.deepEqual(acceptLaunchPolicy(db, 'A', policy([job], { claims: { mayStatePrice: false, benchmarkUrls: [], productTruthVersion: productTruth().version } }), NOW), { ok: true })
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  // another tenant's own (current) policy row: the stale record of tenant A must not touch it
+  const otherPolicy = JSON.stringify(policy([job], { sender: 'b@other.example', testInbox: 'b@other.example', claims: { mayStatePrice: false, benchmarkUrls: [], productTruthVersion: 'pt-1111111111111111' } }))
+  db.prepare("INSERT INTO autopilot_launch_policy (tenant_id, acceptance_id, version, policy, accepted_at, launched_at, preflight) VALUES ('B', 'bbbbbbbbbbbbbbbb', ?, ?, ?, ?, NULL)").run(LAUNCH_POLICY_VERSION, otherPolicy, NOW, NOW)
+  assert.equal(launchPolicyView(db, 'A').paused_because, undefined, 'current record: no pause line')
+  // the record moves on (simulated by binding A to an older version)
+  const stored = readLaunchPolicy(db, 'A')!.policy
+  db.prepare("UPDATE autopilot_launch_policy SET policy = ? WHERE tenant_id = 'A'").run(JSON.stringify({ ...stored, claims: { ...stored.claims, productTruthVersion: 'pt-0000000000000000' } }))
+  const v = launchPolicyView(db, 'A')
+  assert.match(v.paused_because ?? '', /^Autopilot is paused: what dazl ships changed since you accepted your launch policy \(record pt-0000000000000000 is now pt-[0-9a-f]{16}\)\. Re-accept the current record to resume\.$/)
+  assert.equal(v.reaccept_action, 'reaccept_product_truth')
+  assert.equal(launchGate(db, 'A', 'me@acme.example', NOW + 2).calibrated, false)
+  // one click: re-accept the same policy on the current record, then the same preflight resumes the launch
+  assert.deepEqual(reacceptCurrentTruth(db, 'A', NOW + 3), { ok: true })
+  assert.equal(readLaunchPolicy(db, 'A')!.policy.claims.productTruthVersion, productTruth().version)
+  assert.deepEqual({ ...readLaunchPolicy(db, 'A')!.policy, claims: { ...readLaunchPolicy(db, 'A')!.policy.claims, productTruthVersion: undefined } }, { ...stored, claims: { ...stored.claims, productTruthVersion: undefined } }, 'nothing else in the policy changes')
+  assert.equal((await runCalibration(db, 'A', 'Acme', gmail().d)).ok, true)
+  assert.equal(launchPolicyView(db, 'A').paused_because, undefined)
+  assert.deepEqual(reacceptCurrentTruth(db, 'A', NOW + 4), { ok: false, reason: 'not_stale' })
+  // tenant B: its row untouched by A's pause and A's re-accept
+  assert.equal((db.prepare("SELECT policy FROM autopilot_launch_policy WHERE tenant_id = 'B'").get() as { policy: string }).policy, otherPolicy)
+  assert.deepEqual(reacceptCurrentTruth(db, 'C', NOW), { ok: false, reason: 'no_launch_policy' })
+  assert.equal(staleTruth(null), null)
 })
