@@ -25,6 +25,7 @@
 import type { Db } from '../db/client.ts'
 import { captureError } from '../ops/errors.ts'
 import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
+import { parkPendingReservedJobs } from '../scan/store-db.ts'
 import { DbQueue } from './db.ts'
 import { instanceId } from '../ops/instance.ts'
 import { isStaging } from '../staging.ts'
@@ -98,17 +99,38 @@ export interface SharedScanDeps<J extends ClaimedScan> {
 import { settleReapedTrial } from '../billing/trial-reap.ts'
 const nowS = () => Math.floor(Date.now() / 1000)
 
-// The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter.
+// The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter. As there, a
+// reserved paid call of ANY attempt ends the scan accounting_uncertain: an earlier attempt's unsettled call may have been
+// billed just the same, and a scan parked for one (parkPendingReservedJobs) must end here, not bounce back to pending.
 export async function reapStaleScans(domain: Db, leaseSeconds: number, now: number): Promise<number> {
   const changes = (await domain.run(
-    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
-       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
-       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN ? ELSE finished_at END,
+    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN ? ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - leaseSeconds])).changes
   if (changes > 0) await settleReapedTrial(domain, now)
   return changes
+}
+
+// A live scan keeps its queue claim. The scan row's claim time is renewed by every paid call (lib/scan/spend-cap.ts);
+// the queue item's lease was written once, at the claim. Without this, a scan running past the lease lost its queue
+// claim while still alive: the other process kept claiming and releasing the item until it dead-lettered, and the
+// tenant's claimed count dropped during a live run. Each kick copies the scan row's newer claim time onto its claimed
+// item (compare-and-set on the old lease, so a claim that changed meanwhile is untouched). A scan whose worker died
+// stops renewing its row, so its item's lease still runs out. At most one read and one write per claimed scan.
+export async function renewScanLeases(queue: Db, domain: Db, leaseSeconds: number): Promise<number> {
+  const claimed = await queue.all<{ id: string; tenant_id: string; lease_expires_at: number | null }>(
+    "SELECT id, tenant_id, lease_expires_at FROM work_queue WHERE status = 'claimed' AND kind = 'scan'")
+  let n = 0
+  for (const c of claimed) {
+    const row = await domain.get<{ claimed_at: number | null }>("SELECT claimed_at FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'running'", [c.id, c.tenant_id])
+    const until = row?.claimed_at == null ? null : Number(row.claimed_at) + leaseSeconds
+    if (until === null || c.lease_expires_at === null || until <= Number(c.lease_expires_at)) continue
+    n += (await queue.run("UPDATE work_queue SET lease_expires_at = ? WHERE id = ? AND status = 'claimed' AND lease_expires_at = ?", [until, c.id, c.lease_expires_at])).changes
+  }
+  return n
 }
 
 export async function mirrorScans(domain: Db, q: DbQueue, now: number): Promise<number> {
@@ -141,8 +163,12 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   const perTenant = d.perTenantInFlight ?? scanPerTenantLimit()
   const owner = d.owner ?? instanceId()
   const log = d.log ?? ((line: string) => console.log(line))
+  // A pending scan that still holds a reserved paid call (data from before #594) is never started: parked and ended
+  // accounting_uncertain by the reap below, exactly as the in-process claimer does (lib/scan/store-db.ts).
+  await parkPendingReservedJobs(d.domain)
   await reapStaleScans(d.domain, lease, clock())
   await mirrorScans(d.domain, q, clock())
+  await renewScanLeases(d.queue, d.domain, lease)
   while (d.slots.available()) {
     // Fair service (#355). Round-robin: a free slot goes to the tenant served longest ago. Per-tenant limit: a tenant
     // with perTenant scans claimed gets no more until one settles, so one tenant's backlog or slow provider cannot hold
@@ -156,7 +182,9 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
     // tenant and the scan is re-mirrored under its owner on the next kick.
     const job = await d.domain.get<J>(
       `UPDATE scan_jobs SET status = 'running', attempts = attempts + 1, claimed_at = ?
-       WHERE id = ? AND user_id = ? AND status = 'pending' RETURNING ${JOB_COLUMNS}`,
+       WHERE id = ? AND user_id = ? AND status = 'pending'
+         AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')
+       RETURNING ${JOB_COLUMNS}`,
       [clock(), claim.item.id, claim.item.tenantId])
     if (!job) {
       const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ? AND user_id = ?', [claim.item.id, claim.item.tenantId])

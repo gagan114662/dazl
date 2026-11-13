@@ -62,9 +62,9 @@ case "$1 $2 $3" in
   "is-enabled --quiet $W") [ -e ${T}/enabled ];;
   "is-active $W "*) if [ -e ${T}/worker-up ]; then echo active; else echo inactive; exit 3; fi;;
   "stop $W "*) [ -e ${T}/fail-stop ] && exit 1; rm -f ${T}/worker-up;;
-  "start $W "*) [ -e ${T}/fail-start ] && exit 1; touch ${T}/worker-up;;
+  "start $W "*) [ -e ${T}/fail-start ] && exit 1; [ -e ${T}/recovery/pending ] && echo "WORKER STARTED WITH A RECOVERY POINT STILL PENDING" >> ${calls}; touch ${T}/worker-up;;
   "stop dazl-staging.service "*) [ -e ${T}/worker-up ] && echo "APP STOPPED WITH THE WORKER RUNNING" >> ${calls}; echo stopped > ${served};;
-  "restart dazl-staging.service "*) [ -e ${T}/worker-up ] && echo "APP RESTARTED WITH THE WORKER RUNNING" >> ${calls}; basename "$(readlink -f ${root}/current)" > ${served};;
+  "restart dazl-staging.service "*) [ -e ${T}/worker-up ] && echo "APP RESTARTED WITH THE WORKER RUNNING" >> ${calls}; sha=$(basename "$(readlink -f ${root}/current)"); if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > ${served}; fi;;
   *) echo "unexpected: $*" >> ${calls}; exit 1;;
 esac\n`)
   execFileSync('chmod', ['+x', systemctl])
@@ -74,12 +74,12 @@ esac\n`)
   const helper = path.join(helperDir, 'recovery_point.py')
   writeFileSync(helper, readFileSync(new URL('../../ops/staging/recovery_point.py', import.meta.url))); execFileSync('chmod', ['755', helper])
   const flag = (name: string, on: boolean) => { if (on) writeFileSync(path.join(T, name), ''); else rmSync(path.join(T, name), { force: true }) }
-  const deploy = () => {
+  const deploy = (extra: Record<string, string> = {}) => {
     writeFileSync(calls, '')
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
       PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: String(port), STAGING_SYSTEMCTL: systemctl, STAGING_RECOVERY: helper,
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`,
-      STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1',
+      STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '2', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, MIN_FREE_BYTES: '1', FIRST_RELEASE_BYTES: '1', ...extra,
     } as unknown as NodeJS.ProcessEnv })
     // the calls that change something, in order (the reads: cat, is-enabled, is-active, are left out)
     const order = readFileSync(calls, 'utf8').trim().split('\n').filter(l => !/^(cat|is-enabled|is-active) /.test(l))
@@ -96,7 +96,7 @@ esac\n`)
     assert.doesNotMatch(r.out, /scan worker/)
 
     // installed, enabled and running: stopped by name before the app is stopped for the recovery point, still stopped
-    // across the cutover, started after the app
+    // across the cutover and the health gate, started only after the deploy's commit point (no recovery point pending)
     flag('installed', true); flag('enabled', true); flag('worker-up', true)
     const s2 = commit('two')
     r = deploy()
@@ -136,5 +136,33 @@ esac\n`)
     assert.ok(!r.order.includes(`stop ${A}`), 'the app is not stopped once the worker stop failed')
     assert.equal(readFileSync(path.join(T, 'state', 'current-sha'), 'utf8').trim(), before, 'the live release is unchanged')
     assert.doesNotMatch(readFileSync(calls, 'utf8'), /WITH THE WORKER RUNNING|unexpected/)
+    flag('fail-stop', false)
+
+    // a new release that never becomes healthy: the worker stays stopped until the previous release is back and healthy
+    // (the restored database is final), and it is never started while the recovery point is still pending
+    flag('worker-up', true)
+    const live = readFileSync(path.join(T, 'state', 'current-sha'), 'utf8').trim()
+    const bad = commit('six: never healthy')
+    writeFileSync(path.join(T, `unready-${bad}`), '')
+    r = deploy()
+    assert.equal(r.code, 1); assert.match(r.out, new RegExp(`rolled back: ${live} is live again`))
+    assert.deepEqual(r.order, [`stop ${W}`, `stop ${A}`, `stop ${W}`, `restart ${A}`, `stop ${W}`, `stop ${A}`, `stop ${W}`, `restart ${A}`, `start ${W}`])
+    assert.doesNotMatch(readFileSync(calls, 'utf8'), /PENDING|WITH THE WORKER RUNNING|unexpected/)
+    rmSync(path.join(T, `unready-${bad}`))
+
+    // STAGING_STOP / STAGING_RESTART replace only the app's commands: the worker is still stopped before each of them
+    flag('worker-up', true)
+    commit('seven')
+    const appLog = path.join(T, 'app-cmds')
+    writeFileSync(appLog, '')
+    const stopApp = path.join(T, 'stop-app.sh'), restartApp = path.join(T, 'restart-app.sh')
+    writeFileSync(stopApp, `#!/usr/bin/env bash\n[ -e ${T}/worker-up ] && echo "OVERRIDE STOP WITH THE WORKER RUNNING" >> ${appLog}; echo stop >> ${appLog}; echo stopped > ${served}\n`)
+    writeFileSync(restartApp, `#!/usr/bin/env bash\n[ -e ${T}/worker-up ] && echo "OVERRIDE RESTART WITH THE WORKER RUNNING" >> ${appLog}; echo restart >> ${appLog}; basename "$(readlink -f ${root}/current)" > ${served}\n`)
+    execFileSync('chmod', ['+x', stopApp, restartApp])
+    r = deploy({ STAGING_STOP: stopApp, STAGING_RESTART: restartApp })
+    assert.equal(r.code, 0, r.out)
+    assert.deepEqual(readFileSync(appLog, 'utf8').trim().split('\n'), ['stop', 'restart'], 'the overrides ran, each with the worker already stopped')
+    assert.deepEqual(r.order, [`stop ${W}`, `stop ${W}`, `start ${W}`])
+    assert.match(r.out, /scan worker: active/)
   } finally { server.kill(); rmSync(T, { recursive: true, force: true }) }
 })

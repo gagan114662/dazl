@@ -10,6 +10,7 @@ import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
+import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
@@ -2079,15 +2080,38 @@ export function trackInFlight(job: Job, queueToken?: number): () => void { const
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0
-  const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ? AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')") // ANY attempt's reserved (unsettled, possibly billed) call blocks the hand-back: the lease reaper fails it closed, never a silent rebill
+  const upd = db.prepare("UPDATE scan_jobs SET status = 'pending', claimed_at = NULL WHERE id = ? AND status = 'running' AND attempts = ? AND attempts < ? AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')") // ANY attempt's reserved (unsettled, possibly billed) call blocks the hand-back: never a silent rebill
+  // A scan this process cannot hand back is ended here, at once, with the outcome the lease reaper would give it 20
+  // minutes later (reapStaleRunningJobs, lib/scan/store.ts): 'accounting_uncertain' when a paid call is still reserved
+  // (it may have been billed: the call stays recorded as reserved and the scan is never run again, so nothing is charged
+  // twice), 'timeout' when this was its last attempt. Waiting for the lease changed nothing about the outcome; it only
+  // left the scan 'running' with nobody running it and, through the queue's per-tenant limit, kept the account from
+  // starting another scan until the lease passed (#836, decision of 2026-11-13: a deploy must not lock an account out).
+  // Same fence as the hand-back: only this process's own attempt (status running AND this attempt number).
+  const end = db.prepare(
+    `UPDATE scan_jobs SET status = 'failed',
+       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' ELSE 'timeout' END,
+       finished_at = ?, claimed_at = NULL
+     WHERE id = ? AND status = 'running' AND attempts = ?
+       AND (attempts >= ? OR EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved'))`)
   const queueHere = !process.env.DATABASE_URL
   for (const [job, token] of inFlightSet()) {
     try {
       n += db.transaction((): number => {
+        const now = Math.floor(Date.now() / 1000)
         const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
-            .run(Math.floor(Date.now() / 1000), job.id, token)
+            .run(now, job.id, token)
+        }
+        if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS).changes === 1) {
+          // a trial scan's reservation is settled as the reaper settles it; the queue claim is closed by its token, so
+          // the account's next scan is claimable at once
+          try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch { /* no trial table in this store */ }
+          if (token !== null && queueHere) {
+            db.prepare("UPDATE work_queue SET status = 'done', last_error = NULL, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL, dedupe_key = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
+              .run(job.id, token)
+          }
         }
         return c
       })()

@@ -62,7 +62,11 @@ const storeReady = (db: Database.Database): boolean =>
 // item still open (a claim whose scan already ended is closed by the next kick). Indexed reads: scan_jobs_status,
 // work_queue_claimable. The queue table appears with the first kick; before that there is no queue item to close.
 const hasWork = (db: Database.Database): boolean => {
-  if (db.prepare("SELECT 1 AS x FROM scan_jobs WHERE status IN ('pending', 'running') LIMIT 1").get() !== undefined) return true
+  // a pending scan only when the queue would take it: the same funding rule as the mirror (mirrorScans: a saved key or
+  // trial-funded). A keyless scan waits for its account's key; it is not work, or it would be a kick, and a write,
+  // every pass for as long as it waits.
+  if (db.prepare("SELECT 1 AS x FROM scan_jobs WHERE status = 'running' LIMIT 1").get() !== undefined) return true
+  if (db.prepare("SELECT 1 AS x FROM scan_jobs WHERE status = 'pending' AND (user_id IN (SELECT tenant_id FROM tenant_llm_keys) OR funded_by = 'trial') LIMIT 1").get() !== undefined) return true
   try {
     return db.prepare("SELECT 1 AS x FROM work_queue WHERE status IN ('pending', 'claimed') AND kind = 'scan' LIMIT 1").get() !== undefined
   } catch (e) { if (/no such table/i.test((e as Error).message)) return false; throw e }

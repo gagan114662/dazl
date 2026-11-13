@@ -130,7 +130,7 @@ test('#836 a worker restarted mid-scan (SIGTERM) with no paid request in flight 
   } finally { await w.close() }
 })
 
-test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its ledger reservation written by the test: the stub provider records none): the scan is NOT handed back and never run again; after the lease it ends failed accounting_uncertain at attempt 1 and its queue item is closed without a second run', async () => {
+test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its ledger reservation written by the test: the stub provider records none): the scan is not handed back and never run again; it ends failed accounting_uncertain at once, its queue claim is closed, and the same account\'s next scan runs on the other worker without waiting for the lease', async () => {
   const w = world(['t1'])
   try {
     const id = w.scan('t1')
@@ -140,25 +140,19 @@ test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its l
     w.db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('call-1', 't1', ?, 1, 'llm.anthropic', 0.02, 'reserved', ?)").run(id, nowS())
     const b = w.start('worker-b')
     await until(() => /started instance=worker-b/.test(b.out()), 'worker-b up')
+    const stoppedAt = Date.now()
     await w.stop(a, 'SIGTERM')
-    await sleep(900)
-    assert.deepEqual(w.job(id), { status: 'running', attempts: 1 }, 'not handed back: the request may have been billed')
-    assert.equal(w.queueRow(id)!.status, 'claimed', 'the claim stays until its lease')
-    // the lease runs out
-    const past = nowS() - STALE_RUNNING_S - 5
-    w.db.prepare('UPDATE scan_jobs SET claimed_at = ? WHERE id = ?').run(past, id)
-    w.db.prepare('UPDATE work_queue SET claimed_at = ?, lease_expires_at = ? WHERE id = ?').run(past, past + STALE_RUNNING_S, id)
-    await until(() => w.job(id).status === 'failed', 'the scan is ended closed')
+    // no lease wait: the stopping worker ends the scan itself, with the outcome the reaper would give it 20 minutes later
     assert.deepEqual(w.db.prepare('SELECT status, error, attempts FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain', attempts: 1 })
-    await until(() => w.queueRow(id)!.status !== 'claimed', 'expired claim reaped')
-    w.db.prepare("UPDATE work_queue SET not_before = ? WHERE id = ? AND status = 'pending'").run(nowS(), id)
-    await until(() => w.queueRow(id)!.status === 'done', 'queue item closed')
-    await until(() => w.lines(b, /nothing to run/).length > 0, 'the closing line read')
-    assert.equal(w.lines(b, /claimed scan=/).length, 0, 'worker-b never ran it')
-    assert.equal(w.lines(b, /provider call/).length, 0)
-    assert.match(w.lines(b, /nothing to run/)[0] ?? '', new RegExp(`nothing to run scan=${id} token=\\d+ scan_status=failed instance=worker-b`))
-    assert.deepEqual(w.leads(id), { n: 0, d: 0 })
-    assert.equal(w.job(id).attempts, 1)
+    assert.equal(w.queueRow(id)!.status, 'done', 'its queue claim is closed, not left claimed until the lease')
+    assert.equal((w.db.prepare("SELECT status FROM scan_spend_calls WHERE id = 'call-1'").get() as { status: string }).status, 'reserved', 'the paid call stays recorded, unsettled')
+    // the account is not locked out: its next scan is claimed by worker-b at once (per-tenant limit 1)
+    const next = w.scan('t1')
+    await until(() => w.job(next).status === 'done', 'the account\'s next scan ran')
+    assert.ok(Date.now() - stoppedAt < 20_000, 'within seconds of the stop, not after the 20-minute lease')
+    assert.equal(w.queueRow(next)!.claimed_by, 'worker-b')
+    assert.equal(w.lines(b, new RegExp(`claimed scan=${id} `)).length, 0, 'the interrupted scan is never run again')
+    assert.deepEqual(w.leads(id), { n: 0, d: 0 }); assert.equal(w.job(id).attempts, 1)
   } finally { await w.close() }
 })
 
@@ -239,6 +233,8 @@ test('#836 worker pass: off without the flag, idle (no write, no kick) with no p
   assert.equal(kicks, 0)
   db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt, created_at) VALUES ('t1', 't1@example.test', 'Co', 'x', 'x', 1)").run()
   const id = createJob(db, 't1', { business_name: 'Scan', industry: 'roofing', location: 'Toronto' })
+  assert.equal(await workerPass({ db, kick, env: on }), 'idle', 'a pending scan with no saved key is not the queue\'s to take')
+  db.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES ('t1', 'anthropic', 'x', '1234', 1, 1)").run()
   assert.equal(await workerPass({ db, kick, env: on }), 'kicked')
   db.prepare("UPDATE scan_jobs SET status = 'running', claimed_at = 1 WHERE id = ?").run(id)
   assert.equal(await workerPass({ db, kick, env: on }), 'kicked', 'a running scan is work: the kick frees it when its worker died')
