@@ -388,11 +388,13 @@ export function evaluatePlan(plan: QueryPlan, proofs: Readonly<Record<string, Om
 // Whether a text shows the event family (and object, when the request names one) a condition asks for: the same patterns the compiler reads.
 export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean { return eventMatchIndex(event, object, text) >= 0 }
 // The object an event match names (lower case, singular), from the first of the event's object groups that matched.
-function objectOf(e: { object?: number | number[] }, m: RegExpMatchArray): string {
+function objectOf(e: { event: string; object?: number | number[] }, m: RegExpMatchArray): string {
   const groups = e.object === undefined ? [] : Array.isArray(e.object) ? e.object : [e.object]
   const g = groups.map(i => m[i]).find(x => typeof x === 'string' && x !== '')
-  // singular: "offices" -> office, "branches" -> branch (only ch/sh/x/ss + es loses the e)
-  return g ? g.toLowerCase().replace(/(?:(?<=ch|sh|x|ss)es|s)$/, '') : ''
+  if (!g) return ''
+  // an opening's premises noun, singular: "offices" -> office, "branches" -> branch (only ch/sh/x/ss + es loses the e).
+  // Every other event keeps main's stem exactly (review on #1130 at 89e021f3): "tomatoes" -> tomato, "services" -> servic.
+  return e.event === 'open' ? g.toLowerCase().replace(/(?:(?<=ch|sh|x|ss)es|s)$/, '') : g.toLowerCase().replace(/(?:es|s)$/, '')
 }
 // The verb-first opening exactly as main read it before #878 (no ordinals, no noun-first forms, and a request for a new
 // "location" met only by "location"): a match here keeps main's reading unchanged (review on #1130 at 77e509ac).
@@ -401,19 +403,22 @@ export function mainOpenMatches(object: string | undefined, text: string): boole
   for (const m of text.matchAll(new RegExp(MAIN_OPEN.source, 'gi'))) if (!object || (m[1] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return true
   return false
 }
-// Where in the text the event (and object) first shows, or -1.
-export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {
+// Where in the text the event (and object) first shows ([start, end]), or null.
+export function eventMatchSpan(event: string | undefined, object: string | undefined, text: string): [number, number] | null {
   const e = EVENTS.find(x => x.event === event)
-  if (!e) return -1
+  if (!e) return null
   for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
     if (e.ok && !e.ok(text, m)) continue
-    if (!object || !e.object) return m.index ?? 0
+    const span: [number, number] = [m.index ?? 0, (m.index ?? 0) + m[0].length]
+    if (!object || !e.object) return span
     const got = objectOf(e, m)
     // a request for a new "location" is met by any new premises (a clinic, an office, a store ...); a named kind needs that kind
-    if (got === object || (object === 'location' && e.event === 'open' && got !== '')) return m.index ?? 0
+    if (got === object || (object === 'location' && e.event === 'open' && got !== '')) return span
   }
-  return -1
+  return null
 }
+// Where in the text the event (and object) first shows, or -1.
+export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number { return eventMatchSpan(event, object, text)?.[0] ?? -1 }
 
 // ---- The plan as the person sees it, BEFORE the search (#876 / #752) ----
 // A serialisable, human-worded view of the compiled plan: the same tree the gates evaluate, with each condition said in plain words (a completed hire is

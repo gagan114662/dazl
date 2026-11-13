@@ -118,11 +118,13 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   return /^(?:in|at|on)\s+/i.test(rest) && placeOk(rest, text) && clean(rest)
 }
 const NOUN_FIRST_OPEN_G = new RegExp(NOUN_FIRST_OPEN_SRC, 'gi')
-// Where the first accepted noun-first opening starts in the text, or -1.
-export function nounFirstOpenAt(text: string, company?: string | null): number {
-  for (const m of text.matchAll(NOUN_FIRST_OPEN_G)) if (nounFirstOk(text, m, company)) return m.index ?? 0
-  return -1
+// Where the first accepted noun-first opening is in the text ([start, end]), or null.
+export function nounFirstOpenSpan(text: string, company?: string | null): [number, number] | null {
+  for (const m of text.matchAll(NOUN_FIRST_OPEN_G)) if (nounFirstOk(text, m, company)) return [m.index ?? 0, (m.index ?? 0) + m[0].length]
+  return null
 }
+// Where the first accepted noun-first opening starts in the text, or -1.
+export function nounFirstOpenAt(text: string, company?: string | null): number { return nounFirstOpenSpan(text, company)?.[0] ?? -1 }
 export const NOUN_FIRST_OPEN = { test: (text: string): boolean => nounFirstOpenAt(text) >= 0 }
 // The event signal as it was before #878 (no noun-first openings): a non-opening event is read with this, unchanged.
 export const showsEventSignal = (text: string): boolean => EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
