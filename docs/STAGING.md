@@ -148,6 +148,22 @@ Google prerequisite is skipped for those addresses; every other trial limit stil
 `DAZL_ENV=staging`. It keys on the signup email, which a password signup does not verify, so list only throwaway test addresses
 (whoever registers a listed address first gets the exemption) and remove them after the check.
 
+## Technology-change fixture (test only, #769)
+
+No real site changes its stack on demand, so an adoption, a removal and an outage between two readable pages could not be watched live. On staging only (`DAZL_ENV=staging`; the route answers 404 anywhere else) a signed-in member with the operate role can serve a fixture company's homepage in a named variant and crawl it once:
+
+    POST /api/leads/tech-fixture   {"page": "plain" | "hubspot" | "consent_wall" | "challenge" | "outage_503"}
+    DELETE /api/leads/tech-fixture
+
+- Each POST runs **one real crawl** (`crawlJob` -> `crawlSite` -> `recordTechObservation` -> `techChanges`) of `dazltechfixture.test` on a lead named "dazl tech fixture (test only)" in the caller's own workspace. Only the HTTP fetch is local; the readability verdict, the detector, the dated `tech_scan` row and the `tech_change` rows are the production code. No model, no search, nothing sent, $0. Needs `SITECRAWL_ENABLED` not `0` (else 503 `crawl_disabled`).
+- Pages: `plain` readable, no technology; `hubspot` readable with HubSpot's forms embed; `consent_wall` HTTP 200 cookie wall (recorded `thin_page`); `challenge` HTTP 200 bot challenge (recorded `blocked`); `outage_503` HTTP 503 everywhere (no observation).
+- The answer lists every dated observation, every change row, what this crawl added (`crawl.new_changes`) and `measured`: crawls, unreadable or failed crawls, changes claimed, and how many of those the served page could not carry (`false_changes`).
+- The check: `plain`, `hubspot` -> `HubSpot added`. Then `outage_503`, `consent_wall`, `challenge` -> no new change. Then `plain` -> still none; `plain` again -> `HubSpot removed` (two readable absences). The rows show on the lead's card at `/app/leads?job_id=<job_id>`.
+- Observations are dated to the second: a call in the same second as the last one waits for the next.
+- `DELETE` removes the fixture's play, lead and every row its crawls wrote.
+
+Code: `web/lib/scan/tech-fixture.ts`; tests `web/test/tech-fixture-769.test.ts`, `web/test/tech-fixture-route-769.test.ts`.
+
 ## Stripe in test mode (runbook, Instinct)
 Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
 
