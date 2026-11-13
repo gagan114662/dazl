@@ -101,7 +101,9 @@ export const isCalendarDay = (d: string): boolean => {
 // (an expansion signal), which is fine for a fail-closed fit cap but would fail OPEN here, so this
 // rule uses the stored signal kind plus strict hiring wording only. A non-English hiring signal with
 // no kind is held unconfirmed (conservative), never upgraded.
-const HIRING_EN = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(?:y|ies)\b|\bis (recruiting|looking for an? )/i
+// #533 live: the model words a board posting "Posted a <role> role on Ashby" / "Posted a <role> role on Lever": a posted
+// role, job, position or opening is hiring wording too (never a bare "posted a ..." of anything else).
+const HIRING_EN = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(?:y|ies)\b|\bis (recruiting|looking for an? )|\bposted an? [^.;]{1,80}?\b(?:role|job|position|opening|vacancy)\b/i
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed
 // trigger is hiring; it is never a funding or other trigger's date.
 export const isHiringTrigger = (signal: string | null | undefined, signalKind?: string | null): boolean =>
