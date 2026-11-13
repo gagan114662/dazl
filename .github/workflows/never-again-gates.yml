@@ -1,0 +1,24 @@
+name: never-again-gates
+# docs/NEVER-AGAIN.md: the doc's own consistency test, the live-check gate's tests (#3) and the no-on-box-build tests (#1).
+# Runs on every pull request (no path filter: the doc cites files across the repo, so any change can break it).
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  never-again:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: NEVER-AGAIN doc + live-check gate tests (.github/scripts)
+        run: node --test '.github/scripts/*.test.mjs'
+      - name: No build on the box (ops/test_never_again.py)
+        run: python3 -m unittest discover -s ops -p 'test_never_again.py' -v
+      - name: shellcheck the deploy scripts (errors only)
+        run: shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh

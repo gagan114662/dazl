@@ -1,0 +1,24 @@
+name: live-check-gate
+# NEVER-AGAIN #3 (docs/NEVER-AGAIN.md): an issue closed without a maintainer comment containing
+# "Live check (prod <commit>): PASS" is reopened with a comment. Closing as not planned / duplicate, or a wontfix /
+# duplicate / not-planned label, is exempt. Logic and tests: .github/scripts/live-check-gate{,.test}.mjs.
+on:
+  issues:
+    types: [closed]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: live-check-gate-${{ github.event.issue.number }}
+jobs:
+  live-check-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Reopen unless closed with a prod live check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/live-check-gate.mjs
