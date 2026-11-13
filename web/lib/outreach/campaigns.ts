@@ -43,7 +43,7 @@ export function campaignsLimit(v: string | null): number {
 export function listCampaigns(db: Database.Database, tenantId: string, limit = 10): Campaign[] {
   const jobs = db.prepare(`SELECT id, query, status, error, created_at, candidates FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
+    ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).

@@ -49,8 +49,8 @@ try {
     const recent = new Date(Date.now() - 10 * 86400_000).toISOString().slice(0, 10)
     const NYC = 'Dental practices in New York hiring front desk staff', LONDON = 'Find London UK companies hiring sales account executives.'
     const J1 = 'a'.repeat(24), J2 = 'b'.repeat(24)
-    const job = (id, q, icp, verified, review, at) => {
-      s.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, ?, 'x', '(from request)', '-', ?, ?, 'running', 5, ?)").run(id, tenant, q, icp, at)
+    const job = (id, q, icp, verified, review, at, testOnly = false) => {
+      s.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, ?, 'x', ?, ?, ?, ?, 'running', 5, ?)").run(id, tenant, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', q, icp, at)
     }
     // leads are added while the scan runs (a trigger), then it finishes with its scan-time counts
     const finish = (id, at, verified, review) => s.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ?, verified = ?, needs_review = ?, dropped = 0 WHERE id = ?").run(at + 60, verified, review, id)
@@ -61,6 +61,8 @@ try {
     lead(J1, 'n1', { review: 'outside_window_undated' }); lead(J1, 'n2', { review: 'counterparty_signal', date: recent }); finish(J1, now - 7200, 0, 2)
     job(J2, LONDON, null, 1, 0, now - 3600)
     lead(J2, 'l1', { machine: true, date: recent }); finish(J2, now - 3600, 1, 0)
+    const J3 = 'c'.repeat(24)   // a test-only run: Campaigns does not list it, so its card keeps what it recorded and says so
+    job(J3, 'a test-only fixture run', null, 0, 1, now - 1800, true); lead(J3, 't1', { review: 'outside_window_undated' }); finish(J3, now - 1800, 0, 1)
     s.close()
 
     // the Campaigns card for each scan: what the history must say too
@@ -83,16 +85,44 @@ try {
         assert.ok(result.startsWith(card[id].run.label), `${width} ${name}: the result line is the card's (${card[id].run.label}): ${result}`)
         assert.equal(await c.first().getByTestId('next-step').textContent(), card[id].next.label, `${width} ${name}: the next step is the card's`)
       }
+      const fx = page.getByTestId('past-scan').filter({ has: page.locator(`a[href="/app/leads?job_id=${J3}"]`) })
+      await fx.first().waitFor({ timeout: 20000 })
+      assert.match(await fx.first().getByTestId('as-recorded').textContent(), /As recorded when the scan finished \(Campaigns does not list this scan\)/)
+      assert.equal(await page.getByTestId('past-scan').filter({ has: page.locator(`a[href="/app/leads?job_id=${J1}"]`) }).getByTestId('as-recorded').count(), 0, 'a current card carries no "as recorded" line')
+      const historyPill = await page.getByTestId('past-scan').filter({ has: page.locator(`a[href="/app/leads?job_id=${J1}"]`) }).locator('span.pill').first().getAttribute('class')
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${width}: no horizontal scroll`)
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `leads-history-${width}.png`), fullPage: true })
+      // the same run on the Campaigns page: the same pill, in the same colour
+      await page.goto(base + '/app/campaigns', { waitUntil: 'networkidle' })
+      const camp = page.getByTestId('campaign').filter({ has: page.locator(`a[href="/app/campaigns/${J1}"]`) })
+      await camp.first().waitFor({ timeout: 20000 })
+      assert.equal(await camp.first().getByTestId('run-tag').textContent(), card[J1].run.tag)
+      assert.equal((await camp.first().getByTestId('run-tag').getAttribute('class')).trim(), historyPill.trim(), `${width}: the pill colour is the Campaigns card's`)
       out.push(`${width}: NYC and London history cards = their Campaigns cards (Research only, Change the search)`)
       await ctx.close()
     }
+    // the campaigns read is slow: until it answers, no card shows a verdict (never the scan-time "2 need your review")
+    { const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }); await ctx.addCookies([cookie])
+      let release; const gate = new Promise(r => { release = r })
+      await ctx.route('**/api/campaigns**', async r => { await gate; await r.continue() })
+      const page = await ctx.newPage(); await page.goto(base + '/app/leads')
+      const nyc = page.getByTestId('past-scan').filter({ has: page.locator(`a[href="/app/leads?job_id=${J1}"]`) })
+      await nyc.first().waitFor({ timeout: 20000 })
+      const waiting = await nyc.first().textContent()
+      assert.doesNotMatch(waiting, /[1-9] needs? your review|Needs your review|Review them/, `while the current counts load: ${waiting}`)
+      assert.match(waiting, /Checking\.\.\./); assert.equal(await nyc.first().getByTestId('next-step').count(), 0, 'no next step until the verdict is known')
+      release()
+      await nyc.first().getByTestId('next-step').waitFor({ timeout: 20000 })
+      assert.ok((await nyc.first().textContent()).includes('Research only'))
+      out.push('slow campaigns read: "Checking..." with no verdict or next step, then the current one'); await ctx.close() }
     // the campaigns read fails: the cards say they are as recorded (never a silent mix)
     { const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } }); await ctx.addCookies([cookie])
       await ctx.route('**/api/campaigns**', r => r.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"x"}' }))
       const page = await ctx.newPage(); await page.goto(base + '/app/leads', { waitUntil: 'networkidle' })
       await page.getByTestId('history-recorded').waitFor({ timeout: 20000 })
+      const nyc = page.getByTestId('past-scan').filter({ has: page.locator(`a[href="/app/leads?job_id=${J1}"]`) }).first()
+      assert.match(await nyc.getByTestId('as-recorded').textContent(), /^As recorded when the scan finished\.$/, 'each card says it is as recorded')
+      assert.ok((await nyc.textContent()).includes('Needs your review'), 'and shows what it recorded')
       out.push('campaigns read failed: the history says it shows each scan as recorded'); await ctx.close() }
   } finally { await b.close() }
   console.log(`leads history UI check passed (real build, real routes): ${out.join('; ')}`)

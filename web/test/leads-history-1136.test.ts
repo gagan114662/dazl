@@ -30,6 +30,9 @@ function store() {
   lead(db, 'jl', 'l1', { machine: true, date: recent }); lon()                          // DEFAULT-DENY: no required-check pass
   const fx = job(db, 'jt', 'a test-only fixture run', null, 0, 1, true)                // Campaigns does not list test-only runs
   lead(db, 'jt', 't1', { review: 'outside_window_undated' }); fx()
+  // a CSV import: no query, so Campaigns does not list it either
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at, csv_domain) VALUES ('jc', 'A', 'x', 'csv', 'csv', NULL, 'running', 1, ?, 'acme.example')").run(t++)
+  lead(db, 'jc', 'c1', { review: 'outside_window_undated' }); db.prepare("UPDATE scan_jobs SET status = 'done', verified = 0, needs_review = 1, dropped = 0 WHERE id = 'jc'").run()
   return db
 }
 // what GET /api/campaigns answers (app/api/campaigns/route.ts), and what the Leads history reads
@@ -60,12 +63,13 @@ test('#1136: the London Test B run (a required check never passed) - research on
   assert.deepEqual([h.run.tag, h.run.label], [c.run!.tag, c.run!.label]); assert.equal(h.run.tag, 'Research only')
 })
 
-test('#1136: a scan Campaigns does not list (a test-only run), or any scan while the campaigns read failed, keeps its recorded status and says so', async () => {
+test('#1136: a scan Campaigns does not list (a test-only run, a CSV import), or any scan while the campaigns read failed, keeps its recorded status and says so', async () => {
   const { jobs, cards } = await both(store())
   assert.equal(cards.has('jt'), false)
   const h = historyStatus(jobs.get('jt')!, undefined)
   assert.equal(h.current, false); assert.deepEqual(h.run, runStatusOf(jobs.get('jt')!)); assert.deepEqual(h.next, h.run.next)
   assert.equal(historyStatus(jobs.get('jn')!, undefined).current, false, 'the read failed: recorded, flagged')
+  assert.equal(cards.has('jc'), false, 'a CSV import is not a campaign'); assert.equal(historyStatus(jobs.get('jc')!, undefined).current, false, 'so its card is flagged as recorded')
 })
 
 test('#1136: /api/campaigns?limit covers the whole history (20), never more; anything else is the default 10', () => {
