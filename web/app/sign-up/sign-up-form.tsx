@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
+import { signUpPlanLine } from '@/lib/trial-copy'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
@@ -60,9 +61,7 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
         <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">
-          {trialFunded
-            ? 'Free plan: 50 scans a month with your own AI key. New accounts may get 3 trial scans first. Upgrade any time.'
-            : 'Free plan: 50 scans a month with your own AI key. Upgrade any time.'}
+          {signUpPlanLine(trialFunded)}
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>

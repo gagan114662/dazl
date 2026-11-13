@@ -67,12 +67,24 @@ const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href:
 // while unknown. An unconfirmed account links directly: the link confirms the address (lib/auth-google.ts linkGoogle,
 // #1095), so no confirmation mail is needed.
 // account.fresh: signed in within the last hour (GET /api/auth/reauth); linking needs it, so a stale session confirms the
-// password first instead of coming back from Google with reauth_required. null while unknown: no actions are offered yet.
-export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean; fresh?: boolean } | null): TrialNotice {
+// password first instead of coming back from Google with reauth_required. null while still loading: no actions yet.
+// ACCOUNT_LOAD_FAILED: the account could not be read (network, a 5xx, an expired session). That is never a dead end: Link
+// Google is offered anyway, since the server decides the link and answers every case (signed_out, reauth_required,
+// mismatch) with its own copy on the way back (#1095).
+export const ACCOUNT_LOAD_FAILED = 'failed' as const
+export type NoticeAccount = { verified: boolean; google: boolean; fresh: boolean }
+// The account from GET /api/auth/email and GET /api/auth/reauth bodies (null: that request failed). The email read is what
+// matters: when it failed the result is ACCOUNT_LOAD_FAILED, never "still loading". An unreadable reauth reads as fresh
+// (the server answers reauth_required on the way back if it is not).
+export function noticeAccount(email: { verified?: unknown; google?: unknown } | null, reauth: { fresh?: unknown } | null): NoticeAccount | typeof ACCOUNT_LOAD_FAILED {
+  return email ? { verified: !!email.verified, google: !!email.google, fresh: reauth ? !!reauth.fresh : true } : ACCOUNT_LOAD_FAILED
+}
+export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean; fresh?: boolean } | typeof ACCOUNT_LOAD_FAILED | null): TrialNotice {
   const c = typeof reason === 'string' && reason in TRIAL_REFUSAL_COPY ? TRIAL_REFUSAL_COPY[reason as TrialRefusal] : null
   if (!c) return { text: "Free trial scans can't run right now. Add your own AI key to scan.", actions: [ADD_KEY] }
   if (c.next !== 'link_google') return { text: c.text, actions: [ADD_KEY] }
   if (!account) return { text: c.text, actions: [] }
+  if (account === ACCOUNT_LOAD_FAILED) return { text: c.text, actions: [{ kind: 'link_google', label: 'Link Google', href: linkGoogleHref(here) }, ADD_KEY] }
   // An unconfirmed account links directly: the Google link confirms the same address (#1095 decision, linkGoogle).
   if (account.fresh === false) {
     return { text: `${c.text} First confirm it is you: enter your password.`, actions: [{ kind: 'reauth', label: 'Confirm it is you' }, ADD_KEY] }
@@ -82,6 +94,13 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
 
 // What POST /api/scan's 402 trial_unavailable (with its admission reason) says on the Leads page, in plain words: never the raw error id.
 // The money allowance (account_total_cap) is called the free trial allowance; every refusal ends with the one next step, the account's own key.
+// The sign-up page's plan line (#1095): the free trial scans come with Google sign-in, never promised to the email path.
+export function signUpPlanLine(trialFunded: boolean): string {
+  return trialFunded
+    ? 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.'
+    : 'Free plan: 50 scans a month with your own AI key. Upgrade any time.'
+}
+
 export function trialRefusedCopy(reason: unknown): string {
   const r = typeof reason === 'string' ? reason : ''
   const head = r === 'account_total_cap' ? 'Your free trial allowance is used up.'

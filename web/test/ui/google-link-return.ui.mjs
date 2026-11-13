@@ -8,7 +8,7 @@
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
@@ -44,6 +44,11 @@ const RESULTS = [
   ['signed_out', false, /Sign in first, then add Google sign-in/],
   ['unverified', false, /Confirm your email first/], // no longer returned; an old ?google= in a bookmark still reads
 ]
+// #1095 (Hermes review): the server's own estimate for a password account refused the free trial for google_required, so the
+// cost panel on Leads is checked with what /api/scan/estimate really returns for it (lib/scan/price-estimate.ts estimateRun).
+const BLOCKED_EST = JSON.parse(execFileSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--input-type=module', '-e',
+  "import { estimateRun } from './lib/scan/price-estimate.ts'; process.stdout.write(JSON.stringify(estimateRun({ budget: null, payer: 'trial', limited: true, trialRefusal: 'google_required', trialUsed: 0 })))"],
+  { cwd: dir, env: { PATH: process.env.PATH } }).toString())
 const b = await chromium.launch()
 async function open(width, url, pending, profile = PROFILE) {
   const fresh = !/google=reauth_required/.test(url) // the server said the session is stale: so does /api/auth/reauth
@@ -62,6 +67,9 @@ async function open(width, url, pending, profile = PROFILE) {
     // an older job open on Leads (?job_id=): its own query must not replace the restored search
     if (p === '/api/scan/status') return json({ status: 'done', query: 'an OLDER search from the open job', lead_count: 0, attempts: 1, max_attempts: 3 })
     if (p === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
+    if (p === '/api/scan/icp') return json({ icp: PROFILE.buyer, inferred: true })
+    if (p === '/api/scan/estimate') return json({ estimate: BLOCKED_EST })
+    if (p === '/api/scan' && req.method() === 'POST') return json({ error: 'fenced: no scan starts in this check' }, 418)
     if (p === '/api/auth/email') return json({ email: 'pat@example.test', verified: false, google: false })
     if (p === '/api/auth/reauth') return json({ fresh, method: 'password' })
     return json({}, 404)
@@ -141,6 +149,26 @@ try {
         } finally { await o.ctx.close() }
       })
     }
+    // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared
+    // free trial" above "Free scans need a Google account") and offers Link Google back to this page.
+    await check(`/app/leads blocked trial estimate @${width}`, async () => {
+      const o = await open(width, '/app/leads', null)
+      const label = `/app/leads blocked estimate @${width}`
+      try {
+        await o.page.locator('#play').waitFor({ timeout: 8000 })
+        await o.page.locator('#play').fill(QUERY)
+        await o.page.locator('form:has(#play) button.send').click()
+        const panel = o.page.getByTestId('estimate-confirm'); await panel.waitFor({ timeout: 15000 })
+        assert.equal(await panel.getAttribute('data-verdict'), 'blocked', `${label}: blocked`)
+        const t = await panel.innerText()
+        assert.doesNotMatch(t, /Paid by the shared free trial/i, `${label}: a refused run is not paid by the trial`)
+        assert.match(t, /Free scans need a Google account/, `${label}: why, in words`)
+        await wayForward(o.page, false, 'failed', label)
+        assert.equal(await o.page.getByTestId('estimate-confirm-run').count(), 0, `${label}: no Run button`)
+        await noOverflow(o.page, label)
+        if (process.env.SHOTS) await o.page.screenshot({ path: path.join(process.env.SHOTS, `leads-blocked-estimate-${width}.png`), fullPage: true })
+      } finally { await o.ctx.close() }
+    })
     // Leads with an older job open (?job_id=): the job's status tick must not replace the restored search
     await check(`/app/leads?job_id linked @${width}`, async () => {
       const o = await open(width, `/app/leads?job_id=${JOB}&google=linked`, 'leads')

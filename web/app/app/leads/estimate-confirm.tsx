@@ -1,5 +1,5 @@
 'use client'
-import { capLine, type RunEstimate } from '@/lib/scan/price-estimate'
+import { capLine, estimatePayerLine, type RunEstimate } from '@/lib/scan/price-estimate'
 import TrialRefusalNotice from '../trial-refusal-notice'
 
 const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
@@ -12,7 +12,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
   return (
     <section className="card p-4 sm:p-5 my-4 text-sm" data-testid="estimate-confirm" data-verdict={v.ok ? 'ok' : 'blocked'} aria-label="Price estimate">
       <h2 className="font-semibold text-base">What this run will use</h2>
-      <p className="text-[var(--ink-2)] text-xs mt-1">{est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'} An estimate, not a quote or a bill.</p>
+      <p className="text-[var(--ink-2)] text-xs mt-1" data-testid="estimate-payer">{estimatePayerLine(est) ? `${estimatePayerLine(est)} ` : ''}An estimate, not a quote or a bill.</p>
       {/* Below sm (phones, 390px) every row stacks as a labelled block, so the projected cost is on screen without scrolling the
           table sideways (#851 reviewer pixels); from sm up it is the 4-column table. */}
       <div className="mt-3 overflow-x-auto">

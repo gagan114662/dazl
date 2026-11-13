@@ -237,7 +237,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
     'The web-search research fallback and any provider retries cannot be bounded and are not in the total.',
     trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
-    ...(i.payer === 'trial' ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
+    // #1095: a refused trial run is not paid by anyone: never claim the trial pays for it
+    ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
   const cap = { max_usd: Number.isFinite(limit) ? limit : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
@@ -310,4 +311,11 @@ export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
   const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding} limit binds)` : ''}`
   return `${parts.join('; ')}; ${left}. Model requests expected: ${capped.min === capped.max ? cur(capped.min) : `${cur(capped.min)} - ${cur(capped.max)}`}.`
+}
+
+// #1095: who pays, as the cost panel's first line. A run the free trial refused is paid by no one, so it claims no payer
+// (the refusal notice below it says why and what to do); otherwise the shared trial or the account's own keys.
+export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): string | null {
+  if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
+  return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
 }

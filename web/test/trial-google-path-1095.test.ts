@@ -4,7 +4,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { TRIAL_REFUSALS } from '../lib/billing/trial-budget.ts'
-import { trialRefusalNotice, TRIAL_REFUSAL_COPY } from '../lib/trial-copy.ts'
+import { trialRefusalNotice, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, noticeAccount, signUpPlanLine } from '../lib/trial-copy.ts'
+import { estimateRun, estimatePayerLine } from '../lib/scan/price-estimate.ts'
 import { safeNext, linkGoogleHref, googleLinkResultCopy, GOOGLE_LINK_RESULTS } from '../lib/google-link.ts'
 
 const RAW = /\b(trial_unavailable|google_required|domain_used|attempts_cap|account_total_cap|global_daily_cap|not_configured)\b/
@@ -71,4 +72,35 @@ test('#1095: Settings offers "Add Google sign-in" to an unconfirmed account too 
   const link = /\{([^{}]*)&&\s*<a[^>]*href="\/api\/auth\/google\?link=1"/.exec(panel)
   assert.ok(link, 'the Add Google sign-in link is rendered under a condition')
   assert.equal(link![1].trim(), '!s.google', 'shown whenever Google is not linked yet, confirmed or not')
+})
+
+test('#1095: a blocked free-trial cost panel never says the shared free trial pays (no payer is claimed for a refused run)', () => {
+  for (const why of ['google_required', 'domain_used', 'attempts_cap', 'account_total_cap', 'global_daily_cap']) {
+    const est = estimateRun({ budget: null, payer: 'trial', limited: true, trialRefusal: why, trialUsed: 0 })
+    assert.equal(est.verdict.ok, false, why); assert.equal(est.verdict.reason, 'trial_unavailable', why)
+    const panel = [estimatePayerLine(est) ?? '', ...est.assumptions].join('\n')
+    assert.doesNotMatch(panel, /Paid by the shared free trial/i, `${why}: a refused run is not paid by the trial`)
+  }
+  // a trial run that can go ahead still says who pays; an own-key run says it is billed to the account's keys
+  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'trial', limited: true, trialUsed: 0 })), 'Paid by the shared free trial, not billed to you.')
+  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'you' })), 'Billed to your own keys and plans.')
+})
+
+test('#1095: when the account cannot be read, google_required still offers Link Google back to this page (never a dead end)', () => {
+  const failed = noticeAccount(null, null) // GET /api/auth/email failed (network, 5xx, an expired session's 401)
+  assert.equal(failed, ACCOUNT_LOAD_FAILED, 'a failed read is not "still loading"')
+  const n = trialRefusalNotice('google_required', '/app/leads', failed)
+  const link = n.actions.find(a => a.kind === 'link_google')
+  assert.ok(link, 'a Link Google button after a failed account read')
+  assert.equal(link!.href, '/api/auth/google?link=1&next=%2Fapp%2Fleads')
+  assert.ok(n.actions.some(a => a.kind === 'add_key'), 'and Add your AI key')
+  assert.deepEqual(trialRefusalNotice('google_required', '/app/leads', null).actions, [], 'still loading is different from failed')
+  assert.deepEqual(noticeAccount({ verified: false, google: false }, null), { verified: false, google: false, fresh: true })
+})
+
+test('#1095: sign-up says the free trial scans come with Google sign-in, never promised to the email path', () => {
+  const on = signUpPlanLine(true)
+  assert.equal(on, 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
+  assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
+  assert.equal(signUpPlanLine(false), 'Free plan: 50 scans a month with your own AI key. Upgrade any time.')
 })

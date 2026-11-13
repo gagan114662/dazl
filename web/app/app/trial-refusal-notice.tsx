@@ -1,12 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { trialRefusalNotice, TRIAL_REFUSAL_COPY } from '@/lib/trial-copy'
+import { trialRefusalNotice, noticeAccount, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, type NoticeAccount } from '@/lib/trial-copy'
 import { googleLinkResultCopy } from '@/lib/google-link'
 
 // #1095: a refused free-trial scan, in words, with the way forward (never the raw code). Google-required on a password
 // account links Google to THIS account and comes back to this page with the same search ready to run.
 export const PENDING_SEARCH_KEY = 'dazl_pending_search'
-type Account = { verified: boolean; google: boolean; fresh: boolean }
+type Account = NoticeAccount
 
 // step: where on the page the search was started (the first-run steps), so the page can reopen there.
 // at: when it was first saved; a re-save after a failed link keeps it, so retries never extend the 30 minutes.
@@ -34,16 +34,17 @@ export function takeGoogleLinkResult(): { ok: boolean; text: string } | null {
   return googleLinkResultCopy(r)
 }
 
-async function loadAccount(): Promise<Account | null> {
+// The account, or ACCOUNT_LOAD_FAILED when it could not be read (the notice then still offers Link Google, never nothing).
+async function loadAccount(): Promise<Account | typeof ACCOUNT_LOAD_FAILED> {
   const [email, reauth] = await Promise.all([
     fetch('/api/auth/email').then(r => r.ok ? r.json() : null).catch(() => null),
     fetch('/api/auth/reauth').then(r => r.ok ? r.json() : null).catch(() => null),
   ])
-  return email ? { verified: !!email.verified, google: !!email.google, fresh: reauth ? !!reauth.fresh : true } : null
+  return noticeAccount(email, reauth)
 }
 
 export default function TrialRefusalNotice({ reason, query, step, text }: { reason: unknown; query: string; step?: string; text?: string }) {
-  const [account, setAccount] = useState<Account | null>(null)
+  const [account, setAccount] = useState<Account | typeof ACCOUNT_LOAD_FAILED | null>(null)
   const [here, setHere] = useState('/app')
   const [note, setNote] = useState('')
   const [password, setPassword] = useState('')
