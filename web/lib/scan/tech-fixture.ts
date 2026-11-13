@@ -181,6 +181,8 @@ async function crawlOnce(db: Database.Database, tenantId: string, p: TechFixture
 // Removes the fixture's job and lead and every row its crawls wrote. Only on staging; only the caller's own workspace.
 export function deleteTechFixture(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): { deleted: boolean } {
   if (typeof tenantId !== 'string' || !tenantId || !techFixtureOn(env)) throw new FixtureError('staging_only')
+  // A crawl still running would write its rows under the deleted ids, where no later cleanup could find them.
+  if (inFlight.has(tenantId)) throw new FixtureError('crawl_in_flight')
   const ids = fixtureLead(db, tenantId)
   if (!ids) return { deleted: false }
   db.transaction(() => {

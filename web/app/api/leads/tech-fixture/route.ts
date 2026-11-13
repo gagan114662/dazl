@@ -39,7 +39,7 @@ export async function DELETE(req: NextRequest) {
   try {
     return NextResponse.json(deleteTechFixture(getScanDb(), user.tenantId))
   } catch (e) {
-    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })
+    if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: e.code === 'crawl_in_flight' ? 409 : 403 })
     throw e
   }
 }

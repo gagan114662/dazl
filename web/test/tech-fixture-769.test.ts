@@ -113,7 +113,12 @@ test('#769 one history shows one adoption and one removal: the technology coming
   assert.equal(a.status, 'fulfilled'); assert.equal(c.status, 'fulfilled')
   assert.equal(b.status, 'rejected'); assert.match(String((b as PromiseRejectedResult).reason), /crawl_in_flight/)
   assert.equal((await crawl('A', 'plain')).measured.crawls, 7)
-  void db
+  // cleanup while a crawl is running is refused (its rows would land under deleted ids); afterwards it removes everything
+  const running = crawl('A', 'plain')
+  assert.throws(() => deleteTechFixture(db, 'A', STAGING), /crawl_in_flight/)
+  await running
+  assert.deepEqual(deleteTechFixture(db, 'A', STAGING), { deleted: true })
+  assert.equal((db.prepare("SELECT count(*) AS n FROM connector_audit WHERE tenant_id = 'A'").get() as { n: number }).n, 0)
 })
 
 test('#769 a clock that does not move past the last observation is refused, and nothing is written', async () => {

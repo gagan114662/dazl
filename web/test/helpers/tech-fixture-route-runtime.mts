@@ -69,6 +69,13 @@ test('#769 tech fixture route on staging: plain -> hubspot adds; an outage (whol
   assert.deepEqual(last.measured, { crawls: 8, unreadable_or_failed_crawls: 4, changes_claimed: 2, false_changes: 0, changes_claimed_on_unreadable_or_failed: 0 })
   assert.deepEqual(last.observations.map((o: { readability: string }) => o.readability), ['ok', 'ok', 'thin_page', 'blocked', 'ok', 'ok'])
 
+  // Two calls at once: one runs, the other is refused with 409 and counts nothing.
+  const [x, y] = await Promise.all([call('POST', { page: 'plain' }), call('POST', { page: 'plain' })])
+  assert.deepEqual([x.status, y.status], [200, 409])
+  assert.deepEqual(await y.json(), { error: 'crawl_in_flight' })
+  assert.equal((await x.json()).measured.crawls, 9)
+  assert.equal(jobs(db), 1)
+
   // B cannot remove A's fixture: B has none of its own.
   setUser({ ...B, role: 'owner' })
   assert.deepEqual(await (await call('DELETE')).json(), { deleted: false })
