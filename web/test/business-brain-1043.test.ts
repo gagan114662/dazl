@@ -141,3 +141,17 @@ test('#1043 council r2: a hiring play only from a positive hiring condition, nev
   assert.equal(at(300).length, 1); assert.equal(at(300)[0].length, 300); assert.ok(at(300)[0].endsWith('E'))
   assert.deepEqual(at(301), [])
 })
+
+// Hermes review at 2ac10107: real prod saved signals (read-only, 2026-11-13) and their negated forms
+test('#1043 Hermes: a negated hiring signal in real prod wording never makes a hiring play; a signal the compiler reads the wrong way round makes no play', () => {
+  const q = (signals: string[], who = ['Practice owner']) => businessPlays({ buyer: icp({ who, where: [], signals }) }, []).map(p => p.query)
+  // "without" / "no ... of" are caught only by the compiled plan's negation (not by the stop-word list)
+  for (const s of ['without hiring front-desk staff', 'without hiring an office manager', 'no hiring of recruiters', 'without hiring a receptionist']) assert.deepEqual(q([s]), [], s)
+  // the real signal "Business rejecting venture capital funding" compiles to a POSITIVE funding condition: no play (it would find funded companies)
+  assert.deepEqual(q(['Business rejecting venture capital funding'], ['Small team leaders']), [])
+  assert.deepEqual(q(['Company switching away from ad-supported or data-selling tools']), [])
+  // the real positive signals keep their plays
+  assert.deepEqual(q(['Opened a new location', 'hiring front-desk staff', 'hiring an office manager']),
+    ['Practice owner - Opened a new location', 'Practice owner at companies hiring front-desk staff', 'Practice owner at companies hiring office manager'])
+  assert.deepEqual(q(['Opened a new office', 'hiring recruiters'], ['Agency owner']), ['Agency owner - Opened a new office', 'Agency owner at companies hiring recruiters'])
+})

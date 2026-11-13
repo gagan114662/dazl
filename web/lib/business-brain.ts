@@ -102,7 +102,12 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   }
   // a hiring condition backs a plain play only as "hiring" with no role ("Expanding team, hiring"); a junk role ("hiring the")
   // backs nothing, and one with a real role is the hiring play above
-  const plainOk = (x: string) => !hiringRole(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
+  // Words that turn a signal against its condition ("Business rejecting venture capital funding", a real saved signal: the
+  // compiler reads a positive funding condition, so the play would look for funded companies). When the text says one of
+  // them, a plain play is offered only if the compiler understood the negation (it marked a condition negated); otherwise none.
+  const NEGATING = /\b(?:not|never|no|without|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?)\b/i
+  const understood = (x: string) => !NEGATING.test(x) || conds(x).some(c => c.negated)
+  const plainOk = (x: string) => !hiringRole(x) && understood(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || (!stoppedHiring(x) && !(c.cond.role ?? '').trim())))
   const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
