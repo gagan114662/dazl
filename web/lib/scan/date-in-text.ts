@@ -82,19 +82,23 @@ export function datePositions(text: string): { day: string; index: number; end: 
 // left out (#460 review). Words that also describe events ("formed", "established", "since") are NOT background: "a joint
 // venture formed in 2019" or "an office established in 2019" is the event's own year and stays stale. Used by the stale-year checks (event-date-binding.ts, page-timing.ts).
 const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)\s+(?:in\s+)?$/i
-// #1129: a four-digit number in an Australian ADDRESS is a postcode, never a year ("Sydney, NSW 2000 / Melbourne,
-// VIC 3000" held a lead as stale for "the year 2000"). Only in address form (review on #1137: a bare code is not enough,
-// "WA 2019 expansion", "the ACT 2021 budget" and "SA 2018 Series A" are years): a capitalised place name, then the state or
-// territory code in capitals, then the number, in text that is not all capitals. The address must END at the number (review
-// round 2 on #1137: "Raised SA 2018 Expansion" and "The ACT 2019 Amendments" are years): end of text, punctuation or a
-// separator, "and"/"or" before another capitalised place, or a word an address or a job-board header goes on with
-// ("Apply for this job", "Phone", "Hybrid", "Full time", review round 3). Any other follower ("Expansion", "Amendments")
-// keeps the year, so an unknown layout holds a lead rather than passing it. The word before the code must not be a
-// sentence word ("The", "Raised", "In"). Known limit: a sentence that ends at "<Name> NSW 2019." reads as an address.
-const POSTCODE_BEFORE = /\b([A-Z][a-z]+),?\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT),?\s*$/
+// #1129: a four-digit number in an Australian ADDRESS can be a postcode, not a year ("Sydney, NSW 2000 / Melbourne,
+// VIC 3000" held a lead as stale for "the year 2000"). The year pattern is 1980-2099, and only New South Wales has
+// postcodes there (2000-2099, Sydney and its suburbs). Every other code's postcodes never look like a year (VIC 3xxx, QLD
+// 4xxx, SA 5xxx, WA 6xxx, TAS 7xxx, NT 08xx, ACT 02xx/26xx/29xx; review (Hermes-PC) at 431c8e87), and "WA" is also
+// Washington ("Seattle, WA 2019."), so after any other code the number stays a year. NSW PO-box postcodes (1xxx) are not
+// excluded: a 19xx after NSW stays a year.
+// Only in address form (reviews on #1137): a capitalised place name that is not a sentence word ("The", "Raised", "In"),
+// then "NSW", then 2000-2099, in text that is not all capitals, and the address ENDS at the number: end of text,
+// punctuation or a separator, "and"/"or" before another capitalised place, or a word an address or a job-board header goes
+// on with ("Apply for this job", "Phone", "Hybrid", "Full time"). Any other follower ("Expansion") keeps the year, so an
+// unknown layout holds a lead rather than passing it. Known limits (a year hidden): a sentence that ends at
+// "<Name> NSW 2019." and "<Place> NSW 20xx <header word>" ("Sydney NSW 2019 Government grants").
+const POSTCODE_BEFORE = /\b([A-Z][a-z]+),?\s+NSW,?\s*$/
 const NOT_PLACE_WORD = /^(?:The|A|An|In|At|On|Of|For|By|From|To|Our|Its|Their|This|That|New|Raised|Announced|Opened|Launched|Won|Closed|Signed|Hello|Hi)$/
 const ADDRESS_END = /^\s*(?:$|[.,;:/|)\]?!\-–—]|(?:and|or|&)\s+[A-Z]|(?:Australia|Apply|Phone|Ph|Tel|Telephone|Fax|Email|Mobile|Hybrid|Remote|On-?site|Full|Part|Contract|Casual|Permanent|Temporary|Government|Location|Department|Employment|Map|Directions|View|Get)\b)/
 const isPostcode = (t: string, at: number, end: number): boolean => {
+  if (!/^20\d\d$/.test(t.slice(at, end))) return false
   const m = POSTCODE_BEFORE.exec(t.slice(Math.max(0, at - 60), at))
   return !!m && !NOT_PLACE_WORD.test(m[1]) && ADDRESS_END.test(t.slice(end, end + 20)) && /[a-z]/.test(t.slice(Math.max(0, at - 60), end + 20))
 }
