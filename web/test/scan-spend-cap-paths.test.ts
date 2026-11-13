@@ -166,7 +166,9 @@ test('inventory: each gated module reserves its kind before its request, and daz
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
   // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
   assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
-  assert.match(runner, /const pooledByRunner = !job\.csv_domain && ownerLimits\(job\.user_id\) !== null/)
+  // XHawk on #1154: CSV jobs of a named account take the same PooledGuard (its unsettled-accounting marker stops them too)
+  assert.match(runner, /const pooledByRunner = ownerLimits\(job\.user_id\) !== null/)
+  assert.match(runner, /const owner = ownerLimits\(job\.user_id\)\n/)
   assert.equal([...runner.matchAll(/\(deps\.autopilot \?\? runAutopilot\)\(/g)].length, 1)
   assert.match(runner, /outsideScanSpend\(\(\) => \(deps\.autopilot \?\? runAutopilot\)\(/)
   assert.match(SOURCES.find(s => s.rel === 'lib/enrich/index.ts')!.text, /runWithJobSpend\(db, tenantId, lead\.scan_job_id, \(\) => enrichLeadContacts\(/, 'the owner retry draws on its scan')

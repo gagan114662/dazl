@@ -1209,7 +1209,8 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
   const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
   // #846/#847: the owner's day/month caps. An owner the operator named, on a query job, is reserved by the runner's own
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
-  const pooledByRunner = !job.csv_domain && ownerLimits(job.user_id) !== null
+  // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
+  const pooledByRunner = ownerLimits(job.user_id) !== null
   return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
@@ -1238,7 +1239,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
   }
   try {
     const jobMax = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
-    const owner = job.csv_domain ? null : ownerLimits(job.user_id)
+    const owner = ownerLimits(job.user_id)
     // A free-trial scan runs on dazl's keys: every paid step counts against its reserve (lib/billing/trial-budget.ts). Its
     // own budget, if it set one, can only lower that limit. Without the trial's caps and prices it does not run.
     const trial = job.funded_by === 'trial' ? trialCaps() : null

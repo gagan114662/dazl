@@ -190,3 +190,16 @@ test('#1154: runWithoutAccountSpend is used by no product module under lib/ or a
   const users = [...walk(`${root}lib`), ...walk(`${root}app`)].filter(f => !f.endsWith('/lib/scan/spend-cap.ts') && readFileSync(f, 'utf8').includes('runWithoutAccountSpend'))
   assert.deepEqual(users, [])
 })
+
+// XHawk on #1154: a reservation undone in the same transaction leaves no empty window rows behind; a settle whose window row is gone is an
+// accounting failure (it throws, the transaction rolls back, the hold keeps its worst case), never a silent success.
+bothEngines('#1154 XHawk: release removes the window rows it leaves empty; settle on a missing window row throws', async ({ db }) => {
+  const { reservePoolWindows, releasePoolWindows, settlePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const L = { day: 1, month: 10 }
+  await db.tx(function* (t) { const ok = yield* reservePoolWindows(t, A, L, 0.3, T0); assert.equal(ok, true); yield* releasePoolWindows(t, A, L, 0.3, T0) })
+  assert.deepEqual(await rows(db, A), [], 'a released reservation leaves the store as it found it')
+  await db.tx(function* (t) { yield* reservePoolWindows(t, A, L, 0.3, T0) })
+  assert.equal((await rows(db, A)).length, 2)
+  await db.tx(function* (t) { yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE ?', [A, 'd%']) })
+  await assert.rejects(db.tx(function* (t) { yield* settlePoolWindows(t, A, L, -0.1, 0.2, T0, T0 + 5) }), /spend_pool_window_missing/)
+})

@@ -303,7 +303,12 @@ export function* reservePoolWindows(t: Tx, owner: string, limits: PoolLimits, us
 // Undo a reservePoolWindows that returned true, in the same transaction (the caller's own step refused after it).
 export function* releasePoolWindows(t: Tx, owner: string, limits: PoolLimits, usd: number, atS: number): TxBody<void> {
   if (!(Number.isFinite(usd) && usd > 0)) return
-  for (const [w] of windows(limits)) yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd - ? < 0 THEN 0 ELSE reserved_usd - ? END, calls = calls - 1 WHERE tenant_id = ? AND period = ?', [usd, usd, owner, periodOf(w, atS)])
+  for (const [w] of windows(limits)) {
+    const period = periodOf(w, atS)
+    yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd - ? < 0 THEN 0 ELSE reserved_usd - ? END, calls = calls - 1 WHERE tenant_id = ? AND period = ?', [usd, usd, owner, period])
+    // a window row left with nothing in it (this reservation made it, or it was this call alone) goes, so a refused call changes nothing (XHawk on #1154)
+    yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ? AND calls <= 0 AND reserved_usd <= 0 AND reported_usd <= 0', [owner, period])
+  }
 }
 // Move a reservation made at atS by delta (to the vendor-reported cost) in every window it was made in; reported adds
 // the vendor's own figure. Never below zero; an overrun is recorded past the limit (later reservations then refuse).
@@ -311,8 +316,11 @@ export function* settlePoolWindows(t: Tx, owner: string, limits: PoolLimits, del
   const d = Number.isFinite(delta) ? delta : 0, rep = Number.isFinite(reported) && reported > 0 ? reported : 0
   if (d === 0 && rep === 0) return
   for (const [w] of windows(limits)) {
-    yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
+    const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd + ? < 0 THEN 0 ELSE reserved_usd + ? END, reported_usd = reported_usd + ?, updated_at = ? WHERE tenant_id = ? AND period = ?',
       [d, d, rep, nowS, owner, periodOf(w, atS)])
+    // the reserved window row must still be there (XHawk on #1154): a missing row is an accounting failure, never a silent success; the transaction
+    // rolls back, the hold keeps its worst case and the caller records the failure
+    if (r.changes !== 1) throw new Error('spend_pool_window_missing')
   }
 }
 
