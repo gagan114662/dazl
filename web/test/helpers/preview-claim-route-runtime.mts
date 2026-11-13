@@ -296,10 +296,29 @@ test('the password path keeps the claim in a server intent too, so a confirmatio
     const claim = set.find(c => /^dazl_claim=/.test(c))!
     assert.ok(claim, `${String(to)}: intent cookie set`)
     assert.ok(claim.startsWith(`dazl_claim=${r0.token};`), 'the validated token itself')
-    for (const a of [/Max-Age=3600/, /Path=\//, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(claim, a)
+    for (const a of [/Max-Age=86400/, /Path=\//, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(claim, a)
     assert.doesNotMatch(claim, /Domain=/i, 'host-only intent cookie')
     assert.ok(!set.some(c => /^dazl_return=/.test(c)), 'the password path sets no Google return intent')
   }
+  // The emailed confirmation link is valid 24 h: the intent must cover all of it (a link opened at 23 h still finds it) but
+  // never outlive a claim that expires sooner. Date.now is pinned so the arithmetic is exact, then restored.
+  const realNow = Date.now
+  try {
+    Date.now = () => NOW
+    const maxAge = async (token: string) => Number(/Max-Age=(\d+)/.exec((await go(token, 'sign-up')).headers.getSetCookie().find(c => /^dazl_claim=[a-f0-9]/.test(c)) ?? '')?.[1])
+    assert.equal(await maxAge(r0.token), 86400, 'a long-lived claim: the intent lasts the full 24 h confirmation window')
+    const rs = await issueFor('soon@example.test')
+    h.prepare('UPDATE preview_claims SET snapshot = ? WHERE id = ?').run(
+      JSON.stringify({ ...JSON.parse((h.prepare('SELECT snapshot FROM preview_claims WHERE id = ?').get(rs.id) as { snapshot: string }).snapshot), expiresAt: NOW + 2 * 3600_000 }), rs.id)
+    assert.equal(await maxAge(rs.token), 7200, 'the intent never outlives a claim expiring in 2 h')
+  } finally { Date.now = realNow }
+  // "Not now" drops the intent without touching the claim row
+  const gone = await claimRoute.DELETE(new NextRequest('https://app.test/api/preview/claim', { method: 'DELETE', headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.9.9.${++ip}`, cookie: `dazl_claim=${r0.token}` } }))
+  assert.equal(gone.status, 200)
+  assert.ok(gone.headers.getSetCookie().some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'the intent cookie is cleared')
+  const csrf = await claimRoute.DELETE(new NextRequest('https://app.test/api/preview/claim', { method: 'DELETE', headers: { 'x-forwarded-for': `10.9.9.${++ip}` } }))
+  assert.equal(csrf.status, 403, 'not clearable cross-site / without JSON')
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'Not now claims nothing')
   // unknown, tampered and expired tokens never set an intent and go back to their public page
   const rx = await issueFor('expired2@example.test')
   h.prepare('UPDATE preview_claims SET expires_at = ? WHERE id = ?').run(NOW - 1000, rx.id)
@@ -321,6 +340,14 @@ test('the password path keeps the claim in a server intent too, so a confirmatio
     claimRoute.GET(new NextRequest('https://app.test/api/preview/claim', { headers: { 'x-forwarded-for': `10.9.7.${++ip}`, cookie } })))
   assert.equal(read.status, 200, 'the claim page (no ?t=, no tab storage) reads the proof from the intent cookie')
   assert.equal((await read.json()).business, 'Clinic Soft')
+  // 23 h after the cookie was set (still inside its 24 h life) the confirmation tab resumes the same claim
+  const realNow2 = Date.now
+  try {
+    Date.now = () => NOW + 23 * 3600_000
+    const late = await withJar(new Map([['dazl_session', await createSession('U-drew')]]), () =>
+      claimRoute.GET(new NextRequest('https://app.test/api/preview/claim', { headers: { 'x-forwarded-for': `10.9.8.${++ip}`, cookie } })))
+    assert.equal(late.status, 200, 'a confirmation opened 23 h later still resumes the claim')
+  } finally { Date.now = realNow2 }
   // ...and "Continue with Google" from that new tab (the plain /api/auth/google start) keeps the claim instead of /app
   const g = await start.GET(req('https://app.test/api/auth/google', cookie))
   assert.ok(g.headers.getSetCookie().some(c => /^dazl_return=preview;/.test(c)), 'a valid intent cookie routes the Google return to the claim')

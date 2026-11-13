@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db/client'
 import { getMasterKey } from '@/lib/secrets'
 import { isClaimToken, readPublicClaim } from '@/lib/scan/preview-claim'
 import { redirectNoStore, setClaimCookie } from '@/lib/auth-google-response'
+import { VERIFY_TTL_S } from '@/lib/email-ownership'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
 // Continue a preview claim with a password: "Create account" / "Sign in" on the public preview page (#416). Like the
@@ -24,6 +25,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
   const c = await readPublicClaim(await getDb(), getMasterKey(), token)
   if (c.status !== 'ok') return redirectNoStore(new URL(`/preview/${token}`, base))
   const res = redirectNoStore(new URL(page, base))
-  setClaimCookie(res, token)
+  // Lives as long as the emailed confirmation link (VERIFY_TTL_S, 24 h), never past the claim's own expiry (readers
+  // also re-verify the claim on every use, so a stale cookie grants nothing). At least 1 s so the cookie is never a delete.
+  const left = Math.floor((c.snapshot.expiresAt - Date.now()) / 1000)
+  setClaimCookie(res, token, Math.max(1, Math.min(VERIFY_TTL_S, left)))
   return res
 }

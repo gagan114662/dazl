@@ -30,3 +30,10 @@ test('the public preview page sends Create account / Sign in through the validat
   assert.match(src, /\/continue\?to=sign-in/)
   assert.doesNotMatch(src, /go\('\/sign-(up|in)'\)/, 'never straight to the auth pages: a confirmation link opened in a new tab would lose the claim')
 })
+
+test('the claim page has a way out that clears the intent (#416 review)', () => {
+  const src = readFileSync(new URL('../app/preview/claim/page.tsx', import.meta.url), 'utf8')
+  assert.match(src, /Not now, go to my workspace/)
+  assert.match(src, /method: 'DELETE'/)
+  assert.match(src, /window\.location\.href = '\/app'/)
+})

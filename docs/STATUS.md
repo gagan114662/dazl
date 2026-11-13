@@ -2,6 +2,8 @@
 
 Updated by the builder on every branch. Newest first.
 
+- #1068 b/416-claim-intent review fix (Hermes-PC + xhawk): the password-path claim intent cookie now lasts the 24 h email-confirmation window (capped at the claim's own expiry; the Google path keeps 1 h), so a confirmation link opened after the first hour still resumes the preview claim instead of landing on /app. The claim page gets "Not now, go to my workspace" (DELETE /api/preview/claim, same-origin JSON; clears the intent, claims nothing). Competitive: a prospect's preview-to-signup path no longer silently drops after 60 min. Fixtures only; no live check (Instinct: confirm after >1 h).
+
 - #763 (Norway registry, branch kabir-763-1794340503): brreg leads now cite the entity's own API record (data.brreg.no/enhetsregisteret/api/{enheter|underenheter}/{orgnr}), which states
   registreringsdatoEnhetsregisteret, so the unchanged verifier dates them (`page_bound`). The verifier's page fetcher reads that one JSON record URL shape and nothing else. A Norway task
   (`norway-dental-registry`, brreg only) is on the scoreboard, outside frozen benchmark set v1. Not verified: a keyed scoreboard run (TINYFISH_API_KEY, SCOREBOARD_ANTHROPIC_KEY); registry
