@@ -65,22 +65,20 @@ function clauseAt(text: string, from: number): { rest: string; question: boolean
   const tail = text.slice(from), stop = tail.search(/[.!?;]/)
   return { rest: stop < 0 ? tail : tail.slice(0, stop), question: stop >= 0 && tail[stop] === '?' }
 }
-// #878 (reviews on #1130 at 57008172 and 519f060c): the opened PLACE reported closed, shut or moved. Read for openings only.
-// Anywhere in the quote, only a standalone banner counts: a line, sentence, bracket or dash/comma/"but" part that is just
-// "Permanently closed", "Temporarily closed", "Closed permanently", "(closed)", "[closed]", "It has since closed", "since
-// closed", "has moved" ("Our new clinic is now open in Parkdale. Permanently closed"). "Our old Boston office has closed" and
-// "Applications are now closed" are not banners.
-const CLOSED_BANNER = /^(?:(?:it|we|they)\s+)?(?:(?:has|have)\s+(?:since\s+|now\s+)?(?:permanently\s+)?(?:closed|shut\s*down|moved|relocated)|since\s+(?:closed|moved|relocated)|(?:now\s+)?(?:permanently|temporarily)\s+closed|closed(?:\s+(?:permanently|temporarily|for\s+good|until\s+further\s+notice))?)$/i
+// #878 (reviews on #1130 at 57008172, 519f060c and 77e509ac): the opened PLACE reported closed, shut or moved. Read for the
+// new opening forms only. Anywhere in the quote, only a standalone banner counts: a line, sentence, bracket, or a part
+// between dashes, commas, "·", "•", "|" or "but", that is just "Permanently closed", "Temporarily closed", "Closed
+// permanently", "CLOSED" / "Closed", "(closed)", "[closed]", "It has since closed", "since closed", "has moved", "It closed
+// in March", "we have closed it" ("Our new clinic is now open in Parkdale · Permanently closed · Dentist"). "Our old Boston
+// office has closed" and "Applications are now closed" are not banners.
+const CLOSED_BANNER = /^(?:(?:it|we|they)\s+)?(?:(?:has|have)\s+(?:since\s+|now\s+)?(?:permanently\s+)?(?:closed|shut\s*down|moved|relocated)(?:\s+(?:it|down|permanently|for\s+good))?|since\s+(?:closed|moved|relocated)|(?:now\s+)?(?:permanently|temporarily)\s+closed|closed(?:\s+(?:permanently|temporarily|for\s+good|until\s+further\s+notice))?)$|^(?:it|we|they)\s+(?:has\s+|have\s+)?closed(?:\s+(?:it|down|in\s+[a-z]+(?:\s+\d{4})?|in\s+\d{4}|last\s+[a-z]+))?$/i
 export function closedBanner(quote: string): boolean {
-  return quote.split(/[.!?;\n()[\]]|\s[-–—]\s|,|\s(?:but|however)\s/i).map(x => x.trim().replace(/^[-–—:]\s*/, '')).some(x => x !== '' && CLOSED_BANNER.test(x) && (!/^closed$/i.test(x) || /[([]\s*closed\s*[)\]]/i.test(quote)))
+  return quote.split(/[.!?;\n()[\]·•|]|\s[-–—]\s|,|\s(?:but|however)\s/i).map(x => x.trim().replace(/^[-–—:]\s*/, '')).some(x => x !== '' && CLOSED_BANNER.test(x) && (x !== 'closed' || /[([]\s*closed\s*[)\]]/.test(quote)))
 }
 // Inside the opening's own clause: closed / shut / moved / relocated only with nothing following it (end of clause,
 // punctuation) or a "permanently / temporarily / for good / until" qualifier, plus "closed its doors" and "no longer open".
 // "has closed a $5M round", "shut down its legacy product", "relocated its HQ", "moved to a new HQ" are no closure.
 export const CLAUSE_CLOSED = /\b(?:closed\s+(?:its|our|their|the)\s+doors|no\s+longer\s+open|(?:(?:has|have)\s+(?:since\s+)?|since\s+|now\s+|permanently\s+|temporarily\s+)(?:closed|shut\s*down|moved|relocated)(?=\s*(?:$|[,.;:!?)\]–—-]|permanently\b|temporarily\b|for\s+good\b|until\b))|(?:closed|shut\s*down|relocated|moved)\s+(?:permanently|temporarily|for\s+good|until\s+further\s+notice)\b)/i
-// A verb-first opening of premises ("opened a new clinic"; never "opens a new chapter"): the verb-first form of
-// targeting.ts EVENTS 'open'.
-export const VERB_OPEN_SRC = String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(?:locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b`
 // #878 allow-list (reviews on #1130). A noun-first match is an opening only when what follows the open verb is:
 //   - nothing more (end of clause), "its/their doors", "for business", "and accepting / welcoming / serving ...", or
 //     "- <words>" / ", <words>" / ": <words>" with no hours, availability, future, day, month or "said <Name>";
@@ -126,13 +124,6 @@ export function nounFirstOpenAt(text: string, company?: string | null): number {
   return -1
 }
 export const NOUN_FIRST_OPEN = { test: (text: string): boolean => nounFirstOpenAt(text) >= 0 }
-// The opening spans in a text (every verb-first and noun-first candidate, accepted or not), for a reader that must read
-// the clause's other events exactly as before #878 with the openings blanked out.
-export function openingSpans(text: string): [number, number][] {
-  const out: [number, number][] = []
-  for (const re of [new RegExp(VERB_OPEN_SRC, 'gi'), NOUN_FIRST_OPEN_G]) for (const m of text.matchAll(re)) out.push([m.index ?? 0, (m.index ?? 0) + m[0].length])
-  return out
-}
 // The event signal as it was before #878 (no noun-first openings): a non-opening event is read with this, unchanged.
 export const showsEventSignal = (text: string): boolean => EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
 export const showsEventBeyondHiring = (text: string): boolean => showsEventSignal(text) || NOUN_FIRST_OPEN.test(text)

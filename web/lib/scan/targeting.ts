@@ -394,6 +394,13 @@ function objectOf(e: { object?: number | number[] }, m: RegExpMatchArray): strin
   // singular: "offices" -> office, "branches" -> branch (only ch/sh/x/ss + es loses the e)
   return g ? g.toLowerCase().replace(/(?:(?<=ch|sh|x|ss)es|s)$/, '') : ''
 }
+// The verb-first opening exactly as main read it before #878 (no ordinals, no noun-first forms, and a request for a new
+// "location" met only by "location"): a match here keeps main's reading unchanged (review on #1130 at 77e509ac).
+const MAIN_OPEN = /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi
+export function mainOpenMatches(object: string | undefined, text: string): boolean {
+  for (const m of text.matchAll(new RegExp(MAIN_OPEN.source, 'gi'))) if (!object || (m[1] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return true
+  return false
+}
 // Where in the text the event (and object) first shows, or -1.
 export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {
   const e = EVENTS.find(x => x.event === event)

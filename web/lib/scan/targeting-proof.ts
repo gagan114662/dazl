@@ -3,10 +3,10 @@
 // tenant's saved competitor list. Nothing here fetches, asks a model or guesses: a condition no verified fact shows stays 'unknown',
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
-import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, openingOwnerIsOther, type Stage } from './sales-hiring-gate.ts'
+import { planConditions, eventMatches, eventMatchIndex, mainOpenMatches } from './targeting.ts'
+import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, quoteShowsEventMain, newOpeningShown, requestPlaces, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
-import { needsEventBeyondHiring, closedBanner, CLAUSE_CLOSED } from '../search/page-class.ts'
+import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
@@ -42,12 +42,15 @@ const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|althoug
 const GATE_EVENTS = new Set(['open', 'launch', 'expand'])
 const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|won'?t|without|failed\s+to|lost|losing|den(?:y|ies|ied)|reject\w*|revok\w+|withdr\w+|cancel\w*|denied|plans?\s+to|planning|intends?|aims?\s+to|hopes?\s+to|seeks?\s+to|seeking|bid(?:s|ding)?\s+for|in\s+talks|will|would|could|may|might|if|unless|once|pending|expected|reportedly|rumou?r\w*|allegedly)\b/i
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
-  // every event but an opening is read exactly as before #878
-  if (event !== 'open') return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
-  // #878 (reviews on #1130): an opening is not shown when the quote carries a closed banner anywhere or its own clause says
-  // the place closed or moved, or when its pronoun / missing subject refers back to another company (openingOwnerIsOther)
-  if (closedBanner(quote)) return false
-  return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !CLAUSE_CLOSED.test(k) && !subjectIsOther(k.slice(0, i), company) && !openingOwnerIsOther(quote, k, Math.max(0, quote.indexOf(k)), i, company) })
+  return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
+}
+// #878 (reviews on #1130, design at 77e509ac): an opening main read (its verb-first regex and object) is read as main read
+// it; a new opening form (noun-first, an ordinal, a new premises meeting "location") only when it is the lead's own
+// (newOpeningShown: not closed, attributable, not negated or hypothetical). Launches and expansions read as on main.
+function gateEventShown(event: string | undefined, object: string | undefined, quote: string, lead: ProofLead, query: string | null | undefined): boolean {
+  if (event !== 'open') return quoteShowsEventMain(quote, lead.company) && eventMatches(event, object, quote)
+  if (quoteShowsEventMain(quote, lead.company) && mainOpenMatches(object, quote)) return true
+  return newOpeningShown(quote, lead.company, k => eventMatchIndex(event, object, k), requestPlaces(query), EVENT_NOT)
 }
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".
@@ -187,7 +190,7 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const shows = GATE_EVENTS.has(c.event ?? '') ? gateEventShown(c.event, c.object, quote, lead, ctx.query) : eventShown(c.event, c.object, quote, lead.company)
       return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {

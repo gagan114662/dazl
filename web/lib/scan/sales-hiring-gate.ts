@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenAt, openingSpans, closedBanner, CLAUSE_CLOSED, VERB_OPEN_SRC } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenAt, closedBanner, CLAUSE_CLOSED } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 
@@ -52,105 +52,96 @@ export function stageOk(clause: string, stage: Stage): boolean {
   const letter = stage.slice(7)
   return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
 }
-// #878 (reviews on #1130): who an OPENING belongs to when its clause names no subject of its own. Only openings (verb-first,
-// noun-first, grand opening) are read this way; every other event is read exactly as before #878.
-//   - A pronoun subject ("Their new clinic is now open", "They opened a new clinic") and no subject at all (a prefix of
-//     determiners and adverbs only: "New clinic now open", "The / A / This / That new clinic ...", "Just opened a new
-//     clinic", "The team opened ...") name the nearest referent before them in the quote.
-//   - A referent is: an @handle; whoever follows congrats / shoutout / kudos / "welcome to the neighbourhood" (any case:
-//     "congrats to bright smiles", "the team at bright smiles"), where "our friends / neighbours ..." is another, unnamed
-//     practice; a capitalised name after "at" / "from" ("Big news from Bright Smiles"); or the subject of a sentence
-//     ("Bright Smiles is growing"). Greetings, "thanks to X", "partners with X", "joins as VP" and places are no referent.
-//   - The opening is another company's (the reader fails closed) when that referent is unnamed or is not the lead
-//     (nameIsLead); with no referent at all it is the lead's own ("Big news! Their new clinic is now open").
-const PRONOUN_SUBJECT = /\b(?:they|their|them|its|his|her)\b/gi
-const BARE = new Set(['a', 'an', 'the', 'this', 'that', 'just', 'officially', 'finally', 'recently', 'now', 'also', 'team', 'brand'])
-const NAME_STOP = new Set(['congrats', 'congratulations', 'our', 'we', 'the', 'a', 'an', 'their', 'they', 'it', 'its', 'his', 'her', 'new', 'today', 'big', 'huge', 'excited', 'thrilled', 'welcome', 'happy', 'proud', 'shoutout', 'thanks', 'thank', 'check', 'grand', 'opening', 'now', 'open', 'opened', 'join', 'in', 'at', 'on', 'to', 'and', 'is', 'are', 'friends', 'team', 'great', 'news', 'so', 'this', 'that', 'with', 'for', 'of', 'from', 'by', 'meet', 'say', 'hello', 'hi', 'hey', 'i', 'you', 'your', 'my', 'me', 'us', 'all', 'everyone', 'love', 'wow', 'exciting', 'update', 'visit', 'come', 'book', 'call', 'stop', 'business', 'life', 'everything', 'time', 'work', 'construction', 'progress', 'there', 'here', 'what', 'who', 'which', 'week', 'month', 'year', 'day'])
-const OWN_GENERIC = new Set(['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group', 'and', 'of', 'dental', 'clinic', 'clinics', 'dentistry', 'dds', 'dmd'])
-const STREET_END = /\b(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy)\.?$/i
-type Referent = { at: number; name: string | null }   // name null: another practice the quote does not name ("our neighbours")
-const nameWords = (x: string) => wordsOf(x).filter(w => !NAME_STOP.has(w))
-function referents(before: string): Referent[] {
-  const out: Referent[] = []
+// #878 (reviews on #1130, design at 77e509ac): every event main already read (verb-first openings included) is read with
+// main's code unchanged. Only the opening forms this PR adds (noun-first, grand opening, and a verb-first match that
+// main's regex did not make) are accepted, and only when the opening is attributable to the lead:
+//   - the nearest name-like token before it in the quote is the lead (nameIsLead), or
+//   - nothing name-like comes before it at all, and its own clause has no third-person pronoun ("New dental clinic now
+//     open in Parkdale" passes; "Their new clinic is now open in Parkdale" with no one named fails closed).
+// Name-like: an @handle; whoever follows congrats / shoutout / kudos / "welcome to the neighbourhood" in any case ("our
+// friends / neighbours" is a practice the quote does not name); a run of capitalised words, less stop words, months,
+// weekdays and the request's own place words. When in doubt the opening is not the lead's (unknown); main gave unknown for
+// all of these forms, so no lead main had is lost.
+const THIRD_PERSON = /\b(?:they|their|them|its|his|her)\b/i
+const CAP_STOP = new Set(['the', 'a', 'an', 'big', 'news', 'congrats', 'congratulations', 'visit', 'proud', 'thanks', 'thank', 'you', 'welcome', 'hello', 'hi', 'hey', 'looking', 'try', 'our', 'we', 'us', 'it', 'its', 'their', 'they', 'this', 'that', 'these', 'those', 'new', 'now', 'open', 'opened', 'opening', 'today', 'great', 'exciting', 'excited', 'thrilled', 'huge', 'happy', 'grand', 'just', 'also', 'come', 'book', 'call', 'check', 'join', 'meet', 'say', 'stop', 'shoutout', 'introducing', 'announcing', 'update', 'wow', 'love', 'growing', 'finally', 'officially', 'sadly', 'good', 'here', 'there', 'what', 'who', 'why', 'when', 'how', 'is', 'are', 'and', 'or', 'in', 'at', 'on', 'to', 'for', 'of', 'from', 'by', 'with', 'i', 'my', 'me', 'your', 'all', 'everyone', 'brand', 'yes', 'so', 'more', 'best', 'first', 'second', 'third', 'next', 'last', 'one', 'home', 'clinic', 'location', 'office', 'store'])
+const MONTH_DAY = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)$/i
+type NameLike = { at: number; name: string | null }   // name null: a practice the quote refers to but does not name ("our neighbours")
+function nameLikes(before: string, places: ReadonlySet<string>): NameLike[] {
+  const out: NameLike[] = []
   for (const m of before.matchAll(/@[A-Za-z0-9_.]+/g)) out.push({ at: m.index ?? 0, name: m[0].replace(/\.+$/, '') })
   for (const m of before.matchAll(/\b(?:congrat\w*|shout-?outs?|kudos|hats\s+off|welcome\s+to\s+the\s+neighbou?rhood)\b[,!]?\s*(?:(?:to|for)\s+)?/gi)) {
     const from = (m.index ?? 0) + m[0].length
     let x = before.slice(from).split(/[!.,;:?\n]|\s[-–—]\s|\s(?:for|on|and|who|which|as|with)\s/i)[0].trim().replace(/["“”'‘’]/g, '').trim()
     if (x === '' || x.includes('@')) continue
-    x = x.replace(/^(?:(?:the|all\s+the)\s+)?(?:team|folks|crew|staff|everyone|people|gang)\s+(?:over\s+)?at\s+/i, '').replace(/^(?:our|my)\s+(?:good\s+)?friends\s+(?:over\s+)?at\s+/i, '')
-    if (/^(?:us|me|you|all|everyone|ourselves|(?:our|the)\s+team|team)$/i.test(x)) continue
+    x = x.replace(/^(?:(?:the|all\s+the)\s+)?(?:whole\s+)?(?:team|folks|crew|staff|everyone|people|gang)\s+(?:over\s+)?at\s+/i, '').replace(/^(?:our|my)\s+(?:good\s+)?friends\s+(?:over\s+)?at\s+/i, '')
+    if (/^(?:us|me|you|all|everyone|ourselves|(?:our|the)\s+(?:whole\s+)?team|(?:whole\s+)?team)$/i.test(x)) continue
     if (/^(?:our|my|the)\s+(?:\w+\s+)?(?:friends|neighbou?rs|colleagues|partners|pals|peers)\b/i.test(x)) { out.push({ at: from, name: null }); continue }
-    if (nameWords(x).length) out.push({ at: from, name: x })
+    if (wordsOf(x).some(w => !CAP_STOP.has(w))) out.push({ at: from, name: x })
   }
-  for (const m of before.matchAll(/\b(?:at|from)\s+([A-Z][\w&'’.-]*(?:\s+[A-Z][\w&'’.-]*)*)/g)) {
-    if (!STREET_END.test(m[1]) && nameWords(m[1]).some(w => !OWN_GENERIC.has(w))) out.push({ at: (m.index ?? 0) + m[0].length - m[1].length, name: m[1] })
-  }
-  // the subject of a sentence: the words at its start up to is / are / was / were / has / have / had
-  for (const m of before.matchAll(/(?:^|[.!?;\n]\s*)((?:[\w&'’@-]+\s+){1,5}?)(?:is|are|was|were|has|have|had)\b/gi)) {
-    if (nameWords(m[1]).some(w => !OWN_GENERIC.has(w))) out.push({ at: (m.index ?? 0) + m[0].indexOf(m[1]), name: m[1].trim() })
+  for (const m of before.matchAll(/(?<![\w@.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g)) {
+    const kept = m[0].split(/[ \t]+/).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !MONTH_DAY.test(k) && !places.has(k) })
+    if (kept.length) out.push({ at: (m.index ?? 0) + m[0].indexOf(kept[0]), name: kept.join(' ') })
   }
   return out
 }
-// The referent nearest before `at` (the last one), or null.
-export function nearestReferent(text: string, at: number): Referent | null {
-  const rs = referents(text.slice(0, Math.max(0, at)))
-  return rs.length ? rs.reduce((x, y) => (y.at > x.at ? y : x)) : null
+// The request's own place words ("Dental clinics in Toronto" -> toronto): a place the request names is no other company.
+export function requestPlaces(query: string | null | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const m of (query ?? '').matchAll(/\b(?:in|near|around|across)\s+([A-Z][\w-]*(?:\s+[A-Z][\w-]*)*)/g)) for (const w of wordsOf(m[1])) out.add(w)
+  return out
 }
-// The lead's distinctive words (its name without generic and corporate words; all of them when nothing is left).
-const distinctive = (x: string) => { const all = wordsOf(x), d = all.filter(w => !NAME_STOP.has(w) && !OWN_GENERIC.has(w)); return d.length ? d : all }
-const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every(w => b.includes(w))
-const GENERIC_SUFFIX = /(?:dental|dentistry|clinic|clinics|dds|dmd|inc|co|ltd|llc|official|group)$/
-// A name is the lead's only when its distinctive words are exactly the lead's, or (with at least 2 of them) all inside the
-// lead's name ("Bright Smiles" for "Bright Smiles Dental Studio"). One shared word ("Bright Family Dentistry" for "Family
-// Dental Care") or an extra word ("Metro City Dentistry North") is another practice. An @handle (or a one-word name) is the
-// lead's when, without generic suffix words, it EQUALS the lead's distinctive words joined, or its whole name joined
-// ("@metrocitydentistry", "@metrocity"; never "@notmetrocitydentistry", "@metrocitydentistrynorth", "@kingcitydental").
+// A new-form opening at absolute position `at` in `excerpt`, whose own clause has `prefix` before it, is the lead's.
+export function openingAttributable(excerpt: string, at: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
+  if (!company) return !THIRD_PERSON.test(prefix)
+  const ns = nameLikes(excerpt.slice(0, Math.max(0, at)), places)
+  if (ns.length === 0) return !THIRD_PERSON.test(prefix)
+  const nearest = ns.reduce((x, y) => (y.at > x.at ? y : x))
+  return nearest.name !== null && nameIsLead(nearest.name, company)
+}
+// Corporate and descriptive words a name may carry around the lead's own words ("Acme Software", "Acme HQ", "Metro City
+// Dental Centre"); a place word ("North", a city) is not one of them.
+const DESCRIPTIVE = new Set(['software', 'hq', 'labs', 'lab', 'technologies', 'technology', 'tech', 'inc', 'group', 'centre', 'center', 'clinic', 'clinics', 'dental', 'dentistry', 'studio', 'studios', 'co', 'corp', 'ltd', 'llc', 'limited', 'plc', 'the', 'and', 'of', 'dds', 'dmd'])
+const core = (x: string) => wordsOf(x).filter(w => !DESCRIPTIVE.has(w))
+// A name is the lead's only when, without corporate / descriptive words, it is exactly the lead's name: "Acme Software",
+// "Metro City Dental Centre", "Bright Smiles" for "Bright Smiles Dental Studio". One shared word ("Bright Family Dentistry"
+// for "Family Dental Care"), a missing one ("Metro Dental") or an extra one ("Metro City Dentistry North", "Smile Dental
+// Studio Brampton") is another practice. An @handle or a one-word name is the lead's when it is the lead's whole name
+// joined, or its own words joined followed only by descriptive words ("@metrocitydentistry", "@metro_city_dental";
+// never "@notmetrocitydentistry", "@metrocitydentistrynorth", "@kingcitydental").
 export function nameIsLead(name: string, company: string): boolean {
-  const own = distinctive(company)
+  const own = core(company).length ? core(company) : wordsOf(company)
   if (own.length === 0) return false
-  const theirs = distinctive(name)
-  if (name.startsWith('@') || (theirs.length === 1 && !own.includes(theirs[0]))) {
-    let h = name.toLowerCase().replace(/[^a-z0-9]/g, '')
-    const whole = wordsOf(company).filter(w => !['inc', 'ltd', 'llc', 'limited', 'plc', 'co', 'corp'].includes(w)).join('')
-    if (h === whole) return true
-    for (let prev = ''; prev !== h;) { prev = h; h = h.replace(GENERIC_SUFFIX, '') }
-    return h !== '' && h === own.join('')
+  const words = wordsOf(name)
+  if (name.startsWith('@') || (words.length === 1 && own.length > 1)) {
+    const h = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (h === wordsOf(company).join('')) return true
+    const joined = own.join('')
+    if (!h.startsWith(joined)) return false
+    let rest = h.slice(joined.length)
+    for (let prev = ''; rest !== '' && prev !== rest;) { prev = rest; for (const d of DESCRIPTIVE) if (rest.startsWith(d)) { rest = rest.slice(d.length); break } }
+    return rest === ''
   }
-  return sameSet(theirs, own) || (theirs.length >= 2 && theirs.every(w => own.includes(w)))
+  const theirs = core(name).length ? core(name) : words
+  return theirs.join(' ') === own.join(' ')
 }
-// An opening at `i` in clause `c` (which starts at `start` in the whole excerpt) is another company's: its subject is a
-// pronoun or missing, and the nearest referent before it is unnamed or not the lead.
-export function openingOwnerIsOther(excerpt: string, c: string, start: number, i: number, company: string | null | undefined): boolean {
-  if (!company) return false
-  const prefix = c.slice(0, Math.max(0, i))
-  const pronouns = [...prefix.matchAll(PRONOUN_SUBJECT)]
-  let at: number
-  if (pronouns.length) at = start + (pronouns[pronouns.length - 1].index ?? 0)
-  else if (wordsOf(prefix).every(w => BARE.has(w)) && !/^our\b/i.test(c.slice(Math.max(0, i)))) at = start + Math.max(0, i)
-  else return false
-  const r = nearestReferent(excerpt, at)
-  return r !== null && (r.name === null || !nameIsLead(r.name, company))
+// The non-funding gate exactly as main read it: any event (an opening included) in a clause whose subject is the lead.
+const mainClauseEvent = (c: string, company: string | null | undefined): boolean => { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventSignal(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+export const quoteShowsEventMain = (excerpt: string | null, company?: string | null): boolean => clauses(excerpt ?? '').some(c => mainClauseEvent(c, company))
+// A new-form opening (found by `match` in a clause) the quote shows as the lead's: its clause subject is not another
+// company, the place is not reported closed (a banner anywhere, or a closure in its own clause), and it is attributable.
+export function newOpeningShown(excerpt: string, company: string | null | undefined, match: (clause: string) => number, places: ReadonlySet<string> = new Set(), not?: RegExp): boolean {
+  if (closedBanner(excerpt)) return false
+  return clauses(excerpt).some(c => {
+    const i = match(c)
+    if (i < 0 || (not && not.test(c)) || CLAUSE_CLOSED.test(c) || subjectIsOther(c.slice(0, i), company)) return false
+    return openingAttributable(excerpt, Math.max(0, excerpt.indexOf(c)) + i, c.slice(0, i), company, places)
+  })
 }
-// Where the first opening in a clause starts (verb-first, or noun-first as the company-aware allow-list reads it), or -1.
-function openingAt(c: string, company: string | null | undefined): number {
-  const nf = nounFirstOpenAt(c, company), v = c.search(new RegExp(VERB_OPEN_SRC, 'i'))
-  return nf < 0 ? v : v < 0 ? nf : Math.min(nf, v)
-}
-// A non-opening event, read exactly as before #878.
-const otherEventShown = (c: string, company: string | null | undefined): boolean => { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventSignal(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
   const all = excerpt ?? ''
+  // main's reading, plus a noun-first opening (#878) that is the lead's own
+  if (!fundingAsked) return quoteShowsEventMain(all, company) || newOpeningShown(all, company, c => nounFirstOpenAt(c, company))
   return clauses(all).some(c => {
-    if (!fundingAsked) {
-      const o = openingAt(c, company)
-      if (o < 0) return otherEventShown(c, company)
-      // another event in an opening's clause ("Acme launched a new app and opened a new office") is still read as before
-      let rest = c; for (const [x, y] of openingSpans(c)) rest = rest.slice(0, x) + ' '.repeat(y - x) + rest.slice(y)
-      if (otherEventShown(rest, company)) return true
-      // the opening: not closed (a banner anywhere in the quote, or a closure in its own clause), and the lead's own
-      if (closedBanner(all) || CLAUSE_CLOSED.test(c)) return false
-      return !subjectIsOther(c.slice(0, o), company) && !openingOwnerIsOther(all, c, Math.max(0, all.indexOf(c)), o, company)
-    }
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
