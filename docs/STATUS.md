@@ -28,6 +28,8 @@ Updated by the builder on every branch. Newest first.
   brreg now spends one record read per cited item from the shared 60/hour cap (up to 12 calls per scan, about 5 full scans an hour process-wide). Registry
   records carry no email/phone, so a Norway lead still needs enrichment before it can be qualified.
 
+- #899 b/899-free-mailbox-verifier (Hermes decision 2026-11-12: free tier only): ZeroBounce's free tier is wired as the mailbox verifier (`lib/people/zerobounce.ts`) when `ZEROBOUNCE_API_KEY` is set; the scan runner's last post-finish step (`verifyJobCandidates`, traced `email_verify`) checks the scan's high-confidence US guesses with the existing capped `verifyCandidates`; the crawl itself is unchanged. New monthly cap per database = the free allowance (100, `EMAIL_VERIFY_MONTHLY_CAP` can only lower it), kept in an operator ledger (`email_verify_usage`) that tenant deletion leaves alone; the provider's own refusal is the backstop, on top of the per-tenant daily cap (`EMAIL_VERIFY_DAILY_CAP`, still 0 by default). A bad key / no-credits answer stops the run; only "valid" verifies, catch-all never does. Migration 0063 (ledger + index; 0062 is #1096 on main; renumber at merge if another lands first, see ~/work/migration_claims.txt). A bad key / no credits / 429 stops the scan's remaining checks. Privacy text names ZeroBounce. Not yet: showing a verified guess in Find work email (#1036 follow-up, needs a work_email_lookups schema change). Not verified live: needs a free ZeroBounce key on staging.
+
 ## Score
 
 - Baseline (Instinct, 2026-10-25, live Ohio scan on main 94e3c645): 2 search hits, 1 candidate, 0 verified,
