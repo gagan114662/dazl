@@ -19,8 +19,8 @@ test('#1037 first-play estimate lists the capped people searches, never "no Tiny
   assert.match(p!.note ?? '', /at most 10 searches, one per ready lead that names nobody yet/)
   assert.ok(!e.rows.some(r => /No TinyFish search or fetch/.test(r.note ?? '')), 'the false "no TinyFish" line is gone')
   assert.ok(!e.rows.some(r => /Free sources only/.test(r.label)))
-  assert.equal(row(e, 'sources_free')!.note, 'No TinyFish lead search or page fetch in this mode')
-  assert.ok(!e.rows.some(r => r.id === 'tinyfish_search'), 'no lead search row')
+  assert.equal(row(e, 'sources_free')!.note, 'Leads come from free sources first')
+  assert.ok(!e.rows.some(r => r.id === 'tinyfish_search'), 'no ordinary lead search row')
 })
 
 test('#1037 first-play people searches are priced when the operator pays per search, and gone when the step is off', () => {
@@ -89,7 +89,7 @@ test('#1037 edge counts: a trial with people search off says "plus 0"; negative,
 })
 
 test('#1037 run-budget disclosure follows the server count: 0 -> off (no TinyFish call), 3 -> "up to 3"', () => {
-  const off = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  const off = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 0, firstPlayLead: { searches: 0, fetches: 0 } }).surfaces.find(x => x.surface === 'search_and_fetch')!
   assert.equal(off.status, 'off'); assert.match(off.note, /no TinyFish search, fetch or post-scan people search/)
   const three = describeRunBudget(FIRST5, { firstPlayPeopleSearches: 3 }).surfaces.find(x => x.surface === 'search_and_fetch')!
   assert.equal(three.status, 'not_covered'); assert.match(three.note, /up to 3 TinyFish people searches/)
@@ -125,4 +125,19 @@ test('#1037 trial (non-first5) search row: lead searches at the operator price, 
   assert.match(r.note ?? '', /people searches are paid from the free-trial reserve at \$0\.0040? each/)
   const own = row(estimateRun({ budget: null, payer: 'you', firstPlayPeopleSearches: 10, trialTinyfishSearchUsd: 0.004, env: { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.5' } }), 'tinyfish_search')!
   assert.equal(Math.round(own.usd!.max * 1e6) / 1e6, Math.round(0.5 * own.units.max * 1e6) / 1e6, 'an own-key scan prices every search at the operator price')
+})
+
+test('#1037 item 1: the first-play estimate states the capped lead-search fallback, priced, and drops it when the operator turns it off', () => {
+  const e = estimateRun({ budget: FIRST5, payer: 'trial', trialTinyfishSearchUsd: 0.02, env: { DAZL_PRICE_TINYFISH_FETCH_USD: '0.01' } })
+  const l = row(e, 'first_play_lead_search')!
+  assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', trialTinyfishSearchUsd: 0.02, trialTinyfishFetchUsd: 0.005, env: { DAZL_PRICE_TINYFISH_FETCH_USD: '0.01' } }), 'first_play_lead_search')!.usd, { min: 0, max: 0.02 * 3 + 0.005 * 6 }, 'a trial pays page reads at the trial price')
+  assert.equal(l.provider, 'TinyFish'); assert.deepEqual(l.units, { min: 0, max: 3 })
+  assert.deepEqual(l.usd, { min: 0, max: 0.02 * 3 + 0.01 * 6 })
+  assert.match(l.note ?? '', /Only when free news cannot serve the play: at most 3 TinyFish searches and 6 page reads/)
+  assert.match(l.note ?? '', /never from its last 25%/)
+  assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '1' } }), 'first_play_lead_search')!.units, { min: 0, max: 1 })
+  assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '0' } }), 'first_play_lead_search'), undefined)
+  assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', firstPlayLead: { searches: 1, fetches: 2 } }), 'first_play_lead_search')!.units, { min: 0, max: 1 }, 'the server-effective caps win')
+  assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', firstPlayLead: { searches: 0, fetches: 0 } }), 'first_play_lead_search'), undefined, 'TinyFish off on the server: no row')
+  assert.equal(row(estimateRun({ budget: { paid_fallback: false }, payer: 'trial', env: {} }), 'first_play_lead_search'), undefined, 'not a first play: no fallback row')
 })
