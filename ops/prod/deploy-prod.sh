@@ -85,27 +85,30 @@ PY
   mv -f -- "$CADDY.next" "$CADDY"
   systemctl reload caddy || { cp -a "$bak" "$CADDY"; systemctl reload caddy || true; die "caddy did not reload; the previous config is restored"; }
 }
-listener_cwds() { ss -ltnpH | grep -oP 'pid=\K[0-9]+' | sort -u | while read -r p; do readlink "/proc/$p/cwd" 2>/dev/null || true; done; }
+# one line per listening process: its working directory, or "?" when it cannot be read while the process still exists
+# (a reader must treat "?" as "could be anywhere", never as "runs nothing")
+listener_cwds() { ss -ltnpH | grep -oP 'pid=\K[0-9]+' | sort -u | while read -r p; do readlink "/proc/$p/cwd" 2>/dev/null || { [ ! -e "/proc/$p" ] || echo '?'; }; done; }
+in_use() { local c; while IFS= read -r c; do [[ $c == "$1" || $c == "$1"/* ]] && return 0; done <<< "$2"; return 1; }
+manual_prune_hint() { local d; for d in "$RELEASE_ROOT"/dazl-*-prod; do [ -d "$d" ] && [ ! -L "$d" ] && log "  release directory $d: if nothing runs from it, remove it by hand once: sudo rm -rf -- $d"; done; return 0; }
 port_pid() { ss -ltnpH "sport = :$1" | grep -oP 'pid=\K[0-9]+' | head -1 || true; }
 # Release directories nothing needs: not the live release, not the recorded rollback target, not one any listener runs
 # from (the previous release, a staging service, ...), not one passed in. Each is removed as ITS OWNER (never root; a
 # root-owned one is left and logged), so nothing is removed that its owner could not remove itself.
 release_web() { [[ $1 == "$RELEASE_ROOT"/* ]] && [[ ${1#"$RELEASE_ROOT"/} =~ ^dazl-[0-9a-f]{8}-prod/web$ ]]; }
 prune_unused() {
-  local keep=" ${LIVE_WEB%/web} $* " d owner cwds prev c used
+  local keep=" ${LIVE_WEB%/web} $* " d owner cwds prev
   prev=$( [ -f "$STATE" ] && grep -oP '^PREV_SHA=\K[0-9a-f]{40}$' "$STATE" || true)
   [ -z "$prev" ] || keep="$keep $RELEASE_ROOT/dazl-${prev:0:8}-prod "
   # "could not read" is never "nothing runs": unless the live release runs from a release directory and that directory
   # is among the listeners' working directories, nothing is removed (the disk check then refuses: fail closed)
-  release_web "$LIVE_WEB" || { log "not removing any release: the live release does not run from a release directory ($LIVE_WEB)"; return 0; }
+  release_web "$LIVE_WEB" || { log "not removing any release: the live release does not run from a release directory ($LIVE_WEB)"; manual_prune_hint; return 0; }
   cwds=$(listener_cwds)
-  printf '%s\n' "$cwds" | grep -qxF -- "$LIVE_WEB" || { log "not removing any release: the live release's directory is not among the listeners' working directories"; return 0; }
+  printf '%s\n' "$cwds" | grep -qxF -- "$LIVE_WEB" || { log "not removing any release: the live release's directory is not among the listeners' working directories"; manual_prune_hint; return 0; }
+  ! printf '%s\n' "$cwds" | grep -qxF '?' || { log "not removing any release: a listening process's directory cannot be read"; manual_prune_hint; return 0; }
   for d in "$RELEASE_ROOT"/dazl-*-prod; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     case "$keep" in *" $d "*) continue ;; esac
-    used=0
-    while IFS= read -r c; do [[ $c == "$d" || $c == "$d"/* ]] && { used=1; break; }; done <<< "$cwds"
-    [ $used = 0 ] || continue
+    ! in_use "$d" "$cwds" || continue
     owner=$(stat -c %U -- "$d")
     [ "$owner" != root ] || { log "not removing $d: it is owned by root; remove it by hand once if it is not needed: rm -rf -- $d"; continue; }
     log "removing unused release $d (owner $owner)"
@@ -206,7 +209,9 @@ if [ -n "$LIVE_WEB" ] && as_app test -d "$LIVE_WEB/node_modules"; then live_lock
 
 # 2. the release, as the app user: source checked out, the build PREBUILT on GitHub (never built here)
 reuse=0
-if [ -d "$DIR" ] && listener_cwds | grep -q "^$DIR"; then
+cwds_now=$(listener_cwds)
+! printf '%s\n' "$cwds_now" | grep -qxF '?' || die "a listening process's directory cannot be read, so $DIR may be in use; nothing done"
+if [ -d "$DIR" ] && in_use "$DIR" "$cwds_now"; then
   [ "$(as_app cat "$DIR/web/.build-commit" 2>/dev/null)" = "$SHA" ] && [ -n "$(as_app cat "$DIR/web/.next/BUILD_ID" 2>/dev/null)" ] \
     || die "$DIR is in use by a live process and is not a complete build of $SHA; refusing"
   log "$DIR is live and a complete build of $SHA: reusing it"; reuse=1
@@ -258,6 +263,8 @@ for _ in $(seq 1 "${PROD_HEALTH_TRIES:-90}"); do c=$(health_sha "http://127.0.0.
 
 # 5. switch, verify publicly, record rollback state
 OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE"); OLD_WEB=$LIVE_WEB
+# the rollback target must be known before the switch: a live release that does not say its commit is not switched away from
+[[ $OLD_SHA =~ ^[0-9a-f]{40}$ ]] || { stop_new; die "the live release on :$LIVE did not report its commit (got '${OLD_SHA:-nothing}'), so there would be no rollback target; NOT switching, stopped the new release"; }
 switch_caddy "$NEW"
 sleep "${PROD_SWITCH_SLEEP:-3}"
 pub=$(health_sha "$PUBLIC_URL")

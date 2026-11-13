@@ -109,9 +109,12 @@ esac
 [[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] || fail "STAGING_KEEP_BACKUPS must be a whole number of at least 1 (got '$KEEP_BACKUPS'); nothing done"
 [[ $DOWNLOAD_BUDGET_S =~ ^[0-9]+$ ]] || fail "STAGING_DOWNLOAD_BUDGET_S must be a whole number of seconds; nothing done"
 [[ $DEPLOY_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_DEPLOY_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
-# downloads + deploy.sh (+ its 60 s kill grace) must end before the unit's TimeoutStartSec (80 min), with room to spare
-UNIT_LIMIT_S=4500
-[ $(( DOWNLOAD_BUDGET_S + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 60 ))s together); nothing done"
+BACKUP_ALLOWANCE_S=${STAGING_BACKUP_ALLOWANCE_S:-300}
+[[ $BACKUP_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_BACKUP_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
+# Every step is bounded, and together they end before the unit's TimeoutStartSec (80 min = 4800 s) with a minute to spare:
+# reading main (60 s), the downloads, the database backup, deploy.sh and its 60 s kill grace.
+UNIT_LIMIT_S=4740
+[ $(( 60 + DOWNLOAD_BUDGET_S + BACKUP_ALLOWANCE_S + DEPLOY_ALLOWANCE_S + 60 )) -le $UNIT_LIMIT_S ] || fail "STAGING_DOWNLOAD_BUDGET_S + STAGING_BACKUP_ALLOWANCE_S + STAGING_DEPLOY_ALLOWANCE_S must leave the run inside the unit's timeout (at most $(( UNIT_LIMIT_S - 120 ))s together); nothing done"
 # finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
 # and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
 # owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
@@ -147,7 +150,7 @@ if [ $dry = 0 ]; then
 fi
 
 # 1. main's head
-main_sha=$(git ls-remote "$REPO_URL" refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}') || true
+main_sha=$(timeout 60 git ls-remote "$REPO_URL" refs/heads/main 2>/dev/null | awk 'NR==1 {print $1}') || true
 is_sha "$main_sha" || fail "could not read main's head commit from $REPO_URL; nothing done"
 
 # 2. already live, recently failed, or not built yet
@@ -275,7 +278,7 @@ if [ -e "$db" ]; then
   install -d -m 700 "$BACKUPS"
   out="$BACKUPS/app-pre-${main_sha:0:8}-$(date -u +%Y%m%dT%H%M%SZ).db"
   rm -f -- "$out.tmp"
-  python3 - "$db" "$out.tmp" <<'PY' || { rm -f -- "$out.tmp"; fail "the staging database backup failed; nothing deployed"; }
+  bst=0; timeout --kill-after=10 "$BACKUP_ALLOWANCE_S" python3 - "$db" "$out.tmp" <<'PY' || bst=$?
 import sqlite3, sys, urllib.parse
 src = sqlite3.connect('file:%s?mode=ro' % urllib.parse.quote(sys.argv[1]), uri=True)
 dst = sqlite3.connect(sys.argv[2])
@@ -283,6 +286,8 @@ src.backup(dst); dst.close(); src.close()
 r = sqlite3.connect(sys.argv[2]).execute('pragma integrity_check').fetchone()[0]
 if r != 'ok': sys.exit('integrity_check: %s' % r)
 PY
+  if [ $bst = 124 ] || [ $bst = 137 ]; then rm -f -- "$out.tmp"; fail "the staging database backup ran past its ${BACKUP_ALLOWANCE_S}s allowance; nothing deployed"; fi
+  [ $bst = 0 ] || { rm -f -- "$out.tmp"; fail "the staging database backup failed; nothing deployed"; }
   chmod 600 "$out.tmp"; mv -f -- "$out.tmp" "$out"
   ls -1t "$BACKUPS"/app-pre-*.db 2>/dev/null | tail -n +$(( KEEP_BACKUPS + 1 )) | xargs -r rm -f --
   log "backed up the staging database to $out (integrity ok)"
@@ -294,9 +299,10 @@ build="bash '$self' --extract '$DL'"
 st=0; STAGING_BUILD=$build timeout --kill-after=60 "$DEPLOY_ALLOWANCE_S" bash "$DEPLOY" 8>&- || st=$?
 now=
 [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE" 2>/dev/null)" = "$main_sha" ] && now=1
-# stopped by the allowance AFTER it recorded the switch: the commit is live, so the run reports that, not a failure
+# stopped by the allowance after deploy.sh found the new release healthy and recorded it (deploy.sh writes current-sha
+# only then): the commit is live, so the run reports that, not a failure
 if { [ $st = 124 ] || [ $st = 137 ]; } && [ -n "$now" ]; then log "deploy.sh was stopped by its allowance after $main_sha went live"; st=0; fi
-[ $st != 124 ] && [ $st != 137 ] || fail "deploy.sh was stopped (exit $st: ran past its ${DEPLOY_ALLOWANCE_S}s allowance, or was killed) for $main_sha and was stopped; retrying after ${RETRY_AFTER_S}s"
+[ $st != 124 ] && [ $st != 137 ] || fail "deploy.sh was stopped (exit $st: ran past its ${DEPLOY_ALLOWANCE_S}s allowance, or was killed) for $main_sha; retrying after ${RETRY_AFTER_S}s"
 [ $st = 0 ] || fail "deploy.sh failed for $main_sha (exit $st); retrying after ${RETRY_AFTER_S}s; the downloaded build is kept"
 if [ -n "$now" ]; then
   rm -f -- "$PSTATE"/failed-* "$DL"/staging-*

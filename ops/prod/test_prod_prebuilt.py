@@ -595,6 +595,26 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0); self.assertIn('and the database backup', r.stdout + r.stderr)
         self.assertEqual(self.live_port(), '3104')
 
+    def test_a_listener_whose_directory_cannot_be_read_stops_the_prune_and_the_deploy(self):
+        # "could not read" is never "runs nothing": a listening process whose cwd cannot be read (here pid 1, another
+        # user's process) could run from any release, so nothing is removed and the deploy refuses
+        self.publish(); (self.t / 'listen/4002').write_text('1')
+        r = self.deploy(B)
+        self.assert_untouched(r, "directory cannot be read")
+        self.assertIn('not removing any release: a listening process', r.stdout)
+        self.assertIn('remove it by hand once: sudo rm -rf -- ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), r.stdout)
+        self.assertTrue((self.t / 'rel/dazl-0ld0ld00-prod').exists())
+
+    def test_a_live_release_that_does_not_report_its_commit_is_not_switched_away_from(self):
+        # the rollback target is recorded from the live release's /api/health: without it, no switch (and no empty PREV_SHA)
+        self.publish()
+        (self.t / 'health/3104').unlink()   # the live release stops answering /api/health (it still listens)
+        r = self.deploy(B)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('did not report its commit', r.stdout)
+        self.assertEqual(self.live_port(), '3104'); self.assertFalse((self.t / 'ops/prod-state').exists(), 'no rollback state written')
+        self.assertFalse((self.t / 'health/3105').exists() and (self.t / 'listen/3105').exists() and os.path.exists('/proc/' + (self.t / 'listen/3105').read_text()), 'the new release was stopped')
+
     def test_hard_linked_node_modules_is_not_counted_unpacked_ones_are(self):
         # Finding 1(b): room for the build and the backup, not for 624 MB of node_modules
         free = self.FLOOR + self.db.stat().st_size + self.BOX_NEXT_UNP + 100 * 10 ** 6

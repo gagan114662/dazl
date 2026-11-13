@@ -393,8 +393,10 @@ class PullPrebuiltTest(unittest.TestCase):
         tmo = int(re.search(r'^TimeoutStartSec=(\d+)min$', unit, re.M).group(1)) * 60
         src = Path(SCRIPT).read_text()
         budget = int(re.search(r'DOWNLOAD_BUDGET_S=\$\{STAGING_DOWNLOAD_BUDGET_S:-(\d+)\}', src).group(1))
+        backup_allow = int(re.search(r'BACKUP_ALLOWANCE_S=\$\{STAGING_BACKUP_ALLOWANCE_S:-(\d+)\}', src).group(1))
         deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=\$\{STAGING_DEPLOY_ALLOWANCE_S:-(\d+)\}', src).group(1))
-        self.assertLess(budget + deploy_allow, tmo, 'the downloads plus deploy.sh fit inside the unit timeout')
+        self.assertLess(60 + budget + backup_allow + deploy_allow + 60, tmo, 'reading main, the downloads, the backup and deploy.sh (with its kill grace) fit inside the unit timeout')
+        self.assertIn('timeout 60 git ls-remote', src, 'reading main is bounded too')
 
     def test_deploy_sh_is_stopped_inside_its_allowance(self):
         # #1061 review (XHawk at c51687fd): DEPLOY_ALLOWANCE_S was declared but never enforced, so a deploy.sh that ran
@@ -413,6 +415,19 @@ class PullPrebuiltTest(unittest.TestCase):
         r = self.run_pull(STAGING_DEPLOY_ALLOWANCE_S=2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('stopped by its allowance after', r.stdout + r.stderr); self.assertEqual(self.live(), B)
+
+    def test_a_database_backup_that_cannot_finish_is_stopped_inside_its_allowance(self):
+        # #1061 council: the backup has its own bound inside the unit timeout. A writer holding the database exclusively
+        # makes the online backup wait; it is stopped at its allowance and the run says so (nothing deployed).
+        import time
+        self.publish()
+        holder = subprocess.Popen(['python3', '-c', "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1], isolation_level=None); c.execute('pragma locking_mode=exclusive'); c.execute('begin exclusive'); c.execute('create table if not exists _h(v)'); c.execute('insert into _h values (1)'); print('locked', flush=True); time.sleep(60)", str(self.db)], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), 'locked')
+            t0 = time.monotonic(); r = self.run_pull(STAGING_BACKUP_ALLOWANCE_S=2); took = time.monotonic() - t0
+        finally: holder.kill(); holder.wait()
+        self.assertLess(took, 30, f'took {took:.0f}s')
+        self.assert_refused(r, 'backup ran past its 2s allowance')
 
     def assert_refused_at(self, r, why, live):
         self.assertNotEqual(r.returncode, 0, r.stdout)
