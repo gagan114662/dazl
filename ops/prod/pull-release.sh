@@ -83,10 +83,20 @@ fetch() {
     local f="$DL/${n%%:*}"; [ -f "$f" ] && [ ! -L "$f" ] && [ "$(sha256 "$f")" = "${n##*:}" ] && have=$(( have + $(stat -c %s -- "$f") ))
   done
   local need=$(( next_bytes + mods_bytes - have + next_unp + mods_unp ))
-  local avail; avail=$(df -B1 --output=avail "$DL" | tail -n 1 | tr -d ' ')
-  if [ $(( avail - need )) -lt "$MIN_FREE_BYTES" ]; then
-    fail "ALERT low_disk: $avail bytes free, the release needs about $need (downloads plus the unpacked build), and the box keeps $MIN_FREE_BYTES free; nothing downloaded, nothing changed"
-  fi
+  # both filesystems: the download cache and where the release is unpacked (often the same; then all of it counts there)
+  local fs avail rel_fs dl_dev rel_dev
+  rel_fs=${PROD_RELEASE_ROOT:-/home/ubuntu}; [ -d "$rel_fs" ] || rel_fs=/
+  dl_dev=$(stat -c %d -- "$DL"); rel_dev=$(stat -c %d -- "$rel_fs")
+  for fs in "$DL" "$rel_fs"; do
+    local here=$need
+    if [ "$dl_dev" != "$rel_dev" ]; then
+      if [ "$fs" = "$DL" ]; then here=$(( next_bytes + mods_bytes - have )); else here=$(( next_unp + mods_unp )); fi
+    fi
+    avail=$(df -B1 --output=avail "$fs" | tail -n 1 | tr -d ' ')
+    if [ $(( avail - here )) -lt "$MIN_FREE_BYTES" ]; then
+      fail "ALERT low_disk: $avail bytes free on $fs, the release needs about $here there (downloads plus the unpacked build), and the box keeps $MIN_FREE_BYTES free; nothing downloaded, nothing changed"
+    fi
+  done
   # superseded downloads go first (only this commit's verified files are kept)
   for f in "$DL"/* "$DL"/.[!.]*; do
     [ -e "$f" ] || [ -L "$f" ] || continue

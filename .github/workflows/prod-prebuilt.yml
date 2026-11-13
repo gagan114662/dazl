@@ -84,6 +84,11 @@ jobs:
   publish:
     needs: build
     if: github.event_name != 'pull_request'
+    # one publish at a time across all commits: the keep-newest-5 step must never delete another run's archives
+    # between its archive and manifest uploads
+    concurrency:
+      group: prod-prebuilt-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -101,6 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           cd prebuilt
+          # only a commit on main is ever published for production (a hand-run build of any other commit is refused)
+          st=$(gh api "repos/$REPO/compare/$SHA...main" --jq .status)
+          case "$st" in ahead|identical) ;; *) echo "$SHA is not on main (compare: $st); nothing published"; exit 1 ;; esac
           gh release view "$TAG" -R "$REPO" >/dev/null 2>&1 || gh release create "$TAG" -R "$REPO" --prerelease --target "$SHA" \
             --title "Production prebuilt builds (automatic)" \
             --notes "Built by .github/workflows/prod-prebuilt.yml; unpacked on the production box by ops/prod/pull-release.sh. Assets are named by commit; the newest 5 commits are kept. Not a product release."

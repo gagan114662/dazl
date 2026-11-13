@@ -20,7 +20,6 @@ import tempfile
 import unittest
 
 HERE = Path(__file__).resolve().parent
-PULL, DEPLOY = str(HERE / 'pull-release.sh'), str(HERE / 'deploy-prod.sh')
 A, B = 'a' * 40, 'b' * 40
 LOCK1, LOCK2 = b'{"lockfileVersion":3,"v":1}\n', b'{"lockfileVersion":3,"v":2}\n'
 
@@ -99,7 +98,12 @@ def sha(path):
 class ProdPrebuiltTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); T = self.t = Path(self.tmp.name)
-        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web'): (T / d).mkdir(parents=True)
+        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib'): (T / d).mkdir(parents=True)
+        # the scripts as installed: root-owned in a root-only-writable directory (the test user stands in for root)
+        (T / 'lib').chmod(0o755)
+        for f in ('pull-release.sh', 'deploy-prod.sh'):
+            (T / 'lib' / f).write_bytes((HERE / f).read_bytes()); (T / 'lib' / f).chmod(0o755)
+        self.PULL, self.DEPLOY = str(T / 'lib/pull-release.sh'), str(T / 'lib/deploy-prod.sh')
         for name, body in STUBS.items():
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
         # the source tree a checkout of B gives (package.json + lockfile; no build, no node_modules)
@@ -108,13 +112,13 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.live = live = T / 'rel' / f'dazl-{A[:8]}-prod' / 'web'
         (live / 'node_modules/next').mkdir(parents=True); (live / 'node_modules/next/package.json').write_text('{"live":1}')
         (live / 'package-lock.json').write_bytes(LOCK1); (live / '.build-commit').write_text(A + '\n')
-        # its environment is what the deploy copies into the new release (PATH included, as on the box)
-        self.proc = subprocess.Popen(['sleep', '600'], cwd=live, env={'PATH': f"{T / 'bin'}:{os.environ['PATH']}", 'FAKE_T': str(T), 'DAZL_SECRET_SAMPLE': 'kept'})
+        # its environment is what the deploy copies into the new release (PATH and DB_PATH included, as on the box)
+        self.db = T / 'data/prod.db'
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=live, env={'PATH': f"{T / 'bin'}:{os.environ['PATH']}", 'FAKE_T': str(T), 'DAZL_SECRET_SAMPLE': 'kept', 'DB_PATH': str(T / 'data/prod.db')})
         (T / 'listen/3104').write_text(str(self.proc.pid)); (T / 'health/3104').write_text(A)
         (T / 'Caddyfile').write_text('dazl.ai, www.dazl.ai {\n\treverse_proxy localhost:3104\n}\n')
         # an older release no process runs from: removed after a successful deploy
         (T / 'rel/dazl-0ld0ld00-prod/web').mkdir(parents=True)
-        self.db = T / 'data/prod.db'
         con = sqlite3.connect(self.db); con.execute('create table t (v text)'); con.execute("insert into t values ('kept')"); con.commit(); con.close()
         (T / 'run.env').write_text('DAZL_MAIL=on\n')
 
@@ -145,12 +149,13 @@ class ProdPrebuiltTest(unittest.TestCase):
              'PROD_RUN_ENV': str(T / 'run.env'), 'PROD_REPO_URL': 'https://example.test/dazl.git', 'PROD_PUBLIC_URL': 'https://dazl.test',
              'PROD_PREBUILT_BASE_URL': 'https://example.test/rel', 'PROD_PREBUILT_DIR': str(T / 'dl'),
              'PROD_NODE_ARCH': 'arm64', 'PROD_NODE_ABI': '127', 'PROD_MIN_FREE_BYTES': '0',
-             'PROD_HEALTH_TRIES': '3', 'PROD_HEALTH_SLEEP': '0', 'PROD_SWITCH_SLEEP': '0'}
+             'PROD_HEALTH_TRIES': '3', 'PROD_HEALTH_SLEEP': '0', 'PROD_SWITCH_SLEEP': '0', 'PROD_STOP_SLEEP': '0',
+             'PROD_TRUSTED_UID': str(os.getuid())}
         e.update({k: str(v) for k, v in over.items()})
         return e
 
     def deploy(self, *args, **over):
-        return subprocess.run(['bash', DEPLOY, *args], env=self.env(**over), capture_output=True, text=True, timeout=120)
+        return subprocess.run(['bash', self.DEPLOY, *args], env=self.env(**over), capture_output=True, text=True, timeout=120)
 
     def log(self, name):
         p = self.t / name
@@ -212,7 +217,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assertEqual(self.deploy(B).returncode, 0)
         (self.t / 'health/3104').unlink()
         r = self.deploy('--rollback')
-        self.assertNotEqual(r.returncode, 0); self.assertIn('not answering; refusing', r.stdout)
+        self.assertNotEqual(r.returncode, 0); self.assertIn("answers 'nothing', not the recorded", r.stdout)
         self.assertEqual(self.live_port(), '3105')
 
     # --- refusals: dazl.ai is untouched -----------------------------------------------------------------------------
@@ -227,7 +232,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assert_untouched(self.deploy(B), 'no prebuilt build is published for .*run the prod-prebuilt workflow')
         self.assertFalse((self.t / 'rel' / f'dazl-{B[:8]}-prod').exists())
 
-    def test_disk_floor_refuses_before_downloading(self):
+    def test_deploy_disk_check_refuses_before_downloading(self):
         self.publish()
         r = self.deploy(B, PROD_MIN_FREE_BYTES=10 ** 15)
         self.assert_untouched(r, 'free')
@@ -282,21 +287,76 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.publish(); (self.t / 'migrate-fail').touch()
         self.assert_untouched(self.deploy(B), 'migration failed; prod untouched')
 
+    # --- the independent review of c51687fd: root never runs what the app user controls; verified backup; rollback ---
+    def test_run_env_is_parsed_as_data_never_executed_by_root(self):
+        # R1: a run.env line like X=$(cmd) must stay text; root never sources the app user's file
+        self.publish()
+        (self.t / 'run.env').write_text('DAZL_X=$(touch "$FAKE_T/pwned")\nexport DAZL_Y="quoted value"\n')
+        r = self.deploy(B)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.t / 'pwned').exists(), 'a command in run.env ran')
+        env = (self.t / 'ops/prod.env').read_text()
+        self.assertIn("DAZL_X='$(touch \"$FAKE_T/pwned\")'", env); self.assertIn("DAZL_Y='quoted value'", env)
+
+    def test_untrusted_script_location_is_refused(self):
+        # R2: root runs deploy-prod.sh and pull-release.sh: refused unless root-owned and root-writable only
+        self.publish()
+        (self.t / 'lib').chmod(0o775)
+        self.assert_untouched(self.deploy(B), 'not trusted')
+        (self.t / 'lib').chmod(0o755); (self.t / 'lib/pull-release.sh').chmod(0o775)
+        self.assert_untouched(self.deploy(B), 'not trusted')
+
+    def test_missing_or_mismatched_database_is_refused_before_anything(self):
+        # R3: never back up (or migrate) a database that is not the one the release uses
+        self.publish()
+        self.assert_untouched(self.deploy(B, PROD_DB=str(self.t / 'data/missing.db')), 'missing or not a regular file')
+        other = self.t / 'data/other.db'; sqlite3.connect(other).execute('create table x (y)').connection.commit()
+        self.assert_untouched(self.deploy(B, PROD_DB=str(other)), 'is not .*the database this deploy backs up')
+        self.assertFalse((self.t / 'backups').exists())
+
+    def test_corrupt_database_backup_is_refused(self):
+        # R3: the backup is verified (integrity_check) before migrate
+        self.publish()
+        self.db.write_bytes(b'not a database' * 200)
+        self.assert_untouched(self.deploy(B), 'backup failed')
+        self.assertEqual(self.log('npm.log'), '', 'no migrate without a verified backup')
+
+    def test_rollback_after_a_failed_deploy_is_refused(self):
+        # R4: deploy B (A is the rollback target on :3104), then a failed deploy of C stops A on :3104 and leaves no
+        # usable target: --rollback must refuse, never switch to whatever answers on the old port
+        self.publish()
+        self.assertEqual(self.deploy(B).returncode, 0)
+        C = 'c' * 40; self.publish(C); (self.t / 'bad-health').touch()
+        self.assertNotEqual(self.deploy(C).returncode, 0)
+        self.assertEqual(self.live_port(), '3105', 'B still serves')
+        r = self.deploy('--rollback')
+        self.assertNotEqual(r.returncode, 0, r.stdout); self.assertRegex(r.stdout, 'no rollback target|not the recorded')
+        self.assertEqual(self.live_port(), '3105')
+
+    def test_one_deploy_at_a_time(self):
+        # R5: a second deploy while one holds the lock does nothing
+        import fcntl
+        self.publish()
+        (self.t / 'ops').mkdir(exist_ok=True)
+        with open(self.t / 'ops/deploy.lock', 'w') as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assert_untouched(self.deploy(B), 'another deploy or rollback is running')
+
     def test_download_time_budget(self):
         self.publish()
-        r = subprocess.run(['bash', PULL, 'fetch', B], env=self.env(PROD_DOWNLOAD_BUDGET_S='0'), capture_output=True, text=True)
+        r = subprocess.run(['bash', self.PULL, 'fetch', B], env=self.env(PROD_DOWNLOAD_BUDGET_S='0'), capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0); self.assertIn('time budget', r.stderr)
 
     def test_extract_without_a_verified_fetch_refuses(self):
         web = self.t / 'x/web'; web.mkdir(parents=True); (web / 'package-lock.json').write_bytes(LOCK1)
         (self.t / 'dl').mkdir()
-        r = subprocess.run(['bash', PULL, 'extract', B, str(web)], env=self.env(), capture_output=True, text=True)
+        r = subprocess.run(['bash', self.PULL, 'extract', B, str(web)], env=self.env(), capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0); self.assertIn('no verified prebuilt build', r.stderr)
         self.assertFalse((web / '.next').exists())
 
     def test_the_deploy_script_contains_no_build_step(self):
         # supplement to the behaviour tests above: no command in the deploy path installs or compiles
-        for f in (DEPLOY, PULL):
+        for f in (self.DEPLOY, self.PULL):
             code = '\n'.join(l for l in Path(f).read_text().splitlines() if not l.lstrip().startswith('#'))
             self.assertNotRegex(code, r'next build|npm ci|npm install|\btsc\b', f)
 
