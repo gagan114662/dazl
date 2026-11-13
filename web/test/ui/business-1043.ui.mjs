@@ -60,6 +60,8 @@ try {
       if (p === '/api/settings/memory') return json({ memory: { icp: '', positioning: '', tone: '', exclusions: [], objections: [] } })
       if (p === '/api/settings/competitors') return json({ competitors: ['Zocdoc'] })
       if (p === '/api/scan/jobs') return json({ jobs: [] })
+      if (p === '/api/scan/latest') return json({ query: 'An older dental play', icp: { summary: 'OLD REVIEWED PROFILE', who: ['Old role'], industries: [], sizes: [], where: [], signals: [], exclude: [] }, icp_source: 'user' })
+      if (p === '/api/scan/estimate') return json({ error: 'stub: estimate not needed' }, 400)
       if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null })
       return json({}, 404)
     })
@@ -80,8 +82,8 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${width}: no horizontal scroll`)
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `business-${width}.png`), fullPage: true })
     // 3. edit the buyer roles: the POST carries the change and keeps the research block
-    await roles.getByRole('button', { name: 'Edit' }).click()
-    const who = roles.getByLabel(/Buyer roles/)
+    await roles.getByRole('button', { name: 'Edit Buyer roles' }).click()
+    const who = roles.getByRole('textbox', { name: 'Buyer roles (one per line)' })
     await who.fill('Practice owner\nOffice manager')
     await roles.getByRole('button', { name: 'Save' }).click()
     await roles.getByRole('status').filter({ hasText: 'Saved' }).waitFor({ timeout: 10000 })
@@ -91,13 +93,50 @@ try {
     // 4. a play opens Leads with the search filled in and starts nothing
     const play = page.getByTestId('play').first()
     const q = (await play.textContent()).trim()
+    const before = posts.length
     await play.click()
     await page.waitForURL(/\/app\/leads\?q=/, { timeout: 20000 })
     await page.waitForFunction(v => document.querySelector('#play')?.value === v, q, { timeout: 20000 }).catch(() => {})
     assert.equal(await page.locator('#play').inputValue(), q, 'Leads opens with the play filled in')
     await page.waitForTimeout(500)
-    assert.equal(posts.filter(x => x.p === '/api/scan').length, 0, 'no scan started')
+    assert.deepEqual(posts.slice(before).filter(x => x.m !== 'GET'), [], 'opening the play writes nothing and starts nothing (no scan, estimate or profile call)')
+    // pressing Find leads for the play: the estimate is asked with the play's own sentence, never the older reviewed profile
+    await page.getByRole('button', { name: /Find leads/ }).first().click()
+    await page.waitForTimeout(800)
+    const est = posts.slice(before).find(x => x.p === '/api/scan/estimate')
+    assert.ok(est, 'Find leads asked for the estimate')
+    assert.equal(est.body.query, q)
+    assert.notEqual(est.body.icp?.summary, 'OLD REVIEWED PROFILE', 'the older reviewed play profile is not carried onto the new sentence')
     out.push(`${width}: 7 sections, site link, empty sections, save keeps research, play prefilled "${q}"`)
+    await ctx.close()
+  }
+  {
+    const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    const writes = []
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      if (req.method() !== 'GET') writes.push(p)
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (p === '/api/settings/profile' || p === '/api/settings/memory') return json({ error: 'unavailable' }, 500)
+      if (p === '/api/settings/competitors') return json({ competitors: ['Zocdoc'] })
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByTestId('load-failed').waitFor({ timeout: 20000 })
+    for (const id of ['company', 'customer', 'roles', 'signals']) {
+      const sec = page.getByTestId(`section-${id}`)
+      assert.match(await sec.textContent(), /Could not load your profile/); assert.doesNotMatch(await sec.textContent(), /dazl did not find this/)
+      assert.equal(await sec.getByRole('button', { name: /^Edit / }).count(), 0, `${id}: no editor from a profile that did not load`)
+    }
+    assert.match(await page.getByTestId('section-voice').textContent(), /Could not load Memory/)
+    assert.doesNotMatch(await page.getByTestId('section-voice').textContent(), /dazl did not find this/)
+    assert.match(await page.getByTestId('section-competitors').textContent(), /Zocdoc/)
+    assert.deepEqual(writes, [])
+    out.push('failed reads: "Could not load", no profile editor')
     await ctx.close()
   }
   console.log(`business page UI check passed (real build): ${out.join('; ')}`)

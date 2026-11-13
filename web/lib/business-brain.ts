@@ -20,9 +20,14 @@ const list = (a: unknown) => Array.isArray(a) ? a.map(clean).filter(Boolean) : [
 const httpsUrl = (u: unknown) => typeof u === 'string' && /^https:\/\/[^\s]{4,500}$/.test(u) ? u : null
 
 // Only a source-backed research item with a page earns "from your site"; hypotheses and rejected items do not.
-function siteItems(research: Icp['research'], kinds: ResearchedHyp['k'][]): BrainItem[] {
+const host = (u: unknown) => { try { return typeof u === 'string' && u ? new URL(/^https?:\/\//i.test(u) ? u : 'https://' + u).hostname.replace(/^www\./, '').toLowerCase() : null } catch { return null } }
+// the research must be about the website saved NOW (after a website change, the old site's items are not "your site"),
+// and each item needs its page AND the quote found there (the same bar as the research review, app/app/research-review.tsx)
+function siteItems(research: Icp['research'], kinds: ResearchedHyp['k'][], website: unknown): BrainItem[] {
   const hyps = Array.isArray(research?.hyps) ? research!.hyps : []
-  return hyps.filter(h => kinds.includes(h.k) && (h.s === 'sourced' || h.s === 'reviewed') && httpsUrl(h.u) && clean(h.t))
+  const site = host(website)
+  if (!site || host(research?.site) !== site) return []
+  return hyps.filter(h => kinds.includes(h.k) && (h.s === 'sourced' || h.s === 'reviewed') && httpsUrl(h.u) && host(h.u) === site && clean(h.q) && clean(h.t))
     .map(h => ({ text: clean(h.t), source: { kind: 'site' as const, url: h.u! } }))
 }
 // The same text twice (a profile field that a research item also backs) is shown once, with its site source.
@@ -46,17 +51,17 @@ export function businessSections(p: BrainProfile | null, m: BrainMemory | null, 
   return [
     { id: 'company', title: 'Company & offer', edit: 'profile', items: merge(
       field('Company', p?.business_name), field('What you sell', p?.sells),
-      site ? [{ label: 'Website', text: site, source: { kind: 'site', url: site } }] : [],
-      siteItems(b?.research, ['offer']).map(i => ({ ...i, label: 'Offer' })),
+      site ? [{ label: 'Website', text: site, source: prof }] : [],   // the address the user saved, not a page dazl read
+      siteItems(b?.research, ['offer'], p?.website).map(i => ({ ...i, label: 'Offer' })),
       field('Positioning', m?.positioning, mem)) },
     { id: 'customer', title: 'Ideal customer', edit: 'profile', items: merge(
       field('Summary', b?.summary), each('Industry', b?.industries), each('Company size', b?.sizes), each('Where', b?.where),
-      siteItems(b?.research, ['industry']).map(i => ({ ...i, label: 'Industry' })), siteItems(b?.research, ['size']).map(i => ({ ...i, label: 'Company size' })),
-      siteItems(b?.research, ['location']).map(i => ({ ...i, label: 'Where' })),
-      each('Not a fit', b?.exclude), siteItems(b?.research, ['disqualifier']).map(i => ({ ...i, label: 'Not a fit' })),
+      siteItems(b?.research, ['industry'], p?.website).map(i => ({ ...i, label: 'Industry' })), siteItems(b?.research, ['size'], p?.website).map(i => ({ ...i, label: 'Company size' })),
+      siteItems(b?.research, ['location'], p?.website).map(i => ({ ...i, label: 'Where' })),
+      each('Not a fit', b?.exclude), siteItems(b?.research, ['disqualifier'], p?.website).map(i => ({ ...i, label: 'Not a fit' })),
       field('In your words', m?.icp, mem), list(m?.exclusions).map(text => ({ label: 'Skip', text, source: mem }))) },
-    { id: 'roles', title: 'Buyer roles', edit: 'profile', items: merge(each('Role', b?.who), siteItems(b?.research, ['persona']).map(i => ({ ...i, label: 'Role' }))) },
-    { id: 'signals', title: 'Buying signals', edit: 'profile', items: merge(each('Signal', b?.signals), siteItems(b?.research, ['pain']).map(i => ({ ...i, label: 'Need' }))) },
+    { id: 'roles', title: 'Buyer roles', edit: 'profile', items: merge(each('Role', b?.who), siteItems(b?.research, ['persona'], p?.website).map(i => ({ ...i, label: 'Role' }))) },
+    { id: 'signals', title: 'Buying signals', edit: 'profile', items: merge(each('Signal', b?.signals), siteItems(b?.research, ['pain'], p?.website).map(i => ({ ...i, label: 'Need' }))) },
     { id: 'competitors', title: 'Competitors', edit: 'competitors', items: list(competitors).map(text => ({ text, source: { kind: 'competitors' } })) },
     { id: 'objections', title: 'Objections & answers', edit: 'memory', items: (Array.isArray(m?.objections) ? m!.objections : [])
       .filter(o => clean(o?.q)).map(o => ({ label: clean(o.q), text: clean(o.a) || '(no answer saved yet)', source: mem })) },
@@ -67,8 +72,8 @@ export function businessSections(p: BrainProfile | null, m: BrainMemory | null, 
 export interface BrainPlay { label: string; query: string }
 // Up to 5 one-click plays built only from what is saved, and only with signals dazl's search can actually find:
 // a buyer role (or industry) in the first place named with a saved signal, companies hiring the role a saved hiring
-// signal names (a job-posting signal, lib/scan/targeting.ts), and people looking for an alternative to a saved competitor (complaint/alternatives posts,
-// lib/signals/competitor-reddit.ts). Nothing is suggested when the profile has nothing to build it from.
+// signal names (a job-posting signal, lib/scan/targeting.ts), and people looking for an alternative to a saved competitor (a plain web-search sentence; the complaint/alternatives
+// connector, lib/signals/competitor-reddit.ts, adds posts only when it is enabled for the workspace). Nothing is suggested when the profile has nothing to build it from.
 export function businessPlays(p: BrainProfile | null, competitors: string[] | null): BrainPlay[] {
   const b = p?.buyer ?? null
   const who = list(b?.who), ind = list(b?.industries), where = list(b?.where)[0] ?? '', sig = list(b?.signals)
@@ -76,13 +81,36 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
   const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
-  if (buyer && sig[0]) add(`${buyer}${place}`, `${buyer}${place} - ${sig[0]}`)
+  const hiringSig = (x: string) => /\bhir(?:e|es|ing)\b/i.test(x)
+  const firstPlain = sig.find(x => !hiringSig(x))   // a hiring signal becomes the hiring play below, never also a plain one
+  if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
   for (const h of sig.map(x => /\bhir(?:e|es|ing)\s+(?:a |an |their first |new )?(.{2,80})$/i.exec(x)?.[1]?.trim()).filter((x): x is string => !!x).slice(0, 2))
     add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
   for (const c of list(competitors).slice(0, 2)) add(`Looking for an alternative to ${c}`, `${buyer || 'Companies'}${place} looking for an alternative to ${c}`)
-  // a second signal play, unless that signal already became the hiring play above (the same search in other words)
-  if (buyer && sig[1] && !/\bhir(?:e|es|ing)\b/i.test(sig[1])) add(`${buyer}${place}: ${sig[1]}`, `${buyer}${place} - ${sig[1]}`)
+  // a second plain-signal play (hiring signals are already the hiring plays above)
+  const secondPlain = sig.filter(x => !hiringSig(x))[1]
+  if (buyer && secondPlain) add(`${buyer}${place}: ${secondPlain}`, `${buyer}${place} - ${secondPlain}`)
   return out
+}
+
+// The profile editor's save (#1043): the body for POST /api/settings/profile. The stored buyer's other fields (research,
+// window, country, language, lookalike) are kept as they are; the website is always sent (blank clears it). A profile with
+// no stored buyer and no "who you sell to" saves the company fields alone - the route refuses a buyer without a summary,
+// so buyer details without one are an error the user can fix, never a silent drop.
+export interface ProfileForm { business_name: string; sells: string; website: string; summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[] }
+export function profilePayload(stored: BrainProfile | null, f: ProfileForm): { body: Record<string, unknown> } | { error: string } {
+  const body: Record<string, unknown> = { business_name: f.business_name.trim(), sells: f.sells.trim(), website: f.website.trim() }
+  const cleanList = (a: string[]) => a.map(x => x.trim()).filter(Boolean)
+  const lists = { who: cleanList(f.who), industries: cleanList(f.industries), sizes: cleanList(f.sizes), where: cleanList(f.where), signals: cleanList(f.signals), exclude: cleanList(f.exclude) }
+  const summary = f.summary.trim()
+  const anyList = Object.values(lists).some(a => a.length > 0)
+  if (!summary) {
+    if (anyList || stored?.buyer) return { error: 'Add who you sell to (a short description) before saving the buyer details.' }
+    return { body }
+  }
+  const base: Icp = stored?.buyer ?? { summary: '', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  body.buyer = { ...base, summary, ...lists }
+  return { body }
 }

@@ -672,7 +672,9 @@ export default function LeadsClient() {
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (restoredSearch.current) return // #1095: the search the user was running before linking Google wins
       if (!prefill && j.query && !query) setQuery(q => q || j.query)
-      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
+      // a ?q= sentence is a new search: the last run's reviewed profile is not carried onto it (#1043 council; the saved
+      // business profile is used instead, as for a first scan)
+      if (j.icp && !prefill) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
 
