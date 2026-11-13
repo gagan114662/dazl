@@ -48,6 +48,8 @@ const anyDayMonth = (t: string) => t.split(/[^A-Za-z]+/).some(w => DAY_MONTH.tes
 const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|couple|many|time|order|person|line|style|business|session|progress|stages?|phases?|christmas|easter|thanksgiving|halloween|hanukkah|diwali|ramadan|eid)$/i
 // The words a caption may put between "new" and the premises when it has no case to tell a name by (Title Case, ALL CAPS,
 // all lower case): the lead's own name, or one of these.
+// generic words a lead's name may carry (they never tell two practices apart)
+const LEAD_GENERIC = new Set(['inc', 'ltd', 'llc', 'limited', 'plc', 'the', 'co', 'corp', 'group', 'and', 'of', 'dental', 'dentistry', 'clinic', 'clinics', 'dds', 'dmd', 'centre', 'center', 'studio', 'studios'])
 export const PREMISES_ADJ = /^(?:dental|dentistry|medical|family|pediatric|paediatric|orthodontic|cosmetic|veterinary|vet|physio|physiotherapy|chiropractic|wellness|health|beauty|hair|nail|fitness|flagship|downtown|uptown|larger|bigger|expanded|modern|beautiful|main|second|third|fourth|fifth|satellite|community|walk-in|urgent|care|retail|pop-up|popup)$/i
 const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
 // A place after in / at / on: a street address, "the heart of <Name>", or a proper name (capitalised in mixed-case text;
@@ -105,6 +107,13 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   if (company) {
     const own = new Set(company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
     const words = body.split(/\s+/), noun = words.findIndex(w => PREMISES.test(w))
+    // R17: a fill carrying any of the lead's words must be the lead's whole name ("New Metro Dental Clinic" is not Metro
+    // City Dentistry): its words, less frame words and premises adjectives that are not the lead's, are the lead's core
+    const fill = noun > 0 ? words.slice(1, noun).map(w => w.toLowerCase().replace(/[^a-z0-9&'-]/g, '')).filter(w => w !== '' && !/^(?:new|our|brand)$/.test(w)) : []
+    if (fill.some(w => own.has(w) && !PREMISES_ADJ.test(w) && !LEAD_GENERIC.has(w))) {
+      const core = (ws: string[]) => ws.filter(w => !LEAD_GENERIC.has(w)).join(' ')
+      if (core(fill.filter(w => own.has(w) || !PREMISES_ADJ.test(w))) !== core([...own])) return false
+    }
     // no case to tell a name by: every word between the qualifier and the noun is the lead's own name or a premises adjective
     if (!mixed && noun > 0 && words.slice(1, noun).some(w => !/^(?:new|our|brand)$/i.test(w) && !own.has(w.toLowerCase()) && !PREMISES_ADJ.test(w))) return false
     // the word right before the noun is a place ("Our new Woodbridge location") only after "our" or the lead's own name

@@ -256,7 +256,21 @@ export function openingAttributable(excerpt: string, at: number, end: number, pr
   if (placeWords.some(w => PRACTICE_WORD.test(w) && !leadWords.has(w))) return false
   for (const m of (inner ? inner[2] : '').matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
   const fillPlaces = new Set([...places, ...placeWords])
-  if (wordsOf(inner ? inner[1] : match).some(w => !OPENING_FRAME.has(w) && !PREMISES_ADJ.test(w) && !leadWords.has(w) && !fillPlaces.has(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w))) return false
+  const fill = wordsOf(inner ? inner[1] : match)
+  if (fill.some(w => !OPENING_FRAME.has(w) && !PREMISES_ADJ.test(w) && !leadWords.has(w) && !fillPlaces.has(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w))) return false
+  // R17: a fill carrying any of the lead's words must be the lead's whole name, not a part of it ("New Metro Dental
+  // Clinic" or "City Dental office" for Metro City Dentistry is another practice)
+  // In mixed-case text the capitalised words of the fill are a name ("Grand opening of our new Family Dental Clinic"):
+  // less frame words and places, they must be the lead's name
+  const fillText = inner ? inner[1] : match
+  const mixed = /[a-z]/.test(excerpt) && /[A-Z]/.test(excerpt) && !match.split(/\s+/).every(w => /^[A-Z0-9]/.test(w))
+  const capped = mixed ? fillText.split(/\s+/).filter(w => /^[A-Z]/.test(w)).map(w => w.replace(/[^\w&'’-]/g, '')).filter(w => !OPENING_FRAME.has(w.toLowerCase()) && !fillPlaces.has(w.toLowerCase())) : []
+  if (capped.length > 0 && !nameIsLead(capped.join(' '), lead)) return false
+  // (only the lead's distinctive words count: "dental" in "New dental clinic" for Eleven Dental is an adjective)
+  if (fill.some(w => leadWords.has(w) && !PREMISES_ADJ.test(w) && !DESCRIPTIVE.has(w))) {
+    const named = fill.filter(w => !OPENING_FRAME.has(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w) && (leadWords.has(w) || (!PREMISES_ADJ.test(w) && !fillPlaces.has(w))))
+    if (!nameIsLead(named.join(' '), lead)) return false
+  }
   // a place run carrying the lead's words must be the lead itself ("at Metro City Dentistry North" is not)
   for (const m of excerpt.slice(end, stop).matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
   if (contrastsLead(excerpt, lead)) return false
