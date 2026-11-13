@@ -6,6 +6,8 @@ import Database from 'better-sqlite3'
 import { setUser } from './tenant-route-db.ts'
 import { setDb, sqliteDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { setErrorSinks, type ErrorRecord } from '../../lib/ops/errors.ts'
+import { NextRequest } from 'next/server'
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
 const route = await import('../../app/api/home/results/route.ts')
@@ -16,8 +18,16 @@ test('#1040 GET /api/home/results: 401 signed out, 503 on an unreadable store, 2
   setUser({ id: 'A', business_name: 'Acme' })
   const broken = { kind: 'sqlite', all: async () => { throw new Error('disk I/O error') }, get: async () => { throw new Error('disk I/O error') }, run: async () => { throw new Error('x') } } as unknown as Db
   setDb(broken)
-  const r503 = await route.GET()
+  // the failure is reported (captureError) with this route, the tenant and the request id, before the 503
+  const T = 'c'.repeat(32), RID = '3f2a9c4e-1b7d-4e8a-9c0f-5d6e7f8a9b0c'
+  setUser({ id: T, business_name: 'Acme' })
+  const seen: ErrorRecord[] = []; const restore = setErrorSinks([r => { seen.push(r) }])
+  const r503 = await route.GET(new NextRequest('http://dazl.test/api/home/results', { headers: { 'x-request-id': RID } }))
+  restore()
   assert.equal(r503.status, 503)
+  assert.equal(seen.length, 1, 'one error record')
+  assert.deepEqual([seen[0].where, seen[0].method, seen[0].tenant, seen[0].request_id], ['/api/home/results', 'GET', T, RID])
+  setUser({ id: 'A', business_name: 'Acme' })
   const body503 = await r503.json() as Record<string, unknown>
   assert.equal('tiles' in body503, false, 'an unreadable store never answers counts')
   const raw = new Database(':memory:'); migrateAllSqlite(raw); setDb(sqliteDb(raw))
