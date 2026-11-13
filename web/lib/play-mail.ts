@@ -24,7 +24,8 @@
 // outbox (and tests read it there). Nothing is sent to any lead or prospect; this mail goes only to the account.
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { claimWatchAlertsStep, type Fence } from './watch.ts'
-import { lockAlertsStep, releaseRunAlertsStep, VISIBLE_LEAD } from './play-alerts.ts'
+import { lockAlertsStep, releaseRunAlertsStep, seedPlayAlertsStep, VISIBLE_LEAD } from './play-alerts.ts'
+import { alertKeysOf } from './monitor-events.ts'
 import { sendSystemMail } from './system-mail.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { playName, type PlayIcp } from './play-card.ts'
@@ -86,6 +87,9 @@ function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBo
   yield* fence(t)
   // #883: the tenant's claim lock first, before any row of this play is touched (one order for every pass)
   yield* lockAlertsStep(t, d.user_id)
+  // what main mailed before the record existed is read in BEFORE this run's own marker is written: the backfill takes every
+  // marked run as mailed, and this run is not mailed yet
+  yield* seedPlayAlertsStep(t, d.user_id, alertKeysOf)
   const claim = yield* t.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING', [d.watch_id, mailClaimKey(d.job_id)])
   if (claim.changes !== 1) return null // another tick or instance has it
   // read under the claim: a play paused or deleted since the list was read mails nothing (the claim stays: once only)

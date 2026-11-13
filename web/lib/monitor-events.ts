@@ -163,7 +163,7 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
     // "now reachable" change still alerts once.
     if (!p && other) {
       // the company's other keys: this lead's own, and the ones the record holds for it (a lead stored without the website still finds the website's row)
-      for (const k of new Set([keys.nameKey, keys.domainKey, other.domain_key, other.entity_key])) for (const kind of new Set([l.signal_kind ?? 'signal', other.signal_kind ?? 'signal', 'signal'])) {
+      for (const k of new Set([keys.nameKey, keys.domainKey, other.domain_key, other.entity_key])) for (const kind of new Set(l.signal_kind ? [l.signal_kind, 'signal'] : ['signal', other.signal_kind ?? 'signal'])) {   // the same kind, or one side unlabelled (sameEventAs): never another labelled kind
         if (p || !k || k === ek) continue
         const old = yield* t.get<{ actionable_at: number | null; reachable_at: number | null }>('SELECT actionable_at, reachable_at FROM monitor_events WHERE user_id = ? AND event_key = ?', [a.userId, `${k}|${l.event_date}|${kind}`])
         if (old) { p = { actionable_at: old.actionable_at == null ? null : Number(old.actionable_at), reachable_at: old.reachable_at == null ? null : Number(old.reachable_at) }; evKey = `${k}|${l.event_date}|${kind}` }

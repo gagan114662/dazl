@@ -127,9 +127,10 @@ export function* learnAlertKeysStep(t: Tx, tenantId: string, k: AlertKeys, jobId
   if (held) yield* holdKeysStep(t, tenantId, k, held, now)
   return held
 }
-// The same event as the one the holder alerted: the same day, and the same kind when both sides name one (one run can
-// store an event with no kind and the next label it, as production did for OpenRelay and Photon); a holder with no
-// date at all cannot be told apart from it, so it counts as the same.
+// The same event as the one the holder alerted: the same day, and the same kind when both sides name one. One run can
+// store an event with no kind and the next label it (production did for OpenRelay and Photon), so an event with no kind
+// on either side cannot be told apart from another event of that company on that day and counts as the same; two
+// events that each name a different kind on one day are two events. A holder with no date at all counts as the same.
 export const sameEventAs = (held: Pick<PlayAlert, 'event_date' | 'signal_kind'>, l: { event_date: string | null; signal_kind: string | null }): boolean =>
   held.event_date == null || (held.event_date === l.event_date && (held.signal_kind == null || l.signal_kind == null || held.signal_kind === l.signal_kind))
 
@@ -142,6 +143,8 @@ export const sameEventAs = (held: Pick<PlayAlert, 'event_date' | 'signal_kind'>,
 //     the mail pass picked up but did not mail (play paused at that moment, no confirmed address) cannot be told apart
 //     any more and counts as mailed;
 //   - every monitor alert for a new company or a new signal (its event key carries the company and the day).
+// Not read in (each can mail a company once more after the deploy): what a since-deleted play mailed (its markers went with it),
+// and a mailed lead that has since left the Leads list (quarantined or re-scored into the hidden tier).
 // Bounded: the newest SEED_MAX rows of each kind. The marker row (entity_key SEEDED) makes it once only; it is not a
 // company key (those start "d:" or "n:"). `keysOf` is lib/monitor-events.ts alertKeysOf (passed in: this module sits
 // below it).
@@ -171,7 +174,9 @@ export function* seedPlayAlertsStep(t: Tx, tenantId: string, keysOf: (l: { compa
   for (const r of mons) {
     // the monitor's own event key: "<d:host | n:name>|<day>|<kind>"; the company key in it is the one the alert was raised under
     const [entity, day, kind] = String(r.event_key).split('|')
-    const k = keysOf({ company: r.company, company_domain: entity?.startsWith('d:') ? entity.slice(2) : null })
+    const named = keysOf({ company: r.company, company_domain: entity?.startsWith('d:') ? entity.slice(2) : null })
+    // an alert raised under the name carries that exact key (the stored company text is cut at 150 characters)
+    const k: AlertKeys = entity?.startsWith('n:') ? { domainKey: null, nameKey: entity } : named
     items.push({ keys: k, owner: { play_kind: 'monitor', play_id: r.play_id, job_id: r.job_id, event_date: /^\d{4}-\d{2}-\d{2}$/.test(day ?? '') ? day : null, signal_kind: kind && kind !== 'signal' ? kind : null }, at: Number(r.at) })
   }
   items.sort((a, b) => a.at - b.at)   // stable: each list is already oldest first

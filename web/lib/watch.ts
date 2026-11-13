@@ -143,7 +143,7 @@ export function markWatchLeads(db: Database.Database, watchId: string, jobId: st
   const tenant = (db.prepare(WATCH_TENANT_SQL).get(watchId) as { user_id: string } | undefined)?.user_id
   // #883: what main mailed before the alert record existed is read in first, once per account (lib/play-alerts.ts). The SQLite
   // transaction runs to its end inside this call (lib/db/client.ts); a failure leaves the record unseeded for the next pass.
-  if (tenant) void sqliteDb(db).tx(t => seedPlayAlertsStep(t, tenant, alertKeysOf)).catch(() => { /* seeded by the next pass */ })
+  if (tenant) void sqliteDb(db).tx(t => seedPlayAlertsStep(t, tenant, alertKeysOf)).catch(e => captureError(e, { source: 'worker', where: 'watch:seed-play-alerts', tenantId: tenant })) // seeded by the next pass (the mail pass seeds before it claims)
   let fresh = 0
   const mark = db.prepare(MARK_NEW_SQL)
   const remember = db.prepare(REMEMBER_SQL)

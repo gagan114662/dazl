@@ -371,6 +371,10 @@ bothEngines('#883 one monitor: a company alerted without its website is not a "n
   const later: L = { ...PHOTON_2, date: '2026-11-20', kind: 'hiring', signal: 'Photon is hiring its first sales rep', url: 'https://jobs.example/photon-sales' }
   assert.deepEqual(await monitorRun(db, m.id, NOW + 36 * DAY, [later]), [{ kind: 'new_signal', company: 'Photon' }])
   assert.deepEqual(await monitorRun(db, m.id, NOW + 43 * DAY, [later, { ...later, domain: null }]), [])
+  // two events of one company on ONE day that each name a different kind are two events: the second alerts once as a new signal
+  const funding: L = { ...later, kind: 'raised_funding', signal: 'Photon raised a Series A', url: 'https://news.example/photon-series-a' }
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 43 * DAY + 3600, [funding]), [{ kind: 'new_signal', company: 'Photon' }])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 43 * DAY + 7200, [{ ...funding, domain: null }, later]), [])
   // a second monitor of the account does not re-alert them either
   const m2 = await createMonitor(db, A, { query: Q_SDR }, NOW)
   assert.ok('id' in m2)
@@ -428,6 +432,7 @@ bothEngines('#883 the deploy: what main already mailed is not mailed again by th
   assert.equal(rec['n:campfire'], `watch:${sdr}`); assert.equal(rec['d:zenithon.ai'], `monitor:${m.id}`); assert.equal(rec['n:zenithon'], `monitor:${m.id}`)
   assert.equal(rec['n:mercury'], `watch:${sdr}`, 'Mercury is held by the run that actually mailed it')
   assert.deepEqual(await db.get<{ job_id: string }>("SELECT job_id FROM play_alerts WHERE tenant_id = ? AND entity_key = 'n:photon'", [A]), { job_id: j1 })
+  assert.equal(rec['n:smile avenue dental'], `watch:${seed}`, 'Smile Avenue Dental is held by the run that mailed it after the deploy, not by the pre-deploy run that never was')
   // once only: the marker is there, and a later pass adds and changes nothing
   assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM play_alerts WHERE tenant_id = ? AND entity_key = '~seeded'", [A]))!.n), 1)
   const before = await alerts(db, A)
@@ -442,6 +447,22 @@ bothEngines('#883 the deploy: what main already mailed is not mailed again by th
   await runJob(db, B, other, Q_SEED, NOW, [OPENRELAY_2])
   assert.equal(await sendPlayRunMails(db, { now: NOW + 3720 }), 1)
   assert.deepEqual(listed((await outbox(db, B))[0].body), ['OpenRelay'])
+})
+
+bothEngines('#883 the deploy, when the mail pass is the account\'s first pass: the run it is about to mail is not taken as already mailed (council on PR #1162)', async ({ db }) => {
+  await account(db, A, 'founder@a.example')
+  const seed = await play(db, A, Q_SEED, NOW - 9 * DAY)
+  const sdr = await play(db, A, Q_SDR, NOW - 9 * DAY)
+  // on main: play 1's run finished first with Campfire and was still waiting for its mail pass (no marker) when play 2's later run,
+  // which also found Campfire, was mailed
+  const waiting = await mailedOnMain(db, A, seed, Q_SEED, NOW - 7200, [CAMPFIRE, NGENAIRE], { marker: false })
+  const mailed = await mailedOnMain(db, A, sdr, Q_SDR, NOW - 3600, [CAMPFIRE])
+  // the deploy; the first thing that touches the record is the mail pass, picking up the waiting run
+  assert.equal(await sendPlayRunMails(db, { now: NOW }), 1)
+  assert.deepEqual(listed((await outbox(db, A))[0].body), ['Ngenaire'], 'Campfire was mailed by the other play before the deploy')
+  assert.deepEqual(await newFlags(db, waiting), { Campfire: 0, Ngenaire: 1 })
+  assert.deepEqual(await db.get<{ job_id: string }>("SELECT job_id FROM play_alerts WHERE tenant_id = ? AND entity_key = 'n:campfire'", [A]), { job_id: mailed })
+  assert.deepEqual(await db.get<{ job_id: string }>("SELECT job_id FROM play_alerts WHERE tenant_id = ? AND entity_key = 'n:ngenaire'", [A]), { job_id: waiting })
 })
 
 bothEngines('#883 the first play\'s own leads are held by its automatic repeat: another play does not mail them as new', async ({ db }) => {
