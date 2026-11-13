@@ -5,6 +5,7 @@ import { countriesIn, resolveSegment } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
+import { postingDay } from './ats-posting.ts'
 
 // Public job-board JSON (Greenhouse, Ashby, Lever). Evidence only: a posting says a company is hiring a role in a state.
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
@@ -117,11 +118,9 @@ export function bodyQuotes(raw: unknown): string[] {
 }
 export const bodyQuote = (raw: unknown): string | null => bodyQuotes(raw)[0] ?? null
 const onPage = (pageText: string, q: string) => norm(pageText).includes(norm(q))
-const day = (v: unknown): string | null => {
-  if (typeof v !== 'string') return null
-  const t = Date.parse(v)
-  return Number.isNaN(t) ? null : new Date(t).toISOString().slice(0, 10)
-}
+// #533: the one posting-day rule, shared with the board record read (lib/sources/ats-posting.ts), so a posting has the same
+// day whichever path found it. Strings only here (Lever's numeric createdAt is dated below).
+const day = (v: unknown): string | null => typeof v === 'string' ? postingDay(v) : null
 type Note = (code: string) => void
 // `seen` reports how a BOARD LIST request went, for the per-board progress rows: 'answered' (200, or a plain 404 / 403 = no such board), 'failed' (no answer, 5xx / 429, cut, oversize, malformed).
 type Seen = (r: 'answered' | 'failed') => void
@@ -279,7 +278,7 @@ export const jobBoardsAdapter: SourceAdapter = {
           const url = typeof j?.hostedUrl === 'string' ? j.hostedUrl : ''
           const loc = typeof j?.categories?.location === 'string' ? j.categories.location : undefined
           if (typeof j?.text !== 'string' || !url.startsWith('https://') || !roleOk(j.text) || !place.ok(loc, ...(Array.isArray(j?.categories?.allLocations) ? j.categories.allLocations.filter((x: unknown) => typeof x === 'string') : []))) continue
-          const date = typeof j.createdAt === 'number' && Number.isFinite(j.createdAt) ? new Date(j.createdAt).toISOString().slice(0, 10) : null
+          const date = typeof j.createdAt === 'number' ? postingDay(j.createdAt) : null
           if (!fresh(date)) continue
           const quote = await quoteFor(url, j.descriptionPlain)
           if (!quote) continue
