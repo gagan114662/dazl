@@ -102,16 +102,16 @@ export function atsRecord(body: unknown, r: AtsPostingRef): AtsRecord | 'missing
 }
 
 // The header block the board's own posting page shows above the description, from the record's fields, in page order:
-//   Ashby:      <title> Location <location> Employment Type <Full time> Department <department>
+//   Ashby:      <title> Location <location> Employment Type <Full time> Location Type <Remote> Department <department>
 //   Lever:      <title> <all locations, " / "> <department> – <team> / <commitment> / <Workplace> Apply for this job
 //   Greenhouse: <title> <location>
 // Only fields the record states are written; nothing is invented.
 const EMPLOYMENT: Record<string, string> = { FullTime: 'Full time', PartTime: 'Part time', Intern: 'Intern', Contract: 'Contract', Temporary: 'Temporary' }
-const WORKPLACE: Record<string, string> = { hybrid: 'Hybrid', remote: 'Remote', onsite: 'On-site', 'on-site': 'On-site' }
+const WORKPLACE: Record<string, string> = { hybrid: 'Hybrid', remote: 'Remote', onsite: 'On-site', 'on-site': 'On-site' } // Ashby workplaceType: Remote / Hybrid / OnSite
 function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, location: string): string {
   if (kind === 'ashby') {
-    const et = str(job.employmentType), dept = str(job.department)
-    return [title, location && `Location ${location}`, et && `Employment Type ${EMPLOYMENT[et] ?? et}`, dept && `Department ${dept}`].filter(Boolean).join(' ')
+    const et = str(job.employmentType), dept = str(job.department), wt = str(job.workplaceType)
+    return [title, location && `Location ${location}`, et && `Employment Type ${EMPLOYMENT[et] ?? et}`, wt && `Location Type ${WORKPLACE[wt.toLowerCase()] ?? wt}`, dept && `Department ${dept}`].filter(Boolean).join(' ')
   }
   if (kind === 'lever') {
     const cat = isObj(job.categories) ? job.categories : {}

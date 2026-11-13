@@ -47,6 +47,9 @@ test('#533 live 1: "Posted a <role> role on Ashby/Lever" is hiring wording; a po
   assert.equal(isHiringTrigger(MACQ_SIGNAL, null), true)
   assert.equal(isHiringTrigger('Posted an Account Executive job on Greenhouse', null), true)
   for (const no of ['Posted record revenue for Q3', 'Posted a Series A announcement', 'Posted a blog about its new office', 'Raised a Series A round']) assert.equal(isHiringTrigger(no, null), false, no)
+  // review on #1128: only the whole board wording counts, and never under another stored kind
+  for (const [no, kind] of [['Raised a Series B and posted a press release on its new CRO role', 'funding'], ['Raised a Series B and posted a press release on its new CRO role', null], ['CEO posted a LinkedIn update about leaving her role', null], ['VP Sales posted a farewell note about leaving her role', 'leadership_change'], ['Jane posted a photo from her new job', null]] as const) assert.equal(isHiringTrigger(no, kind), false, `${no} (${kind})`)
+  assert.equal(isHiringTrigger(TEKION_SIGNAL, 'funding'), false, 'a stored non-hiring kind wins over the wording')
 })
 
 test('#533 live 2: the record text carries the posting page header in page order, so a header quote is found', async () => {
@@ -56,6 +59,15 @@ test('#533 live 2: the record text carries the posting page header in page order
     assert.ok((t as Page).text.startsWith(`${TEKION_QUOTE} Department Sales Tekion is hiring`), (t as Page).text)
     const m = await read(MACQ_URL); assert.ok(!isFail(m), JSON.stringify(m))
     assert.ok((m as Page).text.startsWith(`${MACQ_QUOTE} Macquarie Technology Group is hiring`), (m as Page).text)
+  } finally { restore() }
+})
+
+test('#533 live 2 (review on #1128): an Ashby posting with a location type carries it between Employment Type and Department, as its page shows', async () => {
+  const board = { jobs: [{ ...TEKION_BOARD.jobs[0], workplaceType: 'Remote' }] }
+  const restore = fakeHttps(u => u.startsWith('https://api.ashbyhq.com/') ? { status: 200, type: 'application/json', body: JSON.stringify(board) } : { status: 403, type: 'text/html', body: '' })
+  try {
+    const t = await read(TEKION_URL); assert.ok(!isFail(t))
+    assert.ok((t as Page).text.startsWith(`${TEKION_QUOTE} Location Type Remote Department Sales`), (t as Page).text)
   } finally { restore() }
 })
 
@@ -69,8 +81,10 @@ test('#533 live 1+2+3 through the verifier: both requested-role postings are ver
     assert.deepEqual(o.review.map(r => [r.company, r.review_reason]), [], 'nothing held: not quote_unconfirmed, not event_date_stale')
     assert.deepEqual(o.leads.map(l => [l.company, l.event_date, l.event_date_proof]).sort(), [['Macquarie Technology Group', '2026-10-27', 'ats_structured'], ['Tekion', '2026-11-11', 'ats_structured']])
     // a funding claim cited to the same posting still takes no date from it
-    const f = await verifyLeads([draft({ company: 'Tekion', signal: 'Raised a Series B round', source_url: TEKION_URL, excerpt: TEKION_QUOTE })], read, NOW)
-    assert.ok([...f.leads, ...f.review].every(l => l.event_date_proof !== 'ats_structured'), JSON.stringify(f))
+    for (const signal of ['Raised a Series B round', 'Raised a Series B and posted a press release on its new CRO role']) {
+      const f = await verifyLeads([draft({ company: 'Tekion', signal, source_url: TEKION_URL, excerpt: TEKION_QUOTE })], read, NOW)
+      assert.ok([...f.leads, ...f.review].every(l => l.event_date_proof !== 'ats_structured'), `${signal}: ${JSON.stringify(f)}`)
+    }
     // Identity is a separate open issue (#1126): a quote that never names the company, on a board whose slug is the name
     // glued together, is still dropped as entity_mismatch (never stale, never quote_unconfirmed)
     const glued = await verifyLeads([draft({ company: 'Macquarie Technology Group', signal: MACQ_SIGNAL, source_url: `https://jobs.lever.co/macquarietechnologygroup/${MACQ_ID}`, excerpt: MACQ_QUOTE })], read, NOW)
