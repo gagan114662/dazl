@@ -16,7 +16,7 @@ says what that code does. It is not a pricing page and makes no billing claim.
 | Limit | Set by | Applies to | Kind |
 |---|---|---|---|
 | **Hard per-scan cap** (#377, #533) | owner rule: CAD 5 per paid scan; `DAZL_SCAN_CAP_CAD` can only lower it | every paid provider call of one scan (all attempts, retries, workers, post-finish enrichment, owner retry of its held lookups) | hard dollars, reserved on the scan's own row before each call (below) |
-| Owner day / month pool | `DAZL_RUN_MAX_USD_USERS`, `DAZL_OWNER_MONTH_MAX_USD_USERS` (per owner id) | every LLM call of that owner: scan runner and every `ownerGuarded` path | hard dollars, shared store (`tenant_spend_pools`) |
+| Owner day / month pool (#846/#847: every account, never unlimited) | per account: `DAZL_RUN_MAX_USD_USERS` (day), `DAZL_OWNER_MONTH_MAX_USD_USERS` (month), "<owner id>:<usd>,..."; every other account: `DAZL_OWNER_DAY_MAX_USD` (default USD 10), `DAZL_OWNER_MONTH_MAX_USD` (default USD 100). Not a positive number (missing, 0, negative, Infinity, text): the next source applies. Above USD 100 a day / USD 1,000 a month: clamped | every model call of that owner: scan runner and every `ownerGuarded` path | hard dollars, shared store (`tenant_spend_pools`) |
 | Per-run (per play) `max_usd` | the scan's `run_budget` | that scan job's LLM calls | hard dollars, saved on the job row per call |
 | Trial scan reserve | `DAZL_TRIAL_SCAN_RESERVE_USD` | a trial scan's LLM and TinyFish steps | hard dollars (lib/billing/trial-budget.ts) |
 | Trial account total, global daily | `DAZL_TRIAL_ACCOUNT_TOTAL_USD`, `DAZL_TRIAL_GLOBAL_DAILY_USD` | trial admission | hard dollars, checked at admission |
@@ -24,8 +24,27 @@ says what that code does. It is not a pricing page and makes no billing claim.
 | Apollo / PDL counts | `MAX_LEADS = 5`, `MAX_CONTACTS = 5` per scan (lib/enrich/index.ts); 50 companies per commenter batch | BYOK enrichment, one pass | **count caps, not dollars** |
 | Workspace enrichment credits | **no default limit**; per-workspace explicit limit (Settings > Enrichment, `tenant_spend_pools` periods `cla|clp` + `d|m`), else an operator-wide `DAZL_APOLLO_CREDITS_DAY` / `_MONTH`, `DAZL_PDL_CREDITS_DAY` / `_MONTH`, else unset = only the per-scan caps bind (usage still counted) | every Apollo org lookup and PDL person search, any pass, job, retry, restart or instance | **credits (counts), not dollars**, shared store (`tenant_spend_pools`, periods `cad:`/`cam:`/`cpd:`/`cpm:`; lib/enrich/credit-pool.ts) |
 
-With no owner limit set, `ownerGuarded` returns the provider unchanged: the owner paths are then bounded only by
-the vendor and the tenant's own key.
+Every account has a day and a month limit (#846/#847). An account the operator named in either `_USERS` list keeps the
+PooledGuard path below (the runner's guard and `ownerGuarded`); its other window is the deployment default. Every other
+account is reserved at the model transport (`lib/scan/spend-cap.ts reserveScanSpend`): inside a scan in the scan cap's
+own transaction (`ScanSpendCtx.accountLimits`, set by the runner), outside one through the account spend context
+`ownerGuarded` opens (`runWithAccountSpend`). The worst case (the scan cap's price table, gpt-4.1 included) is reserved
+on both windows before the request; past either limit the call is refused `owner_pool_limit` and nothing is sent or
+written; after it the windows settle to the vendor-reported cost (a failed or unreported call keeps its worst case). That
+path writes no pending marker: a crash keeps the worst case counted. A model with no listed price is refused on it.
+A model call with neither a scan nor an account context is refused (`no_spend_context`, review R2): every real path opens
+one (the runner's scan context; `ownerGuarded`, for a named account too with `limits: null`; the free-trial website read
+through `inAccount` with the account's caps, review R1). The only way past is the named escape hatch
+`runWithoutAccountSpend('offline_eval' | 'test', ...)`. Lock order: a reservation and a settle both take the account's
+pool rows before the scan_jobs row (review R3). Settings are plain decimals only (`1e2`, `0x10`, `+5` are ignored); in an
+account list the first valid entry for the id wins (review R7).
+
+**Proving the caps on a deployment** with zero spend: `GET /api/internal/spend-caps` with the operator secret
+(`Authorization: Bearer $AUTOPILOT_TICK_SECRET`; 404 otherwise). It reports, for the per-scan, per-account, per-day and
+per-month cap, the effective number, where it came from (`account`, `env`, `default`; settings that were ignored or
+clamped) and the real reservation code's outcome at it, run in a throwaway in-memory SQLite store with the app's own
+migrations: no provider call, the app's store never opened. `?tenant=<account id>` shows which caps that account gets.
+`lib/ops/spend-caps-check.ts`; `test/spend-caps-route-846.test.ts`.
 
 ## Paid callers
 
@@ -141,7 +160,7 @@ claim), on both engines, including two SQLite connections to one file as two ins
 ## Not covered yet (#363 stays open)
 
 - **Scan runner completions** now settle to the vendor-reported usage (owner pool and job run budget; trial scans unchanged and OFF). A call whose cost could not be saved ends the scan as `accounting_failed` (never retried, never an empty result). The runner writes no pending marker. A crash leaves the worst-case reservation counted. The stale-lease reaper and the shutdown handoff do NOT re-run a job that has a paid call of its current attempt still `reserved` (scan_spend_calls): it ends `accounting_uncertain`, because the vendor may have billed that call. A job with nothing unsettled is retried as before (up to MAX_ATTEMPTS) and an interruption between paid steps can repeat unbilled work. A crash cannot be told apart from a call that was reserved but never sent, so that case also fails closed.
-- **OpenAI is not supported under an owner pool or run budget**: no OpenAI model is in the price table (`PRICES_USD_PER_M` holds only `claude-sonnet-4-5`), so every reservation is refused `model_unpriced`. The default `gpt-4.1` is listed at $2 / $8 per 1M input / output tokens on https://developers.openai.com/api/docs/models/gpt-4.1 (marked Deprecated there); it was NOT added, because OpenAI usage counts cached input inside prompt tokens and the settle math was written for Anthropic's usage fields.
+- **OpenAI is not supported under a named owner's pool or a run budget** (an account on the default caps is priced at the transport, gpt-4.1 at its Priority rate, see the scan cap table): no OpenAI model is in the price table (`PRICES_USD_PER_M` holds only `claude-sonnet-4-5`), so every reservation is refused `model_unpriced`. The default `gpt-4.1` is listed at $2 / $8 per 1M input / output tokens on https://developers.openai.com/api/docs/models/gpt-4.1 (marked Deprecated there); it was NOT added, because OpenAI usage counts cached input inside prompt tokens and the settle math was written for Anthropic's usage fields.
 - **Per-play limits** exist only for scans (`run_budget.max_usd`). Polish, follow-ups and qualification for a play
   count against the owner pool, not a per-play limit.
 - **TinyFish and Apollo/PDL** are bounded by counts, not dollars, outside a scan (inside one, the hard per-scan cap

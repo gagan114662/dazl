@@ -4,6 +4,7 @@ process.env.SCAN_LLM_TIMEOUT_MS = '50' // read once at provider.ts load, so it m
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import Database from 'better-sqlite3'
 
 const { claimKeyedJob, runJob, scanJobBudgetMs } = await import('../lib/scan/runner.ts')
@@ -61,7 +62,8 @@ test('NEVER-resolving provider: the budget does NOT release the run (admission g
   void run
 })
 
-test('transport abort is the real hard bound on the live provider; the retired research path makes no fetch at all (#379)', async () => {
+// #1154: a direct live-provider call outside any scan or account context is refused (no_spend_context); this check uses the test escape hatch
+test('transport abort is the real hard bound on the live provider; the retired research path makes no fetch at all (#379)', () => runWithoutAccountSpend('test', async () => {
   // The abort bound now lives where live provider calls still exist: complete. A fetch that never answers is aborted
   // at the 50 ms transport timeout - no hang.
   const hangingFetch = ((_u: unknown, init?: RequestInit) => new Promise((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))))) as unknown as typeof fetch
@@ -79,7 +81,7 @@ test('transport abort is the real hard bound on the live provider; the retired r
   const j = getJob(db, 'A', id)!
   assert.equal(j.status, 'failed'); assert.equal(j.error, 'unbounded_fallback_hold')
   assert.equal(calls, 0, 'retired research attempted no fetch')
-})
+}))
 
 test('reap + late completion + ownership loss: the old attempt finishing late writes nothing and does not touch the new attempt', async () => {
   const { db, master, id } = rig()
