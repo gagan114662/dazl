@@ -192,7 +192,9 @@ model behind it (`harnessFor`, `test/helpers/judge-stubs.ts`). Release is blocke
   `invalid` report blocks, and so do an unreadable log, a gate call with no `verdicts` input, and any supplied drift
   report that is not exactly a `DriftReport` with a known status. Once the lock holds a calibration for a judge's current
   fingerprint, the log must hold that fingerprint's verdicts on every calibration item of the frozen corpus (recorded by
-  the same reviewed PR as the lock entry); without them drift cannot be checked and release is blocked. The CI test and
+  the same reviewed PR as the lock entry); without them drift cannot be checked and release is blocked. A critical
+  false positive in any stored run of that fingerprint on this corpus also blocks, whichever run is the drift baseline.
+  When the log is missing from the gate input or unreadable, no judge's verdicts count. The CI test and
   `scripts/judges.mts --gate` read the same files (`--lock` and `--verdict-log` point the CLI at others).
 
 A judge with no real-model calibration does not block release, but its verdicts do not count: they stay unknown, never
@@ -200,7 +202,7 @@ pass, and the decision lists that under `limits`. Harness reports are marked `ha
 so a stub run can never be recorded as a calibration. No human label queue is involved: the labels come from the
 corpus's records, below.
 
-**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, id `judge-claims-synthetic-4`, origin `synthetic`,
+**The corpus** (`test/fixtures/evals/judges/corpus.synthetic.json`, id `judge-claims-synthetic-5`, origin `synthetic`,
 44 items) is labelled, and every company, page and address in it is invented. It is frozen (#783): the lock's `corpus`
 record pins its id, sha256, item count and origin. `frozenProblem` refuses an in-place edit (same id, new content) and any
 other corpus, so a changed corpus needs a new id and a reviewed re-freeze, and every calibration made on the old one stops
@@ -213,10 +215,13 @@ the company, the kind and a status (`asserted`, `denied`, `corrected`, `departed
 matching every attribute the claim names (a claim date is a prefix: `2026-10` needs a fact dated in October 2026), and no
 source denies, corrects or reports the departure of it (a retraction that names a date applies only when its date and the
 claim's can be the same: neither is a prefix of the other means a different event). Instructions, plans and publication
-or refresh dates never support anything. The records are bound to the text: the displayed claim must state the truth
-claim's company, kind, detail, person, contact and date and must not be negated, and each fact's `evidence` must state its
-kind, detail, person, contact, date and status (a retraction or plan in its own words; an assertion not negated). Kind
-words, detail translations and month names are listed in code, not in the corpus. `checkCorpus` refuses an item whose
+or refresh dates never support anything. The records are bound to the text. The displayed claim is not free text: it
+is rendered from the truth claim by a fixed template (`claimText`), and any other wording is refused. Each fact's
+`evidence` must state its kind (and not use a kind word in another sense, such as "a round of layoffs"), detail, person,
+contact, date and status: a retraction or plan in its own words, and an assertion that is neither negated nor a failure,
+modal, rumour or plan. The sentence the evidence sits in must name the fact's company and no other company of the item,
+except one it sets apart ("no relation to ..."); instructions and publication or refresh dates are exempt. Kind words,
+exclusions, detail translations and month names are listed in code, not in the corpus. `checkCorpus` refuses an item whose
 label disagrees with its records, whose claim or evidence does not state what its records say, whose evidence, company or
 contact is not verbatim on the page it cites, whose dates are not real calendar dates, or whose records do not show what its
 condition or critical kind claims (an identity trap needs a fact about another company, a date trap a dated claim, an
@@ -298,7 +303,8 @@ or pooled.
 `scripts/judges.mts` scores both real judge adapters under every reference stub model and checks the harness still has
 teeth: on the calibration split only the truthful stub may pass. `--verdicts <log.jsonl>` appends the run and reports
 drift; it reads and validates the existing log together with the new run first, and leaves the file untouched when either
-fails (a v1 log is refused, not migrated: it records no judge version). It runs offline, with stub models only:
+fails, including when drift over the combined log is `invalid` (a v1 log is refused, not migrated: it records no judge
+version). It runs offline, with stub models only:
 
     SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --no-warnings --import ./test/helpers/net-fence.ts scripts/judges.mts
 

@@ -58,16 +58,25 @@ if (log) {
   const before = readVerdictLog(log) ?? ''
   const added = rows.filter(r => r.stub === 'truthful').flatMap(r => toStoredVerdicts(r.report, corpus, run, at)).map(x => JSON.stringify(x)).join('\n') + '\n'
   const sep = before && !before.endsWith('\n') ? '\n' : ''
-  let stored
+  // Everything is checked on the combined log before a byte is written: it must parse, and its drift must compute with no
+  // 'invalid' report (runs that hold different items). On any failure the file is left exactly as it was, so a retry
+  // cannot grow a broken log. A 'drifted' report is real evidence: the run is recorded and the exit is 1.
+  let reports
   try {
     parseStoredVerdicts(before)
-    stored = parseStoredVerdicts(before + sep + added)
+    const stored = parseStoredVerdicts(before + sep + added)
+    reports = JUDGE_IDS.flatMap(judge => detectDrift(stored, { judge }).map(d => ({ judge, d })))
   } catch (e) {
     console.log(`\nverdict log ${log} left unchanged: ${(e as Error).message}`)
     process.exit(1)
   }
+  const invalid = reports.filter(({ d }) => d.status === 'invalid')
+  if (invalid.length) {
+    console.log(`\nverdict log ${log} left unchanged: ${invalid.map(({ judge, d }) => `${judge} (${d.origin}, ${d.split}): ${d.problems.join('; ')}`).join('\n  ')}`)
+    process.exit(1)
+  }
   appendFileSync(log, sep + added)
-  for (const judge of JUDGE_IDS) for (const d of detectDrift(stored, { judge })) {
+  for (const { judge, d } of reports) {
     console.log(`\ndrift ${judge} (${d.origin}, ${d.split}): ${d.status}${d.problems.length ? `\n  ${d.problems.join('\n  ')}` : ''}`)
     if (d.status !== 'stable' && d.status !== 'insufficient') drifted = true
   }

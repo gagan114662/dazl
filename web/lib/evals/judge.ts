@@ -224,7 +224,21 @@ const NEGATIONS = ['not', 'no', 'never', 'denied', 'pas', 'nicht', 'kein', 'kein
 const STATUS_WORDS: Partial<Record<FactStatus, readonly string[]>> = {
   denied: [...NEGATIONS, 'remains'], corrected: ['not', 'error', 'corrected', 'correction'], departed: ['left', 'former', 'quitté'], planned: ['will', 'plans', 'planned'],
 }
+// An assertion is a plain statement that it happened: a failure, a modal, a rumour or a refutation is not one.
+const HEDGES = ['failed', 'fails', 'fail', 'may', 'might', 'could', 'would', 'rumoured', 'rumored', 'reportedly', 'allegedly', 'refuted', 'unconfirmed', 'expected', 'plans', 'planned', 'will', 'collapsed', 'cancelled', 'canceled', 'abandoned']
 const negated = (w: string[], text: string) => w.some(x => NEGATIONS.includes(x)) || /n['’]t\b/i.test(text)
+// A kind word used in another sense ("a seed round of layoffs" is not funding): words that, next to the kind's own words,
+// mean the text is about something else.
+const KIND_EXCLUSIONS: Partial<Record<FactKind, readonly string[]>> = {
+  funding: ['layoff', 'layoffs', 'job cuts', 'redundancies', 'interviews', 'of talks', 'of golf', 'of drinks', 'of voting', 'playoff', 'tournament'],
+  hiring: ['hiring freeze', 'paused hiring'], hire: ['hire purchase', 'for hire'], opening: ['opening hours', 'opening remarks', 'opened an investigation', 'opened talks'],
+  acquisition: ['acquired a taste', 'acquired skills'],
+}
+// "X, no relation to Y," / "unlike Y": a named company the text sets apart from its subject. Removed before the subject,
+// negation and other-company checks, so "Corvid Robotic Systems, no relation to Corvid Robotics, opened a Leeds office"
+// is an assertion about Corvid Robotic Systems only.
+const SET_APART = /(?:,\s*|\(\s*)?\b(?:no relation to|not affiliated with|unrelated to|unlike|not to be confused with|nicht zu verwechseln mit|sans lien avec|sin relación con)\s+[^,.;:()]+[,.;:)]?/giu
+const setApart = (text: string) => squash(text).replace(SET_APART, ' ').replace(/\s+/g, ' ').trim()
 const DETAIL_WORDS: Readonly<Record<string, readonly string[]>> = { 'seed': ['amorçage', 'startkapital'], 'cto': ['directeur technique'], 'series a': ['series-a'] }
 const MONTH_WORDS: readonly (readonly string[])[] = [
   ['january', 'janvier', 'januar', 'enero', 'janeiro'], ['february', 'février', 'februar', 'febrero', 'fevereiro'], ['march', 'mars', 'märz', 'marzo', 'março'],
@@ -243,16 +257,54 @@ export function unstatedAttrs(text: string, r: { kind?: unknown; status?: unknow
   const t = squash(text), has = (x: string) => t.includes(squash(x)), w = words(text)
   const out: string[] = []
   const sw = isStr(r.status) ? STATUS_WORDS[r.status as FactStatus] : undefined
+  const plain = setApart(text), pw = words(plain)
   if (sw && !sw.some(x => w.includes(x)) && !(r.status === 'denied' && negated(w, text))) out.push(`status (${String(r.status)})`)
-  if (r.status === 'asserted' && negated(w, text)) out.push('status (asserted, but the text is negated)')
-  if (withCompany && isStr(r.company) && !has(r.company)) out.push('company')
+  if (r.status === 'asserted' && negated(pw, plain)) out.push('status (asserted, but the text is negated)')
+  if (r.status === 'asserted' && pw.some(x => HEDGES.includes(x))) out.push('status (asserted, but the text is a failure, modal, rumour or plan)')
+  if (withCompany && isStr(r.company) && !plain.includes(squash(r.company))) out.push('company')
   const kw = FACT_KINDS.includes(r.kind as FactKind) ? KIND_WORDS[r.kind as FactKind] : []
   if (kw.length && !kw.some(has)) out.push('kind')
+  if ((KIND_EXCLUSIONS[r.kind as FactKind] ?? []).some(has)) out.push('kind (a kind word used in another sense)')
   if (isStr(r.detail) && ![r.detail, ...(DETAIL_WORDS[squash(r.detail)] ?? [])].some(has)) out.push('detail')
   if (isStr(r.person) && !has(r.person)) out.push('person')
   if (isStr(r.contact) && !has(r.contact)) out.push('contact')
   if (isStr(r.date) && isPartialDate(r.date) && !statesDate(text, r.date)) out.push('date')
   return out
+}
+// The sentence(s) of `source` around `evidence` (from the sentence start before it to the sentence end after it, squashed):
+// where a fact's subject must be named, since evidence often starts after the name ("raised a seed round").
+function sentenceOf(source: string, evidence: string): string {
+  const s = squash(source), e = squash(evidence), at = s.indexOf(e)
+  if (at < 0) return e
+  const before = s.slice(0, at), after = s.slice(at + e.length)
+  const start = Math.max(...['. ', '! ', '? '].map(b => { const i = before.lastIndexOf(b); return i < 0 ? 0 : i + b.length }))
+  const endHit = /[.!?](?:\s|$)/.exec(after)
+  return s.slice(start, at + e.length + (endHit ? endHit.index + 1 : after.length))
+}
+// The displayed claim is not free text: it is rendered from the truth claim by this fixed template, and checkCorpus
+// refuses any other wording, so the text a judge is asked about cannot drift from the records that label it.
+const MONTH_NAMES = MONTH_WORDS.map(m => m[0][0].toUpperCase() + m[0].slice(1))
+const dateText = (d: string) => { const [y, m, day] = d.split('-'); return day ? ` on ${+day} ${MONTH_NAMES[+m - 1]} ${y}` : m ? ` in ${MONTH_NAMES[+m - 1]} ${y}` : ` in ${y}` }
+const article = (x: string) => /^\d/.test(x) ? x : `${/^[aeiou]/i.test(x) ? 'an' : 'a'} ${x}`
+const proper = (x: string) => /^\p{Lu}/u.test(x) && !/^\p{Lu}{2,}/u.test(x)
+export function claimText(c: TruthClaim): string {
+  const C = c.company, d = c.detail, p = c.person, k = c.contact
+  let t: string, usedPerson = false, usedContact = false
+  switch (c.kind) {
+    case 'funding': t = d ? `${C} raised ${/^[aeiou]/i.test(d) ? 'an' : 'a'} ${d} round` : `${C} raised funding`; break
+    case 'hiring': t = d ? `${C} is hiring ${article(d)}` : `${C} is hiring`; break
+    case 'hire': t = d ? `${C} hired ${article(d)}` : `${C} made a hire`; break
+    case 'opening': t = d ? (proper(d) ? `${C} opened a new location in ${d}` : `${C} opened a new ${d}`) : `${C} opened a new location`; break
+    case 'closure': t = d ? (proper(d) ? `${C} closed its location in ${d}` : `${C} closed its ${d}`) : `${C} closed a location`; break
+    case 'acquisition': t = `${C} was acquired`; break
+    case 'product': t = d ? `${C} launched ${d}` : `${C} launched a new product`; break
+    case 'contact': t = `${k ?? 'An address'} is ${d ? article(`${d} contact`) : 'a contact'} at ${C}`; usedContact = true; break
+    case 'role': t = `${p ?? 'Someone'}${k ? ` (${k})` : ''} is the current ${d ?? 'role holder'} at ${C}`; usedPerson = usedContact = true; break
+    default: t = `${C}: ${c.kind}${d ? ` ${d}` : ''}`
+  }
+  if (p && !usedPerson) t += ` (person: ${p})`
+  if (k && !usedContact) t += ` (contact: ${k})`
+  return `${t}${c.date ? dateText(c.date) : ''}.`
 }
 // The label the records imply. A claim is supported only when a source ASSERTS a fact about the claim's exact company
 // (squashed text equality: a look-alike name is another company), of the claim's kind, matching every attribute the claim
@@ -288,7 +340,7 @@ export function checkTruth(it: JudgeItem): string[] {
   if (!FACT_KINDS.includes(claim.kind as FactKind) || claim.kind === 'instruction') p.push(`${it.id}: truth claim kind ${String(claim.kind)} is not a claimable kind`)
   for (const a of OPTIONAL_ATTRS) if (claim[a] !== undefined && !nonEmpty(claim[a])) p.push(`${it.id}: truth claim ${a} must be a non-empty string`)
   if (claim.date !== undefined && !isPartialDate(claim.date)) p.push(`${it.id}: truth claim date ${String(claim.date)} is not a real YYYY[-MM[-DD]] date`)
-  if (isStr(it.claim) && !p.length) { const miss = unstatedAttrs(it.claim, { ...claim, status: 'asserted' }, true); if (miss.length) p.push(`${it.id}: the displayed claim does not state the truth claim's ${miss.join(', ')}`) }
+  if (!p.length && it.claim !== claimText(claim as unknown as TruthClaim)) p.push(`${it.id}: the displayed claim is not the one its truth claim renders (${JSON.stringify(claimText(claim as unknown as TruthClaim))})`)
   t.facts.forEach((f: unknown, n: number) => {
     const at = `${it.id}: fact ${n + 1}`
     if (!isObj(f)) { p.push(`${at} is not an object`); return }
@@ -304,6 +356,16 @@ export function checkTruth(it: JudgeItem): string[] {
     if (f.date !== undefined && !isPartialDate(f.date)) p.push(`${at}: date ${String(f.date)} is not a real YYYY[-MM[-DD]] date`)
     if (isStr(f.contact) && !squash(src.text).includes(squash(f.contact))) p.push(`${at}: contact is not on the page`)
     if (nonEmpty(f.evidence)) { const miss = unstatedAttrs(f.evidence, f, false); if (miss.length) p.push(`${at}: its evidence does not state its ${miss.join(', ')}`) }
+    // the fact's company is the subject of the sentence its evidence sits in, and that sentence names no other company of
+    // this item except one it sets apart ("no relation to ..."). An instruction is about no company, and a publication or
+    // refresh date is about the page, so those are exempt.
+    if (nonEmpty(f.evidence) && nonEmpty(f.company) && f.status !== 'instruction' && f.kind !== 'publication' && f.kind !== 'page_update') {
+      const sent = setApart(sentenceOf(src.text, f.evidence)), own = squash(f.company)
+      if (!sent.includes(own)) p.push(`${at}: the sentence of its evidence does not name its company ${f.company}`)
+      const others = [...new Set([claim.company, ...(t.facts as unknown[]).map((x: unknown) => isObj(x) ? x.company : undefined)].filter(nonEmpty).map(squash))].filter(o => o !== own && !own.includes(o))
+      const named = others.filter(o => sent.replaceAll(own, ' ').includes(o))
+      if (named.length) p.push(`${at}: the sentence of its evidence also names ${named.join(', ')}, another company of this item`)
+    }
   })
   if (p.length) return p
   const truth = t as unknown as JudgeTruth
@@ -912,9 +974,10 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
   const fz = lp ?? frozenProblem(i?.corpus, i.lock.corpus)
   if (fz) blocks.push(fz)
   const msg = (e: unknown) => e instanceof Error ? e.message : String(e)
-  let records: StoredVerdict[] | null = null
-  if (i?.verdicts === undefined) blocks.push('no stored-verdict log was given to the gate (its text, or null when there is none): drift cannot be checked')
-  else if (i.verdicts !== null) { try { records = parseStoredVerdicts(i.verdicts) } catch (e) { blocks.push(`the stored-verdict log is unreadable: ${msg(e)}`) } }
+  let records: StoredVerdict[] | null = null, logProblem: string | null = null
+  if (i?.verdicts === undefined) logProblem = 'no stored-verdict log was given to the gate (its text, or null when there is none): drift cannot be checked'
+  else if (i.verdicts !== null) { try { records = parseStoredVerdicts(i.verdicts) } catch (e) { logProblem = `the stored-verdict log is unreadable: ${msg(e)}` } }
+  if (logProblem) blocks.push(logProblem)
   const supplied: unknown[] = i?.drift === undefined ? [] : Array.isArray(i.drift) ? i.drift : []
   if (i?.drift !== undefined && !Array.isArray(i.drift)) blocks.push('the drift reports are not a list')
   supplied.forEach((d, n) => { const p = driftReportProblem(d); if (p) blocks.push(`drift report ${n + 1} is unreadable: ${p}`) })
@@ -953,8 +1016,8 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
       if (ids.length) b.push(`${j.spec.id}: critical false positive in its ${String(e.judge?.model)} calibration (${CRITICAL_KINDS.filter(k => byKind[k].length).map(k => `${k}: ${byKind[k].join(', ')}`).join('; ')}): release blocked`)
       else if (!entryPassed(e as unknown as Record<string, unknown>)) b.push(`${j.spec.id}: its ${String(e.judge?.model)} calibration failed: ${(Array.isArray(e.problems) ? e.problems : []).join('; ') || 'no clean pass recorded'}`)
     }
-    let computed: DriftReport[] = []
-    if (records) { try { computed = detectDrift(records, { judge: j.spec.id }) } catch (e) { b.push(`${j.spec.id}: drift over its stored verdicts cannot be computed: ${msg(e)}`) } }
+    let computed: DriftReport[] = [], driftError: string | null = null
+    if (records) { try { computed = detectDrift(records, { judge: j.spec.id }) } catch (e) { driftError = `drift over its stored verdicts cannot be computed: ${msg(e)}`; b.push(`${j.spec.id}: ${driftError}`) } }
     const drift = [...computed, ...supplied.filter(d => !driftReportProblem(d)) as DriftReport[]]
     for (const d of drift.filter(x => x.judge === j.spec.id)) {
       if (d.status === 'drifted') b.push(`${j.spec.id}: stored verdicts drifted (${d.origin}): ${d.problems.join('; ')}`)
@@ -963,7 +1026,18 @@ export function releaseGate(i: { lock: JudgeLock; corpus: JudgeCorpus; judges: R
     if (entries.length && !computed.some(d => d.origin === i.corpus.origin && d.corpus_hash === hash && d.split === 'calibration' && d.latest?.fingerprint === fp && JSON.stringify(d.items) === calIds)) {
       b.push(`${j.spec.id}: the lock holds a calibration of fingerprint ${fp} but the stored-verdict log ${records ? 'has no run of it' : 'is missing or unreadable'} on every calibration item of corpus ${String(i.corpus?.id)}: drift cannot be checked`)
     }
-    const real_model = lp ? { usable: false, reason: lp } : judgeGate(j, i.lock, i.corpus, [...computed, ...supplied] as DriftReport[])
+    // A stored run of the locked fingerprint is held to the lock's own bar: a critical false positive in any of them (any
+    // split, on this corpus) blocks, whatever the lock entry says and whichever run is the drift baseline.
+    let storedCritical: string | null = null
+    if (entries.length && records) {
+      const bad = [...new Set(records.filter(r => r.judge === j.spec.id && r.fingerprint === fp && r.corpus_hash === hash && r.critical && r.answer === 'supported').map(r => `${r.item} (run ${r.run}, ${r.split})`))]
+      if (bad.length) { storedCritical = `a stored run of its calibrated fingerprint has a critical false positive: ${bad.join(', ')}`; b.push(`${j.spec.id}: ${storedCritical}: release blocked`) }
+    }
+    const real_model: GateResult = lp ? { usable: false, reason: lp }
+      : logProblem ? { usable: false, reason: `judge ${j.spec.id}: ${logProblem}` }
+      : driftError ? { usable: false, reason: `judge ${j.spec.id}: ${driftError}` }
+      : storedCritical ? { usable: false, reason: `judge ${j.spec.id}: ${storedCritical}` }
+      : judgeGate(j, i.lock, i.corpus, [...computed, ...supplied] as DriftReport[])
     if (!real_model.usable) limits.push(`${j.spec.id}: verdicts do not count (${real_model.reason}); its answers stay unknown, never pass`)
     return { id: j.spec.id, fingerprint: fp, registered_fingerprint: reg?.fingerprint ?? null, changed, harness: harness.map(h => ({ stub: h.stub, expect_pass: h.expect_pass, ok: h.ok, critical_fp: h.critical_fp })), real_model, critical_fp_by_kind: byKind, blocks: b }
   })

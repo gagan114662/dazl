@@ -36,13 +36,13 @@ const tmp = () => mkdtempSync(join(tmpdir(), 'dazl-judge-'))
 test('finding 1: truth records must be stated by the text they describe - the displayed claim, and each fact\'s evidence', () => {
   checkCorpus(CORPUS) // the committed corpus, multilingual evidence included, states every attribute it records
   // the displayed claim changed under unchanged funding records
-  refused(withItem('cal-plain-pos', it => { it.claim = 'Querix closed permanently.' }), /cal-plain-pos: the displayed claim does not state the truth claim's kind, detail/, 'claim text rewritten')
-  refused(withItem('cal-date-pos', it => { it.claim = 'Copperline raised a Series A on 9 October 2026.' }), /cal-date-pos: the displayed claim does not state the truth claim's date/, 'claim date rewritten')
-  refused(withItem('hold-ml-contact-neg', it => { it.claim = 'marie@vellichor.fr is the sales lead at Vellichor.' }), /displayed claim does not state the truth claim's contact/, 'claim contact rewritten')
+  refused(withItem('cal-plain-pos', it => { it.claim = 'Querix closed permanently.' }), /cal-plain-pos: the displayed claim is not the one its truth claim renders \("Querix raised a seed round\."\)/, 'claim text rewritten')
+  refused(withItem('cal-date-pos', it => { it.claim = 'Copperline raised a Series A on 9 October 2026.' }), /cal-date-pos: the displayed claim is not the one its truth claim renders/, 'claim date rewritten')
+  refused(withItem('hold-ml-contact-neg', it => { it.claim = 'marie@vellichor.fr is the sales lead at Vellichor.' }), /hold-ml-contact-neg: the displayed claim is not the one its truth claim renders/, 'claim contact rewritten')
   // a role fact for a person the evidence never names, on a page that only says an annual report came out
   refused(withItem('cal-plain-pos', it => {
     it.sources[0].text += ' Querix published its annual report.'
-    it.claim = 'Jane Doe is the Head of Sales at Querix.'
+    it.claim = 'Jane Doe is the current Head of Sales at Querix.'
     it.quote = 'Querix published its annual report'
     it.truth = { claim: { company: 'Querix', kind: 'role', person: 'Jane Doe', detail: 'Head of Sales' }, facts: [{ source: 1, evidence: 'Querix published its annual report.', company: 'Querix', kind: 'role', status: 'asserted', person: 'Jane Doe', detail: 'Head of Sales' }] }
   }), /cal-plain-pos: fact 1: its evidence does not state its kind, detail, person/, 'role fact the evidence does not state')
@@ -52,7 +52,7 @@ test('finding 1: truth records must be stated by the text they describe - the di
   refused(withItem('cal-plain-pos', it => { it.truth!.facts[0].kind = 'acquisition' }), /fact 1: its evidence does not state its kind/, 'fact kind')
   refused(withItem('hold-ml-contact-neg', it => { it.truth!.facts[0].evidence = 'a quitté Vellichor en 2025' }), /fact 1: its evidence does not state its kind, person, contact/, 'fact person and contact')
   // the status is bound too: a negated claim, a denial filed as an assertion, a retraction whose words retract nothing
-  refused(withItem('cal-plain-pos', it => { it.claim = 'Querix did not raise a seed round.' }), /displayed claim does not state the truth claim's status \(asserted, but the text is negated\)/, 'negated claim')
+  refused(withItem('cal-plain-pos', it => { it.claim = 'Querix did not raise a seed round.' }), /cal-plain-pos: the displayed claim is not the one its truth claim renders \("Querix raised a seed round\."\)/, 'negated claim')
   refused(withItem('cal-neg-neg', it => { it.label = 'supported'; it.quote = 'denied reports that it raised a seed round'; it.truth!.facts[0].status = 'asserted' }), /fact 1: its evidence does not state its status \(asserted, but the text is negated\)/, 'denial filed as an assertion')
   refused(withItem('cal-plain-pos', it => { it.label = 'not_supported'; delete it.quote; it.truth!.facts[0].status = 'denied' }), /fact 1: its evidence does not state its status \(denied\)/, 'assertion filed as a denial')
   refused(withItem('cal-plain-pos', it => { it.truth!.facts[0].status = 'planned' }), /fact 1: its evidence does not state its status \(planned\)/, 'past event filed as a plan')
@@ -226,4 +226,91 @@ test('finding 9: any supplied drift report that is not exactly a known-status Dr
   const lock = { ...LOCK, judges: [lockEntry(await calibrate(j, CORPUS), AT, SRC)] }
   assert.equal(judgeGate(j, lock, CORPUS, [real]).usable, true)
   for (const [what, d] of bad) assert.equal(judgeGate(j, lock, CORPUS, [real, d] as never).usable, false, what)
+})
+
+// --- the independent review at 1f045566 (R1-R4, R6, R7): each fails at 1f045566 -------------------------------------
+
+test('R1: the displayed claim is rendered from the truth claim, and asserted evidence cannot be a failure, modal, rumour or another sense of the kind word', () => {
+  for (const claim of ['Querix closed permanently after its seed round collapsed.', 'Querix failed to raise a seed round.', 'Querix may raise a seed round.', 'Northwind, unlike Querix, raised a seed round.', 'Querix is rumoured to have raised a seed round, which it refuted.', 'Querix raised a seed round!']) {
+    refused(withItem('cal-plain-pos', it => { it.claim = claim }), /cal-plain-pos: the displayed claim is not the one its truth claim renders \("Querix raised a seed round\."\)/, claim)
+  }
+  const asserted = (sentence: string, why: string, re: RegExp) => refused(withItem('cal-plain-pos', it => {
+    it.sources[0].text += ` ${sentence}.`; it.truth!.facts[0].evidence = sentence; delete it.truth!.facts[0].date
+  }), re, why)
+  asserted('Querix failed to raise a seed round in October 2026', 'failure filed as an assertion', /fact 1: its evidence does not state its status \(asserted, but the text is a failure, modal, rumour or plan\)/)
+  asserted('Querix may raise a seed round', 'modal filed as an assertion', /status \(asserted, but the text is a failure, modal, rumour or plan\)/)
+  asserted('Querix is rumoured to have raised a seed round', 'rumour filed as an assertion', /status \(asserted, but the text is a failure, modal, rumour or plan\)/)
+  asserted('Querix announced a seed round of layoffs', 'layoffs filed as funding', /fact 1: its evidence does not state its kind \(a kind word used in another sense\)/)
+  // every committed claim is exactly its rendering: a reworded one is refused
+  for (const it of CORPUS.items) refused(withItem(it.id, x => { x.claim = x.claim.replace(/\.$/, ', sources say.') }), new RegExp(`${it.id}: the displayed claim is not the one its truth claim renders`), it.id)
+})
+
+test('R2: a fact\'s company is the subject of its evidence sentence; "no relation to <other>" is allowed, a swapped company is not', () => {
+  const corvid = CORPUS.items.find(i => i.id === 'hold-plain-identity-neg')!.truth!.facts[0]
+  assert.equal(corvid.evidence, 'Corvid Robotic Systems, no relation to Corvid Robotics, opened a Leeds office', 'the original evidence is restored and accepted')
+  refused(withItem('hold-plain-identity-neg', it => {
+    it.truth!.facts = [{ ...it.truth!.facts[0], company: 'Corvid Robotics' }]
+    it.label = 'supported'; it.quote = 'opened a Leeds office'; it.critical = null
+  }), /hold-plain-identity-neg: fact 1: the sentence of its evidence does not name its company Corvid Robotics/, 'identity trap relabelled')
+  refused(withItem('hold-copy-neg', it => {
+    it.truth!.facts = [{ ...it.truth!.facts[0], company: 'Halden Systems' }]
+    it.label = 'supported'; it.quote = 'Holden Systems was acquired by Ferro Group'; it.critical = null
+  }), /hold-copy-neg: fact 1: the sentence of its evidence does not name its company Halden Systems/, 'look-alike relabelled')
+  refused(withItem('cal-plain-pos', it => { it.truth!.facts[0].company = 'Querix Holdings'; it.sources[0].text += ' Querix Holdings is its parent.' }), /fact 1: the sentence of its evidence does not name its company Querix Holdings/, 'company named elsewhere on the page')
+})
+
+test('R3: the gate holds stored runs of a calibrated fingerprint to the lock: a critical false positive in any of them blocks', async () => {
+  const cal = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.truthful(), CLAIM_SUPPORT_SPEC), CORPUS)
+  const bad = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.name_matcher(), CLAIM_SUPPORT_SPEC), CORPUS)
+  assert.ok(bad.critical_fp.length > 0)
+  const lock = { ...LOCK, judges: [lockEntry(cal, AT, SRC)] }
+  const judges = await releaseInputs(CORPUS)
+  const gate = (rs: StoredVerdict[]) => releaseGate({ lock, corpus: CORPUS, judges, verdicts: jsonl(rs) })
+  for (const [what, rs] of [
+    ['only a bad run', toStoredVerdicts(bad, CORPUS, 'b1', AT)],
+    ['two identical bad runs', [...toStoredVerdicts(bad, CORPUS, 'b1', AT), ...toStoredVerdicts(bad, CORPUS, 'b2', '2026-11-11T00:00:00Z')]],
+  ] as const) {
+    const d = gate([...rs])
+    assert.equal(d.release, 'blocked', what)
+    assert.ok(d.blocks.some(b => /^claim_support: a stored run of its calibrated fingerprint has a critical false positive: .*cal-date-neg \(run b1, calibration\)/.test(b)), `${what}: ${d.blocks.join('; ')}`)
+    assert.equal(d.judges.find(j => j.id === 'claim_support')!.real_model.usable, false, what)
+  }
+  assert.equal(gate(toStoredVerdicts(cal, CORPUS, 'c1', AT)).release, 'allowed', 'the calibration\'s own run releases')
+})
+
+test('R4: --verdicts leaves the file byte-identical when the combined log\'s drift is invalid (a truncated earlier run)', () => {
+  const d = tmp()
+  try {
+    const log = join(d, 'verdicts.jsonl')
+    assert.equal(cli('--verdicts', log).status, 0)
+    const full = parseStoredVerdicts(readFileSync(log, 'utf8'))
+    const truncated = jsonl(full.filter(r => !(r.judge === 'claim_support' && r.item === 'cal-date-neg')))
+    writeFileSync(log, truncated)
+    for (const attempt of [1, 2]) {
+      const r = cli('--verdicts', log)
+      assert.equal(r.status, 1, `attempt ${attempt}`)
+      assert.match(r.stdout, /verdict log .* left unchanged: claim_support \(synthetic, calibration\): runs on this corpus version and split hold different items/)
+      assert.equal(readFileSync(log, 'utf8'), truncated, `attempt ${attempt}: byte-identical`)
+    }
+  } finally { rmSync(d, { recursive: true, force: true }) }
+})
+
+test('R6: when the stored-verdict log is unreadable, no judge reads as usable', async () => {
+  const cal = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.truthful(), CLAIM_SUPPORT_SPEC), CORPUS)
+  const lock = { ...LOCK, judges: [lockEntry(cal, AT, SRC)] }
+  const judges = await releaseInputs(CORPUS)
+  for (const verdicts of [jsonl(toStoredVerdicts(cal, CORPUS, 'c1', AT)) + '{"v":2', undefined]) {
+    const d = releaseGate({ lock, corpus: CORPUS, judges, verdicts: verdicts as string })
+    assert.equal(d.release, 'blocked')
+    const rm = d.judges.find(j => j.id === 'claim_support')!.real_model
+    assert.equal(rm.usable, false, String(verdicts).slice(-10))
+    assert.match(rm.reason, /stored-verdict log/)
+  }
+})
+
+test('R7: hold-contact-neg keeps its claim detail "sales lead", and its displayed claim says so', () => {
+  const it = CORPUS.items.find(i => i.id === 'hold-contact-neg')!
+  assert.equal(it.truth!.claim.detail, 'sales lead')
+  assert.equal(it.claim, 'Jane Doe (jane@ostro.example) is the current sales lead at Ostro Analytics.')
+  assert.equal(it.label, 'not_supported')
 })
