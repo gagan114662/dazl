@@ -273,3 +273,107 @@ test('#878 review at 57008172 finding 4: an earlier name is the lead only when i
   assert.equal(truthOf(DENTAL, 'Family Dental Care', yes), 'pass', yes)
   assert.equal(quoteShowsEvent(yes, yes, false, 'Family Dental Care'), true, yes)
 })
+
+// review (independent) at 519f060c: every new rule is for openings only; every other event reads exactly as on main
+const plans = { launch: 'SaaS companies launching a new product', expand: 'SaaS companies expanding to new markets', office: 'SaaS companies opening a new office' }
+const both = (q: string, company: string, quote: string) => [quoteShowsEvent(quote, quote, false, company), truthOf(q, company, quote)]
+
+test('#878 review at 519f060c R2 + corpus: launch, expansion and partner quotes give exactly main\'s gate and C1 (values recorded from origin/main)', () => {
+  const rows: [string, string, string, boolean, string][] = [
+    ["SaaS companies launching a new product", "Acme", "Acme launched a new product today", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Today we launched a new product for finance teams", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Launched a new product for finance teams", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Introducing Acme Flow. We launched a new product today", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Meet Flow, our new AI assistant. We launched a new product built for Salesforce users", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Acme Corp launched a new product, its first since the Stripe integration", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Acme partners with HubSpot. They launched a new product for marketers", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Following feedback from Shopify merchants, Acme launched a new product", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "After talking to Salesforce admins we launched a new product", false, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "Acme launched a new product after the shutdown of its legacy tool", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Acme shut down its legacy product and launched a new product", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Acme moved to a new pricing model and launched a new product", true, "pass"],
+    ["SaaS companies expanding to new markets", "Acme", "Acme is expanding to Austin", true, "unknown"],
+    ["SaaS companies expanding to new markets", "Acme", "Acme relocated its HQ and is expanding to Austin", true, "unknown"],
+    ["SaaS companies expanding to new markets", "Acme", "We are expanding to Austin. Thanks to our partners at Google", true, "unknown"],
+    ["SaaS companies expanding to new markets", "Acme", "Thanks to AWS, we are expanding to Austin", true, "unknown"],
+    ["SaaS companies expanding to new markets", "Acme", "Big news from the Acme team! Expanding to Austin this month", true, "unknown"],
+    ["SaaS companies expanding to new markets", "Acme", "Partnering with Microsoft. Expanding to Austin", true, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dentistry is expanding to Parkdale", true, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dentistry is expanding to Parkdale after closing its old office", true, "unknown"],
+    ["Dental clinics in Toronto opening a new location or expanding", "Metro City Dentistry", "Metro City Dentistry relocated and is expanding to Parkdale", true, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "CEO Jane Doe said her team launched a new product", false, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "Acme integrates with Slack. Its new product launched today", false, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "Acme integrates with Slack. They launched a new product today", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Acme announced a partnership with Slack and its team launched a new product", true, "pass"],
+    ["SaaS companies expanding to new markets", "Acme", "Acme signs Walmart as a customer. They are expanding to Austin", true, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "Bright Labs is growing. The new product launched today", false, "unknown"],
+    ["SaaS companies launching a new product", "Acme", "Bright Labs is growing. Launched a new product today", true, "pass"],
+    ["SaaS companies launching a new product", "Acme", "Congrats @brightlabs! Their new product launched today", false, "unknown"],
+  ]
+  for (const [q, company, quote, gate, c1] of rows) assert.deepEqual(both(q, company, quote), [gate, c1], quote)
+  // R7: "opens a new chapter" is no opening, so it is read as on main too
+  assert.deepEqual(both(plans.launch, 'Acme', 'Bright Labs is growing. Acme opens a new chapter'), [true, 'unknown'])
+})
+
+test('#878 review at 519f060c R1: an opening whose subject is only determiners / adverbs, or a pronoun for an unnamed or lower-case practice, is not the lead\'s', () => {
+  for (const quote of [
+    'Bright Smiles is growing. A new clinic is now open in Parkdale',
+    'Bright Smiles is growing. This new clinic is now open in Parkdale',
+    'Bright Smiles is growing. That new clinic is now open in Parkdale',
+    'Bright Smiles is growing. Just opened a new clinic in Parkdale',
+    'congrats to bright smiles! their new clinic is now open in parkdale',
+    'Congrats to brightsmiles! Their new clinic is now open in Parkdale',
+    'Congrats to the team at bright smiles. New clinic now open in Parkdale',
+    'Congrats to our friends down the street! Their new clinic is now open in Parkdale',
+    'Huge congrats to our neighbours. Their new clinic is now open in Parkdale',
+    'Bright Smiles is growing. The team opened a new clinic in Parkdale',
+    'Welcome to the neighbourhood, Bright Smiles! New clinic now open in Parkdale',
+  ]) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [false, 'unknown'], quote)
+})
+
+test('#878 review at 519f060c R3: only a standalone banner (anywhere) or a closure with nothing after it (in the opening\'s clause) undoes an opening', () => {
+  // main's pass kept: closing a round, shutting a product, relocating an HQ, another office closing, closed applications
+  for (const quote of [
+    'Acme relocated its HQ and opened a new office in Austin',
+    'Acme shut down its legacy product and opened a new office in Austin',
+    'Acme has moved to a new HQ and opened a new office in Austin',
+    'Acme has closed a $5M round and opened a new office in Austin',
+    'Acme opened a new office in Austin. Our old Boston office has closed',
+    'Acme opened a new office in Austin. Applications for the beta are now closed',
+    'Acme opened a new office in Austin to be closer to customers who moved to Texas',
+  ]) assert.deepEqual(both(plans.office, 'Acme', quote), [true, 'pass'], quote)
+  for (const quote of [
+    'Our new clinic is now open in Parkdale. Permanently closed',
+    'Our new clinic is now open in Parkdale\nTemporarily closed',
+    'We opened a new clinic in Parkdale. It has since closed',
+    'New clinic now open in Parkdale (closed permanently)',
+    'New clinic now open in Parkdale [closed]',
+    'Our new clinic is now open in Parkdale - temporarily closed',
+    'Metro City Dentistry opened a new clinic in Parkdale, since closed',
+  ]) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [false, 'unknown'], quote)
+})
+
+test('#878 review at 519f060c R4: greetings, thanks, partners, people and places are not names', () => {
+  for (const [company, quote] of [
+    ['Acme', 'Hello Austin! Opened a new office downtown'],
+    ['Acme', 'Thanks to Stripe! Opened a new office in Austin'],
+    ['Acme', 'Partnering with Google Cloud. Opened a new office in Austin'],
+    ['Acme', 'Growing fast! Opened a new office in Austin'],
+    ['Acme', 'Sarah Chen joins as VP. They opened a new office in Austin'],
+  ]) assert.deepEqual(both(plans.office, company, quote), [true, 'pass'], quote)
+  assert.deepEqual(both('Restaurants opening a new location', "Joe's Pizza", 'Queen West, we are here! Opened a new location this week'), [true, 'pass'])
+  for (const quote of ['Welcome Dr. Patel to the team! New clinic now open in Parkdale', 'Thank you Parkdale! The new clinic is now open']) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [true, 'pass'], quote)
+})
+
+test('#878 review at 519f060c R5: a handle is the lead only when it equals the lead\'s name; an extra or a missing distinctive word is another practice', () => {
+  for (const [company, quote] of [
+    ['Smile Dental', 'Congrats @brightsmiles! Their new clinic is now open in Parkdale'],
+    ['City Dental', 'Congrats @kingcitydental! Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Congrats @notmetrocitydentistry! Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Congrats @metrocitydentistrynorth! Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Congrats Metro City Dentistry North! Their new clinic is now open in Parkdale'],
+    ['Metro City Dentistry', 'Metro Dental is growing. Their new clinic is now open in Parkdale'],
+    ['Smile Dental', 'Smile Dental Studio Brampton is growing. Their new clinic is now open in Parkdale'],
+  ]) assert.deepEqual(both(DENTAL, company, quote), [false, 'unknown'], quote)
+  for (const quote of ['Congrats @metrocitydentistry! Their new clinic is now open in Parkdale', 'Congrats @metro_city_dental! Their new clinic is now open in Parkdale']) assert.deepEqual(both(DENTAL, 'Metro City Dentistry', quote), [true, 'pass'], quote)
+})
