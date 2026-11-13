@@ -96,7 +96,7 @@ export interface TechFixtureResult {
   job_id: string; lead_id: string; site: string; page: TechFixturePage
   // What this one crawl did: the crawl's own ledger status for the site ('ok', 'none_published', 'site_unreachable', 'robots_error', ...)
   // and the technology branch's own ledger status ('observed ok: 1 technologies, 1 changes; pages 1'; 'no_observation: ...' when the
-  // homepage gave no verdict, as in an outage).
+  // crawl stopped at robots.txt, as in outage_503), null when the crawl never reached that branch (home_503: homepage unreachable).
   crawl: { status: string | null; tech: string | null; new_observation: boolean; new_changes: string[] }
   observations: TechFixtureObservation[]
   changes: TechFixtureChange[]
@@ -169,6 +169,8 @@ async function crawlOnce(db: Database.Database, tenantId: string, p: TechFixture
   // A crawl that was cut short or failed inside writes no ledger row for the site (crawlJob returns early on an abort and only logs its
   // own errors). That is not an outage the site served: refuse it, never report it as "nothing changed".
   if (deps.signal?.aborted || !ledger.some(r => r.connector === 'sitecrawl')) throw new FixtureError('crawl_incomplete')
+  // The technology branch itself failed ('error: <name>' in its ledger): the crawl read the page but recorded nothing reliable.
+  if (ledger.some(r => r.connector === TECH_AUDIT && r.status.startsWith('error:'))) throw new FixtureError('crawl_incomplete')
   const observations = scans(db, tenantId, ids.leadId)
   const changes = changeRows(db, tenantId, ids.leadId)
   const newChanges = changes.map(c => c.value).filter(v => !changesBefore.has(v))

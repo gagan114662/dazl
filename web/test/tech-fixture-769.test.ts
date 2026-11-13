@@ -145,6 +145,22 @@ test('#769 a crawl that was cut short or failed inside is refused as incomplete,
   assert.deepEqual(counts(), before)
 })
 
+test('#769 a failed technology branch is refused as incomplete; a change the served page could not carry is counted as false', async () => {
+  const { db, crawl, now } = setup()
+  await crawl('A', 'plain')
+  // the observation write fails inside the technology branch: refused, and no fixture crawl is counted
+  db.exec("CREATE TRIGGER fail_scan BEFORE INSERT ON lead_enrichments WHEN NEW.kind = 'tech_scan' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+  await assert.rejects(crawlTechFixture(db, 'A', 'hubspot', { env: STAGING, now }), /crawl_incomplete/)
+  db.exec('DROP TRIGGER fail_scan')
+  assert.equal((await crawl('A', 'plain')).measured.crawls, 2)
+  // The measure is not zero by construction: the caller says the page is `plain`, the crawl is handed a page WITH HubSpot, so the
+  // detector's (correct) adoption is a change the declared page could not carry and is counted as false.
+  const hubspot = techFixtureHtml('hubspot')
+  const lying = await crawlTechFixture(db, 'A', 'plain', { env: STAGING, now, get: async (url) => (new URL(url).pathname === '/' ? { ...hubspot, finalUrl: url } : { status: 404, body: '', finalUrl: url }) })
+  assert.deepEqual(lying.crawl.new_changes, ['HubSpot added'])
+  assert.deepEqual(lying.measured, { crawls: 3, unreadable_or_failed_crawls: 0, changes_claimed: 1, false_changes: 1, changes_claimed_on_unreadable_or_failed: 0 })
+})
+
 test('#769 the false-change measure counts a change the served page could not carry', () => {
   for (const p of ['consent_wall', 'challenge', 'outage_503', 'home_503'] as const) for (const v of ['HubSpot added', 'HubSpot removed']) assert.equal(techFixtureFalseChange(p, v), true)
   assert.equal(techFixtureFalseChange('hubspot', 'HubSpot added'), false)
