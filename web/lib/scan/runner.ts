@@ -76,6 +76,7 @@ import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, adaptiveDiscoveryOn } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -923,9 +924,17 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
 // when the run disabled paid steps, a budget already refused a call, or too little of the scan's time budget is left.
 // Its outcome is the 'search:adaptive' source row: ok / empty / skipped:<why> / budget_stopped / search_cap, so a
 // bounded stop is never reported as an exhausted market.
-export const ADAPTIVE_SEARCHES = 3
-export const ADAPTIVE_FETCHES = 6
+export { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES }
 export const ADAPTIVE_MIN_REMAINING_MS = 120_000
+// Is this job a monitor's run? Both paths that queue one (lib/monitors.ts runDueMonitors, the scheduled tick, and
+// lib/play-now.ts runPlayNow, "Find leads now") insert its monitor_runs row in the SAME transaction as the job, so the row
+// exists before any runner can claim the job, including for a job queued before this code shipped. An index seek on
+// monitor_runs_job (job_id), scoped to the job's owner through the monitor. No table: no monitors; any other read error
+// fails closed (true: no extra round).
+export const MONITOR_RUN_SQL = 'SELECT 1 AS x FROM monitor_runs r JOIN monitors m ON m.id = r.monitor_id WHERE r.job_id = ? AND m.user_id = ? LIMIT 1'
+export function isMonitorRun(db: Database.Database, job: Pick<Job, 'id' | 'user_id'>): boolean {
+  try { return !!db.prepare(MONITOR_RUN_SQL).get(job.id, job.user_id) } catch (e) { return !/no such table/i.test(String(e)) }
+}
 interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
 
 async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound): Promise<LeadDraft[] | null> {
@@ -1563,15 +1572,19 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       for (const n of rescuedNotes(leads, u => verifierFetch.get(u) ?? verifierFetch.get(canonicalUrl(u) ?? u) ?? null, outcome.leads)) if (!seenKeys.has(n.key)) fallbackNotes.push(n)
     }
     // Adaptive discovery (#381; see ADAPTIVE_SEARCHES): round one ran, extracted candidates and verified none of them.
-    // Gated OFF by default: one round costs up to ADAPTIVE_SEARCHES searches + ADAPTIVE_FETCHES fetches + 1 extraction
-    // on top of round one, for every paid non-trial scan that verified nothing, and that extra spend has no owner
-    // approval. DAZL_ADAPTIVE_DISCOVERY_ENABLED=1 opts in; OFF behaves exactly as without the feature (no round, no
-    // calls, no ledger row). Trial scans skip the round on their own policy (paidFallback=false) even when enabled.
-    if (process.env.DAZL_ADAPTIVE_DISCOVERY_ENABLED === '1' && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
+    // ON by default (lib/scan/run-budget.ts adaptiveDiscoveryOn): one round costs up to ADAPTIVE_SEARCHES searches +
+    // ADAPTIVE_FETCHES fetches + 1 extraction on top of round one, and the price estimate's maxima include it.
+    // DAZL_ADAPTIVE_DISCOVERY_ENABLED=0 turns it off; OFF behaves exactly as without the feature (no round, no calls,
+    // no ledger row). Trial scans skip the round on their own policy (paidFallback=false).
+    if (adaptiveDiscoveryOn(process.env) && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
+      // a scheduled play run (a watch's or a monitor's) runs unattended under the caps it was confirmed with: no extra round
+      let recurring = !!job.watch_id
+      if (!recurring) recurring = isMonitorRun(db, job)
       const left = jobDeadlines.get(job)
       const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
-      if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      if (recurring) stop('skipped:recurring_run')
+      else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
       else if (budgetRefused) stop('budget_stopped')
       else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
       else if (!plan.retry) stop(`skipped:${plan.why.split(':')[0]}`)
