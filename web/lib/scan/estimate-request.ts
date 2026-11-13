@@ -13,6 +13,8 @@ import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
+import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
+import { limits as tinyfishLimits, tinyfishEnabled } from '../search/tinyfish.ts'
 
 export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; status: number; error: string; detail?: string; message?: string; loss?: IcpLoss[] }
 // What the owner's shared spend pools (tenant_spend_pools, the same store the guard reserves in) have reserved this UTC day and month, so the estimate agrees with the guard.
@@ -63,6 +65,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
     trialTinyfishSearchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishSearchUsd ?? null,
     trialTinyfishFetchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishFetchUsd ?? null,
+    firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 },
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,

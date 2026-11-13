@@ -54,3 +54,9 @@ test('#1037 route: DAZL_FIRST_PLAY_PEOPLE_SEARCHES=3 -> "up to 3" in the surface
   assert.equal(s.status, 'not_covered'); assert.match(s.note, /up to 3 TinyFish people searches/)
   assert.deepEqual(people(d).map(x => /up to (\d+)/.exec(x)?.[1]), ['3'])
 })
+
+test('#1037 xhawk review route: lower deployment TinyFish limits win over the fallback caps in the 202 disclosure', async () => {
+  const d = await first5({ PEOPLE_SEARCH_ENABLED: '0', TINYFISH_API_KEY: 'tf-fixture', DAZL_FIRST_PLAY_LEAD_SEARCHES: undefined, DAZL_FIRST_PLAY_LEAD_FETCHES: undefined, TINYFISH_SEARCHES_PER_SCAN: '1', TINYFISH_FETCHES_PER_SCAN: '2' })
+  assert.match(d.surfaces.find(x => x.surface === 'search_and_fetch')!.note, /capped at 1 lead searches and 2 page reads/)
+  delete process.env.TINYFISH_SEARCHES_PER_SCAN; delete process.env.TINYFISH_FETCHES_PER_SCAN
+})

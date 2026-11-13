@@ -18,8 +18,8 @@ import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '@/lib/people/people-search'
-import { firstPlayLeadCaps } from '@/lib/people/first-play-cap'
-import { tinyfishEnabled } from '@/lib/search/tinyfish'
+import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/first-play-cap'
+import { limits as tinyfishLimits, tinyfishEnabled } from '@/lib/search/tinyfish'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
@@ -199,7 +199,7 @@ export async function POST(req: NextRequest) {
     }).immediate()
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
-    return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? firstPlayLeadCaps() : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
+    return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
   } catch (e) {
     if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
     if (e instanceof AdmissionRefused && refused) return refused

@@ -72,7 +72,7 @@ import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
-import { firstPlayLeadCaps } from '../people/first-play-cap.ts'
+import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
@@ -1015,7 +1015,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
-  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
+  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
@@ -1403,7 +1403,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // usable) the play falls back to the existing TinyFish lead search, HARD-capped per run (firstPlayLeadCaps: default 3 searches
     // and 6 page reads, settings can only lower them, 0 = off). It draws on the same per-scan spend cap, and a free-trial play pays
     // each call from its trial reserve (trialCharges), exactly as an ordinary scan's TinyFish calls do.
-    let playCaps = firstPlayLeadCaps()
+    let playCaps = effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tfLimits())
     // A free-trial play's fallback never plans into the last FIRST_PLAY_TRIAL_KEEP of the trial reserve (left for the checks after the
     // scan), the same rule as its people step: the caps shrink to what fits, priced at the trial's own search and page-read prices.
     if (trial && trialGuard && playCaps.searches > 0) {
@@ -1414,8 +1414,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       while (n > 0 && n * sp + fetchesFor(n) * fp > room + 1e-9) n--
       playCaps = { searches: n, fetches: fetchesFor(n) }
     }
+    let keepRefused = false
     if (!leads && !budgetRefused && deps.first5 && job.query && icpForSources && complete && tinyfishEnabled() && playCaps.searches > 0) {
-      await runTinyfishStage(playCaps)
+      // Every paid step of a trial fallback (query planning, TinyFish search / page reads, extraction) also passes a guard at the
+      // 75% line for as long as the fallback runs, so its model calls cannot reach into the kept quarter either (xhawk review).
+      const keep = trial && trialGuard ? new SpendGuard(trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP), trialGuard.reservedUsd) : null
+      if (keep) { keep.label = TRIAL_BUDGET_REASON; spendGuards.push(keep) }
+      try { await runTinyfishStage(playCaps) } finally { if (keep) { spendGuards.splice(spendGuards.indexOf(keep), 1); keepRefused = keep.refused } }
       const st = { ...summarizeTrace(diag.trace), ...diag.info }
       capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0 // #1082
       if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
@@ -1423,7 +1428,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     }
     if (!leads) {
       // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
-      if (trialGuard?.refused) throw new SpendRefused(TRIAL_BUDGET_REASON)
+      if (trialGuard?.refused || keepRefused) throw new SpendRefused(TRIAL_BUDGET_REASON)
       // paid_fallback=false: stop honestly by what actually ended the search - a failed source (source_error), a clean
       // zero from every source this run could use (no_discovery), or sources that could not conclude with the fallback
       // held (unbounded_fallback_hold). Only an earlier real budget refusal is a budget stop; the fallback's absence is not one.

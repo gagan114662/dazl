@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
-import { firstPlayLeadCaps } from '../lib/people/first-play-cap.ts'
+import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../lib/people/first-play-cap.ts'
 import { fallbackStopCode } from '../lib/scan/runner.ts'
 import { SourceRunLedger } from '../lib/scan/source-runs.ts'
 
@@ -80,6 +80,9 @@ test('#1037 first play: the page-read cap holds - DAZL_FIRST_PLAY_LEAD_FETCHES=2
   const r = await withEnv({ NEWS_SEARCH_ENABLED: '0', DAZL_FIRST_PLAY_LEAD_FETCHES: '2' }, () => runFixture(base(FUNDING, { hits: many, tfPages: Object.fromEntries(many.map(h => [h.url, page])) })))
   const fetched = r.calls.tfFetchBatches.flat()
   assert.ok(fetched.length >= 1 && fetched.length <= 2, `page reads: ${fetched.length}`)
+  // xhawk review: the report marks only the pages the cap lets the fallback read as selected (not the ordinary 16).
+  const selected = ((r.report?.urls ?? []) as { selected: boolean }[]).filter(u => u.selected).length
+  assert.ok(selected >= 1 && selected <= 2, `selected URLs in the report: ${selected}`)
 })
 
 // Council R1/R2: a news stage recorded as skipped_* never ran, so it must not block a clean TinyFish result from concluding.
@@ -156,4 +159,21 @@ test('#1037 FREE TRIAL first play: the fallback never plans into the last quarte
   // Reserve 1: 75% is 0.75; at 0.3 per search two searches (0.6) fit and a third (0.9) would eat into the kept quarter.
   const t = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.3' }, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5', hits: [] })))
   assert.ok(t.calls.searches.length >= 1 && t.calls.searches.length <= 2, `searches inside the 75% line: ${t.calls.searches.length}`)
+})
+
+test('#1037 xhawk review: the fallback caps never exceed the deployment TinyFish per-scan limits, and the runner obeys the lower one', async () => {
+  assert.deepEqual(effectiveFirstPlayLeadCaps({ searches: 3, fetches: 6 }, { searchesPerScan: 1, fetchesPerScan: 2 }), { searches: 1, fetches: 2 })
+  assert.deepEqual(effectiveFirstPlayLeadCaps({ searches: 3, fetches: 6 }, { searchesPerScan: 8, fetchesPerScan: 16 }), { searches: 3, fetches: 6 })
+  assert.deepEqual(effectiveFirstPlayLeadCaps({ searches: 0, fetches: 6 }, { searchesPerScan: 8, fetchesPerScan: 16 }), { searches: 0, fetches: 0 })
+  const r = await withEnv({ NEWS_SEARCH_ENABLED: '0', TINYFISH_SEARCHES_PER_SCAN: '1', TINYFISH_FETCHES_PER_SCAN: '1' }, () => runFixture(base(FUNDING)))
+  assert.ok(r.calls.searches.length <= 1 && r.calls.tfFetchBatches.flat().length <= 1, `${r.calls.searches.length} / ${r.calls.tfFetchBatches.flat().length}`)
+})
+
+test('#1037 xhawk review: a trial fallback\'s MODEL calls cannot reach into the kept quarter either - the run stops as a trial budget stop instead', async () => {
+  // 0.248 per search: three searches (0.744) fit the 75% line on their own, so the pre-plan keeps all three; the fallback's own model
+  // calls (query planning, priced) push past 0.75, so a search or call is refused before the kept quarter is touched.
+  const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
+  const t = await withEnv({ ...TRIAL_ENV, DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.248' }, () => runFixture(base(FUNDING, { fundedBy: 'trial', model: 'claude-sonnet-4-5', hits: [] })))
+  assert.ok(t.calls.searches.length < 3, `a search that would cross the 75% line was not sent: ${t.calls.searches.length}`)
+  assert.ok(reserved(t) <= 0.75 + 1e-9, `reserved stays at or under the 75% line: ${reserved(t)}`)
 })

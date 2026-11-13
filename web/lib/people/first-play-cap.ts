@@ -21,3 +21,9 @@ export function firstPlayLeadCaps(env: Record<string, string | undefined> = proc
   const n = (raw: string | undefined, max: number) => { if (typeof raw !== 'string' || raw.trim() === '') return max; return /^\d{1,3}$/.test(raw.trim()) ? Math.min(max, Number(raw.trim())) : 0 }
   return { searches: n(env.DAZL_FIRST_PLAY_LEAD_SEARCHES, FIRST_PLAY_LEAD_SEARCHES_MAX), fetches: n(env.DAZL_FIRST_PLAY_LEAD_FETCHES, FIRST_PLAY_LEAD_FETCHES_MAX) }
 }
+// The caps the fallback can really use: never above the deployment's own TinyFish per-scan limits (TINYFISH_SEARCHES_PER_SCAN /
+// TINYFISH_FETCHES_PER_SCAN, lib/search/tinyfish.ts limits()), so the runner, the 202 disclosure and the estimate state the same numbers.
+export function effectiveFirstPlayLeadCaps(caps: { searches: number; fetches: number }, perScan: { searchesPerScan: number; fetchesPerScan: number }): { searches: number; fetches: number } {
+  const searches = Math.max(0, Math.min(caps.searches, perScan.searchesPerScan))
+  return { searches, fetches: searches === 0 ? 0 : Math.max(0, Math.min(caps.fetches, perScan.fetchesPerScan)) }
+}

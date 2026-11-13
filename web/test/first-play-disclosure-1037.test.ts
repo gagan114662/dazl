@@ -137,5 +137,7 @@ test('#1037 item 1: the first-play estimate states the capped lead-search fallba
   assert.match(l.note ?? '', /never from its last 25%/)
   assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '1' } }), 'first_play_lead_search')!.units, { min: 0, max: 1 })
   assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', env: { DAZL_FIRST_PLAY_LEAD_SEARCHES: '0' } }), 'first_play_lead_search'), undefined)
+  assert.deepEqual(row(estimateRun({ budget: FIRST5, payer: 'trial', firstPlayLead: { searches: 1, fetches: 2 } }), 'first_play_lead_search')!.units, { min: 0, max: 1 }, 'the server-effective caps win')
+  assert.equal(row(estimateRun({ budget: FIRST5, payer: 'trial', firstPlayLead: { searches: 0, fetches: 0 } }), 'first_play_lead_search'), undefined, 'TinyFish off on the server: no row')
   assert.equal(row(estimateRun({ budget: { paid_fallback: false }, payer: 'trial', env: {} }), 'first_play_lead_search'), undefined, 'not a first play: no fallback row')
 })

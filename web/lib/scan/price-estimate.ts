@@ -67,6 +67,9 @@ export interface EstimateInput {
   trialTinyfishSearchUsd?: number | null
   // #1037 item 1: a trial pays the first-play lead fallback's page reads from its reserve at this price (runner.ts trialCharges).
   trialTinyfishFetchUsd?: number | null
+  // #1037 item 1: the first-play lead fallback's caps as the server runs them (estimate-request passes effectiveFirstPlayLeadCaps);
+  // omitted (a browser preview): firstPlayLeadCaps(env), the code maximum, never understated.
+  firstPlayLead?: { searches: number; fetches: number }
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
@@ -138,7 +141,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
     // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):
     // at most this many searches and page reads, paid from the free-trial reserve at the trial price for a trial.
-    const lead = firstPlayLeadCaps(env)
+    const lead = i.firstPlayLead ?? firstPlayLeadCaps(env)
     if (lead.searches > 0) {
       const trialS = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
       const trialF = trialS !== null && typeof i.trialTinyfishFetchUsd === 'number' && Number.isFinite(i.trialTinyfishFetchUsd) && i.trialTinyfishFetchUsd >= 0 ? i.trialTinyfishFetchUsd : null
