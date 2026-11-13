@@ -38,13 +38,25 @@ const NF_PLACE = String.raw`(?:\s+(?:in|at|on)\s+(?:(?!\b(?:by|from|of)\b)[^.!?;
 const NF_VERB = String.raw`\s+(?:is\s+|are\s+|has\s+|have\s+)?(?:now\s+|officially\s+|finally\s+)*(?:open|opened)\b`
 // The candidate shapes; every match is then checked by nounFirstOk (an allow-list on what follows, in code, case-aware).
 export const NOUN_FIRST_OPEN_SRC = String.raw`\b${NF_LEAD}\s+${NF_FILL}${NF_NOUN}\b${NF_PLACE}${NF_VERB}|\bgrand\s+opening\s+of\s+(?:our|its|their)\s+(?:new\s+)?${NF_FILL}${NF_NOUN}\b`
-const TIME_WORDS = /\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}\s*[-–]\s*\d{1,2}\b|\d+\s*\/\s*7|hours?|days?|week|weekends?|weekdays?|daily|nightly|tonight|today|tomorrow|soon|next|until|till|again|re-?open\w*|year-?round|around\s+the\s+clock|summer|winter|spring|autumn|every|all\s+(?:day|week|year|summer|winter)|walk-?ins?|bookings?|appointments?|registration|enrol\w*|house|late|early|evenings?|mornings?|only)\b/i
+const TIME_WORDS = /\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}\s*(?:[-–]|to)\s*\d{1,2}\b|\d+\s*\/\s*7|\d+(?:st|nd|rd|th)\b|q[1-4]|hours?|days?|weeks?|weekends?|weekdays?|months?|daily|nightly|tonight|today|tomorrow|soon|next|until|till|again|re-?open\w*|year-?round|around\s+the\s+clock|summer|winter|spring|autumn|fall|holidays?|during|sharp|ago|every|all\s+(?:day|week|year|summer|winter)|walk-?ins?|bookings?|appointments?|registration|enrol\w*|house|late|early|evenings?|mornings?|afternoons?|only)\b/i
 const DAY_MONTH = /^(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?$|^(?:jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*$|^may$/i
 const FUTURE = /\b(?:will|would|coming|upcoming|join\s+us|is\s+on|starting|beginning|from\s+(?:mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|this\s+(?:mon|tue|wed|thu|fri|sat|sun|week|month|coming)\w*|tomorrow|tonight|soon|next|later)\b/i
 const PAST_YEAR = /\b(?:19|20)\d{2}\b(?!\s+[A-Za-z]+\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy)\b)/i
 const SAID = /\b(?:said|says|according\s+to|per)\s+[A-Z]/
 const PREMISES = /^(?:locations?|offices?|clinics?|stores?|branch(?:es)?|restaurants?|studios?|practices?|warehouses?|showrooms?|shops?|gyms?|salons?)$/i
 const anyDayMonth = (t: string) => t.split(/[^A-Za-z]+/).some(w => DAY_MONTH.test(w))
+const NOT_PLACE = /^(?:a|an|the|one|two|three|four|five|six|few|some|several|couple|many|time|order|person|line|style|business|session|progress|stages?)$/i
+const STREET = /^\d+\s+[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|way|lane|ln|cres|crescent|ct|court|pkwy|hwy|w|e|n|s)\b/i
+// A place after in / at / on: a street address, "the heart of <Name>", or a proper name (capitalised in mixed-case text;
+// in all-lower or all-caps text, a word that is not an article, number or common noun).
+function placeOk(rest: string, text: string): boolean {
+  const after = rest.replace(/^(?:in|at|on)\s+/i, '')
+  if (STREET.test(after)) return true
+  const w = (/^the\s+heart\s+of\s+(\S+)/i.exec(after) ?? /^(\S+)/.exec(after))?.[1]?.replace(/[^A-Za-z'-]/g, '') ?? ''
+  if (!w || NOT_PLACE.test(w) || DAY_MONTH.test(w)) return false
+  const mixed = /[a-z]/.test(text) && /[A-Z]/.test(text)
+  return mixed ? /^[A-Z]/.test(w) : true
+}
 // The clause a match sits in (to the next . ! ? ; or the end), and whether it is a question.
 function clauseAt(text: string, from: number): { rest: string; question: boolean } {
   const tail = text.slice(from), stop = tail.search(/[.!?;]/)
@@ -71,12 +83,15 @@ export function nounFirstOk(text: string, m: RegExpMatchArray, company?: string 
   if (company) {
     const own = new Set(company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
     const words = body.split(/\s+/), noun = words.findIndex(w => PREMISES.test(w))
-    if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && k + 1 !== noun - 1)) return false
+    // the word right before the noun is a place ("Our new Woodbridge location") only after "our" or the lead's own name
+    const ours = words.slice(0, Math.max(0, noun - 1)).some(w => /^our$/i.test(w) || own.has(w.toLowerCase()))
+    if (noun > 0 && /^[a-z]/.test(words[noun]) && words.slice(1, noun).some((w, k) => /^[A-Z]/.test(w) && !/^(?:New|Our|Brand)$/.test(w) && !own.has(w.toLowerCase()) && !(ours && k + 1 === noun - 1))) return false
   }
   if (rest === '' || /^(?:its|their)\s+doors\b/i.test(rest) || /^for\s+business\b/i.test(rest)) return clean(rest.replace(/^(?:its|their)\s+doors\b|^for\s+business\b/i, ''))
-  if (/^and\s+(?:accepting|welcoming|serving|ready)\b/i.test(rest)) return !FUTURE.test(rest) && !anyDayMonth(rest) && !SAID.test(rest)
+  if (/\bfor\s+[A-Z][\w&'-]*(?:\s+[A-Z][\w&'-]*)*\s+(?:patients|clients|customers|members)\b/.test(rest)) return false
+  if (/^and\s+(?:accepting|welcoming|serving|ready)\b/i.test(rest)) return !FUTURE.test(rest) && !anyDayMonth(rest) && !SAID.test(rest) && !PAST_YEAR.test(rest) && !/\b(?:ago|since)\b/i.test(rest)
   if (/^[,:–-]/.test(rest)) return clean(rest)
-  return /^(?:in|at|on)\s+(?:\d+\s+[A-Za-z]|[A-Za-z])/i.test(rest) && !DAY_MONTH.test(rest.split(/\s+/)[1] ?? '') && clean(rest)
+  return /^(?:in|at|on)\s+/i.test(rest) && placeOk(rest, text) && clean(rest)
 }
 const NOUN_FIRST_OPEN_G = new RegExp(NOUN_FIRST_OPEN_SRC, 'gi')
 // Where the first accepted noun-first opening starts in the text, or -1.

@@ -132,6 +132,24 @@ test('#878 noun-first openings are read; not-yet, hours, other companies and den
     ['Kailash Dentistry', 'Our new clinic is open in Parkdale Mon to Fri'],
     ['Kailash Dentistry', 'Grand opening of our new clinic tonight'],
     ['Kailash Dentistry', 'New clinic opened in 2015 in Parkdale'],
+    // review round 4 on #1130
+    ['Kailash Dentistry', 'Our new clinic is open in two weeks'],
+    ['Kailash Dentistry', 'Our new clinic is open in a few weeks'],
+    ['Kailash Dentistry', 'Our new clinic is open in a month'],
+    ['Kailash Dentistry', 'Our new clinic is open in the fall'],
+    ['Kailash Dentistry', 'Our new clinic is open in Q1'],
+    ['Kailash Dentistry', 'Our new clinic is open on the 15th'],
+    ['Kailash Dentistry', 'Our new clinic is open in the afternoon'],
+    ['Kailash Dentistry', 'Our new clinic in Parkdale is open in the afternoons'],
+    ['Kailash Dentistry', 'Our new clinic is open on holidays'],
+    ['Kailash Dentistry', 'Our new clinic is open at 10 sharp'],
+    ['Kailash Dentistry', 'Our new clinic is now open - 9 to 5'],
+    ['Kailash Dentistry', 'Our new office is open in Parkdale during renovations'],
+    ['Kailash Dentistry', 'New Starbucks location now open in Parkdale'],
+    ['Kailash Dentistry', 'New Invisalign clinic now open'],
+    ['Kailash Dentistry', 'New clinic is now open in Parkdale for Smile Co patients'],
+    ['Kailash Dentistry', 'Our new clinic opened and serving patients since 2015'],
+    ['Kailash Dentistry', 'Our new clinic opened in Parkdale years ago'],
   ]
   const shows = (company: string, q: string) => quoteShowsEvent(q, q, false, company) && eventMatches('open', 'location', q)
   for (const [c, q] of yes) assert.equal(shows(c, q), true, q)
