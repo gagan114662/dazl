@@ -18,21 +18,33 @@ const CUSTOMER_PHRASE = /\b(became|becomes|becoming|is now|are now|joined|joins|
 // A public ATS posting (jobs.ashbyhq.com/{org}/..., jobs.lever.co/{org}/..., boards.greenhouse.io/{org}/jobs/...) belongs to the board's org, not to the board
 // host (#767: "jobs" from jobs.ashbyhq.com matched a link like zapier.com/l/jobs/... next to "using AI tools" in Zapier's own posting and held it as a counterparty).
 export function hostBrand(sourceUrl: string): string | null {
+  return sourceBrand(sourceUrl)?.brand ?? null
+}
+// ats: the brand is a board org slug ("retail", "brightloophq"), so it is compared with the WHOLE company key, never its first word (#767 review: "AI Corp"
+// cited to jobs.ashbyhq.com/retail/... is not "retail"'s own posting).
+function sourceBrand(sourceUrl: string): { brand: string; ats: boolean } | null {
   const ats = atsPostingRef(sourceUrl)
-  if (ats) { const org = ats.org.toLowerCase().replace(/[^a-z0-9]/g, ''); return org.length >= 3 ? org : null }
+  if (ats) { const org = ats.org.toLowerCase().replace(/[^a-z0-9]/g, ''); return org.length >= 3 ? { brand: org, ats: true } : null }
   let host: string
   try { host = new URL(sourceUrl).hostname.toLowerCase() } catch { return null }
   const labels = host.split('.').filter(l => l && l !== 'www')
   if (labels.length < 2) return null
   const brand = labels[0].replace(/[^a-z0-9]/g, '')
-  return brand.length >= 3 ? brand : null
+  return brand.length >= 3 ? { brand, ats: false } : null
 }
 
 export function counterpartySignal(c: Candidate, page: Page, passage: string): string | null {
-  const brand = hostBrand(c.source_url)
-  if (!brand) return null
+  const src = sourceBrand(c.source_url)
+  if (!src) return null
+  const { brand } = src
   const company = companyKey(c.company)
-  if (!company || company.includes(brand) || brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
+  if (!company) return null
+  if (src.ats) {
+    // a board org is the lead's own when it IS the company's whole key (spaces dropped), or one starts with the other and both are at least 4 characters
+    // ("brightloophq" / "Brightloop"); a short key inside a longer slug ("ai" in "retail") is not the same company
+    const whole = company.replace(/ /g, '')
+    if (whole === brand || (Math.min(whole.length, brand.length) >= 4 && (brand.startsWith(whole) || whole.startsWith(brand)))) return null
+  } else if (company.includes(brand) || brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
   const hay = norm(passage || `${page.title} ${page.text.slice(0, 3000)}`)
   if (!hay.includes(brand)) return null
   if (!CUSTOMER_PHRASE.test(hay)) return null

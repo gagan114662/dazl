@@ -325,8 +325,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         // (page read, no open sales role / closed marker / no careers page) gets results 0; anything uncertain (fetch failed,
         // robots unreachable, unverified job, wrong domain, rejected) is -1 - never reported as 'none found'.
         if (c === null) audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'fetch_failed', results: -1 })
-        else if (c.vacancy && c.vacancy.quote.trim().length < 20) {
-          // #767: a vacancy with no quote from the posting's own text (a public ATS posting whose text never names the role or the hiring, only boilerplate) is not
+        else if (c.vacancy && c.vacancy.quote.trim() === '') {
+          // #767: a vacancy with NO quote from the posting's own text (only a public ATS posting can have none: one whose text never states the vacancy) is not
           // recorded as hiring evidence: fail closed, audited as uncertain (-1), never 'none found'
           audit(db, { tenantId: job.user_id, connector: 'check:careers-page', jobId: job.id, lookup: `${l.id} (gate) careers`.slice(0, 200), status: 'checked_vacancy_no_quote', results: -1 })
           careersNote = `its careers page links ${c.vacancy.title}, but that posting's own text never states the role or the hiring, so it is not recorded as hiring evidence. `

@@ -10,9 +10,9 @@ import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { careersSalesVacancy } from '../lib/signals/careers-page.ts'
+import { careersSalesVacancy, postingQuote } from '../lib/signals/careers-page.ts'
 import { atsPageText, atsPostingRef, atsRecord } from '../lib/sources/ats-posting.ts'
-import { htmlToText } from '../lib/scan/fetch-page.ts'
+import { decode, htmlToText } from '../lib/scan/fetch-page.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
 const master = randomBytes(32)
@@ -33,7 +33,7 @@ const GH = 'https://boards.greenhouse.io/brightloop/jobs/4012345'
 // Greenhouse sends content as escaped HTML and the record also carries company_name: the old text was `${title} ${company_name} ${content}`
 const GH_DESC = '<h2>About Brightloop</h2><p>Brightloop builds workflow software for finance teams across Europe &amp; the UK.</p><h2>The role</h2><p>We are hiring an Account Executive to own the full sales cycle for new mid-market customers in London.</p>'
 const GH_PREAMBLE = '<h2>About Brightloop</h2><p>Brightloop builds workflow software for finance teams across Europe &amp; the UK.</p><h2>Benefits</h2><p>Private health cover and 30 days of holiday.</p>'
-const ghRecord = (desc: string) => JSON.stringify({ id: 4012345, title: 'Account Executive', company_name: 'Brightloop', first_published: `${POSTED}T09:00:00Z`, location: { name: 'London' }, content: desc.replace(/</g, '&lt;').replace(/>/g, '&gt;') })
+const ghRecord = (desc: string) => JSON.stringify({ id: 4012345, title: 'Account Executive', company_name: 'Brightloop', first_published: `${POSTED}T09:00:00Z`, location: { name: 'London' }, content: desc.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') })
 const html = (b: string) => `<html><body>${b}</body></html>`
 type Board = 'ashby' | 'lever' | 'greenhouse'
 const http = (board: Board, desc: string): SafeGet => async url => {
@@ -54,8 +54,8 @@ const verifierPage = (board: Board, desc: string) => async (url: string) => {
   const p = atsPageText(rec, rec.html ? ghText(rec.description) : rec.description)
   return { text: p.text, title: p.title, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
 }
-// the Greenhouse content as the verifier reads it (fetch-page: htmlToText of the unescaped content)
-const ghText = (escaped: string) => htmlToText(escaped.replace(/&lt;/g, '<').replace(/&gt;/g, '>')).text
+// the Greenhouse content as the verifier reads it: lib/scan/fetch-page.ts's own htmlToText(decode(content)), never a hand-written copy
+const ghText = (escaped: string) => htmlToText(decode(escaped)).text
 const NOW = Date.now()
 const vacancy = (board: Board, desc: string) => careersSalesVacancy('brightloop.io', get(board, desc), { now: NOW, company: 'Brightloop', namedQuote: true })
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -91,6 +91,29 @@ test('Greenhouse: the quote is a verbatim passage of the posting content as the 
   assert.match(q, /We are hiring an Account Executive/)
   const none = await vacancy('greenhouse', GH_PREAMBLE)
   assert.equal(none.reason, 'found'); assert.equal(none.vacancy!.quote, '', `no quote: ${none.vacancy!.quote}`)
+})
+
+// #767 review R1: hiring wording counts only when it is tied to THIS role (the title or its core role right after it, in the same sentence)
+test('a quote must state THIS vacancy: hiring wording about something else or a passing title mention gives no quote', () => {
+  assert.equal(postingQuote(['About Brightloop. Our customers are looking for a faster way to close their books, and finance teams are seeking tools that scale. Benefits: health cover and 30 days holiday.'], 'Account Executive', 'Brightloop'), '', 'customers "looking for" a tool is not a vacancy')
+  assert.equal(postingQuote(['Our Engineering team is hiring for a Staff Backend Engineer this quarter. You will report to the Account Executive Lead and join our sales team.'], 'Senior AE'), '', 'another role\'s hiring is not this one')
+  assert.equal(postingQuote(['The Account Executive works with our Account Executive Managers. Team is hiring process lead.'], 'Account Executive - London'), '', 'a passing title mention is not a vacancy statement')
+  assert.equal(postingQuote(['We are hiring an SDR to support our Account Executive team in London.'], 'Account Executive'), '', 'the hiring is for another role named first')
+  assert.equal(postingQuote(['Hi there! We\u2019re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Brightloop.'], 'Sales Assist Representative', 'Brightloop'), 'We\u2019re looking for a new Sales-Assist Representative to join the Sales-Assist Motion at Brightloop.')
+  assert.equal(postingQuote(['The role: Brightloop is hiring an Account Executive to own the London sales cycle.'], 'Account Executive - London', 'Brightloop'), 'The role: Brightloop is hiring an Account Executive to own the London sales cycle.', 'the core role before " - London"')
+})
+
+// #767 review R2: Greenhouse content is turned into text by the verifier's own functions, so entities (&rsquo; &#8217; &mdash; and a double-escaped &amp;lt;)
+// render exactly as on the verifier's page
+const GH_ENTITIES = '<h2>About Brightloop</h2><p>Brightloop&rsquo;s software runs finance teams.</p><p>We&#8217;re hiring an Account Executive &mdash; own the London sales cycle for &amp;lt;b&amp;gt;SMB&amp;lt;/b&amp;gt; customers &eacute;tendue.</p>'
+test('Greenhouse entities: the quote is byte-for-byte on the page the verifier renders (htmlToText(decode(content)))', async () => {
+  const r = await vacancy('greenhouse', GH_ENTITIES)
+  assert.equal(r.reason, 'found'); const q = r.vacancy!.quote
+  const page = (await verifierPage('greenhouse', GH_ENTITIES)(GH)) as { text: string }
+  assert.ok(q.length >= 20 && page.text.includes(q), `the quote is on the verifier's page: ${JSON.stringify(q)} / ${JSON.stringify(page.text)}`)
+  assert.match(q, /hiring an Account Executive/)
+  assert.doesNotMatch(q, /&(?:rsquo|mdash|#8217|eacute);/, 'no named / numeric entity left literal in the quote')
+  assert.match(q, /&lt;b&gt;SMB/, 'a double-escaped tag is decoded once, as the verifier renders it')
 })
 
 async function run(board: Board, desc: string, query = 'London B2B SaaS startups hiring sales staff') {

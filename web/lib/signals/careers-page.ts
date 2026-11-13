@@ -7,6 +7,7 @@
 import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 import { getDomain } from 'tldts'
+import { decode as decodeEntities, htmlToText } from '../scan/fetch-page.ts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
 // posted (#533 AC4): when the careers link IS a public Greenhouse / Lever / Ashby posting, the board's OWN first-published date read from that
@@ -147,9 +148,10 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
   return { ok: true, text: plain.slice(0, 6000), title: title.slice(0, 120), posted, postedBoard: posted ? postedBoard : null, passages: passages.filter(p => p.length >= 20) }
 }
 // Only the fields the verifier's read of the board record also renders as text: Ashby / Lever descriptionPlain (and Lever additionalPlain), Greenhouse content
-// (escaped HTML, turned into text the same way). Ashby's descriptionHtml is never read there, so it is never quoted here.
+// (escaped HTML), turned into text by the verifier's OWN functions (lib/scan/fetch-page.ts: htmlToText(decode(content))), so the quote source is byte-identical to
+// the page the verifier checks. Ashby's descriptionHtml is never read there, so it is never quoted here.
 const plainText = (v: unknown) => typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : ''
-const htmlText = (v: string) => decode(decode(v).replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+const htmlText = (v: string) => htmlToText(decodeEntities(v)).text
 async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }, accept?: (title: string) => boolean): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
   if (ATS_HOST.test(u.hostname.toLowerCase())) return verifyAtsJob(u, get, site, company, hit.title, accept)
@@ -192,23 +194,36 @@ export function quoteFor(text: string, title: string, at: number, company?: stri
   return best
 }
 // The quote for a public ATS posting (#767 live check: a quote glued the title onto the description's boilerplate preamble, "Sales Assist Representative AI AT
-// ZAPIER At Zapier ...", which is on no page). It is a window inside ONE passage of the posting's own text, never across the title join, around the passage that states
-// the vacancy: the posting's title (any spacing / hyphenation, "Sales-Assist Representative"), else its core role (before " - London"), else hiring wording
-// ("We're looking for", "we are hiring", "join our team"). A preamble that does neither (company boilerplate, "our hiring process") gives no quote (''),
-// and the callers skip a vacancy without one.
-const HIRING = /\b(?:(?:we(?:'|\u2019)re|we are|is|are) (?:currently |actively |now )?(?:hiring|looking for|seeking|searching for|in search of|recruiting)\b|(?:looking for|seeking|hiring|recruiting) (?:an? |our (?:first|next|new) )|join (?:us|our|the) [^.!?]{0,40}\bteam\b|in this role\b|this role (?:is|will)\b)/i
-const escRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const titleRe = (t: string) => { const w = t.split(/[^\p{L}\p{N}]+/u).filter(Boolean); return w.length ? new RegExp(`(?<![\\p{L}\\p{N}])${w.map(escRe).join('[\\s\\-\u2010-\u2014_/]+')}(?![\\p{L}\\p{N}])`, 'iu') : null }
+// ZAPIER At Zapier ...", which is on no page). It is a window inside ONE passage of the posting's own text, never across the title join, and it must state THIS
+// vacancy: one sentence holding hiring wording ("We're looking for", "we are hiring", "seeking a") followed closely by the posting's title or its core role (any
+// spacing / hyphenation: "Sales-Assist Representative"). Hiring wording about something else ("our customers are looking for", "our Engineering team is hiring
+// for a Backend Engineer") and a passing title mention ("works with our Account Executive Managers") are not a vacancy statement: no quote (''), and the callers
+// skip a vacancy without one.
+const HIRING = /\b(?:we(?:'|\u2019)re|we are) (?:currently |actively |now )?(?:hiring|looking for|seeking|searching for|in search of|recruiting)\b|\b(?:looking for|seeking|hiring|recruiting) (?:an?|our (?:first|next|new))\b/gi
+// between the hiring wording and the title: at most 3 filler words ("a new", "an experienced"), none that starts another clause ("an SDR to support our Account
+// Executive team" is not hiring an Account Executive)
+const TIE = /^[\s,]*(?:[\p{L}\p{N}'\u2019-]+[\s,]+){0,3}$/u
+const UNTIE = /\b(?:to|for|with|and|or|support|supporting|help|helping|join|alongside|under|who|that|than|plus)\b/i
+const titleRe = (t: string) => { const w = t.split(/[^\p{L}\p{N}]+/u).filter(Boolean); return w.length ? new RegExp(`(?<![\\p{L}\\p{N}])${w.join('[\\s\\-\u2010-\u2014_/]+')}(?![\\p{L}\\p{N}])`, 'giu') : null }
 export function postingQuote(passages: string[], title: string, company?: string): string {
   const core = title.split(/\s[-\u2013\u2014|\u00b7]\s|\s*[,(\[]/)[0]?.trim() ?? ''
-  const finders = [titleRe(title), core && core !== title ? titleRe(core) : null, HIRING].filter((r): r is RegExp => !!r)
-  for (const re of finders) for (const p of passages) {
-    const m = re.exec(p); if (!m) continue
-    // start the window at the sentence the match is in when that is close, so it does not open mid-word
-    const s = Math.max(0, ...['. ', '! ', '? ', ': '].map(d => { const i = p.lastIndexOf(d, m.index); return i < 0 ? 0 : i + 2 }))
-    const from = m.index - s <= 60 ? s : 0
-    const q = quoteFor(p.slice(from), m[0], m.index - from, company).trim()
-    if (q.length >= 20 && p.includes(q)) return q
+  const titles = [titleRe(title), core && core !== title ? titleRe(core) : null].filter((r): r is RegExp => !!r)
+  for (const p of passages) {
+    for (const sm of p.matchAll(/[^.!?]+(?:[.!?]+|$)/g)) {
+      const sentence = sm[0], s0 = sm.index ?? 0
+      for (const h of sentence.matchAll(HIRING)) {
+        const hEnd = (h.index ?? 0) + h[0].length
+        for (const re of titles) {
+          const t = [...sentence.matchAll(re)].find(m => { const gap = sentence.slice(hEnd, m.index ?? 0); return (m.index ?? 0) >= hEnd && TIE.test(gap) && !UNTIE.test(gap) })
+          if (!t) continue
+          // the window spans the hiring wording through the title (starting at the sentence when that is close), widened to the company name when asked
+          const hAt = s0 + (h.index ?? 0), span = sentence.slice(h.index ?? 0, (t.index ?? 0) + t[0].length)
+          const begin = Math.max(s0 + (sentence.length - sentence.trimStart().length), hAt - 60)
+          const q = quoteFor(p.slice(begin), span, hAt - begin, company).trim()
+          if (q.length >= 20 && q.includes(span.trim()) && p.includes(q)) return q
+        }
+      }
+    }
   }
   return ''
 }

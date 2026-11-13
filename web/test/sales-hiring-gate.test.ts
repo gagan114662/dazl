@@ -634,6 +634,18 @@ test('#767 careers gate: an Ashby posting is quoted from its own descriptionPlai
   b.db.close()
 })
 
+// #767 review R3: only an EMPTY quote (a public ATS posting whose text never states the vacancy) is demoted; a first-party careers vacancy with a short quote keeps
+// main's result
+test('#767 careers gate: a first-party "Sales Manager" job page with a short quote still carries the hiring half, as on main', async () => {
+  const s = seed()
+  await applySalesHiringGate(s.db, s.job, serve({}), { now: NOW, careersGet: cGet({ '/': '<a href="/careers">Careers</a>', '/careers': '<h2>Open roles at Brightloop</h2><ul><li><a href="/careers/sm">Sales Manager</a></li></ul>', '/careers/sm': '<h1>Sales Manager</h1>' }) })
+  assert.equal(lead(s.db).review_reason, null)
+  const ev = careersEvidence(s.db)
+  assert.equal(ev.length, 1); assert.equal(ev[0].value, 'Open sales role on its careers page: Sales Manager'); assert.match(ev[0].label, /Sales Manager$/)
+  assert.deepEqual(careersRows(s.db).map(r => [r.status, r.results]), [['checked_vacancy', 1]])
+  s.db.close()
+})
+
 test('#533 direct-career check-history: clean absence, closed marker and fetch failure each leave an honest row; generic request keeps legacy pass', async () => {
   // clean absence: every page answered, nothing there - results 0, never -1
   const a = seed({ query: ROLE_QUERY, icp: ROLE_ICP })

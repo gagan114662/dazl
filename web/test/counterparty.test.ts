@@ -49,3 +49,12 @@ test('hostBrand of a public ATS posting is the board org, so a company\'s own po
   const named = { title: 'Sales Assist Representative @ zapier', text: 'Brightloop uses Zapier for its sales workflows, and we are hiring to support customers like it.', retrievedAt: 0 }
   assert.equal(counterpartySignal(other as never, named as never, ''), 'source_owner:zapier', 'another company named on Zapier\'s own posting is still a counterparty mention')
 })
+// #767 review R4: an ATS org slug is compared with the WHOLE company key, never its first word
+test('an ATS org brand is matched on the whole company key: "AI Corp" on the retail board is a counterparty, "Brightloop" on brightloophq is its own', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  const page = { title: 'Account Executive @ retail', text: 'AI Corp uses Retail for its stores, and we are hiring an Account Executive to grow accounts like it.', retrievedAt: 0 }
+  const ai = { name: '', company: 'AI Corp', contact: null, signal: 'AI Corp uses Retail', source_url: `https://jobs.ashbyhq.com/retail/${id}`, score: 80, excerpt: 'AI Corp uses Retail for its stores', event_date: null }
+  assert.equal(counterpartySignal(ai as never, page as never, ''), 'source_owner:retail')
+  const own = { ...ai, company: 'Brightloop', source_url: `https://jobs.ashbyhq.com/brightloophq/${id}` }
+  assert.equal(counterpartySignal(own as never, { ...page, title: 'x @ brightloophq', text: 'Brightloop uses Brightloophq tooling; we are hiring an Account Executive.' } as never, ''), null)
+})

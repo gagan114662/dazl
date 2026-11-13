@@ -137,7 +137,8 @@ export const resetBoardMemo = () => boardMemo.clear()
 const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || isAtsRecordUrl(u)
 
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
-function decode(s: string): string {
+// exported (#767): the careers adapter quotes Greenhouse content from exactly this rendering, so its quote is on the verifier's page
+export function decode(s: string): string {
   return s
     .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, e: string) => {
       if (e[0] === '#') {
