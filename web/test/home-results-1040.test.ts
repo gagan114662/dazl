@@ -93,6 +93,8 @@ bothEngines('#1040 round 3: Interested decides per Gmail thread like the Inbox; 
   await msg('m15', 'A', 'a15'); await reply('g15a', 'A', 't-m15', 'm15', 'positive', IN + DAY); await reply('g15b', 'A', 'tb-m15', 'm15', 'bounce_review', IN + 2 * DAY)
   // a yes, then an unmatched notice (no send id) in the same thread: that thread's deciding row is the notice
   await msg('m16', 'A', 'a16'); await reply('g16a', 'A', 't-m16', 'm16', 'positive', IN + DAY); await reply('g16b', 'A', 't-m16', null, 'bounce_unmatched', IN + 2 * DAY)
+  // another tenant's newer 'no' with the same thread id: never A's deciding reply
+  await reply('g15x', 'B', 't-m15', null, 'negative', IN + 3 * DAY)
   // tenant B's message pointing at tenant A's lead a1 (no tenant-binding key on lead_id)
   await msg('m17', 'B', 'a1'); await reply('g17', 'B', 't-m17', 'm17', 'other', IN + DAY)
   const r = await homeResults(db, 'A', NOW)

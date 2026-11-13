@@ -24,4 +24,8 @@ test('#1040 GET /api/home/results: 401 signed out, 503 on an unreadable store, 2
   const ok = await route.GET()
   assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'no-store')
   assert.deepEqual((await ok.json() as { tiles: unknown }).tiles, { leads: 0, contacted: 0, replied: 0, interested: 0 })
+  // a sent email and reply reading off (no consent, no account): the route passes that on, so replies are unknown, not 0
+  raw.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, created_at, sent_at, test) VALUES ('m1', 'A', 'gone', 'x@co.example', 'Hello there', 'A short first email body for the test.', 'sent', ?, ?, 0)").run(Math.floor(Date.now() / 1000) - 86400, Math.floor(Date.now() / 1000) - 86400)
+  const off = await (await route.GET()).json() as { reply_reading: boolean; tiles: Record<string, unknown> }
+  assert.equal(off.reply_reading, false); assert.deepEqual(off.tiles, { leads: 0, contacted: 1, replied: null, interested: null })
 })
