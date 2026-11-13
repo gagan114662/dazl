@@ -1,7 +1,7 @@
 'use client'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
-import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy } from '@/lib/error-copy'
+import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -174,7 +174,7 @@ export default function LeadsClient() {
   // The plan shown above Run (#876) is compiled HERE from exactly what Run sends: the request text now in the box and the profile now being edited. Any edit to either,
   // a website fill, or a restored saved run, recompiles it on the spot, so it can never describe an earlier request or profile.
   const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
-  const [draftNote, setDraftNote] = useState('')
+  const [draftNote, setDraftNote] = useState<PreviewNote>({ text: '', dropped: null })
   const [busy, setBusy] = useState(false)
   const [starting, setStarting] = useState(false)
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
@@ -420,7 +420,7 @@ export default function LeadsClient() {
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first.' : j.error || 'Could not build the profile')); return }
       await startOffer(query)
       setDraft(j.icp)
-      setDraftNote(j.inferred ? 'dazl worked this out from your request. Edit anything that is off, then run the scan.' : 'dazl could not infer more, so it will use your words as they are. Add detail below if you like.')
+      setDraftNote(profilePreviewNote(j.inferred, j.coverage)) // #917: a cut-off fallback says so and shows what was left out
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
@@ -449,7 +449,7 @@ export default function LeadsClient() {
       if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
-      setDraftNote(`Filled from ${host}. Edit anything that is off, then run the scan.`)
+      setDraftNote({ text: `Filled from ${host}. Edit anything that is off, then run the scan.`, dropped: null })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
@@ -872,7 +872,8 @@ export default function LeadsClient() {
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} />
           <PlanViewCard plan={draftPlan} />
           <div className="flex items-center justify-between gap-3 mb-3">
-            <p className="text-gray-400">{draftNote}</p>
+            <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
+            {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
@@ -910,7 +911,7 @@ export default function LeadsClient() {
           return (
             <p className="text-xs text-[#555] mb-2">
               {wn.text}{' '}
-              {wn.editTo && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wn.editTo! }); setDraftNote(wn.editNote!) }}>{wn.editLabel}</button>}
+              {wn.editTo && <button className="underline text-[#111]" onClick={() => { setDraft({ ...icp.icp, window_days: wn.editTo! }); setDraftNote({ text: wn.editNote!, dropped: null }) }}>{wn.editLabel}</button>}
             </p>
           )
         })()}
@@ -929,7 +930,7 @@ export default function LeadsClient() {
             {icp.icp.window_days ? <li>Only signals from the last {icp.icp.window_days} days</li> : null}
           </ul>
           <div className="flex items-center gap-3 mt-2">
-            <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote('Edit the profile and run again.') }}>Edit and run again</button>
+            <button className="underline text-[#111] text-xs" onClick={() => { setDraft(icp.icp); setDraftNote({ text: 'Edit the profile and run again.', dropped: null }) }}>Edit and run again</button>
             <button className="underline text-[#111] text-xs" onClick={() => void watchReq({ query: query.trim(), icp: icp.icp })}>Watch this weekly</button>
           </div>
           {watchNote && <p className="text-xs text-gray-500 mt-1">{watchNote}</p>}

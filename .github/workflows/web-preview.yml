@@ -126,6 +126,13 @@ jobs:
           set -o pipefail
           SHOTS=preview/free-site-read node test/ui/free-site-read.ui.mjs | tee /tmp/fsr.out
           ! grep -q '^NOT RUN' /tmp/fsr.out
+      # #917: a profile the scan would cut is refused in plain words (7th exclusion), and a fallback profile for a request over 300 characters discloses what it left out. Bundled LeadsClient, every call stubbed. It must run, not skip.
+      - name: Lossy profile refusal and fallback coverage (#917)
+        run: |
+          set -o pipefail
+          mkdir -p preview/lossy-profile
+          SHOTS=preview/lossy-profile node test/ui/lossy-profile.ui.mjs | tee /tmp/lp.out
+          ! grep -q '^SKIP' /tmp/lp.out
       # #1095: back from Link Google, every result (linked, already, each failure) says how it went, restores the same search and reopens the step where it started, on onboarding and Leads, at 1280 and 390. It must run, not skip.
       - name: Google link return (note, restored search, open step, Run enabled)
         run: |
