@@ -31,7 +31,9 @@ test('#382 #1036 on staging with the flag: no network call, a clearly synthetic 
   assert.deepEqual(found.map(p => [p.name, p.title, p.domain]), [['Staging Testperson', 'Head of Sales', 'harbordental.example']])
   const e = await pdlPersonEnrich('k', { first: 'dana', last: 'lee', domain: 'harbordental.example' }, recording(calls), { env: STAGING, hints: { title: 'Practice Manager' } })
   assert.equal(calls.length, 0)
-  assert.deepEqual([e.billed, e.match?.email, e.match?.country, e.match?.title], [true, 'dana.lee@harbordental.example', 'united states', 'Practice Manager'])
+  assert.deepEqual([e.billed, e.match?.email, e.match?.country, e.match?.title], [true, 'staging-dana.lee@harbordental.example', 'united states', 'Practice Manager'], 'the address is self-evidently synthetic')
+  assert.deepEqual(await pdlPeopleSearch('k', 'No Domain Co', recording(calls), 5, { env: STAGING }), [], 'no domain known: no match, never an invented domain')
+  assert.deepEqual(await pdlPersonEnrich('k', { first: 'a', last: 'b', domain: '' }, recording(calls), { env: STAGING }), { billed: false, match: null })
 })
 
 test('#382 staging live-check path: Apollo rejects its key, the fake PDL is called through every real gate and its person is attached', async () => {
@@ -61,5 +63,17 @@ test('#1036 staging live-check path: Find work email with only a PDL key returns
   const r = await findWorkEmail(db, 'A', lead, 'Dana Lee|Practice Manager', { fetchImpl: recording(calls), master, now: 1_800_000_000, env: STAGING })
   assert.equal(calls.length, 0)
   assert.equal(r.status, 'unverified')
-  assert.deepEqual([(r as { row: { provider: string; address: string } }).row.provider, (r as { row: { address: string } }).row.address], ['pdl', 'dana.lee@harbordental.example'])
+  assert.deepEqual([(r as { row: { provider: string; address: string } }).row.provider, (r as { row: { address: string } }).row.address], ['pdl', 'staging-dana.lee@harbordental.example'])
+})
+
+test('#382 #1036 through the real callers, a production env with the flag set makes the real request and attaches no synthetic person', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: [], who: [], signals: [] }), jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('lead1', ?, '', 'Harbor Dental', 'harbordental.example', 'opened', 'https://x.example/1')").run(jobId)
+  saveCredential(db, 'u1', 'enrich:pdl', 'k', master)
+  const calls: string[] = []
+  await enrichLeadContacts(db, 'u1', jobId, [{ id: 'lead1', company: 'Harbor Dental', company_domain: 'harbordental.example' }], { fetchImpl: recording(calls), master, env: { DAZL_ENV: 'production', DAZL_STAGING_FAKE_PDL: '1' } })
+  assert.equal(calls.length, 1, 'the real request')
+  assert.ok(!(enrichmentsForLeads(db, 'u1', ['lead1']).lead1 ?? []).some(e => /Staging Testperson/.test(e.value)))
 })

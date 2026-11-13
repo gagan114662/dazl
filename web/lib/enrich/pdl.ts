@@ -24,10 +24,13 @@ export const stagingFakePdl = (env: Record<string, string | undefined> = process
 export interface PdlStagingHints { domain?: string | null; first?: string; last?: string; title?: string | null; linkedin?: string | null }
 function stagingPdlFetch(h: PdlStagingHints): typeof fetch {
   return (async (u: RequestInfo | URL) => {
-    const url = String(u), domain = (h.domain ?? 'staging-company.example').toLowerCase()
-    if (url.includes('/v5/person/search')) return new Response(JSON.stringify({ status: 200, data: [{ full_name: 'Staging Testperson', job_title: 'Head of Sales', job_company_website: domain, linkedin_url: null }] }), { status: 200 })
+    const url = String(u), domain = h.domain ? h.domain.toLowerCase() : null
+    // No domain known for the caller's lead: no match (PDL's own 'not found' shapes), never an invented domain.
+    if (url.includes('/v5/person/search')) return new Response(JSON.stringify({ status: 200, data: domain ? [{ full_name: 'Staging Testperson', job_title: 'Head of Sales', job_company_website: domain, linkedin_url: null }] : [] }), { status: 200 })
+    if (!domain) return new Response(JSON.stringify({ status: 404, error: { type: 'not_found' } }), { status: 404 })
     const first = (h.first ?? 'staging').toLowerCase(), last = (h.last ?? 'testperson').toLowerCase()
-    return new Response(JSON.stringify({ status: 200, likelihood: 8, data: { full_name: `${first} ${last}`, job_title: h.title ?? 'Head of Sales', work_email: `${first}.${last}@${domain}`, location_country: 'united states', job_company_website: domain, linkedin_url: h.linkedin ?? null } }), { status: 200 })
+    // The address is self-evidently synthetic ('staging-' prefix): never a plausible real person's address at a real company.
+    return new Response(JSON.stringify({ status: 200, likelihood: 8, data: { full_name: `${first} ${last}`, job_title: h.title ?? 'Head of Sales', work_email: `staging-${first}.${last}@${domain}`, location_country: 'united states', job_company_website: domain, linkedin_url: h.linkedin ?? null } }), { status: 200 })
   }) as typeof fetch
 }
 export async function pdlPeopleSearch(apiKey: string, orgName: string, fetchImpl: typeof fetch = fetch, max = 5, staging: { env?: Record<string, string | undefined>; hints?: PdlStagingHints } = {}): Promise<ApolloPerson[]> {
