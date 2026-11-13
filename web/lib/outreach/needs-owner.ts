@@ -9,6 +9,9 @@ export const NEEDS_OWNER_CLASSES = ['positive', 'other', 'uncertain', 'bounce_re
 export const SETTLED_STOPS = ['opt_out', 'negative', 'bounce', 'suppressed'] as const
 // Machine mail: decides a thread only when the thread has nothing a person wrote.
 export const NOT_A_PERSON = ['auto', 'soft_bounce'] as const
+// A reply a person wrote, for counting "replied" (Home's tiles, #1040, and the Inbox's sent_since filter that the tiles link to):
+// never an auto-reply or any bounce / delivery notice. 'uncertain' counts: the classifier gives it to hedged answers people write.
+export const PERSON_REPLY = ['positive', 'negative', 'other', 'opt_out', 'uncertain'] as const
 
 const has = (xs: readonly string[], v: string | null) => v !== null && xs.includes(v)
 export function needsOwner(classification: string, stopped: string | null): boolean {

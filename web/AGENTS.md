@@ -1,3 +1,5 @@
+**Read `docs/NEVER-AGAIN.md` first, every session:** the mistakes we never repeat, their rules and the gates that enforce them.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know
