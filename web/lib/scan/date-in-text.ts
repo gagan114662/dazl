@@ -85,10 +85,16 @@ const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)
 // #1129: a four-digit number in an Australian ADDRESS is a postcode, never a year ("Sydney, NSW 2000 / Melbourne,
 // VIC 3000" held a lead as stale for "the year 2000"). Only in address form (review on #1137: a bare code is not enough,
 // "WA 2019 expansion", "the ACT 2021 budget" and "SA 2018 Series A" are years): a capitalised place name, then the state or
-// territory code in capitals, then the number, with no lower-case word right after it, in text that is not all capitals.
-const POSTCODE_BEFORE = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,?\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT),?\s*$/
-const isPostcode = (t: string, at: number, end: number): boolean =>
-  POSTCODE_BEFORE.test(t.slice(Math.max(0, at - 60), at)) && !/^\s+[a-z]/.test(t.slice(end, end + 20)) && /[a-z]/.test(t.slice(Math.max(0, at - 60), end + 20))
+// territory code in capitals, then the number, in text that is not all capitals. The address must END at the number (review
+// round 2 on #1137: "Raised SA 2018 Expansion" and "The ACT 2019 Amendments" are years): end of text, punctuation or a
+// separator, or "Australia". The word before the code must not be a sentence word ("The", "Raised", "In").
+const POSTCODE_BEFORE = /\b([A-Z][a-z]+),?\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT),?\s*$/
+const NOT_PLACE_WORD = /^(?:The|A|An|In|At|On|Of|For|By|From|To|Our|Its|Their|This|That|New|Raised|Announced|Opened|Launched|Won|Closed|Signed|Hello|Hi)$/
+const ADDRESS_END = /^\s*(?:$|[.,;:/|)\]\-–—]|Australia\b)/
+const isPostcode = (t: string, at: number, end: number): boolean => {
+  const m = POSTCODE_BEFORE.exec(t.slice(Math.max(0, at - 60), at))
+  return !!m && !NOT_PLACE_WORD.test(m[1]) && ADDRESS_END.test(t.slice(end, end + 20)) && /[a-z]/.test(t.slice(Math.max(0, at - 60), end + 20))
+}
 export function eventYears(text: string): number[] {
   const t = text.replace(/\s+/g, ' ')
   return [...t.matchAll(/\b(19[89]\d|20\d{2})\b/g)].filter(m => {
