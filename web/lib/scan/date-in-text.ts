@@ -87,10 +87,13 @@ const BACKGROUND = /\b(?:founded|incorporated|in business since|operating since)
 // "WA 2019 expansion", "the ACT 2021 budget" and "SA 2018 Series A" are years): a capitalised place name, then the state or
 // territory code in capitals, then the number, in text that is not all capitals. The address must END at the number (review
 // round 2 on #1137: "Raised SA 2018 Expansion" and "The ACT 2019 Amendments" are years): end of text, punctuation or a
-// separator, or "Australia". The word before the code must not be a sentence word ("The", "Raised", "In").
+// separator, "and"/"or" before another capitalised place, or a word an address or a job-board header goes on with
+// ("Apply for this job", "Phone", "Hybrid", "Full time", review round 3). Any other follower ("Expansion", "Amendments")
+// keeps the year, so an unknown layout holds a lead rather than passing it. The word before the code must not be a
+// sentence word ("The", "Raised", "In"). Known limit: a sentence that ends at "<Name> NSW 2019." reads as an address.
 const POSTCODE_BEFORE = /\b([A-Z][a-z]+),?\s+(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT),?\s*$/
 const NOT_PLACE_WORD = /^(?:The|A|An|In|At|On|Of|For|By|From|To|Our|Its|Their|This|That|New|Raised|Announced|Opened|Launched|Won|Closed|Signed|Hello|Hi)$/
-const ADDRESS_END = /^\s*(?:$|[.,;:/|)\]\-–—]|Australia\b)/
+const ADDRESS_END = /^\s*(?:$|[.,;:/|)\]?!\-–—]|(?:and|or|&)\s+[A-Z]|(?:Australia|Apply|Phone|Ph|Tel|Telephone|Fax|Email|Mobile|Hybrid|Remote|On-?site|Full|Part|Contract|Casual|Permanent|Temporary|Government|Location|Department|Employment|Map|Directions|View|Get)\b)/
 const isPostcode = (t: string, at: number, end: number): boolean => {
   const m = POSTCODE_BEFORE.exec(t.slice(Math.max(0, at - 60), at))
   return !!m && !NOT_PLACE_WORD.test(m[1]) && ADDRESS_END.test(t.slice(end, end + 20)) && /[a-z]/.test(t.slice(Math.max(0, at - 60), end + 20))
