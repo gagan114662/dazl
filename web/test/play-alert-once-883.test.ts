@@ -300,7 +300,7 @@ bothEngines('#883 two claim passes at the same moment over the same companies in
 }, { pgMax: 4 })
 
 // One scheduled run of a monitor that stored `leads` (dated and verified, as the detector needs), then the tick's fold.
-async function monitorRun(db: Db, t: string, mon: string, at: number, leads: L[]) {
+async function monitorRun(db: Db, mon: string, at: number, leads: L[]) {
   await db.run('UPDATE monitors SET next_run_at = CASE WHEN id = ? THEN ? ELSE 9999999999 END', [mon, at])
   const jobs = await runDueMonitors(db, { now: at })
   assert.equal(jobs.length, 1)
@@ -323,13 +323,13 @@ bothEngines('#883 across play kinds: a monitor does not repeat what a weekly pla
   assert.ok('id' in m, JSON.stringify(m))
   // the monitor finds the same opening, Campfire (now dated: the play's lead had no date, so it cannot be told apart)
   // and Zenithon, which no play has alerted
-  assert.deepEqual(await monitorRun(db, A, m.id, NOW + DAY, [SMILE, { ...CAMPFIRE, date: '2026-11-10', fit: 3 }, ZENITHON]), [{ kind: 'new_company', company: 'Zenithon' }])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + DAY, [SMILE, { ...CAMPFIRE, date: '2026-11-10', fit: 3 }, ZENITHON]), [{ kind: 'new_company', company: 'Zenithon' }])
   // the same events again: nothing
-  assert.deepEqual(await monitorRun(db, A, m.id, NOW + 8 * DAY, [SMILE, ZENITHON]), [])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 8 * DAY, [SMILE, ZENITHON]), [])
   // a later, different dated event of a company the play alerted is a new signal, once (never "new company")
   const second: L = { ...SMILE, date: '2026-11-18', signal: 'Smile Avenue Dental opened a second office', url: 'https://qns.com/2026/11/smile-avenue-dental-second-office/' }
-  assert.deepEqual(await monitorRun(db, A, m.id, NOW + 15 * DAY, [second, SMILE]), [{ kind: 'new_signal', company: 'Smile Avenue Dental' }])
-  assert.deepEqual(await monitorRun(db, A, m.id, NOW + 22 * DAY, [second]), [])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 15 * DAY, [second, SMILE]), [{ kind: 'new_signal', company: 'Smile Avenue Dental' }])
+  assert.deepEqual(await monitorRun(db, m.id, NOW + 22 * DAY, [second]), [])
 
   // the other direction: the weekly play now finds Zenithon, which the monitor alerted. Not new, not mailed.
   const j = await runJob(db, A, sdr, Q_SDR, NOW + 23 * DAY, [ZENITHON])
