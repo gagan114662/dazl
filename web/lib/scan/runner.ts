@@ -52,7 +52,7 @@ import { applyRejections, readRejections, stripRejectedPeople, type Rejections }
 import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
-import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, postingKey, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
@@ -206,7 +206,7 @@ export function playOfferUnresolved(db: Database.Database, userId: string, jobId
 export function scoringSellerContext(db: Database.Database, userId: string, jobId: string, memory: Memory | null): string {
   return memoryPromptBlock(memory ? { ...memory, positioning: '' } : null) + offerBlockFor(db, userId, jobId)
 }
-export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
+export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
@@ -343,6 +343,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   }
   const best = new Map<string, VerifiedLead>()
   const quotes = new Map<string, QuoteEvidence[]>()
+  // #1095: the title a board's API record gives a posting the verifier read through it, by posting (the sales-hiring gate matches the requested role on it)
+  const postingTitles = new Map<string, string>()
   const review = new Map<string, ReviewLead>()
   // Which candidate each surviving row came from (rows are clones), so a LATER drop (duplicate, source cap) is recorded against the right occurrence.
   const bestSrc = new Map<string, LeadDraft>(); const reviewSrc = new Map<string, LeadDraft>(); const origin = new WeakMap<object, LeadDraft>()
@@ -466,6 +468,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (cp) {
       toReview(c, 'counterparty_signal'); continue
     }
+    { const pk = page.board?.title ? postingKey(c.source_url) : null; if (pk) postingTitles.set(pk, page.board!.title!) }
     passed.push({ c, v }); note(c, 'passed', null)
   }
 
@@ -503,7 +506,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     leads: capPer([...best.values()], (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)),
     review: capPer([...review.values()], (a, b) => b.score - a.score),
     dropped,
-    quotes,
+    quotes, postingTitles,
   }
 }
 
@@ -1477,7 +1480,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // #1095: the place may come from the profile when the request's own words name none the board source knows ("Austin B2B SaaS ..."
     // whose profile resolved "Austin, TX"): the board source then reads the request with that place appended, never every place.
     // only a profile that names exactly ONE place the board source knows: a multi-place profile is never narrowed to its first place
-    const profilePlaces = job.query && !placeIn(job.query) ? (icpForSources?.where ?? []).filter(w => typeof w === 'string' && placeIn(w)) : []
+    const profilePlaces = job.query && !placeIn(job.query) ? (icpForSources?.where ?? []).filter(w => typeof w === 'string' && placeIn(`in ${w}`)) : []
     const profilePlace = profilePlaces.length === 1 ? profilePlaces[0] : null
     const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
@@ -1491,8 +1494,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (sel && icpForSources && complete) {
       try {
         assertOwned(db, job)
-        // the board source reads the profile's place whether it was picked by the user or chosen automatically (XHawk on #1155)
-        const collected = await collectEvidenceReport(sel, (sel.adapters.includes('jobboards') && boardsQuery ? boardsQuery : job.query)!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [])
+        // the board source reads the profile's place whether it was picked by the user or chosen automatically; only it gets the request with the
+        // place appended, every other picked source keeps the user's own request (XHawk on #1155)
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {})
         const items = collected.items
         for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
@@ -1698,6 +1702,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
               const seenReview = new Set(outcome.review.map(dedupKey))
               for (const r of o2.review) { const k = dedupKey(r); if (!seenKeys.has(k) && !seenReview.has(k)) { seenReview.add(k); outcome.review.push(r) } }
               for (const [r, n] of Object.entries(o2.dropped)) outcome.dropped[r] = (outcome.dropped[r] ?? 0) + n
+              if (o2.postingTitles) { outcome.postingTitles ??= new Map(); for (const [k, v] of o2.postingTitles) outcome.postingTitles.set(k, v) }
               if (o2.quotes) { outcome.quotes ??= new Map(); for (const [k, v] of o2.quotes) outcome.quotes.set(k, [...(outcome.quotes.get(k) ?? []), ...v]) }
               stop('ok')
             }
@@ -1894,7 +1899,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
     let heldByGate: Map<string, string> = new Map()
     try {
-      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
+      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, postingTitles: outcome.postingTitles, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
       trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'error'

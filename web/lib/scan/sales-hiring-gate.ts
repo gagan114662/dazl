@@ -1,4 +1,4 @@
-import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from './hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof, type RequestedHiringRole } from './hiring-role-match.ts'
 // "Seed funding AND hiring sales": a request whose play needs an event beyond hiring plus sales / GTM hiring is not answered by the
 // funding quote alone. After the contact crawl has bound each lead to its company domain, a verified lead keeps its place only when
 //   (a) its own saved quote already names a sales / GTM hiring (the source says it), or
@@ -21,16 +21,18 @@ import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
-// #1095: a verified posting quote that states the vacancy for the requested role: "is hiring an Account Executive", "looking for a new Account
-// Executive", "Join Justworks as an Account Executive". A role noun right after the title (Manager, Lead, Director ...) makes it another role.
-const HIRE_LEAD = String.raw`(?:hiring|looking\s+for|seeking|recruiting|looking\s+to\s+hire|join\s+(?:us|our\s+team|the\s+team|[A-Z][\w&.-]*(?:\s+[A-Z][\w&.-]*){0,3})\s+as)`
+// #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
+// posting body says: a real posting's quotable sentences are company boilerplate, and a Sales Engineer posting can mention Account Executives.
+// A role noun right after the requested title (Manager, Lead, Director ...) makes it another role.
 const ROLE_TAIL = /^(?:\s*-\s*|\s+)(?:manager|lead|director|head|vp|assistant|associate|coordinator|trainer|recruiter|engineer)s?\b/i
-export function postingStatesRole(quote: string, term: string): boolean {
-  const t = term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
-  const re = new RegExp(`\\b${HIRE_LEAD}\\s+(?:(?:an?|our|the|new|first|two|three|several|multiple|experienced|senior|junior|sr\\.?|jr\\.?)\\s+){0,3}(${t})s?\\b`, 'gi')
-  for (const m of quote.matchAll(re)) if (!ROLE_TAIL.test(quote.slice(m.index! + m[0].length))) return true
-  return false
+export function titleIsRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
+  const m = matchedHiringRole(title, roles); if (!m) return null
+  const t = m.term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
+  const hit = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
+  return hit && ROLE_TAIL.test(title.slice(hit.index + hit[0].length)) ? null : m
 }
+// one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
+export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
 export const NO_SALES_HIRING = 'no_sales_hiring_evidence'
@@ -177,7 +179,7 @@ export function quoteShowsCompletedHire(quote: string | null | undefined, compan
     return !subjectIsOther(k.slice(0, m.index), company) || (/^join/i.test(m[0]) && !!next && own.includes(next))
   })
 }
-export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
+export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
   const demotions = none.demotions
@@ -253,20 +255,19 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       // #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board (Greenhouse / Lever / Ashby).
       // The verifier already read that posting through the board's API record, bound it to this company (#1126: the board's stated name or its
       // whole slug) and dated it by the board's own first-published day (ats_structured). When that day is inside the hiring clock and the
-      // verified quote from the posting names the requested role, the posting IS the role evidence: no website domain is needed to find the
-      // board again (the trial's own-board leads had none and were held as no_sales_hiring_evidence).
+      // record's own TITLE is the requested role (opts.postingTitles: the title the verifier read from the record, by posting), the posting IS
+      // the role evidence: no website domain is needed to find the board again (the trial's own-board leads had none and were held).
       if (roles.length && !or) {
-        const ats = atsPostingRef(l.source_url)
+        const ats = atsPostingRef(l.source_url), pk = postingKey(l.source_url)
         const t = l.event_date ? Date.parse(l.event_date) : NaN
         const own = !!ats && l.event_date_proof === 'ats_structured' && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
-        // the quote must STATE this vacancy: hiring wording, then (within a few words) the requested role, and no other role noun right after it
-        // ("... report to the Account Executive Lead" or "an Account Executive Manager" is another role, not this vacancy)
-        const m = own ? roles.find(r => postingStatesRole(l.evidence_excerpt ?? '', r.term)) ?? null : null
+        const title = own && pk ? opts.postingTitles?.get(pk) ?? '' : ''
+        const m = title ? titleIsRole(title, roles) : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
-          // one posting, one hiring row: an enrichment for this posting already stored (signal enrichment runs first) is not written again (XHawk on #1155)
-          const already = db.prepare("SELECT 1 AS x FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role') AND source_url = ? LIMIT 1").get(l.id, l.source_url)
-          if (!already) addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${m.term} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`, l.evidence_excerpt].filter(Boolean).join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
+          // one posting, one hiring row: an enrichment for this posting already stored under any of its URLs is not written again (XHawk on #1155)
+          const stored = db.prepare("SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role') AND source_url IS NOT NULL").all(l.id) as { source_url: string }[]
+          if (!stored.some(e => postingKey(e.source_url) === pk)) addEnrichment(db, job.user_id, l.id, { connector: `signals:${ats.kind}-gtm`, kind: 'hiring', value: `Open role on its ${board} job board: ${title} - posted ${l.event_date}`.slice(0, 254), label: [`Requested role: ${m.term}`, `${board} first-published date read from the posting`].join('; ').slice(0, 200), confidence: 60, source_url: l.source_url, source_date: l.event_date!, retrieved_at: now })
           passed++; passedIds.push(l.id); continue
         }
       }

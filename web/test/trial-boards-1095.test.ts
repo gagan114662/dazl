@@ -3,79 +3,106 @@
 // but the free job-board source (Greenhouse / Lever / Ashby JSON: readable, dated postings) needs a place it recognises in the REQUEST,
 // and a bare US city is neither London/NYC, a state name nor "<City>, <Country>". It was skipped ("skipped_no_place"), so the trial's
 // only candidates were aggregator pages (LinkedIn, Indeed, Glassdoor, mediabistro, builtinaustin) and 0 leads were ready.
-// REAL from that run: the request, the profile place, the planned queries, the result URLs and the candidates the model drew from them.
-// INVENTED: the Greenhouse board JSON for Justworks (one of those real candidates) and its posting body.
+// REAL from that run: the request, the profile place, the planned queries, the result URLs and the candidates the model drew from them
+// (NinjaOne on thesaasjobs, OEC on mediabistro: both held, 0 ready).
+// REAL, verbatim (review at 54953a0a: no invented posting): the Greenhouse board of NinjaOne as its public API returned it on 2026-11-13
+// (test/fixtures/1095-ninjaone-greenhouse.json: all 21 postings titled Account Executive, the three Austin ones in full). Only the dates are
+// moved: each posting keeps its age as of 2026-11-13, so the 30-day window reads the same on any day the test runs.
+// SYNTHETIC: the model's replies. Its candidate for the board posting quotes the sentence the source itself handed it (company boilerplate,
+// as on every real posting read: the vacancy is proven by the record's title, never by that sentence).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
+import { readFileSync } from 'node:fs'
+import { runFixture, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import { placeIn } from '../lib/sources/jobboards.ts'
+import { ADAPTERS } from '../lib/sources/index.ts'
+import { atsPostingRef, atsRecord, atsPageText } from '../lib/sources/ats-posting.ts'
+import { htmlToText, decode } from '../lib/scan/fetch-page.ts'
+import { enrichmentsForLeads } from '../lib/connectors/store.ts'
 
 const REQUEST = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
 const ICP = { summary: 'Austin B2B SaaS companies hiring their first account executive', who: ['Founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['1-50'], where: ['Austin, TX'], signals: ['hiring their first account executive'], exclude: [], country: 'US', language: 'en', window_days: 30 }
 const QUERIES = ['(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) "first account executive" Austin, TX', 'Austin B2B SaaS first account executive hiring Austin, TX', 'Austin software company account executive job posting careers Austin, TX']
-const LI = 'https://linkedin.com/jobs/view/account-executive-in-territory-austin-tx-at-justworks-4485363528'
+const SAASJOBS = 'https://www.thesaasjobs.com/jobs/767593187-account-executive-mid-market-midwest'
 const MEDIA = 'https://www.mediabistro.com/jobs/3543208051-saas-smb-account-executive-4-day-week-hybrid'
-const GH_AUSTIN = 'https://job-boards.greenhouse.io/justworks/jobs/7301001'
-const GH_DALLAS = 'https://job-boards.greenhouse.io/justworks/jobs/7301002'
-const QUOTE = 'Justworks is hiring an Account Executive to own new business for small companies across Austin and Central Texas'
+const GH = (id: number | string) => `https://job-boards.greenhouse.io/ninjaone/jobs/${id}`
+const AUSTIN = [4472362009, 4469783009, 4470849009]   // Account Executive, MSP / Account Executive, SMB / SLED Senior Account Executive, Mid Market
+type GhJob = { id: number; title: string; first_published: string; updated_at: string; location: { name: string }; content?: string }
+const REAL = JSON.parse(readFileSync(new URL('./fixtures/1095-ninjaone-greenhouse.json', import.meta.url), 'utf8')) as { list: { jobs: GhJob[] }; postings: Record<string, GhJob> }
+// the record's own dates, moved by the days since the fixture was read (2026-11-13)
+const READ = Date.UTC(2026, 10, 13)
+const moved = (iso: string) => new Date(Date.parse(iso) + (Math.floor(Date.now() / 86_400_000) * 86_400_000 - READ)).toISOString()
+const live = <T extends GhJob>(j: T): T => ({ ...j, first_published: moved(j.first_published), updated_at: moved(j.updated_at) })
 function boards() {
   const seen: string[] = []
   const http: SafeGet = async url => {
     if (new URL(url).hostname === 'hn.algolia.com') return null
     seen.push(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
-    if (url === 'https://boards-api.greenhouse.io/v1/boards/justworks/jobs') return j({ jobs: [
-      { id: 7301001, title: 'Account Executive - In-Territory (Austin, TX)', updated_at: daysAgo(1), location: { name: 'Austin, TX' }, absolute_url: GH_AUSTIN },
-      { id: 7301002, title: 'Account Executive - In-Territory (Dallas, TX)', updated_at: daysAgo(1), location: { name: 'Dallas, TX' }, absolute_url: GH_DALLAS },
-    ] })
-    const d = url.match(/boards\/justworks\/jobs\/(\d+)$/)
-    if (d) return j({ id: +d[1], title: 'Account Executive - In-Territory', first_published: daysAgo(9), content: `&lt;p&gt;${QUOTE}.&lt;/p&gt;&lt;p&gt;You will run the full sales cycle from first call to signed contract with founders and finance leaders.&lt;/p&gt;`, location: { name: d[1] === '7301001' ? 'Austin, TX' : 'Dallas, TX' }, absolute_url: d[1] === '7301001' ? GH_AUSTIN : GH_DALLAS })
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs') return j({ ...REAL.list, jobs: REAL.list.jobs.map(live) })
+    const d = url.match(/boards\/ninjaone\/jobs\/(\d+)$/)
+    if (d && REAL.postings[d[1]]) return j(live(REAL.postings[d[1]]))
     return null
   }
   return { http, seen }
 }
+// The verifier's read of a posting URL, built by the real code from the real record (lib/scan/fetch-page.ts does exactly this with the API body).
+const fetchPage = async (u: string) => {
+  const ref = atsPostingRef(u), raw = ref?.org === 'ninjaone' ? REAL.postings[ref.id] : null
+  if (!ref || !raw) return { fail: 'blocked' as const }   // the aggregator pages (thesaasjobs, mediabistro) were not readable in the live run either
+  const rec = atsRecord(live(raw), ref)
+  if (!rec || rec === 'missing') return { fail: 'error' as const }
+  const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
+  return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
+}
 function fx(sourceHttp: SafeGet): Fixture {
-  // The model's candidates: from the search (REAL: Justworks on LinkedIn, OEC on mediabistro) and, when the board posting is in its
-  // prompt, from the posting (quoting the posting's own text).
+  // The model's candidates: from the search (REAL: NinjaOne on thesaasjobs, OEC on mediabistro) and, for each board posting in its prompt,
+  // one that cites the posting and quotes the sentence the source handed over.
   const fromSearch: Cand[] = [
-    { company: 'Justworks', signal: 'Justworks is hiring an Account Executive in Austin, TX', source_url: LI, excerpt: 'Account Executive - In-Territory (Austin, TX)', event_date: daysAgo(9) },
+    { company: 'NinjaOne', signal: 'is hiring an account executive', source_url: SAASJOBS, excerpt: 'The Account Executive role at NinjaOne, is responsible for achieving sales and profitability objectives among our largest and most strategic prospect accounts.', event_date: null as never },
     { company: 'OEC', signal: 'is hiring a SaaS SMB account executive', source_url: MEDIA, excerpt: 'OEC is seeking a SaaS SMB Account Executive to drive the full sales cycle', event_date: null as never },
   ]
   return {
     request: REQUEST, modelIcp: ICP, modelQueries: QUERIES,
-    hits: [{ url: LI, title: 'Account Executive - In-Territory (Austin, TX) at Justworks', snippet: 'Justworks Account Executive Austin, TX', date: daysAgo(9) }, { url: MEDIA, title: 'SaaS SMB Account Executive', snippet: 'OEC is seeking a SaaS SMB Account Executive', date: null as never }],
-    // the verifier reads a Greenhouse posting through its board API record (lib/sources/ats-posting.ts): its title line, then its own text
-    tfPages: {}, own: { [LI]: 'blocked', [MEDIA]: 'blocked', [GH_AUSTIN]: { title: 'Account Executive - In-Territory @ justworks', text: `Account Executive - In-Territory Austin, TX ${QUOTE}. You will run the full sales cycle from first call to signed contract with founders and finance leaders. Job posting on the Greenhouse job board.`, published: daysAgo(9).slice(0, 10) } },
+    hits: [{ url: SAASJOBS, title: 'Account Executive, Mid Market Midwest', snippet: 'The Account Executive role at NinjaOne', date: null as never }, { url: MEDIA, title: 'SaaS SMB Account Executive', snippet: 'OEC is seeking a SaaS SMB Account Executive', date: null as never }],
+    tfPages: {}, own: {},
     extraction: fromSearch,
-    extractionFn: p => p.includes('"source":"jobboards"') && p.includes(GH_AUSTIN)
-      ? [...fromSearch, { company: 'Justworks', signal: 'hiring an Account Executive in Austin, TX', source_url: GH_AUSTIN, excerpt: QUOTE, event_date: daysAgo(9) }]
-      : fromSearch,
-    deps: { sourceHttp },
+    extractionFn: p => {
+      const out = [...fromSearch]
+      for (const m of p.matchAll(/\{[^{}]*"source":"jobboards"[^{}]*\}/g)) {
+        const it = JSON.parse(m[0]) as { url: string; text: string; date?: string }
+        out.push({ company: 'NinjaOne', signal: 'is hiring an account executive in Austin, TX', source_url: it.url, excerpt: it.text, event_date: it.date ?? (null as never) })
+      }
+      return out
+    },
+    deps: { sourceHttp, fetchPage },
   }
 }
 
-test('#1095: a US "<City>, <ST>" is a place for the job-board source; it never widens to the state or matches remote', () => {
+test('#1095: a US "<City>, <ST>" after in / near / around is a place for the job-board source; it never widens to the state or matches remote', () => {
   const p = placeIn('in Austin, TX')
   assert.equal(p?.name, 'Austin, TX')
   assert.deepEqual([p!.ok('Austin, TX'), p!.ok('Hybrid - Austin, Texas'), p!.ok('Dallas, TX'), p!.ok('Austin, MN'), p!.ok('Remote')], [true, true, false, false, false])
-  assert.equal(placeIn('Portland, Oregon')?.name, 'Portland, OR')
+  assert.equal(placeIn('SaaS companies near Portland, Oregon hiring AEs')?.name, 'Portland, OR')
   // a non-US country, another state (read without the city's own words: Kansas City, MO names no Kansas) and a remote posting are never the city
   const sj = placeIn('in San Jose, CA')!
   assert.deepEqual([sj.ok('San Jose, CA'), sj.ok('San Jose, California, United States'), sj.ok('San Jose, Costa Rica')], [true, true, false])
   const kc = placeIn('in Kansas City, MO')!
   assert.deepEqual([kc.ok('Kansas City, MO'), kc.ok('Kansas City, KS')], [true, false])
-  assert.deepEqual([p!.ok('Austin'), p!.ok('Austin, US'), p!.ok('Austin, TX HQ'), p!.ok('Remote - Austin, TX')], [true, true, true, false], 'the real board location shapes (Braze, Dialpad, AlertMedia) match; remote does not')
+  assert.deepEqual([p!.ok('Austin'), p!.ok('Austin, US'), p!.ok('Austin, TX HQ'), p!.ok('Austin, Texas, United States'), p!.ok('Remote - Austin, TX'), p!.ok('Texas, USA')], [true, true, true, true, false, false], 'the real board location shapes (Braze, Dialpad, AlertMedia, NinjaOne) match; remote and a state-only location do not')
   assert.equal(placeIn(REQUEST), null, 'the request alone names no place the source knows: the profile supplies it')
-  // review on #1155: a role or request word right before the city is not part of it (else the place matched nothing and blocked the state / profile fallbacks)
-  for (const [q, city, loc] of [['Account Executive Austin, TX', 'Austin, TX', 'Austin, TX'], ['Sales Manager Dallas, Texas', 'Dallas, TX', 'Dallas, TX'], ['Companies hiring AEs. Austin, TX', 'Austin, TX', 'Austin, Texas'], ['St. Louis, MO sales', 'St. Louis, MO', 'St. Louis, MO'], ['Salt Lake City, UT', 'Salt Lake City, UT', 'Salt Lake City, UT']] as const) {
-    const pl = placeIn(q); assert.equal(pl?.name, city, q); assert.equal(pl!.ok(loc), true, `${q} matches ${loc}`)
+  for (const [q, city] of [['account executives in Austin, TX', 'Austin, TX'], ['dentists in Columbus, OH hiring', 'Columbus, OH'], ['in St. Louis, MO', 'St. Louis, MO'], ['around Salt Lake City, UT', 'Salt Lake City, UT'], ['in New Orleans, LA', 'New Orleans, LA']] as const) assert.equal(placeIn(q)?.name, city, q)
+  assert.equal(placeIn(`${REQUEST} in Austin, TX`)?.name, 'Austin, TX', 'the request as the board source reads it (the profile place appended)')
+})
+
+test('#1095 review at 54953a0a: a capitalised phrase before ", <State>" is not a city: the request keeps the state place it has on main', () => {
+  for (const [q, state] of [
+    ['Dentists, Ohio hiring a receptionist', 'Ohio'], ['Restaurants, Texas hiring sales staff', 'Texas'], ['Healthcare Providers, Florida hiring SDRs', 'Florida'],
+    ['Series B Fintechs, California hiring account executives', 'California'], ['Sales Manager, Texas', 'Texas'], ['SDR Team Lead, California', 'California'], ['Portland, Oregon', 'Oregon'],
+  ] as const) {
+    const pl = placeIn(q); assert.equal(pl?.name, state, q)
+    assert.equal(pl!.ok(`Somewhere, ${state}`), true, `${q} reads the state's postings`)
   }
-  // a role word before ", <State>" is not a city: the request keeps its state place (review round 2 on #1155); a "New ..." city keeps its name
-  for (const q of ['Sales Manager, Texas', 'Account Executive, Texas', 'Founders, Texas']) assert.equal(placeIn(q)?.name, 'Texas', q)
-  assert.equal(placeIn('SDR Team Lead, California')?.name, 'California')
-  assert.equal(placeIn('in New Orleans, LA')?.name, 'New Orleans, LA')
-  // XHawk on #1155: an earlier "<Words>, <Word>" phrase never hides a later real city/state
-  assert.equal(placeIn('Find companies hiring Account Executives, Austin, TX')?.name, 'Austin, TX')
 })
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {
@@ -87,24 +114,44 @@ test('#1095 review: a profile naming SEVERAL places is never narrowed to its fir
   assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
 })
 
-test('#1095 live trial request: the profile\'s "Austin, TX" runs the free job-board source, the Austin posting becomes a verified, board-dated lead, and the Dallas posting never reaches extraction', async () => {
+test('#1095 live trial request on the REAL NinjaOne board: the profile\'s "Austin, TX" runs the free job-board source and an Austin posting becomes a READY, board-dated lead with its hiring row', async () => {
   const { http, seen } = boards()
   const x = await runFixture(fx(http))
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
   assert.ok(run && ['ok', 'partial'].includes(run.status), `the job-board source ran: ${run?.status}`)
-  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/justworks/jobs'), 'the board of a company this scan found was read')
-  assert.ok(!seen.some(u => u.endsWith('/7301002')), 'the Dallas posting was never detail-fetched')
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'the board of a company this scan found was read')
+  const details = seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => +u.split('/').pop()!)
+  assert.ok(details.length > 0 && details.every(id => AUSTIN.includes(id)), `only Austin postings were detail-fetched (not "Texas, USA", Singapore, Germany ...): ${details}`)
   const ready = x.leads.filter(l => !l.review_reason)
-  const gh = ready.find(l => l.source_url === GH_AUSTIN)
-  assert.ok(gh, `a ready lead cites the Austin posting: ${JSON.stringify(x.leads.map(l => [l.company, l.source_url, l.review_reason]))}`)
-  assert.equal(gh!.event_date, daysAgo(9).slice(0, 10), 'dated by the board\'s own first-published day')
+  const gh = ready.find(l => AUSTIN.some(id => l.source_url === GH(id)))
+  assert.ok(gh, `a ready lead cites an Austin NinjaOne posting: ${JSON.stringify(x.leads.map(l => [l.company, l.source_url, l.review_reason]))}`)
+  const id = gh!.source_url.split('/').pop()!
+  assert.equal(gh!.event_date, moved(REAL.postings[id].first_published).slice(0, 10), 'dated by the board\'s own first-published day')
+  // the vacancy is the record's TITLE; the stored quote is the posting's own (boilerplate) sentence
+  const row = x.db.prepare('SELECT l.id, j.user_id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.source_url = ?').get(gh!.source_url) as { id: string; user_id: string }
+  const rows = (enrichmentsForLeads(x.db, row.user_id, [row.id])[row.id] ?? []).filter(e => e.kind === 'hiring')
+  assert.equal(rows.length, 1, 'one hiring row for the posting')
+  assert.ok(rows[0].value.includes(REAL.postings[id].title.trim()), `the hiring row names the record's title: ${rows[0].value}`)
+  assert.equal(rows[0].source_url, gh!.source_url)
 })
 
-test('#1095 XHawk: when the user PICKED the job boards as a source, the profile place still drives them (same request, same Austin posting)', async () => {
+test('#1095 XHawk: when the user PICKED the job boards as a source, the profile place still drives them (same request, same board)', async () => {
   const { http, seen } = boards()
   const f = fx(http); f.sources = JSON.stringify({ adapters: ['jobboards'], feeds: [], pages: [] })
   const x = await runFixture(f)
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
   assert.ok(run && ['ok', 'partial'].includes(run.status), `the picked board source ran with the profile place: ${run?.status}`)
-  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/justworks/jobs'), 'the board was read')
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'the board was read')
+})
+
+test('#1095 XHawk: with job boards PLUS another picked source, only the board source reads the request with the place appended', async () => {
+  const { http, seen } = boards()
+  const real = ADAPTERS.github.collect; const asked: string[] = []
+  ADAPTERS.github.collect = async input => { asked.push(input.query); return [] }
+  try {
+    const f = fx(http); f.sources = JSON.stringify({ adapters: ['jobboards', 'github'], feeds: [], pages: [] })
+    await runFixture(f)
+  } finally { ADAPTERS.github.collect = real }
+  assert.deepEqual(asked, [REQUEST], 'the other source got the user\'s own request')
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'the board source still read the Austin board')
 })

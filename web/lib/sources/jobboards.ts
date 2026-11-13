@@ -90,27 +90,19 @@ export function genericPlace(query: string): Place | null {
 // job-board source never ran and the trial's only readable, dated hiring evidence was never read. A US "<City>, <ST>" or
 // "<City>, <State name>" is that CITY: a posting is in it when its location names the city as a whole word and names no other US state.
 // The city never widens to its state (Dallas, TX is not Austin, TX).
-const CITY_LEAD_STOP = new Set(['account', 'accounts', 'executive', 'executives', 'manager', 'managers', 'sales', 'hiring', 'hire', 'hires', 'companies', 'company', 'startups', 'startup', 'find', 'b2b', 'saas', 'representative', 'representatives', 'director', 'directors', 'engineer', 'engineers', 'developer', 'developers', 'ae', 'aes', 'sdr', 'sdrs', 'bdr', 'bdrs', 'senior', 'junior', 'lead', 'head', 'vp', 'firms', 'agencies', 'dental', 'clinics', 'practices', 'in', 'near', 'at', 'the', 'and', 'or', 'for', 'of', 'from', 'tech', 'software', 'fintech', 'healthtech', 'marketing', 'operations', 'customer', 'success', 'growth', 'founder', 'founders', 'first', 'our', 'their', 'team', 'teams'])
+// Review at 54953a0a: a capitalised phrase before ", <State>" is NOT assumed to be a city ("Dentists, Ohio", "Series B Fintechs, California"
+// and "Sales Manager, Texas" name the state). A city is read only in one unambiguous shape: right after "in" / "near" / "around"
+// ("account executives in Austin, TX"; a profile place is read as "in <place>" by the runner). Anything else falls through to the state.
+const CITY = String.raw`((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)`
+const CITY_AFTER = new RegExp(`\\b(?:in|near|around)\\s+${CITY}(?=$|[\\s,.;)])`, 'gu')
 export function usCityPlace(text: string): Place | null {
-  // every "<Capitalised words>, <Region>" candidate in order: the first whose region is a US state is the place (XHawk on #1155: "Account
-  // Executives, Austin, TX" must not stop at "Account Executives, Austin")
-  for (const m of text.matchAll(/(?:^|[\s(])((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})(?=\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)(?=$|[\s,.;)]))/gu)) {
-    const p = cityPlaceOf(m)
-    if (p) return p
-  }
+  for (const m of text.matchAll(CITY_AFTER)) { const p = cityPlaceOf(m[1], m[2]); if (p) return p }
   return null
 }
-function cityPlaceOf(m: RegExpMatchArray): Place | null {
-  // a role or request word right before the city is not part of it ("Account Executive Austin, TX" is Austin; review on #1155): leading
-  // words are dropped while they are role / request words, so the city is what is left (multi-word cities such as San Jose or Kansas City stay whole)
-  const words = m[1].split(/\s+/)
-  while (words.length > 1 && CITY_LEAD_STOP.has(words[0].toLowerCase())) words.shift()
-  // a role / request word is never itself the city ("Sales Manager, Texas" names the state, not a city called Manager): no city, so stateIn runs
-  if (CITY_LEAD_STOP.has(words[words.length - 1].toLowerCase())) return null
-  m[1] = words.join(' ')
-  const abbr = STATES[m[2]] ? m[2] : Object.keys(STATES).find(k => STATES[k].toLowerCase() === m[2].toLowerCase())
+function cityPlaceOf(cityIn: string, region: string): Place | null {
+  const abbr = STATES[region] ? region : Object.keys(STATES).find(k => STATES[k].toLowerCase() === region.toLowerCase())
   if (!abbr) return null
-  const city = m[1].trim(), key = norm(city)
+  const city = cityIn.trim(), key = norm(city)
   if (key.length < 3 || STATES[abbr].toLowerCase() === key) return null
   const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
   // another state is read from the location with the city itself removed ("Kansas City, MO" names no Kansas); a non-US country ("San Jose, Costa Rica")
