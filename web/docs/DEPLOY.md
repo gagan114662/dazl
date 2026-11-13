@@ -14,8 +14,39 @@ Account deletion (#359): `DAZL_TOMBSTONE_LEDGER` - an append-only file outside t
 Optional: `OPS_ALERT_WEBHOOK_URL` (https; receives each scrubbed error record, throttled; see `lib/ops/errors.ts`), `SENTRY_DSN` (https; the same records as Sentry events, throttled; `SENTRY_ENVIRONMENT` optional), `DAZL_SCAN_SHARED_QUEUE` (`1` claims scans through the shared work queue, `lib/queue/scan-claimer.ts`, and kicks the scan runner every tick; default off, see docs/PLATFORM.md), `SCAN_PER_TENANT_MAX` (1: with the shared queue on, how many of one tenant's scans run at once, 1 to 8), `SCAN_MAX_CONCURRENT` (3), `SCAN_RENDER_URL` and `SCAN_RENDER_TOKEN` (separate renderer container only), `DAZL_ANTHROPIC_MODEL`, `DAZL_OPENAI_MODEL`, `SCAN_STALE_RUNNING_S`, `SCAN_PAGE_TIMEOUT_MS`, `SCAN_LLM_TIMEOUT_MS`, `SCAN_MAX_AGE_DAYS`.
 Not used in this release: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail is PR #13, separate).
 
+## Deploying a prebuilt release (the box never builds)
+The production box has 1.8 GB of RAM. **It must never run `npm ci`, tsc or `next build`**: on 2026-11-12 a deploy that built
+on the box was OOM-killed during `next build` and dazl.ai answered 502 for about 6 minutes. Every release is built on GitHub
+instead, and the box only downloads, verifies and unpacks it.
+- **Build:** `.github/workflows/prod-prebuilt.yml` runs on every push to main, on a free GitHub-hosted arm64 runner (the
+  box's architecture, Node 22), with production's public settings (`PUBLIC_BASE_URL=https://dazl.ai`, never
+  `DAZL_ENV=staging`) and no secrets. It publishes `prod-next-<sha>.tgz` (`.next` + `.build-commit`),
+  `prod-modules-<sha>.tgz` (`node_modules`) and, last, the manifest `prod-prebuilt-<sha>.json` (commit, arch, Node ABI,
+  lockfile sha256, each archive's sha256, size and unpacked size) as assets of the `prod-prebuilt` prerelease, keeping the
+  newest 5 commits. An older commit (a rollback beyond that): run the workflow by hand with `sha=<commit>`.
+- **Deploy (the ops door, as root):** `ops/prod/deploy-prod.sh <sha>`. It checks free disk, copies the live process's
+  environment for the new release, then `ops/prod/pull-release.sh fetch <sha>` (as root: the manifest must name exactly
+  that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads and the unpacked
+  build**; both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
+  source as `ubuntu` in a new `/home/ubuntu/dazl-<sha8>-prod` and runs `pull-release.sh extract` there: the checkout's
+  `package-lock.json` must be the one the build was made from; it unpacks `.next`, and hard-links `node_modules` from the
+  live release when the lockfile is unchanged (else unpacks the built one). Then, as before: back up the database, `npm run
+  db:migrate` (a script, no build), start on the spare port (3104/3105), wait for `/api/health` to report the commit,
+  switch Caddy, and check `https://dazl.ai/api/health` (a mismatch switches straight back). Release directories other than
+  the live and the previous one are removed afterwards.
+- **Rollback:** `ops/prod/deploy-prod.sh --rollback` points Caddy back at the previous release, which is still running on
+  the other port, after checking it still answers `/api/health` (it refuses otherwise). For an older commit, deploy it:
+  its prebuilt build is downloaded again (or rebuilt on GitHub by hand), never built on the box.
+- **Disk:** the deploy refuses with less than 3 GiB free, and `pull-release.sh fetch` refuses when the downloads plus the
+  unpacked build would take free space below 3 GiB (`ALERT low_disk`); keeping only the live and previous releases keeps it there.
+- **Tests:** `python3 -m unittest discover -s ops/prod -p 'test_*.py'` runs both scripts end to end against stand-ins and
+  fails if the deploy path ever runs `npm ci`, `npm install`, tsc or `next build`.
+
+The steps below are the original manual procedure, kept for reference. Its build step (`npm ci && npm run build` on the box)
+is replaced by the prebuilt release above and must not be run on the production box.
+
 ## Steps
-1. On the box: `git fetch && git checkout <this PR's merge commit>` in a NEW directory (not the old app's), then `cd web && npm ci && npm run build`.
+1. On the box: `git fetch && git checkout <this PR's merge commit>` in a NEW directory (not the old app's), then unpack its prebuilt build (`ops/prod/pull-release.sh fetch <sha>` and `extract <sha> <dir>/web`); never `npm ci && npm run build` on the production box.
    Then `npm run db:migrate`. It does nothing while `DATABASE_URL` is unset (SQLite). Do not set `DATABASE_URL` in production until the owner authorizes the Postgres cutover (`docs/PLATFORM.md`, "Production go/no-go").
 2. Put the env vars in a root-only env file and start the app on port 3100: `PORT=3100 npm start` under systemd or pm2 (one instance).
 3. Check it before cutover: `curl localhost:3100/api/ready` (readiness: 200 with `ok:true`; a 503 names the failed check), then `curl -I localhost:3100/sign-up`. Probes for a process manager or load balancer: liveness `/api/health/live` (no store touched); `/api/health` adds whether each configured database (SQLite, Postgres when `DATABASE_URL` is set) answers, 503 if not (`node ops/health-smoke.mjs http://127.0.0.1:3100 <sha>` exits 0 only when it is ok with that commit); readiness `/api/ready` (same as `/api/health/ready`: store, schema, scan queue). Errors are JSON lines on stderr (`"level":"error"`) and each request is a JSON line on stdout (`"type":"request"`); both carry `request_id`, also returned to the client as the `x-request-id` response header. E.g. `journalctl -u <service> | grep '<request id>'`.
