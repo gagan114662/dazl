@@ -165,6 +165,15 @@ test('#769 a failed technology branch is refused as incomplete; a change the ser
   assert.deepEqual(retry.measured, { crawls: 2, unreadable_or_failed_crawls: 0, changes_claimed: 1, false_changes: 0, changes_claimed_on_unreadable_or_failed: 0 })
   await deleteTechFixtureFresh(db)
   await crawl('A', 'plain')
+  // the crawl fails AFTER the technology step wrote both the observation and the change row (its own ledger write fails): refused,
+  // both rows are removed, and the retry is the crawl that claims the adoption
+  db.exec("CREATE TRIGGER fail_site BEFORE INSERT ON connector_audit WHEN NEW.connector = 'sitecrawl' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+  await assert.rejects(crawlTechFixture(db, 'A', 'hubspot', { env: STAGING, now }), /crawl_incomplete/)
+  db.exec('DROP TRIGGER fail_site')
+  assert.equal((db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE tenant_id = 'A' AND kind IN ('tech_scan', 'tech_change')").get() as { n: number }).n, 1)
+  assert.deepEqual((await crawl('A', 'hubspot')).crawl.new_changes, ['HubSpot added'])
+  await deleteTechFixtureFresh(db)
+  await crawl('A', 'plain')
   assert.equal((await crawl('A', 'plain')).measured.crawls, 2)
   // The measure is not zero by construction: the caller says the page is `plain`, the crawl is handed a page WITH HubSpot, so the
   // detector's (correct) adoption is a change the declared page could not carry and is counted as false.
