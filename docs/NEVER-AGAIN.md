@@ -51,7 +51,8 @@ Times are US Eastern unless marked Z.
 - **Enforced by (automated):** `.github/workflows/live-check-gate.yml` runs on every `issues: closed` event and
   reopens the issue (first), then comments why, unless a repo owner/member/collaborator posted that line **with a real
   commit** ("prod staging", a placeholder or a branch name is refused), **with evidence beside it**, **as their own text**
-  (not inside a quote, code or an HTML comment, so citing this rule does not count) and **after the issue was last reopened**. It decides
+  (not inside a quote - including the lines right after a `>` line - code, `<pre>`, or an HTML comment, so citing
+  this rule does not count) and **after the issue was last reopened**. It decides
   on the issue as it is when the check runs, and anything it cannot read counts as no proof. Closing as "not planned"
   or "duplicate", or a `wontfix` / `duplicate` / `not-planned` label, is exempt. Logic and tests:
   `.github/scripts/live-check-gate.mjs`, `.github/scripts/live-check-gate.test.mjs`. Limit: the builder posts as the
@@ -104,3 +105,35 @@ Times are US Eastern unless marked Z.
 - **Date:** several nights up to 2026-11-13 (owner's brief, 2026-11-13 10:18).
 - **Rule:** an update at least every 2 hours while work runs; a lane that ends without a verdict is re-handed at once.
 - **Enforced by (note-only):** reviewer/coordinator operating rule, outside this repo.
+
+## 9. Repeat of entry 3: an issue closed on a check seen only on staging
+
+- **Mistake:** #848 was closed and reported as proven on prod, but the refusal it needed (the spend cap refusing a scan) had
+  only been seen on staging. On dazl.ai the check showed reserves and no refusal. It was reopened the same evening.
+- **Date:** 2026-11-13, closed 18:54Z, reopened 20:26Z.
+- **Rule:** every acceptance criterion must be triggered on dazl.ai itself. "The same pattern is on prod" is not proof. A
+  staging PASS never closes an issue.
+- **Enforced by (partly automated):** `.github/workflows/live-check-gate.yml` reopens any issue closed without the prod
+  line of entry 3, posted after the issue's last reopen (so the earlier comment on #848 no longer counts). Whether the
+  criterion was really triggered on prod is still the verifier's judgement: the verifier brief keeps staging PASS and
+  prod PASS apart, and the coordinator's own close guard (outside this repo) needs a dazl.ai ledger line as well.
+
+## 10. A production secret printed in a lane's output
+
+- **Mistake:** a lane listed the box's crontab, and the production tick secret was in it in plain text, so the secret
+  ended up in the lane's output.
+- **Date:** 2026-11-13.
+- **Rule:** no secret is written inline in a crontab or a systemd unit. Secrets live in root-only files, and nobody lists
+  a crontab, unit or env file unredacted. The ops door shows env keys, never values.
+- **Enforced by (note-only):** operating rule for lanes and the coordinator. Nothing in this repo scans the box's crontab.
+
+## 11. A paid test on production while work was on hold
+
+- **Mistake:** a paid check ran on dazl.ai (the #848 cap check, about $0.04) while the owner had said to hold, before
+  the owner's go-ahead.
+- **Date:** 2026-11-13, about 20:30Z.
+- **Rule:** no paid test on dazl.ai without the owner's explicit go. Since the owner's approval that day, paid live tests
+  are allowed up to C$10 in total: every paid test posts its cost and the running total, and work stops to ask before
+  passing C$10. A task that does not name its spend limit and the running total runs free checks only.
+- **Enforced by (note-only):** the coordinator's task files name the limit and the running total; the reviewer checks
+  that each paid test posted its cost. Nothing in this repo meters spend on tests.

@@ -20,14 +20,29 @@ export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
 export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
 export const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
-// The comment's own text: fenced code blocks, inline code and quoted lines removed.
-// Also removed: HTML comments (never shown on the page), a fence that is never closed (code to the end), inline code in
-// any number of backticks, and indented code lines (4 spaces or a tab).
-const ownText = body => body.replace(/\r/g, '').replace(/[​-‍⁠﻿]/g, '')
-  .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
-  .replace(/^[ \t]*(```+|~~~+)[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm, '')
-  .replace(/(`+)[^\n]*?\1/g, '')
-  .split('\n').filter(l => !/^[ \t]*>/.test(l) && !/^(?: {4}|\t)/.test(l)).join('\n')
+// The comment's own text: everything GitHub shows as a quote, as code, or not at all is removed first.
+// - HTML comments (never shown), <pre>, <code> and <blockquote> blocks (closed or running to the end);
+// - fenced code blocks, also one that is never closed (code to the end);
+// - inline code in any number of backticks, also when it spans lines;
+// - quoted lines (">"), and the lines right after one with no ">" of their own: markdown keeps those inside the quote
+//   until a blank line ("lazy continuation");
+// - indented code lines (4 spaces or a tab).
+const ownText = body => {
+  const text = body.replace(/\r/g, '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+    .replace(/<(pre|code|blockquote)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+    .replace(/^[ \t]*(```+|~~~+)[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm, '')
+    .replace(/(`+)(?!`)[\s\S]*?[^`]\1(?!`)/g, '')
+  const out = []
+  let quoted = false
+  for (const l of text.split('\n')) {
+    if (/^[ \t]*>/.test(l)) { quoted = true; continue }
+    if (quoted && l.trim() !== '') continue          // still inside the quote
+    quoted = false
+    if (!/^(?: {4}|\t)/.test(l)) out.push(l)
+  }
+  return out.join('\n')
+}
 
 // null, or why the comment is not a prod live check PASS. Exported for the tests and the dry run.
 export function passProblem(c, after = null) {

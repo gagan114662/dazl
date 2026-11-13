@@ -96,6 +96,31 @@ test('hidden or code text, a PASS line that continues, and the instructions\' ow
   for (const b of [`${L}\n\n${EVIDENCE}`, `   ${L}  \n${EVIDENCE}`, `**${L}**\n${EVIDENCE}`, `${L}\r\n\r\n${EVIDENCE}`]) assert.equal(decide(closed(), [c(b)]).reopen, false, b)
 })
 
+// Follow-up to the #1153 review (item 3): three more places a reader sees the line as quoted or code. One test per form.
+const LINE = 'Live check (prod 7f4c9061): PASS'
+test('a line right after a ">" line is still inside the quote (no ">" of its own): does not count', () => {
+  for (const b of [`> The rule says:\n${LINE}\n\n${EVIDENCE}`, `> ${EVIDENCE}\n${LINE}\nmore of the quote`, `>quoted\n   ${LINE}\n\n${EVIDENCE}`])
+    assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  // a blank line ends the quote: the reply under it is the commenter's own text
+  assert.equal(decide(closed(), [c(`> ${EVIDENCE}\n\n${LINE}\n\n${EVIDENCE}`)]).reopen, false)
+})
+
+test('the line inside <pre>, <code> or <blockquote> does not count, closed or not', () => {
+  for (const b of [`<pre>\n${LINE}\n</pre>\n\n${EVIDENCE}`, `<pre lang="text">\n${LINE}\n</pre>\n${EVIDENCE}`, `${EVIDENCE}\n<pre>\n${LINE}`, `<PRE>\n${LINE}\n</PRE>\n${EVIDENCE}`,
+    `<code>\n${LINE}\n</code>\n${EVIDENCE}`, `<blockquote>\n${LINE}\n</blockquote>\n${EVIDENCE}`])
+    assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  assert.equal(decide(closed(), [c(`<pre>\nsome log\n</pre>\n\n${LINE}\n\n${EVIDENCE}`)]).reopen, false, 'a log in <pre> beside a real line is fine')
+})
+
+// Removing the inline-code strip from ownText makes this test fail (the mutation that survived the #1153 review).
+test('the line inside inline code that spans lines does not count', () => {
+  for (const b of [`Post this when checked: \`\n${LINE}\n\`\n\n${EVIDENCE}`, `\`\`\n${LINE}\n\`\`\n${EVIDENCE}`, `${EVIDENCE} \`the line is\n${LINE}\nexactly\``])
+    assert.equal(decide(closed(), [c(b)]).reopen, true, b)
+  // inline code elsewhere in a real check does not hide the line or the evidence
+  assert.equal(decide(closed(), [c(`${LINE}\n\n\`GET /api/health\` reports this commit. ${EVIDENCE}`)]).reopen, false)
+  assert.equal(decide(closed(), [c(`${LINE}\n\nran \`a\` and \`b\`.\n${EVIDENCE}`)]).reopen, false)
+})
+
 // Hermes review 4
 test('a PASS from before the last reopen does not count; one after it does', () => {
   const early = c(PASS, 'OWNER', '2026-11-10T10:00:00Z'), late = c(PASS, 'OWNER', '2026-11-12T10:00:00Z')
