@@ -239,3 +239,32 @@ test('#382 owner retry of an Apollo org lookup: org sent and charged, people ste
     assert.equal(r.status, 'retried', JSON.stringify(r))
   } finally { if (prev === undefined) delete process.env.DAZL_ENRICH_RETRY_COST_VERIFIED; else process.env.DAZL_ENRICH_RETRY_COST_VERIFIED = prev }
 })
+
+test('#382 run report (claims basis): an Apollo timeout plus the lookups refused after it -> one unconfirmed lookup, no extra failures', async () => {
+  const s = seed(2); const calls: Calls = { apollo: 0, pdl: 0 }
+  await runWithScanSpend(s.ctx, () => enrichLeadContacts(s.db, 'u1', s.jobId, s.leads, { fetchImpl: router(async () => { throw new DOMException('aborted', 'AbortError') }, async () => ok(PDL_OK), calls), master }))
+  assert.ok(auditRows(s.db, 'enrich:pdl').some(x => x.startsWith('not sent: ')), 'PDL lookups were refused before sending')
+  const o = paidEnrichmentOutcomes(s.db, 'u1', s.jobId)
+  assert.equal(o.basis, 'claims')
+  assert.deepEqual({ unconfirmed: o.unconfirmed, failed: o.failed }, { unconfirmed: 1, failed: 1 }, `only the timed-out org call: ${JSON.stringify(o)}`)
+})
+
+test('#382 notices: two refusal causes for one provider are two lines, each with its own reason', async () => {
+  const { audit } = await import('../lib/connectors/store.ts')
+  const s = seed()
+  audit(s.db, { tenantId: 'u1', connector: 'enrich:pdl', jobId: s.jobId, lookup: 'spend refused: accounting_uncertain', status: 'spend_refused', results: 0 })
+  audit(s.db, { tenantId: 'u1', connector: 'enrich:pdl', jobId: s.jobId, lookup: 'spend refused: over_cap', status: 'spend_refused', results: 0 })
+  const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
+  assert.ok(texts.some(t => t.includes('may have been billed without a confirmed cost')), JSON.stringify(texts))
+  assert.ok(texts.some(t => t.includes("this scan's spending cap had no room left")), JSON.stringify(texts))
+})
+
+test('#382 notices stay newest-first when one provider has several refusal causes (Hermes review at 08349525)', async () => {
+  const s = seed()
+  const row = (connector: string, status: string, lookup: string, at: number) => s.db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES (?, 'u1', ?, ?, ?, ?, 0, ?)").run(randomBytes(12).toString('hex'), connector, s.jobId, lookup, status, at)
+  row('enrich:pdl', 'spend_refused', 'spend refused: accounting_uncertain', 100)
+  row('enrich:apollo', 'timeout', 'org Harbor Dental', 200)
+  row('enrich:pdl', 'spend_refused', 'spend refused: over_cap', 300)
+  const order = (await providerIssues('u1', s.jobId))!.map(i => `${i.connector}:${i.status}:${i.refusal ?? ''}@${i.latest_at}`)
+  assert.deepEqual(order, ['enrich:pdl:spend_refused:over_cap@300', 'enrich:apollo:timeout:@200', 'enrich:pdl:spend_refused:accounting_uncertain@100'])
+})
