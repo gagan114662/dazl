@@ -92,7 +92,7 @@ test('#533 the verifier reads a posting through the board API record, never the 
     const page = await fetchPageDetailed(`${ASHBY_URL}?action=apply`, async () => { throw new Error('the rendering service is never used for a posting') })
     assert.ok(!isFail(page), JSON.stringify(page))
     assert.equal((page as Page).postedAt, '2026-10-15')
-    assert.match((page as Page).text, /^Senior Revenue Operations Manager - Sales Ops & Strategy \(Berlin\)\. Job posting on the acmeco Ashby job board\. Acmeco is hiring/)
+    assert.match((page as Page).text, /^Senior Revenue Operations Manager - Sales Ops & Strategy Location Berlin Acmeco is hiring .* Job posting on the acmeco Ashby job board\.$/)
     assert.doesNotMatch((page as Page).text, /2026-10-15/, 'the day travels as postedAt only, never as text another claim could bind to')
     assert.deepEqual(asked.map(a => [a.url, a.accept]), [['https://api.ashbyhq.com/posting-api/job-board/acmeco', 'application/json']], 'only the API host; the posting page is never requested')
     // through the verifier: the requested-role posting is a verified, dated lead (it was held "blocked_by_site", undated)
