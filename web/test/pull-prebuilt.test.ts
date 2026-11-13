@@ -137,3 +137,29 @@ test('#1061: the publish step removes the old manifest before replacing the arch
   assert.ok(del > 0, 'the old manifest asset is deleted'); assert.ok(archives > 0 && manifest > 0)
   assert.ok(del < archives, 'deleted before the archives are replaced'); assert.ok(archives < manifest, 'the manifest last')
 })
+
+// #1061 review (Hermes-PC at 9056ef11), finding 3: "rebuild any commit for a rollback" must hold for commits from before
+// ops/prod existed. The workflow's REAL Manifest step is run in a checkout of such a commit (no ops/prod), with the
+// tools checkout (.prod-tools, the workflow's own commit) beside it, as on the runner.
+test('#1061: the prod Manifest step runs from the workflow\'s own tools checkout, so a pre-ops/prod commit can be rebuilt', () => {
+  const wfPath = fileURLToPath(new URL('../../.github/workflows/prod-prebuilt.yml', import.meta.url))
+  const wf = readFileSync(wfPath, 'utf8')
+  const tools = wf.slice(wf.indexOf('path: .prod-tools') - 200, wf.indexOf('path: .prod-tools') + 100)
+  assert.match(tools, /ref: \$\{\{ github\.sha \}\}/, 'the tools come from the workflow\'s own commit')
+  const step = wf.slice(wf.indexOf('- name: Manifest'), wf.indexOf('- uses: actions/upload-artifact@v4'))
+  const run = step.slice(step.indexOf('run: |') + 'run: |'.length).split('\n').filter(l => l.trim()).map(l => l.replace(/^ {10}/, '')).join('\n')
+  const ws = mkdtempSync(path.join(tmpdir(), 'prod-manifest-'))
+  const sha = 'b'.repeat(40)
+  mkdirSync(path.join(ws, 'web')); writeFileSync(path.join(ws, 'web/package-lock.json'), '{"lockfileVersion":3}\n')
+  mkdirSync(path.join(ws, '.prod-tools/ops/prod'), { recursive: true })
+  writeFileSync(path.join(ws, '.prod-tools/ops/prod/prebuilt-manifest.mjs'), readFileSync(fileURLToPath(new URL('../../ops/prod/prebuilt-manifest.mjs', import.meta.url))))
+  const src = path.join(ws, 'src'); mkdirSync(path.join(src, '.next'), { recursive: true }); mkdirSync(path.join(src, 'node_modules'))
+  writeFileSync(path.join(src, '.build-commit'), sha + '\n'); writeFileSync(path.join(src, '.next/BUILD_ID'), 'id\n'); writeFileSync(path.join(src, 'node_modules/x'), 'x')
+  mkdirSync(path.join(ws, 'prebuilt'))
+  assert.equal(spawnSync('tar', ['-czf', path.join(ws, `prebuilt/prod-next-${sha}.tgz`), '.next', '.build-commit'], { cwd: src }).status, 0)
+  assert.equal(spawnSync('tar', ['-czf', path.join(ws, `prebuilt/prod-modules-${sha}.tgz`), 'node_modules'], { cwd: src }).status, 0)
+  const r = spawnSync('bash', ['-euo', 'pipefail', '-c', run], { cwd: ws, env: { ...process.env, SHA: sha }, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  const m = JSON.parse(readFileSync(path.join(ws, `prebuilt/prod-prebuilt-${sha}.json`), 'utf8'))
+  assert.equal(m.commit, sha); assert.ok(m.next.unpacked_bytes > 0 && m.modules.unpacked_bytes > 0)
+})

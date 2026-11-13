@@ -31,8 +31,11 @@ export PROD_MIN_FREE_BYTES=${PROD_MIN_FREE_BYTES:-3221225472}
 PULL=$HERE/pull-release.sh
 log() { echo "$(date -Is) $*"; }
 die() { log "$*"; exit 1; }
-as_app() { if [ "$(id -un)" = "$APP_USER" ]; then "$@"; else sudo -u "$APP_USER" -- "$@"; fi; }
-health_sha() { curl -s "$1/api/health" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true; }
+as_user() { local u=$1; shift; if [ "$(id -un)" = "$u" ]; then "$@"; else sudo -u "$u" -- "$@"; fi; }
+as_app() { as_user "$APP_USER" "$@"; }
+# Every health read is bounded (#1061 review): a listener that accepts and never answers must not hang the deploy while it
+# holds the lock (the public read runs after Caddy has switched). A stalled read is "no answer".
+health_sha() { curl -s --connect-timeout 5 --max-time "${PROD_HEALTH_MAX_TIME:-10}" "$1/api/health" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("commit",""))' 2>/dev/null || true; }
 
 # A file root runs (this script, pull-release.sh) must be a regular file owned by root and writable by root only, in
 # directories that are all root-owned and root-writable only (a sticky world-writable one only with a root-owned child).
@@ -82,6 +85,24 @@ PY
 }
 listener_cwds() { ss -ltnpH | grep -oP 'pid=\K[0-9]+' | sort -u | while read -r p; do readlink "/proc/$p/cwd" 2>/dev/null || true; done; }
 port_pid() { ss -ltnpH "sport = :$1" | grep -oP 'pid=\K[0-9]+' | head -1 || true; }
+# Release directories nothing needs: not the live release, not the recorded rollback target, not one any listener runs
+# from (the previous release, a staging service, ...), not one passed in. Each is removed as ITS OWNER (never root; a
+# root-owned one is left and logged), so nothing is removed that its owner could not remove itself.
+prune_unused() {
+  local keep=" ${LIVE_WEB%/web} $* " d owner cwds prev
+  prev=$( [ -f "$STATE" ] && grep -oP '^PREV_SHA=\K[0-9a-f]{40}$' "$STATE" || true)
+  [ -z "$prev" ] || keep="$keep $RELEASE_ROOT/dazl-${prev:0:8}-prod "
+  cwds=$(listener_cwds)
+  for d in "$RELEASE_ROOT"/dazl-*-prod; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    case "$keep" in *" $d "*) continue ;; esac
+    printf '%s\n' "$cwds" | grep -qE "^$d(/|\$)" && continue
+    owner=$(stat -c %U -- "$d")
+    [ "$owner" != root ] || { log "not removing $d: it is owned by root"; continue; }
+    log "removing unused release $d (owner $owner)"
+    as_user "$owner" rm -rf -- "$d" || log "could not remove all of $d (files owned by another user? chown -R $APP_USER it)"
+  done
+}
 write_state() { printf 'PREV_PORT=%s\nPREV_SHA=%s\nNEW_SHA=%s\n' "$1" "$2" "$3" > "$STATE.tmp"; mv -f "$STATE.tmp" "$STATE"; }
 
 # one deploy or rollback at a time (two would pick the same spare port and stop each other's process)
@@ -124,10 +145,6 @@ as_app test -w "$DB" || die "the database $DB is not writable by $APP_USER (the 
 for f in "$DB-wal" "$DB-shm"; do [ ! -e "$f" ] || as_app test -w "$f" || die "$f is not writable by $APP_USER (chown it with the database, web/docs/DEPLOY.md); nothing done"; done
 # SQLite in WAL mode creates -wal/-shm beside the database: the directory must be writable by the app user too
 as_app test -w "$(dirname -- "$DB")" || die "the database directory $(dirname -- "$DB") is not writable by $APP_USER (WAL files are created there: chown it once, web/docs/DEPLOY.md); nothing done"
-db_bytes=$(stat -c %s -- "$DB")
-for fs in "$RELEASE_ROOT" "$(dirname "$BACKUPS")"; do
-  [ "$(df --output=avail -B1 "$fs" | tail -1)" -gt $(( PROD_MIN_FREE_BYTES + db_bytes )) ] || die "less than $PROD_MIN_FREE_BYTES bytes plus the backup ($db_bytes) free on $fs; refusing"
-done
 
 # 1. the new release's environment: the live process's environment plus the run env, parsed as DATA (never sourced by
 #    root: a value like $(cmd) stays text) and shell-quoted, minus PORT; root-only.
@@ -165,6 +182,18 @@ PY
 )
 [ "$(readlink -f -- "${envdb:-/nonexistent}")" = "$(readlink -f -- "$DB")" ] || die "the release's DB_PATH (${envdb:-unset}) is not $DB, the database this deploy backs up; nothing done"
 
+# Disk (#1061 review): release directories nothing needs go BEFORE the disk check, so an earlier deploy's leftovers never
+# block this one (the box had three ~0.9 GB releases and 3.4 GB free: the floor refused every prebuilt deploy).
+prune_unused
+db_bytes=$(stat -c %s -- "$DB")
+for fs in "$RELEASE_ROOT" "$(dirname "$BACKUPS")"; do
+  [ "$(df --output=avail -B1 "$fs" | tail -1)" -gt $(( PROD_MIN_FREE_BYTES + db_bytes )) ] || die "less than $PROD_MIN_FREE_BYTES bytes plus the backup ($db_bytes) free on $fs after removing unused releases; refusing"
+done
+# node_modules is hard-linked from the live release when the lockfiles match (no new bytes): the live lockfile's sha256,
+# read as the app user, lets fetch leave it out of the disk count
+live_lock=
+if [ -n "$LIVE_WEB" ] && as_app test -d "$LIVE_WEB/node_modules"; then live_lock=$(as_app sha256sum -- "$LIVE_WEB/package-lock.json" 2>/dev/null | cut -c1-64 || true); fi
+
 # 2. the release, as the app user: source checked out, the build PREBUILT on GitHub (never built here)
 reuse=0
 if [ -d "$DIR" ] && listener_cwds | grep -q "^$DIR"; then
@@ -175,7 +204,7 @@ fi
 if [ $reuse = 0 ]; then
   # verified download + disk floor; fails before anything on the box changes. The backup's size is counted on whichever
   # filesystem holds the backups, so downloads + release + backup together leave the floor wherever they share one.
-  PROD_RELEASE_ROOT=$RELEASE_ROOT PROD_BACKUP_DIR=$BACKUPS PROD_BACKUP_BYTES=$db_bytes bash "$PULL" fetch "$SHA"
+  PROD_RELEASE_ROOT=$RELEASE_ROOT PROD_BACKUP_DIR=$BACKUPS PROD_BACKUP_BYTES=$db_bytes PROD_LIVE_LOCK_SHA=$live_lock bash "$PULL" fetch "$SHA"
   as_app rm -rf -- "$DIR"
   as_app git clone -q --filter=blob:none "$REPO_URL" "$DIR"
   as_app git -C "$DIR" checkout -q "$SHA"
@@ -217,7 +246,7 @@ for _ in $(seq 1 "${PROD_HEALTH_TRIES:-90}"); do c=$(health_sha "http://127.0.0.
 [ "$c" = "$SHA" ] || { as_app tail -30 "$DIR/next-start.log" || true; stop_new; die "new release did not report $SHA on :$NEW; NOT switching (dazl.ai still on :$LIVE); stopped it"; }
 
 # 5. switch, verify publicly, record rollback state
-OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE")
+OLD_SHA=$(health_sha "http://127.0.0.1:$LIVE"); OLD_WEB=$LIVE_WEB
 switch_caddy "$NEW"
 sleep "${PROD_SWITCH_SLEEP:-3}"
 pub=$(health_sha "$PUBLIC_URL")
@@ -225,13 +254,6 @@ if [ "$pub" != "$SHA" ]; then switch_caddy "$LIVE"; stop_new; die "public health
 mv -f "$OPS/prod.env.next" "$OPS/prod.env"
 write_state "$LIVE" "$OLD_SHA" "$SHA"
 
-# 6. disk: keep the live release and the previous one (the instant rollback target); remove older release directories
-#    that no listener runs from (as the app user, in its own directory)
-keep=" $DIR ${LIVE_WEB%/web} "
-for d in "$RELEASE_ROOT"/dazl-*-prod; do
-  [ -d "$d" ] && [ ! -L "$d" ] || continue
-  case "$keep" in *" $d "*) continue ;; esac
-  listener_cwds | grep -q "^$d" && continue
-  log "removing old release $d"; as_app rm -rf -- "$d" || log "could not remove all of $d (files owned by another user? chown -R $APP_USER it); the deploy itself is done"
-done
+# 6. disk: keep the live release and the previous one (the instant rollback target); remove the rest nothing runs from
+LIVE_WEB=$DIR/web; prune_unused "$DIR" "${OLD_WEB%/web}"
 log "DONE: dazl.ai now $SHA on :$NEW. Previous $OLD_SHA still running on :$LIVE (deploy-prod.sh --rollback to switch back)."

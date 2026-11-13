@@ -82,16 +82,26 @@ fetch() {
   for n in "prod-next-$sha.tgz:$next_sha" "prod-modules-$sha.tgz:$mods_sha"; do
     local f="$DL/${n%%:*}"; [ -f "$f" ] && [ ! -L "$f" ] && [ "$(sha256 "$f")" = "${n##*:}" ] && have=$(( have + $(stat -c %s -- "$f") ))
   done
-  local need=$(( next_bytes + mods_bytes - have + next_unp + mods_unp ))
+  # node_modules is hard-linked from the live release when its lockfile is the build's (the deploy passes the live
+  # lockfile's sha256): no new bytes, so it is not counted. extract re-checks the floor before it ever unpacks it.
+  local mods_land=$mods_unp
+  if [ -n "${PROD_LIVE_LOCK_SHA:-}" ] && [ "$PROD_LIVE_LOCK_SHA" = "$lock_sha" ]; then mods_land=0; log "node_modules will be hard-linked from the live release (same lockfile): not counted"; fi
   # every filesystem involved: the download cache, where the release is unpacked, and (when the deploy passes it) where
   # the database backup goes. What lands on each filesystem is summed there, and each must keep MIN_FREE_BYTES free.
   local rel_fs=${PROD_RELEASE_ROOT:-/home/ubuntu} bk_fs=${PROD_BACKUP_DIR:-} bk_bytes=${PROD_BACKUP_BYTES:-0} fs dev avail
   [[ $bk_bytes =~ ^[0-9]+$ ]] || fail "PROD_BACKUP_BYTES must be a whole number; nothing done"
   [ -d "$rel_fs" ] || rel_fs=/
   if [ -n "$bk_fs" ]; then while [ ! -d "$bk_fs" ]; do bk_fs=$(dirname -- "$bk_fs"); done; fi
+  # superseded downloads (an earlier commit's archives) are removed before this commit's are fetched: counted as free
+  local stale=0
+  for f in "$DL"/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    case "$(basename "$f")" in "prod-next-$sha.tgz"|"prod-modules-$sha.tgz") continue ;; esac
+    stale=$(( stale + $(stat -c %s -- "$f") ))
+  done
   declare -A on=()
-  dev=$(stat -c %d -- "$DL"); on[$dev]=$(( ${on[$dev]:-0} + next_bytes + mods_bytes - have ))
-  dev=$(stat -c %d -- "$rel_fs"); on[$dev]=$(( ${on[$dev]:-0} + next_unp + mods_unp ))
+  dev=$(stat -c %d -- "$DL"); on[$dev]=$(( ${on[$dev]:-0} + next_bytes + mods_bytes - have - stale ))
+  dev=$(stat -c %d -- "$rel_fs"); on[$dev]=$(( ${on[$dev]:-0} + next_unp + mods_land ))
   if [ -n "$bk_fs" ]; then dev=$(stat -c %d -- "$bk_fs"); on[$dev]=$(( ${on[$dev]:-0} + bk_bytes )); fi
   for fs in "$DL" "$rel_fs" ${bk_fs:+"$bk_fs"}; do
     dev=$(stat -c %d -- "$fs"); [ -n "${on[$dev]:-}" ] || continue
@@ -127,6 +137,7 @@ fetch() {
   [ "$inner" = "$sha" ] || { rm -f -- "$DL/prod-next-$sha.tgz"*; fail "the build says it is from ${inner:-an unknown commit}, not $sha; deleted, nothing changed"; }
   get "prod-modules-$sha.tgz" "$mods_sha" "$mods_bytes"
   printf '%s\n' "$lock_sha" > "$DL/prod-lock-$sha.sha256"; chmod 644 "$DL/prod-lock-$sha.sha256"
+  printf '%s\n' "$mods_unp" > "$DL/prod-modules-$sha.unpacked"; chmod 644 "$DL/prod-modules-$sha.unpacked"
   log "verified the prebuilt build of $sha (sha256, sizes, .build-commit)"
 }
 
@@ -140,16 +151,24 @@ extract() {
   want=$(cat "$lock")
   [ -f "$web/package-lock.json" ] && [ "$(sha256 "$web/package-lock.json")" = "$want" ] || fail "extract: $web/package-lock.json is not the lockfile the build of $sha was made from (wrong checkout?); nothing extracted"
   [ "$(tar -xzOf "$next" .build-commit 2>/dev/null || true)" = "$sha" ] || fail "extract: the build is not from $sha; nothing extracted"
+  local mods_unp; mods_unp=$(cat "$DL/prod-modules-$sha.unpacked" 2>/dev/null || true)
+  [[ $mods_unp =~ ^[0-9]+$ ]] || fail "extract: no recorded unpacked size for the node_modules of $sha (run fetch first); nothing extracted"
+  # unpacking node_modules (when it cannot be hard-linked) must still leave the floor: fetch may not have counted it
+  unpack_mods() {
+    local avail; avail=$(df -B1 --output=avail "$web" | tail -n 1 | tr -d ' ')
+    [ $(( avail - mods_unp )) -ge "$MIN_FREE_BYTES" ] || { rm -rf -- "$web/.next" "$web/node_modules"; fail "ALERT low_disk: unpacking node_modules ($mods_unp bytes) would leave less than $MIN_FREE_BYTES free on $web ($avail free); removed the partial release"; }
+    tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
+  }
   rm -rf -- "$web/.next" "$web/node_modules"
   tar -xzf "$next" -C "$web" --no-same-owner --no-same-permissions .next .build-commit
   if [ -n "$live" ] && [ -d "$live/node_modules" ] && [ -f "$live/package-lock.json" ] && [ "$(sha256 "$live/package-lock.json")" = "$want" ]; then
     if cp -al -- "$live/node_modules" "$web/node_modules" 2>/dev/null; then log "node_modules hard-linked from the live release (same lockfile)"
     else # e.g. a live release owned by another user (protected_hardlinks): the verified archive instead
-      rm -rf -- "$web/node_modules"; tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
+      rm -rf -- "$web/node_modules"; unpack_mods
       log "node_modules could not be hard-linked from the live release; unpacked from the verified build"
     fi
   else
-    tar -xzf "$mods" -C "$web" --no-same-owner --no-same-permissions node_modules
+    unpack_mods
   fi
   [ "$(cat "$web/.build-commit")" = "$sha" ] && [ -f "$web/.next/BUILD_ID" ] && [ -f "$web/node_modules/next/package.json" ] || { rm -rf -- "$web/.next" "$web/node_modules"; fail "extract: the unpacked release is incomplete; removed"; }
   log "extracted the prebuilt build of $sha into $web"

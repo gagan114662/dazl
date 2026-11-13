@@ -47,6 +47,14 @@ jobs:
         with:
           ref: ${{ steps.sha.outputs.sha }}
           persist-credentials: false
+      # The tools come from THIS workflow's own commit, never from the commit being built: a commit from before
+      # ops/prod existed (every release older than #1061) must still be rebuildable for a rollback.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .prod-tools
+          sparse-checkout: ops/prod
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -71,7 +79,7 @@ jobs:
         env:
           SHA: ${{ steps.sha.outputs.sha }}
         run: |
-          node ops/prod/prebuilt-manifest.mjs prebuilt "$SHA" web/package-lock.json
+          node .prod-tools/ops/prod/prebuilt-manifest.mjs prebuilt "$SHA" web/package-lock.json
           test "$(tar -xzOf "prebuilt/prod-next-$SHA.tgz" .build-commit)" = "$SHA"
           ls -l prebuilt
       - uses: actions/upload-artifact@v4

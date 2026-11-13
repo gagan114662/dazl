@@ -23,7 +23,9 @@ instead, and the box only downloads, verifies and unpacks it.
   `DAZL_ENV=staging`) and no secrets. It publishes `prod-next-<sha>.tgz` (`.next` + `.build-commit`),
   `prod-modules-<sha>.tgz` (`node_modules`) and, last, the manifest `prod-prebuilt-<sha>.json` (commit, arch, Node ABI,
   lockfile sha256, each archive's sha256, size and unpacked size) as assets of the `prod-prebuilt` prerelease, keeping the
-  newest 5 commits. An older commit (a rollback beyond that): run the workflow by hand with `sha=<commit>`.
+  newest 5 commits. An older commit (a rollback beyond that): run the workflow by hand with `sha=<commit>`. That works
+  for any commit on main, also one from before `ops/prod` existed: the manifest tool is taken from the workflow's own
+  commit (a second checkout, `.prod-tools`), never from the commit being built.
 - **Install (once, as root):** the deploy runs as root, so it only runs root-owned copies it alone can change:
   `install -d -o root -g root -m 755 /usr/local/lib/dazl-prod && install -o root -g root -m 755 ops/prod/deploy-prod.sh
   ops/prod/pull-release.sh /usr/local/lib/dazl-prod/` (both refuse to run from anywhere a non-root account can write,
@@ -32,24 +34,37 @@ instead, and the box only downloads, verifies and unpacks it.
   WAL files, and existing releases a root-run app wrote into; the deploy refuses, changing nothing, while the database or
   its directory is not writable by `ubuntu`). The run env file (`/home/ubuntu/dazl-pr16-run.env`) is read as plain
   `KEY=value` lines (one level of quotes; nothing is expanded or executed).
-- **Deploy (the ops door, as root):** `/usr/local/lib/dazl-prod/deploy-prod.sh <sha>`; one deploy or rollback at a time. It checks free disk, copies the live process's
+- **Deploy (the ops door, as root):** `/usr/local/lib/dazl-prod/deploy-prod.sh <sha>`; one deploy or rollback at a time.
+  It first removes release directories nothing needs (see Disk), checks free disk, copies the live process's
   environment for the new release, then `ops/prod/pull-release.sh fetch <sha>` (as root: the manifest must name exactly
-  that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads and the unpacked
-  build**; both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
+  that commit, this box's arch and Node ABI; **refused unless at least 3 GiB stays free after the downloads, the unpacked
+  build and the database backup** (`node_modules` is not counted when it will be hard-linked from the live release);
+  both archives downloaded within one time budget; size, sha256 and `.build-commit` verified). It checks out the
   source as `ubuntu` in a new `/home/ubuntu/dazl-<sha8>-prod` and runs `pull-release.sh extract` there: the checkout's
   `package-lock.json` must be the one the build was made from; it unpacks `.next`, and hard-links `node_modules` from the
   live release when the lockfile is unchanged (else unpacks the built one). Then, as before: back up the database, `npm run
   db:migrate` as `ubuntu` (a script, no build), after a verified backup (online backup API, `integrity_check` ok, of
   the release's own `DB_PATH`; newest 10 kept in `/var/lib/dazl-prod-backups`), start `next start` as `ubuntu` on the
   spare port (3104/3105), wait for `/api/health` to report the commit,
-  switch Caddy, and check `https://dazl.ai/api/health` (a mismatch switches straight back). Release directories other than
-  the live and the previous one are removed afterwards.
+  switch Caddy, and check `https://dazl.ai/api/health` (a mismatch switches straight back). Every health read is bounded
+  (5 s to connect, 10 s in all): a listener that never answers counts as "no answer" and can never hang the deploy while it
+  holds the lock. Release directories other than the live and the previous one are removed afterwards.
 - **Rollback:** `deploy-prod.sh --rollback` points Caddy back at the previous release, which is still running on the
   other port, only if it still answers `/api/health` with the commit recorded for it (it refuses otherwise; a deploy that
   had to stop it clears the target). For an older commit, deploy it:
   its prebuilt build is downloaded again (or rebuilt on GitHub by hand), never built on the box.
-- **Disk:** the deploy refuses with less than 3 GiB free, and `pull-release.sh fetch` refuses when the downloads plus the
-  unpacked build would take free space below 3 GiB (`ALERT low_disk`); keeping only the live and previous releases keeps it there.
+- **Disk:** everything (the download cache, `/home/ubuntu`, `/var/lib`) is on `/`. Before its disk check the deploy removes
+  each `/home/ubuntu/dazl-*-prod` that is not the live release, not the recorded rollback target and not the working
+  directory of any listener (the previous release, a staging service), as that directory's owner (never as root; a
+  root-owned one is left and logged). It then refuses with less than 3 GiB plus the backup free, and `pull-release.sh
+  fetch` refuses (`ALERT low_disk`) when the downloads, the unpacked `.next`, the unpacked `node_modules` (only when it
+  cannot be hard-linked: a changed lockfile) and the backup would leave less than 3 GiB; `extract` re-checks before it
+  ever unpacks `node_modules`. Measured on 2026-11-13: 3,437,387,776 bytes free with three ~0.9 GB releases; a release
+  needs about 229 MB of downloads + 180 MB of `.next` (+ 624 MB of `node_modules` with a new lockfile) + the 3 MB
+  database. With the third, unused release removed (~0.9 GB back) the first prebuilt deploy fits: about 4.35 GB free
+  before, about 3.94 GB after, against the 3.22 GB floor. An earlier commit's downloads still in the cache are counted as
+  free (they are deleted before the new ones are fetched). Whatever does not fit is refused with `ALERT low_disk` and
+  nothing changed; free space by hand (`docker system prune`, old logs) and deploy again.
 - **Tests:** `python3 -m unittest discover -s ops/prod -p 'test_*.py'` runs both scripts end to end against stand-ins and
   fails if the deploy path ever runs `npm ci`, `npm install`, tsc or `next build`.
 

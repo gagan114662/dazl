@@ -77,6 +77,7 @@ fi
 printf '%s' "$STAGING_BUILD" > "$T/build-cmd"
 echo run >> "$T/deploy-runs"
 [ ! -e "$T/deploy-fail" ] || exit 3
+[ ! -e "$T/deploy-hang" ] || sleep 600
 STATE=${STAGING_STATE_ROOT:-/var/lib/dazl-staging-deploy}
 new=$(cat "$T/deploy-main" 2>/dev/null || cat "$T/main")
 cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
@@ -391,8 +392,18 @@ class PullPrebuiltTest(unittest.TestCase):
         tmo = int(re.search(r'^TimeoutStartSec=(\d+)min$', unit, re.M).group(1)) * 60
         src = Path(SCRIPT).read_text()
         budget = int(re.search(r'DOWNLOAD_BUDGET_S=\$\{STAGING_DOWNLOAD_BUDGET_S:-(\d+)\}', src).group(1))
-        deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=(\d+)', src).group(1))
+        deploy_allow = int(re.search(r'DEPLOY_ALLOWANCE_S=\$\{STAGING_DEPLOY_ALLOWANCE_S:-(\d+)\}', src).group(1))
         self.assertLess(budget + deploy_allow, tmo, 'the downloads plus deploy.sh fit inside the unit timeout')
+
+    def test_deploy_sh_is_stopped_inside_its_allowance(self):
+        # #1061 review (XHawk at c51687fd): DEPLOY_ALLOWANCE_S was declared but never enforced, so a deploy.sh that ran
+        # long was only ever killed by systemd mid-step. Now it runs under `timeout` and the run says why it stopped.
+        import time
+        (self.t / 'deploy-hang').write_text(''); self.publish()
+        t0 = time.monotonic(); r = self.run_pull(STAGING_DEPLOY_ALLOWANCE_S=2); took = time.monotonic() - t0
+        self.assertNotEqual(r.returncode, 0); self.assertLess(took, 30, f'took {took:.0f}s')
+        self.assertIn('ran past its 2s allowance', r.stdout + r.stderr)
+        self.assertNotEqual(self.run_pull(STAGING_DEPLOY_ALLOWANCE_S='0').returncode, 0, 'a zero allowance is refused')
 
     def assert_refused_at(self, r, why, live):
         self.assertNotEqual(r.returncode, 0, r.stdout)

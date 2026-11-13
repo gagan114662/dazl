@@ -25,24 +25,29 @@ LOCK1, LOCK2 = b'{"lockfileVersion":3,"v":1}\n', b'{"lockfileVersion":3,"v":2}\n
 
 STUBS = {
     'curl': r'''#!/usr/bin/env bash
-out=; url=; has_w=0; has_f=0
+out=; url=; has_w=0; has_f=0; mt=
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2;;
     -w) has_w=1; shift 2;;
-    --max-time|--max-filesize|--proto|--retry) shift 2;;
+    --max-time) mt=$2; shift 2;;
+    --connect-timeout|--max-filesize|--proto|--retry) shift 2;;
     -*) [[ "$1" == *f* ]] && has_f=1; shift;;
     *) url=$1; shift;;
   esac
 done
 echo "$url" >> "$FAKE_T/curl.log"
+# a listener that accepts and never answers: the read lasts until curl's own --max-time (none = "forever", 600 s)
+stall() { [ -e "$FAKE_T/stall/$1" ] || return 0; sleep "${mt:-600}"; exit 28; }
 emit() { if [ -n "$out" ]; then printf '%s' "$1" > "$out"; else printf '%s' "$1"; fi; }
 case "$url" in
   http://127.0.0.1:*/api/health)
     p=${url#http://127.0.0.1:}; p=${p%%/*}
+    stall "$p"
     [ -f "$FAKE_T/health/$p" ] || exit 7
     emit "{\"commit\":\"$(cat "$FAKE_T/health/$p")\"}"; exit 0;;
   https://dazl.test/api/health)
+    stall public
     p=$(grep -oE 'reverse_proxy localhost:[0-9]+' "$FAKE_T/Caddyfile" | grep -oE '[0-9]+$')
     emit "{\"commit\":\"$(cat "$FAKE_T/health/$p" 2>/dev/null)\"}"; exit 0;;
 esac
@@ -67,6 +72,16 @@ for f in "$FAKE_T"/listen/*; do
   [ -z "$want" ] || [ "$want" = "$p" ] || continue
   echo "LISTEN 0 511 *:$p *:* users:((\"node\",pid=$(cat "$f"),fd=20))"
 done
+''',
+    # df: the real one, unless a test sets the box's free space (df-base); a release directory listed in df-credit/
+    # (name -> bytes), or a cached download of that name, frees its bytes once it is gone, as removing it does on the box
+    'df': r'''#!/usr/bin/env bash
+if [ -f "$FAKE_T/df-base" ]; then
+  a=$(cat "$FAKE_T/df-base")
+  for c in "$FAKE_T"/df-credit/*; do [ -f "$c" ] || continue; [ -e "$FAKE_T/rel/${c##*/}" ] || [ -e "$FAKE_T/dl/${c##*/}" ] || a=$(( a + $(cat "$c") )); done
+  printf 'Avail\n%s\n' "$a"; exit 0
+fi
+exec /usr/bin/df "$@"
 ''',
     'caddy': '#!/usr/bin/env bash\nexit 0\n',
     'systemctl': '#!/usr/bin/env bash\necho "$*" >> "$FAKE_T/systemctl.log"\n',
@@ -98,7 +113,7 @@ def sha(path):
 class ProdPrebuiltTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); T = self.t = Path(self.tmp.name)
-        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib'): (T / d).mkdir(parents=True)
+        for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib', 'stall', 'df-credit'): (T / d).mkdir(parents=True)
         # the scripts as installed: root-owned in a root-only-writable directory (the test user stands in for root)
         (T / 'lib').chmod(0o755)
         for f in ('pull-release.sh', 'deploy-prod.sh'):
@@ -242,7 +257,9 @@ class ProdPrebuiltTest(unittest.TestCase):
         # the downloads alone fit, the unpacked build does not: refused before anything is downloaded
         import shutil
         free = shutil.disk_usage(self.t).free
-        self.publish(edit=lambda m: {**m, 'modules': {**m['modules'], 'unpacked_bytes': 1_900_000_000}})
+        # a changed lockfile: node_modules is unpacked (a hard-linked one is not counted, see the #1061-review tests)
+        (self.t / 'src/web/package-lock.json').write_bytes(LOCK2)
+        self.publish(lock=LOCK2, edit=lambda m: {**m, 'modules': {**m['modules'], 'unpacked_bytes': 1_900_000_000}})
         r = self.deploy(B, PROD_MIN_FREE_BYTES=max(0, free - 1_000_000_000))
         self.assert_untouched(r, 'ALERT low_disk')
         self.assertNotIn('.tgz', self.log('curl.log'))
@@ -330,7 +347,8 @@ class ProdPrebuiltTest(unittest.TestCase):
         # deploy's own pre-check (floor + backup) passes and the release (400 MB unpacked) on top of the backup does not;
         # with the floor checked separately for each (before), this deploy went ahead.
         import shutil
-        self.publish(edit=lambda m: {**m, 'modules': {**m['modules'], 'unpacked_bytes': 400 * 10 ** 6}})
+        (self.t / 'src/web/package-lock.json').write_bytes(LOCK2)  # node_modules unpacked, so counted
+        self.publish(lock=LOCK2, edit=lambda m: {**m, 'modules': {**m['modules'], 'unpacked_bytes': 400 * 10 ** 6}})
         with open(self.db, 'ab') as f: f.truncate(600 * 10 ** 6)  # a 600 MB (sparse) database
         free = shutil.disk_usage(self.t).free
         r = self.deploy(B, PROD_MIN_FREE_BYTES=free - 600 * 10 ** 6 - 200 * 10 ** 6)
@@ -381,7 +399,7 @@ class ProdPrebuiltTest(unittest.TestCase):
         state = (self.t / 'ops/prod-state').read_text()
         # the public endpoint keeps answering B (e.g. Caddy did not really switch)
         (self.t / 'bin/curl').write_text((self.t / 'bin/curl').read_text().replace(
-            'https://dazl.test/api/health)\n    p=$(grep', 'https://dazl.test/api/health)\n    emit "{\\"commit\\":\\"%s\\"}"; exit 0\n    p=$(grep' % B))
+            'https://dazl.test/api/health)\n    stall public\n    p=$(grep', 'https://dazl.test/api/health)\n    emit "{\\"commit\\":\\"%s\\"}"; exit 0\n    p=$(grep' % B))
         r = self.deploy('--rollback')
         self.assertNotEqual(r.returncode, 0, r.stdout); self.assertIn('after the rollback: switched back', r.stdout)
         self.assertEqual(self.live_port(), '3105'); self.assertEqual((self.t / 'ops/prod-state').read_text(), state)
@@ -470,6 +488,117 @@ class ProdPrebuiltTest(unittest.TestCase):
         for f in (self.DEPLOY, self.PULL):
             code = '\n'.join(l for l in Path(f).read_text().splitlines() if not l.lstrip().startswith('#'))
             self.assertNotRegex(code, r'next build|npm ci|npm install|\btsc\b', f)
+
+    # --- #1061 review (Hermes-PC at 9056ef11) -----------------------------------------------------------------------
+    BOX_FREE = 3_437_387_776           # df -B1 --output=avail / on the box (2026-11-13)
+    BOX_DOWNLOADS = 48_261_983 + 180_740_848   # this head's CI archives; the test's own archives are tiny, so their
+                                               # bytes are taken off the box's free space up front instead
+    BOX_NEXT_UNP, BOX_MODS_UNP = 179_579_293, 623_640_738
+    FLOOR = 3_221_225_472
+
+    def box(self, free, credit=None):
+        (self.t / 'df-base').write_text(str(free))
+        for name, n in (credit or {}).items(): (self.t / 'df-credit' / name).write_text(str(n))
+        self.publish(edit=lambda m: {**m, 'next': {**m['next'], 'unpacked_bytes': self.BOX_NEXT_UNP}, 'modules': {**m['modules'], 'unpacked_bytes': self.BOX_MODS_UNP}})
+
+    def test_box_shaped_disk_three_releases_one_unused_deploys_and_keeps_live_and_previous(self):
+        # Finding 1: the box holds the live release, the previous one (running on the spare port, the recorded rollback
+        # target) and an older one nothing runs from; 3.4 GB free. Before: the floor refused every prebuilt deploy.
+        P = 'c' * 40
+        prev = self.t / 'rel' / f'dazl-{P[:8]}-prod' / 'web'; prev.mkdir(parents=True)
+        pp = subprocess.Popen(['sleep', '600'], cwd=prev); (self.t / 'listen/3105').write_text(str(pp.pid)); (self.t / 'health/3105').write_text(P)
+        (self.t / 'ops/prod-state').write_text(f'PREV_PORT=3105\nPREV_SHA={P}\nNEW_SHA={A}\n')
+        self.box(self.BOX_FREE - self.BOX_DOWNLOADS, {'dazl-0ld0ld00-prod': 918 * 2 ** 20})
+        try:
+            r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
+        finally: pp.kill()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod'), out)
+        self.assertLess(out.index('removing unused release ' + str(self.t / 'rel/dazl-0ld0ld00-prod')), out.index('verified the prebuilt build'), 'removed BEFORE the disk check and download')
+        self.assertIn('not counted', out, 'node_modules hard-linked: not counted')
+        self.assertEqual(self.live_port(), '3105')
+        # live (B) and previous (A, the rollback target) are kept; the old previous and the unused one are gone
+        self.assertEqual(sorted(d.name for d in (self.t / 'rel').iterdir()), sorted([f'dazl-{A[:8]}-prod', f'dazl-{B[:8]}-prod']))
+
+    def test_unused_releases_are_kept_when_running_or_the_rollback_target(self):
+        # the prune never removes what a listener runs from, nor the recorded rollback target (even when it is down)
+        P, Q = 'c' * 40, 'd' * 40
+        target = self.t / 'rel' / f'dazl-{P[:8]}-prod' / 'web'; target.mkdir(parents=True)
+        other = self.t / 'rel' / f'dazl-{Q[:8]}-prod' / 'web'; other.mkdir(parents=True)
+        op = subprocess.Popen(['sleep', '600'], cwd=other); (self.t / 'listen/4000').write_text(str(op.pid))  # e.g. a staging service
+        (self.t / 'ops/prod-state').write_text(f'PREV_PORT=3105\nPREV_SHA={P}\nNEW_SHA={A}\n')
+        r = self.deploy(B)  # nothing published for B: the deploy stops at the download, after the prune
+        op.kill()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(target.exists(), 'the recorded rollback target is kept'); self.assertTrue(other.exists(), 'a running release is kept')
+        self.assertTrue(self.live.exists()); self.assertFalse((self.t / 'rel/dazl-0ld0ld00-prod').exists(), 'the unused one is removed')
+
+    def test_hard_linked_node_modules_is_not_counted_unpacked_ones_are(self):
+        # Finding 1(b): room for the build and the backup, not for 624 MB of node_modules
+        free = self.FLOOR + self.db.stat().st_size + self.BOX_NEXT_UNP + 100 * 10 ** 6
+        self.box(free)
+        r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('not counted', r.stdout)
+
+    def test_a_changed_lockfile_counts_node_modules(self):
+        free = self.FLOOR + self.db.stat().st_size + self.BOX_NEXT_UNP + 100 * 10 ** 6
+        (self.t / 'src/web/package-lock.json').write_bytes(LOCK2)
+        (self.t / 'df-base').write_text(str(free))
+        self.publish(lock=LOCK2, edit=lambda m: {**m, 'next': {**m['next'], 'unpacked_bytes': self.BOX_NEXT_UNP}, 'modules': {**m['modules'], 'unpacked_bytes': self.BOX_MODS_UNP}})
+        self.assert_untouched(self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR), 'ALERT low_disk')
+        self.assertNotIn('.tgz', self.log('curl.log'))
+
+    def test_node_modules_that_cannot_be_hard_linked_is_not_unpacked_below_the_floor(self):
+        # not counted by fetch (same lockfile), then the hard link fails: extract re-checks the floor before unpacking
+        free = self.FLOOR + self.db.stat().st_size + self.BOX_NEXT_UNP + 100 * 10 ** 6
+        self.box(free)
+        (self.live / 'node_modules/next').chmod(0o000)
+        try: r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
+        finally: (self.live / 'node_modules/next').chmod(0o755)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('ALERT low_disk: unpacking node_modules', r.stdout + r.stderr)
+        self.assertEqual(self.live_port(), '3104'); self.assertFalse((self.t / 'rel' / f'dazl-{B[:8]}-prod' / 'web/node_modules').exists())
+
+    def test_an_earlier_commits_downloads_in_the_cache_count_as_free(self):
+        # the cache keeps the last deploy's archives until the next fetch removes them: they are not a reason to refuse
+        free = self.FLOOR + self.db.stat().st_size + self.BOX_NEXT_UNP + 100 * 10 ** 6
+        (self.t / 'src/web/package-lock.json').write_bytes(LOCK2)
+        (self.t / 'df-base').write_text(str(free))
+        (self.t / 'dl').mkdir(); old = self.t / 'dl' / f'prod-modules-{A}.tgz'
+        with open(old, 'wb') as f: f.truncate(700 * 10 ** 6)  # a 700 MB (sparse) archive of the live commit
+        (self.t / 'df-credit' / old.name).write_text(str(700 * 10 ** 6))
+        self.publish(lock=LOCK2, edit=lambda m: {**m, 'next': {**m['next'], 'unpacked_bytes': self.BOX_NEXT_UNP}, 'modules': {**m['modules'], 'unpacked_bytes': self.BOX_MODS_UNP}})
+        r = self.deploy(B, PROD_MIN_FREE_BYTES=self.FLOOR)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(old.exists(), 'the superseded archive was removed')
+
+    def test_a_stalled_public_health_read_cannot_hang_the_deploy_or_keep_the_lock(self):
+        # Finding 2: after Caddy switched, https://dazl.ai/api/health accepts and never answers. Before: the deploy hung
+        # forever holding the lock. Now each read is bounded: it switches back, stops the new release and releases the lock.
+        import time
+        self.publish(); (self.t / 'stall/public').write_text('')
+        t0 = time.monotonic(); r = self.deploy(B); took = time.monotonic() - t0
+        self.assertNotEqual(r.returncode, 0)
+        self.assertLess(took, 60, f'took {took:.0f}s')
+        self.assertIn('switched back to :3104', r.stdout); self.assertEqual(self.live_port(), '3104')
+        (self.t / 'stall/public').unlink()
+        r2 = self.deploy(B)
+        self.assertNotIn('another deploy or rollback is running', r2.stdout + r2.stderr)
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+
+    def test_a_stalled_local_health_read_is_bounded_too(self):
+        import time
+        self.publish(); (self.t / 'stall/3105').write_text('')
+        t0 = time.monotonic(); r = self.deploy(B, PROD_HEALTH_TRIES=2); took = time.monotonic() - t0
+        self.assertNotEqual(r.returncode, 0); self.assertLess(took, 60, f'took {took:.0f}s')
+        self.assertIn('NOT switching', r.stdout); self.assertEqual(self.live_port(), '3104')
+
+    def test_health_reads_carry_a_connect_and_total_timeout(self):
+        code = Path(self.DEPLOY).read_text()
+        line = next(l for l in code.splitlines() if l.startswith('health_sha()'))
+        self.assertIn('--connect-timeout 5', line); self.assertIn('--max-time', line)
 
 
 if __name__ == '__main__':

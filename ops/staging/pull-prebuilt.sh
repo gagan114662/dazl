@@ -59,7 +59,9 @@ MAX_ASSET_BYTES=${STAGING_MAX_ASSET_BYTES:-2000000000}
 # migrate, health check, rollback) it stays below the unit's TimeoutStartSec, so systemd never kills a valid run; the
 # test checks the three numbers against each other.
 DOWNLOAD_BUDGET_S=${STAGING_DOWNLOAD_BUDGET_S:-2400}
-DEPLOY_ALLOWANCE_S=1800
+# Enforced (#1061 review): deploy.sh runs under `timeout`, so it is stopped inside its allowance (and reported), never by
+# systemd's TimeoutStartSec mid-step with no word on why.
+DEPLOY_ALLOWANCE_S=${STAGING_DEPLOY_ALLOWANCE_S:-1800}
 
 log() { echo "staging-prebuilt: $*"; }
 # After the manifest is accepted, every fatal failure writes the retry stamp (finding 4), so a bad asset or a failing
@@ -106,6 +108,7 @@ esac
 # finding 3: a whole number >= 1, or the just-verified backup would be deleted before deploy.sh runs
 [[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] || fail "STAGING_KEEP_BACKUPS must be a whole number of at least 1 (got '$KEEP_BACKUPS'); nothing done"
 [[ $DOWNLOAD_BUDGET_S =~ ^[0-9]+$ ]] || fail "STAGING_DOWNLOAD_BUDGET_S must be a whole number of seconds; nothing done"
+[[ $DEPLOY_ALLOWANCE_S =~ ^[1-9][0-9]*$ ]] || fail "STAGING_DEPLOY_ALLOWANCE_S must be a whole number of seconds >= 1; nothing done"
 # finding 1: root runs $DEPLOY. It and every directory above it must be a real (non-symlink) file/directory owned by root
 # and writable by root only; a world-writable directory is accepted only with the sticky bit and the next component
 # owned by root (like /tmp). Anything else could be replaced by another account and would run as root.
@@ -285,7 +288,8 @@ else log "no staging database at $db yet; nothing to back up"; fi
 # 7. deploy.sh does the rest, with the verified build as its build step
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
 build="bash '$self' --extract '$DL'"
-st=0; STAGING_BUILD=$build bash "$DEPLOY" 8>&- || st=$?
+st=0; STAGING_BUILD=$build timeout --kill-after=60 "$DEPLOY_ALLOWANCE_S" bash "$DEPLOY" 8>&- || st=$?
+[ $st != 124 ] && [ $st != 137 ] || fail "deploy.sh ran past its ${DEPLOY_ALLOWANCE_S}s allowance for $main_sha and was stopped; retrying after ${RETRY_AFTER_S}s"
 now=
 [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE" 2>/dev/null)" = "$main_sha" ] && now=1
 [ $st = 0 ] || fail "deploy.sh failed for $main_sha (exit $st); retrying after ${RETRY_AFTER_S}s; the downloaded build is kept"
