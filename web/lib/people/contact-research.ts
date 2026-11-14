@@ -29,7 +29,7 @@ export const MAX_SEARCHES = 2
 export const MAX_READS = 1
 export const MAX_OUTPUT_TOKENS = 2000   // the answer is a few lines of JSON; the rest is room for the model's own thinking
 const PAGE_TEXT = 6000
-const PROMPT_BYTES = 60_000             // far below the 100K-token tier of the cheapest model
+export const PROMPT_BYTES = 60_000             // far below the 100K-token tier of the cheapest model
 // Decision-maker titles searched for next to the scan's roles (which title is accepted is groundPerson's TOP_ROLE rule).
 export const DECISION_MAKERS = ['Founder', 'Co-founder', 'Owner', 'CEO', 'Chief Executive Officer', 'Managing Director', 'Managing Partner', 'President', 'Principal']
 const PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]{3,100}\/?$/

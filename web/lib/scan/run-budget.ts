@@ -72,7 +72,7 @@ export const SITE_SEARCHES_PER_SCAN = 6
 export const GROUNDED_LOOKUPS_PER_SCAN = 5
 export const GROUNDED_SEARCHES_PER_SCAN = GROUNDED_LOOKUPS_PER_SCAN * 2
 export const GROUNDED_READS_PER_SCAN = GROUNDED_LOOKUPS_PER_SCAN
-export const GROUNDED_MODEL = { id: 'claude-haiku-5-5', usd_per_m: { in: 0.5, out: 2.5 }, inK: 20, outK: 2 }   // per call: a 60 KB prompt at most, 2000 output tokens
+export const GROUNDED_MODEL = { id: 'claude-haiku-5-5', usd_per_m: { in: 0.5, out: 2.5 }, inK: 60, outK: 2 }   // per call, as the spend guard reserves it: a 60 KB prompt at most (one token per byte), 2000 output tokens
 export const groundedLookupsOn = (env: Record<string, string | undefined>): boolean => (env.GROUNDED_PEOPLE_ENABLED ?? '').trim() !== '0'
 export const adaptiveDiscoveryOn = (env: Record<string, string | undefined>): boolean => (env.DAZL_ADAPTIVE_DISCOVERY_ENABLED ?? '').trim() !== '0'
 // Profile generation is ONE request with a known maximum size. icpPrompt JSON-encodes the 600-char request and 300-char seller
