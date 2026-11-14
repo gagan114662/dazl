@@ -23,7 +23,8 @@ function world() {
     raw.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at, created_at) VALUES (?, 'anthropic', 'x', '1234', 1, 1)").run(t)
   }
   const job = (t: string) => createJob(db, t, { business_name: 'Co', industry: 'dental', location: 'Toronto' })
-  const reserve = (id: string, t: string, attempt: number) => raw.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES (?, ?, ?, ?, 'llm.anthropic', 0.02, 'reserved', ?)").run(`c-${id}-${attempt}`, t, id, attempt, nowS())
+  // #1157: a priced NON-model call (a model call abandoned at a graceful stop is now kept and the scan handed back: test/scan-free-orphans-1157.test.ts)
+  const reserve = (id: string, t: string, attempt: number) => raw.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES (?, ?, ?, ?, 'apollo.people', 0.02, 'reserved', ?)").run(`c-${id}-${attempt}`, t, id, attempt, nowS())
   const scan = (id: string) => raw.prepare('SELECT status, attempts, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; attempts: number; error: string | null }
   const item = (id: string) => raw.prepare('SELECT status, attempts, claim_token, lease_expires_at FROM work_queue WHERE id = ?').get(id) as { status: string; attempts: number; claim_token: number | null; lease_expires_at: number | null } | undefined
   let inFlight = 0
