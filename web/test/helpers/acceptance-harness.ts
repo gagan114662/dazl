@@ -38,6 +38,7 @@ export interface Fixture {
   own: Record<string, { title: string; text: string; published?: string; structured?: string[] } | 'blocked' | 'js_required' | 'not_found'>   // SYNTHETIC verifier own-fetch results
   extraction: Cand[]                       // SYNTHETIC extraction reply (real parseLeads runs on it)
   extractionFn?: (prompt: string) => Cand[]   // SYNTHETIC extraction reply that depends on the prompt it was given (replaces `extraction` when set)
+  extractionRaw?: (prompt: string) => string | undefined   // the model's reply as RAW TEXT for this prompt (a reply that is not valid JSON); undefined = the usual reply
   researchError?: boolean                  // the paid model web search fails AFTER send (uncertain 5xx) instead of answering
   searchStatusFor?: (n: number) => number | undefined   // per-search HTTP status (0-based); overrides hitsFor for that search (a mid-run source failure)
   tinyfishOff?: boolean                    // TINYFISH_API_KEY is not set: the TinyFish stage is skipped entirely
@@ -97,7 +98,7 @@ export async function runFixture(f: Fixture) {
     }
     return new Response('{}', { status: 200 })
   }) as typeof fetch
-  const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
+  const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); const raw = f.extractionRaw?.(p); if (raw !== undefined) return raw; return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async (_rk: string, _rp: string, _rf?: typeof fetch) => {
