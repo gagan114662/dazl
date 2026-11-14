@@ -14,7 +14,11 @@ export const RETENTION_DAYS = 90
 export const MAX_TENANT_COPIES = 300
 
 export function migrateEvidenceCopies(db: Database.Database): void {
-  db.exec(`
+  // One write transaction (#836): this replaces a trigger (DROP, then CREATE) and runs in every process that opens the
+  // store. Outside a transaction two processes starting together interleave the two and the second CREATE fails
+  // "trigger ... already exists". IMMEDIATE takes the write lock first; inside a caller's transaction it is a savepoint.
+  db.transaction(() => {
+    db.exec(`
 CREATE TABLE IF NOT EXISTS lead_evidence_copies (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -55,6 +59,7 @@ CREATE TABLE IF NOT EXISTS evidence_purge_audit (
 );
 CREATE TRIGGER IF NOT EXISTS evidence_purge_audit_no_update BEFORE UPDATE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS evidence_purge_audit_no_delete BEFORE DELETE ON evidence_purge_audit BEGIN SELECT RAISE(ABORT, 'purge audit is append-only'); END;`)
+  }).immediate()
 }
 
 // Expired rows are the only rows that can be deleted (the trigger enforces it).

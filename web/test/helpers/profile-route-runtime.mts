@@ -146,3 +146,26 @@ test('#420: a complete manual profile (no website) completes the checklist miles
   as('B')
   assert.equal(step(card(await get())).state, 'todo', "another tenant's checklist never completes from A's profile")
 })
+
+// #1043: the "Your business" editor's payload through the REAL route: a new user saves company fields with no buyer;
+// an existing profile's research, window and lookalike survive an edit of the buyer roles.
+test('#1043 the Your business editor payload: saved by the real route without losing research, window or lookalike', async () => {
+  const { profilePayload } = await import('../../lib/business-brain.ts')
+  db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('N1043', 'n1043@example.test', 'x', 'y')").run()
+  as('N1043')
+  const fresh = profilePayload(null, { business_name: 'NewCo', sells: 'Bookkeeping', website: '', summary: '', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
+  assert.ok('body' in fresh)
+  const r1 = await post((fresh as { body: unknown }).body)
+  assert.equal(r1.status, 200, 'a new user can save the company fields alone')
+  assert.equal((await get()).business_name, 'NewCo')
+  as('A')
+  assert.equal((await post({ buyer: WHOLE_BUYER })).status, 200)
+  const stored = await get()
+  const edit = profilePayload(stored, { business_name: 'ClinicDesk', sells: stored.sells ?? '', website: stored.website ?? '', summary: stored.buyer.summary, who: ['Clinic administrators', 'Office managers'], industries: stored.buyer.industries, sizes: stored.buyer.sizes, where: stored.buyer.where, signals: stored.buyer.signals, exclude: stored.buyer.exclude })
+  assert.ok('body' in edit)
+  assert.equal((await post((edit as { body: unknown }).body)).status, 200)
+  const after = await get()
+  assert.deepEqual(after.buyer.who, ['Clinic administrators', 'Office managers'])
+  assert.deepEqual(after.buyer.research, stored.buyer.research, 'research survives the edit')
+  assert.deepEqual([after.buyer.window_days, after.buyer.country, after.buyer.lookalike], [stored.buyer.window_days, stored.buyer.country, stored.buyer.lookalike])
+})
