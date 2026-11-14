@@ -30,6 +30,9 @@ export function installChunkRecovery(w: any, buildId: string): void {
       btn.setAttribute('style', 'background:#111;color:#fff;border:0;padding:8px 14px;font:inherit;cursor:pointer')
       btn.addEventListener('click', () => w.location.reload())
       box.appendChild(title); box.appendChild(body); box.appendChild(btn); d.body.appendChild(box)
+      // #1116: the notice is fixed to the bottom of the window; on a phone it sat on top of the page's own submit button
+      // (sign-up at 390px), which then could not be pressed. Leave room under the page so everything can scroll clear of it.
+      try { d.body.style.paddingBottom = (box.offsetHeight + 32) + 'px' } catch { /* the notice still shows */ }
     }
     if (w.document.body) show(); else w.document.addEventListener('DOMContentLoaded', show)
   }
