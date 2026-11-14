@@ -406,3 +406,19 @@ test('#1102 grounding round 6b: a filler word does not make "Brightloop Dental <
   const bad = [await G('Jane Roe, Owner of Brightloop Dental practice management consulting.' + D, 'Jane Roe, Owner of Brightloop Dental'), await G('Jane Roe, Owner - Brightloop Dental new bakery.' + D, 'Jane Roe, Owner')]
   bad.forEach((r, i) => assert.notEqual(r.status, 'found', `filler #${i}`))
 })
+
+test('#1102 grounding round 7: a connector word before the title does not hide a lower-case business word', async () => {
+  const bad = await Promise.all(['and', 'with', 'by', 'as'].map(c => researchContactSource(`Brightloop Dental next door bakery ${c} owner Mark Stone, in Toronto.` + D, 'Mark Stone', 'owner', 'owner Mark Stone', 'https://news.example.test/x', 'search')))
+  bad.forEach((r, i) => assert.notEqual(r.status, 'found', `connector #${i}: ${JSON.stringify(r.person)}`))
+})
+
+test('#1102 grounding round 7b: a business noun before the title is walked past; a second mention under other title words is judged', async () => {
+  const OWN6 = 'https://brightloopdental.example/reviews'
+  const bad = await Promise.all(['pet clinic', 'vet clinic', 'law practice', 'hockey team'].map(w => researchContactSource(`Great care, said ${w} owner Mark Stone. We welcome new patients every day here at the office.`, 'Mark Stone', 'owner', 'owner Mark Stone', OWN6, 'page')))
+  bad.forEach((r, i) => assert.notEqual(r.status, 'found', `noun #${i}: ${JSON.stringify(r.person)}`))
+  const { groundPerson } = await import('../lib/people/contact-research.ts')
+  const g = groundPerson({ name: 'Jane Roe', title: 'Practice Owner', source: 'S1', quote: 'Jane Roe, Practice Owner | Brightloop Dental', linkedin_source: null }, [{ id: 'S1', url: 'https://news.example.test/x', title: 'Jane Roe, Practice Owner | Brightloop Dental', text: 'Jane Roe, Owner of Globex Health, which bought Brightloop Dental last year.' + D, kind: 'search' }], { ...INPUT, where: [] })
+  assert.ok('refused' in g, 'a second mention under other title words says whose owner she is')
+  const ok = await researchContactSource('Meet our owner Mark Stone.', 'Mark Stone', 'owner', 'owner Mark Stone', OWN6, 'page'); assert.equal(ok.status, 'found', JSON.stringify(ok))
+  const ok2 = await researchContactSource('Practice owner Mark Stone welcomes you.', 'Mark Stone', 'owner', 'owner Mark Stone', OWN6, 'page'); assert.equal(ok2.status, 'found', JSON.stringify(ok2))
+})

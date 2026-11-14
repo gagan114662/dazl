@@ -243,8 +243,13 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
   // or a separator, never a lower-case business word.
   if (titles[0][0] < names[0][0]) {
-    const lw = /([\p{L}][\p{L}'’-]*)[^\p{L}]*$/u.exec(left)?.[1]
-    if (lw && /^\p{Ll}/u.test(lw) && !(CONNECT0.test(lw) || FILLER.test(lw) || TITLE_OK.test(lw) || roleWords.has(lw.toLowerCase()) || whereWords.has(lw.toLowerCase()))) return { refused: 'title_at_another_organisation' }
+    // Skip back over connector words ("bakery and owner", "bakery with owner", "bakery as owner"): the first real word before them must not be a business word.
+    const toks = left.match(/[\p{L}][\p{L}'’-]*/gu) ?? []
+    // ... and over business NOUNS a reviewer may put before the title ("pet clinic owner", "law practice owner", "hockey team owner"): the word before them is judged.
+    const NOUN = /^(?:clinic|practice|team|staff|patients?|office|company|business|shop|store|firm|studio|group)$/i
+    let k = toks.length - 1; while (k >= 0 && (CONNECT0.test(toks[k]) || NOUN.test(toks[k]))) k--
+    const lw = k >= 0 ? toks[k] : undefined
+    if (lw && /^\p{Ll}/u.test(lw) && !(FILLER.test(lw) || TITLE_OK.test(lw) || roleWords.has(lw.toLowerCase()) || whereWords.has(lw.toLowerCase()))) return { refused: 'title_at_another_organisation' }
   }
   // After the title and a separator, a bare noun clause ("owner, runs the bakery next door", "owner - the bakery down the street") is another business too:
   // the clause must be empty, this company, or only ordinary title / filler / place words.
@@ -338,13 +343,19 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   if (src) {
     const hay = norm(`${src.title}. ${src.text}`), n = esc(norm(answer.name)), t = esc(norm(answer.title))
     const gap = String.raw`[\s,\-–—|:()·•]*(?:(?:is|was|as|the|our|its|their|a|an|dr\.?)[\s,\-–—|:()·•]*){0,3}`
-    for (const re of [new RegExp(`${n}${gap}${t}`, 'gu'), new RegExp(`${t}${gap}${n}`, 'gu')]) {
-      let seen = 0; const nthOf = new Map<string, number>()
+    // The title the model returned, and any other title word next to the name ("Practice Owner" quoted, but "Owner of Globex Health" elsewhere).
+    const TW = String.raw`(?:co-?founder|founder|co-?owner|owner|ceo|chief executive officer|president|principal|managing director|managing partner|director|manager|partner|head)`
+    const pats: [RegExp][] = [[new RegExp(`${n}${gap}(?:${t}|${TW})`, 'gu')], [new RegExp(`(?:${t}|${TW})${gap}${n}`, 'gu')]]
+    const seenTexts = new Map<string, number>()
+    for (const [re] of pats) {
+      let seen = 0
       for (const m of hay.matchAll(re)) {
         if (++seen > 20) return { refused: 'too_many_mentions' }
-        const k = nthOf.get(m[0]) ?? 0; nthOf.set(m[0], k + 1)   // this is the k-th occurrence of that exact text
-        const r = groundAt({ ...answer, quote: m[0] }, sources, input, k)
-        if ('refused' in r && r.refused !== 'quote_not_in_source') return r
+        const k = seenTexts.get(m[0]) ?? 0; seenTexts.set(m[0], k + 1)   // this is the k-th occurrence of that exact text
+        const mentionTitle = m[0].replace(new RegExp(n, 'u'), '').replace(/^[\s,\-–—|:()·•]+|[\s,\-–—|:()·•]+$/g, '').replace(/^(?:(?:is|was|as|the|our|its|their|a|an|dr\.?)\s+)+/, '').trim() || answer.title
+        const r = groundAt({ ...answer, title: mentionTitle.length >= 2 ? mentionTitle : answer.title, quote: m[0] }, sources, input, k)
+        // Only what says whose business it is counts for a mention under other words (its own title may not be a buyer role).
+        if ('refused' in r && ['title_at_another_organisation', 'possessive_title', 'past_role'].includes(r.refused)) return r
       }
     }
   }
