@@ -28,11 +28,13 @@ const smtp = (await import('node:net')).createServer(sock => {
 })
 const smtpPort = await new Promise<number>(r => smtp.listen(0, '127.0.0.1', () => r((smtp.address() as import('node:net').AddressInfo).port)))
 const ledgerDir = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'dazl-health-ledger-'))
-Object.assign(process.env, { SYSTEM_MAIL_SMTP_URL: mode === 'mail-port-25' ? 'smtp://127.0.0.1:25' : `smtp://127.0.0.1:${smtpPort}`, SYSTEM_MAIL_FROM: 'dazl <fixture@example.test>', DAZL_TOMBSTONE_LEDGER: `${ledgerDir}/ledger.jsonl` })
+Object.assign(process.env, { SYSTEM_MAIL_SMTP_URL: mode === 'mail-port-25' || mode === 'mail-port-25-required' ? 'smtp://127.0.0.1:25' : `smtp://127.0.0.1:${smtpPort}`, SYSTEM_MAIL_FROM: 'dazl <fixture@example.test>', DAZL_TOMBSTONE_LEDGER: `${ledgerDir}/ledger.jsonl` })
 if (mode === 'ledger-missing') delete process.env.DAZL_TOMBSTONE_LEDGER
+// reported only by default; 'mail-port-25-required' and 'ledger-missing' turn the operator's switch on
+if (mode === 'mail-port-25-required' || mode === 'ledger-missing') process.env.DAZL_READY_REQUIRES_LAUNCH = '1'
 delete process.env.DAZL_ENV
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-if (mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'ledger-missing') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
+if (mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'mail-port-25-required' || mode === 'ledger-missing') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
 if (mode === 'stats-hang') {
   const base = sqliteDb(getScanDb())
   setDb({ ...base, all: (sql, params) => /FROM work_queue GROUP BY kind/.test(sql) ? new Promise(() => {}) : base.all(sql, params) })
@@ -55,7 +57,7 @@ test(`health routes (${mode})`, async () => {
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
   const { GET: apiReady } = await import('../../app/api/ready/route.ts')
   // the store this instance is configured for: DATABASE_URL -> postgres (pg, pg-behind, pg-down), else sqlite
-  const backend = mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'ledger-missing' ? 'sqlite' : 'postgres'
+  const backend = mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'mail-port-25-required' || mode === 'ledger-missing' ? 'sqlite' : 'postgres'
   const ids = new Set<string>()
   // liveness, /api/health/live: 200 in every mode, even with the store down; no check runs
   const l = await live()
@@ -84,6 +86,8 @@ test(`health routes (${mode})`, async () => {
     // reachable Postgres: ok, even when a migration is missing (that is readiness, not reachability)
     assert.deepEqual([h.status, hb.ok, hb.checks.postgres.ok], [200, true, true], JSON.stringify(hb))
   }
+  // the mail check never waits: the first probe starts its one background verify; let that land before reading
+  await ready(); await (await import('../../lib/ops/launch-checks.ts')).mailCheckSettled()
   for (const get of [ready, apiReady]) {
     const res = await get()
     const body = await res.json()
@@ -97,20 +101,27 @@ test(`health routes (${mode})`, async () => {
       assert.deepEqual(body.checks.env, { ok: false, missing: 1 })
       assert.ok(!JSON.stringify(body).includes('STRIPE'), 'the public body never names the variable')
     } else if (mode === 'mail-port-25') {
-      // #1089: the settings are present but point at port 25, which cannot leave the host: not ready, and it says so
-      assert.equal(res.status, 503, JSON.stringify(body))
+      // #1089: mail set to port 25 cannot leave the host. REPORTED, and `ok` unchanged, while the operator has not required it
+      assert.equal(res.status, 200, JSON.stringify(body)); assert.equal(body.ok, true)
+      assert.deepEqual(body.checks.mail, { ok: false, reason: 'port_25', port: 25 })
+      assert.deepEqual(body.launch, { ok: false, required: false })
+      assert.ok(!JSON.stringify(body).includes('127.0.0.1') && !JSON.stringify(body).includes('SYSTEM_MAIL'), 'the public body names no host and no variable')
+    } else if (mode === 'mail-port-25-required') {
+      // the same deployment once the operator requires it (DAZL_READY_REQUIRES_LAUNCH=1): not ready
+      assert.equal(res.status, 503, JSON.stringify(body)); assert.equal(body.ok, false)
       assert.deepEqual(body.checks.mail, { ok: false, reason: 'port_25', port: 25 })
       assert.deepEqual(body.checks.deletion, { ok: true }); assert.deepEqual(body.checks.env, { ok: true, missing: 0 })
-      assert.ok(!JSON.stringify(body).includes('127.0.0.1') && !JSON.stringify(body).includes('SYSTEM_MAIL'), 'the public body names no host and no variable')
+      assert.deepEqual(body.launch, { ok: false, required: true })
     } else if (mode === 'ledger-missing') {
       assert.equal(res.status, 503, JSON.stringify(body))
       assert.deepEqual(body.checks.deletion, { ok: false, reason: 'not_configured' }); assert.equal(body.checks.mail.ok, true)
+      assert.deepEqual(body.launch, { ok: false, required: true })
       assert.ok(!JSON.stringify(body).includes('TOMBSTONE'), 'the public body never names the variable')
     } else if (mode === 'sqlite') {
       assert.equal(res.status, 200, JSON.stringify(body))
       assert.deepEqual(body.checks.env, { ok: true, missing: 0 })
       assert.equal(body.checks.mail.ok, true, 'the SMTP server answered a real connect'); assert.equal(body.checks.mail.port, smtpPort)
-      assert.deepEqual(body.checks.deletion, { ok: true })
+      assert.deepEqual(body.checks.deletion, { ok: true }); assert.deepEqual(body.launch, { ok: true, required: false })
       assert.equal(body.ok, true)
       assert.equal(body.checks.store.engine, 'sqlite')
       assert.deepEqual(body.checks.schema, { ok: true, skipped: 'sqlite' })

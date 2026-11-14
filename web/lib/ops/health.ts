@@ -27,6 +27,7 @@ import type { DeletionCheck, MailCheck } from './launch-checks.ts'
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
 export interface Readiness {
   ok: boolean
+  launch: { ok: boolean; required: boolean }
   // applied: the highest PG migration recorded in the store (null on SQLite, or when it could not be read)
   store: { engine: Db['kind'] | 'unknown'; migrations: { shipped: number; applied: number | null }; raw_sqlite_modules: number }
   // The alerts when the queue answered and its statistics were read within their own budget; alerts null with the
@@ -56,8 +57,10 @@ export interface ReadinessDeps {
   // the process environment to check against REQUIRED_ENV; the route passes process.env, unit callers may leave it out
   env?: () => Record<string, string | undefined>
   // #1089: the route wires both; unit callers may leave them out (reported as skipped: 'not_wired')
-  mail?: () => Promise<MailCheck>
+  mail?: () => MailCheck
   deletion?: () => DeletionCheck
+  // true: mail and deletion are part of `ok` (DAZL_READY_REQUIRES_LAUNCH=1); otherwise they are reported only
+  launchRequired?: () => boolean
   timeoutMs?: number
   // budget for the optional queue statistics (the alerts), separate from the checks': min(timeoutMs, 500 ms) by default
   statsTimeoutMs?: number
@@ -154,11 +157,14 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
   const env = d.env ? envCheck(d.env()) : { ok: true as const, skipped: 'not_wired' as const }
-  const mail = d.mail ? await d.mail().catch((): MailCheck => ({ ok: false, reason: 'verify_failed' })) : { ok: true as const, skipped: 'not_wired' as const }
+  const mail = d.mail ? d.mail() : { ok: true as const, skipped: 'not_wired' as const }
   const deletion = d.deletion ? d.deletion() : { ok: true as const, skipped: 'not_wired' as const }
   reportLaunchChecks(mail, deletion)
   return {
-    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && mail.ok && deletion.ok,
+    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && (d.launchRequired?.() ? mail.ok && deletion.ok : true),
+    // #1089: can a stranger use this deployment (account mail leaves the host, an account can be deleted)? Part of `ok`
+    // only where the operator requires it; always stated here.
+    launch: { ok: mail.ok && deletion.ok, required: d.launchRequired?.() === true },
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
     queue: queueBody,
     checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion },
