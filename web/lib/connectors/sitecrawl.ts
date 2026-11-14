@@ -158,14 +158,43 @@ const LISTING = /(^|\.)(simplyhired|ziprecruiter|monster|careerbuilder|jobleads|
 const NOT_A_COMPANY_TLD = /\.(gov|edu|mil)(\.[a-z]{2})?$|(^|\.)gc\.ca$|(^|\.)gov\.[a-z]{2,3}(\.[a-z]{2})?$/i
 // Only a node that IS an organisation (or is given as one: hiringOrganization, publisher, author, provider ...) names a company's site. A
 // JobPosting / Article / WebPage node's own url is the posting or story, not the employer, whatever its title says (council R1).
+// The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
+// must not cost quadratic time, council R8). At most 20 blocks, each at most 200 KB.
+export function ldJsonBlocks(html: string): string[] {
+  const out: string[] = []; const low = html.length <= 2_000_000 ? html.toLowerCase() : ''
+  let i = 0
+  while (out.length < 20 && (i = low.indexOf('<script', i)) >= 0) {
+    const tagEnd = low.indexOf('>', i)
+    if (tagEnd < 0) break
+    if (tagEnd - i > 400) { i += 7; continue }
+    const tag = low.slice(i, tagEnd)
+    i = tagEnd + 1
+    if (!/type\s*=\s*["']application\/ld\+json["']/.test(tag)) continue
+    const close = low.indexOf('</script', i)
+    if (close < 0) break
+    if (close - i <= 200_000) out.push(html.slice(i, close))
+    i = close + 8
+  }
+  return out
+}
+// Postal addresses written out on a page ("4437 Supply Court, Bldg 4, Austin, TX 78744"): street number and street, city, two-letter region,
+// postal code. Tags are dropped in one linear pass; at most 20 per page. These, and nothing else from a site's other pages, feed the place
+// confirmation of a searched site: a city named in running text is not an address.
+const POSTAL_ADDRESS = /\b\d{1,6}[A-Za-z]?\s+[^,.;|\n<>]{3,60}(?:,\s*[^,.;|\n<>]{1,30})?,\s*[\p{L} .'-]{2,40},\s*[A-Z]{2}\b\.?,?\s+(?:\d{5}(?:-\d{4})?|[A-Z]\d[A-Z]\s?\d[A-Z]\d)\b/gu
+export function postalAddressSnippets(html: string): string[] {
+  const text = html.slice(0, 800_000).replace(/<[^>]{0,2000}>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ')
+  const out: string[] = []
+  for (const m of text.matchAll(POSTAL_ADDRESS)) { out.push(m[0].slice(0, 160)); if (out.length >= 20) break }
+  return out
+}
 const ORG_TYPE = /(organization|business|corporation|company|dentist|physician|clinic|restaurant|store|contractor|agency|service|ngo|brand)$/i
 const NOT_ORG_TYPE = /^(jobposting|article|newsarticle|blogposting|webpage|website|event|product|offer|person|breadcrumblist|listitem|imageobject|videoobject|place|postaladdress)$/i
 export function jsonLdCompanySites(company: string, html: string, pageHost = ''): string[] {
   const want = norm(company); if (want.length < 4) return []
   const out: string[] = []
   if (html.length > 2_000_000) return []
-  for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
-    let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+  for (const block of ldJsonBlocks(html)) {
+    let root: unknown; try { root = JSON.parse(block) } catch { continue }
     const stack = [root]; let guard = 0
     while (stack.length && guard++ < 2000) {
       const node = stack.pop()
@@ -453,31 +482,63 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
 export function structuredAddressText(html: string): string {
   if (html.length > 2_000_000) return ''
   const out: string[] = []
-  for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
-    let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+  for (const block of ldJsonBlocks(html)) {
+    let root: unknown; try { root = JSON.parse(block) } catch { continue }
     const stack = [root]; let guard = 0
-    while (stack.length && guard++ < 2000 && out.length < 6) {
+    while (stack.length && guard++ < 2000 && out.length < 12) {
       const node = stack.pop()
       if (!node || typeof node !== 'object') continue
       if (Array.isArray(node)) { for (const x of node) { if (stack.length >= 5000) break; if (x && typeof x === 'object') stack.push(x) } continue }
       const rec = node as Record<string, unknown>
-      for (const v of Object.values(rec)) if (v && typeof v === 'object' && stack.length < 5000) stack.push(v)
-      const str = (k: string) => (typeof rec[k] === 'string' ? (rec[k] as string).replace(/[<>\n]/g, ' ').trim().slice(0, 80) : '')
-      const city = str('addressLocality'), region = str('addressRegion')
-      if (!city || !region) continue
-      out.push(`${[str('streetAddress'), city].filter(Boolean).join(', ')}, ${region} ${str('postalCode')}`.trim())
+      // Only the address of an ORGANISATION node is the site's own. Someone else's is never followed: a review's author, an event's venue, a
+      // person, the parent organisation, the area served (council R2).
+      for (const [k, v] of Object.entries(rec)) if (v && typeof v === 'object' && k !== 'address' && !NOT_OWN_ADDRESS_KEY.test(k) && stack.length < 5000) stack.push(v)
+      const types = [rec['@type']].flat().filter((x): x is string => typeof x === 'string')
+      if (types.length === 0 || types.some(t => NOT_ORG_TYPE.test(t)) || !types.some(t => ORG_TYPE.test(t))) continue
+      for (const a of [rec.address].flat()) {
+        if (!a || typeof a !== 'object' || Array.isArray(a)) continue
+        const ad = a as Record<string, unknown>
+        const str = (k: string) => (typeof ad[k] === 'string' || typeof ad[k] === 'number' ? String(ad[k]).replace(/[<>\n]/g, ' ').trim().slice(0, 80) : '')
+        const city = str('addressLocality'), region = str('addressRegion')
+        if (!city || !region) continue
+        out.push(`${[str('streetAddress'), city].filter(Boolean).join(', ')}, ${region} ${str('postalCode')}`.trim())
+      }
     }
   }
   return out.join(' . ')
+}
+const NOT_OWN_ADDRESS_KEY = /^(review|reviews|author|creator|parentOrganization|areaServed|serviceArea|event|events|location|member|memberOf|sponsor|funder|founder|employee|employees|alumni|performer|organizer|publisher|provider|offers|makesOffer|subjectOf|mentions|about|itemReviewed)$/
+// #1122: does the text give a POSTAL address in one of the request's cities: a street number and street, the city, a two-letter region and a
+// postal code ("4437 Supply Court, Bldg 4, Austin, TX 78744"; "200 Queen Street West, Toronto, ON M5V 1Z4")? The city is the part of a
+// requested place before its first comma; a request with no city gives false. A city named in running text or in a list is not an address.
+export function postalAddressInCity(text: string, where: string[]): boolean {
+  const cities = where.map(w => (w.split(',')[0] ?? '').trim()).filter(c => c.length >= 3 && c.length <= 40 && /^[\p{L} .'-]+$/u.test(c))
+  if (cities.length === 0 || !text) return false
+  const t = text.slice(0, 80_000)
+  for (const c of cities) {
+    const city = c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+    const re = new RegExp(`\\b\\d{1,6}[A-Za-z]?\\s+[^,.;|\\n]{3,60}(?:,\\s*[^,.;|\\n]{1,30})?,\\s*${city}\\s*,\\s*[A-Z]{2}\\b\\.?,?\\s+(?:\\d{5}(?:-\\d{4})?|[A-Z]\\d[A-Z]\\s?\\d[A-Z]\\d)\\b`, 'i')
+    if (re.test(t)) return true
+  }
+  return false
 }
 // #1122: the name a company goes by on its own site when the lead carries the long form: the part before "&" / "and" / "-" / "|" / "," when
 // that part is itself two words or more ("Tadco Roofing & Waterproofing" -> "Tadco Roofing"), else the name without one trailing trade word
 // ("Queen Street Dental Centre" -> "Queen Street Dental"). null when nothing safe is left (a one-word or very short remainder is a common
 // word, not a name). Used ONLY for a searched site, and ONLY together with the site's own place agreeing (crawlJob).
 const TRADE_TAIL = /^(centre|center|clinic|clinics|group|services|service|solutions|company|studio|associates|partners|enterprises|international|canada|usa|residential|commercial)$/i
-export function shortCompanyName(company: string): string | null {
+// Words that name a trade, a size or a boast, not a company: a short name made only of these (and of the request's own city) is a phrase many
+// unrelated firms share ("Family Dental", "Best Roofing", "First National Bank", "Austin Roofing" in Austin) and is refused (council R3).
+const GENERIC_WORD = /^(the|a|an|of|and|for|in|at|by|to|my|your|our|best|top|first|premier|quality|elite|pro|professional|expert|total|complete|all|american|national|international|global|united|general|central|north|south|east|west|new|old|city|metro|county|state|family|home|house|community|local|express|direct|plus|one|star|gold|blue|green|red|dental|dentist|dentistry|orthodontics|medical|health|healthcare|care|clinic|roofing|roofs|roofer|construction|contracting|contractors|builders|building|plumbing|electric|electrical|heating|cooling|hvac|landscaping|painting|cleaning|restoration|remodeling|bank|financial|finance|insurance|realty|properties|law|legal|consulting|marketing|digital|media|design|agency|restaurant|cafe|kitchen|grill|bar|pizza|bakery|coffee|street|avenue|road|park|centre|center|group|services|service|solutions|company|studio|associates|partners|dr|mr|mrs)$/i
+export function shortCompanyName(company: string, where: string[] = []): string | null {
   const full = norm(company)
-  const ok = (cand: string) => { const words = cand.trim().split(/\s+/).filter(Boolean); const n = norm(cand); return words.length >= 2 && n.length >= 8 && n.length < full.length ? cand.trim() : null }
+  const cityWords = new Set(where.flatMap(w => w.toLowerCase().split(/[^\p{L}]+/u)).filter(x => x.length >= 3))
+  const ok = (cand: string) => {
+    const words = cand.trim().split(/\s+/).filter(Boolean); const n = norm(cand)
+    if (words.length < 2 || n.length < 8 || n.length >= full.length || cand.length > 80 || /[&|,+]/.test(cand)) return null
+    const distinctive = words.map(w => w.toLowerCase().replace(/[^\p{L}0-9]/gu, '')).filter(w => w.length >= 3 && !GENERIC_WORD.test(w) && !cityWords.has(w))
+    return distinctive.length >= 1 ? cand.trim() : null
+  }
   const head = company.split(/\s+(?:&|and|\+)\s+|\s+[-|]\s+|,\s+/i)[0] ?? ''
   const byHead = head !== company ? ok(head) : null
   if (byHead) return byHead
@@ -569,9 +630,9 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
     onPage?.(home.body, home.finalUrl, home.status)
-    // #1122: what the site's OWN other pages (contact, about, locations) and its structured-data address say, case kept, for the place check of a
-    // searched site whose homepage states no place. Never the homepage's replacement: it is added to it.
-    const sitePlain: string[] = [structuredAddressText(home.body)]
+    // #1122: the POSTAL ADDRESSES the site gives on its own pages (home, contact, about, locations) and in its structured data. They can confirm
+    // the place of a searched site whose homepage states none; they never replace or clear what the homepage itself says.
+    const sitePlain: string[] = [structuredAddressText(home.body), ...postalAddressSnippets(home.body)]
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
       if (stopped()) { stoppedBy = 'aborted'; break }
@@ -582,7 +643,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (!r || r.status >= 400) continue
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
-      if (sitePlain.join(' ').length < 40_000) sitePlain.push(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12_000), structuredAddressText(r.body))
+      if (sitePlain.length < 200) sitePlain.push(structuredAddressText(r.body), ...postalAddressSnippets(r.body))   // every page read contributes its addresses (a few short lines each), never its prose
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -604,7 +665,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, siteText: sitePlain.filter(Boolean).join(' . ').slice(0, 40_000), ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, siteText: sitePlain.filter(Boolean).join(' . ').slice(0, 20_000), ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -871,6 +932,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
       const searchedHosts = new Set<string>()   // hosts that came from the web search for THIS lead (#1122)
+      const shortBound = new Map<string, string>()   // searched host -> the short name its homepage carries instead of the full one
       const sites: string[] = []
       let anchored = false   // a site the page links in its visible text (or the page's own domain); one named only in structured data is a candidate, not a link
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { sites.push(o.site); basisOf.set(o.site, o.basis); if (!o.structured) anchored = true }
@@ -882,22 +944,26 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const attempt = async (cands: string[]) => {
       for (const cand of cands) {
         site = cand
-        // #1122: a site found by the web search may prove itself on its OWN other pages: the place is read from the homepage plus its contact /
-        // about pages and its structured-data address, and the company may go by its short name there - but a short name counts ONLY when that
-        // place agrees outright with the request or the lead's own address. Every other candidate is checked on its homepage alone, as before.
+        // #1122: a site found by the web search may prove its place with a POSTAL ADDRESS in the request's own city (street, city, region, postal
+        // code) given on its own pages or in its structured data, and it may go by the company's short name - but a short name counts ONLY with such
+        // an address. Everything the homepage itself says is still judged exactly as before (pt is the homepage text): an address elsewhere, another
+        // state or city, a street conflict all still refuse; the address can only ADD confirmation, never clear a refusal. A city named in running
+        // text, a list of places served, the city inside the company's own name: none of these is an address. Every other candidate is unchanged.
         const searched = searchedHosts.has(cand)
-        const short = searched ? shortCompanyName(l.company) : null
+        const short = searched ? shortCompanyName(l.company, where) : null
         r = await readSite(cand, short ?? l.company)
         const fullNamed = !short || !!r.homeNorm?.includes(norm(l.company))
-        const pt = searched && r.homeText !== undefined ? `${r.homeText} . ${r.siteText ?? ''}`.slice(0, 70_000) : r.homeText
-        if (!unread(r) && !fullNamed && !((where.length > 0 && placeAgreement(pt ?? '', where, l.company) === 'agrees') || addressAgreement(pt ?? '', `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'agrees')) {
-          const reason = `contact rejected: location unconfirmed ${firstPlaceLabel(pt ?? '') ?? 'no place stated'} vs ${leadPlaceLabel(where)} (the site uses a shortened company name, so its own place must agree)`.slice(0, 180)
+        if (short && !fullNamed) shortBound.set(cand, short); else shortBound.delete(cand)
+        const pt = r.homeText
+        const addressed = searched && !unread(r) && postalAddressInCity(`${r.homeText ?? ''} . ${r.siteText ?? ''}`, where)
+        if (!unread(r) && !fullNamed && !addressed) {
+          const reason = `contact rejected: location unconfirmed ${firstPlaceLabel(pt ?? '') ?? 'no place stated'} vs ${leadPlaceLabel(where)} (the site uses a shortened company name, so it must give a postal address in the requested city)`.slice(0, 180)
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
           recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(pt, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !addressed && !probeLocationAgrees(pt, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, pt, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -917,7 +983,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const v = pt ? placeAgreement(pt, where, l.company) : 'unconfirmed'
-          if (v === 'mismatch' || (pt && ownAddressElsewhere(pt, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
+          if (v === 'mismatch' || (pt && ownAddressElsewhere(pt, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe' && !addressed)) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(pt ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
             if (pt) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(pt ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
@@ -992,7 +1058,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
       // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.
-      if (r.reason === 'ok' || r.reason === 'none_published') addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: 'identity-check-v2: homepage names the company and the place or address agrees'.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+      if (r.reason === 'ok' || r.reason === 'none_published') addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: (shortBound.has(site) ? `identity-check-v2: the site uses the short name "${shortBound.get(site)}" and gives a postal address in the requested city` : 'identity-check-v2: homepage names the company and the place or address agrees').slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       for (const t of r.tech ?? []) {
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
@@ -1003,7 +1069,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
       const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
       for (const f of r.found) {
-        const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
+        const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source${shortBound.has(site) ? '; short name on site' : ''}` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
       }
