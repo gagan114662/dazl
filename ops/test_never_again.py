@@ -133,7 +133,7 @@ class DeployRefusesOnBoxBuild(unittest.TestCase):
 
 
 def deploy_files():
-    pats = ['ops/**/deploy*', 'ops/**/pull*', 'ops/**/*.service', 'scripts/**/deploy*', 'ops/**/*deploy*.sh']
+    pats = ['ops/**/deploy*', 'ops/**/pull*', 'ops/**/run-release*', 'ops/**/check-installed*', 'ops/**/*.service', 'scripts/**/deploy*', 'ops/**/*deploy*.sh']
     seen = set()
     for p in pats:
         for f in REPO.glob(p):
