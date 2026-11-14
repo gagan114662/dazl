@@ -50,7 +50,7 @@ export interface ResearchResult {
   sources: { id: string; url: string; title: string; kind: 'search' | 'page' }[]
   usage: { searches: number; reads: number; model: string | null; input_tokens: number | null; output_tokens: number | null }
 }
-export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal }
+export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal; readPages?: boolean }   // readPages false: search results only, no page of the site is requested
 
 const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
 const norm = (s: string) => tidy(s).toLowerCase().replace(/[’`]/g, "'")
@@ -516,7 +516,7 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   // One page read, only of the company's own site when a result is on its confirmed domain (a team / about page beats a snippet).
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const own = domain ? sources.find(s => { const h = hostOf(s.url); return h === domain || h.endsWith(`.${domain}`) }) : undefined
-  if (own) {
+  if (own && deps.readPages !== false) {
     const r = await tfFetch(deps.db, deps.tenantId, [own.url], spent, tf)
     usage.reads++
     if (r.ok && r.pages[0]) { const text = tidy(markdownToText(r.pages[0].text ?? '')).slice(0, PAGE_TEXT); if (text.length >= 80) sources.push({ id: `S${sources.length + 1}`, url: own.url, title: tidy(r.pages[0].title ?? own.title).slice(0, 200), text, kind: 'page' }) }

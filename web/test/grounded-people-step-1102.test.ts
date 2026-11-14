@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { addEnrichment } from '../lib/connectors/store.ts'
-import { findGroundedPeople, GROUNDED_CONNECTOR, newGroundedStats } from '../lib/people/grounded-people.ts'
+import { findGroundedPeople, GROUNDED_CONNECTOR, newGroundedStats, sourceOwnSite } from '../lib/people/grounded-people.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { CONTACT_RESEARCH_MODEL } from '../lib/people/contact-research.ts'
 import type { Provider } from '../lib/llm/provider.ts'
@@ -33,7 +33,7 @@ test('#1102 a lead that names nobody gets one grounded lookup and the kept perso
   const n = await findGroundedPeople(db, 'A', job, { ...h.opts, stats })
   assert.equal(n, 1); assert.equal(h.calls.prompts, 1, 'one model call, for Pagewake only')
   assert.deepEqual([...new Set(h.calls.searched)], ['pagewake.example', 'Pagewake'], 'its own site, then the open web; no search for the named lead or the in-doubt hold')
-  assert.deepEqual(stats, { eligible: 1, no_website: 0, looked_up: 1, found: 1, none: 0, refused: {}, failed: {} })
+  assert.deepEqual(stats, { eligible: 1, own_source: 0, no_website: 0, looked_up: 1, found: 1, none: 0, refused: {}, failed: {} })
   const rows = personRows(db, 'L-a')
   assert.equal(rows.length, 1); assert.equal(rows[0].connector, GROUNDED_CONNECTOR); assert.equal(rows[0].value, 'Dana Okoye, Head of Sales'); assert.equal(rows[0].source_url, TEAM.url)
   const p = leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = 'L-a' AND kind IN ('person','contact')").all(), HELD_WHO.join('; '))
@@ -62,5 +62,24 @@ test('#1102 a lead with no confirmed website is never looked up: no search, no m
   const stats = newGroundedStats()
   assert.equal(await findGroundedPeople(db, 'A', job, { ...h.opts, stats }), 0)
   assert.equal(h.calls.searched.length, 0); assert.equal(h.calls.reads, 0); assert.equal(h.calls.prompts, 0)
-  assert.deepEqual(stats, { eligible: 0, no_website: 2, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
+  assert.deepEqual(stats, { eligible: 0, own_source: 0, no_website: 2, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
+})
+
+test('#1037 a lead found on its company\'s own site, whose page blocked the scan, has no recorded website: its own site is searched (never read) and the person is kept', async () => {
+  // The real case (austin-roofing, 2026-11-14): source https://<company>.com/careers, held blocked_by_site, company_domain empty.
+  const { db, job } = setup([['L-a', 'Pagewake', 'blocked_by_site', 90], ['L-b', 'Meshgate', 'quote_unconfirmed', 80]], undefined, { domains: false })
+  db.prepare("UPDATE leads SET source_url = 'https://www.pagewake.example/careers' WHERE id = 'L-a'").run()   // Meshgate stays on a job board
+  const h = harness({ person: { name: 'Dana Okoye', title: 'Head of Sales', source: 'S1', quote: 'Dana Okoye, Head of Sales at Pagewake', linkedin_source: null } })
+  const stats = newGroundedStats()
+  assert.equal(await findGroundedPeople(db, 'A', job, { ...h.opts, stats }), 1)
+  assert.deepEqual(stats, { eligible: 1, own_source: 1, no_website: 1, looked_up: 1, found: 1, none: 0, refused: {}, failed: {} })
+  assert.equal(h.calls.searched[0], 'pagewake.example'); assert.equal(h.calls.reads, 0, 'a site that refused the scan is not requested again')
+  assert.equal(personRows(db, 'L-a')[0]?.value, 'Dana Okoye, Head of Sales'); assert.equal(personRows(db, 'L-b').length, 0)
+})
+
+test('#1037 the source page is the company\'s own site only when its host is named after the company', () => {
+  assert.equal(sourceOwnSite('HD Roofing & Repairs', 'https://hdroofingandrepairs.example/careers'), 'hdroofingandrepairs.example', '"&" is "and" in a host name')
+  assert.equal(sourceOwnSite('Pagewake', 'https://www.pagewake.example/jobs/'), 'pagewake.example')
+  for (const u of ['https://www.linkedin.com/jobs/view/estimator-at-pagewake-1', 'https://www.career.com/job/pagewake/estimator', 'https://jobs.example.test/pagewake', 'https://pagewake.jobboard.example/x', 'not a url', null])
+    assert.equal(sourceOwnSite('Pagewake', u), null, String(u))
 })

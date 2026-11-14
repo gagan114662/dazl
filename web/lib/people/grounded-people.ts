@@ -2,7 +2,8 @@
 // grounded lookup each (lib/people/contact-research.ts: at most 2 searches, 1 page read, 1 Haiku call; every field checked in code
 // against the text of a source that was shown). A person is stored only when the lookup keeps one, with the source it was read from.
 // Only a lead with a CONFIRMED website is looked up: off the company's own site a source must name that website to count (Hermes decision
-// on #1164), so a lead with no confirmed website can never keep a person and no search or model call is spent on it (counted: no_website).
+// on #1164), so a lead with no website can never keep a person and no search or model call is spent on it (counted: no_website). The website
+// is the lead's confirmed one, or the site its own source page is on (sourceOwnSite). A site that refused the scan's fetch is searched, never read.
 // Inside the scan's own caps: at most MAX_LEADS leads, one lookup per company, a wall-clock deadline, and the scan's spend ledger
 // still binds every search and model call (a refusal stops the pass, it is not an error).
 import type Database from 'better-sqlite3'
@@ -11,9 +12,24 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 import type { Provider } from '../llm/provider.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
+import { findCompanySitesWithBasis } from '../connectors/sitecrawl.ts'
 import { leadPerson } from './lead-person.ts'
 import { researchContact, type ResearchResult } from './contact-research.ts'
 import { NOT_GRADED_OUT, ROWS_SQL, SEARCHABLE_SQL } from './people-search.ts'
+
+// The lead's SOURCE page is on the company's own site (the page the lead was found on is hosted on a domain named after the company): that site is
+// the company's, by the same test the crawl uses for its strongest basis (evidence_own_domain). Nothing is guessed and nothing is fetched to decide
+// it. The crawl records no website when that page blocked it (blocked_by_site / needs_javascript), which left such a lead with no way to a person.
+// "&" in a name is "and" in a host name ("HD Roofing & Repairs" at hdroofingandrepairs.com).
+export function sourceOwnSite(company: string, sourceUrl: string | null): string | null {
+  if (!sourceUrl) return null
+  for (const name of [company, company.replace(/\s*&\s*/g, ' and ')]) {
+    const own = findCompanySitesWithBasis(name, '', sourceUrl).find(o => o.basis === 'evidence_own_domain')
+    if (own) return own.site
+  }
+  return null
+}
+const BLOCKED = new Set(['blocked_by_site', 'needs_javascript'])
 
 export const GROUNDED_CONNECTOR = 'research:person'
 export const GROUNDED_LABEL = 'quoted from a public source the lookup read (not verified as current staff)'
@@ -21,8 +37,8 @@ export const MAX_LEADS = 5          // lookups per scan, best leads first
 export const CONCURRENCY = 3
 export const DEADLINE_MS = 100_000  // the whole pass; a scan must finish in minutes
 
-export interface GroundedStats { eligible: number; no_website: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
-export const newGroundedStats = (): GroundedStats => ({ eligible: 0, no_website: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
+export interface GroundedStats { eligible: number; own_source: number; no_website: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
+export const newGroundedStats = (): GroundedStats => ({ eligible: 0, own_source: 0, no_website: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
 export interface GroundedOpts { provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; maxLeads?: number; deadlineMs?: number; alive?: () => boolean; stats?: GroundedStats; onStop?: (why: string) => void }
 
 export async function findGroundedPeople(db: Database.Database, tenantId: string, jobId: string, deps: GroundedOpts): Promise<number> {
@@ -36,23 +52,28 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
     if (roles.length === 0) return 0
     const roleText = roles.join('; ')
     const now = deps.now ?? Date.now()
-    const leads = db.prepare(`SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ORDER BY (review_reason IS NOT NULL), COALESCE(fit, 0) DESC, rowid`).all(jobId) as { id: string; company: string; company_domain: string | null }[]
+    const leads = db.prepare(`SELECT id, company, company_domain, source_url, review_reason FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ORDER BY (review_reason IS NOT NULL), COALESCE(fit, 0) DESC, rowid`).all(jobId) as { id: string; company: string; company_domain: string | null; source_url: string | null; review_reason: string | null }[]
     const rowsOf = db.prepare(ROWS_SQL)
     const seen = new Set<string>()
-    const todo: { id: string; company: string; domain: string }[] = []
+    const todo: { id: string; company: string; domain: string; read: boolean }[] = []
     for (const l of leads) {
       const ck = companyKey(l.company); if (seen.has(ck)) continue; seen.add(ck)
       if (leadPerson(rowsOf.all(l.id, tenantId), roleText, now)) continue   // already names its person: nothing to look up
-      if (!(l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain))) { stats.no_website++; continue }
-      if (todo.length < (deps.maxLeads ?? MAX_LEADS)) todo.push({ id: l.id, company: l.company, domain: l.company_domain })
+      const confirmed = l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null
+      const domain = confirmed ?? sourceOwnSite(l.company, l.source_url)
+      if (!domain) { stats.no_website++; continue }
+      if (todo.length >= (deps.maxLeads ?? MAX_LEADS)) continue
+      if (!confirmed) stats.own_source++
+      // A lead held because its page refused the scan's fetch: its site is searched, and no page of it is requested again.
+      todo.push({ id: l.id, company: l.company, domain, read: !(l.review_reason !== null && BLOCKED.has(l.review_reason)) })
     }
     stats.eligible = todo.length
     const deadline = Date.now() + (deps.deadlineMs ?? DEADLINE_MS)
     let stop: string | null = null, next = 0
-    const one = async (l: { id: string; company: string; domain: string }) => {
+    const one = async (l: { id: string; company: string; domain: string; read: boolean }) => {
       stats.looked_up++
       let r: ResearchResult
-      try { r = await researchContact({ company: l.company, domain: l.domain, roles, where }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
+      try { r = await researchContact({ company: l.company, domain: l.domain, roles, where }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, readPages: l.read, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
       catch (e) {
         if (e instanceof SpendRefused) { stop ??= `spend:${e.reason}`; stats.failed[`spend_${e.reason}`] = (stats.failed[`spend_${e.reason}`] ?? 0) + 1; return }
         stats.failed.error = (stats.failed.error ?? 0) + 1; return
