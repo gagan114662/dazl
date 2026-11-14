@@ -18,8 +18,21 @@ const mode = process.env.HEALTH_MODE
 Object.assign(process.env, { DAZL_MASTER_KEY: Buffer.alloc(32, 7).toString('base64'), PUBLIC_BASE_URL: 'https://dazl.test',
   STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture', STRIPE_WEBHOOK_SECRET: 'whsec_fixture' })
 if (mode === 'env-missing') delete process.env.STRIPE_WEBHOOK_SECRET
+// #1089: readiness also needs account mail that can leave the host and a deletion ledger. A fake SMTP server on this
+// machine answers the readiness check's real connect; 'mail-port-25' and 'ledger-missing' leave one wrong.
+const smtpOpen: import('node:net').Socket[] = []
+const smtp = (await import('node:net')).createServer(sock => {
+  smtpOpen.push(sock); sock.on('error', () => {})
+  sock.write('220 fixture ESMTP\r\n')
+  sock.on('data', d => { const line = String(d).trim().toUpperCase(); if (line.startsWith('EHLO') || line.startsWith('HELO')) sock.write('250-fixture\r\n250 OK\r\n'); else if (line.startsWith('QUIT')) { sock.write('221 bye\r\n'); sock.end() } else sock.write('250 OK\r\n') })
+})
+const smtpPort = await new Promise<number>(r => smtp.listen(0, '127.0.0.1', () => r((smtp.address() as import('node:net').AddressInfo).port)))
+const ledgerDir = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'dazl-health-ledger-'))
+Object.assign(process.env, { SYSTEM_MAIL_SMTP_URL: mode === 'mail-port-25' ? 'smtp://127.0.0.1:25' : `smtp://127.0.0.1:${smtpPort}`, SYSTEM_MAIL_FROM: 'dazl <fixture@example.test>', DAZL_TOMBSTONE_LEDGER: `${ledgerDir}/ledger.jsonl` })
+if (mode === 'ledger-missing') delete process.env.DAZL_TOMBSTONE_LEDGER
+delete process.env.DAZL_ENV
 if (mode === 'pg-down') process.env.DATABASE_URL = process.env.HEALTH_DATABASE_URL
-if (mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
+if (mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'ledger-missing') { const lite = new Database(':memory:'); migrateAllSqlite(lite); setScanDb(lite) } // as getDb() opens it; pg-down must keep getDb() on DATABASE_URL
 if (mode === 'stats-hang') {
   const base = sqliteDb(getScanDb())
   setDb({ ...base, all: (sql, params) => /FROM work_queue GROUP BY kind/.test(sql) ? new Promise(() => {}) : base.all(sql, params) })
@@ -42,7 +55,7 @@ test(`health routes (${mode})`, async () => {
   const { GET: ready } = await import('../../app/api/health/ready/route.ts')
   const { GET: apiReady } = await import('../../app/api/ready/route.ts')
   // the store this instance is configured for: DATABASE_URL -> postgres (pg, pg-behind, pg-down), else sqlite
-  const backend = mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' ? 'sqlite' : 'postgres'
+  const backend = mode === 'sqlite' || mode === 'env-missing' || mode === 'stats-hang' || mode === 'mail-port-25' || mode === 'ledger-missing' ? 'sqlite' : 'postgres'
   const ids = new Set<string>()
   // liveness, /api/health/live: 200 in every mode, even with the store down; no check runs
   const l = await live()
@@ -83,9 +96,21 @@ test(`health routes (${mode})`, async () => {
       assert.equal(body.checks.store.ok, true, 'the store answers')
       assert.deepEqual(body.checks.env, { ok: false, missing: 1 })
       assert.ok(!JSON.stringify(body).includes('STRIPE'), 'the public body never names the variable')
+    } else if (mode === 'mail-port-25') {
+      // #1089: the settings are present but point at port 25, which cannot leave the host: not ready, and it says so
+      assert.equal(res.status, 503, JSON.stringify(body))
+      assert.deepEqual(body.checks.mail, { ok: false, reason: 'port_25', port: 25 })
+      assert.deepEqual(body.checks.deletion, { ok: true }); assert.deepEqual(body.checks.env, { ok: true, missing: 0 })
+      assert.ok(!JSON.stringify(body).includes('127.0.0.1') && !JSON.stringify(body).includes('SYSTEM_MAIL'), 'the public body names no host and no variable')
+    } else if (mode === 'ledger-missing') {
+      assert.equal(res.status, 503, JSON.stringify(body))
+      assert.deepEqual(body.checks.deletion, { ok: false, reason: 'not_configured' }); assert.equal(body.checks.mail.ok, true)
+      assert.ok(!JSON.stringify(body).includes('TOMBSTONE'), 'the public body never names the variable')
     } else if (mode === 'sqlite') {
       assert.equal(res.status, 200, JSON.stringify(body))
       assert.deepEqual(body.checks.env, { ok: true, missing: 0 })
+      assert.equal(body.checks.mail.ok, true, 'the SMTP server answered a real connect'); assert.equal(body.checks.mail.port, smtpPort)
+      assert.deepEqual(body.checks.deletion, { ok: true })
       assert.equal(body.ok, true)
       assert.equal(body.checks.store.engine, 'sqlite')
       assert.deepEqual(body.checks.schema, { ok: true, skipped: 'sqlite' })
@@ -127,5 +152,6 @@ test(`health routes (${mode})`, async () => {
   assert.match([...ids][0], /^[a-f0-9]{12}$/)
   restore()
   if (livePg) { await (await (await import('../../lib/db/client.ts')).getDb()).close(); await schema!.drop() }
+  for (const sock of smtpOpen) sock.destroy(); smtp.close()
   console.log(`HEALTH_ROUTES ${mode}`)
 })
