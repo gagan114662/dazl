@@ -75,10 +75,18 @@ test('#1102 contact-research route: one lookup on the caller\'s own key (Haiku a
   // The model call was reserved and settled on the caller's own spend account, nobody else's.
   const pools = db.prepare('SELECT DISTINCT tenant_id FROM tenant_spend_pools').all() as { tenant_id: string }[]
   assert.deepEqual(pools.map(p => p.tenant_id), ['A'])
+  // The call was reserved at the HIGHER tier and settled to what was used (900 in / 200 out at Haiku's higher-tier price, never the list price).
+  { const rows = db.prepare("SELECT period, reserved_usd, reported_usd, calls FROM tenant_spend_pools WHERE tenant_id = 'A'").all() as { period: string; reserved_usd: number; reported_usd: number; calls: number }[]
+    assert.ok(rows.length >= 1 && rows.every(r => r.calls === 1), JSON.stringify(rows))
+    for (const r of rows) assert.ok(Math.abs(r.reserved_usd - (900 * 0.5 + 200 * 2.5) / 1e6) < 1e-9, `settled at the higher tier: ${JSON.stringify(r)}`) }
   // model: "default" asks for the deployment's model on the same key.
   seen.length = 0
   assert.equal((await call({ ...BODY, model: 'default' })).status, 200)
   assert.equal(seen.find(s => s.host === 'api.anthropic.com')?.body?.model, process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5')
+  // An account already over its daily limit: refused 409 spend_limit BEFORE the model request (the searches the pass already made are counted).
+  { process.env.DAZL_OWNER_DAY_MAX_USD = '0.000001'; seen.length = 0
+    const over = await call(); assert.equal(over.status, 409); assert.deepEqual(await over.json(), { error: 'spend_limit' })
+    assert.equal(seen.filter(x => x.host === 'api.anthropic.com').length, 0, 'no model request past the limit'); delete process.env.DAZL_OWNER_DAY_MAX_USD }
   // The second workspace uses its own key.
   setUser({ ...B, role: 'owner' }); seen.length = 0
   assert.equal((await call()).status, 200); assert.equal(seen.find(s => s.host === 'api.anthropic.com')?.key, 'sk-ant-test-b')
