@@ -56,7 +56,7 @@ export interface ResearchResult {
   sources: { id: string; url: string; title: string; kind: 'search' | 'page' }[]
   usage: { searches: number; reads: number; model: string | null; input_tokens: number | null; output_tokens: number | null }
 }
-export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal; readPages?: boolean; budget?: { spent: { searches: number; fetches: number }; searches: number; fetches: number } }
+export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal; deadlineAt?: number; readPages?: boolean; budget?: { spent: { searches: number; fetches: number }; searches: number; fetches: number } }
 // budget: a caller that makes several lookups (the scan step) hands in ONE count and its limits, so the limits bind across lookups, not per lookup.   // readPages false: search results only, no page of the site is requested
 
 const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
@@ -162,7 +162,7 @@ const NOT_TOP = { test: (t: string) => NOT_TOP_HARD.test(t) || NOT_TOP_SOFT.test
 // an engineer) are refused only when the scan did not ask for that role: a sales scan asks for "VP Sales" by name.
 const NEVER_BUYER = /\b(?:assistant|associate|deputy|interim|acting|chief of staff|to the)\b|['’]s\b/i
 // A past-role marker AFTER the quote, up to the end of the sentence ("... until she retired in 2019", "(2008-2019)").
-const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer|died|has died|passed away|the late|succeeded by|replaced by|ousted|fired|departed)\b|\b(?:19|20)\d{2}\s*[-–]\s*\d{2}\b|\bnow\s+(?:runs|leads|heads|works|serves|owns|at|with)\b|\b(?:to|through)\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
+const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer|died|has died|passed away|the late|survived by|memorial|succeeded by|replaced by|ousted|fired|dismissed|departed|departure|retirement|leaving|left in|was \d{2})\b|\b(?:19|20)\d{2}\s*[-–—]\s*\d{2,4}\b|\bnow\s+(?:runs|leads|heads|works|serves|owns|at|with)\b|\b(?:to|through)\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
 
 const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
 const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|vice|vp|svp|evp|sales|revenue|marketing|operations|growth|commercial|business|development|global|regional|cro|cmo|coo|cfo|cto|founder|co-?founder|owner|co-?owner|ceo|co-?ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
@@ -312,24 +312,20 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   // "... is the Chief Revenue Officer at Acme, the leading AI Sales Platform": when THIS company follows the title directly ("at", "of", "@", a comma),
   // the title is tied to it by the sentence itself ("Speakers: Jane Roe, Chief Revenue Officer, Acme; ...", "said Jane Roe, CEO and co-founder of Acme"):
   // other capitalised words around it are the rest of the page, not another employer of hers.
-  // A page that is the company's by itself: its own confirmed site, or the page this lead was found on. There, "managing partner of the Chicago office",
-  // "CEO of the firm" name the company's OWN unit: the title is tied to the company by the sentence, as if it named it.
-  const dom1 = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
-  // Narrow on purpose: only on the company's OWN site (a news story about two firms can quote either firm's office head, so the page a lead was
-  // found on never qualifies); only "<of|at> the <Place> office" followed by punctuation (never "office of <another firm>", never "the company" /
-  // "the firm"); and the place must be one the request names. Anything else goes through the ordinary rules.
-  const unitM = /^[\s,]*(?:of|at|for|in)\s+(?:the|our|its)\s+((?:\p{Lu}[\p{L}.'’-]+\s+){1,3})office(?=\s*(?:[,.;:!?)"”]|$))/u.exec(rawAll.slice(at + span[1], at + span[1] + 70))
-  const whereU = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
-  const onHost = !!dom1 && (hostOf(src.url) === dom1 || hostOf(src.url).endsWith(`.${dom1}`))
-  const unitDirect = onHost && !!unitM && whereU.length > 0 && placeAgreement(unitM[1], whereU, input.company) === 'agrees'
   // The title may run on in title words before the company ("CEO" quoted from "CEO and co-founder of Acme"). Never "|" or a dash: in a result title those lead to the SITE's name.
-  const direct = unitDirect || companySpans(rawAll, input.company).some(([c0]) => {
+  let directEnd = -1   // where this company's name ends, when the title leads straight to it
+  const direct = companySpans(rawAll, input.company).some(([c0, c1]) => {
     const gap = rawAll.slice(at + span[1], c0)
     if (c0 < at + span[1] || gap.length > 40) return false
     const words = gap.split(/[\s,·]+/).filter(Boolean)
     while (words.length && (/^(?:and|&)$/i.test(words[0]) || TITLE_OK.test(words[0]))) words.shift()
-    return /^(?:(?:at|of|@|for|with)\s+)?(?:the)?$/i.test(words.join(' ')) && !/[.;!?|(]|\s[-–—]\s/.test(gap)
+    const ok = /^(?:(?:at|of|@|for|with)\s+)?(?:the)?$/i.test(words.join(' ')) && !/[.;!?|(]|\s[-–—]\s/.test(gap)
+    if (ok) directEnd = c1
+    return ok
   })
+  // ... but the rest of the person's OWN clause (to the next ";" or the sentence end) is still read: "CEO of Acme Dental's London branch", "CEO of Acme,
+  // was named CEO of Globex Health", "Managing Partner, Acme Law, London" name another place or organisation for her.
+  if (direct && directEnd >= 0) { const rest = rawAll.slice(directEnd, Math.min(sHi, directEnd + 160)).split(/[;:“”"]|[.!?]\s/)[0]; if (foreign(rest)) return { refused: 'title_at_another_organisation' } }   // a quotation that follows is someone speaking, not her clause
   // Otherwise the window rule: nothing else that reads as an organisation near the person (a testimonial card, a case study, a guest's byline).
   if (!direct && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
@@ -361,7 +357,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
     if (!plain && !thisCompany(ws.join(' '))) return { refused: 'title_at_another_organisation' }
     }
   }
-  const phrase = unitDirect ? null : /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
+  const phrase = /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
   if (phrase) {
     const cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean), pw = companyKey(phrase).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
     // The phrase must start with this company's name as whole words (the short form "Brightloop" for "Brightloop Dental Group" is a whole-word start too).
@@ -557,7 +553,7 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   if (sources.length === 0) return base('none', 'source_page_unreadable', { queries })
   const listed = sources.map(s => ({ id: s.id, url: s.url, title: s.title, kind: s.kind }))
   // The caller's time is up (its signal cancelled a search or the page read): no paid model call is started after it.
-  if (deps.signal?.aborted) return base('search_failed', 'aborted', { queries, sources: listed })
+  if (deps.signal?.aborted || (deps.deadlineAt !== undefined && Date.now() >= deps.deadlineAt)) return base('search_failed', 'aborted', { queries, sources: listed })
   // One model call, no retry (a retried paid call could be billed twice). A spend refusal propagates to the caller.
   const det = await provider.completeDetailed(deps.apiKey, researchPrompt(input, sources), deps.fetchImpl, MAX_OUTPUT_TOKENS)
   usage.model = det.model ?? provider.configuredModel?.() ?? null

@@ -32,7 +32,8 @@ export function sourceOwnSite(company: string, sourceUrl: string | null): string
     // fortune.com story and "Breezy Bakery" on breezybakery.breezy.hr are on someone else's site (the crawl's looser match is checked against the
     // homepage afterwards; nothing is fetched here, so the name must match whole).
     // ... the whole name as written or without its legal suffix / leading article ("Acme Inc", "The Acme Company" at acme.com: companyKey).
-    if (own && [flat(name), flat(companyKey(name))].includes(flat(own.site.split('.')[0]))) return own.site
+    const bare = name.replace(/^the\s+/i, '').replace(/[\s,]+(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty)\.?$/i, '')   // only a LEADING article and a TRAILING legal suffix
+    if (own && [flat(name), flat(bare)].includes(flat(own.site.split('.')[0]))) return own.site
   }
   return null
 }
@@ -98,7 +99,7 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
     const one = async (l: (typeof todo)[number]) => {
       stats.looked_up++
       let r: ResearchResult
-      try { r = await researchContact({ company: l.company, domain: l.domain, domainConfirmed: l.confirmed, roles, where, evidenceUrl: l.evidence }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, readPages: l.read, budget, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
+      try { r = await researchContact({ company: l.company, domain: l.domain, domainConfirmed: l.confirmed, roles, where, evidenceUrl: l.evidence }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, readPages: l.read, budget, signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())), deadlineAt: deadline }) }
       catch (e) {
         if (e instanceof SpendRefused) { stop ??= `spend:${e.reason}`; stats.failed[`spend_${e.reason}`] = (stats.failed[`spend_${e.reason}`] ?? 0) + 1; return }
         if (e instanceof SpendAccountingFailed) { stop ??= 'spend_unsaved'; stats.failed.spend_unsaved = (stats.failed.spend_unsaved ?? 0) + 1; return }   // a cost that could not be saved: no further paid call in this pass

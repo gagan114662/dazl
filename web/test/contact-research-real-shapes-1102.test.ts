@@ -66,9 +66,12 @@ test('#1102 real pages on the company\'s own site: a title tied to the company b
   assert.equal(why(groundPerson(a('Vice President of Sales', 'Dana Okoye, Vice President of Sales, Pagewake'), own('Speakers: Dana Okoye, Vice President of Sales, Pagewake; Matt Hunt, Product.'), { ...IN, roles: [] })), 'not_a_buyer_role')
   // The sentence gives her ANOTHER employer, on the company's own site (a guest speaker): refused.
   assert.equal(why(groundPerson(a('Chief Revenue Officer', 'Dana Okoye, Chief Revenue Officer, Northgate'), own('Speakers: Dana Okoye, Chief Revenue Officer, Northgate; Matt Hunt, Sr. Director of Product, Pagewake.'), IN)), 'title_at_another_organisation')
-  // The company described after it is named is still the company: she owns the lead ("the franchise arm of ...").
+  // Another organisation named in her own clause ("..., the franchise arm of Globex Health") is refused: the clause after the company is read (council round 3).
   const off = groundPerson(a('Owner', 'Dana Okoye, Owner of Pagewake'), [{ id: 'S1', kind: 'search', url: 'https://news.example.test/x', title: 'Local business news', text: 'Dana Okoye, Owner of Pagewake, the franchise arm of Globex Health. See pagewake.example for hours.' }], IN)
-  assert.ok(!('refused' in off), JSON.stringify(off))
+  assert.ok('refused' in off && off.refused === 'title_at_another_organisation', JSON.stringify(off))
+  // ... while the same sentence without it is kept.
+  const plainOff = groundPerson(a('Owner', 'Dana Okoye, Owner of Pagewake'), [{ id: 'S1', kind: 'search', url: 'https://news.example.test/x', title: 'Local business news', text: 'Dana Okoye, Owner of Pagewake, said the shop reopens today. See pagewake.example for hours.' }], IN)
+  assert.ok(!('refused' in plainOff), JSON.stringify(plainOff))
 })
 
 test('#1102 a lead with a confirmed website searches its own site first; one with none searches public profiles', () => {
