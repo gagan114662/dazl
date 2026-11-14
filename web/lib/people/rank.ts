@@ -18,6 +18,7 @@ export interface PersonContact {
 }
 
 // Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
+import { looksLikeJobTitle } from './job-title-name.ts'
 import { contactCurrency, type ContactCurrency, type Currency, type SiteIdentity } from './currency.ts'
 
 export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
@@ -133,6 +134,8 @@ const PROFILE_URL = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\//
 export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: string, nowMs: number = Date.now(), site: SiteIdentity | null = null): RankedPerson[] {
   const contacts: PersonContact[] = rows
     .filter(r => r.kind === 'contact' || r.kind === 'person')
+    // #1183: a row stored earlier whose "name" is a job title ("Litigation Specialist, Managing Partner") is not a person: not listed, not ranked, not offered
+    .filter(r => { const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep); return !looksLikeJobTitle((i === -1 ? r.value : r.value.slice(0, i)).trim()) })
     .map(r => {
       const sep = r.kind === 'person' ? ', ' : ' - '
       const i = r.value.indexOf(sep)

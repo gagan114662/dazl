@@ -1,3 +1,4 @@
+import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
 import type Database from 'better-sqlite3'
@@ -347,7 +348,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
     if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
-    if (!NAME_LINE.test(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return
       if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
