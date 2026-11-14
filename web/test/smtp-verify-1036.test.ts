@@ -7,9 +7,8 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { VerifierError } from '../lib/people/zerobounce.ts'
 import { verifierFromEnv, verifierMonthlyCap } from '../lib/people/email-pattern.ts'
-import { backoffUntil, FACT_TTL_S, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
+import { backoffUntil, FACT_TTL_S, PORT25_FAILS, port25Blocked, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
 
-type Rule = (rcpt: string, domain: string) => string | null
 interface Fake { port: number; log: string[]; conns: () => number; maxConcurrent: () => number; close: () => Promise<void> }
 // answer(rcpt) -> reply line "250 ok" / "550 no such user" / "450 try later"; greeting overrides the 220 banner.
 async function fakeSmtp(answer: (to: string) => string, greeting = '220 mx.fake.test ESMTP'): Promise<Fake> {
@@ -18,16 +17,17 @@ async function fakeSmtp(answer: (to: string) => string, greeting = '220 mx.fake.
     conns++; open++; maxOpen = Math.max(maxOpen, open)
     sock.on('close', () => { open-- }); sock.on('error', () => {})
     sock.write(`${greeting}\r\n`)
-    let buf = ''
+    let buf = '', mailFrom = false
     sock.on('data', d => {
       buf += String(d)
       for (let i = buf.indexOf('\r\n'); i >= 0; i = buf.indexOf('\r\n')) {
         const line = buf.slice(0, i); buf = buf.slice(i + 2); log.push(line)
         const u = line.toUpperCase()
         if (u.startsWith('EHLO')) sock.write('250-mx.fake.test\r\n250 PIPELINING\r\n')
-        else if (u.startsWith('MAIL FROM')) sock.write('250 ok\r\n')
+        else if (u.startsWith('MAIL FROM')) { mailFrom = true; sock.write('250 ok\r\n') }
+        else if (u.startsWith('RCPT TO') && !mailFrom) sock.write('503 5.5.1 need MAIL first\r\n') // as real servers do after an RSET
         else if (u.startsWith('RCPT TO')) sock.write(`${answer(/<([^>]*)>/.exec(line)?.[1]?.toLowerCase() ?? '')}\r\n`)
-        else if (u.startsWith('RSET')) sock.write('250 ok\r\n')
+        else if (u.startsWith('RSET')) { mailFrom = false; sock.write('250 ok\r\n') }
         else if (u.startsWith('QUIT')) { sock.write('221 bye\r\n'); sock.end() }
         else sock.write('502 not implemented\r\n')
       }
@@ -46,13 +46,13 @@ const setup = async (answer: (to: string) => string, over: Partial<SmtpEnv> = {}
 }
 const normal = (to: string) => to.startsWith('dazl-check-') || to.includes('nouser') ? '550 5.1.1 no such user' : '250 ok'
 
-test('#1036 smtp: 250 for the address and 550 for the random probe = deliverable; the dialog is EHLO, MAIL FROM, RCPT probe, RSET, RCPT address, QUIT - never DATA', async () => {
+test('#1036 smtp: 250 for the address and 550 for the random probe = deliverable; the dialog is EHLO, MAIL FROM, RCPT probe, RCPT address, QUIT - never DATA', async () => {
   const { fake, v } = await setup(normal)
   try {
     const a = await v.verify('dana.lee@acme.test')
     assert.equal(a.outcome, 'deliverable')
     await new Promise(r => setTimeout(r, 100)) // the QUIT is written as the check returns; let it arrive
-    assert.deepEqual(fake.log, ['EHLO verify.notify.dazl.ai', 'MAIL FROM:<verify@notify.dazl.ai>', 'RCPT TO:<dazl-check-abc123@acme.test>', 'RSET', 'RCPT TO:<dana.lee@acme.test>', 'QUIT'])
+    assert.deepEqual(fake.log, ['EHLO verify.notify.dazl.ai', 'MAIL FROM:<verify@notify.dazl.ai>', 'RCPT TO:<dazl-check-abc123@acme.test>', 'RCPT TO:<dana.lee@acme.test>', 'QUIT'])
     assert.ok(!fake.log.some(l => /^DATA/i.test(l)), 'nothing is ever sent')
   } finally { await fake.close() }
 })
@@ -196,4 +196,17 @@ test('#1036 smtp: port 25 shut (connection refused / timeout) degrades honestly:
   const v = smtpMailboxVerifier(db, cfgFor(port), envFor())
   const a = await v.verify('dana.lee@acme.test')
   assert.equal(a.outcome, 'unknown'); assert.ok(backoffUntil(db, '127.0.0.1', clock) > clock)
+})
+
+test('#1036 smtp: three hosts in a row that never greet (port 25 shut) switch the check off for an hour at once, with an honest answer; one greeting ends it', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  let connects = 0 // a blackholed port 25 (the EC2 default) never greets: modelled as a connection that fails at once
+  const v = smtpMailboxVerifier(db, cfgFor(25), envFor({ resolveMx: async d => [{ exchange: `mx.${d}`, priority: 1 }], connect: async () => { connects++; throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) } }))
+  for (let i = 0; i < PORT25_FAILS; i++) await v.verify(`a.user@d${i}.test`)
+  assert.equal(connects, PORT25_FAILS); assert.ok(port25Blocked(db, clock))
+  const a = await v.verify('b.user@another.test')
+  assert.equal(a.outcome, 'unknown'); assert.match(String(a.detail), /port 25 appears to be shut/); assert.equal(connects, PORT25_FAILS, 'no connection attempted while it is judged shut')
+  clock += 3601; assert.ok(!port25Blocked(db, clock), 'after an hour it is tried again')
+  const live = await fakeSmtp(normal)
+  try { const v2 = smtpMailboxVerifier(db, cfgFor(live.port), envFor()); assert.equal((await v2.verify('dana.lee@acme.test')).outcome, 'deliverable'); assert.equal(port25Blocked(db, clock), false) } finally { await live.close() }
 })

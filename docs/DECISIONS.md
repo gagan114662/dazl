@@ -3,6 +3,23 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
+## 2026-11-14: dazl builds its OWN mailbox check; no paid email lookup (#1036)
+
+Decided by Gagan (via Hermes, 2026-11-13 17:05: "in the world of agentic AI, why should anyone pay for email lookup?"); this builder
+note records what it changes and what it does not. It supersedes the 2026-11-12 notes that treated a mailbox verifier as a new paid
+service and kept guessing off for good.
+- **Apollo paid is dropped.** Free methods only. Nothing depends on a paid lookup.
+- **dazl's own SMTP check** (`lib/people/smtp-verify.ts`) asks the company's mail server whether it would accept mail for an address
+  (EHLO, MAIL FROM, RCPT TO, never DATA). It is off unless `SMTP_VERIFY_ENABLED=1` with a HELO name and the sending IP configured;
+  outbound port 25 must be open. A catch-all domain is `catch_all`, never verified (2026-10-26 stands). Every check is reserved
+  against a daily per-tenant cap and a monthly operator cap (`SMTP_VERIFY_MONTHLY_CAP`, default 3000, never above 20000); at most 60
+  RCPT per MX host per hour, one connection per host, backoff after a 4xx, a daily Spamhaus ZEN check of the sending IP with a
+  circuit breaker, and a one-hour stop when port 25 looks shut.
+- **Unchanged:** US recipients only; guessed addresses stay behind `EMAIL_GUESS_ENABLED`; a found or guessed address is not a draft
+  recipient (the #899 boundary); only the verifier's explicit deliverable answer counts as checked.
+- **Open:** the labels "verified / likely / guess" for guessed addresses in Find work email, and outreach using only "verified" by
+  default, are the next PR.
+
 ## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
 
 Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner

@@ -1,7 +1,7 @@
 // #1036 dazl's OWN mailbox check (no paid lookup): a MailboxVerifier (lib/people/email-pattern.ts) that asks the company's own mail
 // server whether it would accept mail for one address, and sends nothing.
 //
-//   MX lookup -> connect to the preferred MX (lowest preference number) -> EHLO -> MAIL FROM -> RCPT TO <address> -> RSET -> QUIT.
+//   MX lookup -> connect to the preferred MX (lowest preference number) -> EHLO -> MAIL FROM -> RCPT TO <random probe> -> RCPT TO <address> -> QUIT.
 //   There is NO DATA command: no message is ever sent, so nobody receives anything.
 //   Catch-all probe: RCPT TO a random address at the domain first. If the server accepts it, it accepts everything: the answer is
 //   'catch_all' and never 'deliverable' (DECISIONS 2026-10-26: a catch-all proves nothing about the mailbox).
@@ -169,6 +169,14 @@ export function noteBackoff(db: Database.Database, mx: string, now: number, hard
 }
 export const clearBackoff = (db: Database.Database, mx: string, now: number) => { if (row(db, `bo:${mx}`)) put(db, `bo:${mx}`, { n: 0, hold_until: 0 }, now) }
 
+// Outbound port 25 is closed by default on many clouds (EC2 drops it until a removal request is granted). A connection that never gets
+// as far as a greeting counts; PORT25_FAILS in a row across hosts (any success resets) mean the port is shut from here, and for the
+// next hour every check answers 'unknown' at once, without waiting out a connect timeout per host. Never 'valid'.
+export const PORT25_FAILS = 3, PORT25_HOLD_S = 3600
+export const port25Blocked = (db: Database.Database, now: number): boolean => { const r = row(db, 'p25'); return !!r && r.n >= PORT25_FAILS && r.updated_at > now - PORT25_HOLD_S }
+const notePort25Fail = (db: Database.Database, now: number) => { const r = row(db, 'p25'); put(db, 'p25', { n: r && r.updated_at > now - PORT25_HOLD_S ? r.n + 1 : 1 }, now) }
+const clearPort25 = (db: Database.Database, now: number) => { if (row(db, 'p25')?.n) put(db, 'p25', { n: 0 }, now) }
+
 // The daily blocklist check of the sending IP. 'listed' opens the breaker; 'unavailable' (the resolver refused) does not.
 export async function zenStatus(db: Database.Database, cfg: SmtpConfig, env: SmtpEnv): Promise<'clean' | 'listed' | 'unavailable'> {
   const now = env.now(), k = `zen:${cfg.egressIp}`, r = row(db, k)
@@ -228,12 +236,14 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
       const host = mx
       return oneAtATime(host, async (): Promise<VerifyAnswer> => {
         const t0 = env.now()
+        if (port25Blocked(db, t0)) return unknown('outbound mail port 25 appears to be shut from this server, so no mailbox can be checked')
         const until = backoffUntil(db, host, t0)
         if (until) return unknown(`the mail server asked us to wait; trying again after ${new Date(until * 1000).toISOString().slice(11, 16)} UTC`)
         let conn: SmtpConn | null = null
         const bail = (e: unknown): VerifyAnswer => { noteBackoff(db, host, env.now()); return unknown(e instanceof Error ? e.message : 'connection failed') }
         try {
-          conn = await env.connect(host, cfg.port, cfg.connectMs)
+          try { conn = await env.connect(host, cfg.port, cfg.connectMs) } catch (e) { notePort25Fail(db, env.now()); throw e }
+          clearPort25(db, env.now())
           const cmd = async (line: string): Promise<SmtpReply> => { conn!.send(line); return conn!.reply() }
           const greet = await conn.reply()
           if (greet.code >= 500) { noteBackoff(db, host, env.now(), true); return unknown(`the mail server refused the connection (${greet.code})`) }
@@ -248,7 +258,9 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
             const probe = await rcpt(`dazl-check-${env.random()}@${domain}`)
             if (!probe) return unknown('the hourly limit for this mail server is used')
             if (probe.code === 250 || probe.code === 251) { setDomainFact(db, domain, { mx: host, catchAll: true }, env.now()); return { outcome: 'catch_all', detail: 'the mail server accepts every address' } }
-            if (NO_SUCH_USER.has(probe.code)) { setDomainFact(db, domain, { mx: host, catchAll: false }, env.now()); const r = await cmd('RSET'); if (r.code !== 250) return unknown('the mail server did not reset') }
+            // A second RCPT in the SAME transaction (no RSET: RSET also clears MAIL FROM, and real servers - Google among them - then
+            // answer 503 bad sequence). A rejected recipient does not end the transaction.
+            if (NO_SUCH_USER.has(probe.code)) setDomainFact(db, domain, { mx: host, catchAll: false }, env.now())
             else { if (probe.code >= 400 && probe.code < 500) noteBackoff(db, host, env.now()); return unknown(`the mail server did not answer the test address (${probe.code})`) }
           }
           // 2. the address itself

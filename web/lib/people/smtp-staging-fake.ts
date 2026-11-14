@@ -13,15 +13,17 @@ import type { SmtpConn, SmtpEnv, SmtpReply } from './smtp-verify.ts'
 
 function scripted(host: string): SmtpConn {
   const domain = host.replace(/^mx\./, '')
+  let mailFrom = false // a real server answers 503 to RCPT without a MAIL FROM in the current transaction
   const out: SmtpReply[] = [{ code: 220, text: `${host} staging fake ESMTP` }]
   return {
     reply: async () => out.shift() ?? { code: 421, text: 'closed' },
     send: line => {
       const u = line.toUpperCase()
       if (u.startsWith('EHLO')) out.push({ code: 250, text: host })
-      else if (u.startsWith('MAIL FROM')) out.push({ code: 250, text: 'ok' })
-      else if (u.startsWith('RSET')) out.push({ code: 250, text: 'ok' })
+      else if (u.startsWith('MAIL FROM')) { mailFrom = true; out.push({ code: 250, text: 'ok' }) }
+      else if (u.startsWith('RSET')) { mailFrom = false; out.push({ code: 250, text: 'ok' }) }
       else if (u.startsWith('QUIT')) out.push({ code: 221, text: 'bye' })
+      else if (u.startsWith('RCPT TO') && !mailFrom) out.push({ code: 503, text: '5.5.1 need MAIL first' })
       else if (u.startsWith('RCPT TO')) {
         const to = /<([^>]*)>/.exec(line)?.[1]?.toLowerCase() ?? ''
         const local = to.split('@')[0]
