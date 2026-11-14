@@ -448,6 +448,44 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
   return [...set].slice(0, 8)
 }
 
+// #1122: the postal address a page declares in its structured data (schema.org PostalAddress), written out as "street, City, REGION postal"
+// so the same place checks that read running text can read it. Bounded walk; unreadable data gives ''.
+export function structuredAddressText(html: string): string {
+  if (html.length > 2_000_000) return ''
+  const out: string[] = []
+  for (const m of html.matchAll(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    let root: unknown; try { root = JSON.parse(m[1]) } catch { continue }
+    const stack = [root]; let guard = 0
+    while (stack.length && guard++ < 2000 && out.length < 6) {
+      const node = stack.pop()
+      if (!node || typeof node !== 'object') continue
+      if (Array.isArray(node)) { for (const x of node) { if (stack.length >= 5000) break; if (x && typeof x === 'object') stack.push(x) } continue }
+      const rec = node as Record<string, unknown>
+      for (const v of Object.values(rec)) if (v && typeof v === 'object' && stack.length < 5000) stack.push(v)
+      const str = (k: string) => (typeof rec[k] === 'string' ? (rec[k] as string).replace(/[<>\n]/g, ' ').trim().slice(0, 80) : '')
+      const city = str('addressLocality'), region = str('addressRegion')
+      if (!city || !region) continue
+      out.push(`${[str('streetAddress'), city].filter(Boolean).join(', ')}, ${region} ${str('postalCode')}`.trim())
+    }
+  }
+  return out.join(' . ')
+}
+// #1122: the name a company goes by on its own site when the lead carries the long form: the part before "&" / "and" / "-" / "|" / "," when
+// that part is itself two words or more ("Tadco Roofing & Waterproofing" -> "Tadco Roofing"), else the name without one trailing trade word
+// ("Queen Street Dental Centre" -> "Queen Street Dental"). null when nothing safe is left (a one-word or very short remainder is a common
+// word, not a name). Used ONLY for a searched site, and ONLY together with the site's own place agreeing (crawlJob).
+const TRADE_TAIL = /^(centre|center|clinic|clinics|group|services|service|solutions|company|studio|associates|partners|enterprises|international|canada|usa|residential|commercial)$/i
+export function shortCompanyName(company: string): string | null {
+  const full = norm(company)
+  const ok = (cand: string) => { const words = cand.trim().split(/\s+/).filter(Boolean); const n = norm(cand); return words.length >= 2 && n.length >= 8 && n.length < full.length ? cand.trim() : null }
+  const head = company.split(/\s+(?:&|and|\+)\s+|\s+[-|]\s+|,\s+/i)[0] ?? ''
+  const byHead = head !== company ? ok(head) : null
+  if (byHead) return byHead
+  const words = company.trim().split(/\s+/)
+  while (words.length > 2 && TRADE_TAIL.test(words[words.length - 1].replace(/[^a-z]/gi, ''))) { words.pop(); const c = ok(words.join(' ')); if (c) return c }
+  return null
+}
+
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
 // polite per-host gap does not outlive a post-processing deadline.
 const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((resolve) => {
@@ -466,7 +504,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; siteText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -531,6 +569,9 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
     onPage?.(home.body, home.finalUrl, home.status)
+    // #1122: what the site's OWN other pages (contact, about, locations) and its structured-data address say, case kept, for the place check of a
+    // searched site whose homepage states no place. Never the homepage's replacement: it is added to it.
+    const sitePlain: string[] = [structuredAddressText(home.body)]
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
       if (stopped()) { stoppedBy = 'aborted'; break }
@@ -541,6 +582,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (!r || r.status >= 400) continue
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
+      if (sitePlain.join(' ').length < 40_000) sitePlain.push(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12_000), structuredAddressText(r.body))
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -562,7 +604,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, siteText: sitePlain.filter(Boolean).join(' . ').slice(0, 40_000), ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -828,6 +870,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const blockedHost = (l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? (() => { try { return new URL(l.source_url).hostname.toLowerCase() } catch { return null } })() : null
       const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
+      const searchedHosts = new Set<string>()   // hosts that came from the web search for THIS lead (#1122)
       const sites: string[] = []
       let anchored = false   // a site the page links in its visible text (or the page's own domain); one named only in structured data is a candidate, not a link
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { sites.push(o.site); basisOf.set(o.site, o.basis); if (!o.structured) anchored = true }
@@ -839,31 +882,45 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const attempt = async (cands: string[]) => {
       for (const cand of cands) {
         site = cand
-        r = await readSite(cand, l.company)
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        // #1122: a site found by the web search may prove itself on its OWN other pages: the place is read from the homepage plus its contact /
+        // about pages and its structured-data address, and the company may go by its short name there - but a short name counts ONLY when that
+        // place agrees outright with the request or the lead's own address. Every other candidate is checked on its homepage alone, as before.
+        const searched = searchedHosts.has(cand)
+        const short = searched ? shortCompanyName(l.company) : null
+        r = await readSite(cand, short ?? l.company)
+        const fullNamed = !short || !!r.homeNorm?.includes(norm(l.company))
+        const pt = searched && r.homeText !== undefined ? `${r.homeText} . ${r.siteText ?? ''}`.slice(0, 70_000) : r.homeText
+        if (!unread(r) && !fullNamed && !((where.length > 0 && placeAgreement(pt ?? '', where, l.company) === 'agrees') || addressAgreement(pt ?? '', `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'agrees')) {
+          const reason = `contact rejected: location unconfirmed ${firstPlaceLabel(pt ?? '') ?? 'no place stated'} vs ${leadPlaceLabel(where)} (the site uses a shortened company name, so its own place must agree)`.slice(0, 180)
+          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
+          recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
+          r = { found: [], reason: 'name_mismatch', pages: 0 }
+          continue
+        }
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(pt, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
-          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
+          audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, pt, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
-          if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: ((locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
+          if (pt) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: ((locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, pt, where)).slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
         // Place agreement against the scan's geography (city-scoped for New York City / London): a same-name practice in another state or
         // another UK city names its own address on its homepage and is refused; a guessed (name_probe) domain must also AGREE for a city ask.
         // A street address in the lead's own evidence: a homepage that lists street addresses and none of them is the lead's is another business with the same name.
-        if (!unread(r) && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(r.homeText, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
-          const reason = `contact rejected: address mismatch ${(streetKeys(r.homeText)[0] ?? 'another address')} vs ${(streetKeys(`${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`)[0] ?? 'the lead\'s address')}`.slice(0, 180)
+        if (!unread(r) && basisOf.get(cand) !== 'evidence_own_domain' && addressAgreement(pt, `${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`) === 'conflict') {
+          const reason = `contact rejected: address mismatch ${(streetKeys(pt)[0] ?? 'another address')} vs ${(streetKeys(`${l.evidence_excerpt ?? ''} ${l.signal ?? ''}`)[0] ?? 'the lead\'s address')}`.slice(0, 180)
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
-          if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
+          if (pt) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
           r = { found: [], reason: 'name_mismatch', pages: 0 }
           continue
         }
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
-          const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
-          if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
+          const v = pt ? placeAgreement(pt, where, l.company) : 'unconfirmed'
+          if (v === 'mismatch' || (pt && ownAddressElsewhere(pt, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
-            audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
-            if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
+            audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(pt ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
+            if (pt) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(pt ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
             r = { found: [], reason: 'name_mismatch', pages: 0 }
             continue
           }
@@ -906,7 +963,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             const hosts = searchCandidateSites(l.company, res.urls, evHost).filter(h => !tried.has(h) && notBlockedHost(h))
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: hosts.length ? 'site_search_candidates' : 'site_search_no_candidate', results: hosts.length })
             if (hosts.length === 0) unresolved = 'search_found_no_candidate'
-            else { for (const h of hosts) basisOf.set(h, 'name_probe'); await attempt(hosts); if (unread(r)) unresolved = 'search_result_not_confirmed' }
+            else { for (const h of hosts) { basisOf.set(h, 'name_probe'); searchedHosts.add(h) } await attempt(hosts); if (unread(r)) unresolved = 'search_result_not_confirmed' }
           }
         }
       }
