@@ -4,7 +4,8 @@
 // products[{ title, handle, body_html, published_at }]. No network: the HTTP getter is a stub.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectShopifyStores, countriesIn, mentionsShopify, readStore, storeHosts, storeLead, storeListQueries, windowDaysIn } from '../lib/sources/shopify.ts'
+import { collectShopifyStores, countriesIn, mentionsShopify, readStore, storeHosts, storeLead } from '../lib/sources/shopify.ts'
+import { readFileSync } from 'node:fs'
 import type { HttpResult, SafeGet } from '../lib/sources/types.ts'
 
 const NOW = new Date('2026-11-14T12:00:00Z')
@@ -32,16 +33,17 @@ function net(stores: Record<string, { meta?: string | number; products?: string 
   return { http, calls }
 }
 
-test('#763 request parsing: the country the request names, its window, whether it is about Shopify, and how many list searches fit the budget', () => {
+test('#763 request parsing: the country the request names, and whether it is about Shopify', () => {
   assert.deepEqual(countriesIn('Ecommerce brands in the United Kingdom running on Shopify'), ['GB'])
   assert.deepEqual(countriesIn('Shopify stores in the UK and the US'), ['GB', 'US'])
   assert.deepEqual(['Canada', 'Shopify brands in Australia', 'New Zealand stores', 'Ireland', 'Germany', 'France', 'the Netherlands', 'India', 'Singapore'].map(t => countriesIn(t)), [['CA'], ['AU'], ['NZ'], ['IE'], ['DE'], ['FR'], ['NL'], ['IN'], ['SG']], 'every country in the table is live')
   assert.deepEqual(countriesIn('shops in Northern Ireland'), ['GB'], 'Northern Ireland is the United Kingdom, not Ireland')
+  assert.deepEqual(countriesIn('Shopify brands in New South Wales, Australia'), ['AU'], 'New South Wales is not Wales')
+  assert.deepEqual(countriesIn('Shopify stores in New England'), [], 'New England is not England')
+  assert.deepEqual(countriesIn('Shopify stores in England and Wales'), ['GB'])
   assert.deepEqual(countriesIn('Shopify stores in Ukraine'), [], 'a country this table does not know names none ("Ukraine" is not "UK")')
   assert.deepEqual(countriesIn('brands that focus on us and our customers'), [], 'the word "us" is not the United States')
-  assert.equal(windowDaysIn('launched a new product in the last 90 days'), 90); assert.equal(windowDaysIn('in the past 30 days'), 30); assert.equal(windowDaysIn('recently'), 90); assert.equal(windowDaysIn('last 999 days'), 90)
   assert.equal(mentionsShopify('Ecommerce brands running on Shopify', null), true); assert.equal(mentionsShopify('ecommerce brands', 'Uses Shopify platform'), true); assert.equal(mentionsShopify('ecommerce brands', undefined, 'new product'), false)
-  assert.deepEqual([1, 2, 3, 8].map(n => storeListQueries(n).length), [0, 1, 2, 2], 'inside the scan search budget: never the only search')
 })
 
 test('#763 store hosts come from this scan own hits: hit hosts, links and plain-text domains on store-list hits; platforms and socials are never stores', async () => {
@@ -70,6 +72,12 @@ test('#763 one store: kept only if meta.json says a Shopify store in the request
   const snag = await readStore('snagtights.com', http, o)
   assert.deepEqual(snag, { host: 'snagtights.com', name: 'Snag', city: 'Livingston', province: 'Scotland', country: 'GB', productUrl: 'https://snagtights.com/products/emmerson-card-holder-in-tulip', productTitle: 'Emmerson - Card Holder Organic Cotton in Tulip', publishedAt: '2026-11-10', createdAt: '2026-11-10', quote: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print.' })
   assert.equal(await readStore('usbrand.com', http, o), null, 'a store in another country is not a lead for a UK request')
+  // the window is the scan's own: a 14-day window drops the product published 4 days ago? no - it keeps it, and drops a 20-day-old one
+  const win = net({ 'w.example': { meta: META({ name: 'W', myshopify_domain: 'w.myshopify.com' }), products: PRODUCTS(PRODUCT('Twenty Days Old', 'twenty', '2026-10-25T09:00:00+00:00')) } }).http
+  assert.notEqual(await readStore('w.example', win, { ...o, windowDays: 90 }), null)
+  assert.equal(await readStore('w.example', win, { ...o, windowDays: 14 }), null, 'a "last 2 weeks" request never gets a 20-day-old product')
+  const bad = net({ 'bad.example': { meta: META({ name: 'Bad', myshopify_domain: 'bad.myshopify.com' }), products: PRODUCTS(PRODUCT('Bad Day', 'bad-day', '2026-10-45T09:00:00+00:00')) } }).http
+  assert.equal(await readStore('bad.example', bad, o), null, '"2026-10-45" is not a calendar day')
   assert.notEqual(await readStore('usbrand.com', http, { ...o, countries: [] }), null, 'a request that names no country drops no store for its country')
   assert.equal(await readStore('notshopify.example', http, o), null, 'no myshopify_domain: not a Shopify store')
   assert.equal(await readStore('stale.example', http, o), null, 'nothing published inside the window')
@@ -131,7 +139,7 @@ const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
 const LIST_URL = 'https://lists.example/blogs/top-shopify-stores-uk'
 const ago = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
-async function scan(query: string, icp: Record<string, unknown>) {
+async function scan(query: string, icp: Record<string, unknown>, o: { searchHits?: { url: string; title: string; snippet: string }[]; storesDown?: boolean; searches?: string } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
@@ -140,41 +148,77 @@ async function scan(query: string, icp: Record<string, unknown>) {
   const searched: string[] = []
   // every search returns the store list and a page about the platform; no page states a dated launch by a named shop
   const fetchImpl = (async (u: string) => {
-    if (u.startsWith('https://api.search.tinyfish.ai')) { searched.push(new URL(u).searchParams.get('query') ?? ''); return new Response(JSON.stringify({ results: [{ url: LIST_URL, title: 'Top Shopify stores UK', snippet: 'A list of stores', date: null }, { url: 'https://www.shopify.com/uk/blog/x', title: 'Shopify blog', snippet: 'About Shopify', date: null }] }), { status: 200 }) }
-    if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: LIST_URL, title: 'Top Shopify stores UK', text: 'A list of fifty Shopify stores in the United Kingdom.' }] }), { status: 200 })
+    if (u.startsWith('https://api.search.tinyfish.ai')) { const query = new URL(u).searchParams.get('query') ?? ''; searched.push(query); const own = /new product launch|launches new product/i.test(query); return new Response(JSON.stringify({ results: [{ url: LIST_URL, title: 'Top Shopify stores UK', snippet: 'A list of stores', date: null }, { url: 'https://www.shopify.com/uk/blog/x', title: 'Shopify blog', snippet: 'About Shopify', date: null }, ...(own ? (o.searchHits ?? []) : []).map(h => ({ ...h, date: null }))] }), { status: 200 }) } // the press hit answers only the request's own launch queries
+    if (u.startsWith('https://api.fetch.tinyfish.ai')) return new Response(JSON.stringify({ results: [{ url: LIST_URL, title: 'Top Shopify stores UK', text: 'A list of fifty Shopify stores in the United Kingdom.' }, ...(o.searchHits ?? []).map(h => ({ url: h.url, title: h.title, text: h.snippet }))] }), { status: 200 })
     return new Response('{}', { status: 200 })
   }) as typeof fetch
   const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? JSON.stringify(['UK Shopify brand new product launch']) : '[]' },
+    // the query planner, and the extraction of the search stage: a press hit (when the scenario has one) becomes a candidate
+    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? JSON.stringify(['UK Shopify brand new product launch', 'ecommerce brand launches new product United Kingdom', 'Shopify brand new range press release UK']) : o.searchHits?.length && p.includes(o.searchHits[0].url) ? JSON.stringify([{ name: '', company: 'Kettle Lane', contact: null, signal: 'Kettle Lane launched a new range of teapots on Shopify', source_url: o.searchHits[0].url, excerpt: o.searchHits[0].snippet, event_date: null }]) : '[]' },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
-  const { http, calls } = net({
+  const sun = JSON.parse(readFileSync(new URL('./fixtures/763-sunspel-product.json', import.meta.url), 'utf8')) as { meta: Record<string, string>; product: { title: string; handle: string; body_html: string }; page: { title: string; text: string } }
+  const SUN_URL = `https://www.sunspel.com/products/${sun.product.handle}`
+  const live = net({
+    'www.sunspel.com': { meta: META(sun.meta), products: JSON.stringify({ products: [{ ...PRODUCT(sun.product.title, sun.product.handle, ago(9)), body_html: sun.product.body_html }] }) },
     'snagtights.com': { meta: META({}), products: PRODUCTS(PRODUCT('Autumn Tights', 'autumn-tights', ago(20))) },
     'lucyandyak.com': { meta: META({ name: 'Lucy & Yak', city: 'Barnsley', province: 'England', myshopify_domain: 'lucy-yak.myshopify.com' }), products: PRODUCTS(PRODUCT('Emmerson - Card Holder Organic Cotton in Tulip', 'emmerson-card-holder-in-tulip', ago(3))) },
     'usbrand.com': { meta: META({ name: 'US Brand', country: 'US', myshopify_domain: 'usbrand.myshopify.com' }), products: PRODUCTS(PRODUCT('New', 'new', ago(3))) },
-  }, { [LIST_URL]: LIST })
-  const page = async () => ({ text: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print. Made in the United Kingdom, ships from England.', title: 'Product', retrievedAt: 1_700_000_000 })
+  }, { [LIST_URL]: LIST.replace('<a href="https://snagtights.com/">Snag</a>', '<a href="https://snagtights.com/">Snag</a> <a href="https://www.sunspel.com/">Sunspel</a>') })
+  // storesDown: Shopify throttles or blocks the box (every store request fails) - the case Hermes measured from this PC
+  const http: SafeGet = o.storesDown ? async (u, op) => (new URL(u).pathname.endsWith('.json') ? null : live.http(u, op)) : live.http
+  const calls = live.calls
+  // the verifier's page reads: the REAL Sunspel product page (captured 2026-11-14), the press hit's own text; any other page is unreadable
+  const page = async (u: string) => u === SUN_URL ? { text: sun.page.text, title: sun.page.title, retrievedAt: 1_700_000_000 } : o.searchHits?.some(h => h.url === u) ? { text: `${o.searchHits[0].title}. ${o.searchHits[0].snippet} Kettle Lane, Bristol, United Kingdom.`, title: o.searchHits[0].title, retrievedAt: 1_700_000_000 } : null
   process.env.TINYFISH_API_KEY = 'test-tinyfish-key'
+  const prevSearches = process.env.TINYFISH_SEARCHES_PER_SCAN; if (o.searches) process.env.TINYFISH_SEARCHES_PER_SCAN = o.searches
   const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl
   try {
     const r = await runJob(db, job, { providers, master, fetchPage: page as never, fetchImpl, sourceHttp: http, score: false, judge: null, paidFallback: false })
     const j = db.prepare('SELECT status, error, candidates FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; error: string | null; candidates: number | null }
     const runs = Object.fromEntries((db.prepare('SELECT collector, status, candidate_count FROM scan_source_runs WHERE job_id = ?').all(job.id) as { collector: string; status: string; candidate_count: number | null }[]).map(x => [x.collector, [x.status, x.candidate_count]]))
-    return { r, j, runs, calls, searched, rows: listLeads(db, 'A', job.id) as unknown as { company: string; source_url: string }[] }
-  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY }
+    return { r, j, runs, calls, searched, rows: listLeads(db, 'A', job.id) as unknown as { company: string; source_url: string; review_reason: string | null }[] }
+  } finally { globalThis.fetch = realFetch; delete process.env.TINYFISH_API_KEY; if (prevSearches === undefined) delete process.env.TINYFISH_SEARCHES_PER_SCAN; else process.env.TINYFISH_SEARCHES_PER_SCAN = prevSearches }
 }
 const UK_ICP = { summary: 'UK ecommerce brands on Shopify', who: ['Founder'], industries: ['Ecommerce'], sizes: [], where: ['United Kingdom'], signals: ['Launched new product in last 90 days', 'Uses Shopify platform'], exclude: [], country: 'GB' }
 
-test('#763 through the runner: a Shopify request whose searches find no candidate no longer ends no_discovery; its UK stores are candidates; store lists are searched first', async () => {
+test('#763 through the runner: a real store becomes a LISTED lead (the real Sunspel product page passes the verifier); the store-list search takes no slot from the request own queries', async () => {
   const s = await scan('Ecommerce brands in the United Kingdom running on Shopify that launched a new product in the last 90 days', UK_ICP)
-  assert.notEqual(s.j.error, 'no_discovery', JSON.stringify(s.j))
   assert.equal(s.j.status, 'done', JSON.stringify(s.j))
-  assert.deepEqual(s.runs['adapter:shopify'], ['ok', 2], JSON.stringify(s.runs))
-  assert.equal(s.j.candidates, 2, 'the two UK stores; the US store is not a candidate')
-  assert.ok(s.calls.includes('https://snagtights.com/meta.json') && s.calls.includes('https://lucyandyak.com/products.json?limit=30'))
+  assert.deepEqual(s.runs['adapter:shopify'], ['ok', 3], JSON.stringify(s.runs))
+  const sun = s.rows.filter(x => x.company === 'Sunspel')
+  assert.equal(sun.length, 1, `the Sunspel store is a listed lead: ${JSON.stringify(s.rows)}`)
+  assert.match(sun[0].source_url, /^https:\/\/www\.sunspel\.com\/products\//)
+  // it is listed but not ready: the product page states no date, so the lead is held for its timing (the same hold every UK lead on main gets)
+  assert.equal(sun[0].review_reason, 'outside_window_undated', JSON.stringify(sun[0]))
   assert.ok(!s.calls.some(u => u.includes('usbrand.com/products.json')), 'a store in another country: its products are never read')
-  assert.match(s.searched[0] ?? '', /top Shopify stores brands list/, `the first search asks for store lists: ${JSON.stringify(s.searched)}`)
-  assert.ok(s.rows.every(x => /^https:\/\/(snagtights|lucyandyak)\.com\/products\//.test(x.source_url)), JSON.stringify(s.rows))
+  // budget 8: the request's own queries all fit, and the one store-list search comes after them
+  assert.equal(s.searched.filter(q => /top Shopify stores brands list/.test(q)).length, 1, JSON.stringify(s.searched))
+  assert.ok(s.searched.findIndex(q => /top Shopify stores brands list/.test(q)) > s.searched.findIndex(q => /UK Shopify brand new product launch/.test(q)), JSON.stringify(s.searched))
+})
+
+test('#763 through the runner: when every store request fails, the scan does no worse than without the source (the search stage lead is still listed, no no_discovery)', async () => {
+  const press = { url: 'https://news.example/kettle-lane-teapots', title: 'Kettle Lane launches new teapot range', snippet: 'Kettle Lane, the Bristol homeware brand on Shopify, launched a new range of hand-glazed teapots this autumn.' }
+  const s = await scan('Ecommerce brands in the United Kingdom running on Shopify that launched a new product in the last 90 days', UK_ICP, { searchHits: [press], storesDown: true, searches: '3' }) // the staging knob
+  assert.equal(s.j.status, 'done', JSON.stringify(s.j))
+  assert.notEqual(s.j.error, 'no_discovery')
+  assert.ok(s.rows.some(x => x.company === 'Kettle Lane'), `the search stage's lead is listed: ${JSON.stringify(s.rows)}`)
+  assert.ok(!s.rows.some(x => /sunspel|snag/i.test(x.company)), 'no store candidate when no store could be read')
+  assert.equal(s.runs['adapter:shopify']?.[1], 0, JSON.stringify(s.runs))
+  assert.ok(s.searched.filter(q => /new product launch|launches new product|press release/i.test(q)).length >= 2, `at 3 searches the request's own launch queries still run: ${JSON.stringify(s.searched)}`)
+})
+
+test("#763 through the runner: the window is the scan's own (a profile window the user set to 14 days drops a 20-day-old product)", async () => {
+  const s = await scan('Ecommerce brands in the United Kingdom running on Shopify that launched a new product', { ...UK_ICP, window_days: 14 })
+  // stores: Lucy & Yak (3 days), Sunspel (9 days), Snag (20 days). 90 days -> 3 candidates (the first runner test); 14 days -> 2
+  assert.deepEqual(s.runs['adapter:shopify'], ['ok', 2], `only the two products inside 14 days: ${JSON.stringify(s.runs)}`)
+  assert.ok(s.rows.some(x => x.company === 'Sunspel'), JSON.stringify(s.rows))
+})
+
+test('#763 the store-list search only uses budget the request own queries leave (staging: 3 searches)', () => {
+  const runner = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
+  assert.match(runner, /budgetN - direct\.length - tech\.length - 1 >= 2 \? \[STORE_LIST_QUERY\] : \[\]/, 'one list search, only when two of the request own queries still fit')
+  assert.match(runner, /withGeography\(\[\.\.\.direct, \.\.\.tech, \.\.\.sanitizeQueries\(plan\.queries, job\.query!\), \.\.\.storeList\]/, 'the list search is last, so the budget slice drops it first')
 })
 
 test('#763 through the runner: a request that does not mention Shopify never runs the source and stops exactly as before', async () => {

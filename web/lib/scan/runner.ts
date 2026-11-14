@@ -8,7 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
-import { collectShopifyStores, countriesIn, mentionsShopify, placeOf, storeLead, storeListQueries } from '../sources/shopify.ts'
+import { collectShopifyStores, countriesIn, mentionsShopify, placeOf, STORE_LIST_QUERY, storeLead } from '../sources/shopify.ts'
 import { KEEP_MODEL_CALLS_JOB_SQL, SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
@@ -1035,12 +1035,16 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
     // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
     const tech = techQueries(planConditions(compileTargeting(job.query, job.icp).root).filter(x => x.cond.kind === 'tech').map(x => ({ tech: x.cond.tech ?? '', change: x.cond.change ?? 'uses', negated: x.negated }))).slice(0, Math.max(0, budgetN - direct.length - 2))
-    const modelQueries = Math.min(6, Math.max(caps ? 1 : 2, budgetN - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
+    // #763: a request about Shopify stores may ask ONE store-list search, only on budget the request's own queries leave: after the reserved
+    // direct and technology queries at least two of the request's own (model-written) queries must still fit. Otherwise it asks none, and a
+    // scan whose store source returns nothing does no worse than one that never asked (Hermes review of #1225: with two list searches
+    // taking two of three slots, 3 of 3 runs went from done to no_discovery).
+    const storeList = mentionsShopify(job.query, icp.summary, ...(icp.signals ?? [])) && budgetN - direct.length - tech.length - 1 >= 2 ? [STORE_LIST_QUERY] : []
+    const modelQueries = Math.min(6, Math.max(caps ? 1 : 2, budgetN - direct.length - tech.length - storeList.length)) // the rest of the search budget after the reserved direct, technology and store-list queries
     const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
     if (diag) diag.info.query_source = plan.source
-    // #763: a request about Shopify stores asks for store LISTS first (lib/sources/shopify.ts reads the stores they link); inside the same budget
-    const storeLists = mentionsShopify(job.query, icp.summary, ...(icp.signals ?? [])) ? storeListQueries(budgetN) : []
-    q = withGeography([...storeLists, ...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, budgetN)
+    // the store-list search goes LAST: if the request's own queries need the whole budget, the slice drops it, never them
+    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!), ...storeList], icp.where).slice(0, budgetN)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
@@ -1498,7 +1502,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // the country a store must be in: the request's own words, else the places and the market code of the profile; none of them: the source reads nothing
         const named = countriesIn(`${job.query} ${(icpForSources.where ?? []).join(' ')}`)
         const countries = named.length > 0 ? named : /^[A-Za-z]{2}$/.test(icpForSources.country ?? '') ? [icpForSources.country!.toUpperCase()] : []
-        const stores = await collectShopifyStores({ query: job.query, countries, discovered: [...diag.hitUrls, ...(leads ?? []).map(l => l.source_url)], http: deps.sourceHttp ?? safeGet, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }, deps.now)
+        const stores = await collectShopifyStores({ query: job.query, countries, windowDays: icpForSources.window_days ?? null, discovered: [...diag.hitUrls, ...(leads ?? []).map(l => l.source_url)], http: deps.sourceHttp ?? safeGet, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }, deps.now)
         assertOwned(db, job) // the collection can take up to its time limit: the attempt must still own the scan before its stores are added
         const drafts = parseLeads(JSON.stringify(stores.map(storeLead)), stores.map(st => st.productUrl)) ?? []
         ledger.record('adapter:shopify', drafts.length > 0 ? 'ok' : Object.keys(notes).length > 0 ? 'partial' : 'empty', drafts.length)

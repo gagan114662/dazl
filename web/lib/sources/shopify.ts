@@ -17,6 +17,7 @@
 // times for that product; they are stated in the candidate's signal and are not a proven event date.
 import type { AdapterInput, SafeGet } from './types.ts'
 import { isRecord, looksLikeHtml } from './types.ts'
+import { isCalendarDay } from '../scan/scoreboard.ts' // a real calendar day: "2026-10-45" is not one
 
 export interface ShopifyStore {
   host: string; name: string; city: string | null; province: string | null; country: string
@@ -26,7 +27,8 @@ export interface ShopifyStore {
   quote: string // text from the product's own description (or its title), expected on the product page
 }
 
-const MAX_LIST_PAGES = 6, MAX_HOSTS = 120, MAX_STORES = 40, CONCURRENCY = 8
+// MAX_STORES: parseLeads keeps at most MAX_LEADS (20) candidates from one source, so more stores than that are never used
+const MAX_LIST_PAGES = 6, MAX_HOSTS = 120, MAX_STORES = 20, CONCURRENCY = 8
 // hosts that are never a merchant's own store: the platform itself, social networks, search, CDNs, app stores, review sites
 const NOT_A_STORE = /(^|\.)(shopify\.com|shopifycdn\.com|shopify\.dev|facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|youtube\.com|youtu\.be|tiktok\.com|pinterest\.[a-z.]+|google\.[a-z.]+|gstatic\.com|googleapis\.com|apple\.com|amazon\.[a-z.]+|ebay\.[a-z.]+|etsy\.com|wikipedia\.org|reddit\.com|medium\.com|github\.com|trustpilot\.com|clutch\.co|g2\.com|w3\.org|schema\.org|cloudflare\.com|jsdelivr\.net|fontshare\.com|whatsapp\.com|t\.me|wa\.me|bit\.ly)$/i
 // a search hit that is a LIST of stores (its links are store domains): its URL path says so ("top-shopify-stores-uk", "best-ecommerce-brands",
@@ -37,7 +39,7 @@ const isStoreList = (u: string): boolean => { try { const x = new URL(u); return
 // The country the request names, as ISO codes Shopify's meta.json uses. Empty when it names none this table knows; the scan then
 // passes the profile's own country code, and with neither the source reads nothing (it never returns stores from every country).
 const COUNTRIES: [RegExp, string][] = [
-  [/\b(united kingdom|great britain|britain|england|scotland|wales|northern ireland)\b|\bU\.?K\.?\b/i, 'GB'],
+  [/\b(united kingdom|great britain|britain|scotland|northern ireland)\b|(?<!\bnew\s)\bengland\b|(?<!\bnew south\s)\bwales\b|\bU\.?K\.?\b/i, 'GB'], // "New England" and "New South Wales" are not the UK
   [/\b(united states|america)\b/i, 'US'],
   [/\b(?:USA|U\.S\.A\.?|U\.S\.?|US)(?![a-z])/, 'US'], // the abbreviation only in capitals: "us" is a word
   [/\bcanada\b/i, 'CA'],
@@ -51,11 +53,9 @@ const COUNTRIES: [RegExp, string][] = [
   [/\bsingapore\b/i, 'SG'],
 ]
 export function countriesIn(text: string): string[] { const t = text.replace(/northern ireland/gi, 'United Kingdom'); return [...new Set(COUNTRIES.filter(([re]) => re.test(t)).map(([, c]) => c))] }
-// "in the last 90 days" / "past 30 days" -> that many days; else 90
-export function windowDaysIn(text: string): number { const m = /\b(?:last|past)\s+(\d{1,3})\s+days\b/i.exec(text); const n = m ? Number(m[1]) : 90; return n >= 1 && n <= 365 ? n : 90 }
-// Searches that return LISTS of stores (their links are the store domains this source reads). At most two, and only inside the scan's own
-// search budget: with one search they are skipped, with two one is asked, with three or more two.
-export const storeListQueries = (budget: number): string[] => ['top Shopify stores brands list', 'best Shopify store examples by brand'].slice(0, budget >= 3 ? 2 : budget >= 2 ? 1 : 0)
+// A search that returns a LIST of stores (its links are the store domains this source reads). The runner asks it only on budget the request's
+// own queries leave (lib/scan/runner.ts): a scan whose store source returns nothing must do no worse than one that never asked.
+export const STORE_LIST_QUERY = 'top Shopify stores brands list'
 export const mentionsShopify = (...texts: (string | null | undefined)[]): boolean => texts.some(t => !!t && /\bshopify\b/i.test(t))
 
 const hostOf = (u: string): string | null => { try { const h = new URL(u).hostname.toLowerCase(); return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(h) && !NOT_A_STORE.test(h) ? h : null } catch { return null } }
@@ -95,7 +95,7 @@ export async function readStore(host: string, http: SafeGet, o: { countries: str
   // A NEW listing: the product's record was CREATED inside the window and it is published inside the window. published_at alone is not
   // that: measured on 12 real UK stores (2026-11-14), 10 had ALL of their listed products "published" inside 90 days, with records
   // created 300 to 800 days earlier (stores re-publish their catalogue). created_at is when the product record was first made.
-  const inWindow = (v: unknown): string | null => { const d = (str(v) ?? '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= floor && d <= today ? d : null }
+  const inWindow = (v: unknown): string | null => { const d = (str(v) ?? '').slice(0, 10); return isCalendarDay(d) && d >= floor && d <= today ? d : null } // a real calendar day: "2026-10-45" is not one
   let best: { day: string; created: string; title: string; handle: string; quote: string } | null = null
   for (const p of products) {
     const day = inWindow(p.published_at), created = inWindow(p.created_at), title = str(p.title), handle = str(p.handle)
@@ -113,12 +113,13 @@ export async function readStore(host: string, http: SafeGet, o: { countries: str
 // The whole collection has one time limit (budgetMs): hosts not started by then are skipped and reported ('time_budget'), so a slow
 // or hostile list of hosts cannot hold the scan.
 export const SHOPIFY_BUDGET_MS = 45_000
-export async function collectShopifyStores(input: Pick<AdapterInput, 'query' | 'discovered' | 'http' | 'note'> & { countries?: string[]; budgetMs?: number }, now = new Date()): Promise<ShopifyStore[]> {
+// windowDays: the scan's own window (the profile's window_days, which a user edit wins, else the request's own words); 90 when it has none.
+export async function collectShopifyStores(input: Pick<AdapterInput, 'query' | 'discovered' | 'http' | 'note'> & { countries?: string[]; budgetMs?: number; windowDays?: number | null }, now = new Date()): Promise<ShopifyStore[]> {
   const countries = (input.countries?.length ? input.countries : countriesIn(input.query)).map(c => c.toUpperCase())
   if (countries.length === 0) { input.note?.('no_country'); return [] }
   const started = Date.now(), budget = input.budgetMs ?? SHOPIFY_BUDGET_MS
   const hosts = await storeHosts(input.discovered ?? [], input.http, input.note)
-  const o = { countries, windowDays: windowDaysIn(input.query), now }
+  const o = { countries, windowDays: input.windowDays && input.windowDays > 0 ? input.windowDays : 90, now }
   const out: ShopifyStore[] = [], seen = new Set<string>()
   let next = 0, cut = false
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, hosts.length) }, async () => {
