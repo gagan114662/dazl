@@ -85,8 +85,43 @@ export function genericPlace(query: string): Place | null {
   }
   return null
 }
+// #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
+// to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
+// job-board source never ran and the trial's only readable, dated hiring evidence was never read. A US "<City>, <ST>" or
+// "<City>, <State name>" is that CITY: a posting is in it when its location names the city as a whole word and names no other US state.
+// The city never widens to its state (Dallas, TX is not Austin, TX).
+// Review at 54953a0a: a capitalised phrase before ", <State>" is NOT assumed to be a city ("Dentists, Ohio", "Series B Fintechs, California"
+// and "Sales Manager, Texas" name the state). A city is read only in one unambiguous shape: right after "in" / "near" / "around"
+// ("account executives in Austin, TX"; a profile place is read as "in <place>" by the runner). Anything else falls through to the state.
+const CITY = String.raw`((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)`
+const CITY_AFTER = new RegExp(`\\b(?:in|near|around)\\s+${CITY}(?=$|[\\s,.;)])`, 'gu')
+// a second city joined on: its region must be a real state (abbreviation or name), so "TX, Dallas" in "Austin, TX, Dallas, TX" is not read as a city
+const STATE_RE = `(?:${[...Object.keys(STATES), ...Object.values(STATES)].sort((x, y) => y.length - x.length).join('|')})`
+const CITY_MORE = new RegExp(`(?:\\band\\s|\\bor\\s|[&,;/])\\s*((?:[A-Z][\\p{L}'-]+|St\\.)(?:\\s+(?:[A-Z][\\p{L}'-]+|St\\.)){0,3})\\s*,\\s*(${STATE_RE})(?=$|[\\s,.;)])`, 'gu')
+export function usCityPlace(text: string): Place | null {
+  // a request naming two different cities is never narrowed to its first one (the same rule the runner applies to a profile)
+  const found = new Map<string, Place>()
+  for (const m of text.matchAll(CITY_AFTER)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  // "in Austin, TX and Dallas, TX", "in Austin, TX, Dallas, TX": a city joined on with and / or / & / , / ; / slash is a second city of the same request
+  if (found.size) for (const m of text.matchAll(CITY_MORE)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  return found.size === 1 ? [...found.values()][0] : null
+}
+function cityPlaceOf(cityIn: string, region: string): Place | null {
+  const abbr = STATES[region] ? region : Object.keys(STATES).find(k => STATES[k].toLowerCase() === region.toLowerCase())
+  if (!abbr) return null
+  const city = cityIn.trim(), key = norm(city)
+  if (key.length < 3 || STATES[abbr].toLowerCase() === key || /\bremote\b/i.test(city)) return null
+  const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+  // another state is read from the location with the city itself removed ("Kansas City, MO" names no Kansas); a non-US country ("San Jose, Costa Rica")
+  // or a remote posting ("Remote - Austin, TX": not located in the city, the same rule as London/NYC) is never this city
+  const cityRe = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
+  const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l)) }
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  const us = usCityPlace(query); if (us) return us
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
   // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.

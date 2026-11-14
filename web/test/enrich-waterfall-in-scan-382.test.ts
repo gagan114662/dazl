@@ -31,7 +31,7 @@ function seed(n = 1) {
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId) // post-finish, as the runner's enrichment pass
   saveCredential(db, 'u1', 'enrich:apollo', 'test-apollo-key-1234', master)
   saveCredential(db, 'u1', 'enrich:pdl', 'test-pdl-key-5678', master); setEnrichFallback(db, 'u1', true)
-  const ctx = { db, jobId, tenantId: 'u1', attempt: 1, cap: scanCapConfig({}) }
+  const ctx = { db, jobId, tenantId: 'u1', attempt: 1, cap: scanCapConfig({}), accountLimits: null }
   return { db, jobId, leads, ctx }
 }
 const router = (apollo: () => Promise<Response>, pdl: () => Promise<Response>, calls: Calls) => (async (u: RequestInfo | URL) => { if (String(u).includes('apollo.io')) { calls.apollo++; return apollo() } calls.pdl++; return pdl() }) as typeof fetch
