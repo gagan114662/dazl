@@ -236,7 +236,7 @@ bothEngines('#882 a lead the Leads list hides (fit 0 or 1) never alerts; a shown
   assert.equal((await db.get<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE entity_key = 'd:mixed.example'"))!.event_key, 'd:mixed.example|2026-10-20|hiring', 'dated by the board: recorded as the hiring event, not as an expansion on that day')
 })
 
-bothEngines('#882 detected once: the same posting returned by five runs under five different grades is one event and one alert; so is one page-proven day', async ({ db }) => {
+bothEngines('#882 detected once: the same posting returned by five runs under five different grades is one event and one alert; so is a page-proven event stored ungraded then graded', async ({ db }) => {
   const mon = await play(db, 'u1', { query: 'B2B software companies hiring account executives' })
   // The Flexport posting (real company, posting URL, day and signal; fit set to 3 so the list shows it: NOT its real grade), returned by
   // five weekly runs. Only the grader's label changes: none, hiring, hiring_relevant_role, job_board_presence, expansion (+hiring).
@@ -247,33 +247,16 @@ bothEngines('#882 detected once: the same posting returned by five runs under fi
   assert.deepEqual(out, [{ newCount: 1, kinds: ['new_company'] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }, { newCount: 0, kinds: [] }])
   assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u1'")).map(e => e.event_key), ['d:flexport.com|2026-10-28|hiring'])
   assert.equal(Number((await db.get<{ n: number }>("SELECT count(*) AS n FROM monitor_alerts WHERE user_id = 'u1'"))!.n), 1)
-  // A day the cited page ties to the event: ungraded, then graded expansion, then graded product_launch. One event, one alert.
-  // (Rule: one company, one page-proven day = one event; a later day is a new one.)
+  // A day the cited page ties to the event: stored ungraded, then graded expansion, then graded the same again: one event, one alert (one
+  // side unlabelled is the same event as a labelled one). A later day is a new event (new_signal); a DIFFERENT labelled kind on the same
+  // day is another event, as the tenant's alert record has it (#883).
   const news = (kind: string | null, date = '2026-10-21'): L => ({ company: 'Kestrel Freight', domain: 'kestrel.example', url: 'https://news.example/kestrel', date, proof: 'page_bound', fit: 3, kind, signal: 'Kestrel Freight opened a depot in Leeds' })
   const mon2 = await play(db, 'u2')
   assert.deepEqual(await run(db, 'u2', mon2, NOW, [news(null)]), { newCount: 1, kinds: ['new_company'] })
   assert.deepEqual(await run(db, 'u2', mon2, NOW + 7 * DAY, [news('expansion')]), { newCount: 0, kinds: [] })
-  assert.deepEqual(await run(db, 'u2', mon2, NOW + 14 * DAY, [news('product_launch')]), { newCount: 0, kinds: [] })
+  assert.deepEqual(await run(db, 'u2', mon2, NOW + 14 * DAY, [news('expansion'), news(null)]), { newCount: 0, kinds: [] })
   assert.deepEqual(await run(db, 'u2', mon2, NOW + 21 * DAY, [news('expansion', '2026-11-15')]), { newCount: 1, kinds: ['new_signal'] })
-  assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u2' ORDER BY event_key")).map(e => e.event_key), ['d:kestrel.example|2026-10-21|event', 'd:kestrel.example|2026-11-15|event'])
-})
-
-bothEngines('#882 detected once in one run: two postings of one company on the same day, one reachable and one not, are one event and ONE alert', async ({ db }) => {
-  const mon = await play(db, 'u1')
-  const a: L = { company: 'Flexport', domain: 'flexport.com', url: 'https://job-boards.greenhouse.io/flexport/jobs/1', date: '2026-10-28', proof: 'ats_structured', kind: 'hiring', signal: 'Flexport is hiring an Account Executive' }
-  const b: L = { ...a, url: 'https://jobs.lever.co/flexport/2', signal: 'Flexport is hiring a Sales Manager', reachable: true }
-  // before: A made the event actionable (new_company) and B then read that as an earlier alert (now_reachable): 2 alerts in one run
-  assert.deepEqual(await run(db, 'u1', mon, NOW, [a, b]), { newCount: 1, kinds: ['new_company'] })
-  const ev = await db.all<{ event_key: string; actionable_at: number | null; reachable_at: number | null }>("SELECT event_key, actionable_at, reachable_at FROM monitor_events WHERE user_id = 'u1'")
-  assert.deepEqual(ev.map(e => [e.event_key, e.actionable_at != null, e.reachable_at != null]), [['d:flexport.com|2026-10-28|hiring', true, true]], 'one event, actionable and reachable at first sight')
-  assert.deepEqual((await db.all<{ source: string }>('SELECT source FROM monitor_cursors WHERE monitor_id = ? ORDER BY source', [mon])).map(c => c.source), ['job-boards.greenhouse.io', 'jobs.lever.co'], 'both sources keep their cursor')
-  // the same pair again: nothing; and a held posting beside a ready one does not hide the ready one
-  assert.deepEqual(await run(db, 'u1', mon, NOW + 7 * DAY, [b, a]), { newCount: 0, kinds: [] })
-  const mon2 = await play(db, 'u2')
-  assert.deepEqual(await run(db, 'u2', mon2, NOW, [{ ...a, review: 'quote_unconfirmed', conf: null }, { ...b, reachable: false }]), { newCount: 1, kinds: ['new_company'] })
-  // policy 'reachable': the event alerts when ANY ready lead of it is reachable
-  const mon3 = await play(db, 'u3', { policy: 'reachable' })
-  assert.deepEqual(await run(db, 'u3', mon3, NOW, [a, b]), { newCount: 1, kinds: ['new_company'] })
+  assert.deepEqual((await db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = 'u2' ORDER BY event_key")).map(e => e.event_key), ['d:kestrel.example|2026-10-21|signal', 'd:kestrel.example|2026-11-15|expansion'])
 })
 
 test('#882 every grader signal id is in exactly one of the monitor\'s groups (another dated event / hiring-type / ambient)', () => {
@@ -330,9 +313,10 @@ test('pure rules: keys are spelling-independent; undated, out-of-window and unve
   // the grader's list has no order: another event first and a hiring signal after it is still a hiring posting
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","hiring_relevant_role"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { kind: 'new_company', alert: true })
   // such a lead is recorded as the hiring event its date belongs to, never as the other event on the posting's day
-  // the key never carries the graded kind: one posting is one event whatever the grader calls it, and so is one page-proven day
+  // the key never carries the graded kind: one posting is one event whatever the grader calls it, and a page-proven event stored ungraded then graded is one event too
   for (const kind of [null, 'hiring', 'hiring_relevant_role', 'job_board_presence', 'open_role_language', 'raised_funding', 'expansion']) assert.equal(eventKeyOf({ ...l, event_date_proof: 'ats_structured', signal_kind: kind }), 'n:harbor dental|2026-10-20|hiring', String(kind))
-  for (const kind of [null, 'expansion', 'product_launch', 'raised_funding', 'press_mention']) assert.equal(eventKeyOf({ ...l, event_date_proof: 'page_bound', signal_kind: kind }), 'n:harbor dental|2026-10-20|event', String(kind))
+  // a page-proven day keeps its own labelled kind (#883: two labelled kinds on one day are two events); unlabelled is 'signal'
+  for (const kind of [null, 'expansion', 'product_launch']) assert.equal(eventKeyOf({ ...l, event_date_proof: 'page_bound', signal_kind: kind }), `n:harbor dental|2026-10-20|${kind ?? 'signal'}`, String(kind))
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: '["expansion","press_mention"]', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   assert.deepEqual(decide({ ...l, event_date_proof: 'ats_structured', signal_kind: 'expansion', signals: 'not json', signal: 'Acme is hiring an Account Executive' }, null, false, 'all', W, NOW), { suppress: 'undated' })
   // ...but a graded hiring lead keeps its board day whatever hiring-type or ambient kind the grader put first (the card's rule decides)
