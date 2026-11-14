@@ -686,7 +686,11 @@ export default function LeadsClient() {
       if (viewedJob.current || /^[a-f0-9]{24}$/.test(new URLSearchParams(window.location.search).get('job_id') ?? '')) return
       if (restoredSearch.current) return // #1095: the search the user was running before linking Google wins
       if (!prefill && j.query && !query) setQuery(q => q || j.query)
-      if (j.icp) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
+      // #1043: a play from "Your business" (?q=...&fresh=1) is a new search built from the business profile, so the last
+      // run's reviewed profile is not carried onto it. Every other ?q= link (Home's widen/recover/change-the-search) keeps
+      // carrying the reviewed profile, as before.
+      const fresh = new URLSearchParams(window.location.search).get('fresh') === '1'
+      if (j.icp && !(prefill && fresh)) setIcp({ icp: j.icp, source: j.icp_source ?? 'user', query: typeof j.query === 'string' ? j.query : null })
     }).catch(() => {})
   }, [])
 
