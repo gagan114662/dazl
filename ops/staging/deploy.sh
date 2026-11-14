@@ -38,7 +38,51 @@ PORT=${STAGING_PORT:-3200}
 SERVICE=${STAGING_SERVICE:-dazl-staging.service}
 RUN_AS=${STAGING_USER:-dazl-staging}
 REPO_URL=${STAGING_REPO_URL:-https://github.com/gagan114662/dazl.git}
-RESTART=${STAGING_RESTART:-systemctl restart $SERVICE}
+# The scan worker (#836, ops/staging/dazl-staging-worker.service): a second process on the same release and database.
+# When its unit is installed it is stopped, by name, before the app is stopped or restarted (before a recovery point, a
+# restore or a migration nothing else may write, and it never runs an old release beside a new one), and it is started
+# only at a point where the database can no longer be rolled back under it: after a deploy's commit point, or once a
+# restored previous release is healthy again. A worker started before the health gate could make a paid call whose
+# record a rollback then erases. Not installed: nothing below touches it.
+# STAGING_STOP and STAGING_RESTART replace only the APP's stop and restart commands; the worker is still stopped
+# around them, so an override cannot leave it writing during a recovery point or a restore. Tests replace SYSTEMCTL.
+WORKER=${STAGING_WORKER_SERVICE:-dazl-staging-worker.service}
+SYSTEMCTL=${STAGING_SYSTEMCTL:-systemctl}
+APP_STOP=${STAGING_STOP:-$SYSTEMCTL stop $SERVICE}
+APP_RESTART=${STAGING_RESTART:-$SYSTEMCTL restart $SERVICE}
+worker_installed() { $SYSTEMCTL cat "$WORKER" >/dev/null 2>&1; }
+# Stop the worker first and by name, so the command returns only once it has exited: PartOf alone would stop it too,
+# but without waiting for it before the recovery point is taken.
+# worker_stamp: this script stopped an enabled worker and has not (successfully) started it again yet. Only then does a
+# later run with nothing to deploy start it. A worker an operator stopped by hand is not touched by such a run; the next
+# real deploy starts it again, as it always did.
+worker_stamp() { echo "$STATE/worker-stopped-by-deploy"; }
+stop_worker() {
+  worker_installed || return 0
+  # stamped whenever the worker is meant to run (enabled): running, or between two automatic restarts
+  if $SYSTEMCTL is-enabled --quiet "$WORKER"; then : > "$(worker_stamp)" || return 1; fi
+  $SYSTEMCTL stop "$WORKER"
+}
+stop_services() {
+  stop_worker || return 1
+  $APP_STOP
+}
+# Restart the app on the release `current` names, with the worker stopped. It stays stopped: start_worker runs later.
+restart_services() {
+  stop_worker || return 1
+  $APP_RESTART
+}
+# Start the worker when its unit is installed and enabled. A worker that does not start is reported, never a failed
+# deploy: the app still runs every scan itself.
+start_worker() {
+  if worker_installed && $SYSTEMCTL is-enabled --quiet "$WORKER"; then
+    # the stamp goes only when the worker really started: a failed start is retried by the next run with nothing to deploy
+    if $SYSTEMCTL start "$WORKER"; then rm -f "$(worker_stamp)"
+    else echo "staging-deploy: ALERT scan worker $WORKER did not start; scans run on the app only" >&2; fi
+  else rm -f "$(worker_stamp)"; fi
+  return 0
+}
+RESTART=restart_services
 MIN_FREE_BYTES=${MIN_FREE_BYTES:-2147483648}
 # Headroom kept above the floor while building: the build is stopped, and a finished release is not put live, once free
 # space falls below MIN_FREE_BYTES + DISK_RESERVE_BYTES, so the protected floor itself is never crossed.
@@ -53,7 +97,7 @@ PROD_ENV_FILE=${PROD_ENV_FILE:-}
 BUILD=${STAGING_BUILD:-'{ [ -d node_modules ] || npm ci --no-audit --no-fund --loglevel=error; } && NODE_OPTIONS=--max-old-space-size=2048 nice -n 10 npx next build && rm -rf .next/cache'}
 # The schema change and seed (#908): run only after the service is stopped and a verified recovery point exists. Tests replace it.
 MIGRATE=${STAGING_MIGRATE:-'npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts'}
-STOP=${STAGING_STOP:-systemctl stop $SERVICE}
+STOP=stop_services
 # The recovery helper, installed beside this script in a root-owned directory (docs/STAGING.md), and the root-only directory
 # recovery points live in: outside STAGING_ROOT (the service account's home) so that account cannot rename or replace them.
 RECOVERY=${STAGING_RECOVERY:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recovery_point.py}
@@ -283,7 +327,7 @@ if [ -e "$pending" ]; then
   [ -n "$p_new" ] && [ "$RELS/$p_new" != "$p_prev" ] && rm -rf "$RELS/$p_new"
   if [ -n "$p_prev" ] && [ -d "$p_prev" ]; then
     ln -sfn "$p_prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$p_prev")" > "$STATE/release.env"
-    $RESTART 9>&- && healthy "$(basename "$p_prev")" && fail "recovered the interrupted deploy of $p_new: database restored, $(basename "$p_prev") is live again"
+    $RESTART 9>&- && healthy "$(basename "$p_prev")" && start_worker && fail "recovered the interrupted deploy of $p_new: database restored, $(basename "$p_prev") is live again"
     fail "recovered the interrupted deploy of $p_new: database restored, but $(basename "$p_prev") did not come up healthy: NO LIVE STAGING SERVICE"
   fi
   rm -f "$ROOT/current" "$STATE/release.env"
@@ -321,6 +365,11 @@ for d in "$RELS"/*; do [ -L "$d" ] && { rm -f "$d"; continue; }; [ -d "$d" ] && 
 [ -d "$ROOT/repo/.git" ] || as git clone -q --no-checkout "$REPO_URL" "$ROOT/repo"
 as git -C "$ROOT/repo" fetch -q origin main
 new=$(as git -C "$ROOT/repo" rev-parse origin/main)
+# A deploy killed between its commit point and the worker's start left the worker stopped, with this script's stamp still
+# there. No recovery point is pending here (step 0 finished any), and the live release is a committed one, so an enabled
+# worker that is not running is started now, whether or not there is anything new to deploy; a real deploy then stops it
+# again by name like any other. Without the stamp the worker was stopped by someone else, and stays stopped.
+if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && [ -n "$(live_release)" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi # a live release must exist: a failed first deploy leaves none (the unit has no working directory)
 cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 # Upgrading from a deploy that kept current-sha in STAGING_ROOT: the old file is the service account's and is not read; the
 # validated, complete live release names the deployed commit instead.
@@ -414,12 +463,16 @@ prune_recovery
 restart_prev() {
   [ -n "$prev" ] || return 1
   ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$(basename "$prev")" > "$STATE/release.env"
-  $RESTART 9>&- && healthy "$(basename "$prev")"
+  # the previous release on its own database, healthy again: that state is final, so the worker may run
+  $RESTART 9>&- && healthy "$(basename "$prev")" && start_worker
 }
 if ! $STOP 9>&-; then
   cleanup
   restart_prev && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") restarted unchanged"
   [ -n "$prev" ] || fail "could not stop the service for a recovery point; nothing migrated, release removed (first deployment: NO LIVE STAGING SERVICE)"
+  # The stop can fail before the app was touched (#836: the scan worker is stopped first, and it would not stop). Say what
+  # is true: when the previous release still answers healthy it is live, not gone.
+  healthy "$(basename "$prev")" && fail "could not stop the service for a recovery point; nothing migrated, release removed, $(basename "$prev") is still live"
   fail "could not stop the service for a recovery point; nothing migrated, release removed, and $(basename "$prev") did not come back healthy: NO LIVE STAGING SERVICE"
 fi
 mh=
@@ -473,7 +526,7 @@ cutover_fail() {
   if [ -n "$prev" ]; then
     local p; p=$(basename "$prev")
     ln -sfn "$prev" "$ROOT/current"; echo "DAZL_COMMIT_SHA=$p" > "$STATE/release.env"
-    if $RESTART 9>&- && healthy "$p"; then fail "rolled back: $p is live again"; fi
+    if $RESTART 9>&- && healthy "$p"; then start_worker; fail "rolled back: $p is live again"; fi
     fail "rollback to $p did not come up healthy: NO LIVE STAGING SERVICE (current points at $p)"
   fi
   # a first deployment has nothing to go back to: leave no pointer at the failed release
@@ -488,6 +541,15 @@ trap - ERR
 clear_pending   # the commit point: from here a crash is NOT rolled back (a retry redeploys this commit over its migrated database)
 safe_touch "$rel/.complete"; echo "$new" > "$STATE/current-sha"
 log "live: $new"
+# Past the commit point: nothing rolls this database back any more, so the worker may write to it.
+start_worker
+# The scan worker's state after the cutover, in the journal (#836). A report only: the gate above is the app's health.
+if worker_installed; then
+  wstate=$($SYSTEMCTL is-active "$WORKER" 2>/dev/null || true)
+  if [ "$wstate" = active ]; then log "scan worker: active ($WORKER)"
+  elif $SYSTEMCTL is-enabled --quiet "$WORKER"; then log "ALERT scan worker: ${wstate:-unknown} ($WORKER is enabled but not running; scans run on the app only)"
+  else log "scan worker: ${wstate:-inactive} ($WORKER is installed but not enabled)"; fi
+fi
 # Release identity (ops/release-manifest.mjs): the exact commit, build id and readiness the live service reports, in the
 # journal and in the release's release.json. A report only; the gate above is /api/health with the commit.
 if [ -f "$rel/ops/release-manifest.mjs" ]; then

@@ -196,6 +196,8 @@ test("requeue on shutdown: an EARLIER attempt's reserved call blocks the hand-ba
   const untrack = trackInFlight({ id, attempts: 2 } as never)
   const n = requeueInFlightForShutdown(db)
   untrack()
-  assert.equal(n, 0, 'not handed back to pending: the reaper owns the fail-closed end (mutation: attempt correlation hands it back - red)')
-  assert.equal(getJob(db, 'u', id)?.status, 'running')
+  assert.equal(n, 0, 'not handed back to pending (mutation: attempt correlation hands it back - red)')
+  // #836 (decision 2026-11-13): the stopping process ends it itself, with the reaper's outcome, instead of leaving it running for the lease
+  assert.equal(getJob(db, 'u', id)?.status, 'failed'); assert.equal(getJob(db, 'u', id)?.error, 'accounting_uncertain')
+  assert.equal((db.prepare("SELECT status FROM scan_spend_calls WHERE id = 'c1'").get() as { status: string }).status, 'reserved', 'the earlier attempt\'s call stays recorded')
 })

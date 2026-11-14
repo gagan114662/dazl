@@ -1155,7 +1155,9 @@ CREATE TABLE work_queue (
         lease_expires_at INTEGER,
         claim_token INTEGER,
         last_error TEXT,
-        dedupe_key TEXT
+        dedupe_key TEXT,
+        claimed_by TEXT,
+        claim_log TEXT
       );
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
