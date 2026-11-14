@@ -275,3 +275,17 @@ test('#381 parseLeads: one malformed item in the reply loses that item, not the 
   // a salvaged item still has to cite an allowed URL, like any other
   assert.deepEqual(parseLeads(broken, [urls[2]], { salvage: true })?.map(l => l.company), ['Milbank'])
 })
+
+// REAL: the extraction reply of a uk-shopify-ecom scan on this branch (2026-11-14, the adaptive round), stored byte for byte in
+// test/fixtures/extraction-reply-unescaped-quote-20261114.txt. 5 items; the fifth copies its quote from the page verbatim, double quotes included
+// ("Beef" Kofta, Smoky Chipotle "Chicken" Pieces ...), without escaping them, so the reply is not JSON. Before: null, all 5 lost. Now: the 4 valid items.
+test('#381 parseLeads on a REAL malformed reply: an unescaped quote inside one verbatim excerpt loses that item only (4 of 5 kept; before: 0)', () => {
+  const reply = readFileSync(new URL('./fixtures/extraction-reply-unescaped-quote-20261114.txt', import.meta.url), 'utf8')
+  assert.throws(() => JSON.parse(reply.slice(reply.indexOf('['), reply.lastIndexOf(']') + 1)), 'the real reply is not JSON as a whole')
+  const urls = [...reply.matchAll(/"source_url": "([^"]+)"/g)].map(m => m[1])
+  assert.equal(urls.length, 5)
+  assert.equal(parseLeads(reply, urls), null, 'without the option (every caller but the extraction step): unusable, as before')
+  const kept = parseLeads(reply, urls, { salvage: true })
+  assert.deepEqual(kept?.map(l => l.company), ['VK', 'Heinz', 'DASH', 'Knorr'], 'Impossible Foods (the broken item) is not repaired or guessed')
+  for (const l of kept!) assert.ok(l.excerpt && l.excerpt.length >= 20 && urls.includes(l.source_url), JSON.stringify(l))
+})

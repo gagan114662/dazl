@@ -1,0 +1,54 @@
+```json
+[
+  {
+    "name": "",
+    "company": "VK",
+    "contact": null,
+    "signal": "VK Vodbox launched in Spar UK stores on 23 November 2026 after rebrand from VK Squashka, indicating recent product launch.",
+    "source_url": "https://britbrief.co.uk/business/retail/vk-vodbox-secures-spar-uk-listing-after-rebrand.html",
+    "excerpt": "VK Vodbox will launch in 164 Spar stores from 23 November, with all three SKUs in 500ml cartons, after its rebrand from VK Squashka.",
+    "event_date": "2026-11-13",
+    "score": 75
+  },
+  {
+    "name": "",
+    "company": "Heinz",
+    "contact": null,
+    "signal": "Heinz launched new range of four soups in microwavable pouch format in November 2026, first time in pouch format in UK.",
+    "source_url": "https://grocerygazette.co.uk/2026/11/09/heinz-expands-range-with-microwavable-pouches",
+    "excerpt": "Heinz has expanded its offerings with the launch of a new range of four different soups in a microwavable pouch format. This marks the first time Heinz soup has come in a pouch format in the UK",
+    "event_date": "2026-11-09",
+    "score": 80
+  },
+  {
+    "name": "",
+    "company": "DASH",
+    "contact": null,
+    "signal": "DASH Pink Lady Apple Sparkling Water launched in May 2026 in supermarket fresh produce aisle, ranking among 2026's fastest-selling soft drink launches.",
+    "source_url": "https://retailtimes.co.uk/dash-pink-lady-apple-sparkling-water-ranks-among-2026s-fastest-selling-soft-drink-launches",
+    "excerpt": "Launched in May 2026, DASH Pink Lady® Apple Sparkling Water became one of the first drink brands to activate in",
+    "event_date": "2026-11-11",
+    "score": 85
+  },
+  {
+    "name": "",
+    "company": "Knorr",
+    "contact": null,
+    "signal": "Knorr launched first-ever liquid concentrated stock in Chicken and Beef flavours in September 2026.",
+    "source_url": "https://www-vercel.unilever.co.uk/news/press-releases/2026/knorr-unveils-first-ever-liquid-concentrated-stock-tapping-into-category-boom",
+    "excerpt": "best-loved stock brands, is set to transform the stock category with the launch of its first-ever liquid concentrated stock. Available in Chicken and Beef flavours",
+    "event_date": "2026-09-16",
+    "score": 82
+  },
+  {
+    "name": "",
+    "company": "Impossible Foods",
+    "contact": null,
+    "signal": "Impossible Foods launched four new products in Tesco supermarkets across UK in September 2026.",
+    "source_url": "https://impossiblefoods.com/en-gb/media/impossible-foods-launches-in-uk-supermarkets-with-tesco",
+    "excerpt": "Beef" Kofta, Smoky Chipotle "Chicken" Pieces, and Spicy "Chicken" Fries begin rolling out to select Tesco locations across the United Kingdom this week.",
+    "event_date": "2026-09-23",
+    "score": 83
+  }
+]
+```
