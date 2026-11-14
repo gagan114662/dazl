@@ -1,4 +1,4 @@
--- Numbered 0069 (main's highest is 0068_play_alerts). Session E also holds 0069 (0069_work_queue_claimed_by): whoever merges second renumbers to main's highest + 1 (loader needs 1..n, no gaps).
+-- Numbered 0070: main's highest is 0069_work_queue_claimed_by (session E landed 0069 first).
 -- #1036: dazl's own SMTP mailbox check (lib/people/smtp-verify.ts). One operator ledger, no tenant data and no addresses of people:
 --   dom:<domain>        per-domain facts (preferred MX, catch-all answer) kept 30 days
 --   rcpt:<mx>:<hour>    RCPT commands sent to one MX host in one UTC hour (the hourly limit)
