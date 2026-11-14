@@ -369,7 +369,7 @@ new=$(as git -C "$ROOT/repo" rev-parse origin/main)
 # there. No recovery point is pending here (step 0 finished any), and the live release is a committed one, so an enabled
 # worker that is not running is started now, whether or not there is anything new to deploy; a real deploy then stops it
 # again by name like any other. Without the stamp the worker was stopped by someone else, and stays stopped.
-if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
+if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && [ -n "$(live_release)" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi # a live release must exist: a failed first deploy leaves none (the unit has no working directory)
 cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 # Upgrading from a deploy that kept current-sha in STAGING_ROOT: the old file is the service account's and is not read; the
 # validated, complete live release names the deployed commit instead.
