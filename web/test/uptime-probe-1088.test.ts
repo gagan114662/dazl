@@ -95,6 +95,11 @@ test('no destination: the outage is still counted and printed, and the alert is 
   mode.health = 'ok'
 })
 
+test('a state file that cannot be written is exit 3, said in words', async () => {
+  const blocker = path.join(T, 'not-a-dir'); writeFileSync(blocker, '')
+  const r = await run(path.join(blocker, 'state.json')); assert.equal(r.code, 3, r.out); assert.match(r.out, /cannot write the state file/)
+})
+
 test('usage: a plain-http outside URL, a bad name and a missing --state are refused', () => {
   const sh = (args: string[]) => spawnSync(process.execPath, [probe, ...args], { encoding: 'utf8' })
   assert.equal(sh(['--check', 'a=https://x.example/h']).status, 2)

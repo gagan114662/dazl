@@ -11,7 +11,8 @@
 export interface AlertRequest { url: string; body: string }
 
 const TELEGRAM_MAX = 4096
-const isTelegram = (u: URL) => u.hostname === 'api.telegram.org' && /^\/bot[^/]+\/sendMessage$/.test(u.pathname)
+const telegramHost = (u: URL) => u.hostname.replace(/\.$/, '').toLowerCase() === 'api.telegram.org'
+const isTelegram = (u: URL) => telegramHost(u) && /^\/bot[^/]+\/sendMessage$/.test(u.pathname)
 
 // null = this URL cannot receive an alert (not https, unparsable, or a Telegram URL with no chat_id): the caller treats
 // it exactly like "no destination" and says so, instead of sending something the receiver will reject forever.
@@ -19,11 +20,13 @@ export function alertRequest(url: string | undefined, payload: Record<string, un
   if (!url || !/^https:\/\//.test(url)) return null
   let u: URL
   try { u = new URL(url) } catch { return null }
+  if (telegramHost(u) && !isTelegram(u)) return null   // another Bot API method, or a stray slash: Telegram would answer 400 forever
   if (isTelegram(u)) {
     const chat = u.searchParams.get('chat_id')?.trim()
     if (!chat || !/^-?\d{1,20}$|^@[A-Za-z0-9_]{4,64}$/.test(chat)) return null
     const cut = text.length > TELEGRAM_MAX ? `${text.slice(0, TELEGRAM_MAX - 20)}\n... (cut)` : text
-    return { url: `${u.origin}${u.pathname}`, body: JSON.stringify({ chat_id: /^-?\d+$/.test(chat) ? Number(chat) : chat, text: cut || 'dazl alert', disable_web_page_preview: true }) }
+    return { url: `${u.origin}${u.pathname}`, body: JSON.stringify({ chat_id: /^-?\d{1,15}$/.test(chat) ? Number(chat) : chat,   // a longer id stays a string (exact; Telegram accepts both)
+       text: cut || 'dazl alert', disable_web_page_preview: true }) }
   }
   return { url, body: JSON.stringify({ text, ...payload }) }
 }
@@ -34,7 +37,7 @@ export function alertDestinationProblem(url: string | undefined): string | null 
   if (!/^https:\/\//.test(url)) return 'OPS_ALERT_WEBHOOK_URL is not an https URL'
   let u: URL
   try { u = new URL(url) } catch { return 'OPS_ALERT_WEBHOOK_URL is not a URL' }
-  if (u.hostname === 'api.telegram.org') {
+  if (telegramHost(u)) {
     if (!isTelegram(u)) return 'the Telegram URL must be https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>'
     if (alertRequest(url, {}, 'x') === null) return 'the Telegram URL has no valid chat_id (?chat_id=<number or @channel>)'
   }

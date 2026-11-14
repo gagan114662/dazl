@@ -3,7 +3,7 @@
 // whole point is to notice when the box, its network or Caddy is gone), from ops/uptime/dazl-uptime.timer or cron.
 // Free: Node 20+ and this one file, no account, no dependency. It reads public health endpoints only.
 //
-//   node ops/uptime/probe.mjs --state ~/.local/state/dazl-uptime.json [--alert-url URL] [--check name=url[=rule]]...
+//   node ops/uptime/probe.mjs --state ~/.local/state/dazl-uptime.json [--check name=url[=rule]]...
 //
 // Checks (default when no --check is given):
 //   prod            https://dazl.ai/api/health                    rule http: answers 200 with {"ok":true}
@@ -13,13 +13,14 @@
 // on-box scheduler check's alert, not an outage.
 // A check is DOWN after --fail-after (2) consecutive failures, i.e. about 2 minutes at one run a minute: one alert when
 // it goes down, a reminder every --remind-s (3600) while it stays down, one "recovered" notice when it is back.
-// Alerts go to --alert-url, else OPS_ALERT_WEBHOOK_URL: the same destinations as the app's own alerts
+// Alerts go to OPS_ALERT_WEBHOOK_URL (the environment only, never a flag: a bot token on the command line would show in `ps`): the same destinations as the app's own alerts
 // (web/lib/ops/alert-destination.ts): a Telegram bot URL https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>
 // gets { chat_id, text }; any other https URL gets JSON with a Slack-compatible `text`. UPTIME_ALERT_CMD (tests) runs a
 // command with the JSON as its argument instead. The alert carries check names, URLs, HTTP status or error class and
 // times: no response body. A state change is recorded only after its alert was DELIVERED, so a failed send is retried
 // on the next run. The alert URL is never printed.
-// Exit 0 = every check up; 1 = at least one failing or down; 2 = usage.
+// A redirect is not followed: a health URL that answers 301 is reported as "HTTP 301" (give the final URL).
+// Exit 0 = every check up; 1 = at least one failing or down; 2 = usage; 3 = the state file cannot be written.
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -28,7 +29,7 @@ import path from 'node:path'
 const argv = process.argv.slice(2)
 const all = f => argv.flatMap((a, i) => a === f && argv[i + 1] !== undefined ? [argv[i + 1]] : [])
 const one = f => all(f).pop()
-const usage = why => { console.error(`uptime-probe: ${why}\nusage: probe.mjs --state FILE [--alert-url URL] [--check name=url[=http|scheduler]]... [--fail-after N] [--remind-s S] [--timeout-ms MS]`); process.exit(2) }
+const usage = why => { console.error(`uptime-probe: ${why}\nusage: probe.mjs --state FILE [--check name=url[=http|scheduler]]... [--fail-after N] [--remind-s S] [--timeout-ms MS]`); process.exit(2) }
 const int = (f, d, min) => { const v = one(f); if (v === undefined) return d; const n = Number(v); if (!Number.isSafeInteger(n) || n < min) usage(`${f} must be an integer >= ${min}`); return n }
 const stateFile = one('--state'); if (!stateFile) usage('--state FILE is required')
 const failAfter = int('--fail-after', 2, 1), remindS = int('--remind-s', 3600, 60), timeoutMs = int('--timeout-ms', 10_000, 100)
@@ -68,18 +69,20 @@ const now = Date.now(), iso = t => new Date(t).toISOString()
 function alertRequest(url, payload, text) {
   if (!url || !/^https:\/\//.test(url)) return null
   let u; try { u = new URL(url) } catch { return null }
-  if (u.hostname === 'api.telegram.org' && /^\/bot[^/]+\/sendMessage$/.test(u.pathname)) {
+  const tg = u.hostname.replace(/\.$/, '').toLowerCase() === 'api.telegram.org'
+  if (tg && !/^\/bot[^/]+\/sendMessage$/.test(u.pathname)) return null
+  if (tg) {
     const chat = u.searchParams.get('chat_id')?.trim()
     if (!chat || !/^-?\d{1,20}$|^@[A-Za-z0-9_]{4,64}$/.test(chat)) return null
-    return { url: `${u.origin}${u.pathname}`, body: JSON.stringify({ chat_id: /^-?\d+$/.test(chat) ? Number(chat) : chat, text: text.slice(0, 4000) || 'dazl alert', disable_web_page_preview: true }) }
+    return { url: `${u.origin}${u.pathname}`, body: JSON.stringify({ chat_id: /^-?\d{1,15}$/.test(chat) ? Number(chat) : chat, text: text.slice(0, 4000) || 'dazl alert', disable_web_page_preview: true }) }
   }
   return { url, body: JSON.stringify({ text, ...payload }) }
 }
 async function send(payload, text) {
   const cmd = process.env.UPTIME_ALERT_CMD
   if (cmd) { const r = spawnSync(cmd, [JSON.stringify({ text, ...payload })], { stdio: 'inherit', timeout: 10_000, killSignal: 'SIGKILL' }); return !r.error && r.status === 0 }
-  const req = alertRequest(one('--alert-url') ?? process.env.OPS_ALERT_WEBHOOK_URL, payload, text)
-  if (!req) { console.error('uptime-probe: no usable alert destination (--alert-url or OPS_ALERT_WEBHOOK_URL: an https webhook, or https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>)'); return false }
+  const req = alertRequest(process.env.OPS_ALERT_WEBHOOK_URL, payload, text)
+  if (!req) { console.error('uptime-probe: no usable alert destination (OPS_ALERT_WEBHOOK_URL: an https webhook, or https://api.telegram.org/bot<token>/sendMessage?chat_id=<id>)'); return false }
   try {
     const r = await fetch(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, redirect: 'error', signal: AbortSignal.timeout(10_000) })
     if (!r.ok) console.error(`uptime-probe: alert destination answered HTTP ${r.status}`)
@@ -116,7 +119,10 @@ for (const { c, reason } of results) {
   next[c.name] = s
   lines.push({ check: c.name, up: false, reason, consecutive_failures: s.fails, alerted: s.down })
 }
-mkdirSync(path.dirname(path.resolve(stateFile)), { recursive: true, mode: 0o700 })
-writeFileSync(`${stateFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); renameSync(`${stateFile}.tmp`, stateFile)
+// a state that cannot be written would make every run alert again: say so and exit 3 (a real unit failure, unlike exit 1)
+try {
+  mkdirSync(path.dirname(path.resolve(stateFile)), { recursive: true, mode: 0o700 })
+  writeFileSync(`${stateFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); renameSync(`${stateFile}.tmp`, stateFile)
+} catch (e) { console.error(`uptime-probe: cannot write the state file (${e?.code ?? 'error'}): alerts will repeat until this is fixed`); process.exit(3) }
 console.log(JSON.stringify({ level: bad ? 'error' : 'info', type: 'uptime_probe', ok: bad === 0, at: iso(now), checks: lines }))
 process.exit(bad ? 1 : 0)

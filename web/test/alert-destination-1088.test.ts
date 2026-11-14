@@ -28,8 +28,13 @@ test('an unusable destination is null, with a reason that never holds the URL or
     ['https://api.telegram.org/bot123:TOKENVALUE/sendMessage', /no valid chat_id/], ['https://api.telegram.org/bot123:TOKENVALUE/sendMessage?chat_id=', /no valid chat_id/],
     ['https://api.telegram.org/bot123:TOKENVALUE/sendMessage?chat_id=not a chat', /no valid chat_id/], ['https://api.telegram.org/bot123:TOKENVALUE/getUpdates?chat_id=5', /must be https:\/\/api\.telegram\.org\/bot<token>\/sendMessage/]] as const) {
     const p = alertDestinationProblem(u); assert.match(p ?? '', why, String(u)); assert.ok(!(p ?? '').includes('TOKENVALUE'))
-    if (u !== 'https://api.telegram.org/bot123:TOKENVALUE/getUpdates?chat_id=5') assert.equal(alertRequest(u, {}, 'x'), null, String(u))
+    assert.equal(alertRequest(u, {}, 'x'), null, String(u))
   }
+  // a stray slash or a trailing-dot host is still Telegram: refused or shaped, never sent the generic JSON
+  assert.equal(alertRequest('https://api.telegram.org/bot1:T/sendMessage/?chat_id=1', {}, 'x'), null)
+  assert.deepEqual(Object.keys(JSON.parse(alertRequest('https://api.telegram.org./bot1:T/sendMessage?chat_id=1', {}, 'x')!.body)).sort(), ['chat_id', 'disable_web_page_preview', 'text'])
+  // a chat id too long for a JSON number stays exact, as a string
+  assert.equal(JSON.parse(alertRequest('https://api.telegram.org/bot1:T/sendMessage?chat_id=12345678901234567890', {}, 'x')!.body).chat_id, '12345678901234567890')
   assert.equal(alertDestinationProblem(TG), null); assert.equal(alertDestinationProblem('https://hooks.example/x'), null)
 })
 
@@ -48,6 +53,7 @@ test("the app's error hook: Telegram gets a readable text built from the allowli
   const text = tg.body.text as string
   assert.match(text, /^dazl production error: TypeError in route \/api\/leads \(GET\)\n/); assert.match(text, /release 7a1d2b31/); assert.match(text, /fingerprint [0-9a-f]+/)
   assert.ok(!/boom|example\.com/.test(text), 'the message text is never sent, as before')
+  for (const c of calls) assert.ok(!/boom|user@example\.com/.test(JSON.stringify(c.body)), 'nothing from the error message reaches either destination')
   assert.equal(hook.url, 'https://hooks.example.test/x'); assert.equal(String(hook.body.text).split('\n').slice(0, -1).join('\n'), text.split('\n').slice(0, -1).join('\n'), 'the same text (the last line is each record\'s own time)'); assert.equal(hook.body.environment, 'production'); assert.equal((hook.body.error as { type: string }).type, 'TypeError')
   assert.equal(alertText(outboundRecord(record(), dep)).split('\n')[0], 'dazl production error: TypeError in route /api/leads (GET)')
 })
