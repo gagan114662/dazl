@@ -62,12 +62,12 @@ function test_sync() {
       assert.deepEqual(st(db, 'u'), { status: 'failed', error: 'accounting_uncertain' })
       assert.deepEqual(st(db, 'k'), { status: 'pending', error: null })
     })
-    test('shutdown handoff: a job with an unsettled call is NOT re-pended (the lease reaper then fails it closed); others are', () => {
+    test('shutdown handoff: a job with an unsettled call is NOT re-pended: it is failed closed at once (#836, as the lease reaper would); others are re-pended', () => {
       const db = mk(); job(db, 'u', 'running'); call(db, 'u', 'reserved'); job(db, 'k', 'running'); call(db, 'k', 'settled')
       const ju = { id: 'u', attempts: 1 }, jk = { id: 'k', attempts: 1 }
       const offU = trackInFlight(ju as never), offK = trackInFlight(jk as never)
       try { requeueInFlightForShutdown(db) } finally { offU(); offK() }
-      assert.equal((st(db, 'u') as { status: string }).status, 'running')
+      assert.deepEqual(st(db, 'u'), { status: 'failed', error: 'accounting_uncertain' })
       assert.equal((st(db, 'k') as { status: string }).status, 'pending')
     })
   })
