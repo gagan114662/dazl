@@ -11,7 +11,7 @@ import {
   parseJudgeReply, parseStoredVerdicts, runJudge, scanJudge, toStoredVerdicts, CONDITIONS, CRITICAL_KINDS, SCAN_JUDGE_SPEC, JudgeCorpusError,
   type JudgeCorpus, type JudgeLock, type JudgeOutcome, type JudgeSpec,
 } from '../lib/evals/judge.ts'
-import { claimSupportJudge, scanJudgeTemplate, scanVerificationJudge, STUB_MODELS } from './helpers/judge-stubs.ts'
+import { claimSupportJudge, scanJudgeTemplate, scanVerificationJudge, RUN_IMPORTED, STUB_MODELS } from './helpers/judge-stubs.ts'
 
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
@@ -195,7 +195,10 @@ test('the lock registers the scan judge as the code has it: editing its prompt o
   assert.equal(judgeFingerprint(SCAN_JUDGE_SPEC, scanJudgeTemplate()), reg!.fingerprint,
     'the scan judge prompt or parser changed: run scripts/judges.mts, review its calibration, and update registered[].fingerprint in test/fixtures/evals/judges/judges.lock.json')
   assert.notEqual(judgeFingerprint(SCAN_JUDGE_SPEC, scanJudgeTemplate() + ' '), reg!.fingerprint)
-  assert.deepEqual(judgeGate({ spec: SCAN_JUDGE_SPEC, template: scanJudgeTemplate() }, LOCK, CORPUS), { usable: false, reason: 'judge scan_verification_judge was never calibrated' })
+  const gated = judgeGate({ spec: SCAN_JUDGE_SPEC, template: scanJudgeTemplate() }, LOCK, CORPUS)
+  // The scan judge runs on the tenant's own provider, so the validation run's single model never makes it count.
+  if (!RUN_IMPORTED) assert.deepEqual(gated, { usable: false, reason: 'judge scan_verification_judge was never calibrated' })
+  else assert.equal(gated.usable, false, 'one model\'s calibration does not make the registered scan judge count')
 })
 
 test('stored verdicts: a JSON-lines log round-trips, and a damaged line is an error, not "no drift"', async () => {
@@ -237,7 +240,10 @@ test('drift: a new model, the same model answering differently, and a rate rise 
 
 test('the gate: only a passing, undrifted calibration for this exact fingerprint on this exact corpus lets a judge count', async () => {
   const j = judge('truthful')
-  assert.deepEqual(judgeGate(j, LOCK, CORPUS), { usable: false, reason: 'judge claim_support was never calibrated' })
+  // the test judge's simulated spec is never the real run's model, so it is uncalibrated either way; the reason differs once
+  // the run's calibration (another model, hence another fingerprint) is committed
+  if (!RUN_IMPORTED) assert.deepEqual(judgeGate(j, LOCK, CORPUS), { usable: false, reason: 'judge claim_support was never calibrated' })
+  else assert.equal(judgeGate(j, LOCK, CORPUS).usable, false)
   const cal = await calibrate(j, CORPUS)
   const lock: JudgeLock = { ...LOCK, judges: [lockEntry(cal, '2026-11-03T00:00:00Z', SRC)] }
   assert.deepEqual(judgeGate(j, lock, CORPUS), { usable: true, reason: 'calibrated' })

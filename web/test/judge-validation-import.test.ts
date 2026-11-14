@@ -112,6 +112,33 @@ test('#784 #785 a completed run imports into the claim\'s consumption, a stored-
   assert.deepEqual((await imp({ artifactText: x.artifactText, recordText: r.recordText! }, LOCK_TEXT, null)).problems, [])
 })
 
+test('#784 the import appends to the verdict log, never replaces it: historical drifted runs survive and still block; the same run again changes nothing; another run under the same id is refused', async () => {
+  const refused = (r: Imported, re: RegExp) => { assert.match(r.problems.join('\n'), re); assert.equal(r.verdictLog, undefined) }
+  const x = await run()
+  const first = await imp(x)
+  const stored = parseStoredVerdicts(first.verdictLog!)
+  // two later runs appended by scripts/judges.mts: the same answers, then one answer flipped under the same fingerprint
+  const copy = (run: string, at: string, flip: boolean) => stored.filter(v => v.judge === 'claim_support' && v.split === 'calibration').map((v, k) => ({ ...v, run, at, answer: flip && k === 0 ? (v.answer === 'supported' ? 'not_supported' : 'supported') as typeof v.answer : v.answer }))
+  const history = [...copy('hist-1', '2026-12-01T00:00:00Z', false), ...copy('hist-2', '2026-12-02T00:00:00Z', true)]
+  const existing = history.map(v => JSON.stringify(v)).join('\n') + '\n'
+  const drift = (log: string) => detectDrift(parseStoredVerdicts(log), { judge: 'claim_support' }).map(d => d.status)
+  assert.ok(drift(existing).includes('drifted'), 'the history alone is drifted evidence')
+  const r = await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(x.artifactText), existingVerdictLog: existing })
+  assert.deepEqual(r.problems, [])
+  assert.ok(r.verdictLog!.startsWith(existing), 'what was on disk is kept, byte for byte')
+  assert.equal(parseStoredVerdicts(r.verdictLog!).length, history.length + stored.length)
+  assert.ok(drift(r.verdictLog!).includes('drifted'), 'and still blocks')
+  const d = releaseGate({ lock: JSON.parse(r.lockText!) as JudgeLock, corpus: CORPUS, judges: await releaseInputs(CORPUS), verdicts: r.verdictLog! })
+  assert.equal(d.release, 'blocked', 'the appended drift is not silently dropped by the import')
+  // "run the same command again": the log already holds this run, so nothing changes
+  const again = await importValidationArtifact({ artifactText: x.artifactText, recordText: r.recordText!, lockText: r.lockText!, corpus: CORPUS, existingVerdictLog: r.verdictLog })
+  assert.deepEqual([again.problems, again.verdictLog], [[], r.verdictLog])
+  // a run id names one run: the same id with other content is refused, and a damaged log is never grown
+  const tampered = existing + r.verdictLog!.slice(existing.length).replace('"answer":"not_supported"', '"answer":"supported"')
+  refused(await importValidationArtifact({ artifactText: x.artifactText, recordText: r.recordText!, lockText: r.lockText!, corpus: CORPUS, existingVerdictLog: tampered }), /already holds run val-1 with different content/)
+  refused(await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(x.artifactText), existingVerdictLog: existing + '{"v":2' }), /the verdict log cannot be written: verdict log line \d+: not JSON/)
+})
+
 test('#784 a gullible model (it believes what the page says about itself) completes the run and fails calibration: the entry is recorded as failed with its critical false positives, the gate blocks the release, and nothing counts', async () => {
   const x = await run({ model: 'gullible' })
   const r = await imp(x)
@@ -169,7 +196,7 @@ test('#784 #785 the committed files agree with each other: with the run\'s artif
     return
   }
   const artifactText = readFileSync(artifact, 'utf8')
-  const r = await importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS })
+  const r = await importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS, existingVerdictLog: existsSync(log) ? readFileSync(log, 'utf8') : null })
   assert.deepEqual(r.problems, [])
   assert.equal(record.claims[0].artifact_sha256, sha(artifactText), 'the claim is consumed by this artifact')
   assert.equal(read('lib/evals/judge-validation-runs.json'), r.recordText)

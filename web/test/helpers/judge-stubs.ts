@@ -3,7 +3,7 @@
 // gives up on other languages, one that is unstable, one that reads only the first source - so the harness can be shown to
 // catch each. They read the prompt the judge under test built, find the corpus item it is about, and answer in that
 // judge's own reply format. No model is called, no key is read and nothing leaves the process.
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { calibrate, claimJudge, scanJudge, SCAN_JUDGE_SPEC, type JudgeAdapter, type JudgeCall, type JudgeCorpus, type JudgeItem, type JudgeSource, type JudgeSpec, type ReleaseJudgeInput } from '../../lib/evals/judge.ts'
 import { judgePrompt as scanJudgePrompt, makeJudge, parseJudgement } from '../../lib/scan/runner.ts'
 import type { Provider } from '../../lib/llm/provider.ts'
@@ -119,6 +119,9 @@ export const releaseInputs = async (corpus: JudgeCorpus): Promise<ReleaseJudgeIn
 // by the same reviewed PR that records its lock entry. Absent while no real model is calibrated. The CLI
 // (scripts/judges.mts --gate) and the CI gate test both read it through readVerdictLog: its text, or null when there is no
 // file. Any other read error is thrown, never treated as "no log".
+// True once the paid validation run's artifact is committed (#784). Tests that assert the uncalibrated state read this, so the
+// import PR is data only: no release-gate assertion is edited to make CI green when the one unrepeatable result lands.
+export const RUN_IMPORTED = existsSync(new URL('../fixtures/evals/judges/validation-run.result.json', import.meta.url))
 export const VERDICT_LOG = new URL('../fixtures/evals/judges/verdicts.jsonl', import.meta.url)
 export function readVerdictLog(path: string | URL): string | null {
   try { return readFileSync(path, 'utf8') } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e }

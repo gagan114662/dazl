@@ -16,7 +16,7 @@
 // that was cut short.
 // The re-score runs here, at import time, against this checkout's judge code.
 // Exit: 0 ok, 2 refused (nothing written), 3 incomplete (some files moved into place: run the same command again).
-import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { importValidationArtifact, ARTIFACT_FIXTURE, LOCK_FIXTURE, VERDICT_LOG_FIXTURE } from '../lib/evals/judge-validation-import.ts'
 import { RUN_RECORD_FILE } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
@@ -30,7 +30,7 @@ if (!path || unknown.length || (expect !== undefined && !/^[0-9a-f]{64}$/.test(e
 let artifactText: string
 try { artifactText = readFileSync(path, 'utf8') } catch { console.error('judge validation import: REFUSED (nothing written)\n  the artifact file cannot be read'); process.exit(2) }
 const corpus = JSON.parse(readFileSync(at('test/fixtures/evals/judges/corpus.synthetic.json'), 'utf8')) as JudgeCorpus
-const r = await importValidationArtifact({ artifactText, expectSha256: expect, recordText: readFileSync(at(RUN_RECORD_FILE), 'utf8'), lockText: readFileSync(at(LOCK_FIXTURE), 'utf8'), corpus })
+const r = await importValidationArtifact({ artifactText, expectSha256: expect, recordText: readFileSync(at(RUN_RECORD_FILE), 'utf8'), lockText: readFileSync(at(LOCK_FIXTURE), 'utf8'), corpus, existingVerdictLog: existsSync(at(VERDICT_LOG_FIXTURE)) ? readFileSync(at(VERDICT_LOG_FIXTURE), 'utf8') : null })
 if (r.problems.length) { console.error(`judge validation import: REFUSED (nothing written)\n  ${r.problems.join('\n  ')}`); process.exit(2) }
 console.log(`judge validation import: run ${r.run_id}, artifact sha256 ${r.artifact_sha256}`)
 if (!r.results) console.log('  the run has NO results (it failed or stopped): the claim is consumed, no verdict and no lock entry is written')

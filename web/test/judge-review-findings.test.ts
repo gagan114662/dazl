@@ -13,7 +13,7 @@ import {
   JudgeCorpusError, type JudgeCorpus, type JudgeItem, type JudgeLock, type JudgeSpec, type JudgeTruth, type StoredVerdict,
 } from '../lib/evals/judge.ts'
 import * as judgeModule from '../lib/evals/judge.ts'
-import { CLAIM_SUPPORT_SPEC, claimSupportJudge, releaseInputs, STUB_MODELS } from './helpers/judge-stubs.ts'
+import { CLAIM_SUPPORT_SPEC, claimSupportJudge, readVerdictLog, releaseInputs, RUN_IMPORTED, STUB_MODELS, VERDICT_LOG } from './helpers/judge-stubs.ts'
 
 // claimText is read off the module object, so this file still loads against an older judge.ts that lacks it (each test
 // then fails on its own, which is what the fail-before check needs)
@@ -207,12 +207,16 @@ test('finding 8: the CLI/CI gate loads the stored-verdict log and checks drift; 
 
 test('finding 9: any supplied drift report that is not exactly a known-status DriftReport blocks release', async () => {
   const judges = await releaseInputs(CORPUS)
-  const gate = (drift: unknown[] | undefined) => releaseGate({ lock: LOCK, corpus: CORPUS, judges, verdicts: null, drift: drift as never })
-  assert.equal(gate(undefined).release, 'allowed', gate(undefined).blocks.join('\n'))
+  // With the paid run imported the lock holds calibrations, and the gate then requires the stored-verdict log beside them.
+  const verdicts = RUN_IMPORTED ? readVerdictLog(VERDICT_LOG) : null
+  const gate = (drift: unknown[] | undefined) => releaseGate({ lock: LOCK, corpus: CORPUS, judges, verdicts, drift: drift as never })
+  // the committed state's own decision is the baseline: a drift report must change it only by blocking, never by allowing
+  const base = gate(undefined)
+  if (!RUN_IMPORTED) assert.equal(base.release, 'allowed', base.blocks.join('\n'))
   const recs = [...await run(V1, 'truthful', 'r1', 1), ...await run(V1, 'truthful', 'r2', 2)]
   const [real] = detectDrift(recs, { judge: 'claim_support' })
   assert.equal(real.status, 'stable')
-  assert.equal(gate([real]).release, 'allowed', 'a real stable report is fine')
+  assert.equal(gate([real]).release, base.release, 'a real stable report changes nothing')
   const bad: [string, unknown][] = [
     ['Hermes\'s probe', { judge: 'claim_support', status: 'corrupt' }],
     ['unknown status, otherwise well formed', { ...real, status: 'corrupt' }],

@@ -11,7 +11,7 @@ import {
   calibrate, detectDrift, judgeFingerprint, judgeGate, lockEntry, releaseGate, toStoredVerdicts, JudgeCorpusError,
   type JudgeAdapter, type JudgeCorpus, type JudgeLock, type ReleaseJudgeInput,
 } from '../lib/evals/judge.ts'
-import { CLAIM_SUPPORT_SPEC, claimSupportJudge, harnessFor, readVerdictLog, RELEASE_JUDGES, releaseInputs, scanVerificationJudge, STUB_MODELS, VERDICT_LOG, type JudgeBuild } from './helpers/judge-stubs.ts'
+import { CLAIM_SUPPORT_SPEC, claimSupportJudge, harnessFor, readVerdictLog, RELEASE_JUDGES, RUN_IMPORTED, releaseInputs, scanVerificationJudge, STUB_MODELS, VERDICT_LOG, type JudgeBuild } from './helpers/judge-stubs.ts'
 
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
@@ -34,7 +34,11 @@ test('CI gate: the committed code, lock and corpus are releasable; every registe
   for (const j of d.judges) {
     assert.equal(j.changed, false); assert.equal(j.fingerprint, j.registered_fingerprint)
     assert.deepEqual(j.harness.map(h => [h.stub, h.ok]), Object.keys(STUB_MODELS).map(s => [s, s === 'truthful']), `${j.id}: only the truthful stub passes`)
-    assert.equal(j.real_model.usable, false, `${j.id} has no real-model calibration`)
+    // Before the paid run's import neither judge has a calibration. After it, the claim judge's verdicts count only when its
+    // committed calibration passed with no critical false positive; the scan judge never does (tenant's own provider).
+    if (!RUN_IMPORTED) assert.equal(j.real_model.usable, false, `${j.id} has no real-model calibration`)
+    else if (j.id === 'scan_verification_judge') assert.equal(j.real_model.usable, false, `${j.id} runs on the tenant's provider`)
+    else assert.equal(j.real_model.usable, LOCK.judges.some(e => e.judge.id === j.id && e.ok && e.critical_fp.length === 0), `${j.id}: usable exactly when its committed calibration passed`)
   }
   assert.ok(d.limits.some(l => /scan_verification_judge: verdicts do not count .* never pass/.test(l)))
   assert.ok(d.limits.some(l => /not ground truth/.test(l)) && d.limits.some(l => /not that any real model is accurate/.test(l)))

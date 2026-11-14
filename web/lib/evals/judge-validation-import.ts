@@ -48,7 +48,10 @@ const CONSUMED = ['artifact_sha256', 'ended_at'] as const
 // expectSha256: the artifact sha256 the run printed where it ran. Required to consume a claim (the first import); once
 // the claim is consumed, the recorded sha256 is the check and this is optional.
 // currentCode: sha256 of this checkout's runner code files (codeHashes()); tests pass their own.
-export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string; currentCode?: Record<string, string> }
+export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string; currentCode?: Record<string, string>
+  // The verdict log as it is on disk (null/absent: no file). The log is append-only (scripts/judges.mts appends to it), so an import
+  // adds this run to it and never replaces it: runs appended since would otherwise vanish and drift would read `insufficient`.
+  existingVerdictLog?: string | null }
 // The files that decide a report's score: calibrate() and the judges' prompts, and the runner's fixed settings.
 export const SCORING_FILES: readonly string[] = Object.freeze(['lib/evals/judge.ts', 'lib/evals/judge-validation-run.ts', 'lib/scan/runner.ts'])
 export interface ImportResult {
@@ -156,8 +159,20 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
     }
   } catch (e) { problems.push(`the artifact's reports cannot be stored: ${e instanceof Error ? e.message : String(e)}`) }
   if (problems.length) return { problems }
-  const verdictLog = verdicts.map(v => JSON.stringify(v)).join('\n') + '\n'
-  try { parseStoredVerdicts(verdictLog) } catch (e) { return { problems: [`the verdict log this artifact gives does not parse: ${e instanceof Error ? e.message : String(e)}`] } }
+  const added = verdicts.map(v => JSON.stringify(v)).join('\n') + '\n'
+  // Append to what is on disk. The existing log must parse first (a damaged log is never grown), and a run id already in it
+  // must be exactly this run's lines: that is the documented "run the same command again" recovery, and it changes nothing.
+  // The same id with other content is refused: two different runs cannot share an id.
+  let verdictLog: string
+  try {
+    const before = i.existingVerdictLog ?? ''
+    const prior = parseStoredVerdicts(before)
+    const same = prior.filter(v => v.run === a.run_id)
+    if (same.length === 0) verdictLog = before + (before && !before.endsWith('\n') ? '\n' : '') + added
+    else if (same.length === verdicts.length && isDeepStrictEqual([...same].map(v => JSON.stringify(v)).sort(), verdicts.map(v => JSON.stringify(v)).sort())) verdictLog = before.endsWith('\n') ? before : before + '\n'
+    else return { problems: [`the verdict log already holds run ${a.run_id} with different content: a run id names one run, so nothing is written`] }
+    parseStoredVerdicts(verdictLog)
+  } catch (e) { return { problems: [`the verdict log cannot be written: ${e instanceof Error ? e.message : String(e)}`] } }
   // There is one approved run, so the lock's calibration entries are exactly this run's: nothing else is carried over.
   const lockText = JSON.stringify({ ...lock, judges: entries }, null, 1) + '\n'
   return { problems: [], recordText, lockText, verdictLog, entries, verdicts, artifact_sha256, run_id: a.run_id, results: true }
