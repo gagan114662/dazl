@@ -37,7 +37,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&isHiringTrigger(lead.signal,lead.signal_kind)
  // #878: a day the page's own structured data gave (a press release's NewsArticle datePublished, a job posting's datePosted: lib/scan/structured-date.ts) is bound by that same rule here, so a recheck
  // never contradicts the scan that dated the lead
- const sd=lead.event_date&&!boardDated?resolveStructuredDate(page.structured,lead.company,`${lead.signal} ${candidate.excerpt}`,icp.where,{title:page.title,quote:candidate.excerpt,published:page.published}):null
+ const sd=lead.event_date&&!boardDated?resolveStructuredDate(page.structured,lead.company,`${lead.signal} ${candidate.excerpt}`,icp.where,{title:page.title,quote:candidate.excerpt,published:page.published,news:true,publishedConflict:page.publishedConflict}):null
  const sdProof=sd&&sd.date===lead.event_date&&!dateRejected?structuredProof(sd):null
  const textBound=lead.event_date?eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company):null
  const date=boardDated?{bound:true,proof:'ats_structured' as const}:sdProof&&!textBound?.bound?{bound:true,proof:sdProof.proof}:lead.event_date?{...textBound!,proof:'page_bound' as const}:null

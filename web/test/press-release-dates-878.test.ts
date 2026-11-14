@@ -11,12 +11,15 @@ import { splitByWindow } from '../lib/scan/window.ts'
 import { isEventDateProof } from '../lib/scan/scoreboard.ts'
 import { isAnnouncementDay } from '../lib/scan/announcement.ts'
 import { cardDate } from '../lib/scan/lead-card.ts'
+import { htmlToText } from '../lib/scan/fetch-page.ts'
+import Database from 'better-sqlite3'
+import { migrateScan, createJob, exportLeads } from '../lib/scan/store.ts'
 import { eventDateCopy } from '../lib/scan/date-copy.ts'
 
 type Real = { company: string; url: string; signal: string; quote: string; title: string; published: string | null; structured: string[] }
 const pages = (JSON.parse(readFileSync(new URL('./fixtures/real-press-pages-878.json', import.meta.url), 'utf8')) as { pages: Real[] }).pages
 const real = (c: string): Real => pages.find(p => p.company === c)!
-const resolve = (p: Real, o: Partial<Real> = {}) => { const q = { ...p, ...o }; return resolveStructuredDate(q.structured, q.company, `${q.signal} ${q.quote}`, [], { title: q.title, quote: q.quote, published: q.published }) }
+const resolve = (p: Real, o: Partial<Real> = {}) => { const q = { ...p, ...o }; return resolveStructuredDate(q.structured, q.company, `${q.signal} ${q.quote}`, [], { title: q.title, quote: q.quote, published: q.published, news: true }) }
 const NOW = new Date('2026-11-13T18:00:00Z')
 
 test('#878 the real press releases of Armstrong Teasdale, McGuireWoods and Benesch are dated by their own NewsArticle publication day; the Toronto clinic by its JobPosting day', () => {
@@ -96,4 +99,61 @@ test('#878 an announcement day is worded as one wherever the day is shown: "anno
   assert.equal(cardDate('2026-09-30', null, { dayVerified: true }), 'event date 30 Sep 2026 (verified on the cited source)', 'a day the page states for the event reads as before')
   assert.match(eventDateCopy('2026-09-30', 'unverified', 'proof_backed', { announced: true }), /announced that day on the cited source; the day it took effect may differ - current need unconfirmed/)
   assert.match(eventDateCopy('2026-09-30', 'unverified', 'proof_backed'), /event day verified on the cited source/)
+})
+
+// the fields a NewsArticle node needs to be a candidate at all, for the negatives below
+const NEWS = (headline: string, datePublished = '2026-09-30') => JSON.stringify({ '@type': 'NewsArticle', headline, datePublished })
+const newsDay = (company: string, headline: string, quote: string, o: { news?: boolean; title?: string; published?: string | null; conflict?: boolean } = {}) =>
+  resolveStructuredDate([NEWS(headline)], company, `${headline} ${quote}`, [], { title: o.title ?? headline, quote, published: o.published === undefined ? '2026-09-30' : o.published, news: o.news ?? true, publishedConflict: o.conflict ?? false })
+
+test('#878 review: the markup\'s own publication days decide, not a null the rule reads as "nothing": two different days in the markup hold the lead', async () => {
+  // a JSON-LD NewsArticle for 2026-09-30 beside an article:published_time of 2026-10-15
+  const html = `<html><head><title>Embedd opens Chicago office</title><meta property="article:published_time" content="2026-10-15T08:00:00Z"><script type="application/ld+json">${NEWS('Embedd opens Chicago office')}</script></head><body>${'Embedd opened a new office in Chicago today. '.repeat(10)}</body></html>`
+  const t = htmlToText(html)
+  assert.equal(t.published, null, 'two days: no single publication day')
+  assert.equal(t.publishedConflict, true)
+  const lead = { company: 'Embedd', signal: 'Opened a new Chicago office', excerpt: 'Embedd opened a new office in Chicago today', source_url: 'https://news.example/e', event_date: null as string | null }
+  await finishUndatedLeads([lead], async () => t, 6, [])
+  assert.equal(lead.event_date, null, 'a page that names two publication days is not dated by either')
+  // the same page without the conflicting meta is dated
+  const clean = htmlToText(html.replace(/<meta[^>]*>/, ''))
+  assert.equal(clean.publishedConflict, false)
+  await finishUndatedLeads([lead], async () => clean, 6, [])
+  assert.equal(lead.event_date, '2026-09-30')
+})
+
+test('#878 review: a NewsArticle is read only on the page the lead itself cites (the own-site lookup of resolution.ts passes no news context)', () => {
+  const a = real('Armstrong Teasdale')
+  assert.ok(resolve(a))
+  assert.equal(resolveStructuredDate(a.structured, a.company, `${a.signal} ${a.quote}`, []), null, 'no context: no NewsArticle')
+  assert.equal(resolveStructuredDate(a.structured, a.company, `${a.signal} ${a.quote}`, [], { title: a.title, quote: a.quote, published: a.published }), null, 'context without news: true')
+})
+
+test('#878 review: events that are still ahead or old, in words the first rule missed, are never dated by the story day', () => {
+  const co = 'Embedd'
+  for (const quote of ['Embedd opens new Chicago office next spring', 'Embedd Chicago office slated to be opened in 2027', 'Embedd launches Chicago office; the launch is scheduled for later', 'Embedd is going to open a Chicago office', 'Embedd is on track to open its Chicago office',
+    'Embedd opened a Chicago office two decades ago', 'Embedd opened its Chicago office in the 1990s', 'Embedd opened its Chicago office a generation ago', 'Embedd opened its Chicago office back in the nineties, back in 1998']) {
+    assert.equal(newsDay(co, 'Embedd office news', quote), null, quote)
+  }
+  assert.deepEqual(newsDay(co, 'Embedd office news', 'Embedd opened a new Chicago office today'), { date: '2026-09-30', kind: 'NewsArticle' }, 'the control')
+  // a recognition is not an event
+  assert.equal(newsDay(co, 'Embedd office news', 'Embedd was named to the Chambers list of leading firms'), null)
+})
+
+test('#878 review: the headline names THE company, not a longer name that starts with it', () => {
+  assert.equal(newsDay('Apex', 'Apex Clean Energy Opens Chicago Office', 'Apex opened its Chicago office'), null)
+  assert.deepEqual(newsDay('Apex', 'Apex Opens Chicago Office', 'Apex opened its Chicago office'), { date: '2026-09-30', kind: 'NewsArticle' })
+  assert.deepEqual(newsDay('Benesch', "Michael Chu Joins Benesch's Intellectual Property Practice Group", 'Benesch is pleased to announce that Michael Chu has joined the firm'), { date: '2026-09-30', kind: 'NewsArticle' })
+  assert.deepEqual(newsDay('Milbank LLP', 'Milbank Adds Leading Energy Partner', 'Milbank LLP is pleased to announce that a partner has joined the firm'), { date: '2026-09-30', kind: 'NewsArticle' })
+})
+
+test('#878 review: the CSV export carries the proof note, so an announcement day is worded as one there too', () => {
+  const db = new Database(':memory:'); migrateScan(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const note = structuredProof({ date: '2026-09-30', kind: 'NewsArticle' })!.note
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, score, fit, event_date, event_date_proof, event_date_proof_note) VALUES ('L1', ?, 'Armstrong Teasdale', 'Expanding in Chicago', 'https://x.example/a', 80, 5, '2026-09-30', 'page_bound', ?)").run(job, note)
+  const rows = exportLeads(db, 'A') as { event_date_proof_note?: string | null }[]
+  assert.equal(rows.length, 1)
+  assert.ok(isAnnouncementDay(rows[0].event_date_proof_note), 'the export row carries the note the wording keys on')
 })

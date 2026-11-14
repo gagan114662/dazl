@@ -45,8 +45,8 @@ const stringValuesOf = (v: unknown, out: string[] = [], depth = 0): string[] => 
 
 // A COMPLETED event stated in the past or perfect tense. "Is pleased to announce" and "has joined" count; "will", a plan, "soon", "to open" or "upon its opening" do not (the event is still ahead, so the
 // story's day is not the event's day, and a quote that mixes a done thing with a future one is not read: it stays held).
-const DONE = /\b(?:announce[sd]?|pleased to announce|expanding|growing|continues? to grow|(?:continuing|continues) to grow|addition of|has joined|have joined|joined|joins|appoint(?:s|ed)|names?d?|opens?|opened|launch(?:es|ed)|expands?|expanded|expansion|raise[sd]?|acquire[sd]?|hire[sd]?|welcomes?|welcomed|adds?|added|unveil(?:s|ed)|secure[sd]?|arrival of|continues? (?:the|its) expansion|bolsters?|strengthens?)\b/i
-const AHEAD = /\b(?:will|shall|plans? to|planning|plan to|soon|upcoming|expected to|set to|to open|to launch|intends?|aims? to|looking to|hopes? to|coming|upon (?:its|the) opening|later this|next (?:month|year|week|quarter))\b/i
+const DONE = /\b(?:announce[sd]?|pleased to announce|expanding|growing|continues? to grow|(?:continuing|continues) to grow|addition of|has joined|have joined|joined|joins|appoint(?:s|ed)|opens?|opened|launch(?:es|ed)|expands?|expanded|expansion|raise[sd]?|acquire[sd]?|hire[sd]?|welcomes?|welcomed|adds?|added|unveil(?:s|ed)|secure[sd]?|arrival of|continues? (?:the|its) expansion|bolsters?|strengthens?)\b/i
+const AHEAD = /\b(?:will|shall|plans? to|planning|plan to|soon|upcoming|expected to|set to|to open|to launch|intends?|aims? to|looking to|hopes? to|coming|upon (?:its|the) opening|later this|later|slated|scheduled|going to|to be (?:opened|launched|completed)|on track to|(?:this|next) (?:spring|summer|fall|autumn|winter)|next (?:month|year|week|quarter))\b/i
 const EVERGREEN_TITLE = /\b(?:top \d*|best|guide|how to|ways to|tips|checklist|versus|vs\.?|list of|reviews?|roundup|comparison|directory|\d+ (?:best|top|ways|tips))\b/i
 export const announcesDoneEvent = (text: string): boolean => DONE.test(text) && !AHEAD.test(text)
 export function kindsFor(claim: string): DateKind[] {
@@ -64,10 +64,24 @@ const namesLoosely = (text: string, key: string): boolean => {
   const t = key.split(' ').filter(Boolean); while (t.length > 2 && GENERIC_TAIL.has(t[t.length - 1])) t.pop()
   return t.length >= 2 && t.join(' ') !== key && hasPhrase(text, t.join(' '))
 }
+// The company the headline names must be THE company, not a longer name that starts with it ("Apex Clean Energy Opens ..." is not "Apex"): right after the name comes a verb or a
+// function word, an apostrophe-s, punctuation, or the end. A capitalised word that is not a headline verb ("Apex Clean ...") is a longer name.
+const HEAD_AFTER = new Set(['s', 'to','and','with','in','on','for','at','is','has','have','was','by','of','from','as','a','an','the','its','adds','added','announces','announced','appoints','bolsters','builds','expands','expanded','expanding','grows','growing','hires','joins','joined','launches','launched','names','opens','opened','opening','raises','raised','strengthens','secures','unveils','welcomes','continues','acquires','acquired','brings','establishes','relocates','moves','extends','deepens','boosts','enters','lands','taps','signs','promotes','elects','appointed'])
+const headlineSubject = (headline: string, company: string): boolean => {
+  const ct = company.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase()).filter(Boolean)
+  const ht = headline.replace(/&#0?39;|&apos;|[’']/g, ' ').split(/\s+/).filter(Boolean)   // "Benesch's" -> "Benesch s": the possessive token is a HEAD_AFTER word
+  const norms = ht.map(w => w.replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase())
+  for (let i = 0; i + ct.length <= norms.length; i++) {
+    if (!ct.every((t, k) => norms[i + k] === t)) continue
+    const next = norms[i + ct.length]
+    return next === undefined || next === '' || HEAD_AFTER.has(next) || /^[a-z]/.test(ht[i + ct.length] ?? '')
+  }
+  return true   // the company was matched loosely (a suffix, an accent): the loose match stands
+}
 // A quote that dates its own event is the quote's to date (the verifier's day binding), never the story's publication day: any year, a month with a day, or a relative past ("last year", "years ago",
 // "previously") means the story may be about something that happened before it ran (a case study, a retrospective, "in March 2025 X opened ..."), so the publication day is not read.
 const MON_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
-const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?) ago\\b|\\bpreviously\\b|\\bback in\\b`, 'i')
+const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?|decades?) ago\\b|\\bpreviously\\b|\\bback in\\b|\\b(?:19|20)\\d0s\\b|\\b(?:decades?|centur(?:y|ies)|generations?)\\b`, 'i')
 const quoteDatesItself = (quote: string): boolean => OWN_DATE.test(quote)
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
@@ -260,7 +274,9 @@ function postingMatches(o: Record<string, unknown>, claim: string, key: string):
 }
 const ROLE_FILLER = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'in', 'at', 'to', 'with', 'm', 'f', 'd', 'w'])
 // The page the blocks came from, for the press-release rule: its title (the story's headline), the lead's quote, and the page's own publication metadata.
-export interface PageContext { title?: string | null; quote?: string | null; published?: string | null }
+// news: true ONLY for the page the lead itself cites (finishUndatedLeads, the recheck): a NewsArticle on some other page (a company's own site read to find a date, resolution.ts) is never the lead's story.
+// publishedConflict: the page's markup names two or more different publication days (fetch-page.ts), so none is the story's own: hold.
+export interface PageContext { title?: string | null; quote?: string | null; published?: string | null; news?: boolean; publishedConflict?: boolean }
 export function resolveStructuredDate(blocks: string[] | undefined, company: string, claim: string, where: string[] = [], ctx: PageContext = {}): StructuredDate | null {
   const kinds = kindsFor(claim), key = companyKey(company)
   if (!blocks?.length || kinds.length === 0 || key.length < 2) return null
@@ -278,14 +294,14 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
           || ([o.headline, o.title, o.name].some(h => typeof h === 'string' && namesLoosely(norm(h), key)) && hasPhrase(desc, key))   // the title says it and the posting's own text says it in full
         if (d && named && postingMatches(o, claim, key)) found.set(`JobPosting|${d}`, { date: d, kind: 'JobPosting' })
       }
-      if (kinds.includes('NewsArticle') && types.includes('NewsArticle')) {
+      if (ctx.news === true && !ctx.publishedConflict && kinds.includes('NewsArticle') && types.includes('NewsArticle')) {
         const d = day(o.datePublished)
         // the story's OWN headline when the node has one (a node about another company is not rescued by the page's title), else the page title
         const headline = [typeof o.headline === 'string' && o.headline.trim() ? o.headline : (ctx.title ?? '')].filter(Boolean)
         const quote = ctx.quote ?? ''
         const stated = ctx.published && /^\d{4}-\d{2}-\d{2}$/.test(ctx.published) ? ctx.published : null
         // the story's own headline names the company, announces a completed event in the quote as well as the claim, is no roundup, and the page's own metadata (when it has any) says the same day
-        if (d && headline.some(h => hasPhrase(norm(h), key)) && ![...headline, ctx.title ?? ''].some(h => EVERGREEN_TITLE.test(h)) && (!stated || stated === d)
+        if (d && headline.some(h => hasPhrase(norm(h), key) && headlineSubject(h, company)) && ![...headline, ctx.title ?? ''].some(h => EVERGREEN_TITLE.test(h)) && (!stated || stated === d)
           && announcesDoneEvent(claim) && (quote === '' || announcesDoneEvent(quote)) && !(quote && quoteDatesItself(quote))) found.set(`NewsArticle|${d}`, { date: d, kind: 'NewsArticle' })
       }
       if (kinds.includes('Event') && types.some(t => /Event$/.test(t))) {
@@ -303,7 +319,7 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
 // Bounded finishing pass for undated candidates: at most `max` of them, one fetch each (the verifier's cached page, so normally none). Mutates the candidate: event_date and a timing_note
 // that says where the date came from. It decides nothing about the window - the caller's window gate judges the new date like any other.
 export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null }>(
-  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; title?: string; published?: string | null } | { fail: string } | null>, max = 6, where: string[] = [],
+  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; title?: string; published?: string | null; publishedConflict?: boolean } | { fail: string } | null>, max = 6, where: string[] = [],
 ): Promise<{ company: string; date: string; kind: DateKind; url: string }[]> {
   const done: { company: string; date: string; kind: DateKind; url: string }[] = []
   let tried = 0
@@ -313,7 +329,7 @@ export async function finishUndatedLeads<T extends { company: string; signal: st
     let page: Awaited<ReturnType<typeof fetchPage>> = null
     try { page = await fetchPage(l.source_url) } catch { page = null }
     if (!page || 'fail' in page) continue
-    const r = resolveStructuredDate(page.structured, l.company, `${l.signal} ${l.excerpt}`, where, { title: page.title, quote: l.excerpt, published: page.published })
+    const r = resolveStructuredDate(page.structured, l.company, `${l.signal} ${l.excerpt}`, where, { title: page.title, quote: l.excerpt, published: page.published, news: true, publishedConflict: page.publishedConflict })
     if (!r) continue
     l.event_date = r.date
     l.timing_note = r.kind === 'NewsArticle' ? `event date ${r.date}: the announcement's own publication day (schema.org NewsArticle datePublished), not a day read from the quote` : `event date ${r.date} read from the page's own structured data (schema.org ${r.kind}), not from the quote`

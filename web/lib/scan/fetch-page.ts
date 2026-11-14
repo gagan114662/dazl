@@ -10,7 +10,7 @@ import { withAtsReadSlot } from './ats-read-slots.ts' // #1127: at most ATS_RECO
 // page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
 // first-published day for it, the posting's own structured publish date (#460).
 // board: set only for a posting read through its board's API record (#1126); the identity the verifier matches instead of the title
-export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null; board?: BoardIdentity }
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; publishedConflict?: boolean; structured?: string[]; postedAt?: string | null; board?: BoardIdentity }
 
 // True only for addresses on the public internet. Everything private, loopback,
 // link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
@@ -169,7 +169,8 @@ export function decode(s: string): string {
 
 // The page's own publication date from its markup: schema.org datePublished / datePosted (JSON-LD or microdata), article:published_time,
 // <time datetime> marked published/pubdate. Modified/updated stamps are update times, not event days, and are never read.
-export function publishedDate(html: string): string | null {
+// Every distinct publication day the page's markup names (the one-day rule below reads this; a page that names two has none it can call its own).
+export function publishedDays(html: string): Set<string> {
   const head = html.slice(0, 400_000)
   const cands: string[] = []
   for (const m of head.matchAll(/"(?:datePublished|datePosted)"\s*:\s*"([^"]{8,40})"/gi)) cands.push(m[1])
@@ -185,8 +186,13 @@ export function publishedDate(html: string): string | null {
     const y = +d[1], mo = +d[2], da = +d[3]
     const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) days.add(t.toISOString().slice(0, 10))
   }
+  return days
+}
+export function publishedDate(html: string): string | null {
+  const days = publishedDays(html)
   return days.size === 1 ? [...days][0] : null
 }
+
 
 // The raw schema.org JSON-LD blocks of a page (capped), kept so a dated entity the page itself declares (an Event's startDate, a JobPosting's datePosted) can be read later by scan/structured-date.ts.
 export function ldJsonBlocks(html: string): string[] {
@@ -194,7 +200,7 @@ export function ldJsonBlocks(html: string): string[] {
   for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
   return out
 }
-export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
+export function htmlToText(html: string): { text: string; title: string; published: string | null; publishedConflict: boolean; structured: string[] } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
   const text = decode(
     html
@@ -204,7 +210,7 @@ export function htmlToText(html: string): { text: string; title: string; publish
   )
     .replace(/\s+/g, ' ')
     .trim()
-  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
+  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), publishedConflict: publishedDays(html).size > 1, structured: ldJsonBlocks(html) }
 }
 
 export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }
