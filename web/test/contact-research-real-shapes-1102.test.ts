@@ -77,3 +77,20 @@ test('#1102 a lead with a confirmed website searches its own site first; one wit
   // A value that is not a host name is never put after site:
   assert.match(researchQueries({ ...IN, domain: 'pagewake.example OR site:evil.test' })[0], /^site:linkedin\.com\/in /)
 })
+
+test('#1102 the model cited another site, the company\'s own site names the same person: kept from the own site, by the same rules', async () => {
+  const { groundOnOwnSite } = await import('../lib/people/contact-research.ts')
+  const offsite: Source = { id: 'S1', kind: 'search', url: 'https://speakers.example.test/dana-okoye', title: 'Dana Okoye - Speakers', text: 'Dana Okoye is the Chief Revenue Officer at Pagewake, the leading platform for revenue teams.' }
+  const ownsite: Source = { id: 'S2', kind: 'search', url: 'https://www.pagewake.example/resources/webinar', title: 'Pagewake Webinar: Forecasting', text: 'Speakers: Dana Okoye, Chief Revenue Officer, Pagewake; Matt Hunt, Sr. Director of Product ...' }
+  const a = { name: 'Dana Okoye', title: 'Chief Revenue Officer', source: 'S1', quote: 'Dana Okoye is the Chief Revenue Officer at Pagewake', linkedin_source: null }
+  assert.equal(why(groundPerson(a, [offsite, ownsite], IN)), 'company_unconfirmed', 'the cited site does not name the website')
+  const g = groundOnOwnSite(a, [offsite, ownsite], IN)
+  assert.equal(g?.person.source_url, ownsite.url); assert.equal(g?.person.quote, 'Dana Okoye, Chief Revenue Officer'); assert.equal(g?.person.linkedin, null)
+  // The own site names SOMEONE ELSE with that title: nothing is kept.
+  assert.equal(groundOnOwnSite(a, [offsite, { ...ownsite, text: 'Speakers: Matt Hunt, Chief Revenue Officer, Pagewake; Dana Okoye joined as a guest.' }], IN), null)
+  // The own site says the role is past: nothing is kept.
+  assert.equal(groundOnOwnSite(a, [offsite, { ...ownsite, text: 'Dana Okoye, Chief Revenue Officer, Pagewake until she retired in 2024.' }], IN), null)
+  // No confirmed website, or a source on a look-alike host: nothing is kept.
+  assert.equal(groundOnOwnSite(a, [offsite, ownsite], { ...IN, domain: null }), null)
+  assert.equal(groundOnOwnSite(a, [offsite, { ...ownsite, url: 'https://pagewake.example.evil.test/x' }], IN), null)
+})

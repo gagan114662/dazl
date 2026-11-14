@@ -97,5 +97,5 @@ test('#1102 contact-research route: one lookup on the caller\'s own key (Haiku a
   // The model inventing a person the search did not return is refused by the grounding check, through the real route.
   answer = { person: { name: 'Maria Gomez', title: 'Owner', source: 'S1', quote: 'Maria Gomez - Owner - Brightloop Dental', linkedin_source: 'S1' } }
   const inv = await (await call()).json() as Record<string, unknown>
-  assert.equal(inv.status, 'not_grounded'); assert.equal(inv.refused, 'quote_not_in_source'); assert.equal(inv.person, null)
+  assert.equal(inv.status, 'not_grounded'); assert.equal(inv.refused, 'profile_names_someone_else'); assert.equal(inv.person, null)
 })

@@ -103,7 +103,9 @@ export function researchPrompt(input: ResearchInput, sources: Source[]): string 
     '{"person": {"name": "<full name as written>", "title": "<title as written>", "source": "<source id, e.g. S3>", "quote": "<the exact words from that source that give the name and the title>", "linkedin_source": "<source id of their profile result, or null>"}}',
     '',
   ].join('\n')
-  let body = '<<<SOURCES\n'
+  const dom = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
+  const own = dom ? sources.filter(x => { const h = hostOf(x.url); return h === dom || h.endsWith(`.${dom}`) }).map(x => x.id) : []
+  let body = `${own.length ? `Sources on the company's own website: ${own.join(', ')}. When one of them names the person with the title, cite it rather than another site.\n` : ''}<<<SOURCES\n`
   for (const s of sources) {
     const block = `[${s.id}] ${s.kind === 'page' ? 'PAGE' : 'RESULT'} ${s.url}\n${s.title}\n${s.text}\n\n`
     if (Buffer.byteLength(head) + Buffer.byteLength(body) + Buffer.byteLength(block) + 12 > PROMPT_BYTES) break
@@ -453,6 +455,30 @@ export function groundPerson(answer0: Answer, sources0: Source[], input: Researc
   return { person: first.person, linkedin_refused: first.linkedin_refused }
 }
 
+// The model picks ONE source, and it often picks a profile or a news site when the company's own website names the same person (measured
+// 2026-11-14: 4 of 4). Off the company's site a source must name the confirmed website to count, so that pick is refused though the person is
+// right. Second look, in code: the SAME name and title, next to each other, in a source on the company's own confirmed site, judged by
+// exactly the same rules (groundPerson). Only after a refusal that says the cited SOURCE is not tied to the company (it does not name the website,
+// the place or the company); never after one that says something about the person (a past role, another organisation, a title that is not theirs).
+export const OWN_SITE_RETRY: readonly string[] = ['company_unconfirmed', 'place_unconfirmed', 'source_does_not_name_company']
+export function groundOnOwnSite(answer: Answer, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | null {
+  const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
+  if (!domain || !NAME.test(answer.name)) return null
+  for (const src of sources) {
+    const h = hostOf(src.url)
+    if (src.id === answer.source || !(h === domain || h.endsWith(`.${domain}`))) continue
+    const raw = tidy(src.kind === 'search' ? `${plain(src.title)}. ${plain(src.text)}` : `${src.title}. ${src.text}`), hay = norm(raw)
+    if (raw.length !== hay.length) continue
+    for (const n of spans(hay, answer.name).slice(0, 10)) for (const t of spans(hay, answer.title).slice(0, 10)) {
+      const between = n[1] <= t[0] ? hay.slice(n[1], t[0]) : t[1] <= n[0] ? hay.slice(t[1], n[0]) : null
+      if (between === null || between.length > 24 || !JOINER.test(between)) continue
+      const g = groundPerson({ ...answer, source: src.id, quote: raw.slice(Math.min(n[0], t[0]), Math.max(n[1], t[1])), linkedin_source: null }, sources, input)
+      if (!('refused' in g)) return g
+    }
+  }
+  return null
+}
+
 export async function researchContact(input: ResearchInput, deps: ResearchDeps): Promise<ResearchResult> {
   const usage: ResearchResult['usage'] = { searches: 0, reads: 0, model: null, input_tokens: null, output_tokens: null }
   const base = (status: ResearchStatus, refused: string | null, extra: Partial<ResearchResult> = {}): ResearchResult => ({ status, person: null, refused, linkedin_refused: null, queries: [], sources: [], usage, ...extra })
@@ -493,7 +519,8 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   const answer = readAnswer(det.text)
   if (answer === 'unreadable') return base('model_failed', det.stop === 'max_tokens' ? 'answer_cut_off' : 'answer_unreadable', { queries, sources: listed })
   if (answer === null) return base('none', 'model_found_nobody', { queries, sources: listed })
-  const g = groundPerson(answer, sources, input)
+  let g = groundPerson(answer, sources, input)
+  if ('refused' in g && OWN_SITE_RETRY.includes(g.refused)) g = groundOnOwnSite(answer, sources, input) ?? g
   if ('refused' in g) return base('not_grounded', g.refused, { queries, sources: listed })
   return { status: 'found', person: g.person, refused: null, linkedin_refused: g.linkedin_refused, queries, sources: listed, usage }
 }
