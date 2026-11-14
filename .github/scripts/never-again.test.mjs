@@ -62,7 +62,7 @@ test('never-again-gates.yml runs all three checks on every pull request, with no
   const run = cmd => wf.split('\n').some(l => l.trim() === `run: ${cmd}`)
   assert.ok(run("node --test '.github/scripts/*.test.mjs'"), 'the doc + live-check gate tests')
   assert.ok(run("python3 -m unittest discover -s ops -p 'test_never_again.py' -v"), 'ops/test_never_again.py')
-  assert.ok(run('shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh'), 'shellcheck on the 4 deploy scripts')
+  assert.ok(run('shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh ops/prod/run-release.sh ops/prod/check-installed.sh'), 'shellcheck on the 4 deploy scripts')
   assert.match(wf, /^on:\n  pull_request:\n  push:\n    branches: \[main\]\n/m, 'every pull request, and main')
   assert.doesNotMatch(wf, /^\s*(paths|paths-ignore|branches-ignore):/m, 'no path filter')
   assert.doesNotMatch(wf, /^\s*if:|continue-on-error/m, 'no step or job is conditional or allowed to fail')
