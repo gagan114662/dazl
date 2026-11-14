@@ -6,10 +6,12 @@ import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { signUpPlanLine } from '@/lib/trial-copy'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
-export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
+// sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
+// without its script; the route redirected back with a code). Rendered on the server, so they show with no script.
+export default function SignUpForm({ trialFunded, sentWithoutScript = false, errorWithoutScript = '' }: { trialFunded: boolean; sentWithoutScript?: boolean; errorWithoutScript?: string }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(errorWithoutScript)
   const claim = useClaimContext()
   // #357: while dazl can mail a link, sign-up does not sign in: the same check_email answer comes back for a new and a
   // taken address, and the app opens after the emailed link is confirmed and the account signs in (the sign-in route
@@ -41,13 +43,13 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
 
   // Non-assertive on purpose: the same answer covers a sent link, a taken address (which gets a notice instead), a
   // capped address and a failed send, so the page never claims delivery it cannot know happened.
-  if (sent) {
+  if (sent || sentWithoutScript) {
     return (
       <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
         <div className="card p-8 sm:p-10 w-full max-w-sm text-center" role="status">
           <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
           <h1 className="text-2xl font-medium mb-3">Check your email</h1>
-          <p className="text-[#555] text-sm mb-4">If <span className="text-[#111]">{sent}</span> can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
+          <p className="text-[#555] text-sm mb-4">If {sent ? <span className="text-[#111]">{sent}</span> : 'the address you entered'} can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
           <p className="text-[#555] text-sm mb-4">Nothing arrived? Sign in with your password and we&apos;ll try to send a new link.</p>
           <a href="/sign-in" className="btn-primary inline-block !py-3 px-6">Sign in</a>
         </div>
@@ -68,7 +70,9 @@ export default function SignUpForm({ trialFunded }: { trialFunded: boolean }) {
         <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
-        <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">
+        {/* action (#1116): before or without the script, the browser posts the form to the same route the script calls, which
+            answers a native post with a redirect back here (?sent=1 / ?error=code). It used to post to this page and reload silently. */}
+        <form method="post" action="/api/auth/signup" onSubmit={handleSubmit} className="flex flex-col gap-3" data-testid="sign-up-form">
           <label className="flex flex-col gap-1 text-sm text-[#333]">Your name
           <input name="name" type="text" required placeholder="Your name" autoComplete="name"
             className="field" />
