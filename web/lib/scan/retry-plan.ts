@@ -31,7 +31,9 @@ export function planRetry(query: string, icp: { signals: string[]; where: string
   // 2026-11-13 staging matrix died this way) gets ONE search for another source of the same company, with the unreadable host excluded. At most MAX_COMPANY_RETRIES
   // of the round's MAX_RETRY_QUERIES; the page it finds goes through the same extraction and the same verifier as any other.
   const heldCompanies = [...new Map(a.review.filter(r => (BLOCKED.has(r.reason) || r.reason === 'quote_unconfirmed') && typeof r.company === 'string' && r.company.trim().length >= 3)
-    .map(r => [norm(r.company!), r] as const)).values()].slice(0, MAX_COMPANY_RETRIES)
+    .map(r => [norm(r.company!), r] as const)).values()]
+    // (review) fresh signals keep most of the round: with two or more of them ONE company is retried, otherwise up to MAX_COMPANY_RETRIES (the slots would be empty)
+    .slice(0, Math.min(MAX_COMPANY_RETRIES, Math.max(1, MAX_RETRY_QUERIES - fresh.length)))
   if (fresh.length === 0 && heldCompanies.length === 0) return no('no_new_signal')
   const blocked = [...new Set(a.review.filter(r => BLOCKED.has(r.reason)).flatMap(r => { try { const u = new URL(r.url); return u.protocol === 'https:' || u.protocol === 'http:' ? [hostKey(u.hostname)] : [] } catch { return [] } }))]
   const req = query.toLowerCase()

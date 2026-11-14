@@ -26,7 +26,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { boardQueries, eventQueries, hasHiringSignal, hiringQueryForNonHiringRequest } from '../search/direct-queries.ts'
+import { boardQueries, eventQueries, hasHiringSignal, hiringQueryForNonHiringRequest, requestAsksHiring } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
@@ -1101,7 +1101,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     // how many: one for each model query dropped, plus the slots the model was never asked to fill (its cap of 6). A model that answers with fewer queries than it
     // was asked for is not topped up: the search count, and so the cost where searches are priced, stays what the plan asked for.
     const room = (sanitized.length - modelQs.length) + Math.max(0, budgetN - direct.length - tech.length - modelQueries)
-    const filler = eventQueries(job.query!).filter(x => !seenQ.has(x.toLowerCase())).slice(0, room)
+    const filler = sanitizeQueries(eventQueries(job.query!), job.query!).filter(x => !seenQ.has(x.toLowerCase())).slice(0, room)
     q = withExclusions(withGeography([...direct, ...tech, ...modelQs, ...filler], icp.where).slice(0, budgetN), job.query!)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
@@ -1127,7 +1127,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #380 / #204 Test B: under an OR plan ("seed funding OR are hiring sales") a job page can prove a branch on its own, so it is not ranked behind the event pages.
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
-  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, hasHiringSignal(job.query!, icp.signals))
+  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, requestAsksHiring(job.query!, icp))   // the same rule as the board queries and the query filter (review)
   const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
@@ -1169,10 +1169,13 @@ const EVENT_WORDS = /\b(?:opens?|opening|opened|announce[sd]?|announcing|expands
 const EVERGREEN_PATH = /^\/(?:(?:about|about-us|services?|locations?|contact|contact-us|team|our-team|careers?|home|pricing|products?|index(?:\.\w+)?)\/?)?$/i
 // hiringAsked: a job posting reports the event only when the request asks for hiring; for any other request it is the least useful readable page (the real
 // Chicago list, a request about new offices, held three unrelated Greenhouse postings).
-export function pageKindRank(url: string, title = '', hiringAsked = true): number {
+export function pageKindRank(url: string, title = '', hiringAsked = true, now = new Date()): number {
   let u: URL
   try { u = new URL(url) } catch { return 0.3 }
   if (isJobPage(url)) return hiringAsked ? 0 : 0.6
+  // (review) a path dated before last year (/news/2019/...) is an archive page: it can never pass the date gate, so it is not preferred
+  const year = /(?:^|[/_-])((?:19|20)\d\d)(?=[/_-]|$)/.exec(u.pathname)
+  if (year && Number(year[1]) < now.getUTCFullYear() - 1) return 0.6
   if (EVENT_PATH.test(u.pathname) || EVENT_WORDS.test(`${u.pathname.replace(/[-_/]+/g, ' ')} ${title}`)) return 0
   if (EVERGREEN_PATH.test(u.pathname)) return 0.6
   return 0.3
@@ -1182,7 +1185,7 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null; title?
     if (isLoginWalled(u)) return 8
     const st = windowStatus(hitByUrl.get(u)?.date ?? null, windowDays, now)
     const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
-    const kind = pageKindRank(u, hitByUrl.get(u)?.title, hiringAsked)
+    const kind = pageKindRank(u, hitByUrl.get(u)?.title, hiringAsked, now)
     // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
     if (eventBeyondHiring && isJobPage(u)) return (cls === 2 ? 5 : 2 + cls) + kind
     return (cls === 2 ? 4 : cls) + kind
