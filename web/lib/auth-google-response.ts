@@ -28,8 +28,11 @@ export const setLinkNextCookie = (res: NextResponse, base: string, value: string
 export const clearLinkNextCookie = (res: NextResponse, base: string) => res.cookies.set(LINK_NEXT_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
 // The preview claim being continued through sign-in (#416): the claim token itself, host-only, short-lived. Path '/'
 // because both the Google callback and the claim route must read it; it carries no PII and is already a public-page URL.
-// Set only from a validated preview row (app/api/preview/[token]/google); every reader re-verifies it before any use.
+// Set only from a validated preview row (app/api/preview/[token]/google and /continue); every reader re-verifies it before any use.
 export const PREVIEW_CLAIM_COOKIE = 'dazl_claim'
 const hostOnly = (maxAge: number, path: string) => ({ httpOnly: true, secure: true, sameSite: 'lax' as const, maxAge, path })
-export const setClaimCookie = (res: NextResponse, value: string) => res.cookies.set(PREVIEW_CLAIM_COOKIE, value, hostOnly(3600, '/'))
+// 1 hour by default (the Google path returns within minutes). The password path passes a longer maxAge: its emailed
+// confirmation link stays valid 24 h, and a link opened in a new tab after the first hour must still find the intent.
+export const CLAIM_COOKIE_DEFAULT_S = 3600
+export const setClaimCookie = (res: NextResponse, value: string, maxAgeS = CLAIM_COOKIE_DEFAULT_S) => res.cookies.set(PREVIEW_CLAIM_COOKIE, value, hostOnly(maxAgeS, '/'))
 export const clearClaimCookie = (res: NextResponse) => res.cookies.set(PREVIEW_CLAIM_COOKIE, '', hostOnly(0, '/'))

@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { claimIntent, clearClaim } from '@/lib/invite-return'
 
 // Completes a preview claim after sign-in or sign-up (#416). Claiming is an intentional act: this page confirms
@@ -14,6 +15,7 @@ type Proof = {
 type Intent = { token?: string; proof: Proof }
 const wrap = { maxWidth: 640, margin: '0 auto', padding: '48px 20px', fontFamily: 'system-ui, sans-serif', color: '#1a1a1a' } as const
 export default function ClaimPage() {
+  const router = useRouter()
   const [intent, setIntent] = useState<Intent | 'loading' | { dead: string }>('loading')
   const [state, setState] = useState<{ kind: 'confirm' | 'working' | 'error'; code?: string }>({ kind: 'confirm' })
   useEffect(() => {
@@ -41,6 +43,13 @@ export default function ClaimPage() {
       })
       .catch(() => setState({ kind: 'error', code: 'failed' }))
   }
+  // Drops the intent (this tab's token and the cookie) and goes to the workspace; nothing is claimed.
+  const notNow = () => {
+    clearClaim()
+    fetch('/api/preview/claim', { method: 'DELETE', headers: { 'content-type': 'application/json' } })
+      .catch(() => { /* the cookie also expires on its own */ })
+      .finally(() => { router.push('/app') })
+  }
   const copy: Record<string, string> = {
     none: 'There is no preview claim in progress. Open your preview link again.',
     signed_out: 'Sign in to claim your preview.',
@@ -54,7 +63,7 @@ export default function ClaimPage() {
     failed: 'Something went wrong. Try again.',
   }
   if (intent === 'loading') return <main style={wrap}><p>Loading...</p></main>
-  if ('dead' in intent) return <main style={wrap}><p role="alert">{copy[intent.dead] || copy.failed}</p></main>
+  if ('dead' in intent) return <main style={wrap}><p role="alert">{copy[intent.dead] || copy.failed}</p><p><button onClick={notNow} style={{ padding: '8px 14px', cursor: 'pointer' }}>Go to my workspace</button></p></main>
   const p = intent.proof
   return (
     <main style={wrap} data-testid="claim-proof">
@@ -74,6 +83,9 @@ export default function ClaimPage() {
       {state.kind === 'error' && <p role="alert">{copy[state.code || 'failed'] || copy.failed}</p>}
       <button onClick={submit} disabled={state.kind === 'working'} style={{ padding: '10px 16px', background: '#111', color: '#fff', borderRadius: 8, border: 'none', cursor: 'pointer' }}>
         {state.kind === 'working' ? 'Claiming...' : 'Claim this preview'}
+      </button>{' '}
+      <button onClick={notNow} disabled={state.kind === 'working'} style={{ padding: '10px 16px', background: 'none', color: '#111', borderRadius: 8, border: '1px solid #999', cursor: 'pointer' }}>
+        Not now, go to my workspace
       </button>
     </main>
   )

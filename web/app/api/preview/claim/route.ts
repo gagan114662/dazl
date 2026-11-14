@@ -63,3 +63,13 @@ export async function GET(req: NextRequest) {
   }
   return NextResponse.json({ error: 'This preview is no longer available.', code: c.status }, { status: c.status === 'unknown' ? 404 : 410 })
 }
+
+// "Not now": drop the claim intent and go to the workspace (#416 review). With a 24 h intent, a plain sign-in in a browser
+// still holding dazl_claim lands on the claim page, so that page needs a way out. Clears only this browser's intent;
+// it reads and changes no claim row. Same-origin JSON only, so a cross-site page cannot clear it.
+export async function DELETE(req: NextRequest) {
+  if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 403 })
+  const res = NextResponse.json({ ok: true })
+  clearClaimCookie(res)
+  return res
+}

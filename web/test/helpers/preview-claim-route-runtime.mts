@@ -35,6 +35,7 @@ const start = await import('../../app/api/auth/google/route.ts')
 const callback = await import('../../app/api/auth/callback/google/route.ts')
 const previewGoogle = await import('../../app/api/preview/[token]/google/route.ts')
 const claimRoute = await import('../../app/api/preview/claim/route.ts')
+const previewContinue = await import('../../app/api/preview/[token]/continue/route.ts')
 const issueRoute = await import('../../app/api/preview/issue/route.ts')
 const signinRoute = await import('../../app/api/auth/signin/route.ts')
 const signupRoute = await import('../../app/api/auth/signup/route.ts')
@@ -279,4 +280,90 @@ test('password sign-up and sign-in resume a Google-path claim intent, and the fi
   const signedOut = await withJar(new Map(), () => claimRoute.GET(new NextRequest(`https://app.test/api/preview/claim?t=${r0.token}`, { headers: { 'x-forwarded-for': '10.9.6.250' } })))
   assert.equal(signedOut.status, 401)
   console.log('PREVIEW_PASSWORD_RESUME_OK')
+})
+
+test('the password path keeps the claim in a server intent too, so a confirmation link opened in a new tab still resumes it (#416)', async () => {
+  const r0 = await issueFor('drew@example.test')
+  const go = (token: string, to?: string) => previewContinue.GET(req(`https://app.test/api/preview/${encodeURIComponent(token)}/continue${to === undefined ? '' : `?to=${encodeURIComponent(to)}`}`), { params: Promise.resolve({ token }) })
+  // a live claim: a server-chosen destination (sign-up or sign-in only) plus the host-only, short claim intent cookie
+  for (const [to, path] of [['sign-up', '/sign-up'], ['sign-in', '/sign-in'], [undefined, '/sign-in'], ['https://evil.test', '/sign-in'], ['//evil.test', '/sign-in'], ['/app/settings', '/sign-in'], ['sign-up/../x', '/sign-in'], ['', '/sign-in']] as const) {
+    const r = await go(r0.token, to)
+    assert.equal(r.status, 307, String(to))
+    const loc = new URL(r.headers.get('location')!)
+    assert.deepEqual([loc.origin, loc.pathname, loc.search], ['https://app.test', path, ''], `${String(to)}: only an allowlisted page, never an input URL`)
+    assert.equal(r.headers.get('cache-control'), 'no-store, max-age=0')
+    const set = r.headers.getSetCookie()
+    const claim = set.find(c => /^dazl_claim=/.test(c))!
+    assert.ok(claim, `${String(to)}: intent cookie set`)
+    assert.ok(claim.startsWith(`dazl_claim=${r0.token};`), 'the validated token itself')
+    for (const a of [/Max-Age=86400/, /Path=\//, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(claim, a)
+    assert.doesNotMatch(claim, /Domain=/i, 'host-only intent cookie')
+    assert.ok(!set.some(c => /^dazl_return=/.test(c)), 'the password path sets no Google return intent')
+  }
+  // The emailed confirmation link is valid 24 h: the intent must cover all of it (a link opened at 23 h still finds it) but
+  // never outlive a claim that expires sooner. Date.now is pinned so the arithmetic is exact, then restored.
+  const realNow = Date.now
+  try {
+    Date.now = () => NOW
+    const maxAge = async (token: string) => Number(/Max-Age=(\d+)/.exec((await go(token, 'sign-up')).headers.getSetCookie().find(c => /^dazl_claim=[a-f0-9]/.test(c)) ?? '')?.[1])
+    assert.equal(await maxAge(r0.token), 86400, 'a long-lived claim: the intent lasts the full 24 h confirmation window')
+    const rs = await issueFor('soon@example.test')
+    h.prepare('UPDATE preview_claims SET snapshot = ? WHERE id = ?').run(
+      JSON.stringify({ ...JSON.parse((h.prepare('SELECT snapshot FROM preview_claims WHERE id = ?').get(rs.id) as { snapshot: string }).snapshot), expiresAt: NOW + 2 * 3600_000 }), rs.id)
+    assert.equal(await maxAge(rs.token), 7200, 'the intent never outlives a claim expiring in 2 h')
+  } finally { Date.now = realNow }
+  // "Not now" drops the intent without touching the claim row
+  const gone = await claimRoute.DELETE(new NextRequest('https://app.test/api/preview/claim', { method: 'DELETE', headers: { 'content-type': 'application/json', 'x-forwarded-for': `10.9.9.${++ip}`, cookie: `dazl_claim=${r0.token}` } }))
+  assert.equal(gone.status, 200)
+  assert.ok(gone.headers.getSetCookie().some(c => /^dazl_claim=;.*Max-Age=0/.test(c)), 'the intent cookie is cleared')
+  const csrf = await claimRoute.DELETE(new NextRequest('https://app.test/api/preview/claim', { method: 'DELETE', headers: { 'x-forwarded-for': `10.9.9.${++ip}` } }))
+  assert.equal(csrf.status, 403, 'not clearable cross-site / without JSON')
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'Not now claims nothing')
+  // unknown, tampered and expired tokens never set an intent and go back to their public page
+  const rx = await issueFor('expired2@example.test')
+  h.prepare('UPDATE preview_claims SET expires_at = ? WHERE id = ?').run(NOW - 1000, rx.id)
+  for (const bad of [`${'1'.repeat(32)}.${'2'.repeat(32)}`, `${r0.token.slice(0, 33)}${'0'.repeat(32)}`, rx.token]) {
+    const r = await go(bad, 'sign-up')
+    assert.equal(new URL(r.headers.get('location')!).pathname, `/preview/${bad}`, 'a dead claim goes back to its public page')
+    assert.ok(!r.headers.getSetCookie().some(c => /^dazl_claim=[a-f0-9]/.test(c)), 'no intent cookie from a dead claim')
+  }
+  // malformed tokens (wrong shape, traversal, empty, huge) never echo into a URL or a cookie
+  for (const junk of ['junk', '../../evil', '', 'a'.repeat(5000)]) {
+    const r = await go(junk, 'sign-up')
+    assert.equal(new URL(r.headers.get('location')!).pathname, '/sign-in', 'a malformed token never echoes into a URL')
+    assert.ok(!r.headers.getSetCookie().some(c => /^dazl_claim=[a-f0-9]/.test(c)))
+  }
+  // The emailed confirmation link opens in a NEW tab (no sessionStorage). The claim page there reads the cookie:
+  await createPasswordUser({ id: 'U-drew', email: 'drew@example.test', name: 'D', business_name: '', password_hash: 'h', salt: 's' })
+  const cookie = `dazl_claim=${r0.token}`
+  const read = await withJar(new Map([['dazl_session', await createSession('U-drew')]]), () =>
+    claimRoute.GET(new NextRequest('https://app.test/api/preview/claim', { headers: { 'x-forwarded-for': `10.9.7.${++ip}`, cookie } })))
+  assert.equal(read.status, 200, 'the claim page (no ?t=, no tab storage) reads the proof from the intent cookie')
+  assert.equal((await read.json()).business, 'Clinic Soft')
+  // 23 h after the cookie was set (still inside its 24 h life) the confirmation tab resumes the same claim
+  const realNow2 = Date.now
+  try {
+    Date.now = () => NOW + 23 * 3600_000
+    const late = await withJar(new Map([['dazl_session', await createSession('U-drew')]]), () =>
+      claimRoute.GET(new NextRequest('https://app.test/api/preview/claim', { headers: { 'x-forwarded-for': `10.9.8.${++ip}`, cookie } })))
+    assert.equal(late.status, 200, 'a confirmation opened 23 h later still resumes the claim')
+  } finally { Date.now = realNow2 }
+  // ...and "Continue with Google" from that new tab (the plain /api/auth/google start) keeps the claim instead of /app
+  const g = await start.GET(req('https://app.test/api/auth/google', cookie))
+  assert.ok(g.headers.getSetCookie().some(c => /^dazl_return=preview;/.test(c)), 'a valid intent cookie routes the Google return to the claim')
+  const oc = /dazl_oauth=([^;]+)/.exec(g.headers.get('set-cookie')!)![1]
+  const [state, n] = oc.split('.'); nonce = n
+  const cb = await callback.GET(req(`https://app.test/api/auth/callback/google?code=c&state=${state}`, `dazl_oauth=${oc}; dazl_return=preview; ${cookie}`))
+  assert.equal(new URL(cb.headers.get('location')!).pathname, '/preview/claim')
+  // re-authentication and linking keep their own return; no intent cookie, or a malformed one, adds none
+  const re = (await start.GET(req('https://app.test/api/auth/google?reauth=1', cookie))).headers.getSetCookie()
+  assert.ok(re.some(c => /^dazl_return=settings;/.test(c)) && !re.some(c => /^dazl_return=preview;/.test(c)), 'reauth keeps its return')
+  const ln = (await start.GET(req('https://app.test/api/auth/google?link=1', cookie))).headers.getSetCookie()
+  assert.ok(ln.some(c => /^dazl_return=link;/.test(c)) && !ln.some(c => /^dazl_return=preview;/.test(c)), 'link keeps its return')
+  for (const c of [undefined, 'dazl_claim=https%3A%2F%2Fevil.test', 'dazl_claim=']) {
+    const r = await start.GET(req('https://app.test/api/auth/google', c))
+    assert.ok(!r.headers.getSetCookie().some(x => /^dazl_return=/.test(x)), `${String(c)}: no return intent`)
+  }
+  assert.equal((h.prepare('SELECT claimed_at FROM preview_claims WHERE id = ?').get(r0.id) as { claimed_at: number | null }).claimed_at, null, 'none of this claims anything')
+  console.log('PREVIEW_PASSWORD_INTENT_OK')
 })
