@@ -16,7 +16,7 @@ test('#1037 first-play estimate lists the capped people searches, never "no Tiny
   const p = row(e, 'people_search')
   assert.ok(p, 'a people-search row is shown')
   assert.equal(p!.provider, 'TinyFish'); assert.deepEqual(p!.units, { min: 0, max: 10 })
-  assert.match(p!.note ?? '', /at most 10 searches, one per ready lead that names nobody yet/)
+  assert.match(p!.note ?? '', /at most 10 searches, one per lead that names nobody yet, ready leads first/)
   assert.ok(!e.rows.some(r => /No TinyFish search or fetch/.test(r.note ?? '')), 'the false "no TinyFish" line is gone')
   assert.ok(!e.rows.some(r => /Free sources only/.test(r.label)))
   assert.equal(row(e, 'sources_free')!.note, 'Leads come from free sources first')
@@ -44,7 +44,7 @@ test('#1037 run-budget disclosure for first5 states the people searches', () => 
   const d = describeRunBudget(FIRST5)
   const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!
   assert.notEqual(s.status, 'off', 'TinyFish is not off on a first play: the people step uses it')
-  assert.match(s.note, /up to 10 TinyFish people searches \(one per ready lead that names nobody yet\)/)
+  assert.match(s.note, /up to 10 TinyFish people searches \(one per lead that names nobody yet, ready leads first\)/)
   assert.doesNotMatch(s.note, /no TinyFish search, fetch or post-scan people search/)
 })
 

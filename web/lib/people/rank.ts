@@ -10,6 +10,9 @@ export interface PersonContact {
   linkedin: string | null
   connector: string
   source?: string // page the person was found on, when it is not a profile
+  // A public profile search result tied to the lead by the employer's NAME only (stored before company-tie.ts required more):
+  // it may be a different business with the same name. Listed with that said; never the lead's person, export or email target.
+  nameOnly?: boolean
   historical?: boolean // named only in a past filing (SEC Form D): visible history, never ranked for action, never recommended
   // #383 criterion 4 (lib/people/currency.ts): verified current on dated first-party or provider-record evidence, else
   // search result only. Set by contactsFromEnrichments; absent means search result only.
@@ -19,6 +22,7 @@ export interface PersonContact {
 
 // Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
 import { contactCurrency, type ContactCurrency, type Currency, type SiteIdentity } from './currency.ts'
+import { companyTied, NAME_ONLY_SOURCE } from './company-tie.ts'
 
 export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
 
@@ -98,7 +102,8 @@ export function rankPeople<T extends PersonContact>(contacts: T[], icpText: stri
 // recommendation refuses them. Same rule whichever connector stored the row and with or without an ICP: explicit
 // contradiction is not a matter of ICP fit. A row with no title is not contradicted (it ranks last, as before).
 export function recommendedPerson<T extends PersonContact>(contacts: T[], icpText: string): (T & RankedPerson) | null {
-  return rankPeople(contacts, icpText).find(c => !c.historical && (!c.title || !roleContradicted(c.title, icpText))) ?? null
+  // A name-only search match (nameOnly) may be another business's person: never recommended either.
+  return rankPeople(contacts, icpText).find(c => !c.historical && !c.nameOnly && (!c.title || !roleContradicted(c.title, icpText))) ?? null
 }
 
 // Stored enrichment rows carry a contact as value "Name - Title" (title optional),
@@ -117,7 +122,12 @@ export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company w
 
 // Where a listed person came from, for one ranked contact: a crawled person whose page is not established as the
 // company's own website (currency reason set) is NOT "the company website" (#781).
-export function peopleSourceText(p: { connector: string; verified?: ContactCurrency }): string {
+// True when a lead's people are ALL name-only search matches (nameOnly), SEC-historical rows aside, and at least one is: the Leads row and
+// the opportunity card then say WHY nobody is shown. A lead with any other person (a tied search result, a site listing) is not in this case.
+export const onlyNameOnly = (people: readonly { nameOnly?: boolean; historical?: boolean }[]): boolean => people.some(p => p.nameOnly) && people.every(p => p.nameOnly || p.historical)
+
+export function peopleSourceText(p: { connector: string; verified?: ContactCurrency; nameOnly?: boolean }): string {
+  if (p.nameOnly) return NAME_ONLY_SOURCE
   if (p.connector === 'sitecrawl' && p.verified?.reason) return 'a crawled website page (listed with this title; not established as the company website)'
   return PEOPLE_SOURCE[p.connector] ?? p.connector
 }
@@ -147,6 +157,7 @@ export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: stri
         linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url : null,
         connector: r.connector ?? r.label ?? 'enrichment',
         ...(r.connector && HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}),
+        ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}),
         ...(r.kind === 'person' && !PROFILE_URL.test(r.source_url) ? { source: r.source_url } : {}),
       }
     })

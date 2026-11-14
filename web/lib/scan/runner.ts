@@ -41,7 +41,8 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -74,7 +75,8 @@ import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
 import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
-import { findPeople, firstPlayPeopleCap, peopleSearchEnabled, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
+import { searchableCompanyCount } from '../people/searchable-holds.ts'
+import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
@@ -635,13 +637,16 @@ const uncertainSpend = new WeakSet<Job>()
 // A model request the vendor answered with a documented rejection (429, 400, ...): not retried, no further model request in this attempt,
 // and the scan ends with its own status. dazl does not claim the rejected request was uncharged.
 const rejectionCode = (status: number | undefined) => status === 429 ? 'provider_rate_limited' : 'provider_rejected'
-function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider {
+function flagAccounting(db: Database.Database, job: Job, p: Provider, vendor: Vendor): Provider {
   // A request that may have been billed (ProviderError charge 'uncertain') ends the scan accounting_uncertain and no further model request is
   // made: stages that swallow errors cannot carry on and pay again. A vendor-declined (4xx) failure keeps the ordinary retry.
   const seen = async <T>(f: () => Promise<T>): Promise<T> => {
     if (uncertainSpend.has(job) || spendAttemptUncertain() || spendAttemptRejected() !== null) throw new SpendRefused('accounting_uncertain')
     try { return await f() } catch (e) {
       if (e instanceof SpendAccountingFailed) accountingFailed.add(job)
+      // #1167: the account limit refused this model call (a named account's own guard refuses before the transport): the attempt
+      // sends nothing more, and the refusal is in the ledger whichever layer refused
+      if (e instanceof SpendRefused && e.reason === OWNER_POOL_LIMIT_REASON) await noteAccountLimitRefusal(`llm.${vendor}`)
       if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'uncertain') uncertainSpend.add(job)
       else if (!(e instanceof ProviderError) && hasUnsettledCall(db, job)) uncertainSpend.add(job) // an unclassified failure with a request reserved and never settled: maybe billed
       throw e
@@ -724,6 +729,26 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   return 'unbounded_fallback_hold'
 }
 
+// #1168: a numeric limit that refused a paid step EARLIER in this attempt (the profile or query-writing model call, whose refusal the
+// run survives by falling back to the request's own words) is still why the run could not search properly. When the run then ends
+// with nothing, that limit stop is what the user is told, never a later source failure or "nothing found". Read from the ledger
+// (scan_spend_calls): the first refused row of this attempt that is either the ACCOUNT limit (any paid step: at the day or month cap
+// the account sends nothing) or a numeric limit on a MODEL call. A render or TinyFish call refused by the per-scan cap is not one:
+// the run's own stages account for those, and it would relabel a genuine source failure as a budget stop.
+const MODEL_LIMIT_REASONS = ['over_limit', 'over_cap']
+export function earlierLimitRefusal(db: Database.Database, job: { id: string; user_id: string; attempts: number }): string | null {
+  try {
+    // by (user_id, scan_job_id): the table's index, and the job's own tenant
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
+      AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (${MODEL_LIMIT_REASONS.map(() => '?').join(',')}))) ORDER BY created_at, rowid LIMIT 1`).get(job.user_id, job.id, job.attempts, OWNER_POOL_LIMIT_REASON, ...MODEL_LIMIT_REASONS) as { reason: string } | undefined
+    return r?.reason ?? null
+  } catch (e) {
+    // the stop then keeps its older name: recorded, never silent
+    captureError(e, { source: 'worker', where: 'runner:earlier-limit-refusal', tenantId: job.user_id, ref: job.id })
+    return null
+  }
+}
+
 // A SpendRefused names why the spend layer refused the call (spend-guard.ts reason); the job error must preserve that
 // reason's class end to end. Only a real numeric cap refusal is a budget stop: everything else (unbounded research,
 // unpriced model, failed accounting, lost ownership) refuses at ANY budget, so calling it budget_stopped would send the
@@ -740,7 +765,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
     case 'accounting_uncertain': case 'accounting_unsettled': case 'reservation_not_saved':
     case 'reservation_invalid': case 'ledger_unavailable': case 'busy': return 'spend_accounting_unavailable'
     case 'ownership_lost': case 'scan_not_found': case 'scan_not_active': return 'ownership_lost'   // the run no longer owns an active job row
-    case 'cap_config_invalid': case 'kind_unknown': return 'spend_config_invalid'
+    case 'cap_config_invalid': case 'kind_unknown': case 'account_limits_missing': return 'spend_config_invalid'
     case 'provider_rejected': return 'provider_rejected'
     case 'units_invalid': case 'price_invalid': case 'price_unknown': case 'cost_invalid': return 'spend_config_invalid'
     default: return 'spend_refused'   // named, never silently a budget stop
@@ -759,8 +784,10 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused && spendAttemptRejected() !== null && !uncertainSpend.has(job) && !spendAttemptUncertain()) { finish(db, job, 'failed', rejectionCode(spendAttemptRejected()!), null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) {
-    const code = refusalCode(e, ledger)
-    ledger?.report({ stop: { code, spend_refusal_reason: e.reason } })
+    // #1168: the unpriceable-research refusal that ends an empty search can follow a real limit refusal earlier in the attempt
+    const limit = e.reason === 'research_unbounded' ? earlierLimitRefusal(db, job) : null
+    const code = refusalCode(limit ? new SpendRefused(limit) : e, ledger)
+    ledger?.report({ stop: { code, spend_refusal_reason: limit ?? e.reason, ...(limit ? { superseded_refusal_reason: e.reason } : {}) } })
     finish(db, job, 'failed', code, null, null, ledger)
     return 'failed'
   } // a refused call is never retried: attempts must not multiply spend
@@ -895,8 +922,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       // research/ground/judge calls. The error names what actually ended the search (source_error / no_discovery /
       // unbounded_fallback_hold) - the fallback's absence alone is not a budget stop.
       if (deps.paidFallback === false) {
-        const code = fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: null } })
+        const limit = earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1285,7 +1313,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor]) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
+    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor], vendor) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
@@ -1453,8 +1481,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // An earlier SpendRefused names the stop by its OWN reason (refusalCode): only a real numeric cap refusal is a
         // budget stop - count_failed / model_unpriced / accounting / ownership refusals refuse at ANY budget, so
         // calling them budget_stopped would send the user to raise a budget that cannot fix it.
-        const code = budgetRefused ? refusalCode(new SpendRefused(budgetRefusal!), ledger) : fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
+        const limit = budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1466,9 +1495,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       } catch (e) {
         // The unbounded-research refusal can FOLLOW an earlier real spend refusal (the TinyFish path's): the earlier
         // refusal is the cause of the empty search, so its reason names the stop - the fallback's shape does not.
-        if (e instanceof SpendRefused && e.reason === 'research_unbounded' && budgetRefused) {
-          const code = refusalCode(new SpendRefused(budgetRefusal!), ledger)
-          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal, superseded_refusal_reason: e.reason } })
+        // #1168: the same holds for a limit that refused an earlier model call the run survived (earlierLimitRefusal)
+        const limit = e instanceof SpendRefused && e.reason === 'research_unbounded' ? (budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)) : null
+        if (limit) {
+          const code = refusalCode(new SpendRefused(limit), ledger)
+          ledger.report({ stop: { code, spend_refusal_reason: limit, superseded_refusal_reason: (e as SpendRefused).reason } })
           finish(db, job, 'failed', code, null, 0, ledger)
           return 'failed'
         }
@@ -1835,13 +1866,16 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     try { applyEvidenceQualityGate(walledRows) } catch { /* gate only */ }
     outcome.review.push(...walledRows)
     // #1037: a free-trial scan's people searches (run after finish, below) are reserved HERE, while the job is still
-    // 'running' - the trial reserve is only written for a running job. One search per verified lead, at most
+    // 'running' - the trial reserve is only written for a running job. One search per lead the pass may search (ready leads,
+    // then held ones whose company is not in doubt: searchable-holds.ts), at most
     // firstPlayPeopleCap(), and never into the last FIRST_PLAY_TRIAL_KEEP of the reserve (left for the checks after it).
     // A search reserved but not made stays reserved: the trial ledger over-counts, never under.
     let trialPeoplePrepaid = 0
     if (trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
       // One search per distinct company (the pass searches each company once), at most the cap.
-      const want = Math.min(firstPlayPeopleCap(), new Set(outcome.leads.map(l => companyKey(l.company))).size), price = trial.tinyfishSearchUsd
+      // The leads the pass can search (searchable-holds.ts searchableCompanyCount): a row it can never search reserves nothing. It may still
+      // search fewer (a lead the crawl names first, a request with no buyer role): the reserve over-counts then, never under.
+      const want = Math.min(firstPlayPeopleCap(), searchableCompanyCount([...outcome.leads, ...outcome.review], companyKey)), price = trial.tinyfishSearchUsd
       // An unusable price (not a finite number >= 0) makes no search at all: never an unpriced trial search.
       const room = !(Number.isFinite(price) && price >= 0) ? 0 : price > 0 ? Math.floor((trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd) / price + 1e-9) : want
       const k = Math.max(0, Math.min(want, Number.isFinite(room) ? room : 0))
@@ -1870,7 +1904,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // People search (person-first): the right people at each lead's company from public profile SEARCH RESULTS, for
     // companies whose own site lists nobody. Never throws; never an address; kill switch PEOPLE_SEARCH_ENABLED=0.
     // #1037: the first play (first5) and free-trial scans run it too, so the first leads a new user sees name who to
-    // contact: one search per ready lead that names nobody yet, at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
+    // contact: one search per lead that names nobody yet (ready leads first, then held ones), at most firstPlayPeopleCap() (10; DAZL_FIRST_PLAY_PEOPLE_SEARCHES
     // lowers it, 0 = off). A trial scan pays each search from its own reserve (trialCharges) and stops searching while less
     // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
     const firstPlay = !!deps.first5 || !!trial
@@ -1886,12 +1920,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // they are used up, and nothing is reserved after finish. Every other scan's searches are counted by TinyFish's own
       // per-scan / tenant / global caps, as before.
       const prepaid = { left: trialPeoplePrepaid }
-      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, onStop: why => { stopped.why ??= why }, alive: () => postFinishAlive(db, job),
+      const stats = newPeopleStats()
+      const n = await findPeople(db, job.user_id, job.id, { fetchImpl: deps.fetchImpl, stats, onStop: why => { stopped.why ??= why }, alive: () => postFinishAlive(db, job),
         ...(firstPlay ? { maxCompanies: peopleCap!, skipNamed: true } : {}),
         ...(trial ? { canSearch: () => prepaid.left > 0, charge: async () => { if (prepaid.left <= 0) throw new SpendRefused(TRIAL_BUDGET_REASON); prepaid.left-- } } : {}) })
-      const detail = { people_stored: n, ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
+      const detail = { people_stored: n, ...peopleStatsDetail(stats), ...(peopleCap !== null ? { cap: peopleCap } : {}), ...(stopped.why ? { stopped: stopped.why } : {}) }
       const status = peopleTraceStatus(n, stopped.why)
-      trace.note('people_search', status, peopleTraceMessage(n, stopped.why), detail)
+      trace.note('people_search', status, peopleTraceMessage(n, stopped.why, stats), detail)
     } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }

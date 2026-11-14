@@ -8,7 +8,8 @@
 // Pure: built only from what the lead already stores. Nothing here is fetched, guessed or invented; anything unknown
 // is listed under missing. Identity reuses the outreach provenance rules (weakest recorded basis governs, the user's
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
-import { recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
+import { companyTied } from '../people/company-tie.ts'
+import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -106,7 +107,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
-    return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}) }
+    return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}), ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}) }
   })
   const top = recommendedPerson(people, buyerRoles) ?? undefined
   const ident = identityOf(l, rows)
@@ -143,7 +144,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   const history = people.filter(p => p.historical)
   if (history.length) assumptions.push(`${history.map(p => `${p.name}${p.title ? ` (${p.title})` : ''}`).join('; ')} named in an SEC Form D filing: history as of the filing, not a current role and not a contact. Not recommended for outreach.`)
-  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
+  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : onlyNameOnly(people) ? 'a confirmed buyer (a search found people at a company with this name, but nothing confirms it is this company)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
   if (!ident && !citedEmail) missing.push('the company\'s own website')
   if (!draftable && !phone) missing.push('an email or phone')
   for (const u of unknown) missing.push(`${u} (not shown in the evidence)`)
