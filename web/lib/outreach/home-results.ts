@@ -10,8 +10,8 @@
 //  - interested: of those, the ones with a reply thread whose deciding reply is positive - the Inbox's rule
 //    (lib/outreach/inbox.ts): per Gmail thread, the newest message that is not an auto-reply or soft bounce, so "yes"
 //    then "no" (or a delivery notice in the same thread) is not interested, and a notice in a thread of its own does not
-//    undo the yes. The tile's Inbox link (?class=positive) lists those threads over all time; it also lists threads Home
-//    leaves out (sent before the window, test sends, sends to a test-fixture lead), never fewer.
+//    undo the yes. The tile's Inbox link (?class=positive&sent_since=<window start>) lists exactly those threads
+//    (lib/outreach/inbox.ts sentSince): the same window, never test sends or sends to a test-fixture lead.
 // New leads are the ones the Leads list shows: not rejected, not hidden as a poor fit (fit <= 1; lib/play-mail.ts
 // VISIBLE_LEAD), not test fixtures (lib/scan/store.ts and store-db.ts list reads leave out source_kind 'test').
 // The latest replies are replies to those same messages (sent in the window), so the list never shows a reply the tiles

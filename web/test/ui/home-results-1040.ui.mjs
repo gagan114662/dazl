@@ -45,7 +45,14 @@ const ZERO = { window_days: 30, since: NOW - 30 * 86400, reply_reading: true, ti
 const OFF = { ...FULL, reply_reading: false, tiles: { ...FULL.tiles, replied: null, interested: null }, by_signal: FULL.by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })) }
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
-async function open(width, results) {
+// what GET /api/home/ready answers: the counts, and the companies behind them (one row each on /app/leads/checked)
+const JA = 'a'.repeat(24), JB = 'b'.repeat(24), JC = 'c'.repeat(24)
+const co = (n, job, reason) => Array.from({ length: n }, (_, i) => ({ lead_id: `${reason || 'ready'}-${job.slice(0, 2)}-${i}`, company: `${reason ? 'Held' : 'Ready'} Co ${job.slice(0, 1)}${i}`, job_id: job, ready: !reason, reason }))
+const mk = (o) => ({ window_days: 30, capped: false, ...o, judged: o.companies.length, ready: o.companies.filter(c => c.ready).length, leads_checked: o.leads_checked ?? o.companies.length, leads_in_window: o.leads_in_window ?? o.companies.length })
+const READY = mk({ scans_checked: 3, scans_in_window: 3, scans: [{ job_id: JA, ready: 3 }],
+  held: [{ reason: 'needs your review', count: 12, job_id: null, scans: 2 }, { reason: 'a required check has not passed', count: 9, job_id: JB, scans: 1 }, { reason: 'no verified date', count: 1, job_id: JB, scans: 1 }],
+  companies: [...co(3, JA, ''), ...co(7, JA, 'needs your review'), ...co(5, JC, 'needs your review'), ...co(9, JB, 'a required check has not passed'), ...co(1, JB, 'no verified date')] })
+async function open(width, results, ready = READY) {
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = [], inboxUrls = []
@@ -56,6 +63,7 @@ async function open(width, results) {
     if (req.method() !== 'GET') writes.push(p)
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (p === '/api/home/results') return results === 'fail' ? json({ error: 'unavailable' }, 503) : json(results)
+    if (p === '/api/home/ready') return ready === 'fail' ? json({ error: 'unavailable' }, 503) : json(ready)
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     // a workspace that has its business details (a brand-new one sees the onboarding wizard, not Home's results)
     if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals: ['opened a new location'], exclude: [] }, new_play_offer: null })
@@ -74,10 +82,14 @@ try {
     const { ctx, page, writes, inboxUrls } = await open(width, FULL)
     const sec = page.getByTestId('home-results'); await sec.waitFor({ timeout: 20000 })
     const tile = async id => (await page.getByTestId(`tile-${id}`).textContent()).replace(/\s+/g, ' ').trim()
-    assert.equal(await tile('leads'), '4New leads'); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
+    await page.waitForFunction(() => !/\.\.\./.test(document.querySelector('[data-testid=tile-ready]')?.textContent ?? '...'), null, { timeout: 20000 })
+    assert.equal(await tile('ready'), '3Ready leads', 'the Leads page\'s ready count (acceptance 1)'); assert.match(await page.getByTestId('new-leads').textContent(), /\(4 new\)/); assert.equal(await tile('contacted'), '4Contacted'); assert.equal(await tile('replied'), '2Replied'); assert.equal(await tile('interested'), '1Interested')
     assert.equal(await page.getByTestId('tile-replied').getAttribute('href'), `/app/inbox?status=all&sent_since=${FULL.since}`)
     assert.equal(await page.getByTestId('tile-contacted').getAttribute('href'), '/app/outreach')
-    assert.equal(await page.getByTestId('tile-leads').getAttribute('href'), '/app/leads?latest=1')
+    // the hold breakdown under the tiles: counts in plain words, adding up, each line opening where its leads are
+    assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready yet (22 of 25 companies checked): 12 need your review (in 2 scans), 9 held by a required check, 1 no verified date')
+    assert.deepEqual(await page.getByTestId('held-line').evaluateAll(a => a.map(x => x.getAttribute('href'))), ['/app/leads/checked?why=needs%20your%20review', '/app/leads/checked?why=a%20required%20check%20has%20not%20passed', '/app/leads/checked?why=no%20verified%20date'], 'every line opens the list of the leads it counts')
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads/checked?why=ready', 'the tile opens the list of its 3 ready leads')
     assert.equal(await page.getByTestId('tile-interested').getAttribute('href'), `/app/inbox?status=all&class=positive&sent_since=${FULL.since}`)
     const rows = await page.getByTestId('by-signal').locator('tbody tr').evaluateAll(trs => trs.map(tr => [...tr.children].map(td => td.textContent.trim())))
     assert.deepEqual(rows, [['Hiring', '2', '2', '1'], ['Raised funding', '1', '2', '1'], ['No signal type', '1', '0', '0']])
@@ -126,6 +138,56 @@ try {
     assert.match(await page.getByTestId('by-signal').textContent(), /unknown/)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390: no horizontal scroll')
     out.push('reply reading off: Replied and Interested unknown, with the way to turn it on'); await ctx.close() }
+  // Review (Hermes-PC) at 14037ed4, finding 1: a line whose leads are in several scans opens a LIST of exactly those leads
+  for (const width of [1280, 390]) { const { ctx, page } = await open(width, FULL)
+    await page.getByTestId('ready-held').waitFor({ timeout: 20000 })
+    // a line whose leads are all in ONE scan opens the list too: 9 rows for "9", not that scan's 10 leads
+    await page.getByTestId('held-line').nth(1).click(); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-title').textContent(), '9 leads: held by a required check'); assert.equal(await page.getByTestId('checked-row').count(), 9)
+    await page.goto(base + '/app', { waitUntil: 'networkidle' }); await page.getByTestId('ready-held').waitFor({ timeout: 20000 })
+    await page.getByTestId('held-line').first().click()
+    await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-title').textContent(), '12 leads: need your review')
+    assert.equal(await page.getByTestId('checked-row').count(), 12, 'as many rows as the line said')
+    assert.deepEqual([...new Set(await page.getByTestId('checked-row').locator('a').evaluateAll(a => a.map(x => x.getAttribute('href'))))].sort(), [`/app/leads?job_id=${JA}`, `/app/leads?job_id=${JC}`], 'each row opens its own scan')
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${width}: no horizontal scroll on the list`)
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `checked-review-${width}.png`) })
+    await ctx.close() }
+  out.push('a line spanning scans opens a list with as many rows as its number')
+  // ready leads in two scans: the tile opens the list of ready leads; 7 rows for "7"
+  { const two = mk({ scans_checked: 2, scans_in_window: 2, scans: [{ job_id: JA, ready: 4 }, { job_id: JB, ready: 3 }], held: [], companies: [...co(4, JA, ''), ...co(3, JB, '')] })
+    const { ctx, page } = await open(390, FULL, two)
+    await page.getByTestId('ready-scans').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('tile-ready').textContent(), /^7Ready leadsIn 2 scans$/)
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads/checked?why=ready')
+    await page.getByTestId('tile-ready').click(); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-title').textContent(), '7 ready leads'); assert.equal(await page.getByTestId('checked-row').count(), 7)
+    out.push('ready in two scans: the tile opens 7 rows'); await ctx.close() }
+  // finding 2: a limit cut the count: "or more", and how many leads were checked - never a total that is not one
+  { const cut = mk({ capped: true, leads_checked: 600, leads_in_window: 1000, scans_checked: 3, scans_in_window: 5, scans: [{ job_id: JA, ready: 2 }], held: [{ reason: 'needs your review', count: 3, job_id: JB, scans: 1 }], companies: [...co(2, JA, ''), ...co(3, JB, 'needs your review')] })
+    const { ctx, page } = await open(1280, FULL, cut)
+    await page.getByTestId('ready-partial').waitFor({ timeout: 20000 })
+    assert.equal((await page.getByTestId('tile-ready').textContent()).replace(/\s+/g, ' '), '2 or moreReady leadsFirst 600 of 1000 leads checked, newest scans first')
+    assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready so far (3 of the 5 companies in the first 600 of 1000 leads checked): 3 need your review', 'held counts under a limit are never called "or more": one may still turn out ready')
+    out.push('limit reached: ready "or more", held "so far", "First 600 of 1000 leads checked"'); await ctx.close() }
+  // the real state on prod today: 0 ready, and the breakdown says why; the tile opens every checked lead
+  { const zero = mk({ scans_checked: 3, scans_in_window: 3, scans: [], held: [{ reason: 'needs your review', count: 12, job_id: null, scans: 3 }, { reason: 'a required check has not passed', count: 1, job_id: JC, scans: 1 }], companies: [...co(6, JA, 'needs your review'), ...co(6, JB, 'needs your review'), ...co(1, JC, 'a required check has not passed')] })
+    const { ctx, page } = await open(390, FULL, zero)
+    await page.getByTestId('ready-held').waitFor({ timeout: 20000 })
+    assert.match(await page.getByTestId('tile-ready').textContent(), /^0Ready leads$/)
+    assert.equal((await page.getByTestId('ready-held').textContent()).replace(/\s+/g, ' ').trim(), 'Not ready yet (13 of 13 companies checked): 12 need your review (in 3 scans), 1 held by a required check')
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '390: no horizontal scroll with the breakdown')
+    if (process.env.SHOTS) await page.getByTestId('home-results').screenshot({ path: path.join(process.env.SHOTS, 'home-ready-zero-390.png') })
+    assert.equal(await page.getByTestId('tile-ready').getAttribute('href'), '/app/leads/checked')
+    await page.getByTestId('tile-ready').click(); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-title').textContent(), '13 leads checked'); assert.equal(await page.getByTestId('checked-row').count(), 13)
+    out.push('0 ready: the breakdown says why, and the tile opens the 13 checked leads'); await ctx.close() }
+  { const { ctx, page } = await open(1280, FULL, 'fail')
+    await page.getByTestId('ready-unread').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('ready-held').count(), 0, 'no breakdown when the check failed')
+    assert.match(await page.getByTestId('tile-ready').textContent(), /could not be checked.*Could not check/)
+    assert.equal(await page.getByTestId('tile-contacted').textContent(), '4Contacted', 'the other tiles still show')
+    out.push('ready check failed: says so, never 0'); await ctx.close() }
   { const { ctx, page } = await open(1280, 'fail')
     await page.getByTestId('results-unread').waitFor({ timeout: 20000 })
     assert.equal(await page.getByTestId('home-results').count(), 0, 'a failed read shows no tiles (never zeros)')
