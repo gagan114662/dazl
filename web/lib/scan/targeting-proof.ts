@@ -44,20 +44,26 @@ const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|w
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
   return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
-// An expansion a press release words without the verb "expand" (#878, real releases): the company GROWS / bolsters / strengthens / builds out / adds to
-// ITS OWN practice, group, team, presence, footprint or office ("is continuing to grow its Corporate Services Group's Chicago presence with the addition
-// of Partner ..."), or someone has JOINED its growing / expanding practice ("has joined the firm as a partner in its growing Intellectual Property Practice
-// Group"). Same guards as every event clause: this company is the subject, and the clause is not denied, planned, conditional or hearsay. Read only for an
-// expand condition with no named object ("expanded into Europe" still needs the literal reader).
+// An expansion a press release words without the verb "expand" (#878, real releases): THIS company, as the sentence's own subject, grows / bolsters /
+// strengthens / builds out / broadens / deepens / adds to ITS OWN practice, group, team, presence, footprint, bench, capability, office or operations
+// ("Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the addition of Partner ..."), or the company announces
+// that someone has joined IT ("the firm", or its name) in "its growing / expanding" practice or group. Strict on purpose: the company's name must come
+// right before the verb, with only a completed / in-progress auxiliary between ("is", "has", "continues to", "is continuing to"), so intent ("looking to
+// grow", "poised to"), failure ("unable to grow"), hearsay and another subject ("X said Beta grew its team", "helps clients grow their team") never pass.
+// The grown unit must be the company's own ("its", no other possessor, not a "team page"), and a clause that also states a cut is not read.
+// Only for an expand condition with no named object ("expanded into Europe" still needs the literal reader).
+const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const GROWN_UNIT = String.raw`(?:practices?|groups?|teams?|presence|footprint|bench|capabilit(?:y|ies)|offices?|operations?)`
-const GROWS_OWN = new RegExp(String.raw`\b(?:grow(?:s|ing)?|grew|grown|bolster(?:s|ed|ing)?|strengthen(?:s|ed|ing)?|build(?:s|ing)?\s+out|built\s+out|broaden(?:s|ed|ing)?|deepen(?:s|ed|ing)?|add(?:s|ed|ing)?\s+to)\s+(?:its|their|our)\s+(?:[\w&'’.-]+\s+){0,6}?${GROWN_UNIT}\b`, 'i')
-const JOINED_GROWING = new RegExp(String.raw`\b(?:has|have)?\s*join(?:ed|s)\b[^.;]{0,80}?\b(?:its|the\s+firm'?s|the\s+company'?s)\s+(?:growing|expanding)\s+(?:[\w&'’.-]+\s+){0,6}?${GROWN_UNIT}\b`, 'i')
+const UNIT_FILLER = String.raw`(?:(?!(?:and|or|of|for|clients?|customers?|partners?|rivals?|competitors?)\b)(?:${GROWN_UNIT}['’]s|[\w&.-]+)\s+){0,6}?`
+const GROW_VERB = String.raw`(?:(?:is|are|has\s+been|have\s+been)\s+(?:continuing\s+to\s+grow|growing|bolstering|strengthening|building\s+out|broadening|deepening|adding\s+to)|(?:continues|has\s+continued|continued)\s+to\s+(?:grow|bolster|strengthen|build\s+out|broaden|deepen|add\s+to)|(?:has|have)\s+(?:grown|bolstered|strengthened|built\s+out|broadened|deepened|added\s+to)|(?:grew|grows|bolster(?:s|ed)|strengthen(?:s|ed)|builds\s+out|built\s+out|broaden(?:s|ed)|deepen(?:s|ed)|add(?:s|ed)\s+to))`
+const SUFFIX_OPT = String.raw`(?:,?\s+(?:LLP|LLC|PLLC|P\.?C\.?|Inc\.?|Ltd\.?))?`
+const SHRINK = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing)|from\s+\d+\s+to\s+\d+)\b/i
 function growthShown(quote: string, company: string): boolean {
-  return clauses(quote).some(k => {
-    if (EVENT_NOT.test(k)) return false
-    const g = GROWS_OWN.exec(k); if (g) return !subjectIsOther(k.slice(0, g.index), company)
-    return JOINED_GROWING.test(k) && !!norm(company) && ` ${norm(k)} `.includes(` ${norm(company)} `)   // the joiner is the subject there, so the clause itself must name this company
-  })
+  const co = company.trim(); if (co.length < 2) return false
+  const name = `${reEsc(co).replace(/\s+/g, String.raw`\s+`)}${SUFFIX_OPT}`
+  const own = new RegExp(String.raw`^(?:today,?\s+)?${name}\s+(?:(?:also|further|today|again|significantly)\s+)?${GROW_VERB}\s+its\s+${UNIT_FILLER}${GROWN_UNIT}\b(?!\s+(?:page|pages|site|bios?|website|section)\b)`, 'i')
+  const joined = new RegExp(String.raw`^${name}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+[^,;]{2,80}?\s+(?:has|have)\s+joined\s+(?:the\s+(?:firm|company)|${name})\b[^,;]{0,60}?\bits\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}\b`, 'i')
+  return clauses(quote).some(k => !EVENT_NOT.test(k) && !SHRINK.test(k) && (own.test(k) || joined.test(k)))
 }
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".
