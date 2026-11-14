@@ -24,7 +24,7 @@ const ROLES = 'Managing Partner; Partner'
 test('#1183 looksLikeJobTitle: titles and practice words are refused; real names (accents, apostrophes, role-like given names) never are', () => {
   for (const t of ['Litigation Specialist', 'Managing Partner', 'Of Counsel', 'Legal Project Manager', 'International Docket Administrator', 'Intellectual Property Specialist', 'Immigration Specialist', 'Senior Associate', 'Chief Marketing Officer', 'Real Estate Broker', 'Customer Success Manager', 'Human Resources', 'Business Development'])
     assert.equal(looksLikeJobTitle(t), true, t)
-  for (const n of ['Jeanne Hammerstrom', 'Nora Wall', "Emilia D'Mello", 'Brent Richardson', 'Jordan Hammond', 'Maya Thornton', 'Dana Whitcombe', 'Corinne Wright', 'Anna María López-Pérez', 'Chase Brooks', 'Grant Miller', 'Taylor Reed', 'Joy Lawyer-Smith'.split('-')[0] + ' Hart'])
+  for (const n of ['Jeanne Hammerstrom', 'Nora Wall', "Emilia D'Mello", 'Brent Richardson', 'Jordan Hammond', 'Maya Thornton', 'Dana Whitcombe', 'Corinne Wright', 'Anna María López-Pérez', 'Chase Brooks', 'Grant Miller', 'Taylor Reed', 'Joy Lawyer-Smith', 'Joy Manager', 'Will Owner', 'Joe Partner', 'Kim Staff', 'Pat Principal'.split('-')[0] + ' Hart'])
     assert.equal(looksLikeJobTitle(n), false, n)
   assert.equal(looksLikeJobTitle(null), false); assert.equal(looksLikeJobTitle(''), false)
 })
@@ -63,4 +63,15 @@ test('#1183 the module is plain ASCII (a raw combining-mark range in a regex was
   assert.ok(!/[^\x00-\x7f]/.test(readFileSync(new URL('../lib/people/job-title-name.ts', import.meta.url), 'utf8')), 'non-ASCII character in job-title-name.ts')
   assert.equal(looksLikeJobTitle('José García'), false)
   assert.equal(looksLikeJobTitle('Sénior Mánager'), true)
+})
+
+test('#1183 an UNLISTED title in a filter control cannot pair into a person (cut by context, not vocabulary); role-like surnames are kept', () => {
+  const filter = ['Managing Member', 'Managing Partner', 'Diretor Comercial', 'Gerente de Vendas'].map((t, i) => opt(70 + i, t)).join('')
+  const page = `<html><body>${PROSE}<div class="datalist"><ul class="datalist__options">${filter}</ul></div></body></html>`
+  assert.deepEqual(extractPeople(page, URL_, 'Managing Partner; Gerente de Vendas'), [], 'Managing Member + Managing Partner / Diretor Comercial + Gerente de Vendas: nobody')
+  const select = `<html><body>${PROSE}<select><option>Managing Member<option>Managing Partner</select></body></html>`
+  assert.deepEqual(extractPeople(select, URL_, ROLES), [], 'an unclosed-option select is page chrome too')
+  assert.equal(looksLikeJobTitle('Joy Manager'), false); assert.equal(looksLikeJobTitle('Pat Principal'), false)
+  const rows = ['Joy Manager, Managing Partner', 'Will Owner, Managing Partner'].map(value => ({ connector: 'enrich:apollo', kind: 'person', value, label: null, source_url: URL_, source_date: '2026-11-13', confidence: null, retrieved_at: 1_794_000_000 }))
+  assert.deepEqual(contactsFromEnrichments(rows, ROLES, 1_794_000_000_000).map(p => p.name).sort(), ['Joy Manager', 'Will Owner'], 'stored provider people with role-like surnames survive')
 })

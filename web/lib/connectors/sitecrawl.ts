@@ -254,10 +254,12 @@ const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|me
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
-const MARK = '(?:testimonial|review|quote|client|customer|partner|sponsor|press|award|feedback|rating)'
+// #1183: a search/filter control (a datalist or dropdown of job titles) is page chrome, never a person card: its options are cut by CONTEXT, so an
+// unlisted title ("Managing Member") next to a listed one cannot pair into a fake person the way a word list alone would let it.
+const MARK = '(?:testimonial|review|quote|client|customer|partner|sponsor|press|award|feedback|rating|datalist|dropdown|facet|refine|filter-?(?:option|list|menu|bar|group|panel))'
 function cutBlocks(html: string): string | null {
   let out = html
-  const open = new RegExp(`<(blockquote|cite|q)\\b[^>]*>|<([a-z][a-z0-9]*)\\b[^>]*\\b(?:class|id)\\s*=\\s*["'][^"']*${MARK}[^"']*["'][^>]*>`, 'i')
+  const open = new RegExp(`<(blockquote|cite|q|select|datalist)\\b[^>]*>|<([a-z][a-z0-9]*)\\b[^>]*\\b(?:class|id)\\s*=\\s*["'][^"']*${MARK}[^"']*["'][^>]*>`, 'i')
   for (let guard = 0; guard < 200; guard++) {
     const m = open.exec(out); if (!m) return out
     const tag = (m[1] ?? m[2]).toLowerCase()
