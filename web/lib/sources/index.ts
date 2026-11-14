@@ -40,7 +40,7 @@ export function keywordsFor(query: string): string[] {
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
 export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}` | 'skipped_out_of_coverage'; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
-export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = []): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
+export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = [], queryFor: Partial<Record<string, string>> = {}): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const results = new Map<string, Evidence[]>()
   const runs = new Map<string, AdapterRun>()
   const tallies = new Map<string, NonNullable<AdapterInput['tally']>>()
@@ -49,7 +49,8 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
     const notes: Record<string, number> = {}
     const tally: NonNullable<AdapterInput['tally']> = {}
     tallies.set(id, tally)
-    const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
+    const q = queryFor[id] ?? query   // #1095: one source may read the request with more context (the job boards: the profile's place); the others keep the request
+    const input: AdapterInput = { query: q, keywords: keywordsFor(q), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
     try {
       const items = await ADAPTERS[id].collect(input)
       const partial = Object.keys(notes).some(k => k !== 'out_of_coverage')
