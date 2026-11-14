@@ -43,7 +43,7 @@ import { canonicalUrl, withExclusions, limits as tfLimits, migrateTinyfish, pick
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
-import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
@@ -148,6 +148,16 @@ function str(v: unknown, max: number): string {
 
 // Parse model output into leads. A lead is kept only if it cites a URL the
 // vendor really returned, so invented sources are dropped.
+// #381 (yield, real scans 2026-11-14): a complete extraction reply of 9 candidates was invalid JSON in ONE item, the whole reply was thrown away and the scan ended with
+// 0 candidates (2 of 9 Chicago scans of that day). When the array does not parse as a whole, each item is parsed on its own and the ones that parse are kept; the broken
+// item is lost, the others are not. Nothing is repaired or guessed: an item is used only when it is valid JSON by itself. No item parses -> null, as before.
+function salvageItems(arrayText: string): unknown[] | null {
+  const items: unknown[] = []
+  for (const chunk of arrayText.slice(1, -1).split(/(?<=\})\s*,\s*(?=\{)/)) {
+    try { const o: unknown = JSON.parse(chunk.trim().replace(/,\s*$/, '')); if (o && typeof o === 'object' && !Array.isArray(o)) items.push(o) } catch { /* this item is lost */ }
+  }
+  return items.length > 0 ? items : null
+}
 export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | null {
   const start = text.indexOf('[')
   const end = text.lastIndexOf(']')
@@ -156,7 +166,8 @@ export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | nul
   try {
     raw = JSON.parse(text.slice(start, end + 1))
   } catch {
-    return null
+    raw = salvageItems(text.slice(start, end + 1))
+    if (!raw) return null
   }
   if (!Array.isArray(raw)) return null
   const allowed = new Set(citedUrls.map(u => u.replace(/\/$/, '')))
@@ -259,6 +270,21 @@ export function cachedFetcher(fetchPage: PageFetcher): PageFetcher {
   }
 }
 
+// #381: the candidates the grounding pass may read: found by this scan's search, their page not among the pages the extraction step read, and not on a login-walled
+// host (a page nobody can read cannot confirm a quote).
+export function snippetCandidates(leads: LeadDraft[], hitUrls: string[], textUrls: Set<string>): LeadDraft[] {
+  const hits = new Set(hitUrls.map(h => canonicalUrl(h) ?? h))
+  return leads.filter(l => { const k = canonicalUrl(l.source_url) ?? l.source_url; return hits.has(k) && !textUrls.has(k) && !isLoginWalled(l.source_url) })
+}
+// #381 (review): does the grounding call's reservation fit under every run guard? Priced exactly as the guard reserves it (callCostUsd on the prompt's bytes and its
+// output limit). No guard: nothing to protect. An unpriced model: no (the guard would refuse the call and stay refused).
+export function groundingFits(guards: SpendGuard[], model: string | undefined, prompt: string, maxOut: number): boolean {
+  if (guards.length === 0) return true
+  let cost: number
+  try { cost = callCostUsd(model, Buffer.byteLength(prompt), maxOut) } catch { return false }
+  return guards.every(g => !g.refused && g.reservedUsd + cost <= g.limitUsd)
+}
+
 // Grounding pass. Research candidates arrive with quotes the model wrote from search-snippet
 // memory; the strict verifier then rejects them (excerpt_not_on_page) and whole scans come back
 // empty. Here the cited pages are fetched for real and the model rewrites its candidates with
@@ -281,7 +307,40 @@ ${p.text}`).join('\n\n---\n\n')}`
 const GROUND_MAX_PAGES = 8
 const GROUND_PAGE_CHARS = 3000
 
-export async function groundLeads(provider: Provider, apiKey: string, query: string, candidates: LeadDraft[], fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
+export const GROUND_MAX_OUT = 4000
+// #381 (review): whether a quote is already on the page (white space and case aside). Such a candidate needs no grounding: the verifier reads the same page.
+const flatText = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
+export const quoteOnPage = (excerpt: string | null | undefined, pageText: string) => !!excerpt && flatText(excerpt).length >= 20 && flatText(pageText).includes(flatText(excerpt))
+// #381 (review): the model is asked for "prospects on these pages", so it can rename a candidate ("Flynn Companies" for "Flynn Group of Companies"), return one
+// twice, or return a company it was never given. A grounded item may only replace a candidate that went in: matched on the same page (the page's only candidate by
+// page alone; otherwise by name), at most one per candidate, anything else dropped. The candidate keeps its own name, company and signal; only the quote (and a
+// date or contact it lacked) comes from the page. So the number of candidates never changes.
+const GENERIC_NAME_WORDS = new Set(['group', 'of', 'and', 'companies', 'holdings', 'international', 'global', 'services', 'partners'])
+const nameWords = (company: string) => companyKey(company).split(' ').filter(w => w && !GENERIC_NAME_WORDS.has(w))
+export function sameCompanyName(a: string, b: string): boolean {
+  if (companyKey(a) && companyKey(a) === companyKey(b)) return true
+  const x = nameWords(a), y = nameWords(b)
+  if (x.length === 0 || y.length === 0) return false
+  const [few, many] = x.length <= y.length ? [x, new Set(y)] : [y, new Set(x)]
+  return few.every(w => many.has(w))
+}
+export function mergeGrounded(originals: LeadDraft[], grounded: LeadDraft[]): Map<LeadDraft, LeadDraft> {
+  const page = (l: LeadDraft) => canonicalUrl(l.source_url) ?? l.source_url
+  const out = new Map<LeadDraft, LeadDraft>()
+  const take = (o: LeadDraft | undefined, g: LeadDraft) => { if (o && !out.has(o) && g.excerpt) out.set(o, { ...o, excerpt: g.excerpt, event_date: o.event_date ?? g.event_date, contact: o.contact ?? g.contact }) }
+  const left: LeadDraft[] = []
+  // exact names first, so a loose match never takes the item that belongs to another candidate of the page
+  for (const g of grounded) { const o = originals.find(o => page(o) === page(g) && !out.has(o) && companyKey(o.company) === companyKey(g.company)); if (o) take(o, g); else left.push(g) }
+  for (const g of left) {
+    const same = originals.filter(o => page(o) === page(g))
+    take(same.length === 1 ? same[0] : same.find(o => !out.has(o) && sameCompanyName(o.company, g.company)), g)
+  }
+  return out
+}
+
+// `fits` (when given) sees the built prompt and its output limit before the paid call: a caller with a dollar guard skips the pass when the call's own reservation
+// would not fit (#381 review: a flat allowance was smaller than the real reservation, and a refused reservation holds the whole run).
+export async function groundLeads(provider: Provider, apiKey: string, query: string, candidates: LeadDraft[], fetchPage: PageFetcher, fetchImpl?: typeof fetch, fits?: (prompt: string, maxOut: number) => boolean): Promise<LeadDraft[] | null> {
   if (!provider.complete) return null
   const urls = [...new Set(candidates.map(c => c.source_url))].slice(0, GROUND_MAX_PAGES)
   const fetched = await Promise.all(urls.map(async url => {
@@ -291,7 +350,9 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
   const pages = fetched.filter((p): p is { url: string; text: string } => !!p && p.text.length >= 200)
   if (pages.length === 0) return null
   try {
-    const text = await provider.complete(apiKey, groundPrompt(query, pages), fetchImpl, 4000)
+    const prompt = groundPrompt(query, pages)
+    if (fits && !fits(prompt, GROUND_MAX_OUT)) return null
+    const text = await provider.complete(apiKey, prompt, fetchImpl, GROUND_MAX_OUT)
     const parsed = parseLeads(text, pages.map(p => p.url))
     return parsed && parsed.length > 0 ? parsed : null
   } catch (e) {
@@ -577,7 +638,7 @@ export function pickVendor(db: Database.Database, tenantId: string): Vendor | nu
 
 // A stop request (or a reaped/re-claimed attempt) must not start NEW provider or network work.
 // It cannot interrupt a call already awaited; that call may finish and be billed, but its result is discarded.
-class ScanStopped extends Error { constructor() { super('scan_stopped') } }
+export class ScanStopped extends Error { constructor() { super('scan_stopped') } }
 // Optional whole-scan budget: an ADMISSION guard, not a wall-clock maximum. It is checked only in assertOwned,
 // i.e. before a NEW phase starts, after the previous await has already returned. It cannot end an awaited call: a
 // provider/fetch call that never settles is bounded only by its own transport abort (SCAN_LLM_TIMEOUT_MS 150 s,
@@ -585,7 +646,7 @@ class ScanStopped extends Error { constructor() { super('scan_stopped') } }
 // SCAN_JOB_BUDGET_MS is set, so default behavior (retries, quota, UI) is unchanged. Discovery scans only: CSV
 // company jobs are not cancellable and never get a deadline. A scan past it fails once as 'scan_timeout' (a
 // retry would repeat the same provider spend). Candidates are in memory until finish(): nothing partial is saved.
-class ScanTimedOut extends Error { constructor() { super('scan_timeout') } }
+export class ScanTimedOut extends Error { constructor() { super('scan_timeout') } }
 const jobDeadlines = new WeakMap<Job, { at: number; now: () => number }>()
 export function scanJobBudgetMs(env: Record<string, string | undefined> = process.env): number | null {
   const raw = env.SCAN_JOB_BUDGET_MS
@@ -1085,7 +1146,6 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
-export const GROUND_ROOM_USD = 0.08   // the grounding call's worst case (8 pages x 3,000 characters in, 4,000 tokens out) with margin
 // Fetch ranking for a compound request: job-board / careers pages go behind the pages that can carry the event, unless the compiled plan is an OR
 // whose hiring branch a job page can prove on its own (an open role). A completed-hire branch (#876, hire_made) is never proven by a job page.
 export function jobPagesBehindEvents(signals: string[] | null | undefined, query: string | null | undefined, icpJson: string): boolean {
@@ -1684,18 +1744,22 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // the model could not ground stays exactly as it was: held for review, never lost, never promoted without the verifier.
     if (complete && deps.ground !== false) {
       const textUrls = new Set(diag.tfTextUrls.map(u => canonicalUrl(u) ?? u))
-      const snippetOnly = leads.filter(l => { const k = canonicalUrl(l.source_url) ?? l.source_url; return diag.hitUrls.some(h => (canonicalUrl(h) ?? h) === k) && !textUrls.has(k) && !isLoginWalled(l.source_url) })
+      const snippetOnly = snippetCandidates(leads, diag.hitUrls, textUrls)
+      // a candidate whose quote is already on its page needs no call (the verifier reads the same page; the fetch is the verifier's cached one, so each page is read once)
+      const texts = new Map<string, string>()
+      await Promise.all([...new Set(snippetOnly.map(l => l.source_url))].map(async u => { const p = await fetchP(u).catch(() => null); if (p && !isFail(p) && p.text) texts.set(u, p.text) }))
+      const open = snippetOnly.filter(l => texts.has(l.source_url) && !quoteOnPage(l.excerpt, texts.get(l.source_url)!))
       // The pass must not take the room a trial or a budgeted run needs for its scoring, judge and people search (the guard flips to refused on any refused call, which
-      // holds the leads): it runs only when every dollar guard of this run has room for its worst case (GROUND_ROOM_USD); a pool guard counts the account, not the run.
-      const room = Math.min(Infinity, ...spendGuards.filter((g): g is SpendGuard => !(g instanceof PooledGuard)).map(g => g.limitUsd - g.reservedUsd))
-      if (snippetOnly.length > 0 && room >= GROUND_ROOM_USD) {
+      // holds the leads): it runs only when the call's own reservation (the built prompt, priced as the guard prices it) fits under every dollar guard of this run; a
+      // pool guard counts the account, not the run. A model without a price is never sent (its reservation would be refused).
+      const runGuards = spendGuards.filter((g): g is SpendGuard => !(g instanceof PooledGuard))
+      const fits = (prompt: string, maxOut: number) => groundingFits(runGuards, (() => { try { return providers_[vendor].configuredModel?.() } catch { return undefined } })(), prompt, maxOut)
+      if (open.length > 0) {
         assertOwned(db, job)
-        const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, snippetOnly, fetchP, deps.fetchImpl)
+        const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, open, fetchP, deps.fetchImpl, fits)
         if (g?.length) {
-          // a grounded lead replaces ITS original (same page, same company); every other candidate of that page stays as it was
-          const keyOf = (l: LeadDraft) => `${canonicalUrl(l.source_url) ?? l.source_url}|${companyKey(l.company)}`
-          const done = new Set(g.map(keyOf))
-          leads.splice(0, leads.length, ...g, ...leads.filter(l => !done.has(keyOf(l))))
+          const swap = mergeGrounded(open, g)
+          leads.splice(0, leads.length, ...leads.map(l => swap.get(l) ?? l))
           partial.candidates = leads
         }
       }
