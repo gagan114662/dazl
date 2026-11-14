@@ -9,6 +9,9 @@ import { finishUndatedLeads, resolveStructuredDate, structuredProof } from '../l
 import { verifyLeads } from '../lib/scan/runner.ts'
 import { splitByWindow } from '../lib/scan/window.ts'
 import { isEventDateProof } from '../lib/scan/scoreboard.ts'
+import { isAnnouncementDay } from '../lib/scan/announcement.ts'
+import { cardDate } from '../lib/scan/lead-card.ts'
+import { eventDateCopy } from '../lib/scan/date-copy.ts'
 
 type Real = { company: string; url: string; signal: string; quote: string; title: string; published: string | null; structured: string[] }
 const pages = (JSON.parse(readFileSync(new URL('./fixtures/real-press-pages-878.json', import.meta.url), 'utf8')) as { pages: Real[] }).pages
@@ -43,7 +46,12 @@ test('#878 negatives built from the real Armstrong Teasdale page: each rule that
   assert.ok(resolve(a), 'the control')
   assert.equal(resolve({ ...a, company: 'Foley & Lardner' } as Real), null, 'the headline names another company')
   assert.equal(resolve(a, { quote: 'Armstrong Teasdale will add a partner in Chicago and plans to open a second office there.' }), null, 'a plan, not a done event')
-  assert.equal(resolve(a, { quote: 'Armstrong Teasdale expanded in Chicago in 2019 with a new partner.' }), null, 'the quote names a year two or more before the story')
+  // the quote dates its own event, so the story's publication day is not read (a case study, a retrospective): any year, a month with a day, a relative past
+  for (const quote of ['Armstrong Teasdale expanded in Chicago in 2019 with a new partner.', 'In March 2025 Armstrong Teasdale expanded in Chicago with a new partner.', 'Armstrong Teasdale expanded in Chicago on March 3 with a new partner.',
+    'Armstrong Teasdale expanded in Chicago last year with a new partner.', 'Armstrong Teasdale expanded in Chicago three years ago with a new partner.', 'Armstrong Teasdale previously expanded in Chicago with a new partner.']) {
+    assert.equal(resolve(a, { quote }), null, quote)
+  }
+  assert.equal(resolve(a, { title: 'Armstrong Teasdale Case Study: the Chicago expansion', quote: 'In March 2025 Armstrong Teasdale opened its Chicago office.' }), null)
   assert.equal(resolve(a, { title: 'Top 10 Chicago law firms expanding in 2026' }), null, 'a roundup title')
   assert.equal(resolve(a, { published: '2026-10-15' }), null, "the page's own metadata names another day")
   assert.equal(resolve(a, { structured: a.structured.map(b => b.replace('"datePublished"', '"dateModified"')) }), null, 'a modification stamp is never read')
@@ -75,4 +83,17 @@ test('#878 through the scan steps (verifyLeads -> finishUndatedLeads -> the 90-d
     outcome.push(`${c} ${l.event_date} ${l.event_date_proof}`)
   }
   assert.deepEqual(outcome, ['Armstrong Teasdale 2026-09-30 page_bound', 'McGuireWoods 2026-09-08 page_bound', 'Benesch 2026-09-10 page_bound', 'Queen Street Dental Centre 2026-11-06 ats_structured'])
+})
+
+test('#878 an announcement day is worded as one wherever the day is shown: "announced", never "event day verified"', () => {
+  const note = structuredProof({ date: '2026-09-30', kind: 'NewsArticle' })!.note
+  assert.ok(isAnnouncementDay(note))
+  assert.ok(!isAnnouncementDay(structuredProof({ date: '2026-11-06', kind: 'JobPosting' })!.note))
+  assert.ok(!isAnnouncementDay("the sentence names this company and the day"))
+  assert.ok(!isAnnouncementDay(null))
+  assert.equal(cardDate('2026-09-30', null, { dayVerified: true, announced: true }), "announced 30 Sep 2026 (the cited source's own publication day; the day it took effect may differ)")
+  assert.match(cardDate('2026-09-30', null, { dayVerified: true, announced: true, windowMissed: true }), /outside the requested window/)
+  assert.equal(cardDate('2026-09-30', null, { dayVerified: true }), 'event date 30 Sep 2026 (verified on the cited source)', 'a day the page states for the event reads as before')
+  assert.match(eventDateCopy('2026-09-30', 'unverified', 'proof_backed', { announced: true }), /announced that day on the cited source; the day it took effect may differ - current need unconfirmed/)
+  assert.match(eventDateCopy('2026-09-30', 'unverified', 'proof_backed'), /event day verified on the cited source/)
 })

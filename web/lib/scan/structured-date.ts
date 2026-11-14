@@ -12,9 +12,10 @@
 // The press-release rule (#878; measured on real press releases of four Chicago law firms, which all carried a NewsArticle datePublished and were held as "outside_window_undated"): a page whose
 // schema.org NewsArticle names a single datePublished (agreeing with the page's own publication metadata when it has one) dates the lead when ALL of: the story's headline / page title names this
 // company; the claim and the quote announce a COMPLETED event (joined, expanded, opened, launched, raised ...) with no plan or future in them ("will", "plans to", "coming soon", "to open", "upon its
-// opening"); the quote names no year older than the page's; the title is not a roundup / guide / list. The day is the ANNOUNCEMENT day: the lead's timing note says so, and a later gate still judges
+// opening"); the quote carries no date of its own (no year, no month with a day, no "last year" / "years ago"); the title is not a roundup / guide / list. The day is the ANNOUNCEMENT day: the lead's timing note says so, and a later gate still judges
 // it exactly like any date (stale, future, window).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { ANNOUNCEMENT_NOTE } from './announcement.ts'
 import { isCountryOrRegion, countryFromField, countriesIn, regionOf, regionsIn, countryOfRegion } from './countries.ts'
 
 export type DateKind = 'Event' | 'JobPosting' | 'NewsArticle'
@@ -25,7 +26,7 @@ export interface StructuredProof { proof: 'page_bound' | 'ats_structured'; note:
 export const structuredProof = (d: StructuredDate): StructuredProof | null => d.kind === 'JobPosting'
   ? { proof: 'ats_structured', note: "the job posting's own structured publish date (schema.org JobPosting datePosted) on this posting's page" }
   : d.kind === 'NewsArticle'
-    ? { proof: 'page_bound', note: "the announcement's own publication day (schema.org NewsArticle datePublished): the story announces this event that day; the day it took effect may differ" }
+    ? { proof: 'page_bound', note: `${ANNOUNCEMENT_NOTE} (schema.org NewsArticle datePublished): the story announces this event that day; the day it took effect may differ` }
     : null   // an Event's startDate keeps the behaviour it always had: a date, no proof
 
 const HIRING = /\b(?:hir(?:e|es|ed|ing)|recruit\w*|jobs?|roles?|positions?|vacanc\w+|openings?)\b/i
@@ -63,8 +64,11 @@ const namesLoosely = (text: string, key: string): boolean => {
   const t = key.split(' ').filter(Boolean); while (t.length > 2 && GENERIC_TAIL.has(t[t.length - 1])) t.pop()
   return t.length >= 2 && t.join(' ') !== key && hasPhrase(text, t.join(' '))
 }
-// The quote names a year at least two older than the story's own day ("founded in 2019" is background and is not read; an event YEAR two or more years back makes the story a retrospective).
-const olderThanPage = (quote: string, pageDay: string): boolean => /\b(20\d\d)\b/.test(quote) && [...quote.matchAll(/\b(20\d\d)\b/g)].some(m => +m[1] <= +pageDay.slice(0, 4) - 2)
+// A quote that dates its own event is the quote's to date (the verifier's day binding), never the story's publication day: any year, a month with a day, or a relative past ("last year", "years ago",
+// "previously") means the story may be about something that happened before it ran (a case study, a retrospective, "in March 2025 X opened ..."), so the publication day is not read.
+const MON_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
+const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?) ago\\b|\\bpreviously\\b|\\bback in\\b`, 'i')
+const quoteDatesItself = (quote: string): boolean => OWN_DATE.test(quote)
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/.exec(v.trim()); if (!m) return null
@@ -282,7 +286,7 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
         const stated = ctx.published && /^\d{4}-\d{2}-\d{2}$/.test(ctx.published) ? ctx.published : null
         // the story's own headline names the company, announces a completed event in the quote as well as the claim, is no roundup, and the page's own metadata (when it has any) says the same day
         if (d && headline.some(h => hasPhrase(norm(h), key)) && ![...headline, ctx.title ?? ''].some(h => EVERGREEN_TITLE.test(h)) && (!stated || stated === d)
-          && announcesDoneEvent(claim) && (quote === '' || announcesDoneEvent(quote)) && !(quote && olderThanPage(quote, d))) found.set(`NewsArticle|${d}`, { date: d, kind: 'NewsArticle' })
+          && announcesDoneEvent(claim) && (quote === '' || announcesDoneEvent(quote)) && !(quote && quoteDatesItself(quote))) found.set(`NewsArticle|${d}`, { date: d, kind: 'NewsArticle' })
       }
       if (kinds.includes('Event') && types.some(t => /Event$/.test(t))) {
         const d = day(o.startDate)
