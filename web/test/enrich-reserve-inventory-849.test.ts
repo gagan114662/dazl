@@ -326,7 +326,8 @@ function unreservedVerifier(rel: string, text: string): string[] {
 const VERIFIER_NAMES = /\b(MailboxVerifier|verifierFromEnv|verifyCandidates)\b/
 // Inventoried users (#899): the adapter (implements MailboxVerifier, makes no reservation-free call of its own: verifierFromEnv
 // is the only constructor), and the scan runner (calls verifyJobCandidates, which reserves inside the verifier module).
-const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts']
+// #1036: lib/people/verify-usage.ts only reads the configured verifier's NAME for Settings > Enrichment and never calls .verify.
+const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts', 'lib/people/verify-usage.ts']
 // Modules besides the verifier module that call .verify themselves: every such call must be reserved (the same guard rules).
 const VERIFY_CALLERS = ['lib/people/work-email.ts']
 function unreservedVerifyCalls(rel: string, text: string): string[] {
