@@ -124,6 +124,54 @@ try {
     out.push(`${width}: 7 sections, site link, empty sections, save keeps research, play prefilled "${q}"`)
     await ctx.close()
   }
+  // #1192: the account shape EVERY real production account has: no website read at all (no research block, no site), with Memory and
+  // Competitors rows. The block above only ever rendered the hasSite=true fixture. Here nothing may claim a site read, and the stored
+  // Memory / Competitors rows must show with their own source; then /app/settings links to both and each link has a target.
+  for (const width of [1280, 390]) {
+    const ctx = await b.newContext({ viewport: { width, height: 900 } })
+    await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+    const errors = []
+    await ctx.route('**/*', async route => {
+      const req = route.request(); const u = new URL(req.url()); const p = u.pathname
+      if (u.origin !== base) return route.abort()
+      if (!p.startsWith('/api/')) return route.continue()
+      const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (p === '/api/settings/profile') return json({ business_name: 'Bright Smile', sells: 'Online booking for dental practices', website: '', buyer: { ...buyer, research: undefined }, new_play_offer: null })
+      if (p === '/api/settings/memory') return json({ memory: { icp: '', positioning: 'Booking that fits the front desk', tone: 'Plain and friendly', exclusions: ['corporate chains'], objections: [{ q: 'We already have a phone system', a: 'It works alongside it' }] } })
+      if (p === '/api/settings/competitors') return json({ competitors: ['Zocdoc', 'NexHealth'] })
+      return json({}, 404)
+    })
+    const page = await ctx.newPage()
+    page.on('pageerror', e => errors.push(String(e)))
+    await page.goto(base + '/app/business', { waitUntil: 'networkidle' })
+    await page.getByRole('heading', { name: 'Your business', level: 1 }).waitFor({ timeout: 20000 })
+    const txt = await page.locator('main, body').first().innerText()
+    assert.equal(await page.getByText(/^from your site:/).count(), 0, `${width}: no item is "from your site" for an account with no site read`)
+    assert.match(txt, /has not read your website yet/, `${width}: says plainly that the website was not read`)
+    assert.doesNotMatch(txt, /Items from your website link to the page/, `${width}: no link claim without a site source`)
+    const comp = await page.getByTestId('section-competitors').textContent()
+    assert.match(comp, /Zocdoc/); assert.match(comp, /NexHealth/); assert.match(comp, /saved in Competitors/)
+    assert.doesNotMatch(comp, /dazl did not find this/, `${width}: a section with rows is not "empty"`)
+    assert.match(await page.getByTestId('section-voice').textContent(), /Plain and friendly[\s\S]*saved in Memory/)
+    assert.match(await page.getByTestId('section-objections').textContent(), /We already have a phone system[\s\S]*It works alongside it/)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${width}: no horizontal scroll`)
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `business-no-site-${width}.png`), fullPage: true })
+    // Settings: both links exist and scroll to a real element
+    await page.goto(base + '/app/settings', { waitUntil: 'networkidle' })
+    const nav = page.getByRole('navigation', { name: 'Settings sections' })
+    await nav.waitFor({ timeout: 20000 })
+    for (const [label, id] of [['Memory', 'memory'], ['Competitors', 'competitors']]) {
+      const link = nav.getByRole('link', { name: label, exact: true })
+      assert.equal(await link.getAttribute('href'), `#${id}`, `${width}: the ${label} link`)
+      await link.click()
+      assert.ok(await page.locator(`#${id}`).first().isVisible(), `${width}: #${id} is on the page and visible after the click`)
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${width}: Settings has no horizontal scroll`)
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `settings-${width}.png`), fullPage: false })
+    assert.deepEqual(errors, [], `${width}: no page errors`)
+    out.push(`${width}: no-site account: no site claim, Competitors / Memory rows with their source; Settings links Memory and Competitors`)
+    await ctx.close()
+  }
   {
     const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
