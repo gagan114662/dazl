@@ -80,8 +80,6 @@ async function monitorRun(db: Db, mon: string, at: number, leads: L[]): Promise<
   return db.all<{ kind: string; company: string; event_key: string }>(
     'SELECT a.kind, a.company, a.event_key FROM monitor_alerts a JOIN monitor_runs r ON r.id = a.run_id WHERE r.job_id = ? ORDER BY a.company, a.kind', [jobs[0]])
 }
-const allAlerts = (db: Db) => db.all<{ kind: string; event_key: string }>("SELECT kind, event_key FROM monitor_alerts WHERE user_id = ? ORDER BY at, event_key", [A])
-const events = (db: Db) => db.all<{ event_key: string }>("SELECT event_key FROM monitor_events WHERE user_id = ? ORDER BY event_key", [A])
 
 
 const HIRING_LABELS = ['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence']
