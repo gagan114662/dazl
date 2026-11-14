@@ -142,7 +142,7 @@ export async function kickQueueRunner(
     // pre-#594 data (the old reaper reset to pending regardless of reservations); binding it would re-run paid calls
     // while the old call may have been billed. Any-attempt, matching the reaper's NOT IN partition.
     const lease = claim.leaseExpiresAt - (claim.item.claimedAt ?? claim.leaseExpiresAt)
-    { const nowS = Math.floor(Date.now() / 1000); db.prepare(SETTLE_FREE_ORPHANS_BIND_SQL).run(nowS, claim.item.id, claim.item.tenantId, nowS - lease) } // #1157: a free (US$0) call left reserved is not 'maybe billed'
+    { const nowS = Math.floor(Date.now() / 1000); db.prepare(SETTLE_FREE_ORPHANS_BIND_SQL).run(nowS, claim.item.tenantId, claim.item.id, claim.item.id, claim.item.tenantId, nowS - lease) } // #1157: a free (US$0) call left reserved is not 'maybe billed'
     const ch = db.prepare(
       `UPDATE scan_jobs SET status='running', attempts = attempts + 1,
          claimed_at = CAST(strftime('%s','now') AS INTEGER)

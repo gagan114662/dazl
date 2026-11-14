@@ -1,10 +1,16 @@
-// #1157: a scan whose attempt is gone (a restart, a crash, an expired lease) while a FREE TinyFish call (priced US$0 inside its free
-// allowance) is still 'reserved' used to end 'failed accounting_uncertain' ("a paid step may already have been billed") and
-// discard everything it found: Hermes's Bangalore matrix scan sat 'running' for 20 minutes and then failed that way. Nothing
-// billable was in flight, so the orphaned row is settled at $0 and the scan is treated as any interrupted one. Reproduced on
-// real data first (a real Bangalore scan killed while a US$0 tinyfish.fetch was reserved). A PRICED reserved call, and any
-// other kind of call, still end the scan closed: that is the double-bill guard and it is unchanged.
-// Both engines for the Db-layer reapers; SQLite for the synchronous store, the queue runner and the shutdown handoff.
+// #1157. The staging scan the issue was filed for (job 3e7778a5, Bangalore, 2026-11-13) died 3 seconds into a PRICED model call
+// (llm.anthropic, US$0.0847 reserved, never settled) when a staging deploy sent SIGTERM; every TinyFish call of that scan had already
+// settled (Hermes's review of this PR, from the staging rows and the box journal). It sat 'running' for the 20-minute lease and then
+// failed accounting_uncertain. Two changes are tested here:
+//   1. a deploy's graceful hand-back records the model call this process abandons as 'kept' (charged at its reserved worst case) and
+//      gives the scan back to pending, so it runs again instead of failing with its results lost. A crash (no hand-back) keeps the
+//      fail-closed rule, and so does a priced non-model call in flight;
+//   2. a FREE TinyFish call (priced US$0) a lost attempt left reserved is settled at $0 and the scan is treated as any interrupted
+//      one, in every reaper, the queue bind and the hand-back. This is NOT what happened to the staging scan; it is a separate
+//      case I found by killing a real Bangalore scan while a US$0 TinyFish call was reserved (my repro waited for a non-model call).
+// A priced non-model reserved call, a free call flagged maybe billed (a 402), and an earlier attempt's model call still end the scan
+// closed: that is the double-bill guard (#363 / #594) and it is unchanged.
+// Both engines for the Db-layer reapers; SQLite for the synchronous store, the queue runner and the shutdown handoff; pg-mem for the Postgres read path.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
@@ -85,14 +91,26 @@ test('sync reaper, queue runner bind and shutdown handoff (SQLite): a free reser
 
   // 2. the graceful-shutdown handoff (a restart/deploy): THE restart case. A free call in flight no longer ends the scan.
   const h = mk(); const now = Math.floor(Date.now() / 1000)
-  job(h, 'free', now); call(h, 'free', FREE_FETCH); job(h, 'paid', now); call(h, 'paid', MODEL)
-  const jobs = ['free', 'paid'].map(id => ({ id, user_id: A, attempts: 1 }) as never)
+  job(h, 'free', now); call(h, 'free', FREE_FETCH); job(h, 'paid', now); call(h, 'paid', PRICED_TF)
+  job(h, 'model', now); call(h, 'model', MODEL); call(h, 'model', FREE_FETCH)          // the staging scan of #1157: a model call in flight when the deploy stopped the process
+  job(h, 'both', now); call(h, 'both', MODEL); call(h, 'both', FREE_OTHER)             // a model call AND a priced non-model call: the scan stays closed
+  h.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('old-c', ?, 'old', 1, 'llm.anthropic', 0.05, 'reserved', ?)").run(A, T0)
+  h.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts, claimed_at, created_at) VALUES ('old', ?, 'Biz', 'manufacturing', 'Bangalore', 'running', 2, ?, ?)").run(A, now, T0) // attempt 2 is this process's; the reserved model call is attempt 1's (a dead earlier attempt): still closed
+  const jobs = [['free', 1], ['paid', 1], ['model', 1], ['both', 1], ['old', 2]].map(([id, attempts]) => ({ id, user_id: A, attempts }) as never)
   const untracks = jobs.map(j => trackInFlight(j))
   requeueInFlightForShutdown(h)
   untracks.forEach(u => u())
   assert.deepEqual(st(h, 'free'), { status: 'pending', error: null }, 'restart with a free call in flight: the scan goes back to pending and is claimed again at once')
   assert.deepEqual(rows(h, 'free'), [{ status: 'settled', actual_usd: 0, reason: 'interrupted_free' }])
-  assert.deepEqual(st(h, 'paid'), { status: 'failed', error: 'accounting_uncertain' }, 'a priced call in flight still ends it closed')
+  assert.deepEqual(st(h, 'paid'), { status: 'failed', error: 'accounting_uncertain' }, 'a priced non-model call in flight still ends it closed')
+  assert.deepEqual(st(h, 'model'), { status: 'pending', error: null }, 'a deploy during a MODEL call: the scan goes back to pending, it is not failed accounting_uncertain')
+  assert.deepEqual(h.prepare("SELECT kind, status, actual_usd, reason FROM scan_spend_calls WHERE scan_job_id = 'model' ORDER BY kind").all(), [
+    { kind: 'llm.anthropic', status: 'kept', actual_usd: null, reason: 'interrupted_kept' },   // charged at its reserved worst case, like an in-process settle with an unknown cost
+    { kind: 'tinyfish.fetch', status: 'settled', actual_usd: 0, reason: 'interrupted_free' },
+  ])
+  assert.deepEqual(st(h, 'both'), { status: 'failed', error: 'accounting_uncertain' }, 'a priced non-model call beside the model call keeps the scan closed')
+  assert.deepEqual(st(h, 'old'), { status: 'failed', error: 'accounting_uncertain' }, "an EARLIER attempt's reserved model call is not this process's to keep: still closed")
+  assert.equal((h.prepare("SELECT status FROM scan_spend_calls WHERE id = 'old-c'").get() as { status: string }).status, 'reserved')
 })
 
 test('#1157 the default stale-scan window is one paid call plus a margin (about 3 minutes), not 20; the env override still works and never goes below the floor', () => {
@@ -257,4 +275,21 @@ test('#1157 Postgres read path: a PENDING scan holding a free reserved call (par
   await pgLeadsRead(pool as never).getJob('u1', 'p')
   assert.deepEqual((await pool.query("SELECT status, error FROM scan_jobs WHERE id = 'p'")).rows[0], { status: 'pending', error: null })
   assert.deepEqual((await pool.query("SELECT status, reason FROM scan_spend_calls WHERE id = 'c-p'")).rows[0], { status: 'settled', reason: 'interrupted_free' })
+})
+
+
+// ---- Hermes review at 9f4e2b58 ---------------------------------------------------------------------------------------------
+import * as O from '../lib/scan/free-orphans.ts'
+test('#1157 no orphan statement scans scan_spend_calls: each is driven by its (user_id, scan_job_id) index, and the stale scans by the status index', () => {
+  const db = new Database(':memory:'); migrateScan(db)
+  const plan = (sql: string) => (db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...Array.from({ length: (sql.match(/\?/g) ?? []).length }, () => 1)) as { detail: string }[]).map(r => r.detail).join(' | ')
+  for (const [name, sql] of Object.entries({ stale: O.SETTLE_FREE_ORPHANS_STALE_SQL, bind: O.SETTLE_FREE_ORPHANS_BIND_SQL, job: O.SETTLE_FREE_ORPHANS_JOB_SQL, keep: O.KEEP_MODEL_CALLS_JOB_SQL })) {
+    const p = plan(sql)
+    assert.doesNotMatch(p, /SCAN scan_spend_calls/, `${name}: ${p}`)
+    assert.match(p, /SEARCH scan_spend_calls USING INDEX scan_spend_calls_job \(user_id=\? AND scan_job_id=\?\)/, `${name}: ${p}`)
+  }
+  const stale = plan(O.STALE_SCANS_SQL)
+  assert.doesNotMatch(stale, /SCAN scan_jobs/, stale); assert.match(stale, /USING INDEX scan_jobs_status/, stale)
+  // not vacuous: the form this replaced IS a table scan
+  assert.match(plan("UPDATE scan_spend_calls SET status = 'settled' WHERE status = 'reserved' AND scan_job_id IN (SELECT id FROM scan_jobs WHERE status = 'running' AND claimed_at < ?)"), /SCAN scan_spend_calls/)
 })

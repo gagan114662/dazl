@@ -3,7 +3,7 @@ import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
 import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
 import { APOLLO_TIMEOUT_MS } from '../enrich/apollo.ts'
-import { SETTLE_FREE_ORPHANS_STALE_SQL } from './free-orphans.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL, STALE_SCANS_SQL } from './free-orphans.ts'
 import { PDL_TIMEOUT_MS } from '../enrich/pdl.ts'
 import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
 import { migrateSellerDecisions } from './intelligence-schema.ts'
@@ -300,7 +300,8 @@ import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 export const STAGING_CHECK_DEAD_S = 180
 export const REAP_STAGING_CHECKS_SQL = "UPDATE scan_jobs SET status = 'failed', error = 'staging_check_interrupted', finished_at = ? WHERE status = 'running' AND business_name = 'dazl real-company Find work email check (staging test)' AND industry = 'staging check' AND location = 'staging check' AND claimed_at IS NULL AND created_at < ?"
 export function reapStaleRunningJobs(db: Database.Database): void {
-  { const n = Math.floor(Date.now() / 1000); db.prepare(SETTLE_FREE_ORPHANS_STALE_SQL).run(n, n - STALE_RUNNING_S) } // #1157: a free (US$0) call left reserved is not 'maybe billed'
+  // #1157: a free (US$0) call left reserved is not 'maybe billed'. Stale scans via scan_jobs' status index, then each scan's rows by (user_id, scan_job_id).
+  { const n = Math.floor(Date.now() / 1000), cut = n - STALE_RUNNING_S; for (const j of db.prepare(STALE_SCANS_SQL).all(cut) as { id: string; user_id: string }[]) db.prepare(SETTLE_FREE_ORPHANS_STALE_SQL).run(n, j.user_id, j.id, j.id, j.user_id, cut) }
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
     `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,

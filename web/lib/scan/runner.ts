@@ -8,7 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
-import { SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
+import { KEEP_MODEL_CALLS_JOB_SQL, SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
@@ -2160,7 +2160,11 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
     try {
       n += db.transaction((): number => {
         const now = Math.floor(Date.now() / 1000)
-        db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.id, job.attempts) // #1157: this attempt's free (US$0) call left reserved is not 'maybe billed'
+        // #1157 (lib/scan/free-orphans.ts): this attempt's free (US$0) call is settled at $0, and the MODEL call this process is abandoning
+        // right now is recorded 'kept' (charged at its reserved worst case), so the scan goes back to pending and runs again on the next
+        // process instead of ending accounting_uncertain with everything it found lost (the staging scan #1157 was filed for).
+        db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
+        db.prepare(KEEP_MODEL_CALLS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
         const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
