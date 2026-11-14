@@ -73,6 +73,16 @@ try {
     for (const e of errs) console.log(`     ${e}`)
     for (const e of errs) failures.push(`${c.path}: ${e}`)
   }
+  // #1116: the pages a native post is redirected to, rendered by the server with NO script: "Check your email", and an error
+  // in the scripted form's words. (This harness sends no mail, so the posts above land in the app; these are what a
+  // deployment with mail delivery shows.) An unknown code shows no message.
+  for (const [q, want, not] of [['?sent=1', /Check your email/, /Create your account/], ['?error=password', /Use a password of 10 to 200 characters/, /Check your email/], ['?error=%3Cscript%3E', /Create your account/, /script>/]]) {
+    await page.goto(base + '/sign-up' + q, { waitUntil: 'domcontentloaded' })
+    const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ')
+    const ok = want.test(text) && !not.test(text)
+    console.log(`${ok ? 'ok  ' : 'FAIL'} JS disabled /sign-up${q}: "${text.slice(0, 70)}"`)
+    if (!ok) failures.push(`/sign-up${q} without script does not show the outcome`)
+  }
   // #1116, the incident's own shape: JavaScript is ON but the page's script files do not load (a stale or mixed build), so the
   // form is never hydrated. At desktop and phone width the visitor still gets an account and "Check your email".
   for (const width of [1280, 390]) {
@@ -110,13 +120,12 @@ try {
     if (!ok) failures.push('the hydrated sign-up form no longer posts JSON and finishes')
     await c3.close()
   }
-  // No account mutation: the seeded user is still the only row.
   const Database = require('better-sqlite3')
   const db = new Database(srv.dbPath, { readonly: true })
   const n = db.prepare('SELECT COUNT(*) AS c FROM users').get().c
+  const made = db.prepare('SELECT COUNT(*) AS c FROM users WHERE email = ?').get(FIX.email).c
   db.close()
   // the seeded user plus the one account the script-less sign-up made; the sign-in submit changed nothing
-  const made = require('better-sqlite3')(srv.dbPath, { readonly: true }).prepare('SELECT COUNT(*) AS c FROM users WHERE email = ?').get(FIX.email).c
   if (n !== 5 || made !== 1) failures.push(`expected the seeded user plus four sign-ups (no script, scripts failed at 2 widths, hydrated), one per address (${n} rows, ${made} for the no-script address)`)
   console.log(`${n === 5 && made === 1 ? 'ok  ' : 'FAIL'} each sign-up made exactly one account (${n} users)`)
 } finally {

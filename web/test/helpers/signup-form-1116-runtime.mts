@@ -45,9 +45,9 @@ test('#1116 native post errors come back as a code, never the values; nothing is
   }
   assert.equal(users(), before, 'no account from a refused post')
   // the page's words for each code; an unknown or hostile code says nothing
-  assert.equal(signUpFormError('email'), 'Enter a valid email address'); assert.match(signUpFormError('password'), /10 or more characters/)
+  assert.equal(signUpFormError('email'), 'Enter a valid email address'); assert.match(signUpFormError('password'), /10 to 200 characters/); assert.match(signUpFormError('origin'), /could not verify/)
   assert.equal(signUpFormError('<script>'), ''); assert.equal(signUpFormError(['email']), ''); assert.equal(signUpFormError('constructor'), ''); assert.equal(signUpFormError(undefined), '')
-  assert.deepEqual(Object.keys(SIGN_UP_FORM_ERRORS).sort(), ['email', 'exists', 'failed', 'password', 'rate', 'unavailable'])
+  assert.deepEqual(Object.keys(SIGN_UP_FORM_ERRORS).sort(), ['email', 'exists', 'failed', 'origin', 'password', 'rate', 'unavailable'])
 })
 
 test('#1116 a cross-site or Origin-less form post is refused and creates nothing (login CSRF stays closed, #1095)', async () => {
@@ -55,7 +55,7 @@ test('#1116 a cross-site or Origin-less form post is refused and creates nothing
   for (const headers of [{ origin: 'https://evil.example' }, { origin: 'null' }, { origin: '' }]) {
     const fields = { ...FIELDS, email: `x${ip}@fixture-1116.test` }
     const res = await signup.POST(formReq(fields, headers))
-    assert.equal(res.status, 303); assert.equal(res.headers.get('location'), '/sign-up?error=failed')
+    assert.equal(res.status, 303); assert.equal(res.headers.get('location'), '/sign-up?error=origin')
     assert.equal(res.headers.get('set-cookie'), null, 'no session cookie')
   }
   assert.equal(users(), before)

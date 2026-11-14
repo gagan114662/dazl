@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   // in a URL.
   const form = (req.headers.get('content-type') || '').includes('application/x-www-form-urlencoded')
   // #1095: no cross-site sign-up that signs this browser in (login CSRF; see app/api/auth/signin/route.ts)
-  if (form ? !sameOriginForm(req) : !sameOriginJson(req)) return form ? signUpFormRedirect(req, 'failed') : NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  if (form ? !sameOriginForm(req) : !sameOriginJson(req)) return form ? signUpFormRedirect(req, 'origin') : NextResponse.json({ error: 'Bad request' }, { status: 400 })
   // one place decides the shape of every answer below
   const fail = (code: SignUpFormCode, json: Record<string, unknown>, status: number, headers?: Record<string, string>) =>
     form ? signUpFormRedirect(req, code) : NextResponse.json(json, { status, ...(headers ? { headers } : {}) })
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
     // #416: a preview claim this browser is carrying from a Google attempt (the httpOnly intent cookie, which the page
     // cannot read) is resumed after a password sign-in too. Only an enum goes back; the claim route re-verifies the token.
     const resume = isClaimToken(req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value) ? { resume: 'preview' as const } : {}
-    if (form) return signUpFormRedirect(req, 'signed_in')   // the session cookie is set above; the app opens
+    if (form) return signUpFormRedirect(req, 'resume' in resume ? 'signed_in_claim' : 'signed_in')   // the session cookie is set above; the app (or the carried preview claim) opens
     return NextResponse.json({ ok: true, redirect: '/app', ...resume })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST', requestId: requestIdOf(req) })
