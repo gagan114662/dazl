@@ -365,17 +365,16 @@ for d in "$RELS"/*; do [ -L "$d" ] && { rm -f "$d"; continue; }; [ -d "$d" ] && 
 [ -d "$ROOT/repo/.git" ] || as git clone -q --no-checkout "$REPO_URL" "$ROOT/repo"
 as git -C "$ROOT/repo" fetch -q origin main
 new=$(as git -C "$ROOT/repo" rev-parse origin/main)
+# A deploy killed between its commit point and the worker's start left the worker stopped, with this script's stamp still
+# there. No recovery point is pending here (step 0 finished any), and the live release is a committed one, so an enabled
+# worker that is not running is started now, whether or not there is anything new to deploy; a real deploy then stops it
+# again by name like any other. Without the stamp the worker was stopped by someone else, and stays stopped.
+if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
 cur=$(cat "$STATE/current-sha" 2>/dev/null || true)
 # Upgrading from a deploy that kept current-sha in STAGING_ROOT: the old file is the service account's and is not read; the
 # validated, complete live release names the deployed commit instead.
 if [ -z "$cur" ]; then l=$(live_release); [ -n "$l" ] && [ -e "$l/.complete" ] && cur=$(basename "$l"); fi
-# Nothing to deploy. A deploy killed between its commit point and the worker's start left the worker stopped, with this
-# script's stamp still there: no recovery point is pending here (step 0 finished any), so the worker is started now.
-# Without the stamp the worker was stopped by someone else, and stays stopped.
-if [ "$new" = "$cur" ]; then
-  if [ -e "$(worker_stamp)" ] && [ ! -e "$pending" ] && worker_installed && ! $SYSTEMCTL is-active --quiet "$WORKER"; then start_worker; fi
-  exit 0
-fi
+[ "$new" != "$cur" ] || exit 0
 
 # the live release: only when `current` is a symlink (readlink -f of a missing path returns the path itself)
 live=$(live_release)
