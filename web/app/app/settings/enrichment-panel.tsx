@@ -9,8 +9,9 @@ const SLOTS = [
   { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search can use your PDL credits per profile returned. Your plan determines available credits and billing, and the cost on your account is not verified.' },
 ]
 
+type MailboxChecks = { state: string; verifier: string | null; day: { used: number; cap: number; remaining: number }; month: { used: number; cap: number; remaining: number; scope: string }; note: string }
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
+  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; mailbox_checks?: MailboxChecks | null; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState('')
   const [limits, setLimits] = useState<Record<string, string>>({})
@@ -103,6 +104,16 @@ export default function EnrichmentPanel() {
               <span>{a.status}{a.results ? ` · ${a.results}` : ''}</span>
             </div>
           ))}
+        </div>
+      )}
+      {data.mailbox_checks && (
+        <div className="mt-4 text-xs text-[#555]" data-testid="mailbox-checks" data-state={data.mailbox_checks.state}>
+          <div className="font-medium text-[#111]">Mailbox checks{data.mailbox_checks.verifier ? ` (${data.mailbox_checks.verifier.includes('staging-fake') ? 'STAGING TEST verifier, not a real check' : data.mailbox_checks.verifier})` : ''}</div>
+          <p>{data.mailbox_checks.note}</p>
+          <p data-testid="mailbox-checks-numbers">
+            Today: {data.mailbox_checks.day.used} used{data.mailbox_checks.day.cap > 0 ? ` of ${data.mailbox_checks.day.cap}, ${data.mailbox_checks.day.remaining} left` : ', no daily limit set'}.
+            {' '}This month: {data.mailbox_checks.month.used} used{data.mailbox_checks.verifier ? ` of ${data.mailbox_checks.month.cap}, ${data.mailbox_checks.month.remaining} left (${data.mailbox_checks.month.scope})` : ''}.
+          </p>
         </div>
       )}
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
