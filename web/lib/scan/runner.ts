@@ -27,7 +27,7 @@ import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn, atsKindOf, profilePlaceText } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf, profilePlaceText, absorbStates } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
@@ -1526,7 +1526,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // only a profile that names exactly ONE place the board source knows: a multi-place profile is never narrowed to its first place
     // #1095: an entry is the place text the board source resolves ("Austin" of a US profile is "Austin, TX"; profilePlaceText), and two entries
     // naming the same place are one place
-    const profilePlaces = job.query && !placeIn(job.query) ? [...new Set((icpForSources?.where ?? []).map(w => typeof w === 'string' ? profilePlaceText(w, icpForSources?.country) : null).filter((x): x is string => !!x))] : []
+    const profilePlaces = job.query && !placeIn(job.query) ? absorbStates([...new Set((icpForSources?.where ?? []).map(w => typeof w === 'string' ? profilePlaceText(w, icpForSources?.country) : null).filter((x): x is string => !!x))]) : []
     const profilePlace = profilePlaces.length === 1 ? profilePlaces[0] : null
     const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))

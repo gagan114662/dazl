@@ -206,6 +206,18 @@ test('#1095 live check: a bare US city of a US profile resolves to its most popu
   assert.equal(placeIn(`${REQUEST} in ${profilePlaceText('Austin', 'US')}`)?.name, 'Austin, TX')
 })
 
+test('#1095 review: a profile naming a city AND its state is one place; "U.S." is a US country; a different state still makes two places', async () => {
+  const { absorbStates } = await import('../lib/sources/jobboards.ts')
+  assert.deepEqual(absorbStates(['Austin, TX', 'Texas']), ['Austin, TX'])
+  assert.deepEqual(absorbStates(['Austin, TX', 'Florida']), ['Austin, TX', 'Florida'], 'another state is another place')
+  assert.deepEqual(absorbStates(['Texas']), ['Texas'])
+  assert.equal(profilePlaceText('Austin', 'U.S.'), 'Austin, TX'); assert.equal(profilePlaceText('Austin', ' usa '), 'Austin, TX')
+  const { http, seen } = boards()
+  const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Texas'] }
+  await runFixture(f)
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'where ["Austin","Texas"] runs the board source for Austin, TX')
+})
+
 test('#1095 live check: two profile entries naming the same place are one place; two different places still name none', async () => {
   const { http, seen } = boards()
   const same = fx(http); same.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Austin, TX'] }

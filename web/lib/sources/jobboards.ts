@@ -143,9 +143,13 @@ export function bareUsCity(name: string): { city: string; abbr: string } | null 
 // a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
 export function profilePlaceText(where: string, country?: string | null): string | null {
   const direct = placeIn(`in ${where}`); if (direct) return direct.name
-  if (!/^(?:us|usa|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
+  if (!/^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
   const b = bareUsCity(where); if (!b) return null
   return placeIn(`in ${b.city}, ${b.abbr}`)?.name ?? null
+}
+// A profile listing a city AND its state ("Austin", "Texas") names one place: the state entry is absorbed by the city entry of that state.
+export function absorbStates(places: string[]): string[] {
+  return places.filter(p => { const abbr = Object.keys(STATES).find(a => STATES[a] === p); return !(abbr && places.some(q => q !== p && q.endsWith(`, ${abbr}`))) })
 }
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
