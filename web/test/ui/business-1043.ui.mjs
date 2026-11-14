@@ -91,6 +91,8 @@ try {
     assert.deepEqual(save?.body?.buyer?.who, ['Practice owner', 'Office manager'])
     assert.deepEqual(save?.body?.buyer?.research, research, 'the stored research is kept')
     // 4. a play opens Leads with the search filled in and starts nothing
+    assert.match(await page.getByTestId('play-label').first().textContent(), /fills in the search on Leads, starts nothing/, 'the play says what it does')
+    assert.match(await page.locator('main, body').first().innerText(), /has not read your website yet/, 'the page says no site read exists')
     const play = page.getByTestId('play').first()
     const q = (await play.textContent()).trim()
     const before = posts.length
