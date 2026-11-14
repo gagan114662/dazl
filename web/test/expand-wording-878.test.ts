@@ -1,6 +1,7 @@
 // #878 (matrix chicago-law, 2026-11-14): a dated, proven press release stayed "targeting not proven" because the request's clause "expanded a
 // practice group" was only read from the literal verb "expand". The quotes below are the real stored quotes of three law-firm releases the matrix
-// cited (company names are the public firms' own; nothing else is kept). Pure proof tests: no network, no model, no provider.
+// cited, as printed in the firms' own public releases (the firms' and the named lawyers' names are in those releases). Pure proof tests: no network, no
+// model, no provider.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { compileTargeting, evaluatePlan, planConditions } from '../lib/scan/targeting.ts'
@@ -22,7 +23,8 @@ test('the plan: C2 is an expand event with no named object, on a 90-day clock', 
   assert.deepEqual([open.event, open.object, expand.event, expand.object || '', expand.within_days], ['open', 'office', 'expand', '', 90])
 })
 
-test('real releases that word an expansion without the verb pass the expand clause, dated on the lead\'s own day', () => {
+// Armstrong Teasdale and Benesch need the growth reader; the McGuireWoods quote says "the expansion of", which the literal reader already accepts.
+test('the three real releases pass the expand clause, dated on the lead\'s own day', () => {
   for (const [co, q] of [['Armstrong Teasdale', ARMSTRONG], ['McGuireWoods', MCGUIRE], ['Benesch', BENESCH]] as const) {
     const p = conditionProof(expand, lead(co, q), [], ctx)
     assert.equal(p.truth, 'pass', q)
@@ -72,4 +74,65 @@ test('an expand clause that names an object still needs the literal reader', () 
   const c = planConditions(p.root).map(x => x.cond).find(x => x.event === 'expand')!
   assert.ok(c.object, 'the request names where')
   assert.equal(conditionProof(c, lead('Armstrong Teasdale', ARMSTRONG), [], ctx).truth, 'unknown')
+})
+
+// ---- council review of #1215 (three reviewers): every string below was run by a reviewer against the first version ----
+const AT = 'Armstrong Teasdale'
+const no = (q: string, why?: string) => assert.equal(truth(AT, q), 'unknown', why ? `${why}: ${q}` : q)
+const yes = (q: string) => assert.equal(truth(AT, q), 'pass', q)
+
+test('the quote as the matrix scan stored it on 2026-11-14 ("National law firm ...") passes; a descriptor before the name is still this company', () => {
+  yes("National law firm Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the addition of Partner Tracy Jacobson and Counsel Jason Faust.")
+  yes('Global law firm Armstrong Teasdale has bolstered its Chicago litigation team with the addition of three partners.')
+  no('A rival of the law firm Armstrong Teasdale grew its team.', 'the subject is the rival')
+})
+
+test('a past or future period, or a year that is not the lead\'s own, never passes: the lead\'s day must be the growth\'s day', () => {
+  for (const q of ['Armstrong Teasdale grew its team last year.', 'Armstrong Teasdale grew its team in Q1 2019.', 'Armstrong Teasdale grew its team during 2019.', 'Armstrong Teasdale grew its team in the 1990s.',
+    'Armstrong Teasdale grew its team over the past decade.', 'Armstrong Teasdale has grown its team over two decades.', 'Armstrong Teasdale has grown its team since its founding.', 'Armstrong Teasdale has grown its bench steadily since inception.',
+    'Armstrong Teasdale is growing its team next year.', 'Armstrong Teasdale is building out its Chicago office, slated to open next spring.', 'Armstrong Teasdale grew its Chicago team in 2025.']) no(q, 'period')
+  yes('Armstrong Teasdale is continuing to grow its Chicago presence with the addition of three partners in 2026.')   // the lead's own year
+})
+
+test('a size reached over time ("has grown its presence to 30 offices") is history, not a dated expansion', () => {
+  for (const q of ['Armstrong Teasdale has grown its presence to 30 offices worldwide.', 'Armstrong Teasdale has grown its team to 40 lawyers.', 'Armstrong Teasdale has grown its team to more than 500 lawyers.', 'Armstrong Teasdale has grown its Chicago team from 10 to 25 lawyers.']) no(q, 'size')
+})
+
+test('the unit must be the head of the phrase and the company\'s own business unit', () => {
+  for (const q of ["Armstrong Teasdale grew its team's morale.", 'Armstrong Teasdale strengthened its team culture.', "Armstrong Teasdale added to its team's page a new bio.", 'Armstrong Teasdale added to its operations manual.',
+    'Armstrong Teasdale has grown its presence on LinkedIn.', 'Armstrong Teasdale bolstered its presence on social media.', 'Armstrong Teasdale strengthened its online presence.', 'Armstrong Teasdale strengthened its office security.',
+    'Armstrong Teasdale strengthened its relationship with the Chicago office of Beta.', 'Armstrong Teasdale strengthened its relationship with the Chicago office.', 'Armstrong Teasdale deepened its partnership with Beta Corp practice group.',
+    'Armstrong Teasdale strengthened its client relationships across practice groups.', 'Armstrong Teasdale grew its digital footprint.']) no(q, 'not its own unit')
+})
+
+test('an abbreviation\'s period or a middle initial does not hide a guard word in the next clause', () => {
+  for (const q of ['Armstrong Teasdale grew its team in the U.S. in 2019.', 'Armstrong Teasdale has grown its presence in St. Louis since 2001.', 'Armstrong Teasdale grew its team, Mr. Smith said.', 'Armstrong Teasdale strengthened its team after Smith Jr. resigned.',
+    'Armstrong Teasdale grew its Chicago team with the addition of Andrew M. Barrios, who left Beta LLP.']) no(q, 'abbreviation')
+  yes('Armstrong Teasdale grew its team in the U.S. with the addition of partner Andrew M. Barrios.')
+  yes('Armstrong Teasdale has grown its presence in St. Louis with three partners.')
+})
+
+test('hearsay, intent and conditions anywhere in the sentence', () => {
+  for (const q of ['Armstrong Teasdale grew its team, Bloomberg reported.', 'Armstrong Teasdale grew its team, sources told Reuters.', 'Armstrong Teasdale has grown its Chicago team, said managing partner Jane Doe.',
+    'Armstrong Teasdale has grown its team, if the filing is accurate.', 'Armstrong Teasdale has grown its Chicago team, which may not last.']) no(q, 'hearsay / condition')
+  // a person called May or Will is not a modal verb
+  yes('Armstrong Teasdale has grown its Chicago practice, with May Lee joining as partner.')
+  yes('Armstrong Teasdale is growing its Chicago team: Will Jones joins as partner.')
+})
+
+test('the joiner must be a hire of THIS firm, now', () => {
+  yes('Armstrong Teasdale announced that Jane Doe has joined the firm as a partner in its growing Corporate Services Group in Chicago.')
+  yes('Today, Armstrong Teasdale announced that Jane Doe has joined Armstrong Teasdale as counsel in its expanding Chicago litigation practice.')   // the firm named, "Today," first
+  for (const q of ['Armstrong Teasdale announced that Beta Corp has joined the firm as a client of its growing healthcare practice.', 'Armstrong Teasdale announced that John Smith has joined the firm as of 2015 in its growing practice.', 'Armstrong Teasdale announced that Beta Corp has joined the firm as a client in its growing healthcare practice.',
+    'Armstrong Teasdale announced that John has joined the firm as counsel from Beta LLP in its growing practice group.', 'Armstrong Teasdale announced that John Smith has joined the firm as a partner in its growing list of clients.']) no(q, 'joiner')
+})
+
+test('wording the comment claims: every growth verb in its completed and in-progress forms; "Departments" is not a departure', () => {
+  for (const q of ['Armstrong Teasdale is continuing to bolster its Chicago litigation team.', 'Armstrong Teasdale is continuing to strengthen its Chicago office.', 'Armstrong Teasdale has been building out its Chicago team.',
+    'Armstrong Teasdale broadened its Corporate Services Group with two partners.', 'Armstrong Teasdale has deepened its Chicago bench.', 'Armstrong Teasdale added to its Chicago team with the hire of two associates.',
+    'Armstrong Teasdale has grown its Tax Departments team in Chicago.', 'Armstrong Teasdale also grows its Chicago team with two partners.', 'Armstrong Teasdale has been growing its Chicago group.']) yes(q)
+})
+
+test('an expand clause on a lead with no proven day never passes through the growth reader', () => {
+  assert.equal(truth(AT, 'Armstrong Teasdale has grown its Chicago litigation team.', null), 'unknown')
 })
