@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
@@ -14,13 +14,20 @@ export interface WorkEmailTarget { key: string; name: string; title: string | nu
 // Keyed by lead: another lead's rows are never merged into this one's.
 // lazy (#1036, the review lane): no request when the block mounts. A page can show many review rows; each would otherwise read
 // the same providers and its own lookups on load. The first click reads what it needs (a stored result is replayed by the POST, free).
-export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
+// initial (#1182): what the page read once with the lead list (providers + this lead's stored lookups). With it the block renders the stored
+// result at once (an address found earlier, an unfinished lookup's warning, "Check mailbox", the exact cost line) and makes NO request on mount;
+// the per-lead read stays only for a click and for following a lookup another tab has in flight.
+export interface WorkEmailInitial { providers: Providers | null; lookups: unknown }
+export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
   return <WorkEmailFor key={p.leadId} {...p} />
 }
 
-function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
-  const [lookups, setLookups] = useState<Record<string, Lookup>>({})
-  const [providers, setProviders] = useState<Providers | null>(null)
+function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
+  const [ownLookups, setLookups] = useState<Record<string, Lookup>>({})
+  const [ownProviders, setProviders] = useState<Providers | null>(null)
+  // What the page's list read said (#1182) merged with what this panel learned since (mergeLookups never erases a newer result): derived, not copied into state.
+  const lookups = useMemo(() => initial ? mergeLookups(ownLookups, initial.lookups) : ownLookups, [ownLookups, initial])
+  const providers = ownProviders ?? initial?.providers ?? null
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
@@ -37,11 +44,12 @@ function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: Work
     }).catch(() => { /* the button still works; the cost line just stays generic */ })
   }, [leadId])
 
+  const hasInitial = initial !== undefined
   useEffect(() => {
     mounted.current = true
-    if (!lazy) load()
+    if (!lazy && !hasInitial) load()
     return () => { mounted.current = false }
-  }, [load, lazy])
+  }, [load, lazy, hasInitial])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
   const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])

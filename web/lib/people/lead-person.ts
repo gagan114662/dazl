@@ -53,7 +53,7 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
     const people = contactsFromEnrichments(clean(rows), icp, Number.isFinite(nowMs) ? nowMs : Date.now(), site)
     const ordered = [...people.filter(p => p.currency === 'verified_current'), ...people.filter(p => p.currency !== 'verified_current')]
     for (const p of ordered) {
-      if (p.historical) continue
+      if (p.historical || p.nameOnly) continue // a name-only search match may be another business with the same name: never the lead's person
       const name = tidy(p.name), title = tidy(p.title ?? '')
       if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) continue // a full name, never a bare first name or a handle
       if (!title || title.length > 120 || roleContradicted(title, icp)) continue
