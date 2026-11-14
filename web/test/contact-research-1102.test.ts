@@ -77,8 +77,8 @@ test('#1102 nothing from the model\'s memory: a name, title, quote, source or pr
     ['a title the source does not give', person('Jane Roe', 'Chief Executive Officer', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'title_not_in_source'],
     ['a source id that was never shown', person('Jane Roe', 'Owner', 'S99', 'Jane Roe - Owner - Brightloop Dental'), 'source_not_shown'],
     ['a first name only', person('Jane', 'Owner', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'not_a_full_name'],
-    ['a same-name company elsewhere', person('Sam Lee', 'Owner', 'S2', 'Sam Lee - Owner - Brightloop Dental Supplies'), 'profile_of_another_employer'],
-    ['a longer-named company in a news line', person('Kim Park', 'Owner', 'S5', 'Kim Park, Owner of Brightloop Dental Supplies'), 'source_does_not_name_company'],
+    ['a same-name company elsewhere', person('Sam Lee', 'Owner', 'S2', 'Sam Lee - Owner - Brightloop Dental Supplies'), 'title_at_another_organisation'],
+    ['a longer-named company in a news line', person('Kim Park', 'Owner', 'S5', 'Kim Park, Owner of Brightloop Dental Supplies'), 'title_at_another_organisation'],
     ['a past role', person('Pat Old', 'Former Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'past_role'],
     ['a past role hidden in the quote ("Former" sits between the name and the title)', person('Pat Old', 'Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'title_not_next_to_name'],
     ['not a buyer role', person('Hy Gene', 'Dental Hygienist', 'S4', 'Hy Gene - Dental Hygienist - Brightloop Dental'), 'not_a_buyer_role'],
@@ -176,7 +176,7 @@ test('#1102 grounding: a title that is another person\'s, a longer name, a past 
     ['"Owner" inside "Homeowners"', SRC('Team', 'Homeowners love Jane Roe, hygienist at Brightloop Dental.' + D), person('Jane Roe', 'Owner', 'S1', 'Homeowners love Jane Roe, hygienist'), 'title_not_in_source'],
     ['a name that is the start of a longer name', SRC('Team', 'Joann Smith, Owner of Brightloop Dental.' + D), person('Ann Smith', 'Owner', 'S1', 'ann Smith, Owner of Brightloop Dental'), 'name_not_in_source'],
     ['"Former" dropped from the quote', SRC('News', 'Former owner Jane Roe sold Brightloop Dental in Toronto last year.' + D), person('Jane Roe', 'owner', 'S1', 'owner Jane Roe sold Brightloop Dental'), 'past_role'],
-    ['another company\'s CEO in the same sentence', SRC('News', 'Brightloop Dental was acquired by Globex Health in Toronto; Globex CEO Jane Roe said more deals follow.' + D), person('Jane Roe', 'CEO', 'S1', 'CEO Jane Roe said'), 'source_does_not_name_company'],
+    ['another company\'s CEO in the same sentence', SRC('News', 'Brightloop Dental was acquired by Globex Health in Toronto; Globex CEO Jane Roe said more deals follow.' + D), person('Jane Roe', 'CEO', 'S1', 'CEO Jane Roe said'), 'title_at_another_organisation'],
     ['a department head is not a decision-maker', SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), 'not_a_buyer_role'],
     ['a vice president is not the president', SRC('Team', 'Jane Roe, Vice President at Brightloop Dental.' + D), person('Jane Roe', 'Vice President', 'S1', 'Jane Roe, Vice President at Brightloop Dental'), 'not_a_buyer_role'],
   ]
@@ -216,6 +216,14 @@ test('#1102 grounding round 2: testimonials, non-decision-maker titles, another 
   const cases: [string, ReturnType<typeof SRC>, unknown, string, ResearchInput?][] = [
     ['a testimonial on the company\'s own site', SRC('Reviews', '"Best dentist in town!" - Mark Stone, Owner of Stone Bakery', OWN), person('Mark Stone', 'Owner', 'S1', 'Mark Stone, Owner of Stone Bakery'), 'title_at_another_organisation'],
     ['a case study on the company\'s own site', SRC('Blog', 'We worked with CEO Sam Park of Globex on the rollout.', 'https://brightloopdental.example/blog/case'), person('Sam Park', 'CEO', 'S1', 'CEO Sam Park of Globex'), 'title_at_another_organisation'],
+    ['a testimonial: org after a comma', SRC('Reviews', 'Best dentist! - Mark Stone, Owner, Stone Bakery', OWN), person('Mark Stone', 'Owner', 'S1', 'Mark Stone, Owner'), 'title_at_another_organisation'],
+    ['a testimonial: org after a dash', SRC('Reviews', 'Best dentist! - Mark Stone, Owner - Stone Bakery', OWN), person('Mark Stone', 'Owner', 'S1', 'Mark Stone, Owner'), 'title_at_another_organisation'],
+    ['a testimonial: org in brackets', SRC('Reviews', 'Best dentist! (Mark Stone, Owner, Stone Bakery)', OWN), person('Mark Stone', 'Owner', 'S1', 'Mark Stone, Owner'), 'title_at_another_organisation'],
+    ['a pipe-separated headline of another company', SRC('Reviews', 'Mark Stone | CEO | Globex Inc', OWN), person('Mark Stone', 'CEO', 'S1', 'Mark Stone | CEO'), 'title_at_another_organisation'],
+    ['the org before the title', SRC('Reviews', 'Stone Bakery owner Mark Stone says they are great.', OWN), person('Mark Stone', 'owner', 'S1', 'owner Mark Stone'), 'title_at_another_organisation'],
+    ['off-site: a patient who owns a bakery', SRC('News', 'Brightloop Dental patient Mark Stone, owner, Stone Bakery, praised it.' + D), person('Mark Stone', 'owner', 'S1', 'Mark Stone, owner'), 'title_at_another_organisation'],
+    ['off-site: a sponsor', SRC('News', 'Brightloop Dental sponsor CEO Sam Park, Globex, spoke.' + D), person('Sam Park', 'CEO', 'S1', 'CEO Sam Park'), 'title_at_another_organisation'],
+    ['she retired in the next sentence', SRC('News', 'Jane Roe, Owner of Brightloop Dental. She retired in 2019.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
     ['a principal engineer', SRC('Team', 'Ann Ruiz, Principal Engineer at Brightloop Dental.' + D), person('Ann Ruiz', 'Principal Engineer', 'S1', 'Ann Ruiz, Principal Engineer at Brightloop Dental'), 'not_a_buyer_role'],
     ['a product owner', SRC('Team', 'Ann Ruiz, Product Owner at Brightloop Dental.' + D), person('Ann Ruiz', 'Product Owner', 'S1', 'Ann Ruiz, Product Owner at Brightloop Dental'), 'not_a_buyer_role'],
     ['a chief of staff', SRC('Team', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental.' + D), person('Ann Ruiz', 'Chief of Staff to the CEO', 'S1', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental'), 'not_a_buyer_role'],
@@ -231,6 +239,20 @@ test('#1102 grounding round 2: testimonials, non-decision-maker titles, another 
   for (const [what, hit, answer, why, input] of cases) {
     const r = await ground(hit, answer, input ?? { ...INPUT, where: [] }); assert.equal(r.status, 'not_grounded', `${what}: ${JSON.stringify(r.person)}`); assert.equal(r.refused, why, what); assert.equal(r.person, null, what)
   }
+  // A longer business whose name merely STARTS with ours, on the company's own site too (council probe).
+  { const r = await ground(SRC('Team', 'Mark Stone, Owner of Stonebridge Capital', 'https://stone.example/team'), person('Mark Stone', 'Owner', 'S1', 'Mark Stone, Owner of Stonebridge Capital'), { company: 'Stone', domain: 'stone.example', roles: [], where: [] }); assert.equal(r.refused, 'title_at_another_organisation') }
+  { const r = await ground(SRC('Team', 'Jane Roe, Owner of Brightloop Dental Supplies.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental Supplies')); assert.equal(r.refused, 'title_at_another_organisation') }
+  // ... and the short form of the real company is not refused.
+  { const r = await ground(SRC('Team', 'Jane Roe, Owner of Brightloop.', 'https://brightloopdental.example/team'), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop'), { ...INPUT, company: 'Brightloop Dental Group', where: [] }); assert.equal(r.status, 'found', JSON.stringify(r)) }
+  // A role the scan asked for is accepted as written, even when it contains a word the top-role rule excludes.
+  { const r = await ground(SRC('Team', 'Jane Roe, Head of Operations at Brightloop Dental.' + D), person('Jane Roe', 'Head of Operations', 'S1', 'Jane Roe, Head of Operations at Brightloop Dental'), { ...INPUT, roles: ['Head of Operations'], where: [] }); assert.equal(r.status, 'found', JSON.stringify(r)) }
+  { const r = await ground(SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), { ...INPUT, roles: ['Director of Marketing'], where: [] }); assert.equal(r.status, 'found', JSON.stringify(r)) }
+  // ... and the right readings of the same shapes are kept (own site: the company named after the title; a degree after the title).
+  for (const [hit, answer] of [
+    [SRC('Team', 'Jane Roe, Owner, Brightloop Dental', OWN), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner')],
+    [SRC('Team', 'Jane Roe, Owner, DDS', OWN), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner')],
+    [SRC('Team', 'Brightloop Dental owner Jane Roe welcomes you.', OWN), person('Jane Roe', 'owner', 'S1', 'owner Jane Roe')],
+  ] as const) { const r = await ground(hit, answer, { ...INPUT, where: [] }); assert.equal(r.status, 'found', JSON.stringify(r)) }
   // The right reading of the same shapes is kept.
   for (const [hit, answer] of [
     [SRC('Team', 'Jane Roe, Owner and lead dentist at Brightloop Dental.' + D), person('Jane Roe', 'Owner and lead dentist', 'S1', 'Jane Roe, Owner and lead dentist at Brightloop Dental')],

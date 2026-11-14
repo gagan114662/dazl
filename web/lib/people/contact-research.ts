@@ -140,7 +140,9 @@ const PAST_NEAR = /\b(?:former|formerly|ex|previous|previously|past|retired|outg
 // The title STARTS with a top role ("Owner and lead dentist", "Founder & CEO"), and nothing in it makes it another job ("Product Owner",
 // "Principal Engineer", "Chief of Staff to the CEO", "CEO's assistant").
 const TOP_ROLE = /^(?:(?:co-?)?founder|(?:co-?)?owner|ceo|chief executive(?: officer)?|managing (?:director|partner)|president|principal)\b/i
-const NOT_TOP = /\b(?:vice|vp|assistant|associate|deputy|interim|acting|engineer|consultant|designer|developer|architect|analyst|scientist|advisor|adviser|chief of staff|product owner|to the|of marketing|of sales|of operations|of engineering|of finance|of hr)\b|['’]s\b/i
+const NOT_TOP_HARD = /\b(?:vice|vp|assistant|associate|deputy|interim|acting|engineer|consultant|designer|developer|architect|analyst|scientist|advisor|adviser|chief of staff|product owner|to the)\b|['’]s\b/i
+const NOT_TOP_SOFT = /\b(?:of marketing|of sales|of operations|of engineering|of finance|of hr)\b/i   // a department head: only when the scan did not ask for that role
+const NOT_TOP = { test: (t: string) => NOT_TOP_HARD.test(t) || NOT_TOP_SOFT.test(t) }
 // A past-role marker AFTER the quote, up to the end of the sentence ("... until she retired in 2019", "(2008-2019)").
 const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
 
@@ -157,7 +159,7 @@ const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down
 export function groundPerson(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
   const src = sources.find(s => s.id === answer.source)
   if (!src) return { refused: 'source_not_shown' }
-  const text = `${src.title} ${src.text}`
+  const text = `${src.title}. ${src.text}`   // the source title is its own sentence: it is never the first words of the snippet
   const hay = norm(text), quote = norm(answer.quote)
   if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
   if (answer.title.length < 2 || answer.title.length > 80) return { refused: 'title_unusable' }
@@ -176,19 +178,42 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   }
   if (!span) return { refused: 'title_not_next_to_name' }
   const roleText = (input.roles ?? []).join('; ')
+  const names0 = names[0][0], titles0 = titles[0][0]
   // What follows the name-and-title: a possessive ("the owner's assistant"), "of / at <another organisation>" ("founder of Roe Labs", "Owner of Stone
   // Bakery"), and a past marker up to the end of the sentence. Checked on every source, the company's own site included (a testimonial or a case
   // study on its site names other people at other organisations).
   const rawAll = tidy(text)
+  if (rawAll.length !== hay.length) return { refused: 'source_text_unstable' }   // lower-casing changed the length: the offsets cannot be trusted
   const tail = rawAll.slice(at + span[1], at + span[1] + 120)
   if (/^['’]s\b/.test(tail)) return { refused: 'possessive_title' }
-  const org = /^[\s,]*(?:of|at|@|for|with)\s+((?:the\s+)?\p{Lu}[\p{L}&'’.-]*(?:\s+(?:&\s+)?\p{Lu}[\p{L}&'’.-]*){0,3})/u.exec(tail)?.[1]
-  if (org && !companyKey(org.replace(/^the\s+/i, '')).startsWith(companyKey(input.company))) return { refused: 'title_at_another_organisation' }
+  // Another organisation named next to the person, by ANY wording: after the title ("Owner of X", "Owner, X", "Owner - X", "(Owner, X)", "CEO | X")
+  // or, when the title comes first, right before it ("X owner Mark Stone"). Only THIS company (or its short form) may stand there.
+  const ORG = String.raw`((?:the\s+)?\p{Lu}[\p{L}&'’-]*(?:\s+(?:&\s+)?\p{Lu}[\p{L}&'’-]*){0,3})`
+  const SUFFIX_OK = /^(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty|dds|dmd|md|mba|cpa|phd|esq)\.?$/i
+  const thisCompany = (org: string): boolean => {
+    const ow = org.replace(/^the\s+/i, '').split(/\s+/).map(w => companyKey(w)).filter(Boolean), cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    if (ow.length === 0) return true
+    const prefix = (a: string[], b2: string[]) => a.length <= b2.length && a.every((w, i) => w === b2[i])
+    if (prefix(ow, cw)) return true                                             // the company or a whole-word start of it ("Brightloop" for "Brightloop Dental Group")
+    return prefix(cw, ow) && ow.slice(cw.length).every(w => SUFFIX_OK.test(w))  // the company plus a legal suffix only ("Stonebridge Capital" is not "Stone")
+  }
+  const afterOrg = new RegExp(`^(?:[\\s,]*(?:of|at|@|for|with)\\s+|\\s*[,\\-–—|(]\\s*)${ORG}`, 'u').exec(tail)?.[1]
+  if (afterOrg && !thisCompany(afterOrg) && !(afterOrg.split(/\s+/).length === 1 && SUFFIX_OK.test(afterOrg))) return { refused: 'title_at_another_organisation' }
+  if (titles0 < names0) { // the title comes first: "Stone Bakery owner Mark Stone"
+    const head = rawAll.slice(Math.max(0, at + span[0] - 60), at + span[0])
+    const lastWord = /([\p{L}][\p{L}'’-]*)\s+$/u.exec(head)?.[1] ?? ''
+    const SKIP = /^(?:Former|Formerly|Previous|Current|New|Late|Our|The|Meet|Welcome|Dr|Mr|Ms|Mrs|And|With|By|Says|Said|Thanks|Thank)$/
+    const beforeOrg = SKIP.test(lastWord) ? undefined : new RegExp(`${ORG}\\s+$`, 'u').exec(head)?.[1]
+    if (beforeOrg && !thisCompany(beforeOrg)) return { refused: 'title_at_another_organisation' }
+  }
   const rest = tail.split(/[.!?]\s/)[0]
   if (PAST_AFTER.test(rest)) return { refused: 'past_role' }
+  // "Jane Roe, Owner. She retired in 2019.": a pronoun in the next sentence that says she / he left.
+  if (/^[^.!?]*[.!?]\s+(?:she|he|they)\b[^.!?]*\b(?:retired|left|resigned|stepped down|sold)\b/i.test(tail)) return { refused: 'past_role' }
   // Past: in the title, in the quote, or in the words right before the quote in the source ("Former owner Jane Roe" quoted from "owner").
   if (roleContradicted(answer.title, roleText) || PAST_NEAR.test(quote) || PAST_NEAR.test(hay.slice(Math.max(0, at - 30), at))) return { refused: 'past_role' }
-  if (NOT_TOP.test(answer.title) || !(titleMatches(answer.title, roleText).length > 0 || TOP_ROLE.test(answer.title))) return { refused: 'not_a_buyer_role' }
+  // A role the scan asked for passes as written; otherwise only a decision-maker title by itself (not a vice-president, an engineer, ...).
+  if (NOT_TOP_HARD.test(answer.title) || !(titleMatches(answer.title, roleText).length > 0 || (TOP_ROLE.test(answer.title) && !NOT_TOP.test(answer.title)))) return { refused: 'not_a_buyer_role' }
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const onOwnSite = !!domain && (hostOf(src.url) === domain || hostOf(src.url).endsWith(`.${domain}`))
   const isProfile = PROFILE.test(src.url.split('?')[0])
