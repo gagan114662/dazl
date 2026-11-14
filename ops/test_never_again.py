@@ -182,6 +182,7 @@ SQLITE_LIB = re.compile(r"""better-sqlite3|node:sqlite|bun:sqlite|^\s*import\s+s
 #             the owner's explicit order (docs/NEVER-AGAIN.md #12)
 WRITABLE_DB_OPENS = {
     'ops/prod/deploy-prod.sh': ('copy', 'the pre-deploy backup: source opened mode=ro, the copy is integrity-checked'),
+    'ops/prod/legacy-v1/deploy-prod.sh': ('copy', 'the v1 deploy backup, kept as the legacy copy: source opened mode=ro, the copy is integrity-checked'),
     'ops/staging/pull-prebuilt.sh': ('copy', 'the pre-deploy backup of the staging database'),
     'ops/backup_preflight.py': ('copy', 'backup and restore rehearsal copies'),
     'ops/staging/recovery_point.py': ('copy', 'staging recovery point: deploy.sh gives it the staging database; restore replaces that file'),
