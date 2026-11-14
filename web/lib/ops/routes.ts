@@ -130,6 +130,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/workspace/members',
   '/api/workspace/switch',
   '/app',
+  '/app/business',
   '/app/campaigns',
   '/app/campaigns/[id]',
   '/app/follow-ups',
