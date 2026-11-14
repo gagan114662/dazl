@@ -706,6 +706,10 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
   const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
   if (failed(news) || failed(tf)) return 'source_error'
+  // The TinyFish search was refused by the platform's own daily allowance (this account's per-day units, or its share of the platform's)
+  // before any request: nothing was searched because the allowance was used up, not because the sources could not conclude. Its own
+  // stop, so the run says the allowance is the reason and that trying again after the UTC day turns over (or with another setting) can search.
+  if (tf === 'skipped_cap') return 'search_allowance_reached'
   // #1037 item 1: a first play where no lead source could run at all (news switched off / not run, TinyFish not run or refused
   // before any request): nothing was searched, so this is not a held fallback. Its own code, so the run says so. Scoped to first
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
@@ -1335,7 +1339,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // #1037 item 1: the capped first-play fallback whose every search answered with zero hits searched clean and found nothing
         // ('empty'). Hits that could not be read or extracted stay 'unavailable' (never concluded).
         const zeroHits = (): boolean => { const t = summarizeTrace(diag.trace); return t.hits_complete === true && t.hits_raw === 0 }
-        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        // Nothing was sent. A refusal by the daily allowance ('cap': this account's units for the UTC day, or its fair share of the platform's)
+        // is 'skipped_cap' - the allowance is the cause. Anything else (the scan's own budget, a breaker) stays 'skipped_hold'.
+        const refusedBeforeSend = (): string => { const na = summarizeTrace(diag.trace).searches_not_attempted; return (na.cap || na.capacity) && !na.spend_refused ? 'skipped_cap' : 'skipped_hold' }
+        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : refusedBeforeSend()) : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
