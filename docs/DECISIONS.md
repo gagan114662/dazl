@@ -3,33 +3,6 @@
 Decisions made by the owner (gagan). Agents read this before changing the behaviour it covers.
 Newest first. A decision changes only when the owner says so.
 
-## 2026-11-13: held leads get a people search inside the existing cap (Refs #1037)
-
-Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner
-decisions yourself, sensibly, and note them in the PR"); reversible by the owner. The post-scan people search (public
-profile search results, `lib/people/people-search.ts`) also covers leads held for review, after every ready lead and
-inside the same cap (5 per scan, 10 on a first play / free-trial scan; no new spend ceiling, the trial's 25% keep
-unchanged). No scan spends a search on a lead graded out of the list (fit 0-1). Not searched, and shown no person
-line: a hold that puts the company itself in doubt (a place that disagrees or is unconfirmed, someone else's customer,
-an owner's self-description, the tenant's own form signal), a lead held when a free scan ran out of budget
-(`trial_budget_reached`: its company may never have been checked), any reason not on the list
-(`lib/people/searchable-holds.ts`), a rejected lead and a row with no company. A person shown
-on a held row carries the same basis label as on a ready card (a search result is "not verified as current"; a dated
-first-party listing is "verified current") and never makes the lead ready or sendable. Why: on real scans most
-candidates are held (the 2026-11-13 matrix: 18 of 18), so "who do I contact" went unanswered on every row the user
-saw. This replaces decision 3 of 2026-11-10 on #1037 only in "one search per ready lead": it is now one per lead that
-names nobody yet, ready leads first.
-
-Added the same day after Hermes-PC's review of PR #1164 (5 of 9 stored search people on staging were at a different
-business with the same name), decided by Hermes (delegated by the owner): **a company name alone never ties a search
-result to a lead, and the only tie is the lead's confirmed website.** A public profile search result is stored only when
-its own text names the lead's crawl-confirmed website (`lib/people/company-tie.ts`); otherwise it is refused and counted.
-A Y Combinator-batch tie and a requested-city tie were built and dropped: free-text patterns kept leaking a same-name
-business on new wordings, and a wrong name is worse than none. Results stored earlier by the name alone stay listed,
-labelled "matched by the company name only - this may be a different business with the same name", and are never the
-lead's person, the export's best person or a work-email target; a card whose only people are such rows says why none is
-shown. This lowers how many leads name a person, on purpose; the grounded lookup of #1102 is the path to naming more.
-
 ## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
 
 Decided by the builder session under the lane's delegation from the owner (Hermes for Gagan, 2026-11-12: "make owner

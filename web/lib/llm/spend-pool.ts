@@ -300,6 +300,15 @@ export function* reservePoolWindows(t: Tx, owner: string, limits: PoolLimits, us
   }
   return true
 }
+// #1167: is either window of this account already at its cap? Read in the caller's transaction. Used for the paid steps that are not
+// counted on the windows themselves (search, fetch, render, enrichment): an account at its day or month cap sends nothing.
+export function* poolWindowsFull(t: Tx, owner: string, limits: PoolLimits, nowS: number): TxBody<boolean> {
+  for (const [w, limit] of windows(limits)) {
+    const r = yield* t.get<{ reserved_usd: number | string }>('SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, periodOf(w, nowS)])
+    if (r && Number(r.reserved_usd) >= limit - EPS) return true
+  }
+  return false
+}
 // Undo a reservePoolWindows that returned true, in the same transaction (the caller's own step refused after it).
 export function* releasePoolWindows(t: Tx, owner: string, limits: PoolLimits, usd: number, atS: number): TxBody<void> {
   if (!(Number.isFinite(usd) && usd > 0)) return
