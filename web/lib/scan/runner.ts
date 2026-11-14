@@ -8,6 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
+import { collectShopifyStores, countriesIn, mentionsShopify, storeLead, storeListQueries } from '../sources/shopify.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
@@ -1026,7 +1027,9 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     const modelQueries = Math.min(6, Math.max(caps ? 1 : 2, budgetN - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
     const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
     if (diag) diag.info.query_source = plan.source
-    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, budgetN)
+    // #763: a request about Shopify stores asks for store LISTS first (lib/sources/shopify.ts reads the stores they link); inside the same budget
+    const storeLists = mentionsShopify(job.query, icp.summary, ...(icp.signals ?? [])) ? storeListQueries(budgetN) : []
+    q = withGeography([...storeLists, ...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, budgetN)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
@@ -1470,6 +1473,25 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0 // #1082
       if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null })
+    }
+    // #763: a request about Shopify stores also reads Shopify's own public store data (lib/sources/shopify.ts): the store domains this
+    // scan's searches surfaced (hit hosts and the links on store-list hits), each store's stated country and its newest product
+    // published inside the request's window. Free, no key, no model call. It runs BEFORE the no-candidates stop below: the searches
+    // for such a request return pages about Shopify and store lists, which name no dated launch, so the search stage alone found
+    // nothing (staging job 6cb4b14f: no_discovery). Its stores are ordinary candidates: the same verifier reads each cited product page.
+    if (!budgetRefused && job.query && icpForSources && !job.sources && mentionsShopify(job.query, icpForSources.summary, ...(icpForSources.signals ?? []))) {
+      const notes: Record<string, number> = {}
+      try {
+        assertOwned(db, job)
+        const shopQuery = countriesIn(job.query).length > 0 ? job.query : `${job.query} ${(icpForSources.where ?? []).join(' ')}`
+        const stores = await collectShopifyStores({ query: shopQuery, discovered: [...diag.hitUrls, ...(leads ?? []).map(l => l.source_url)], http: deps.sourceHttp ?? safeGet, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }, deps.now)
+        const drafts = parseLeads(JSON.stringify(stores.map(storeLead)), stores.map(st => st.productUrl)) ?? []
+        ledger.record('adapter:shopify', drafts.length > 0 ? 'ok' : Object.keys(notes).length > 0 ? 'partial' : 'empty', drafts.length)
+        if (drafts.length > 0) { ledger.candidates('adapter:shopify', drafts); leads = [...(leads ?? []), ...drafts]; partial.candidates = leads }
+      } catch (e) {
+        if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+        ledger.record('adapter:shopify', 'error') // this source failing only means no extra candidates
+      }
     }
     if (!leads) {
       // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
