@@ -170,7 +170,7 @@ test('#899 runner: the check is the LAST post-finish step, traced as email_verif
     const t0 = new EnrichmentTrace()
     await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false } as never, t0)
     const s0 = JSON.stringify(t0)
-    assert.match(s0, /email_verify/); assert.match(s0, /no ZEROBOUNCE_API_KEY/)
+    assert.match(s0, /email_verify/); assert.match(s0, /no mailbox verifier/); assert.match(s0, /ZEROBOUNCE_API_KEY/); assert.match(s0, /SMTP_VERIFY_ENABLED/)
     process.env.ZEROBOUNCE_API_KEY = 'k'
     let calls = 0
     const t1 = new EnrichmentTrace()

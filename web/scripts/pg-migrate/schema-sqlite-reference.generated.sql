@@ -948,6 +948,14 @@ CREATE TABLE sessions (
       expires_at INTEGER NOT NULL
     , active_tenant_id TEXT, public_id TEXT, last_seen_at INTEGER, device TEXT, revoked_at INTEGER, revoked_by TEXT, revoke_reason TEXT, authed_at INTEGER);
 
+CREATE TABLE smtp_verify_state (
+    k TEXT PRIMARY KEY CHECK (length(k) <= 300),
+    n INTEGER NOT NULL DEFAULT 0,
+    hold_until INTEGER NOT NULL DEFAULT 0,
+    v TEXT CHECK (v IS NULL OR length(v) <= 500),
+    updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+  );
+
 CREATE TABLE source_reviews (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, lead_id TEXT NOT NULL,
  input_json TEXT NOT NULL, fetch_status TEXT NOT NULL, quote_match INTEGER NOT NULL,

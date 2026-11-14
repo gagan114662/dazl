@@ -14,6 +14,8 @@ import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
 import { isStaging } from '../staging.ts'
+import { isSmtpVerifier, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE } from './smtp-verify.ts'
+import { stagingSmtpEnv } from './smtp-staging-fake.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -161,6 +163,41 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
   }
   return paired
 }
+// Addresses whose own shape shows the format: "shannon.spees@" printed with no name near it is still a first.last address. Two or
+// more DISTINCT dotted locals (letters.letters, each part 2+ letters, not a known person's) on one site are read as first.last; a
+// single one proves nothing (it may be the firm's own name, "whitley.penn@"). The pattern they support is capped at 'medium'.
+export function shapeOwners(locals: string[], known: Name[] = []): Name[] {
+  const knownLocals = new Set(known.flatMap(k => FORMATS.map(f => localFor(f, k))))
+  const dotted = [...new Set(locals)].filter(l => /^[a-z]{2,}\.[a-z]{2,}$/.test(l) && !knownLocals.has(l) && !ROLE.test(l.replace('.', '')))
+  if (dotted.length < 2) return []
+  return dotted.map(l => { const [first, last] = l.split('.'); return { first, last } })
+}
+// The people an address is printed with, for learning the site's address FORMAT (never for attributing an address to a buyer).
+// For each printed address: the first person-shaped name in its own attribute / text node, else in the text around it, whose name
+// reproduces the local part under a format that uses BOTH names ('first.last', 'flast', ...). A one-name local ('maya@') proves
+// no format, so it is never used here. Known people are skipped (they are already in the pattern's people).
+const TWO_NAME_FORMATS = FORMATS.filter(f => f !== 'first' && f !== 'last')
+export function contextOwners(seen: { address: string; ctx?: AddressContext[] }[], known: Name[] = []): Name[] {
+  const out = new Map<string, Name>()
+  const knownKeys = new Set(known.map(k => `${k.first} ${k.last}`))
+  for (const s of seen) {
+    const local = s.address.split('@')[0]
+    let owner: Name | null = null
+    for (const c of s.ctx ?? []) {
+      for (const text of [c.tight, c.wide]) {
+        const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '')
+        for (const m of raw.matchAll(/(?=(?<![A-Za-z-])([A-Z][a-z'’]+)(?: [A-Z]\.?)? ([A-Z][A-Za-z'’-]+)(?![A-Za-z]))/g)) {
+          const n = { first: ascii(m[1]), last: ascii(m[2]) }
+          if (n.first.length >= 2 && n.last.length >= 2 && TWO_NAME_FORMATS.some(f => localFor(f, n) === local)) { owner = n; break }
+        }
+        if (owner) break
+      }
+      if (owner) break
+    }
+    if (owner && !knownKeys.has(`${owner.first} ${owner.last}`)) out.set(`${owner.first} ${owner.last}`, owner)
+  }
+  return [...out.values()]
+}
 export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
@@ -227,11 +264,22 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 // ---- part 3: mailbox verification ----
 export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 export type Verification = typeof VERIFICATIONS[number]
-export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string }
+// noCall: the answer was reached WITHOUT any request leaving this server (a cached answer, a DNS-only answer, a stop or a backoff already
+// in force): the verifier's own allowance is given back, and an 'unknown' one leaves the address unchecked (releaseVerifySlot).
+export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string; noCall?: boolean }
 // A provider adapter. Tests inject a fake. Production: ZeroBounce's free tier when ZEROBOUNCE_API_KEY is set, else none (today's
 // behaviour: candidates stay 'guessed', unverified).
-export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
-export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): MailboxVerifier | null {
+// blockedNow (optional, synchronous, no network): why NO check can run right now (port 25 shut, the sending address blocklisted), or null.
+// Asked BEFORE a slot is reserved, so a check that cannot run costs nothing.
+export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer>; blockedNow?(): string | null }
+// #1036 dazl's own SMTP mailbox check comes first when it is switched on and fully configured (smtp-verify.ts); it needs the database
+// for its per-domain cache, rate counters and breaker, so a caller without one cannot get it and falls back to the free-tier provider.
+export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch, db?: Database.Database): MailboxVerifier | null {
+  // TEST-ONLY: staging's fake SMTP server (smtp-verify.ts stagingSmtpEnv), never outside DAZL_ENV=staging. It runs the REAL verifier
+  // (cache, rate limit, backoff, catch-all probe) against scripted answers, so the labels can be seen on staging without port 25.
+  if (db && isStaging(env) && env.DAZL_STAGING_FAKE_SMTP === '1') return smtpMailboxVerifier(db, { helo: 'staging.dazl.test', mailFrom: 'verify@notify.dazl.ai', egressIp: '192.0.2.1', port: 25, connectMs: 1000, commandMs: 1000 }, stagingSmtpEnv(), SMTP_STAGING_FAKE)
+  const smtp = db ? smtpConfigFromEnv(env) : null
+  if (db && smtp) return smtpMailboxVerifier(db, smtp)
   // TEST-ONLY: staging's fake verifier (lib/people/zerobounce.ts zeroBounceStagingFetch), never outside DAZL_ENV=staging.
   if (isStaging(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1') return zeroBounceVerifier('staging-fake', zeroBounceStagingFetch, ZEROBOUNCE_STAGING_FAKE)
   const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
@@ -241,6 +289,8 @@ export function verifierFromEnv(env: Record<string, string | undefined> = proces
 // not a tenant's (a second deployment on the same key counts separately; the provider's own refusal stops it).
 // Default and ceiling: the provider's free allowance (ZeroBounce 100). EMAIL_VERIFY_MONTHLY_CAP can only lower it; anything that is
 // not a plain non-negative integer is 0 (no check). Never raised past the free tier: no setting buys checks (#899 decision).
+// The cap that applies to ONE verifier: dazl's own SMTP check has its own (smtp-verify.ts smtpMonthlyCap), a provider's is its free allowance.
+export const verifierMonthlyCap = (env: Record<string, string | undefined>, verifier: string): number => isSmtpVerifier(verifier) ? smtpMonthlyCap(env) : verifyMonthlyCap(env)
 export function verifyMonthlyCap(env: Record<string, string | undefined> = process.env): number {
   const raw = env.EMAIL_VERIFY_MONTHLY_CAP
   if (raw === undefined || raw.trim() === '') return ZEROBOUNCE_FREE_MONTHLY
@@ -264,12 +314,14 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   if (!verifier) return { ...run, skipped: 'no verifier configured' }
   const cap = verifyDailyCap(env)
   if (cap === 0) return { ...run, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
-  const monthCap = verifyMonthlyCap(env)
-  if (monthCap === 0) return { ...run, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
+  const monthCap = verifierMonthlyCap(env, verifier.name)
+  if (monthCap === 0) return { ...run, skipped: isSmtpVerifier(verifier.name) ? 'SMTP_VERIFY_MONTHLY_CAP is 0' : 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
   migrateEmailGuess(db)
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
+  const blocked = rows.length ? verifier.blockedNow?.() ?? null : null
+  if (blocked) { run.stopped = blocked.slice(0, 160); return run } // nothing reserved, nothing marked: the addresses stay unchecked
   for (const { address } of rows) {
     if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
     // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.
@@ -283,12 +335,20 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
     }
     let v: Verification = 'uncertain'
     let stop: string | null = null
-    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
+    let noCall = false
+    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain'; noCall = a?.noCall === true } catch (e) { v = 'uncertain'; noCall = (e as { noCall?: boolean })?.noCall === true; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
     // Cut off by our own deadline mid-call: no answer, so the address goes back to unchecked (a later run may check it). Its slot
     // stays counted in both caps (the request may have reached the provider): an over-count, never an under-count.
     if (v === 'uncertain' && !stop && opts.signal?.aborted) {
       db.prepare("UPDATE email_candidates SET verification = 'none' WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(tenantId, leadId, address)
       run.aborted = true; break
+    }
+    if (noCall) {
+      releaseVerifySlot(db, vname, nowS)
+      if (v === 'uncertain') { // no request was made and nothing was learned: unchecked again, and it no longer counts against the tenant's day
+        db.prepare("UPDATE email_candidates SET verification = 'none', checked_at = NULL WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(tenantId, leadId, address)
+        continue
+      }
     }
     db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
     run.checked++
@@ -307,6 +367,11 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
 export class VerifySlotRefused extends Error {
   readonly reason: 'cap' | 'lost'
   constructor(reason: 'cap' | 'lost') { super(`mailbox check refused: ${reason}`); this.reason = reason }
+}
+// Gives one monthly allowance back (a check that never left this server): never below zero.
+export function releaseVerifySlot(db: Database.Database, vname: string, nowS: number): void {
+  const monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
+  db.prepare('UPDATE email_verify_usage SET n = n - 1 WHERE verifier = ? AND month = ? AND n > 0').run(vname.slice(0, 40), monthKey)
 }
 export async function reserveVerifySlot(db: Database.Database, s: { tenantId: string; verifier: string; nowS: number; dailyCap: number; monthCap: number }, mark: () => boolean): Promise<void> {
   const dayStart = s.nowS - (s.nowS % 86_400), monthKey = new Date(s.nowS * 1000).toISOString().slice(0, 7), vname = s.verifier.slice(0, 40)
@@ -427,7 +492,13 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
   const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
   const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
-  const pattern = rankPattern(locals, allNames)
+  const ctxOwners = contextOwners(seen, allNames)
+  const shaped = shapeOwners(seen.map(s2 => s2.address.split('@')[0]), [...allNames, ...ctxOwners])
+  let pattern = rankPattern([...new Set([...locals, ...seen.map(s2 => s2.address.split('@')[0])])], [...allNames, ...ctxOwners, ...shaped])
+  // A format that leans on the SHAPE of an address (no name printed with it) for ANY of its supporters is never 'high': medium at most.
+  // 'high' is what the mailbox check probes, so every supporter of a 'high' format must be a person named on the site or beside the address.
+  const namedOwner = (p2: Name) => [...allNames, ...ctxOwners].some(x => x.first === p2.first && x.last === p2.last)
+  if (pattern && pattern.confidence === 'high' && pattern.supporters.some(p2 => !namedOwner(p2) && shaped.some(x => x.first === p2.first && x.last === p2.last))) pattern = { ...pattern, confidence: 'medium', score: 60 }
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
@@ -443,6 +514,13 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(tenantId, leadId, site, pattern.format, pattern.support, pattern.confidence, pattern.score, pattern.runnerUp, JSON.stringify(evidence))
   const hasPub = new Set(published.map(x => nameKey(x.name)))
+  // One generation of guesses per site (review 4b3b9025 #2). The crawl records guesses twice - after the main read and again after the
+  // evidence pages - and a later read can change the format or its confidence. UNCHECKED guesses on this site made under another
+  // format are removed, and the ones kept take the pattern's confidence, so the mailbox check (which probes 'high' only) can never
+  // be left probing the format the completed read decided against. Checked rows keep their history.
+  const onSite = `%@${site.toLowerCase()}`
+  db.prepare("DELETE FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND lower(address) LIKE ? AND format <> ?").run(tenantId, leadId, onSite, pattern.format)
+  db.prepare("UPDATE email_candidates SET confidence = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND lower(address) LIKE ? AND format = ?").run(pattern.confidence, tenantId, leadId, onSite, pattern.format)
   // Distinct people per guessed local part: a local two different people would both get is nobody's guess.
   const guessOwners = new Map<string, Set<string>>()
   for (const x of names) {

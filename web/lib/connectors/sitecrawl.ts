@@ -381,6 +381,25 @@ export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
+// #1036 part (a): own-site pages that commonly print a person's own address without being a contact page: press releases ("Media
+// contact: ..."), careers ("send your CV to ..."), privacy / legal notices (a named officer), blog and author pages. Linked pages
+// first (the site's own navigation), then the usual paths. Never a page contactPaths already reads; never a file or a query URL.
+export const EVIDENCE_PAGES = 4
+export const EVIDENCE_BUDGET_MS = 20_000 // the evidence read's own wall-clock budget per site (never above the crawl budget)
+// Env-overridable like the crawl budget (SITECRAWL_EVIDENCE_BUDGET_MS); an invalid or non-positive value is the default, never a disable.
+const evidenceBudgetMs = (): number => { const n = Number(process.env.SITECRAWL_EVIDENCE_BUDGET_MS); return Number.isFinite(n) && n > 0 ? n : EVIDENCE_BUDGET_MS }
+const EVIDENCE_HINT = /(press|news|media|newsroom|careers?|jobs|join-us|privacy|legal|imprint|impressum|datenschutz|blog|authors?|insights|investors?)/i
+export function evidencePaths(homeHtml: string, home: URL): string[] {
+  const skip = new Set(contactPaths(homeHtml, home))
+  const set = new Set<string>()
+  for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
+    let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
+    if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
+    if (EVIDENCE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|jpeg|png|gif|svg|zip|xml)$/i.test(u.pathname) && !u.search && !skip.has(u.pathname)) set.add(u.pathname)
+  }
+  for (const p of ['/press', '/news', '/careers', '/privacy', '/blog']) if (!skip.has(p)) set.add(p)
+  return [...set].slice(0, 10)
+}
 export function contactPaths(homeHtml: string, home: URL): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
@@ -410,7 +429,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted'; later?: () => Promise<void> }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -487,6 +506,40 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       onPage?.(r.body, r.finalUrl, r.status)
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
+    // #1036 own email finder, part (a): more public evidence of the address format. Up to EVIDENCE_PAGES further own-site pages
+    // (press / news, careers, privacy / legal, blog and author pages) are read ONLY for the addresses printed on them (onPage): no
+    // contact, person or technology is taken from them, so nothing else about the crawl's result changes. They are NOT read here:
+    // `later` is handed back and crawlJob runs it after every site's main read, so extra pages never use up the shared post-finish
+    // budget the contacts and people of the remaining sites need. Same robots rule and polite gap; each fetch is bounded.
+    let later: (() => Promise<void>) | undefined
+    if (onPage && stoppedBy !== 'aborted' && stoppedBy !== 'time' && !timeStop && !abortStop) {
+      const paths = evidencePaths(home.body, new URL(home.finalUrl)).filter(p => robots.allows(p)).slice(0, EVIDENCE_PAGES)
+      const gap = Math.max(gapMs, robots.delayMs)
+      // Bounded on its own (review 4b3b9025): crawlSite's deadline is over by the time `later` runs, so the evidence read has its own
+      // wall-clock budget (EVIDENCE_BUDGET_MS, never above the crawl budget) - no fetch starts after it, no gap is waited out past it,
+      // and a fetch gets only the time that is left. It shares the per-host politeness clock (lastHit) with every other crawl in this
+      // process, so two jobs reading the same site still keep the gap between them.
+      if (paths.length) later = async () => {
+        const until = Date.now() + Math.min(crawlBudgetBound(budgetMs), evidenceBudgetMs())
+        const h = new URL(origin).hostname
+        for (const p of paths) {
+          if (signal?.aborted || Date.now() >= until) return
+          // the slot is taken BEFORE the wait, so two reads of one host queued at the same moment are still a gap apart
+          const at = Math.max(Date.now(), (lastHit.get(h) ?? 0) + gap)
+          if (at >= until) return
+          lastHit.set(h, at)
+          if (at > Date.now() && !(await sleepAbort(at - Date.now(), signal))) return
+          const left = until - Date.now()
+          if (left <= 0) return
+          const bound = AbortSignal.timeout(Math.max(1, Math.min(TIMEOUT_MS, left)))
+          let r: Awaited<ReturnType<Get>> = null
+          try { r = await get(origin + p, { signal: signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, bound]) : bound }) } catch { r = null }
+          if (signal?.aborted || Date.now() > until) return // an answer that arrived after the budget is not used
+          if (!r || r.status >= 400) continue
+          onPage(r.body, r.finalUrl, r.status)
+        }
+      }
+    }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
     if (social) {
@@ -506,7 +559,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, ...(later ? { later } : {}), tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -689,6 +742,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // identity check. Site-level outcomes (robots, unreachable) are the same for every lead and are reused as they are.
     type Crawled = Awaited<ReturnType<typeof crawlSite>>
     const siteRead = new Map<string, Crawled>()
+    const laterReads: { leadId: string; site: string; r: Crawled }[] = [] // part (a): evidence pages are read after every site's main read
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const localsBySite = new Map<string, Set<string>>()
     const seenBySite = new Map<string, Map<string, { address: string; url: string; ctx?: AddressContext[] }>>() // email finder: printed addresses + page
@@ -799,6 +853,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
+      if (r.later && (r.reason === 'ok' || r.reason === 'none_published')) laterReads.push({ leadId: l.id, site, r })
       if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
@@ -828,6 +883,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         addEnrichment(db, tenantId, l.id, e); n++
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
+    }
+    // Part (a), after every site's main read: the evidence pages (each once per site), then the guesses are recorded again with the
+    // addresses they printed. Stops at the caller's deadline; whatever was read by then is kept, and the main result is untouched.
+    const ran = new Set<Crawled>()
+    for (const j of laterReads) {
+      if (deps.signal?.aborted) break
+      if (!ran.has(j.r)) { ran.add(j.r); try { await j.r.later?.() } catch { /* never affects the crawl */ } }
+      try { recordEmailGuesses(db, tenantId, j.leadId, j.site, [...(localsBySite.get(j.site) ?? [])], j.r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: j.r.homeText, where, seen: [...(seenBySite.get(j.site)?.values() ?? [])] }) } catch { /* never affects the crawl */ }
     }
   } catch (e) {
     console.error('sitecrawl failed', jobId, e instanceof Error ? e.message : 'error')
