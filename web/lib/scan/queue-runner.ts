@@ -113,6 +113,7 @@ export function queueTenants(env: Record<string, string | undefined> = process.e
 // re-claimed while the legacy reaper still considers it fresh (or vice versa)
 // and can double-run provider calls. Do not configure them apart.
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
+import { SETTLE_FREE_ORPHANS_BIND_SQL } from './free-orphans.ts'
 const QUEUE_LEASE_S = staleRunningSeconds()
 // One queue-mode kick: claim via SqliteQueue, bind the domain row in the same
 // transaction, run the executor, map the domain outcome back by token.
@@ -141,6 +142,7 @@ export async function kickQueueRunner(
     // pre-#594 data (the old reaper reset to pending regardless of reservations); binding it would re-run paid calls
     // while the old call may have been billed. Any-attempt, matching the reaper's NOT IN partition.
     const lease = claim.leaseExpiresAt - (claim.item.claimedAt ?? claim.leaseExpiresAt)
+    { const nowS = Math.floor(Date.now() / 1000); db.prepare(SETTLE_FREE_ORPHANS_BIND_SQL).run(nowS, claim.item.id, claim.item.tenantId, nowS - lease) } // #1157: a free (US$0) call left reserved is not 'maybe billed'
     const ch = db.prepare(
       `UPDATE scan_jobs SET status='running', attempts = attempts + 1,
          claimed_at = CAST(strftime('%s','now') AS INTEGER)

@@ -59,7 +59,9 @@ export async function parkPendingReservedJobs(db: Db): Promise<void> {
 // attempt's reserved (sent, unsettled, possibly billed) call ends the job closed - an unsettled call of a dead EARLIER
 // attempt is exactly the maybe-billed case (attempt correlation would re-queue it to be billed twice).
 import { settleReapedTrial } from '../billing/trial-reap.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL } from './free-orphans.ts'
 export async function reapStaleRunningJobs(db: Db, now = nowS()): Promise<number> {
+  await db.run(SETTLE_FREE_ORPHANS_STALE_SQL, [now, now - STALE_RUNNING_S]) // #1157: a free (US$0) call left reserved is not 'maybe billed'
   const changes = (await db.run(
     `UPDATE scan_jobs SET status = CASE WHEN ${RESERVED_CALL} OR attempts >= ? THEN 'failed' ELSE 'pending' END,
        error = CASE WHEN ${RESERVED_CALL} THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
