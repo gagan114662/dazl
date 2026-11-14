@@ -91,6 +91,17 @@ export async function tinyfishTotals(db: DbLike, now: number, env: Env = process
   const sum = (k: string) => Number(rows.find(r => r.kind === k)?.n ?? 0)
   return { search: { used: sum('search'), cap: L.globalSearchDaily }, fetch: { used: sum('fetch'), cap: L.globalFetchDaily } }
 }
+// #1157: what is left of THIS account's web search allowance today (search calls + fetched URLs, TINYFISH_TENANT_DAILY), and
+// whether it is low: under SEARCH_ALLOWANCE_LOW units, which is about one scan at the per-scan caps. Read-only; shown on the
+// price estimate BEFORE the person confirms a run, so a run that would be refused by the allowance is not started blind.
+export const SEARCH_ALLOWANCE_LOW = 25
+export async function tenantAllowanceLeft(db: DbLike, tenant: string, now: number, env: Env = process.env): Promise<{ left: number; daily: number; low: boolean } | null> {
+  if (!tinyfishEnabled(env)) return null
+  const L = limits(env)
+  const r = await asDb(db).get<{ n: number }>('SELECT COALESCE(SUM(n),0) AS n FROM tinyfish_usage WHERE day = ? AND tenant_id = ?', [dayOf(now), tenant])
+  const left = Math.max(0, L.tenantDaily - Number(r?.n ?? 0))
+  return { left, daily: L.tenantDaily, low: left < SEARCH_ALLOWANCE_LOW }
+}
 // The operator's view (app/api/internal/tinyfish-today): the totals plus the largest TINYFISH_TOP_TENANTS (10) tenants'
 // units today, largest first, and how many tenants are active - all bounded in SQL. Counts only: no tenant ids.
 export const TINYFISH_TOP_TENANTS = 10
