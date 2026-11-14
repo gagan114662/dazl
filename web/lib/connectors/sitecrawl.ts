@@ -732,6 +732,8 @@ const UNRESOLVED_WORDS: Record<string, string> = {
   search_found_no_candidate: 'a web search for the company returned only listing and social pages',
   search_result_not_confirmed: 'no website from a web search was confirmed as this company in this place',
   time_budget: 'the website check ran out of time before a site could be read',
+  site_not_readable: 'the likely website does not allow automated reading (its robots rules), so it was not read',
+  site_not_read: 'the likely website could not be read',
 }
 export const domainUnresolvedWords = (code: string) => UNRESOLVED_WORDS[code] ?? (code.startsWith('search_') ? 'the web search for the company website could not run' : 'the company website could not be confirmed')
 // The named reason beside the lead (one row, replaced on a re-run): no domain was kept, and why. Never a contact, never a domain row.
@@ -906,6 +908,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // The crawl's own time budget stopping it mid-read is the same class of partial read (#871): the pages actually
       // fetched stay recorded in crawl_pages (facts with their own times), but NO derived domain/tech/contact rows.
       if (r.stoppedBy === 'time') continue
+      // The site answered but its robots rules could not be read, or forbid reading it: nothing is read, no domain is kept, and the lead says so (#1122).
+      if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason.startsWith('robots') ? 'site_not_readable' : 'site_not_read', today, Math.floor((deps.now ?? Date.now()) / 1000))
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
