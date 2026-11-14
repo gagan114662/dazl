@@ -17,16 +17,18 @@ const plain = (s: string): string => squeeze(s.toLowerCase().replace(/\bsales[ -
 const expandSdrBdr = (s: string): string => s.replace(/\bsdrs?\b/g, 'sales development representative').replace(/\bbdrs?\b/g, 'business development representative')
 const normal = (s: string): string => squeeze(expandSdrBdr(base(s)).replace(/\baes?\b/g, 'account executive'))
 // The readings of a posting title: as written, as main read it, and, ONLY when the title itself shows the letters are the sales role,
-// with SDR / BDR spelled out. Both must hold: (1) no trade word in the title (engineer, developer, firmware, radio, ... a list, so a word
-// nobody listed is not caught by this alone), and (2) a positive sales signal: a sales word ("SDR - Outbound", "SDR, Inbound Sales") or
-// the title up to its first separator being the acronym and nothing but seniority / segment / region words ("Senior SDR", "Enterprise
-// SDR", "SDR Team Lead", "BDR - EMEA"). Condition (2) is what keeps "SDR Photonics Lead" or "SDR Kernel Contributor" out although no
-// list names photonics or kernel. Otherwise the letters stay as written ("RF Engineer, SDR", "SDR Firmware Engineer", "Senior SDR/DSP
-// Engineer", "Embedded SDR Developer", "Sales Engineer / SDR"): an abbreviating request ("an SDR") still matches such a title exactly
-// as it did before #879, a request that spells the title out ("sales development representatives", or "SDRs", which main never
-// matched) does not. A title that spells out the other meaning ("Software Defined Radio", "After Effects") loses the letters
-// altogether. A trailing ", <two letters>" is a place code (", AE" for the Emirates), not the role (the price: "Director, AE", which
-// main matched for a request for an AE, no longer does).
+// with SDR / BDR spelled out. Both must hold: (1) no trade word in the title (engineer, developer, firmware, radio, ... a list, so a
+// word nobody listed is not caught by this alone), and (2) a positive signal: a sales word anywhere in the title ("SDR - Outbound",
+// "SDR, Inbound Sales"), or the WHOLE title is the acronym and nothing but seniority / segment / region / entry-level words ("Senior
+// SDR", "Enterprise SDR", "SDR Team Lead", "BDR - EMEA"). Separators do not matter: every word of the title counts, so one dash, comma,
+// en dash or bracket cannot hide a trade (`SDR - Photonics`, `SDR – Waveform Lab`, `SDR, Antenna Lab`, `BDR - Borehole Logging`,
+// `sdr antenna lab` all keep the letters as written). Otherwise the letters stay as written ("RF Engineer, SDR", "SDR Firmware
+// Engineer", "Senior SDR/DSP Engineer", "Embedded SDR Developer", "Sales Engineer / SDR"): an abbreviating request ("an SDR") still
+// matches such a title exactly as it did before #879, a request that spells the title out ("sales development representatives", or
+// "SDRs", which main never matched) does not. Known limit: a sales word beside a trade word nobody listed ("Sales Operations SDR
+// Kernel Contributor") still expands. A title that spells out the other meaning ("Software Defined Radio", "After Effects") loses the
+// letters altogether. A trailing ", <two letters>" is a place code (", AE" for the Emirates), not the role (the price: "Director,
+// AE", which main matched for a request for an AE, no longer does).
 const OTHER_MEANING = /\bsoftware[ -]+defined[ -]+radio\b|\bafter[ -]+effects\b/
 const TRADE = /\b(?:engineer|engineering|developer|firmware|software|hardware|systems|radio|rf|dsp|fpga|embedded|designer|compositor|encryption|technician|architect|programmer|scientist|devops|data)\b/
 // words that mean sales and little else: not account / revenue / growth / pipeline, which are trade vocabulary too ("Pipeline Inspector SDR", "SDR Revenue Accountant")
@@ -34,15 +36,15 @@ const SALES_SIGNAL = /\b(?:sales|business development|outbound|inbound|gtm)\b/
 const MODIFIER = new Set(['senior', 'sr', 'junior', 'jr', 'lead', 'founding', 'principal', 'staff', 'associate', 'manager', 'head', 'i', 'ii', 'iii', 'iv', 'remote', 'enterprise', 'commercial', 'smb', 'mid', 'market', 'midmarket', 'inside', 'technical', 'emea', 'apac', 'amer', 'americas', 'na', 'latam', 'uk', 'us', 'global', 'team', 'regional', 'named', 'strategic', 'corporate', 'field',
   'entry', 'level', 'graduate', 'part', 'time', 'temporary', 'contractor', 'apprentice', 'trainee', 'intern', 'saas', 'fintech', 'b2b', 'b2c', 'ai', 'channel', 'partner', 'territory', 'of', 'healthcare', 'cybersecurity'])   // places beyond these ("SDR France") are not listed: those titles match an abbreviating request only
 const PLACE_CODE = /,\s*[a-z]{2}\s*$/i
-const acronymOnlyHead = (b: string): boolean => {
-  const words = squeeze(b.split(/\s+[-\u2013\u2014]\s+|[,(]/)[0]).split(' ').filter(w => w && !MODIFIER.has(w))
+const acronymOnly = (b: string): boolean => {
+  const words = squeeze(b).split(' ').filter(w => w && !MODIFIER.has(w))
   return words.length > 0 && words.every(w => /^(?:sdrs?|bdrs?)$/.test(w))
 }
 const titleForms = (rawTitle: string): string[] => {
   const title = rawTitle.replace(PLACE_CODE, ''), b = base(title)
   if (OTHER_MEANING.test(b)) return [` ${squeeze(b.replace(/\b(?:sdrs?|bdrs?|ae)\b/g, ' '))} `]
   const forms = [` ${squeeze(b)} `, ` ${plain(title)} `]
-  if (!TRADE.test(b) && (SALES_SIGNAL.test(b) || acronymOnlyHead(b))) forms.push(` ${squeeze(expandSdrBdr(b))} `)
+  if (!TRADE.test(b) && (SALES_SIGNAL.test(b) || acronymOnly(b))) forms.push(` ${squeeze(expandSdrBdr(b))} `)
   return forms
 }
 // literal: the term as written (no abbreviation expanded), kept when it differs, so a title that carries the same letters the

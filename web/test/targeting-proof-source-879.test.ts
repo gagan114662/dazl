@@ -243,8 +243,16 @@ test('#879 radio / firmware / embedded postings are not the sales role a request
     assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'pass', t)
   }
   // a bare title with filler words after the acronym keeps the letters as written (the #878 fixtures once used "SDR a"; a real posting is "SDR - <team>")
-  assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR a')]).truth, 'unknown')
-  assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR - a')]).truth, 'pass')
+  // the whole title counts: a filler word, or any word after a dash, is not a sales reading ("SDR - a" reads as sales only through a head-only rule)
+  for (const t of ['SDR a', 'SDR - a']) assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR - Outbound a')]).truth, 'pass')
+  // the review at 21689de1: trade titles behind ONE separator, in every dash / case form (all of them must stay unknown through conditionProof)
+  for (const t of ['SDR, Antenna Lab', 'SDR - Signal Processing', 'SDR - Waveform Lab', 'SDR, Spectrum Monitoring', 'SDR - Photonics', 'SDR \u2013 Photonics', 'SDR \u2014 Photonics', 'sdr antenna lab', 'SDR (Antenna Lab)', 'SDR: Antenna Lab', 'SDR | Waveform Lab']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  }
+  for (const t of ['BDR, Geology', 'BDR - Borehole Logging', 'BDR \u2013 Borehole Logging', 'bdr borehole logging']) {
+    assert.equal(prove('Software companies hiring BDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  }
   // a bare trade-vocabulary word (pipeline, account, revenue, growth) is not a sales signal (council on 48708c67)
   for (const t of ['SDR Pipeline Integrity Lead', 'Pipeline Inspector SDR', 'SDR Revenue Accountant', 'Account Payable SDR', 'SDR Account Security Lead', 'BDR Growth Marketing Manager']) {
     assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
