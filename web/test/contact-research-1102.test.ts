@@ -382,3 +382,21 @@ test('#1102 grounding round 5b: every occurrence of the quote is judged; a lower
   bad.forEach((r, i) => assert.notEqual(r, 'found', `bad #${i}`))
   const ok = await G('', 'Jane Roe, Owner of Brightloop Dental said hello.' + D, 'https://news.example.test/x', 'Jane Roe, Owner of Brightloop Dental'); assert.equal(ok.status, 'found', JSON.stringify(ok))
 })
+
+test('#1102 grounding round 6: a lower-case business word before a title-first title; every place the name and title sit together is judged, not only the quote', async () => {
+  const OWN5 = 'https://brightloopdental.example/reviews'
+  const R = (text: string, title: string, quote: string, url = OWN5, kind: 'page' | 'search' = 'search') => researchContactSource(text, 'Mark Stone', title, quote, url, kind)
+  const bad = [
+    await R('Great dentist! - bakery owner Mark Stone', 'owner', 'owner Mark Stone'),
+    await R('Great dentist! - small business owner Mark Stone', 'owner', 'owner Mark Stone'),
+    await R("Best dentist in town! The local bakery's owner, Mark Stone.", 'owner', 'owner, Mark Stone', OWN5, 'page'),
+  ]
+  bad.forEach((r, i) => assert.notEqual(r.status, 'found', `title-first #${i}: ${JSON.stringify(r.person)}`))
+  // The headline repeats the name and title; a LONGER quote that occurs once must not hide the sentence that says whose owner she is.
+  const { groundPerson } = await import('../lib/people/contact-research.ts')
+  const g = groundPerson({ name: 'Jane Roe', title: 'Owner', source: 'S1', quote: 'Jane Roe, Owner | Brightloop Dental', linkedin_source: null }, [{ id: 'S1', url: 'https://news.example.test/x', title: 'Jane Roe, Owner | Brightloop Dental', text: 'Jane Roe, Owner of Globex Health, which bought Brightloop Dental last year.' + D, kind: 'search' }], { ...INPUT, where: [] })
+  assert.ok('refused' in g, 'a longer quote does not hide the second mention')
+  // The plain right readings still pass.
+  const ok = await Promise.all([R('Meet our owner Mark Stone.', 'owner', 'owner Mark Stone', 'https://brightloopdental.example/team'), R('Practice owner Mark Stone welcomes you.' + D, 'owner', 'owner Mark Stone', 'https://brightloopdental.example/team')])
+  ok.forEach((r, i) => assert.equal(r.status, 'found', `ok #${i}: ${JSON.stringify(r)}`))
+})

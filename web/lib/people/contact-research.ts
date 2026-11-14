@@ -191,6 +191,7 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // and an "of / at / for / with / from" phrase after the title must lead to this company ("owner of a local bakery" does not).
   const SUFFIX_OK = /^(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty|dds|dmd|md|mba|cpa|phd|esq)\.?$/i
   const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
+  const CONNECT0 = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|our|my|your|welcomes?|opens?|opened|by|as|of)$/i
   const whereWords = new Set((input.where ?? []).flatMap(w => String(w).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w => w.length >= 3))
   const thisCompany = (org: string): boolean => {
     const ow = org.replace(/^the\s+/i, '').split(/\s+/).map(w => companyKey(w)).filter(Boolean), cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
@@ -237,6 +238,12 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   const left = windowText.slice(0, at + span[0] - windowStart), right = windowText.slice(at + span[1] - windowStart)
   const foreign = (seg: string) => foreignRun(seg.split(/\s+/).map(w => personWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) ? '' : w).join(' ').replace(/\s+/g, ' '))
   if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
+  // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
+  // or a separator, never a lower-case business word.
+  if (titles[0][0] < names[0][0]) {
+    const lw = /([\p{L}][\p{L}'’-]*)[^\p{L}]*$/u.exec(left)?.[1]
+    if (lw && /^\p{Ll}/u.test(lw) && !(CONNECT0.test(lw) || FILLER.test(lw) || TITLE_OK.test(lw) || roleWords.has(lw.toLowerCase()) || whereWords.has(lw.toLowerCase()))) return { refused: 'title_at_another_organisation' }
+  }
   // After the title and a separator, a bare noun clause ("owner, runs the bakery next door", "owner - the bakery down the street") is another business too:
   // the clause must be empty, this company, or only ordinary title / filler / place words.
   const CONNECT = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|welcomes?|opens?|opened)$/i
@@ -322,7 +329,23 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
 export function groundPerson(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
   const first = groundAt(answer, sources, input, 0)
   if ('refused' in first) return first
-  for (let n = 1; n < 6; n++) { const r = groundAt(answer, sources, input, n); if ('refused' in r) { if (r.refused === 'quote_not_in_source') break; return r } }
+  for (let n = 1; n < 40; n++) { const r = groundAt(answer, sources, input, n); if ('refused' in r) { if (r.refused === 'quote_not_in_source') break; return r } }
+  // ... and at every OTHER place the name and the title sit together in the source (the model picks the quote: a longer quote that occurs once must
+  // not hide a second sentence that says whose owner she is).
+  const src = sources.find(x => x.id === answer.source)
+  if (src) {
+    const hay = norm(`${src.title}. ${src.text}`), n = esc(norm(answer.name)), t = esc(norm(answer.title))
+    const gap = String.raw`[\s,\-–—|:()·•]*(?:(?:is|was|as|the|our|its|their|a|an|dr\.?)[\s,\-–—|:()·•]*){0,3}`
+    for (const re of [new RegExp(`${n}${gap}${t}`, 'gu'), new RegExp(`${t}${gap}${n}`, 'gu')]) {
+      let seen = 0; const nthOf = new Map<string, number>()
+      for (const m of hay.matchAll(re)) {
+        if (++seen > 20) return { refused: 'too_many_mentions' }
+        const k = nthOf.get(m[0]) ?? 0; nthOf.set(m[0], k + 1)   // this is the k-th occurrence of that exact text
+        const r = groundAt({ ...answer, quote: m[0] }, sources, input, k)
+        if ('refused' in r && r.refused !== 'quote_not_in_source') return r
+      }
+    }
+  }
   return first
 }
 
