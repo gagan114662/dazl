@@ -1483,8 +1483,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const notes: Record<string, number> = {}
       try {
         assertOwned(db, job)
-        const shopQuery = countriesIn(job.query).length > 0 ? job.query : `${job.query} ${(icpForSources.where ?? []).join(' ')}`
-        const stores = await collectShopifyStores({ query: shopQuery, discovered: [...diag.hitUrls, ...(leads ?? []).map(l => l.source_url)], http: deps.sourceHttp ?? safeGet, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }, deps.now)
+        // the country a store must be in: the request's own words, else the places and the market code of the profile; none of them: the source reads nothing
+        const named = countriesIn(`${job.query} ${(icpForSources.where ?? []).join(' ')}`)
+        const countries = named.length > 0 ? named : /^[A-Za-z]{2}$/.test(icpForSources.country ?? '') ? [icpForSources.country!.toUpperCase()] : []
+        const stores = await collectShopifyStores({ query: job.query, countries, discovered: [...diag.hitUrls, ...(leads ?? []).map(l => l.source_url)], http: deps.sourceHttp ?? safeGet, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }, deps.now)
+        assertOwned(db, job) // the collection can take up to its time limit: the attempt must still own the scan before its stores are added
         const drafts = parseLeads(JSON.stringify(stores.map(storeLead)), stores.map(st => st.productUrl)) ?? []
         ledger.record('adapter:shopify', drafts.length > 0 ? 'ok' : Object.keys(notes).length > 0 ? 'partial' : 'empty', drafts.length)
         if (drafts.length > 0) { ledger.candidates('adapter:shopify', drafts); leads = [...(leads ?? []), ...drafts]; partial.candidates = leads }

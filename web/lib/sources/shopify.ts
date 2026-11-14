@@ -32,14 +32,23 @@ const NOT_A_STORE = /(^|\.)(shopify\.com|shopifycdn\.com|shopify\.dev|facebook\.
 const STORE_LIST = /(?:top|best|leading|popular|successful|examples?|stores|brands|shops|websites|sites)/i // tested on the URL's PATH only, never its host
 const isStoreList = (u: string): boolean => { try { const x = new URL(u); return x.protocol === 'https:' && STORE_LIST.test(x.pathname) } catch { return false } }
 
-// The country the request names, as ISO codes Shopify's meta.json uses; null when it names none this table knows (then no store is
-// dropped for its country: the verifier's own place check still applies).
+// The country the request names, as ISO codes Shopify's meta.json uses. Empty when it names none this table knows; the scan then
+// passes the profile's own country code, and with neither the source reads nothing (it never returns stores from every country).
 const COUNTRIES: [RegExp, string][] = [
   [/\b(united kingdom|great britain|britain|england|scotland|wales|northern ireland)\b|\bU\.?K\.?\b/i, 'GB'],
-  [/\b(united states|america)\b/i, 'US'], [/\b(?:USA|U\.S\.A\.?|U\.S\.?|US)(?![a-z])/, 'US'], // the abbreviation only in capitals: "us" is a word [/\bcanada\b/i, 'CA'], [/\baustralia\b/i, 'AU'], [/\bnew zealand\b/i, 'NZ'],
-  [/\b(ireland)\b/i, 'IE'], [/\bgermany\b/i, 'DE'], [/\bfrance\b/i, 'FR'], [/\bnetherlands\b/i, 'NL'], [/\bindia\b/i, 'IN'], [/\bsingapore\b/i, 'SG'],
+  [/\b(united states|america)\b/i, 'US'],
+  [/\b(?:USA|U\.S\.A\.?|U\.S\.?|US)(?![a-z])/, 'US'], // the abbreviation only in capitals: "us" is a word
+  [/\bcanada\b/i, 'CA'],
+  [/\baustralia\b/i, 'AU'],
+  [/\bnew zealand\b/i, 'NZ'],
+  [/\bireland\b/i, 'IE'],
+  [/\bgermany\b/i, 'DE'],
+  [/\bfrance\b/i, 'FR'],
+  [/\bnetherlands\b/i, 'NL'],
+  [/\bindia\b/i, 'IN'],
+  [/\bsingapore\b/i, 'SG'],
 ]
-export function countriesIn(text: string): string[] { return [...new Set(COUNTRIES.filter(([re]) => re.test(text)).map(([, c]) => c))] }
+export function countriesIn(text: string): string[] { const t = text.replace(/northern ireland/gi, 'United Kingdom'); return [...new Set(COUNTRIES.filter(([re]) => re.test(t)).map(([, c]) => c))] }
 // "in the last 90 days" / "past 30 days" -> that many days; else 90
 export function windowDaysIn(text: string): number { const m = /\b(?:last|past)\s+(\d{1,3})\s+days\b/i.exec(text); const n = m ? Number(m[1]) : 90; return n >= 1 && n <= 365 ? n : 90 }
 // Searches that return LISTS of stores (their links are the store domains this source reads). At most two, and only inside the scan's own
@@ -90,16 +99,25 @@ export async function readStore(host: string, http: SafeGet, o: { countries: str
     if (!best || day > best.day) best = { day, title, handle, quote }
   }
   if (!best) return null // a readable store with nothing published inside the window: not a lead for this request
-  return { host, name: str(meta.name) ?? host, city: str(meta.city), province: str(meta.province), country, productUrl: `https://${host}/products/${best.handle}`, productTitle: best.title.slice(0, 160), publishedAt: best.day, quote: best.quote }
+  return { host, name: plain(str(meta.name) ?? host).slice(0, 80) || host, city: str(meta.city), province: str(meta.province), country, productUrl: `https://${host}/products/${best.handle}`, productTitle: best.title.slice(0, 160), publishedAt: best.day, quote: best.quote }
 }
 
-export async function collectShopifyStores(input: Pick<AdapterInput, 'query' | 'discovered' | 'http' | 'note'>, now = new Date()): Promise<ShopifyStore[]> {
+// countries: the ISO codes a kept store must be in (the request's own words, else the profile's country). EMPTY reads nothing: a
+// request whose country this source cannot name gets no stores rather than stores from everywhere.
+// The whole collection has one time limit (budgetMs): hosts not started by then are skipped and reported ('time_budget'), so a slow
+// or hostile list of hosts cannot hold the scan.
+export const SHOPIFY_BUDGET_MS = 45_000
+export async function collectShopifyStores(input: Pick<AdapterInput, 'query' | 'discovered' | 'http' | 'note'> & { countries?: string[]; budgetMs?: number }, now = new Date()): Promise<ShopifyStore[]> {
+  const countries = (input.countries?.length ? input.countries : countriesIn(input.query)).map(c => c.toUpperCase())
+  if (countries.length === 0) { input.note?.('no_country'); return [] }
+  const started = Date.now(), budget = input.budgetMs ?? SHOPIFY_BUDGET_MS
   const hosts = await storeHosts(input.discovered ?? [], input.http, input.note)
-  const o = { countries: countriesIn(input.query), windowDays: windowDaysIn(input.query), now }
+  const o = { countries, windowDays: windowDaysIn(input.query), now }
   const out: ShopifyStore[] = [], seen = new Set<string>()
-  let next = 0
+  let next = 0, cut = false
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, hosts.length) }, async () => {
     while (next < hosts.length && out.length < MAX_STORES) {
+      if (Date.now() - started > budget) { if (!cut) { cut = true; input.note?.('time_budget') } return }
       const host = hosts[next++]
       const s = await readStore(host, input.http, o, input.note).catch(() => { input.note?.('store_error'); return null })
       if (s && !seen.has(s.name.toLowerCase()) && out.length < MAX_STORES) { seen.add(s.name.toLowerCase()); out.push(s) }
