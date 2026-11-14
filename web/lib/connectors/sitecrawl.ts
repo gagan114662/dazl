@@ -381,6 +381,22 @@ export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
+// #1036 part (a): own-site pages that commonly print a person's own address without being a contact page: press releases ("Media
+// contact: ..."), careers ("send your CV to ..."), privacy / legal notices (a named officer), blog and author pages. Linked pages
+// first (the site's own navigation), then the usual paths. Never a page contactPaths already reads; never a file or a query URL.
+export const EVIDENCE_PAGES = 4
+const EVIDENCE_HINT = /(press|news|media|newsroom|careers?|jobs|join-us|privacy|legal|imprint|impressum|datenschutz|blog|authors?|insights|investors?)/i
+export function evidencePaths(homeHtml: string, home: URL): string[] {
+  const skip = new Set(contactPaths(homeHtml, home))
+  const set = new Set<string>()
+  for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
+    let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
+    if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
+    if (EVIDENCE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|jpeg|png|gif|svg|zip|xml)$/i.test(u.pathname) && !u.search && !skip.has(u.pathname)) set.add(u.pathname)
+  }
+  for (const p of ['/press', '/news', '/careers', '/privacy', '/blog']) if (!skip.has(p)) set.add(p)
+  return [...set].slice(0, 10)
+}
 export function contactPaths(homeHtml: string, home: URL): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
@@ -486,6 +502,21 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+    }
+    // #1036 own email finder, part (a): more public evidence of the address format. Up to EVIDENCE_PAGES further own-site pages
+    // (press / news, careers, privacy / legal, blog and author pages) are read ONLY for the addresses printed on them (onPage): no
+    // contact, person or technology is taken from them, so nothing else about the crawl's result changes. Same robots rule, same
+    // polite gap, same wall-clock budget; never when the crawl was aborted or ran out of time.
+    if (onPage && stoppedBy !== 'aborted' && stoppedBy !== 'time') {
+      let extra = 0
+      for (const p of evidencePaths(home.body, new URL(home.finalUrl))) {
+        if (stopped() || extra >= EVIDENCE_PAGES || (deadline && Date.now() >= deadline)) break
+        if (!robots.allows(p)) continue
+        const r = await polite(origin + p, robots.delayMs)
+        if (!r || r.status >= 400) continue
+        extra++
+        onPage(r.body, r.finalUrl, r.status)
+      }
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.

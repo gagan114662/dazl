@@ -161,6 +161,41 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
   }
   return paired
 }
+// Addresses whose own shape shows the format: "shannon.spees@" printed with no name near it is still a first.last address. Two or
+// more DISTINCT dotted locals (letters.letters, each part 2+ letters, not a known person's) on one site are read as first.last; a
+// single one proves nothing (it may be the firm's own name, "whitley.penn@"). The pattern they support is capped at 'medium'.
+export function shapeOwners(locals: string[], known: Name[] = []): Name[] {
+  const knownLocals = new Set(known.flatMap(k => FORMATS.map(f => localFor(f, k))))
+  const dotted = [...new Set(locals)].filter(l => /^[a-z]{2,}\.[a-z]{2,}$/.test(l) && !knownLocals.has(l) && !ROLE.test(l.replace('.', '')))
+  if (dotted.length < 2) return []
+  return dotted.map(l => { const [first, last] = l.split('.'); return { first, last } })
+}
+// The people an address is printed with, for learning the site's address FORMAT (never for attributing an address to a buyer).
+// For each printed address: the first person-shaped name in its own attribute / text node, else in the text around it, whose name
+// reproduces the local part under a format that uses BOTH names ('first.last', 'flast', ...). A one-name local ('maya@') proves
+// no format, so it is never used here. Known people are skipped (they are already in the pattern's people).
+const TWO_NAME_FORMATS = FORMATS.filter(f => f !== 'first' && f !== 'last')
+export function contextOwners(seen: { address: string; ctx?: AddressContext[] }[], known: Name[] = []): Name[] {
+  const out = new Map<string, Name>()
+  const knownKeys = new Set(known.map(k => `${k.first} ${k.last}`))
+  for (const s of seen) {
+    const local = s.address.split('@')[0]
+    let owner: Name | null = null
+    for (const c of s.ctx ?? []) {
+      for (const text of [c.tight, c.wide]) {
+        const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '')
+        for (const m of raw.matchAll(/(?=(?<![A-Za-z-])([A-Z][a-z'’]+)(?: [A-Z]\.?)? ([A-Z][A-Za-z'’-]+)(?![A-Za-z]))/g)) {
+          const n = { first: ascii(m[1]), last: ascii(m[2]) }
+          if (n.first.length >= 2 && n.last.length >= 2 && TWO_NAME_FORMATS.some(f => localFor(f, n) === local)) { owner = n; break }
+        }
+        if (owner) break
+      }
+      if (owner) break
+    }
+    if (owner && !knownKeys.has(`${owner.first} ${owner.last}`)) out.set(`${owner.first} ${owner.last}`, owner)
+  }
+  return [...out.values()]
+}
 export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
@@ -427,7 +462,11 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
   const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
   const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
-  const pattern = rankPattern(locals, allNames)
+  const ctxOwners = contextOwners(seen, allNames)
+  const shaped = shapeOwners(seen.map(s2 => s2.address.split('@')[0]), [...allNames, ...ctxOwners])
+  let pattern = rankPattern([...new Set([...locals, ...seen.map(s2 => s2.address.split('@')[0])])], [...allNames, ...ctxOwners, ...shaped])
+  // A format supported ONLY by the shape of the addresses (no name printed with any of them) is never 'high': medium at most.
+  if (pattern && pattern.confidence === 'high' && pattern.supporters.every(p2 => shaped.some(x => x.first === p2.first && x.last === p2.last))) pattern = { ...pattern, confidence: 'medium', score: 60 }
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
