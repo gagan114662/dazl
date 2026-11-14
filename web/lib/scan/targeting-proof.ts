@@ -44,55 +44,79 @@ const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|w
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
   return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
-// An expansion a press release words without the verb "expand" (#878, real releases): THIS company, as the sentence's own subject, grows / bolsters /
-// strengthens / builds out / broadens / deepens / adds to ITS OWN practice, group, team, presence, footprint, bench, capability, office or operations
-// ("Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the addition of Partner ..."), or the company announces
-// that someone has joined IT as a partner / counsel / ... in "its growing / expanding" practice or group.
-// A false pass tells a user "this company expanded" on a day the source does not give, so the reader is strict (council review of #1215):
-//  - the company's name comes right before the verb (an optional "National law firm" style descriptor before it, a legal suffix after it), with only a
-//    completed or in-progress auxiliary between: intent, failure, hearsay and another subject never match;
-//  - the grown unit is the HEAD of the phrase and is the company's own: after it the clause ends, or names a place ("in Chicago"), or the people added
-//    ("with the addition of ...", "with three partners"). "its team's morale", "its team culture", "its operations manual", "its presence on LinkedIn",
-//    "its online presence", "its relationship with the Chicago office" and "its team to 40 lawyers" (a size reached over time) are not that;
-//  - the WHOLE sentence (abbreviation periods such as "U.S.", "St.", "Mr." and middle initials do not end it) states no cut or departure, no hearsay,
-//    no intent or condition, no past or future period, and no year other than the lead's own event year: the lead's day must be this growth's day.
-// Only for an expand condition with no named object ("expanded into Europe" still needs the literal reader).
+// An expansion a press release words without the verb "expand" (#878, real releases). THIS company, as the sentence's own subject:
+//   - grows / bolsters / strengthens / builds out / broadens / deepens / adds to ITS OWN practice, group, team, presence, footprint, bench, capability,
+//     office or operations AND SAYS WHO WAS ADDED NOW ("Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the
+//     addition of Partner Tracy Jacobson and Counsel Jason Faust", "... with three partners", "... by hiring two associates");
+//   - welcomes a stated number of lawyers / partners / ... to its own office, team, practice or group ("Ogletree Deakins ... is pleased to welcome three
+//     attorneys from Laner Muchin Ltd. to the firm's Chicago office");
+//   - announces that a named person has joined it in a role "in its growing / expanding" practice or group.
+// A false pass tells a user "this company expanded" on a day the source does not give, so the reader is strict (two reviews of #1215):
+//  - a growth sentence that names nobody added now is NOT read: "has grown its presence across the United States" is the firm's history ("About the
+//    firm"), and after the unit only a place written as a name and then the people may follow, never free text ("in morale", "in search results",
+//    ", then shut the office", ": a new wooden one in the lobby");
+//  - the people are a count of at least one, or a named person: "with zero new lawyers", "by hiring nobody", "with the hiring freeze lifted" are not;
+//  - capital letters are checked as written (a place or a person is a name): the patterns are case-sensitive, only the company's own name is not;
+//  - the WHOLE sentence (abbreviation periods such as "U.S.", "St.", "Mr." and middle initials do not end it) states no cut, closure or departure, no
+//    hearsay or doubt, no intent or condition, no other period (a year or a month that is not the lead's own, "earlier this year", "in recent years",
+//    "previously", "before ...", "when ..."): the lead's day must be this growth's day;
+//  - a company name under four letters is not read at all ("Law firm Law grew its team").
+// Only for an expand condition with no named object ("expanded into Europe" still needs the literal reader). What this does NOT read, knowingly: a hire
+// alone ("X has joined the firm as a partner in its restructuring practice"), "Mr. X's arrival bolsters the firm's ...", "announced its move to a
+// larger office", and a longer legal name than the lead's ("Benesch, Friedlander, Coplan & Aronoff LLP").
 const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const GROWN_UNIT = String.raw`(?:practices?|groups?|teams?|presence|footprint|bench|capabilit(?:y|ies)|offices?|operations?)`
+// the company's name in any letter case, inside otherwise case-sensitive patterns
+const anyCase = (x: string) => reEsc(x).replace(/\p{L}/gu, ch => ch.toLowerCase() === ch.toUpperCase() ? ch : `[${ch.toLowerCase()}${ch.toUpperCase()}]`).replace(/\s+/g, String.raw`\s+`)
+const GROWN_UNIT = String.raw`(?:[Pp]ractices?|[Gg]roups?|[Tt]eams?|presence|footprint|bench|capabilit(?:y|ies)|[Oo]ffices?|operations?)`
 // words between "its" and the unit: the unit's own name ("Corporate Services Group's Chicago"). Never a preposition or a conjunction (the phrase would
 // then be about something else: "its relationship with the Chicago office"), never another party, never a medium ("online presence").
 const UNIT_FILLER = String.raw`(?:(?!(?:and|or|of|for|with|to|on|at|by|from|in|into|through|between|among|over|under|about|than|as|clients?|customers?|partners?|rivals?|competitors?|online|digital|web|brand|social|media|marketing|market|search|seo)\b)(?:${GROWN_UNIT}['’]s|[\w&.-]+)\s+){0,6}?`
-const UNIT_TAIL = String.raw`(?=\s*$|\s*[,:]|\s+(?:in|across|throughout)\s+(?:the\s+)?[A-Z]|\s+with\s+(?:the\s+)?(?:additions?|arrivals?|hires?|hiring|appointments?)\b|\s+with\s+(?:[\w-]+\s+){0,3}(?:partners?|lawyers?|attorneys?|counsel|associates?|hires?|professionals?|members?|advisers?|advisors?|engineers?|specialists?)\b|\s+by\s+(?:adding|hiring|welcoming|naming|appointing)\b)`
+const PLACE = String.raw`(?:the\s+)?[A-Z][\w.'’-]*(?:\s+[A-Z][\w.'’-]*){0,3}`
+const COUNT = String.raw`(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a\s+dozen|[1-9]\d{0,2})`
+const ROLE = String.raw`(?:[Pp]artners?|[Cc]ounsel|[Aa]ssociates?|[Aa]ttorneys?|[Ll]awyers?|[Ss]hareholders?|[Pp]rincipals?|[Dd]irectors?|[Pp]rofessionals?|[Aa]dvis[eo]rs?|[Ee]ngineers?|[Ss]pecialists?|[Hh]ires?|[Mm]embers?)`
+const NOT_A_PERSON = String.raw`(?:Fund|Capital|Partners|Group|Holdings|Ventures|Bank|Trust|Associates|LLC|LLP|Inc|Ltd|Corp|Company|Firm)\b`
+const PERSON = String.raw`(?!${NOT_A_PERSON})[A-Z][a-z'’-]+(?:\s+[A-Z]\.?)?(?:\s+(?!${NOT_A_PERSON})[A-Z][A-Za-z'’-]+){1,2}(?!\s+${NOT_A_PERSON})`
+// who was added: a count of at least one with a role, or a named person (with or without a role before the name)
+const ADDED = String.raw`(?:${COUNT}\s+(?:new\s+|lateral\s+|senior\s+|experienced\s+)?${ROLE}\b|(?:(?:new\s+)?${ROLE}\s+)?${PERSON})`
+const PEOPLE_TAIL = String.raw`(?:\s+(?:in|across|throughout)\s+${PLACE})?,?\s+(?:with\s+the\s+(?:additions?|arrivals?|hires?|hiring|appointments?)\s+of\s+${ADDED}|with\s+${COUNT}\s+(?:new\s+|lateral\s+|senior\s+|experienced\s+)?${ROLE}\b|by\s+(?:adding|hiring|welcoming|naming|appointing)\s+${ADDED})`
 const GROW_BASE = String.raw`(?:grow|bolster|strengthen|build\s+out|broaden|deepen|add\s+to)`
 const GROW_ING = String.raw`(?:growing|bolstering|strengthening|building\s+out|broadening|deepening|adding\s+to)`
 const GROW_DONE = String.raw`(?:grown|bolstered|strengthened|built\s+out|broadened|deepened|added\s+to)`
 const GROW_VERB = String.raw`(?:(?:is|are|has\s+been|have\s+been)\s+(?:continuing\s+to\s+${GROW_BASE}|${GROW_ING})|(?:continues|has\s+continued|continued)\s+to\s+${GROW_BASE}|(?:has|have)\s+${GROW_DONE}|(?:grew|grows|bolster(?:s|ed)|strengthen(?:s|ed)|buil(?:ds|t)\s+out|broaden(?:s|ed)|deepen(?:s|ed)|add(?:s|ed)\s+to))`
 const SUFFIX_OPT = String.raw`(?:,?\s+(?:LLP|LLC|PLLC|P\.?C\.?|Inc\.?|Ltd\.?))?`
 const DESCRIPTOR_OPT = String.raw`(?:(?:[\w-]+\s+){0,3}(?:firm|company|agency|startup|fintech|provider|consultancy|studio|practice)\s+)?`
-const JOIN_ROLE = String.raw`(?:an?\s+|its\s+|the\s+)?(?:[\w-]+\s+){0,2}(?:partner|counsel|associate|attorney|lawyer|principal|director|shareholder|member|president|officer|head|chair|leader|manager|advisor|adviser)\b`
-// a cut or a departure in the sentence
-const GROWTH_CUT = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing)|from\s+\d+\s+to\s+\d+|departures?|departed|departing|departs|exit\w*|left|leav(?:es|ing)|retire\w*|resign\w*|loss\s+of)\b/i
-// someone else saying so
-const GROWTH_HEARSAY = /\b(?:said|says|according\s+to|claims?|claimed|reported(?:ly)?|reports|told|sources?|per\s+[A-Z])\b/
+const JOIN_ROLE = String.raw`(?:an?\s+|its\s+|the\s+)?(?:(?:senior|managing|equity|special|general|lead|of)\s+){0,2}(?:partner|counsel|associate|attorney|lawyer|principal|director|shareholder|member|president|officer|chair)`
+// a cut, a closure or a departure in the sentence
+const GROWTH_CUT = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing|ure)|shut(?:s|ting|tered)?|dissolv\w+|disband\w+|wound\s+down|freezes?|frozen|from\s+\d+\s+to\s+\d+|departures?|departed|departing|departs|exit\w*|left|leav(?:es|ing)|retire\w*|resign\w*|loss\s+of|poach\w*)\b/i
+// someone else saying so, or doubt about it
+const GROWTH_HEARSAY = /\b(?:said|says|according\s+to|claims?|claimed|reported(?:ly)?|reports|told|sources?|per\s+[A-Z]|alleg\w+|argu\w+|believ\w+|doubt\w*|critics?|lawsuit|whether|unclear|uncertain|in\s+theory|supposedly|purportedly|expected|rumou?r\w*)\b/
 // a period other than the release's own moment: the lead's day would not be this growth's day
-const GROWTH_PERIOD = /\b(?:(?:last|past|previous|prior)\s+(?:year|decade|quarter|month|few|several|\d+)|over\s+the\s+(?:past|last|years|decades?)|over\s+(?:two|three|four|five|\d+|several|many)\s+(?:years|decades)|during|throughout|since|ago|decades?|Q[1-4]|(?:19|20)\d\ds|next\s+(?:year|month|quarter|spring|summer|fall|autumn|winter|week)|upcoming|coming\s+(?:year|months?|weeks?)|slated|set\s+to|later\s+this|soon)\b/i
+const GROWTH_PERIOD = /\b(?:(?:last|past|previous|prior)\s+(?:year|decade|quarter|month|few|several|\d+)|over\s+the\s+(?:past|last|years|decades?)|over\s+(?:two|three|four|five|\d+|several|many)\s+(?:years|decades)|during|throughout\s+(?:the\s+)?(?:19|20|year|decade|its\s+history)|since|ago|decades?|Q[1-4]|fiscal|(?:19|20)\d\ds|in\s+recent\s+(?:years|months|times)|in\s+the\s+past|years?\s+back|\d+\s+years|years\s+in\s+a\s+row|in\s+a\s+row|earlier\s+this|previously|formerly|former|before|when\s+it|founded|next\s+(?:year|month|quarter|spring|summer|fall|autumn|winter|week)|upcoming|coming\s+(?:year|months?|weeks?)|slated|set\s+to|later\s+this|soon)\b/i
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+// a month named in the sentence that is not the lead's own month ("grew its team in January", lead dated in September). "May" before a capitalised
+// word is a person ("May Lee"), not the month.
+const otherMonth = (sentence: string, month: number): boolean => MONTHS.some((m, i) => i !== month && new RegExp(String.raw`\b${m[0].toUpperCase()}${m.slice(1)}\b${m === 'may' ? String.raw`(?!\s+[A-Z])` : ''}`).test(sentence))
 // Sentences of a quote: an abbreviation's or a middle initial's period does not end one, so a guard word after "U.S." or "Mr." stays in the sentence it qualifies.
 const sentencesOf = (t: string): string[] => t
   .replace(/\b(U\.S|U\.K|E\.U|St|Mr|Mrs|Ms|Dr|Jr|Sr|No|Inc|Ltd|Corp|Co|P\.C|L\.L\.P|L\.L\.C|vs|etc)\.(?=\s|,|$)/g, (_m, w: string) => w.replace(/\./g, ''))
   .replace(/\b([A-Z])\.(?=\s+[A-Z])/g, '$1')
   .split(/(?<=[.!?])\s+|\n+/).map(x => x.trim()).filter(Boolean)
 function growthShown(quote: string, company: string, eventDate: string | null | undefined): boolean {
-  const co = company.trim(); if (co.length < 3) return false
-  const year = /^(\d{4})-/.exec(eventDate ?? '')?.[1]
-  if (!year) return false // no proven day: nothing to tie the growth to
-  const name = `${reEsc(co).replace(/\s+/g, String.raw`\s+`)}${SUFFIX_OPT}`
-  const own = new RegExp(String.raw`^(?:today,?\s+)?${DESCRIPTOR_OPT}${name}\s+(?:(?:also|further|today|again|significantly)\s+)?${GROW_VERB}\s+its\s+${UNIT_FILLER}${GROWN_UNIT}\b${UNIT_TAIL}`, 'i')
-  const joined = new RegExp(String.raw`^(?:today,?\s+)?${DESCRIPTOR_OPT}${name}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+[^,;]{2,80}?\s+(?:has|have)\s+joined\s+(?:the\s+(?:firm|company)|${name})\s+as\s+${JOIN_ROLE}(?:(?![A-Z][\w&.-]*\s+(?:LLP|LLC|Inc|Ltd)\b)[^,;]){0,60}?\b(?:in|to|within)\s+its\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}\b(?=\s*$|\s*,|\s+in\s+(?:the\s+)?[A-Z]|\s+based\b)`, 'i')
+  const co = company.trim(); if (co.length < 4) return false
+  const day = /^(\d{4})-(\d{2})-/.exec(eventDate ?? '')
+  if (!day) return false // no proven day: nothing to tie the growth to
+  const year = day[1], month = Number(day[2]) - 1
+  const name = `${anyCase(co)}${SUFFIX_OPT}`
+  const subject = String.raw`^(?:[Tt]oday,?\s+)?${DESCRIPTOR_OPT}${name}`
+  // case-sensitive on purpose: a place and a person are written with capitals; only the company's name is matched in any case
+  const own = new RegExp(String.raw`${subject}\s+(?:(?:also|further|today|again|significantly)\s+)?${GROW_VERB}\s+its\s+${UNIT_FILLER}${GROWN_UNIT}${PEOPLE_TAIL}`)
+  const welcomed = new RegExp(String.raw`${subject}(?:,\s[^,;]{3,140},)?\s+(?:is\s+(?:pleased|proud|delighted|excited|thrilled)\s+to\s+welcome|welcomes|has\s+welcomed|welcomed)\s+${COUNT}\s+(?:new\s+|lateral\s+|senior\s+|experienced\s+)?${ROLE}\b(?:\s+from\s+[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,4})?\s+to\s+(?:the\s+firm['’]s|its)\s+(?:${PLACE}\s+)?${GROWN_UNIT}(?=\s*$|\s*,|\s+in\s+${PLACE})`)
+  const joined = new RegExp(String.raw`${subject}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+${PERSON}\s+has\s+joined\s+(?:the\s+(?:firm|company)|${name})\s+as\s+${JOIN_ROLE}\s+(?:in|to|within)\s+its\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}(?=\s*$|\s*,|\s+in\s+${PLACE}|\s+based\b)`)
   return sentencesOf(quote).some(sentence => {
     // "May Lee" and "Will Jones" are people, not modal verbs
     if (EVENT_NOT.test(sentence.replace(/\b(?:May|Will)\s+(?=[A-Z])/g, '')) || GROWTH_CUT.test(sentence) || GROWTH_HEARSAY.test(sentence) || GROWTH_PERIOD.test(sentence)) return false
-    if ((sentence.match(/\b(?:19|20)\d\d\b/g) ?? []).some(y => y !== year)) return false // a year that is not the lead's own
-    return clauses(sentence).some(k => { const c = k.trim().replace(/[.!?]+$/, ''); return own.test(c) || joined.test(c) })
+    if ((sentence.match(/\b(?:19|20)\d\d\b/g) ?? []).some(y => y !== year) || otherMonth(sentence, month)) return false // a year or a month that is not the lead's own
+    return clauses(sentence).some(k => { const c = k.trim().replace(/[.!?]+$/, ''); return own.test(c) || welcomed.test(c) || joined.test(c) })
   })
 }
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
