@@ -74,8 +74,13 @@ export const DEFINITIONS = [
   'usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it',
   'icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run',
 ]
+// The line a builder on contacts (root cause 4) must read: which mode ran, and whether Apollo/PDL contacts can appear at all.
+export const CONTACTS_LINE = {
+  budget: 'contacts: this run gave each case a run budget (max_usd), which switches the paid contact pass OFF, so Apollo/PDL contacts never appear here; named/email come from the lead, the company site and people search only. Run with --contacts to measure the contact pass',
+  contacts: (keys: string[]) => `contacts: --contacts mode, no run dollar limit on the job (as in the staging matrix), so the paid contact pass runs; provider keys saved for the cases: ${keys.length ? keys.join(', ') : 'NONE (set MATRIX_PDL_KEY / MATRIX_APOLLO_KEY), so the pass has nothing to call'}; the cap is the scan spend ledger's per-scan cap plus the runner's stop`,
+}
 
-export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { commit: string; date: string }): string {
+export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { commit: string; date: string; contacts?: string[] | null }): string {
   const pass = rows.filter(r => r.pass).length
   const head = `MATRIX local @ ${meta.commit} ${meta.date}: ${pass}/${rows.length} PASS (per case: >=${t.ready_leads_min} ready, >=${t.named_contact_min_pct}% named, >=${t.dated_source_min_pct}% dated, >=${t.location_category_match_min_pct}% in place and category; cap US$${t.per_case_confirm_cap_usd}/case)`
   const cols = ['case', 'status', 'cand', 'leads', 'ready', 'named%', 'email%', 'dated%', 'match%', 'secs', 'usd', 'verdict']
@@ -83,5 +88,5 @@ export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { com
   const w = cols.map((c, i) => Math.max(c.length, ...body.map(b => b[i].length)))
   const line = (cells: string[]) => cells.map((c, i) => c.padEnd(w[i])).join('  ')
   const held = rows.filter(r => !r.pass).map(r => `  ${r.id}: ${r.error ? `${r.error}; ` : ''}${r.why.join('; ')}${Object.keys(r.held).length ? ` | held: ${Object.entries(r.held).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}` : ''}`)
-  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held, '', 'definitions:', ...DEFINITIONS.map(d => `  ${d}`)].join('\n')
+  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held, '', 'definitions:', ...[...DEFINITIONS, meta.contacts ? CONTACTS_LINE.contacts(meta.contacts) : CONTACTS_LINE.budget].map(d => `  ${d}`)].join('\n')
 }

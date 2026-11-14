@@ -10,7 +10,7 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { measureCase, verdict, matrixTable, DEFINITIONS, type CaseResult, type MatrixCase, type MatrixThresholds } from '../scripts/matrix-score.mts'
+import { measureCase, verdict, matrixTable, DEFINITIONS, CONTACTS_LINE, type CaseResult, type MatrixCase, type MatrixThresholds } from '../scripts/matrix-score.mts'
 import { runCase, spentUsd, sellerLineFor } from '../scripts/matrix-run.mts'
 import { parseEnvFile } from '../scripts/matrix-env.mts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -183,4 +183,74 @@ test('the table prints its definitions, and the script refuses a bad cap or time
   assert.match(run('--timeout', '0').stderr, /--timeout must be a number/)
   assert.match(run('--cap', '-1').stderr, /per-case cap must be a number above 0/)
   assert.match(run('--cap', 'abc').stderr, /per-case cap must be a number above 0/)
+})
+
+// Review of #1210, finding 1: ready leads present, exact ready and held, a held-first/ready-second pair, compared with Home's own
+// count on the same store. In a child process with the scan-route loader (homeReady uses the app's aliases and scan store).
+test('ready with READY leads: exact count and held map, ready winning over a held twin met first, equal to homeReady (child process)', () => {
+  const env = { ...process.env } as NodeJS.ProcessEnv; delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/scan-route-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/matrix-ready-runtime.mts'],
+    { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
+})
+
+const caseX: MatrixCase = { id: 'x', label: 'x', seller: 'ChairSide', offer: 'Online booking for dental clinics', query: 'Dental clinics in Toronto that opened a new location', expect }
+function keyed(tenant: string) {
+  const master = randomBytes(32)
+  const db = new Database(':memory:'); migrateAllSqlite(db); saveKey(db, tenant, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  return { db, master }
+}
+
+test('runCase: a job left running or pending when the run returns is INCOMPLETE and cannot pass (a retry that never came)', async () => {
+  for (const left of ['running', 'pending'] as const) {
+    const { db, master } = keyed('matrix-x')
+    // the run returns without finishing the job: running as claimed, or handed back to pending for a retry
+    const run = (async (d: Database.Database, job: { id: string }) => { if (left === 'pending') d.prepare("UPDATE scan_jobs SET status = 'pending' WHERE id = ?").run(job.id); return 'retry' }) as never
+    const r = await runCase(db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 5, thresholds: { ...T, ready_leads_min: 0, named_contact_min_pct: 0, dated_source_min_pct: 0, location_category_match_min_pct: 0 }, deps: { master }, run })
+    assert.equal((db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status, left)
+    assert.equal(r.error, null, 'no error code names it: only the unfinished status does')
+    assert.equal(r.status, 'INCOMPLETE', `a job left ${left} is INCOMPLETE`); assert.equal(r.pass, false, 'and cannot pass, even with every threshold at 0')
+  }
+})
+
+test('runCase --contacts: no run dollar limit on the job (the contact pass stays on), and the cap must be the ledger\'s own or the case does not run', async () => {
+  const done = (async (d: Database.Database, job: { id: string }) => { d.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job.id); return 'done' }) as never
+  // the ledger cap is not set to the case cap: refused before anything is created
+  const a = keyed('matrix-x')
+  const refused = await runCase(a.db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 5, thresholds: T, deps: { master: a.master }, contacts: true, env: {}, run: done })
+  assert.equal(refused.error, 'cap_not_enforced'); assert.equal(refused.status, 'INCOMPLETE'); assert.equal(refused.pass, false); assert.equal(refused.usd, null)
+  assert.equal((a.db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, 0, 'no job was created')
+  assert.equal((await runCase(a.db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 5, thresholds: T, deps: { master: a.master }, contacts: true, env: { DAZL_SCAN_CAP_CAD: 'abc' }, run: done })).error, 'cap_not_enforced', 'a malformed ledger cap refuses too')
+  // the ledger cap is the case cap (CAD 0.75 at 1.50 = US$0.50): the job runs with NO run budget
+  const b = keyed('matrix-x')
+  const ok = await runCase(b.db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 5, thresholds: T, deps: { master: b.master }, contacts: true, env: { DAZL_SCAN_CAP_CAD: '0.7500' }, run: done })
+  assert.equal(ok.status, 'done'); assert.equal(ok.error, null)
+  assert.equal((b.db.prepare('SELECT run_budget FROM scan_jobs').get() as { run_budget: string | null }).run_budget, null, 'no run budget: the runner keeps the paid contact pass on')
+  // budget mode (the default) keeps the run budget
+  const c = keyed('matrix-x')
+  await runCase(c.db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 5, thresholds: T, deps: { master: c.master }, run: done })
+  assert.deepEqual(JSON.parse((c.db.prepare('SELECT run_budget FROM scan_jobs').get() as { run_budget: string }).run_budget), { max_usd: 0.5 })
+})
+
+test('runCase --contacts: the runner stops the job when its recorded spend reaches the cap', async () => {
+  const { db, master } = keyed('matrix-x')
+  // a run that records US$0.50 of settled spend and then keeps going
+  const run = (async (d: Database.Database, job: { id: string }) => {
+    d.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, created_at) VALUES ('c1', 'matrix-x', ?, 1, 'pdl.people', 0.5, 0.5, 'settled', ?)").run(job.id, NOW)
+    await new Promise(r => setTimeout(r, 1500))
+    return 'done'
+  }) as never
+  const r = await runCase(db, caseX, { tenant: 'matrix-x', cap: 0.5, timeoutS: 10, thresholds: T, deps: { master }, contacts: true, env: { DAZL_SCAN_CAP_CAD: '0.75' }, run })
+  assert.equal(r.error, 'budget_stopped'); assert.equal(r.status, 'INCOMPLETE'); assert.equal(r.pass, false); assert.equal(r.usd, 0.5)
+  assert.equal((db.prepare('SELECT status FROM scan_jobs').get() as { status: string }).status, 'failed', 'a failed job refuses every later paid reservation')
+})
+
+test('the table says which contact mode ran: budget mode states that Apollo/PDL contacts never appear; contacts mode names the keys', () => {
+  const budget = matrixTable([], T, { commit: 'x', date: 'y' })
+  assert.ok(budget.includes(CONTACTS_LINE.budget))
+  assert.match(budget, /switches the paid contact pass OFF, so Apollo\/PDL contacts never appear here; named\/email come from the lead, the company site and people search only/)
+  assert.match(matrixTable([], T, { commit: 'x', date: 'y', contacts: ['PDL'] }), /--contacts mode, no run dollar limit on the job .* provider keys saved for the cases: PDL;/)
+  assert.match(matrixTable([], T, { commit: 'x', date: 'y', contacts: [] }), /provider keys saved for the cases: NONE \(set MATRIX_PDL_KEY \/ MATRIX_APOLLO_KEY\)/)
+  assert.doesNotMatch(matrixTable([], T, { commit: 'x', date: 'y', contacts: ['PDL'] }), /switches the paid contact pass OFF/)
 })

@@ -4,7 +4,7 @@
 // PASS/FAIL. The DEFINITIONS differ in places (see the footer the table prints), so compare a local row with a local row: run it
 // BEFORE a change and AFTER it, and show both in the PR.
 //
-//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--dry] [--json] [--timeout 300]
+//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
 //        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir]
 //
 // Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
@@ -13,6 +13,11 @@
 //   TINYFISH_SEARCHES_PER_SCAN, TINYFISH_FETCHES_PER_SCAN, SITECRAWL_ENABLED, NEWS_SEARCH_ENABLED, EMAIL_GUESS_ENABLED and any
 //   other scan knob: the staging values, so a local scan behaves like a staging scan
 // --env-file reads KEY=VALUE lines into the environment BEFORE the pipeline loads (a non-empty value already in the environment wins).
+// --contacts: run WITHOUT a run dollar limit on the job, as Hermes's staging matrix does, so the paid contact pass (the tenant's
+// Apollo/PDL keys: MATRIX_PDL_KEY, MATRIX_APOLLO_KEY, saved for each case when set) runs and named % / email % can include its
+// contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
+// In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
+// checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
 // Cost cap: US$0.50 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
 // ledger before every paid call; the table prints what each case cost. TinyFish calls are priced at US$0 while dazl's own daily
 // counters stay inside TinyFish's free allowance, so the US$ column leaves TinyFish out (the table says so).
@@ -60,12 +65,15 @@ const tinyfish = (process.env.TINYFISH_API_KEY || '').trim()
 const commit = (() => { try { return execSync('git rev-parse --short HEAD', { cwd: root }).toString().trim() } catch { return 'unknown' } })()
 const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
+const contacts = flag('contacts')
+const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
   console.log(`matrix:local --dry @ ${commit}: ${cases.length} case(s) from ${matrixPath}, cap US$${cap.toFixed(2)} each (total at most US$${(cap * cases.length).toFixed(2)}), timeout ${timeoutS}s each`)
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
   console.log(`keys: TINYFISH_API_KEY ${tinyfish ? 'set' : 'MISSING'}; Anthropic key ${anthropic ? 'set' : 'MISSING'} (MATRIX_ANTHROPIC_KEY / SCOREBOARD_ANTHROPIC_KEY / DAZL_TRIAL_ANTHROPIC_KEY)`)
+  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${contactKeys.pdl ? 'set' : 'MISSING'}, Apollo key ${contactKeys.apollo ? 'set' : 'MISSING'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
   console.log(`staging knobs: ${knobs.map(k => `${k}=${process.env[k] === undefined ? 'unset' : 'set'}`).join(' ')}`)
   process.exit(anthropic && tinyfish ? 0 : 2)
 }
@@ -78,6 +86,11 @@ process.env.DAZL_MASTER_KEY = master.toString('base64')
 const { default: Database } = await import('better-sqlite3')
 const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
 const { saveKey } = await import('../lib/llm/key-store.ts')
+if (contacts) {
+  // the ledger's own per-scan cap, in its own unit (CAD at its floor rate of 1.50 per USD): cap US$ x 1.5
+  process.env.DAZL_SCAN_CAP_CAD = (cap * 1.5).toFixed(4)
+  delete process.env.DAZL_SCAN_CAP_FX_CAD_PER_USD
+}
 const { runCase } = await import('./matrix-run.mts')
 const { matrixTable } = await import('./matrix-score.mts')
 
@@ -85,22 +98,32 @@ const db = new Database(':memory:')
 migrateAllSqlite(db)   // every table the app's own scan store has, so no pipeline step fails on a missing table
 const tenantOf = (c: MatrixCase) => `matrix-${c.id}`
 for (const c of cases) saveKey(db, tenantOf(c), 'anthropic', anthropic, master)
+const savedContactKeys: string[] = []
+if (contacts) {
+  const { saveCredential } = await import('../lib/connectors/store.ts')
+  const { ENRICH_APOLLO, ENRICH_PDL } = await import('../lib/enrich/index.ts')
+  for (const [name, key, connector] of [['PDL', contactKeys.pdl, ENRICH_PDL], ['Apollo', contactKeys.apollo, ENRICH_APOLLO]] as const) {
+    if (!key) continue
+    for (const c of cases) saveCredential(db, tenantOf(c), connector, key, master)
+    savedContactKeys.push(name)
+  }
+}
 
 const results: CaseResult[] = []
 let crashed = false
 for (const c of cases) {
-  const r = await runCase(db, c, { tenant: tenantOf(c), cap, timeoutS, thresholds, deps: { master } })
+  const r = await runCase(db, c, { tenant: tenantOf(c), cap, timeoutS, thresholds, deps: { master }, contacts })
   if (r.error?.startsWith('crashed')) crashed = true
   results.push(r)
-  console.error(`${c.id}: ${r.status}${r.error ? ` (${r.error})` : ''} cand=${r.candidates} leads=${r.leads} ready=${r.ready} usd=${r.usd?.toFixed(3)} (${r.seconds}s)`)
+  console.error(`${c.id}: ${r.status}${r.error ? ` (${r.error})` : ''} cand=${r.candidates} leads=${r.leads} ready=${r.ready} usd=${r.usd == null ? '?' : r.usd.toFixed(3)} (${r.seconds}s)`)
 }
 
-const table = matrixTable(results, thresholds, { commit, date })
+const table = matrixTable(results, thresholds, { commit, date, contacts: contacts ? savedContactKeys : null })
 const outDir = path.resolve(expand(opt('out') ?? process.env.MATRIX_OUT ?? path.join(root, '..', 'matrix-local-results')))
 mkdirSync(outDir, { recursive: true })
 const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}-${Date.now().toString(36)}`
 writeFileSync(path.join(outDir, `${stamp}.txt`), table + '\n')
-if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, cap_usd: cap, thresholds, results }, null, 2))
+if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, mode: contacts ? 'contacts' : 'budget', cap_usd: cap, thresholds, results }, null, 2))
 console.log(table)
 console.error(`written: ${path.join(outDir, `${stamp}.txt`)}`)
 process.exit(crashed ? 1 : 0)
