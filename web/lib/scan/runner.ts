@@ -1076,6 +1076,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
+export const GROUND_ROOM_USD = 0.08   // the grounding call's worst case (8 pages x 3,000 characters in, 4,000 tokens out) with margin
 // Fetch ranking for a compound request: job-board / careers pages go behind the pages that can carry the event, unless the compiled plan is an OR
 // whose hiring branch a job page can prove on its own (an open role). A completed-hire branch (#876, hire_made) is never proven by a job page.
 export function jobPagesBehindEvents(signals: string[] | null | undefined, query: string | null | undefined, icpJson: string): boolean {
@@ -1656,12 +1657,17 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     if (complete && deps.ground !== false) {
       const textUrls = new Set(diag.tfTextUrls.map(u => canonicalUrl(u) ?? u))
       const snippetOnly = leads.filter(l => { const k = canonicalUrl(l.source_url) ?? l.source_url; return diag.hitUrls.some(h => (canonicalUrl(h) ?? h) === k) && !textUrls.has(k) && !isLoginWalled(l.source_url) })
-      if (snippetOnly.length > 0) {
+      // The pass must not take the room a trial or a budgeted run needs for its scoring, judge and people search (the guard flips to refused on any refused call, which
+      // holds the leads): it runs only when every dollar guard of this run has room for its worst case (GROUND_ROOM_USD); a pool guard counts the account, not the run.
+      const room = Math.min(Infinity, ...spendGuards.filter((g): g is SpendGuard => !(g instanceof PooledGuard)).map(g => g.limitUsd - g.reservedUsd))
+      if (snippetOnly.length > 0 && room >= GROUND_ROOM_USD) {
         assertOwned(db, job)
         const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, snippetOnly, fetchP, deps.fetchImpl)
         if (g?.length) {
-          const covered = new Set(g.map(x => canonicalUrl(x.source_url) ?? x.source_url))
-          leads.splice(0, leads.length, ...g, ...leads.filter(l => !covered.has(canonicalUrl(l.source_url) ?? l.source_url)))
+          // a grounded lead replaces ITS original (same page, same company); every other candidate of that page stays as it was
+          const keyOf = (l: LeadDraft) => `${canonicalUrl(l.source_url) ?? l.source_url}|${companyKey(l.company)}`
+          const done = new Set(g.map(keyOf))
+          leads.splice(0, leads.length, ...g, ...leads.filter(l => !done.has(keyOf(l))))
           partial.candidates = leads
         }
       }

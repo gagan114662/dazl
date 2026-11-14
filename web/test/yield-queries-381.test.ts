@@ -97,3 +97,36 @@ test('#381 runner: a candidate the model cannot ground stays held for review, an
   const y = await runFixture(g)
   assert.ok(!y.calls.prompts.some(p => /^You research sales leads/.test(p)), 'no grounding call for a walled host')
 })
+
+test('#381 runner (review): a page with two candidates where the model grounds one: the other stays held, never lost', async () => {
+  const OTHER_QUOTE = 'Another Smile Clinic is also opening downtown Toronto next month'
+  const f = groundFx()
+  f.own = { [CLINIC]: { ...PAGE, text: `${PAGE.text} Another Smile Clinic is also opening downtown in Toronto next month (${daysAgo(12)}).` } }   // B is on the page, its snippet quote is not verbatim
+  f.extractionFn = p => /^You research sales leads/.test(p)
+    ? [{ company: 'Example Dental Toronto', signal: 'opened a second clinic', source_url: CLINIC, excerpt: PAGE_QUOTE, event_date: daysAgo(12) }]   // grounds A only
+    : [{ company: 'Example Dental Toronto', signal: 'opened a second clinic', source_url: CLINIC, excerpt: SNIPPET_QUOTE.replace(' ...', ''), event_date: daysAgo(12) },
+       { company: 'Another Smile Clinic', signal: 'opening a clinic', source_url: CLINIC, excerpt: OTHER_QUOTE, event_date: daysAgo(12) }]
+  const x = await runFixture(f)
+  assert.equal(x.leads.find(l => l.company === 'Example Dental Toronto')?.review_reason, null, 'A grounded and verified')
+  assert.ok(x.leads.find(l => l.company === 'Another Smile Clinic'), `B is not lost: ${JSON.stringify(x.leads.map(l => [l.company, l.review_reason]))}`)
+})
+
+test('#381 runner (review): a run whose dollar guard has no room for the grounding call does not make it (a refusal there would hold the run\'s leads)', async () => {
+  const f = groundFx(); f.runBudget = JSON.stringify({ max_usd: 0.05 })
+  const x = await runFixture(f)
+  assert.ok(!x.calls.prompts.some(p => /^You research sales leads/.test(p)), 'no grounding call under a $0.05 budget')
+})
+
+import { boardQueries as bq } from '../lib/search/direct-queries.ts'
+test('#381 board queries (review): a request in another language lets the profile signals decide; genuine hiring asks that use "opening" survive; a business opening does not count', () => {
+  const de = { signals: ['hiring a sales rep'], where: ['Berlin'], language: 'de' }
+  assert.ok(bq('Unternehmen in Berlin, die einen Vertriebsmitarbeiter einstellen', de).length >= 1, 'non-English request: signals decide, as before')
+  assert.deepEqual(bq('Unternehmen in Berlin, die einen Vertriebsmitarbeiter einstellen', { ...de, language: 'en' }), [], 'an English profile reads the request only')
+  for (const r of ['Austin roofing companies with an opening for an estimator', 'Austin companies with job openings for project managers', 'Austin firms opening a position for a receptionist']) assert.ok(bq(r, { signals: [], where: ['Austin'] }).length >= 1, r)
+  for (const r of ['Roofing companies opening their second branch in Austin', 'Restaurants in Vancouver that are opening a second location']) assert.deepEqual(bq(r, { signals: ['hiring a manager'], where: ['Austin'] }), [], r)
+})
+
+test('#381 hosts (review): a walled name must be the registrable domain, not any label', () => {
+  for (const u of ['https://threads.acme.com/x', 'https://indeed.com.evil.example/x', 'https://x.acme.io/y']) assert.equal(isLoginWalled(u), false, u)
+  for (const u of ['https://www.glassdoor.co.uk/x', 'https://au.indeed.com/x', 'https://www.linkedin.com/jobs/1']) assert.equal(isLoginWalled(u), true, u)
+})

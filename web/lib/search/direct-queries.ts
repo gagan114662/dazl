@@ -157,8 +157,11 @@ export const hasHiringSignal = (request: string, signals: string[]): boolean => 
 // Whether local-service categories (dental, roofing) should skip the board query too is left to a decision: the NYC dental acceptance fixtures pin it today.
 // "opening a second location" is a business opening, not a job opening: the shared hiring words match any "opening" (Vancouver restaurants, a real request).
 const BUSINESS_OPENING = /\bopen(?:ing|s|ed)?\s+(?:a|an|its|our|their|the|new|second|third|another|up)\b/gi
-export function boardQueries(request: string, icp: { signals?: string[]; where?: string[] }): string[] {
-  if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), [])) return []
+// The hiring words this module knows are mostly English: a request in another language (the profile's `language` is not 'en') can express hiring in words it does not
+// recognise, so there the profile's signals keep deciding, as before. (The job-board SOURCE, runner.ts hiringRequest, makes its own decision and still reads the signals.)
+export function boardQueries(request: string, icp: { signals?: string[]; where?: string[]; language?: string }): string[] {
+  const english = !icp.language || icp.language === 'en'
+  if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), english ? [] : icp.signals ?? [])) return []
   return directQueries(request, icp.signals ?? [], icp.where ?? [])
 }
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
