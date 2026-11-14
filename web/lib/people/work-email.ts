@@ -32,7 +32,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { guessFromLearnedFormat, type GuessView } from './email-formats.ts'
+import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
 import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
@@ -126,12 +126,13 @@ export function workEmailsForLeads(db: Database.Database, tenantId: string, lead
 
 // What the Leads page needs for every work-email block on it, read once with the list (#1182): the providers answer (the same for every
 // lead, except the test-only fixture lead, whose answer is adjusted exactly as its own GET does) and the stored lookups by lead.
-export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]> }
+// guesses (#1036): the shown guessed addresses by lead (flag off or none: {}), so a reload shows a stored guess with no per-lead request.
+export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, GuessView[]> }
 export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
   const providers = workEmailProviders(db, tenantId, env)
   const providers_by_lead: Record<string, WorkEmailProviders> = {}
   for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
-  return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)) }
+  return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)), guesses: guessesForLeads(db, tenantId, leads.map(l => l.id), env) }
 }
 
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).

@@ -10,6 +10,8 @@ import { guessCopy, mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL
 type Lookup = ShownLookup
 type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
 const guessKey = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase()
+const isGuess = (x: unknown): x is GuessShown => !!x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string'
+const guessMap = (list: unknown): Record<string, GuessShown> => { const n: Record<string, GuessShown> = {}; if (Array.isArray(list)) for (const x of list) if (isGuess(x)) n[guessKey(x.person)] = x; return n }
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
@@ -18,7 +20,7 @@ export interface WorkEmailTarget { key: string; name: string; title: string | nu
 // initial (#1182): what the page read once with the lead list (providers + this lead's stored lookups). With it the block renders the stored
 // result at once (an address found earlier, an unfinished lookup's warning, "Check mailbox", the exact cost line) and makes NO request on mount;
 // the per-lead read stays only for a click and for following a lookup another tab has in flight.
-export interface WorkEmailInitial { providers: Providers | null; lookups: unknown }
+export interface WorkEmailInitial { providers: Providers | null; lookups: unknown; guesses?: unknown }
 export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
   return <WorkEmailFor key={p.leadId} {...p} />
 }
@@ -33,11 +35,12 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
   // guessed addresses (learned format), by person: the GET read survives a reload, the POST answer shows at once
-  const [guesses, setGuesses] = useState<Record<string, GuessShown>>({})
+  // The page's list read carries the stored guesses (initial.guesses), so they show on a fresh load and a reload with no per-lead request.
+  const [guesses, setGuesses] = useState<Record<string, GuessShown>>(() => guessMap(initial?.guesses))
   // The key is the person's name exactly as stored (case and spacing folded, punctuation kept): a letters-only key made "Ann A. Bell"
   // and "Anna Bell" one person. `replace`: the GET read is the whole truth, so a guess the server no longer shows is dropped; the POST
   // answer carries one person's guess and only merges.
-  const takeGuesses = useCallback((list: unknown, replace = false) => { if (!Array.isArray(list)) return; setGuesses(g => { const n: Record<string, GuessShown> = replace ? {} : { ...g }; for (const x of list) if (x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string') n[guessKey((x as GuessShown).person)] = x as GuessShown; return n }) }, [])
+  const takeGuesses = useCallback((list: unknown, replace = false) => { if (!Array.isArray(list)) return; setGuesses(g => ({ ...(replace ? {} : g), ...guessMap(list) })) }, [])
 
   const [reads, setReads] = useState(0)
   const mounted = useRef(false)
@@ -53,6 +56,10 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
   }, [leadId, takeGuesses])
 
   const hasInitial = initial !== undefined
+  // The list was read again (a scan finished, a filter changed): its guesses are the whole truth for this lead, like the per-lead GET.
+  const initialGuesses = initial?.guesses
+  const firstGuesses = useRef(initialGuesses)
+  useEffect(() => { if (initialGuesses !== firstGuesses.current) { firstGuesses.current = initialGuesses; if (Array.isArray(initialGuesses)) takeGuesses(initialGuesses, true) } }, [initialGuesses, takeGuesses])
   useEffect(() => {
     mounted.current = true
     if (!lazy && !hasInitial) load()

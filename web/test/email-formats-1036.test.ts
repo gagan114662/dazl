@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createJob } from '../lib/scan/store.ts'
-import { findWorkEmail, workEmailsFor } from '../lib/people/work-email.ts'
+import { findWorkEmail, workEmailPageRead, workEmailsFor } from '../lib/people/work-email.ts'
 import { confirmedAddressesAt, guessesForLead, guessFor, guessFromLearnedFormat, learnedFormat, rankConfirmed } from '../lib/people/email-formats.ts'
 import { reserveVerifySlot, VerifySlotRefused } from '../lib/people/email-pattern.ts'
 import { mailboxCheckUsage } from '../lib/people/verify-usage.ts'
@@ -261,4 +261,35 @@ test('#1036 review fixes 3: a foreign-area play gets no guess even with no key; 
   const many = seed(); twoConfirmed(many.db)
   for (const [p, a] of [['Dana Lee, Practice Manager', `dana.lee@${SITE}`], ['Owen Park, Owner', `owen.park@${SITE}`]]) many.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('A', ?, ?, ?, 'first.last', ?, 'guessed', 'high')").run(many.lead, p, a, BASIS)
   assert.deepEqual(guessesForLead(many.db, 'A', many.lead, ON).map(g => g.address).sort(), [`dana.lee@${SITE}`, `owen.park@${SITE}`])
+})
+
+// Review of c0a39f1d (BLOCKER 1): since #1182 the Leads page reads once with the list and the panel makes no per-lead GET on mount, so a stored
+// guess has to ride in that list read or it never shows after a reload.
+test('#1036 review c0a39f1d: the Leads page read carries every lead\'s stored guess in a fixed number of queries (not-found row, flag off, other tenant, refused address)', async () => {
+  const s = seed(); twoConfirmed(s.db)
+  s.db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, detail, updated_at) VALUES ('A', ?, ?, 'not_found', 'pdl', NULL, 'no match', ?)").run(s.lead, DANA, NOW) // no Find button is left to click
+  await findWorkEmail(s.db, 'A', s.lead, DANA, { env: ON, now: NOW })
+  const page = (leads: { id: string }[], env: Record<string, string | undefined> = ON, tenant = 'A') => workEmailPageRead(s.db, tenant, leads, env)
+  const got = page([{ id: s.lead }]).guesses
+  assert.deepEqual(got[s.lead]?.map(g => [g.person, g.address, g.label]), [['Dana Lee', `dana.lee@${SITE}`, 'guessed, unverified']], 'a stored guess is in the list read, beside a not_found row')
+  assert.deepEqual(got[s.lead], guessesForLead(s.db, 'A', s.lead, ON), 'identical to the per-lead read')
+  assert.deepEqual(page([{ id: s.lead }], {}).guesses, {}, 'flag off: nothing in the list read')
+  assert.deepEqual(page([{ id: s.lead }], ON, 'B').guesses, {}, "another tenant's page never carries it")
+  // fixed number of reads however many leads the page has (no N+1 on a request path)
+  const real = s.db.prepare.bind(s.db); const sqls: string[] = []
+  s.db.prepare = ((q: string) => { sqls.push(q); return real(q) }) as typeof s.db.prepare
+  const ids = Array.from({ length: 30 }, (_, i) => (i + 1).toString(16).padStart(24, '0'))
+  const one = workEmailPageRead(s.db, 'A', [{ id: s.lead }], ON); const oneQ = sqls.length; sqls.length = 0
+  const many = workEmailPageRead(s.db, 'A', [{ id: s.lead }, ...ids.map(id => ({ id }))], ON)
+  assert.equal(sqls.length, oneQ, '31 leads cost the same number of queries as 1')
+  assert.deepEqual(many.guesses, one.guesses)
+  s.db.prepare = real
+  // a guess whose address a lookup flagged undeliverable is not carried
+  s.db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, detail, updated_at, mailbox_check) VALUES ('A', ?, 'Other Person|Owner', 'unverified', 'pdl', ?, 'x', ?, 'undeliverable')").run(s.lead, `dana.lee@${SITE}`, NOW)
+  assert.deepEqual(page([{ id: s.lead }]).guesses, {}, 'refused / undeliverable address is never shown')
+  // the panel seeds from initial.guesses and resyncs when the list is re-read, with no mount-time request (source-shape assertion: no render harness here)
+  const panel = readFileSync(new URL('../app/app/leads/work-email.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /useState<Record<string, GuessShown>>\(\(\) => guessMap\(initial\?\.guesses\)\)/)
+  assert.match(panel, /if \(!lazy && !hasInitial\) load\(\)/, 'no per-lead GET on mount when the page already read')
+  assert.match(readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8'), /guesses: workEmailPage\.guesses\?\.\[leadId\] \?\? NO_GUESSES/)
 })

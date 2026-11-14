@@ -136,7 +136,7 @@ const storedGuesses = (db: Database.Database, tenantId: string, leadId: string):
 }
 
 // One person's guess, as it may be SHOWN, from the lead's stored guessed rows.
-function viewOf(db: Database.Database, tenantId: string, leadId: string, rows: GuessRow[], personName: string, cache: DomainEvidence): GuessView | null {
+function viewOf(db: Database.Database, tenantId: string, leadId: string, rows: GuessRow[], personName: string, cache: DomainEvidence, refused?: Set<string>): GuessView | null {
   const want = splitName(personName)
   if (!want) return null
   const mine = rows.filter(r => { const n = splitName(r.person.split(',')[0] ?? ''); return !!n && n.first === want.first && n.last === want.last })
@@ -155,7 +155,9 @@ function viewOf(db: Database.Database, tenantId: string, leadId: string, rows: G
   // The copy says "from addresses your workspace confirmed", so an address with no such basis today must not be shown.
   if (!learned || learned.format !== r.format || `${localFor(learned.format, want)}@${domain}` !== r.address.toLowerCase()) return null
   // the same address already answered by a lookup as refused / undeliverable: it is not shown as a guess either
-  try { if (db.prepare("SELECT 1 FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND lower(address) = ? AND mailbox_check IN ('refused','undeliverable') LIMIT 1").get(tenantId, leadId, r.address.toLowerCase())) return null } catch (e) { if (!noTable(e)) throw e }
+  // (a page read hands in the refused set it read once for every lead; a single read asks per guess)
+  if (refused) { if (refused.has(`${leadId}|${r.address.toLowerCase()}`)) return null }
+  else try { if (db.prepare("SELECT 1 FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND lower(address) = ? AND mailbox_check IN ('refused','undeliverable') LIMIT 1").get(tenantId, leadId, r.address.toLowerCase())) return null } catch (e) { if (!noTable(e)) throw e }
   const label = candidateLabel(r)
   const verified = label === 'guessed, verified'
   return {
@@ -181,4 +183,34 @@ export function guessesForLead(db: Database.Database, tenantId: string, leadId: 
   const cache: DomainEvidence = new Map()
   const people = [...new Set(rows.map(r => r.person.split(',')[0] ?? r.person))]
   return people.map(p => viewOf(db, tenantId, leadId, rows, p, cache)).filter((g): g is GuessView => !!g)
+}
+
+// #1036 (review of c0a39f1d): the shown guesses of EVERY lead a Leads page lists, in a fixed number of reads however many leads there are:
+// one tenant-scoped query for the guessed rows (chunked like workEmailsForLeads), one for the addresses a lookup flagged refused /
+// undeliverable, and each domain's confirmed addresses + learned format worked out once for the whole page. Same guards as the
+// per-lead read (viewOf); only leads with at least one shown guess appear, and flag off returns {} without touching the database.
+export function guessesForLeads(db: Database.Database, tenantId: string, leadIds: string[], env: Record<string, string | undefined> = process.env): Record<string, GuessView[]> {
+  const out: Record<string, GuessView[]> = {}
+  if (!emailGuessEnabled(env)) return out
+  const ids = [...new Set(leadIds.filter(id => typeof id === 'string' && /^[a-f0-9]{24}$/.test(id)))]
+  const byLead = new Map<string, GuessRow[]>(), refused = new Set<string>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200), marks = part.map(() => '?').join(',')
+    try {
+      for (const r of db.prepare(`SELECT lead_id, person, address, format, confidence, verification, verifier, checked_at, country_basis, tier, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id IN (${marks}) AND tier = 'guessed' AND country_basis IS NOT NULL ORDER BY lead_id, address`).all(tenantId, ...part) as (GuessRow & { lead_id: string })[]) {
+        const { lead_id, ...row } = r; const l = byLead.get(lead_id) ?? []; l.push(row); byLead.set(lead_id, l)
+      }
+    } catch (e) { if (noTable(e)) return out; throw e }
+    if (byLead.size === 0) continue
+    try {
+      for (const r of db.prepare(`SELECT lead_id, lower(address) AS a FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (${marks}) AND address IS NOT NULL AND mailbox_check IN ('refused','undeliverable')`).all(tenantId, ...part) as { lead_id: string; a: string }[]) refused.add(`${r.lead_id}|${r.a}`)
+    } catch (e) { if (!noTable(e)) throw e }
+  }
+  const cache: DomainEvidence = new Map()
+  for (const [leadId, rows] of byLead) {
+    const people = [...new Set(rows.map(r => r.person.split(',')[0] ?? r.person))]
+    const shown = people.map(p => viewOf(db, tenantId, leadId, rows, p, cache, refused)).filter((g): g is GuessView => !!g)
+    if (shown.length) out[leadId] = shown
+  }
+  return out
 }
