@@ -4,6 +4,7 @@
 // Only a lead with a CONFIRMED website is looked up: off the company's own site a source must name that website to count (Hermes decision
 // on #1164), so a lead with no website can never keep a person and no search or model call is spent on it (counted: no_website). The website
 // is the lead's confirmed one, or the site its own source page is on (sourceOwnSite). A site that refused the scan's fetch is searched, never read.
+// A lead with no website at all is still looked up when the page it was found on can be read (a press release, a news story): only that page, no search.
 // Inside the scan's own caps: at most MAX_LEADS leads, one lookup per company, a wall-clock deadline, and the scan's spend ledger
 // still binds every search and model call (a refusal stops the pass, it is not an error).
 import type Database from 'better-sqlite3'
@@ -30,6 +31,10 @@ export function sourceOwnSite(company: string, sourceUrl: string | null): string
   return null
 }
 const BLOCKED = new Set(['blocked_by_site', 'needs_javascript'])
+// The lead's own source page can be read for the person it names (a press release, a news story) unless it is a social network (never requested:
+// LinkedIn above all) or it already refused the scan.
+const NEVER_READ = /(?:^|\.)(?:linkedin|facebook|instagram|twitter|x|tiktok|youtube)\.com$/i
+const readableSource = (url: string | null, hold: string | null): string | null => { try { const u = new URL(url ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && !NEVER_READ.test(u.hostname.toLowerCase()) && !(hold !== null && BLOCKED.has(hold)) ? u.toString() : null } catch { return null } }
 
 export const GROUNDED_CONNECTOR = 'research:person'
 export const GROUNDED_LABEL = 'quoted from a public source the lookup read (not verified as current staff)'
@@ -37,8 +42,8 @@ export const MAX_LEADS = 5          // lookups per scan, best leads first
 export const CONCURRENCY = 3
 export const DEADLINE_MS = 100_000  // the whole pass; a scan must finish in minutes
 
-export interface GroundedStats { eligible: number; own_source: number; no_website: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
-export const newGroundedStats = (): GroundedStats => ({ eligible: 0, own_source: 0, no_website: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
+export interface GroundedStats { eligible: number; own_source: number; source_page: number; no_website: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
+export const newGroundedStats = (): GroundedStats => ({ eligible: 0, own_source: 0, source_page: 0, no_website: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
 export interface GroundedOpts { provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; maxLeads?: number; deadlineMs?: number; alive?: () => boolean; stats?: GroundedStats; onStop?: (why: string) => void }
 
 export async function findGroundedPeople(db: Database.Database, tenantId: string, jobId: string, deps: GroundedOpts): Promise<number> {
@@ -55,25 +60,27 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
     const leads = db.prepare(`SELECT id, company, company_domain, source_url, review_reason FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ORDER BY (review_reason IS NOT NULL), COALESCE(fit, 0) DESC, rowid`).all(jobId) as { id: string; company: string; company_domain: string | null; source_url: string | null; review_reason: string | null }[]
     const rowsOf = db.prepare(ROWS_SQL)
     const seen = new Set<string>()
-    const todo: { id: string; company: string; domain: string; read: boolean }[] = []
+    const todo: { id: string; company: string; domain: string | null; evidence: string | null; read: boolean }[] = []
     for (const l of leads) {
       const ck = companyKey(l.company); if (seen.has(ck)) continue; seen.add(ck)
       if (leadPerson(rowsOf.all(l.id, tenantId), roleText, now)) continue   // already names its person: nothing to look up
       const confirmed = l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null
       const domain = confirmed ?? sourceOwnSite(l.company, l.source_url)
-      if (!domain) { stats.no_website++; continue }
+      // No website: the page the lead was found on is still its own evidence, and may name the person (one page read, one model call, no search).
+      const evidence = readableSource(l.source_url, l.review_reason)
+      if (!domain && !evidence) { stats.no_website++; continue }
       if (todo.length >= (deps.maxLeads ?? MAX_LEADS)) continue
-      if (!confirmed) stats.own_source++
+      if (!domain) stats.source_page++; else if (!confirmed) stats.own_source++
       // A lead held because its page refused the scan's fetch: its site is searched, and no page of it is requested again.
-      todo.push({ id: l.id, company: l.company, domain, read: !(l.review_reason !== null && BLOCKED.has(l.review_reason)) })
+      todo.push({ id: l.id, company: l.company, domain, evidence, read: !(l.review_reason !== null && BLOCKED.has(l.review_reason)) })
     }
     stats.eligible = todo.length
     const deadline = Date.now() + (deps.deadlineMs ?? DEADLINE_MS)
     let stop: string | null = null, next = 0
-    const one = async (l: { id: string; company: string; domain: string; read: boolean }) => {
+    const one = async (l: { id: string; company: string; domain: string | null; evidence: string | null; read: boolean }) => {
       stats.looked_up++
       let r: ResearchResult
-      try { r = await researchContact({ company: l.company, domain: l.domain, roles, where }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, readPages: l.read, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
+      try { r = await researchContact({ company: l.company, domain: l.domain, roles, where, evidenceUrl: l.evidence }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, readPages: l.read, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
       catch (e) {
         if (e instanceof SpendRefused) { stop ??= `spend:${e.reason}`; stats.failed[`spend_${e.reason}`] = (stats.failed[`spend_${e.reason}`] ?? 0) + 1; return }
         stats.failed.error = (stats.failed.error ?? 0) + 1; return

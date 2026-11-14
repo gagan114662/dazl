@@ -6,6 +6,9 @@
 // The AND wording, the ambiguous "and/or" and Test A are pinned to a snapshot recorded on #643's head (1b39c7a8 on main; same tree as da52cca1).
 // Synthetic pages, stubbed model / TinyFish / news / boards; invented companies; no network, no key, no credits.
 import test from 'node:test'
+// The snapshot pins the scan's calls as they were on #643's head. The grounded named-person step (#1102) came later and adds its own search and
+// model call after the scan; it has its own tests (grounded-people-step-1102) and is switched off here so the pin stays about the OR plan.
+process.env.GROUNDED_PEOPLE_ENABLED = '0'
 import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { buildSourcePrompt } from '../lib/sources/index.ts'

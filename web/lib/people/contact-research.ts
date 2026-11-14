@@ -37,7 +37,10 @@ const NOT_SHOWN = 'S?'   // never a real source id
 const NAME = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[\p{Lu}][\p{L}'’-]{1,24}(?:\s+[\p{Lu}]\.?)?(?:\s+[\p{Lu}][\p{L}'’-]{1,24}){1,2}$/u
 
 // domain: the lead's CONFIRMED website (never a guessed one; the caller must supply only a confirmed one, this lookup trusts it): off the company's own site a source is kept only when its text names this website, so with no confirmed website only the company's own page can ground a person.
-export interface ResearchInput { company: string; domain?: string | null; roles?: string[]; where?: string[] }
+// evidenceUrl: the page the LEAD was found on (a press release, a news story, a page of the company's site). It is this lead's own evidence, so a
+// person it names with a title at this company is this company's: no website tie is asked of it (the person must still be named next to the company).
+export interface ResearchInput { company: string; domain?: string | null; roles?: string[]; where?: string[]; evidenceUrl?: string | null }
+const samePage = (a: string, b: string | null | undefined) => { try { const x = new URL(a), y = new URL(b ?? ''); const p = (u: URL) => `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}`; return p(x) === p(y) } catch { return false } }
 export interface Source { id: string; url: string; title: string; text: string; kind: 'search' | 'page' }
 export interface ResearchPerson { name: string; title: string; linkedin: string | null; source_url: string; quote: string; place: 'agrees' | 'no_geography' | 'unconfirmed' }
 export type ResearchStatus = 'found' | 'none' | 'not_grounded' | 'search_failed' | 'model_failed' | 'bad_input'
@@ -105,7 +108,8 @@ export function researchPrompt(input: ResearchInput, sources: Source[]): string 
   ].join('\n')
   const dom = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const own = dom ? sources.filter(x => { const h = hostOf(x.url); return h === dom || h.endsWith(`.${dom}`) }).map(x => x.id) : []
-  let body = `${own.length ? `Sources on the company's own website: ${own.join(', ')}. When one of them names the person with the title, cite it rather than another site.\n` : ''}<<<SOURCES\n`
+  const evid = sources.filter(x => x.kind === 'page' && samePage(x.url, input.evidenceUrl)).map(x => x.id)
+  let body = `${evid.length ? `Source ${evid[0]} is the page this company was found on: when it names the person with the title at this company, cite it.\n` : ''}${own.length ? `Sources on the company's own website: ${own.join(', ')}. When one of them names the person with the title, cite it rather than another site.\n` : ''}<<<SOURCES\n`
   for (const s of sources) {
     const block = `[${s.id}] ${s.kind === 'page' ? 'PAGE' : 'RESULT'} ${s.url}\n${s.title}\n${s.text}\n\n`
     if (Buffer.byteLength(head) + Buffer.byteLength(body) + Buffer.byteLength(block) + 12 > PROMPT_BYTES) break
@@ -304,8 +308,13 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   // "... is the Chief Revenue Officer at Acme, the leading AI Sales Platform": when THIS company follows the title directly ("at", "of", "@", a comma),
   // the title is tied to it by the sentence itself ("Speakers: Jane Roe, Chief Revenue Officer, Acme; ...", "said Jane Roe, CEO and co-founder of Acme"):
   // other capitalised words around it are the rest of the page, not another employer of hers.
+  // A page that is the company's by itself: its own confirmed site, or the page this lead was found on. There, "managing partner of the Chicago office",
+  // "CEO of the firm" name the company's OWN unit: the title is tied to the company by the sentence, as if it named it.
+  const dom1 = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
+  const pageTied = (!!dom1 && (hostOf(src.url) === dom1 || hostOf(src.url).endsWith(`.${dom1}`))) || (src.kind === 'page' && samePage(src.url, input.evidenceUrl))
+  const unitDirect = pageTied && /^[\s,]*(?:of|at|for|in)\s+(?:the|our|its)\s+(?:\p{Lu}[\p{L}.'’-]+\s+){0,3}(?:office|firm|practice|company|clinic)\b/u.test(rawAll.slice(at + span[1], at + span[1] + 70))
   // The title may run on in title words before the company ("CEO" quoted from "CEO and co-founder of Acme"). Never "|" or a dash: in a result title those lead to the SITE's name.
-  const direct = companySpans(rawAll, input.company).some(([c0]) => {
+  const direct = unitDirect || companySpans(rawAll, input.company).some(([c0]) => {
     const gap = rawAll.slice(at + span[1], c0)
     if (c0 < at + span[1] || gap.length > 40) return false
     const words = gap.split(/[\s,·]+/).filter(Boolean)
@@ -343,7 +352,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
     if (!plain && !thisCompany(ws.join(' '))) return { refused: 'title_at_another_organisation' }
     }
   }
-  const phrase = /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
+  const phrase = unitDirect ? null : /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
   if (phrase) {
     const cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean), pw = companyKey(phrase).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
     // The phrase must start with this company's name as whole words (the short form "Brightloop" for "Brightloop Dental Group" is a whole-word start too).
@@ -367,7 +376,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   if (isProfile) {
     // The existing parser decides: "Name - Title - Employer" / "Name - Title at Employer" with exactly this employer, not past, not ambiguous.
     return { refused: 'profile_not_a_search_result' }   // a profile is only ever a search result (LinkedIn is never fetched); groundPerson judges those
-  } else if (!onOwnSite) {
+  } else if (!onOwnSite && !(unitDirect && src.kind === 'page' && samePage(src.url, input.evidenceUrl))) {
     // The company is named right next to the person: within 40 characters of the name-and-title, with no sentence break and no
     // other capitalised name in between ("... acquired by Globex Health; Globex CEO Jane Roe" is Globex's CEO).
     const [a, b] = [at + span[0], at + span[1]]
@@ -379,12 +388,13 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
     if (!near) return { refused: 'source_does_not_name_company' }
   }
   const where = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
-  const place = onOwnSite ? 'no_geography' as const : placeAgreement(text, where, input.company)
+  const isEvidence = src.kind === 'page' && samePage(src.url, input.evidenceUrl)   // the lead's own source page, as read (never a search result that merely shares its URL)
+  const place = onOwnSite || isEvidence ? 'no_geography' as const : placeAgreement(text, where, input.company)
   // The product's own gate (people-search.ts): when the request names a place, the source must agree; one that names no place does not.
   if (place === 'mismatch') return { refused: 'another_place' }
   if (place === 'unconfirmed') return { refused: 'place_unconfirmed' }
   // A company NAME is not a company (company-tie.ts, Hermes decision on #1164): off the company's own site, the source must name the lead's CONFIRMED website.
-  if (!onOwnSite && !companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return { refused: 'company_unconfirmed' }
+  if (!onOwnSite && !isEvidence && !companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return { refused: 'company_unconfirmed' }
   // LinkedIn: only a URL a search returned, whose own result line the parser reads as this person at this company.
   let linkedin: string | null = null, linkedin_refused: string | null = null
   const lsrc = answer.linkedin_source ? sources.find(s => s.id === answer.linkedin_source) : isProfile ? src : null
@@ -471,10 +481,11 @@ export function groundPerson(answer0: Answer, sources0: Source[], input: Researc
 export const OWN_SITE_RETRY: readonly string[] = ['company_unconfirmed', 'place_unconfirmed', 'source_does_not_name_company']
 export function groundOnOwnSite(answer: Answer, sources: Source[], input: ResearchInput, o: { directOnly?: boolean } = {}): { person: ResearchPerson; linkedin_refused: string | null } | null {
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
-  if (!domain || !NAME.test(answer.name)) return null
+  if ((!domain && !input.evidenceUrl) || !NAME.test(answer.name)) return null
   for (const src of sources) {
     const h = hostOf(src.url)
-    if (!(h === domain || h.endsWith(`.${domain}`))) continue
+    // The company's own site, or the lead's own source page as read.
+    if (!((!!domain && (h === domain || h.endsWith(`.${domain}`))) || (src.kind === 'page' && samePage(src.url, input.evidenceUrl)))) continue
     const raw = tidy(src.kind === 'search' ? `${plain(src.title)}. ${plain(src.text)}` : `${src.title}. ${src.text}`), hay = norm(raw)
     if (raw.length !== hay.length) continue
     for (const n of spans(hay, answer.name).slice(0, 10)) for (const t of spans(hay, answer.title).slice(0, 10)) {
@@ -492,8 +503,12 @@ export function groundOnOwnSite(answer: Answer, sources: Source[], input: Resear
 export async function researchContact(input: ResearchInput, deps: ResearchDeps): Promise<ResearchResult> {
   const usage: ResearchResult['usage'] = { searches: 0, reads: 0, model: null, input_tokens: null, output_tokens: null }
   const base = (status: ResearchStatus, refused: string | null, extra: Partial<ResearchResult> = {}): ResearchResult => ({ status, person: null, refused, linkedin_refused: null, queries: [], sources: [], usage, ...extra })
-  const queries = researchQueries(input)
-  if (queries.length === 0) return base('bad_input', 'no_company')
+  const dom0 = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
+  // The lead's own source page, read when it is not on the company's site (that site is searched instead) and reading is allowed.
+  const evidence = input.evidenceUrl && /^https?:\/\//.test(input.evidenceUrl) && deps.readPages !== false && !(dom0 && (hostOf(input.evidenceUrl) === dom0 || hostOf(input.evidenceUrl).endsWith(`.${dom0}`))) ? input.evidenceUrl : null
+  // With no website, nothing a search returns can be tied to the company (company-tie.ts): when the source page can be read, no search is made.
+  const queries = !dom0 && evidence ? [] : researchQueries(input)
+  if (clean(input.company, 80).length < 2 || (queries.length === 0 && !evidence)) return base('bad_input', 'no_company')
   // An unpriced model is refused BEFORE any search is spent: the scan/account table, and for an owner the operator named
   // (their pool prices from its own table, lib/llm/spend-guard.ts) that table too.
   const model = deps.provider.configuredModel?.()
@@ -511,16 +526,18 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
     if (!r.ok) { failed = r.reason; if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth' || r.reason === 'disabled') break; continue }
     for (const h of r.hits) { const u = h.url.split('#')[0]; if (!seen.has(u)) { seen.add(u); hits.push(h) } }
   }
-  if (hits.length === 0) return base(failed ? 'search_failed' : 'none', failed ?? 'no_results', { queries })
+  if (hits.length === 0 && !evidence) return base(failed ? 'search_failed' : 'none', failed ?? 'no_results', { queries })
   const sources: Source[] = hits.slice(0, 20).map((h, i) => ({ id: `S${i + 1}`, url: h.url, title: plain(h.title).slice(0, 200), text: plain(h.snippet ?? '').slice(0, 400), kind: 'search' as const }))
   // One page read, only of the company's own site when a result is on its confirmed domain (a team / about page beats a snippet).
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const own = domain ? sources.find(s => { const h = hostOf(s.url); return h === domain || h.endsWith(`.${domain}`) }) : undefined
-  if (own && deps.readPages !== false) {
-    const r = await tfFetch(deps.db, deps.tenantId, [own.url], spent, tf)
+  const toRead = evidence ? { url: evidence, title: '' } : own
+  if (toRead && deps.readPages !== false) {
+    const r = await tfFetch(deps.db, deps.tenantId, [toRead.url], spent, tf)
     usage.reads++
-    if (r.ok && r.pages[0]) { const text = tidy(markdownToText(r.pages[0].text ?? '')).slice(0, PAGE_TEXT); if (text.length >= 80) sources.push({ id: `S${sources.length + 1}`, url: own.url, title: tidy(r.pages[0].title ?? own.title).slice(0, 200), text, kind: 'page' }) }
+    if (r.ok && r.pages[0]) { const text = tidy(markdownToText(r.pages[0].text ?? '')).slice(0, PAGE_TEXT); if (text.length >= 80) sources.push({ id: `S${sources.length + 1}`, url: toRead.url, title: tidy(r.pages[0].title ?? toRead.title).slice(0, 200), text, kind: 'page' }) }
   }
+  if (sources.length === 0) return base('none', 'source_page_unreadable', { queries })
   const listed = sources.map(s => ({ id: s.id, url: s.url, title: s.title, kind: s.kind }))
   // One model call, no retry (a retried paid call could be billed twice). A spend refusal propagates to the caller.
   const det = await provider.completeDetailed(deps.apiKey, researchPrompt(input, sources), deps.fetchImpl, MAX_OUTPUT_TOKENS)
