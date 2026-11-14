@@ -17,6 +17,7 @@ import { findCompanySitesWithBasis } from '../connectors/sitecrawl.ts'
 import { leadPerson } from './lead-person.ts'
 import { researchContact, MAX_READS, MAX_SEARCHES, type ResearchResult } from './contact-research.ts'
 import { limits } from '../search/tinyfish.ts'
+import { GROUNDED_LOOKUPS_PER_SCAN } from '../scan/run-budget.ts'
 import { NOT_GRADED_OUT, ROWS_SQL, SEARCHABLE_SQL } from './people-search.ts'
 
 // The lead's SOURCE page is on the company's own site (the page the lead was found on is hosted on a domain named after the company): that site is
@@ -48,7 +49,7 @@ export const readableSource = (url: string | null, hold: string | null): string 
 
 export const GROUNDED_CONNECTOR = 'research:person'
 export const GROUNDED_LABEL = 'quoted from a public source the lookup read (not verified as current staff)'
-export const MAX_LEADS = 5          // lookups per scan, best leads first
+export const MAX_LEADS = GROUNDED_LOOKUPS_PER_SCAN   // lookups per scan, best leads first (the count the price estimate states)
 export const CONCURRENCY = 3
 export const DEADLINE_MS = 100_000  // the whole pass; a scan must finish in minutes
 
@@ -131,12 +132,14 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
 // Whether the scan runs the step at all, and why not (the runner's trace note). Kill switch GROUNDED_PEOPLE_ENABLED=0; no search provider; the
 // operator's first-play people-search switch at 0; a scan on another vendor's key (the lookup asks for an Anthropic model); a free-trial scan; the
 // first play (first5), whose search, fetch and model counts are capped tightly and stated to the user up front.
-export function groundedPeopleSkip(o: { env?: Record<string, string | undefined>; searchEnabled: boolean; peopleCap: number | null; vendor: string; trial: boolean; firstPlay: boolean }): string | null {
+export function groundedPeopleSkip(o: { env?: Record<string, string | undefined>; searchEnabled: boolean; peopleCap: number | null; vendor: string; trial: boolean; firstPlay: boolean; paidFallback?: boolean; scheduled?: boolean }): string | null {
   if ((o.env ?? process.env).GROUNDED_PEOPLE_ENABLED === '0') return 'GROUNDED_PEOPLE_ENABLED=0'
   if (!o.searchEnabled) return 'TinyFish search is not configured: no lookup can run'
   if (o.peopleCap === 0) return 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people lookups on the first play / trial scans'
   if (o.vendor !== 'anthropic') return 'the grounded lookup runs on an Anthropic key and this scan uses another vendor'
   if (o.trial) return 'free-trial scans keep their reserve for the checks after the scan'
+  if (o.paidFallback === false) return 'paid steps are switched off for this run (paid_fallback=false)'
+  if (o.scheduled) return 'a scheduled run (a watch or a monitor) runs unattended under the counts it was confirmed with'
   if (o.firstPlay) return 'the first play stays inside its own small search and model budget: the lookup runs on full scans'
   return null
 }

@@ -261,7 +261,9 @@ test('#851 trial payer: the trial always runs under its reserve guard, so an unp
 
 test('#381 the estimate states the adaptive round in its maxima wherever the round can run (on by default; off with "0", on a trial or with paid steps off)', async () => {
   const { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } = await import('../lib/scan/run-budget.ts')
-  const priced = { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_PRICE_TINYFISH_FETCH_USD: '0.002' }
+  // The named-person lookups (#1102) add their own searches and pages to the same rows; they are pinned in test/grounded-council-1102 and
+  // switched off here so these maxima stay about the adaptive round and the website searches.
+  const priced = { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_PRICE_TINYFISH_FETCH_USD: '0.002', GROUNDED_PEOPLE_ENABLED: '0' }
   const rows = (e: ReturnType<typeof estimateRun>) => Object.fromEntries(e.rows.map(r => [r.id, r]))
   const on = rows(estimateRun({ budget: null, payer: 'you', env: priced }))
   // #1036 4b: plus the company-website searches after the scan (never on a trial, never with paid steps off)

@@ -136,6 +136,8 @@ test('council: when the scan does not run the step at all', () => {
   assert.match(groundedPeopleSkip({ ...on, peopleCap: 0 }) ?? '', /DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0/)
   assert.match(groundedPeopleSkip({ ...on, vendor: 'openai' }) ?? '', /another vendor/)
   assert.match(groundedPeopleSkip({ ...on, trial: true }) ?? '', /free-trial/)
+  assert.match(groundedPeopleSkip({ ...on, paidFallback: false }) ?? '', /paid steps/); assert.match(groundedPeopleSkip({ ...on, scheduled: true }) ?? '', /scheduled run/)
+  assert.equal(groundedPeopleSkip({ ...on, paidFallback: true, scheduled: false }), null)
 })
 
 test('council round 2: the deadline cancels a hanging page read and NO model call is started after it; an unsaved cost stops the pass; a hold that questions the page gives no site', async () => {
@@ -183,8 +185,28 @@ test('the company right before the title ("<Company> Managing Partner <Name> sai
     ['another firm before the title', '"A great hire," said Northgate Managing Partner Jane Roe. Acme Law declined to comment.', ans('Jane Roe', 'Managing Partner', 'Northgate Managing Partner Jane Roe')],
     ['a longer-named business', '"A great hire," said Acme Law Group Managing Partner Jane Roe.', ans('Jane Roe', 'Managing Partner', 'Managing Partner Jane Roe')],
     ['a former role', 'The firm thanked former Acme Law Managing Partner Jane Roe for her service.', A],
+    ['the company is only the end of a longer business name', '"Great hire," said North Acme Law Managing Partner Jane Roe.', A],
+    ['the same, joined by an ampersand', '"Great hire," said Smith & Acme Law Managing Partner Jane Roe.', A],
+    ['the same, hyphenated', '"Great hire," said Globex-Acme Law Managing Partner Jane Roe.', A],
+    ['not yet the title-holder', 'Future Acme Law Managing Partner Jane Roe spoke at the event.', A],
+    ['no longer the title-holder, another wording', 'Erstwhile Acme Law Managing Partner Jane Roe spoke at the event.', A],
     ['she moved elsewhere in the same clause', 'Acme Law Managing Partner Jane Roe has joined Globex Legal as chair.', A],
     ['another place in her clause, on a Chicago request', 'Acme Law Managing Partner Jane Roe of London said the team is growing.', A],
   ]
   for (const [what, text, a] of bad) assert.ok('refused' in groundPerson(a, ownPage(text), OWN), `${what}: ${why(groundPerson(a, ownPage(text), OWN))}`)
+})
+
+test('the price estimate states the lookups in its maxima, at the step\'s own limits and the guard\'s price; none on a trial, a first play or with paid steps off', async () => {
+  const { estimateRun } = await import('../lib/scan/price-estimate.ts')
+  const rb = await import('../lib/scan/run-budget.ts'); const gp = await import('../lib/people/grounded-people.ts'); const cr = await import('../lib/people/contact-research.ts'); const { scanModelPrice } = await import('../lib/scan/spend-cap.ts')
+  assert.equal(rb.GROUNDED_LOOKUPS_PER_SCAN, gp.MAX_LEADS); assert.equal(rb.GROUNDED_SEARCHES_PER_SCAN, gp.MAX_LEADS * cr.MAX_SEARCHES); assert.equal(rb.GROUNDED_READS_PER_SCAN, gp.MAX_LEADS * cr.MAX_READS)
+  assert.equal(rb.GROUNDED_MODEL.id, cr.CONTACT_RESEARCH_MODEL); assert.deepEqual(rb.GROUNDED_MODEL.usd_per_m, scanModelPrice(cr.CONTACT_RESEARCH_MODEL)); assert.equal(rb.GROUNDED_MODEL.outK * 1000, cr.MAX_OUTPUT_TOKENS)
+  const priced = { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_PRICE_TINYFISH_FETCH_USD: '0.002', DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' }
+  const rows = (e: ReturnType<typeof estimateRun>) => Object.fromEntries(e.rows.map(r => [r.id, r]))
+  const on = rows(estimateRun({ budget: null, payer: 'you', env: priced })), off = rows(estimateRun({ budget: null, payer: 'you', env: { ...priced, GROUNDED_PEOPLE_ENABLED: '0' } }))
+  assert.equal(on.tinyfish_search.units.max - off.tinyfish_search.units.max, 10); assert.equal(on.tinyfish_fetch.units.max - off.tinyfish_fetch.units.max, 5)
+  assert.equal(on.named_person_lookup.units.max, 5); assert.ok(on.named_person_lookup.usd!.max > 0.07 && on.named_person_lookup.usd!.max < 0.09, String(on.named_person_lookup.usd!.max))
+  assert.equal(off.named_person_lookup, undefined)
+  for (const e of [estimateRun({ budget: { paid_fallback: false }, payer: 'you', env: priced }), estimateRun({ budget: { first5: true }, payer: 'you', env: priced }), estimateRun({ budget: null, payer: 'trial', env: priced })]) assert.equal(rows(e).named_person_lookup, undefined)
+  assert.ok(rb.BUDGET_EXCLUDED_PATHS.some(p => /Named-person lookup after the scan/.test(p)))
 })

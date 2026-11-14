@@ -8,7 +8,7 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } from './run-budget.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, GROUNDED_LOOKUPS_PER_SCAN, GROUNDED_MODEL, GROUNDED_READS_PER_SCAN, GROUNDED_SEARCHES_PER_SCAN, groundedLookupsOn, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } from './run-budget.ts'
 import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
@@ -163,10 +163,16 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     // and a trial or a run with paid steps off gets none; a scheduled play run and a deployment without TinyFish also make none,
     // which the estimate cannot see, so there it overstates (never understates).
     const site = i.payer !== 'trial' && b?.paid_fallback !== false && env.SITECRAWL_ENABLED !== '0' ? SITE_SEARCHES_PER_SCAN : 0
-    const searchMax = (tfSearch ?? 0) * (searches + site) + (trialPeoplePrice ?? tfSearch ?? 0) * people
+    // #1102: the named-person lookups after the scan (grounded-people.ts). A MAXIMUM, with the step's own policy: none on a trial or with paid
+    // steps off (this branch is never a first play); a scheduled run, another vendor's key or no TinyFish also make none, so there it overstates.
+    const grounded = i.payer !== 'trial' && b?.paid_fallback !== false && groundedLookupsOn(env)
+    const gSearch = grounded ? GROUNDED_SEARCHES_PER_SCAN : 0, gRead = grounded ? GROUNDED_READS_PER_SCAN : 0
+    const searchMax = (tfSearch ?? 0) * (searches + site + gSearch) + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
-    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
-    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
+    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site + gSearch }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${gSearch ? `; plus at most ${gSearch} searches for the named-person lookups (at most ${GROUNDED_LOOKUPS_PER_SCAN} leads that still name nobody)` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
+    rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches + gRead }, usd: price(tfFetch, fetches + gRead), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}${gRead ? `; plus at most ${gRead} pages for the named-person lookups` : ''}` })
+    // (A scan whose own model has no listed price is refused whole: its estimate lists no priced model row, this one included.)
+    if (grounded && p) rows.push({ id: 'named_person_lookup', label: 'Named-person lookup (who to contact)', provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: `$${GROUNDED_MODEL.usd_per_m.in.toFixed(2)} in / $${GROUNDED_MODEL.usd_per_m.out.toFixed(2)} out per 1M tokens (${GROUNDED_MODEL.id})`, units: { min: 0, max: GROUNDED_LOOKUPS_PER_SCAN }, usd: { min: 0, max: modelCost(GROUNDED_MODEL.usd_per_m, GROUNDED_LOOKUPS_PER_SCAN, GROUNDED_MODEL.inK, GROUNDED_MODEL.outK)! }, capped, note: `At most ${GROUNDED_LOOKUPS_PER_SCAN} calls, one for each lead that still names nobody after the scan; only on an Anthropic key` })
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {

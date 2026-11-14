@@ -64,6 +64,16 @@ export const ADAPTIVE_FETCHES = 6
 // global TinyFish caps as every search. Same policy as the adaptive round: never a free-trial scan, never a first play, never a run
 // with paid_fallback=false, never a scheduled play run. The count lives here so the price estimate (bundled into the browser) states it in its maxima.
 export const SITE_SEARCHES_PER_SCAN = 6
+// #1102: after the scan, a lead that still names nobody gets ONE grounded named-person lookup (lib/people/grounded-people.ts): at most
+// GROUNDED_LOOKUPS_PER_SCAN leads, each at most 2 web searches, 1 page read and 1 Haiku call. Same policy as the website searches: never a
+// free-trial scan, never a first play, never a run with paid_fallback=false, never a scheduled play run; kill switch GROUNDED_PEOPLE_ENABLED=0.
+// The counts and the model call's worst case live here so the price estimate (bundled into the browser) states them in its maxima;
+// test/grounded-council-1102 pins them to the step's own limits and to the guard's price for the model.
+export const GROUNDED_LOOKUPS_PER_SCAN = 5
+export const GROUNDED_SEARCHES_PER_SCAN = GROUNDED_LOOKUPS_PER_SCAN * 2
+export const GROUNDED_READS_PER_SCAN = GROUNDED_LOOKUPS_PER_SCAN
+export const GROUNDED_MODEL = { id: 'claude-haiku-5-5', usd_per_m: { in: 0.5, out: 2.5 }, inK: 20, outK: 2 }   // per call: a 60 KB prompt at most, 2000 output tokens
+export const groundedLookupsOn = (env: Record<string, string | undefined>): boolean => (env.GROUNDED_PEOPLE_ENABLED ?? '').trim() !== '0'
 export const adaptiveDiscoveryOn = (env: Record<string, string | undefined>): boolean => (env.DAZL_ADAPTIVE_DISCOVERY_ENABLED ?? '').trim() !== '0'
 // Profile generation is ONE request with a known maximum size. icpPrompt JSON-encodes the 600-char request and 300-char seller
 // text, and JSON.stringify turns one control char (U+0000) into 6 ASCII bytes (\u0000), which beats a 3-byte BMP char, a 2-byte
@@ -87,6 +97,7 @@ export const BUDGET_EXCLUDED_PATHS = [
   `TinyFish search and fetch - bounded by COUNT, not dollars: at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan and ${DEFAULT_TINYFISH.tenantDaily} units per tenant per day (defaults); a scan you start that verifies no lead in its first round may make one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages (never a free-trial scan, a run with paid_fallback=false or a play's run; unless the operator has turned it off); after the scan, at most ${SITE_SEARCHES_PER_SCAN} more searches (counted on top of the per-scan searches above, under the same daily caps) find the website of leads whose source page links none (never a free-trial scan, a first play, a run with paid_fallback=false, or a watch's or monitor's scheduled run); what a unit costs is TinyFish's pricing, not known to dazl`,
   'Free sources: GDELT news search, public job boards, SEC Form D, the company-site crawl - no model cost',
   peopleSearchExclusion(PEOPLE_SEARCHES_MAX, false)!,
+  `Named-person lookup after the scan (full scans only; not a first play, a free-trial scan, a scheduled run or a run with paid steps off) - at most ${GROUNDED_LOOKUPS_PER_SCAN} leads that still name nobody: up to ${GROUNDED_SEARCHES_PER_SCAN} TinyFish searches and ${GROUNDED_READS_PER_SCAN} pages under the same daily counts, and ${GROUNDED_LOOKUPS_PER_SCAN} calls to ${GROUNDED_MODEL.id} on your key, counted against your spend limits`,
   'Autopilot and every outreach action (drafting, AI rewrite, follow-ups, replies) - separate features on their own keys and switches; a job with a budget does NOT start autopilot',
   'Weekly watches take their own budget (each weekly run is bounded separately, not the watch in total); CSV imports take the narrowing flags only, no max_usd',
   'Bring-your-own-key Apollo / People Data Labs enrichment is switched OFF only when the budget has max_usd or credit_enrichment=false; under judge=false or paid_fallback=false alone it still runs, on your own credits, unbounded',

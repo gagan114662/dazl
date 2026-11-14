@@ -150,7 +150,7 @@ const spans = (hay: string, needle: string): [number, number][] => [...hay.match
 // "Jane Roe - Owner", "Owner Jane Roe", "Jane Roe is the owner", "Dr. Jane Roe, Owner and lead dentist"; never "Jane Roe, receptionist
 // at ..., thanked owner" (another person's title further along the sentence).
 const JOINER = /^[\s,\-–—|:()·•]*(?:(?:is|was|as|the|our|its|their|a|an|dr\.?)[\s,\-–—|:()·•]*){0,3}$/i
-const PAST_NEAR = /\b(?:former|formerly|ex|previous|previously|past|retired|outgoing|late|then)\b|\bex-/i
+const PAST_NEAR = /\b(?:former|formerly|ex|previous|previously|past|retired|outgoing|late|then|erstwhile|one-?time|future|soon-to-be|incoming|nominee|designate|candidate)\b|\bex-|-elect\b/i
 // A title that is a decision-maker's by itself (used when the title matches none of the scan's own roles).
 // The title STARTS with a top role ("Owner and lead dentist", "Founder & CEO"), and nothing in it makes it another job ("Product Owner",
 // "Principal Engineer", "Chief of Staff to the CEO", "CEO's assistant").
@@ -211,6 +211,15 @@ function profilePosition(answer: Answer, src: Source, input: ResearchInput): { t
     return { title }
   }
   return { refused: past ? 'past_role' : 'profile_does_not_give_title_at_company' }
+}
+
+// The company's name may be only the END of a longer business name ("North Acme Law", "Lake Summit Dental", "Smith & Acme Law", "Globex-Acme Law"):
+// true when the word right before it is capitalised or a number (and not an ordinary sentence word), or is joined to it by & - /.
+function longerNameBefore(raw: string, c0: number): boolean {
+  const before = raw.slice(Math.max(0, c0 - 40), c0)
+  if (/[&\/-]\s*$/.test(before)) return true
+  const w = /([\p{L}\p{N}][\p{L}\p{N}'’.-]*)\s+$/u.exec(before)?.[1]
+  return !!w && /^[\p{Lu}\p{N}]/u.test(w) && !/^(?:The|A|An|At|By|From|With|Said|Says|And|But|For|Our|Meet)$/.test(w)
 }
 
 // Every field the model returned is checked against the sources it was shown. Returns the person, or the first check that failed.
@@ -325,7 +334,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   })
   // The company right BEFORE the title-and-name ("Acme Law Managing Partner Jane Roe said", "Acme Law's CEO, Jane Roe"): the same tie from the other
   // side. Only when the title comes first in the span (company, title, name) and nothing but a possessive or a space stands between.
-  const directBefore = !direct && titles[0][0] < names[0][0] && companySpans(rawAll, input.company).some(([, c1]) => c1 <= at + span[0] && /^(?:['’]s)?\s{1,2}$/.test(rawAll.slice(c1, at + span[0])))
+  const directBefore = !direct && titles[0][0] < names[0][0] && companySpans(rawAll, input.company).some(([c0, c1]) => c1 <= at + span[0] && /^(?:['’]s)?\s{1,2}$/.test(rawAll.slice(c1, at + span[0])) && !longerNameBefore(rawAll, c0))
   // ... but the rest of the person's OWN clause (to the next ";" or the sentence end) is still read: "CEO of Acme Dental's London branch", "CEO of Acme,
   // was named CEO of Globex Health", "Managing Partner, Acme Law, London" name another place or organisation for her.
   // (Cut on the masked copy, same length as the raw text: the period of "Inc." / "Corp." right after the name does not end her clause.)
