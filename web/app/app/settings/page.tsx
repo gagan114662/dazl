@@ -40,6 +40,7 @@ async function SettingsBody() {
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 mb-6 text-xs font-mono uppercase tracking-wider">
         {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
+      <p className="text-sm mb-4" data-testid="business-link"><a className="underline underline-offset-4 inline-flex items-center min-h-11" href="/app/business">See and edit everything dazl knows about your business</a></p>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel /></div>
       <div id="account" className="scroll-mt-6"><AccountPanel /></div>
