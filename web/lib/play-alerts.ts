@@ -127,12 +127,26 @@ export function* learnAlertKeysStep(t: Tx, tenantId: string, k: AlertKeys, jobId
   if (held) yield* holdKeysStep(t, tenantId, k, held, now)
   return held
 }
+// The kind an alert records for a lead, and compares on. A day proven by a job board's own publish date (event_date_proof
+// 'ats_structured') is the POSTING's event whatever the model grader called the lead: the grader's first listed signal changes from
+// run to run for one posting, so the raw kind would make a relabel a new event (#1193, the same defect #882 removed from the monitor's
+// own event rows). Every other lead keeps its own label (null = unlabelled).
+export const alertKindOf = (l: { signal_kind: string | null; event_date_proof?: string | null }): string | null =>
+  l.event_date_proof === 'ats_structured' ? 'hiring' : l.signal_kind ?? null
+// The labels that describe a posting rather than another dated event. A record written before the kind was normalised may hold any
+// of them for a board-dated posting, so a board-dated lead matches them all (no migration).
+export const HIRING_KINDS: ReadonlySet<string> = new Set(['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence'])
 // The same event as the one the holder alerted: the same day, and the same kind when both sides name one. One run can
 // store an event with no kind and the next label it (production did for OpenRelay and Photon), so an event with no kind
 // on either side cannot be told apart from another event of that company on that day and counts as the same; two
 // events that each name a different kind on one day are two events. A holder with no date at all counts as the same.
-export const sameEventAs = (held: Pick<PlayAlert, 'event_date' | 'signal_kind'>, l: { event_date: string | null; signal_kind: string | null }): boolean =>
-  held.event_date == null || (held.event_date === l.event_date && (held.signal_kind == null || l.signal_kind == null || held.signal_kind === l.signal_kind))
+// A board-dated lead (alertKindOf 'hiring') is the same event as a holder that alerted that day under ANY hiring-type label.
+export const sameEventAs = (held: Pick<PlayAlert, 'event_date' | 'signal_kind'>, l: { event_date: string | null; signal_kind: string | null; event_date_proof?: string | null }): boolean => {
+  if (held.event_date == null) return true
+  if (held.event_date !== l.event_date) return false
+  const kind = alertKindOf(l)
+  return held.signal_kind == null || kind == null || held.signal_kind === kind || (kind === 'hiring' && HIRING_KINDS.has(held.signal_kind))
+}
 
 // --- What was alerted before this table existed ---------------------------------------------------------------------
 // Once per account, in the caller's transaction and under the account's claim lock (take lockAlertsStep first): the

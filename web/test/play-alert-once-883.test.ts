@@ -9,8 +9,8 @@
 // into the window), OpenRelay and Photon are four stored rows as they are.
 // Each run goes through the production steps: createWatch -> a run's job and leads -> the runner's mark (writeWatchLeads,
 // the Db-layer twin of markWatchLeads) -> the mail pass (sendPlayRunMails), and for monitors createMonitor ->
-// runDueMonitors -> collectMonitorResults. A monitor lead is given date_status 'verified' by hand: no scan writes that
-// value today (the open finding on #882), and that detector is not what this test is about.
+// runDueMonitors -> collectMonitorResults. A monitor lead is stored the way the scanner stores a proven event day today:
+// date_status 'unverified' and event_date_proof 'page_bound' (the monitor reads the proof; no scan writes date_status 'verified', #882).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomBytes } from 'node:crypto'
@@ -71,8 +71,8 @@ async function play(db: Db, t: string, query: string, at: number): Promise<strin
 }
 async function addLead(db: Db, job: string, l: L): Promise<string> {
   const id = id24()
-  await db.run(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score, fit, event_date, date_status, confidence, review_reason, signal_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, job, l.company, l.domain ?? null, l.signal, l.url, l.score, l.fit, l.date ?? null, l.dateStatus ?? 'undated', l.conf ?? null, l.review ?? null, l.kind ?? null])
+  await db.run(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score, fit, event_date, date_status, event_date_proof, confidence, review_reason, signal_kind) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, job, l.company, l.domain ?? null, l.signal, l.url, l.score, l.fit, l.date ?? null, l.dateStatus === 'verified' ? 'unverified' : l.dateStatus ?? 'undated', l.dateStatus === 'verified' ? 'page_bound' : null, l.conf ?? null, l.review ?? null, l.kind ?? null])
   return id
 }
 // One run of a weekly / daily play that stored `leads`, up to the point the scan runner leaves it: leads marked by the
