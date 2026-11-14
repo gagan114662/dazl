@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { eventQueries, hiringQueryForNonHiringRequest, requestAsksHiring } from '../lib/search/direct-queries.ts'
 import { withExclusions, pickFetchUrls, isLoginWalled, QUERY_CAP } from '../lib/search/tinyfish.ts'
-import { fetchRankFor, pageKindRank } from '../lib/scan/runner.ts'
+import { fetchRankFor, oneReadPerStory, pageKindRank } from '../lib/scan/runner.ts'
 import { planRetry } from '../lib/scan/retry-plan.ts'
 
 interface Job { job: string; query: string; icp: { where: string[]; signals: string[] }; queries: string[]; urls: { url: string; selected: boolean }[]; candidates: { company: string; url: string; fate: string }[] }
@@ -139,4 +139,36 @@ test('#381 (review) runner: the leaked hiring query is not sent, request-built e
     'Fintech startups in Berlin, Germany raised a funding round press release',
   ], 'the model query first, the request-built queries behind it')
   for (const q of sent) assert.match(q, /-site:facebook\.com -site:instagram\.com -site:linkedin\.com -site:youtube\.com -site:tiktok\.com$/, q)
+})
+
+// REAL: a chicago-law scan of this branch at 3 searches / 4 page reads (2026-11-14, ~/work/verify/yield/disc/disc-574976bb-3x4-chicago-law-run1.err on the builder PC).
+// Its three queries all asked about "opened a new office" (the request's second event, "expanded a practice group", was never asked), and two of its four page reads
+// went to one press release on two sites. Queries and addresses below are copied from that log; the titles are the headline the addresses carry (titles were not logged).
+test('#381 (real scan) a free query slot goes to the event nobody asked about yet; an event the queries already cover goes last', () => {
+  const request = 'Law firms in Chicago, Illinois that opened a new office or expanded a practice group in the last 90 days'
+  const sent = ['Chicago law firm opened new office press release', 'law firm new office Chicago managing partner']
+  assert.equal(eventQueries(request)[0], 'Law firms in Chicago, Illinois opened a new office announcement', 'with nothing asked yet: the request\'s own order')
+  assert.equal(eventQueries(request, sent)[0], 'Law firms in Chicago, Illinois expanded a practice group announcement', 'what the real scan should have sent third')
+  assert.equal(eventQueries(request, [...sent, 'Chicago law firm expanded practice group'])[0], 'Law firms in Chicago, Illinois opened a new office announcement', 'both covered: the request\'s order again')
+})
+
+test('#381 (real scan) one page read per story: the syndicated copy of a press release is read after the other stories, never instead of them', () => {
+  const read = [
+    'https://ogletree.com/media-center/press-releases/2026-10-26/ogletree-deakins-expands-chicago-office-with-three-attorneys-including-shareholder-christina-wernick',
+    'https://prnewswire.com/news-releases/zayed-law-significantly-expands-chicago-office-302899256.html',
+    'https://easternprogress.com/zayed-law-significantly-expands-chicago-office/article_98792e10-fcbb-544e-8326-dff51883e6bd.html',
+    'https://karnsandkarns.com/press/karns-karns-personal-injury-and-accident-attorneys-opens-new-office-location-in-lincoln-park-chicago',
+  ]
+  const next = 'https://crokefairchild.com/2026/10/croke-fairchild-duarte-beres-and-point-of-difference-strategies-announce-move-to-new-offices-at-222-n-lasalle-street'   // a real result of the same scans, not read
+  const hits = [...read, next].map(url => ({ url, title: '' }))
+  const base = fetchRankFor(new Map(hits.map(h => [h.url, { date: null, title: '' }])), 90, false, new Date('2026-11-14T00:00:00Z'), false)
+  assert.deepEqual(pickFetchUrls(hits.map(h => h.url), 4, base), read, 'before: what the real scan read (both Zayed Law copies)')
+  const picked = pickFetchUrls(hits.map(h => h.url), 4, oneReadPerStory(hits, base))
+  assert.deepEqual([...picked].sort(), [read[0], read[1], read[3], next].sort(), 'four different stories')
+  // nothing is excluded: with a free slot the copy is still read
+  assert.equal(pickFetchUrls(hits.map(h => h.url), 5, oneReadPerStory(hits, base)).length, 5)
+  // the same headline on two addresses that share no slug (title match), and two different stories of one site
+  const t = [{ url: 'https://a.example/x1', title: 'Acme Law opens a second Chicago office | A News' }, { url: 'https://b.example/y2', title: 'Acme Law opens a second Chicago office - B Wire' }, { url: 'https://a.example/x3', title: 'Beta Law expands its tax practice group | A News' }]
+  const r = oneReadPerStory(t, () => 0)
+  assert.deepEqual(t.map(h => r(h.url)), [0, 0.9, 0])
 })

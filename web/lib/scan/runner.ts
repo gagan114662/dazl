@@ -1101,7 +1101,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     // how many: one for each model query dropped, plus the slots the model was never asked to fill (its cap of 6). A model that answers with fewer queries than it
     // was asked for is not topped up: the search count, and so the cost where searches are priced, stays what the plan asked for.
     const room = (sanitized.length - modelQs.length) + Math.max(0, budgetN - direct.length - tech.length - modelQueries)
-    const filler = sanitizeQueries(eventQueries(job.query!), job.query!).filter(x => !seenQ.has(x.toLowerCase())).slice(0, room)
+    const filler = sanitizeQueries(eventQueries(job.query!, modelQs), job.query!).filter(x => !seenQ.has(x.toLowerCase())).slice(0, room)
     q = withExclusions(withGeography([...direct, ...tech, ...modelQs, ...filler], icp.where).slice(0, budgetN), job.query!)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
@@ -1128,7 +1128,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
   const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, requestAsksHiring(job.query!, icp))   // the same rule as the board queries and the query filter (review)
-  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
+  const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, oneReadPerStory(hits, fetchRank)) // exact duplicates removed, breadth first by host, nothing excluded; a second copy of one story is read after the other stories of its class
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
   if (diag && f.ok) diag.held = HeldText.seal(`${job.id}:${job.attempts}`, urls, f.pages) // sealed for THIS attempt: only text already fetched, never re-fetched
@@ -1167,6 +1167,23 @@ export function jobPagesBehindEvents(signals: string[] | null | undefined, query
 const EVENT_PATH = /\/(?:news|newsroom|press|press-releases?|media|media-center|blog|articles?|stories|announcements?|insights|updates)(?:\/|$)|\/(?:19|20)\d\d\/\d\d?(?:\/|$)|(?:19|20)\d\d-\d\d-\d\d/i
 const EVENT_WORDS = /\b(?:opens?|opening|opened|announce[sd]?|announcing|expands?|expanded|expansion|launch(?:es|ed)?|raises?|raised|funding|acquires?|acquired|joins?|appoints?|welcomes?|new[- ](?:office|location|store|clinic|plant|branch))\b/i
 const EVERGREEN_PATH = /^\/(?:(?:about|about-us|services?|locations?|contact|contact-us|team|our-team|careers?|home|pricing|products?|index(?:\.\w+)?)\/?)?$/i
+// #381 (real Chicago scan, 2026-11-14): two of the four page reads went to the same press release on two sites (prnewswire.com and a syndicating newspaper).
+// A later copy of a story (the same headline, or the same headline slug in the address) is ranked behind every other page of its class: order only, nothing excluded.
+const storyKeys = (url: string, title = ''): string[] => {
+  const words = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(w => w && !/^\d+$/.test(w))
+  const keys: string[] = []
+  const head = words(title.split(/\s[|\u2013\u2014-]\s/)[0] ?? ''); if (head.length >= 5) keys.push(head.join(' '))
+  try { for (const seg of new URL(url).pathname.split('/')) { const w = words(seg.replace(/\.[a-z0-9]{2,5}$/i, '')); if (w.length >= 5) keys.push(w.join(' ')) } } catch { /* no address keys */ }
+  return keys
+}
+export function oneReadPerStory(hits: { url: string; title?: string }[], rank: (u: string) => number): (u: string) => number {
+  const seen = new Set<string>(), later = new Set<string>()
+  for (const h of hits.map((h, i) => ({ h, i, r: rank(h.url) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.h)) {
+    const keys = storyKeys(h.url, h.title)
+    if (keys.some(k => seen.has(k))) later.add(h.url); else for (const k of keys) seen.add(k)
+  }
+  return (u: string) => later.has(u) ? Math.floor(rank(u)) + 0.9 : rank(u)
+}
 // hiringAsked: a job posting reports the event only when the request asks for hiring; for any other request it is the least useful readable page (the real
 // Chicago list, a request about new offices, held three unrelated Greenhouse postings).
 export function pageKindRank(url: string, title = '', hiringAsked = true, now = new Date()): number {

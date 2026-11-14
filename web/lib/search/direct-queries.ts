@@ -173,7 +173,10 @@ export function boardQueries(request: string, icp: { signals?: string[]; where?:
 // leave; they never replace a model query that follows the request.
 const HAPPENED = /\b(?:open(?:s|ed|ing)?|launch\w*|rais\w+|announc\w+|expand\w*|expansion|hir(?:e[ds]?|ing)|post(?:ed|ing)|acquir\w+|merg\w+|mov(?:ed|ing)|relocat\w+|appoint\w+|join(?:ed|ing)|add(?:ed|ing)|start(?:ed|ing)|switch\w*|migrat\w+|replatform\w*|rebrand\w*|redesign\w*|won|win(?:s|ning)?|clos(?:ed|ing)|receiv\w+|secur\w+|sign(?:ed|ing)|grow(?:n|ing)?|grew|new)\b/i
 const WINDOW = /\s*(?:in|within|over|during)\s+the\s+(?:last|past)\s+\d+\s+(?:days?|weeks?|months?|years?)\.?/gi
-export function eventQueries(request: string): string[] {
+// `asked`: the queries the scan already has. An event they already cover goes last, so a free slot goes to an event nobody asked about yet (a real Chicago scan sent
+// three queries about "opened a new office" and none about "expanded a practice group", the request's second event).
+const contentWords = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(w => w.length > 2 && !['the', 'and', 'new', 'for', 'that', 'are', 'its'].includes(w)).map(w => w.replace(/(?:ing|ed|es|s)$/, ''))
+export function eventQueries(request: string, asked: string[] = []): string[] {
   // only the request's FIRST sentence (what to find), without its opening verb: later sentences are instructions ("Exclude chains. Provide dated evidence and a
   // contact"), which must never become search words
   const first = request.split(/(?<=[.;!?])\s+|\n+/)[0] ?? ''
@@ -185,6 +188,9 @@ export function eventQueries(request: string): string[] {
   // negation ("not hiring") would search for the very thing the request excludes
   const events = m[2].split(/\s+or\s+(?:are\s+|is\s+|have\s+|has\s+)?/i).map(e => e.trim().replace(/^(?:are|is|have|has|had)\s+/i, ''))
     .filter(e => e.length >= 4 && HAPPENED.test(e) && !/^(?:not|no|never|without|don'?t|doesn'?t|didn'?t|haven'?t|hasn'?t)\b/i.test(e)).slice(0, 3)
+  const askedWords = new Set(asked.flatMap(contentWords))
+  const covered = (e: string) => { const w = contentWords(e); return w.length > 0 && w.filter(x => askedWords.has(x)).length / w.length >= 0.6 }
+  events.sort((a, b) => Number(covered(a)) - Number(covered(b)))   // stable: the request's own order inside each group
   const out: string[] = []
   for (const kind of ['announcement', 'news', 'press release']) for (const e of events) {
     if (kind === 'announcement' && /\bannounc/i.test(e)) { out.push(`${head} ${e}`); continue }   // "announced a new CEO announcement" says it twice
