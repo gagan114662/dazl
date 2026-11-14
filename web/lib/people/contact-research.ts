@@ -233,8 +233,9 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // (For a search result the window is the part the quote is in: the snippet, or the title line of a profile result; a page: the sentence and the one before.)
   const titleLen = tidy(src.title).length + 2
   const inTitle = at < titleLen
+  // A profile result whose quote is in the title line: the WHOLE result is the window (the snippet may say whose owner she is).
   const windowStart = src.kind === 'page' ? pLo : inTitle ? 0 : titleLen
-  const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll.slice(0, titleLen - 2) : rawAll.slice(titleLen)
+  const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll : rawAll.slice(titleLen)
   const left = windowText.slice(0, at + span[0] - windowStart), right = windowText.slice(at + span[1] - windowStart)
   const foreign = (seg: string) => foreignRun(seg.split(/\s+/).map(w => personWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) ? '' : w).join(' ').replace(/\s+/g, ' '))
   if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
@@ -249,7 +250,7 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   const CONNECT = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|welcomes?|opens?|opened)$/i
   // The words right after the company's name: a legal suffix, a requested place or an ordinary connector / title word; anything business-like in
   // lower case ("Brightloop Dental supplies store") is another business.
-  const strayAfterCompany = (words: string[]): boolean => { const w0 = words.slice(0, 1)[0]; return !!w0 && /^\p{Ll}/u.test(w0) && !w0.includes('.') && w0.toLowerCase() !== (input.domain ?? '').toLowerCase().split('.')[0] && !(CONNECT.test(w0) || FILLER.test(w0) || SUFFIX_OK.test(w0) || whereWords.has(w0.toLowerCase())) }
+  const strayAfterCompany = (words: string[]): boolean => { const w0 = words.slice(0, 1)[0]; return !!w0 && /^\p{Ll}/u.test(w0) && !w0.includes('.') && w0.toLowerCase() !== (input.domain ?? '').toLowerCase().split('.')[0] && !(CONNECT.test(w0) || SUFFIX_OK.test(w0) || whereWords.has(w0.toLowerCase())) }
   const afterAll = tail.split(/[.!?]\s/)[0]
   const clause = /^\s*[,(\-–—/|·:;]\s*([^,.;)]{1,60})/u.exec(afterAll)?.[1]
   if (clause) {
