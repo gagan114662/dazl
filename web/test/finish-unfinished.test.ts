@@ -34,14 +34,25 @@ test('EMBEDD: nothing found -> stays held with the specific reason (outside_wind
     assert.equal(r.review_reason, 'outside_window_undated'); assert.equal(r.event_date, null)
   }
 })
+test('#878: a NewsArticle that announces the opening, with its own datePublished, dates the candidate (the announcement day), judged by the window gate; its proof says so', async () => {
+  const { r, x } = await row(fx([ld({ '@type': 'NewsArticle', headline: 'Embedd opens a new office in Shoreditch', datePublished: daysAgo(9) })]))
+  assert.equal(r.review_reason, null, JSON.stringify(r)); assert.equal(r.event_date, daysAgo(9))
+  assert.match(r.timing_note ?? '', /announcement's own publication day \(schema\.org NewsArticle datePublished\)/)
+  assert.deepEqual(x.db.prepare('SELECT event_date_proof FROM leads').get(), { event_date_proof: 'page_bound' })
+  // the same story a year old is stale, never ready; an announcement that is still ahead is not dated at all
+  assert.equal((await row(fx([ld({ '@type': 'NewsArticle', headline: 'Embedd opens a new office', datePublished: daysAgo(200) })]))).r.review_reason, 'outside_window')
+  assert.equal((await row(fx([ld({ '@type': 'NewsArticle', headline: 'Embedd opens a new office', datePublished: daysAgo(9) })], { quote: 'Embedd will open a new office in Shoreditch, London next spring' }))).r.review_reason, 'outside_window_undated')
+})
 test('the window gate still applies to a structured date: stale or future dates are held with their own reason', async () => {
   assert.equal((await row(fx([EVENT(daysAgo(200))]))).r.review_reason, 'outside_window')
   assert.equal((await row(fx([EVENT(daysAgo(-40))]))).r.review_reason, 'event_date_future_date')
 })
-test('identity: an Event organised by another company, a publication/modified stamp, two different dates, or a JobPosting date on an opening claim never date the lead', async () => {
+test('identity: an Event organised by another company, an update stamp, another company\'s story, a blog, two different dates, or a JobPosting date on an opening claim never date the lead', async () => {
   for (const structured of [
     [EVENT(daysAgo(9), 'Initech')],
-    [ld({ '@type': 'NewsArticle', headline: 'Embedd office', datePublished: daysAgo(9), dateModified: daysAgo(3) })],
+    [ld({ '@type': 'NewsArticle', headline: 'Embedd office', dateModified: daysAgo(3) })],                               // an update stamp alone is never read
+    [ld({ '@type': 'NewsArticle', headline: 'Initech office', datePublished: daysAgo(9) })],                            // a story about another company
+    [ld({ '@type': 'BlogPosting', headline: 'Embedd office', datePublished: daysAgo(9) })],                             // a blog is not a press release (#878)
     [EVENT(daysAgo(9)), EVENT(daysAgo(30))],
     [ld({ '@type': 'JobPosting', title: 'Engineer', datePosted: daysAgo(9), hiringOrganization: { '@type': 'Organization', name: 'Embedd' } })],
   ]) { const { r } = await row(fx(structured)); assert.equal(r.review_reason, 'outside_window_undated', structured[0]); assert.equal(r.event_date, null) }
@@ -56,7 +67,7 @@ test('resolveStructuredDate: @graph and nested nodes are read; kind must fit the
   assert.equal(resolveStructuredDate([jp], 'Embedd', 'is hiring a backend engineer'), null, 'a posting for another role is not this claim')
   assert.equal(resolveStructuredDate([jp], 'Embedd', 'opened a new office'), null)
   assert.equal(resolveStructuredDate([ld({ '@type': 'Event', name: 'Embedd', startDate: '2026-02-30' })], 'Embedd', 'opened'), null, 'not a real calendar day')
-  assert.deepEqual(kindsFor('raised a seed round'), [])
+  assert.deepEqual(kindsFor('raised a seed round'), ['NewsArticle'], 'a completed funding announcement can be dated by its own press release (#878), never by an Event or a posting')
 })
 test('bounded: at most 6 undated candidates are finished per scan', async () => {
   const { finishUndatedLeads } = await import('../lib/scan/structured-date.ts')

@@ -1,0 +1,80 @@
+{
+ "note": "Real pages read from the public web on 2026-11-14 (the matrix run of 2026-11-13 cited them). Each entry keeps what the date rule reads: the page title, the page's own publication metadata, the lead's stored quote and signal, and the schema.org nodes trimmed to type / headline / title / name / dates / employer / a posting's description. No page text is kept.",
+ "pages": [
+  {
+   "company": "Armstrong Teasdale",
+   "url": "https://www.armstrongteasdale.com/news/armstrong-teasdale-expands-corporate-practice-in-chicago-with-partner-tracy-jacobson-and-counsel-jason-faust/",
+   "signal": "Expanding Corporate Practice Group in Chicago with new partner and counsel",
+   "quote": "Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the addition of Partner Tracy Jacobson and Counsel Jason Faust.",
+   "title": "Armstrong Teasdale Expands Corporate Practice in Chicago with Partner Tracy Jacobson and Counsel Jason Faust",
+   "published": "2026-09-30",
+   "structured": [
+    "{\"@type\":\"NewsArticle\",\"headline\":\"Armstrong Teasdale Expands Corporate Practice in Chicago with Partner Tracy Jacobson and Counsel Jason Faust\",\"name\":\"Armstrong Teasdale Expands Corporate Practice in Chicago with Partner Tracy Jacobson and Counsel Jason Faust\",\"datePublished\":\"2026-09-30T00:00:00+0000\"}"
+   ]
+  },
+  {
+   "company": "McGuireWoods",
+   "url": "https://www.mcguirewoods.com/news/press-releases/2026/9/mcguirewoods-bolsters-insurance-recovery-practice-with-chicago-partner-andrew-barrios/",
+   "signal": "Expanding Insurance Recovery Practice Group with Chicago partner",
+   "quote": "McGuireWoods continues the expansion of its nationally ranked Insurance Recovery Practice Group with the arrival of partner Andrew M. Barrios,",
+   "title": "McGuireWoods Bolsters Insurance Recovery Practice with Chicago Partner Andrew Barrios - McGuireWoods",
+   "published": "2026-09-08",
+   "structured": [
+    "{\"@graph\":[{\"@type\":\"NewsArticle\",\"headline\":\"McGuireWoods Bolsters Insurance Recovery Practice with Chicago Partner Andrew Barrios\",\"datePublished\":\"2026-09-08T11:17:13+00:00\",\"dateModified\":\"2026-09-08T11:17:16+00:00\"},{\"@type\":\"WebPage\",\"name\":\"McGuireWoods Bolsters Insurance Recovery Practice with Chicago Partner Andrew Barrios - McGuireWoods\",\"datePublished\":\"2026-09-08T11:17:13+00:00\",\"dateModified\":\"2026-09-08T11:17:16+00:00\"}]}"
+   ]
+  },
+  {
+   "company": "Benesch",
+   "url": "https://www.beneschlaw.com/news/michael-chu-joins-beneschs-intellectual-property-practice-group-from-mcdermott-will-schulte-strengthening-patent-litigation-benc",
+   "signal": "Expanding Intellectual Property Practice Group in Chicago with new partner",
+   "quote": "Benesch is pleased to announce that Michael Chu has joined the firm as a partner in its growing Intellectual Property Practice Group in Chicago.",
+   "title": "Michael Chu Joins Benesch's Intellectual Property Practice Group From McDermott Will & Schulte, Strengthening Patent Litigation Bench | Benesch Law",
+   "published": "2026-09-10",
+   "structured": [
+    "{\"@graph\":[{\"@type\":\"WebPage\",\"name\":\"Michael Chu Joins Benesch&#039;s Intellectual Property Practice Group From McDermott Will &amp; Schulte, Strengthening Patent Litigation Bench | Benesch Law\",\"datePublished\":\"2026-09-10T12:36:36-04:00\",\"dateModified\":\"2026-09-10T13:00:52-04:00\"},{\"@type\":\"NewsArticle\",\"headline\":\"Michael Chu Joins Benesch&#039;s Intellectual Property Practice Group From McDermott Will &amp; Schulte,\",\"name\":\"Michael Chu Joins Benesch&#039;s Intellectual Property Practice Group From McDermott Will &amp; Schulte,\",\"datePublished\":\"2026-09-10T12:36:36-04:00\",\"dateModified\":\"2026-09-10T13:00:52-04:00\"}]}"
+   ]
+  },
+  {
+   "company": "Queen Street Dental Centre",
+   "url": "https://ca.linkedin.com/jobs/view/dental-receptionist-queen-street-dental-at-123dentist-4487372096?position=7&pageNum=0&refId=Aa13uDS4CtwZLUMFrMt9qA%3D%3D&track",
+   "signal": "Hiring a part-time Dental Receptionist in Toronto",
+   "quote": "The team at Queen Street Dental Centre located in Toronto Ontario are looking for a passionate, hard-working Dental Receptionist on a part time basis.",
+   "title": "Dental Receptionist - Queen Street Dental at 123Dentist — Toronto, Ontario, Canada | LinkedIn Jobs",
+   "published": "2026-11-06",
+   "structured": [
+    "{\"@type\":\"JobPosting\",\"title\":\"Dental Receptionist - Queen Street Dental\",\"datePosted\":\"2026-11-06T22:57:57.000Z\",\"hiringOrganization\":{\"name\":\"123Dentist\"},\"description\":\"The team at Queen Street Dental Centre located in Toronto Ontario are looking for a passionate, hard-working &lt;strong&gt;Dental Receptionist &lt;/strong&gt; on a part time basis.&lt;br&gt;&lt;br&gt;The ideal Dental Receptionist for our team enjoys working collaboratively with others and behind the scenes to organize, implement systems and structure and ensure the practice runs efficiently.&lt;br&gt;&lt;br&gt;Queen Street Dental Centre is nestled in the vibrant community of Leslieville, in downtown Toronto. We are a busy, multi-disciplinary office providing a full spectrum of dental services.\"}"
+   ]
+  },
+  {
+   "company": "Milbank LLP",
+   "url": "https://www.milbank.com/en/news/milbank-to-open-chicago-office-adds-leading-energy-partner-nadav-klugman.html",
+   "signal": "Opening new Chicago office with energy partner Nadav Klugman",
+   "quote": "Milbank LLP is pleased to announce that Nadav Klugman has joined as a partner in the firm's Global Project, Energy & Infrastructure Finance Group. He will be based in the firm's Chicago office upon its opening.",
+   "title": "Milbank to Open Chicago Office, Adds Leading Energy Partner Nadav Klugman",
+   "published": "2026-08-24",
+   "structured": [
+    "{\"@graph\":[{\"@type\":\"WebPage\",\"name\":\"Milbank to Open Chicago Office, Adds Leading Energy Partner Nadav Klugman\"},{\"@type\":\"NewsArticle\",\"headline\":\"Milbank to Open Chicago Office, Adds Leading Energy Partner Nadav Klugman\",\"name\":\"Milbank to Open Chicago Office, Adds Leading Energy Partner Nadav Klugman\",\"datePublished\":\"2026-08-24\"}]}"
+   ]
+  },
+  {
+   "company": "Nousu Collective",
+   "url": "https://www.nousucollective.com/blog/top-cold-calling-agencies-sydney-b2b",
+   "signal": "Sydney-based B2B outbound agency featured in cold calling agencies roundup, offers cold calling, email campaigns and LinkedIn outreach for B2B SaaS companies.",
+   "quote": "Nousu Collective Sydney, Australia 100% Australian, in-house team Cold calling, email campaigns and LinkedIn outreach Monthly retainer, Not published Not published B2B SaaS and technology companies",
+   "title": "Top Cold Calling and Telemarketing Companies Sydney 2026",
+   "published": "2026-02-04",
+   "structured": []
+  },
+  {
+   "company": "Roof Royale",
+   "url": "https://roofroyale.com/careers",
+   "signal": "is hiring Project Managers",
+   "quote": "Roof Royale is a veteran-owned Texas roofing company looking for strong Sales professionals and Project Managers who want to grow with a clear, accountable team",
+   "title": "Careers at Roof Royale | Sales & Project Manager Opportunities",
+   "published": null,
+   "structured": [
+    "{\"@type\":\"WebPage\",\"name\":\"Careers at Roof Royale | Sales & Project Manager Opportunities\"}"
+   ]
+  }
+ ]
+}

@@ -8,6 +8,7 @@ import {ownPlaceAgreement} from './own-block.ts'
 import {closedJobEvidence} from './closed-job.ts'
 import {verifyEvidence,type Candidate} from './evidence.ts'
 import {eventDateBound} from './event-date-binding.ts'
+import {resolveStructuredDate,structuredProof} from './structured-date.ts'
 import {counterpartySignal} from './counterparty.ts'
 import {isHiringTrigger} from './scoreboard.ts'
 // the verifier's date rejections (lib/scan/runner.ts DATE_REJECTS): a claimed day the date rules reject never takes the board proof
@@ -34,7 +35,12 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  // day, is bound by the page text or is undated
  const dateRejected=!literal.ok&&DATE_REJECTS.has(literal.reason)
  const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&isHiringTrigger(lead.signal,lead.signal_kind)
- const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),proof:'page_bound' as const}:null
+ // #878: a day the page's own structured data gave (a press release's NewsArticle datePublished, a job posting's datePosted: lib/scan/structured-date.ts) is bound by that same rule here, so a recheck
+ // never contradicts the scan that dated the lead
+ const sd=lead.event_date&&!boardDated?resolveStructuredDate(page.structured,lead.company,`${lead.signal} ${candidate.excerpt}`,icp.where,{title:page.title,quote:candidate.excerpt,published:page.published}):null
+ const sdProof=sd&&sd.date===lead.event_date&&!dateRejected?structuredProof(sd):null
+ const textBound=lead.event_date?eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company):null
+ const date=boardDated?{bound:true,proof:'ats_structured' as const}:sdProof&&!textBound?.bound?{bound:true,proof:sdProof.proof}:lead.event_date?{...textBound!,proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')
  const reasons:string[]=[]
