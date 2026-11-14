@@ -36,6 +36,7 @@ import { isStaging, type Env } from '../staging.ts'
 import { completionCost } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { modelUsageEnabled } from '../scan/model-usage.ts'
+import { eventDayVerified } from '../scan/scoreboard.ts'
 
 export const ACTIVATION_DAYS = 14
 export const REPEAT_DAYS = 30
@@ -165,13 +166,19 @@ async function load(db: Db, growth: string): Promise<Data> {
     .map(u => ({ id: u.id, email: normEmail(u.email), created_at: n(u.created_at) ?? 0 }))
   const owners = await db.all<{ tenant_id: string; member_id: string; role: string }>('SELECT tenant_id, member_id, role FROM memberships')
   const invited = new Set((await db.all<{ accepted_by: string }>('SELECT accepted_by FROM invitations WHERE accepted_at IS NOT NULL AND accepted_by IS NOT NULL')).map(r => r.accepted_by))
+  // A run's usable leads: ready (no review reason, not rejected) and dated by a day the cited source PROVES - the lead card's own rule
+  // (eventDayVerified, #1176). date_status 'verified' is no longer written by any scan, so counting on it made every run since
+  // 2026-10-23 read as zero. The proof column narrows the read in SQL; the trigger compatibility is checked per lead.
+  const usableByJob = new Map<string, number>()
+  for (const l of await db.all<{ scan_job_id: string; event_date: string; event_date_proof: string; signal: string | null; signal_kind: string | null }>(
+    "SELECT scan_job_id, event_date, event_date_proof, signal, signal_kind FROM leads WHERE quarantined_at IS NULL AND review_reason IS NULL AND event_date IS NOT NULL AND event_date_proof IS NOT NULL")) {
+    if (eventDayVerified(l)) usableByJob.set(l.scan_job_id, (usableByJob.get(l.scan_job_id) ?? 0) + 1)
+  }
   const jobs = (await db.all<Record<string, unknown>>(
-    `SELECT j.user_id, j.status, j.query, j.csv_domain, j.industry, j.location, j.finished_at, j.created_at, j.verified,
-            (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND l.quarantined_at IS NULL AND l.review_reason IS NULL
-               AND l.date_status = 'verified' AND l.event_date IS NOT NULL) AS usable
+    `SELECT j.id, j.user_id, j.status, j.query, j.csv_domain, j.industry, j.location, j.finished_at, j.created_at, j.verified
      FROM scan_jobs j`)).map(j => ({
     user_id: String(j.user_id), status: String(j.status), query: (j.query as string | null) ?? null, csv_domain: (j.csv_domain as string | null) ?? null,
-    industry: String(j.industry), location: String(j.location), finished_at: n(j.finished_at), created_at: n(j.created_at) ?? 0, verified: n(j.verified), usable: n(j.usable) ?? 0,
+    industry: String(j.industry), location: String(j.location), finished_at: n(j.finished_at), created_at: n(j.created_at) ?? 0, verified: n(j.verified), usable: usableByJob.get(String(j.id)) ?? 0,
   }))
   const billing = (await db.all<{ tenant_id: string; action: string; summary: string; at: unknown }>(
     "SELECT tenant_id, action, summary, at FROM audit_events WHERE actor_id = 'stripe' AND action IN ('billing.plan_changed', 'billing.payment_failed', 'billing.refunded') ORDER BY at, seq"))

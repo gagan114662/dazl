@@ -25,8 +25,8 @@ function seed() {
     .run(id, user, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', query, at + t++)
   // confirmed: the user checked the source themselves (a machine-verified lead also needs a full timing proof to be ready)
   const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string }) => db.prepare(
-    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain, source_kind) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'verified' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null, o.source ?? null)
+    "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, event_date_proof, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain, source_kind) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'unverified' : null, o.date ? 'page_bound' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null, o.source ?? null)
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
 }

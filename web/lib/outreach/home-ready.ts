@@ -13,7 +13,7 @@ import { getJob, listLeads } from '@/lib/scan/store'
 import { enrichmentsForLeads } from '@/lib/connectors/store'
 import { currentnessHeld, leadWindowHeld } from '@/lib/outreach/currentness'
 import { requiredGateHeld } from '@/lib/scan/held-state'
-import { surfaceStoredIntent, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
+import { eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
 import { heldReason, type PreviewLead } from '@/lib/journey'
 import { companyKey } from '@/lib/scan/evidence'
@@ -70,7 +70,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
       if (judgedLeads >= maxLeads) { capped = true; whole = false; break }
       judgedLeads++
       // the hold fields exactly as GET /api/leads computes them, for this lead only
-      const row = { ...l, intent: surfaceStoredIntent(l as never, timingOpts).intent, enrichments: enr[l.id] ?? [],
+      const row = { ...l, intent: surfaceStoredIntent(l as never, timingOpts).intent, enrichments: enr[l.id] ?? [], day_verified: eventDayVerified(l as never),
         window_held: leadWindowHeld(db, tenantId, l.id, at), currentness_held: currentnessHeld(db, tenantId, l.id, at), gate_held: requiredGateHeld(db, tenantId, l.id) !== null }
       const why = heldReason(row as never)
       if (!v) { v = { lead_id: l.id, company: l.company || 'Unnamed company', job_id: id, ready: !why, reason: why ?? '' }; companies.push(v) }

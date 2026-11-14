@@ -1,11 +1,12 @@
 // A proof-of-value preview (#403): the companies one finished discovery run found for a prospect's own offer, shown
 // to that prospect. It is built only from that run's own leads, owned by the tenant asking, and only from leads that
-// passed the run's gates: no review reason, not quarantined, a verified event date inside the evidence window, an
+// passed the run's gates: no review reason, not quarantined, no failed required check, an event day the cited source proves (the lead card's own rule, #1176) inside the evidence window, an
 // unpurged quote and an https source the reader can open. Contact details never enter a preview: a person's name,
 // email or phone is private to the run. The prospect's offer is shown as an inference from their public pages, never
 // as their own words. Homepage illustrations (*.example) can never become evidence. A run with nothing usable is a
 // hold: no proof message is built and nothing invented takes its place.
 import type { Db } from '../db/client.ts'
+import { eventDayVerified } from './scoreboard.ts'
 
 export const PROOF_MAX_COMPANIES = 5
 export const PROOF_EVIDENCE_DAYS = 90
@@ -14,6 +15,8 @@ export interface ProofLeadRow {
   id: string; company: string; signal: string; source_url: string; evidence_excerpt: string | null
   event_date: string | null; date_status: string | null; review_reason: string | null; quarantined_at: number | null
   evidence_purged_at: number | null; confidence: number | null; score: number
+  event_date_proof?: string | null; signal_kind?: string | null   // how the scan proved event_date (#460); the proof, not date_status, makes the day verified (#1176)
+  gate_held?: boolean | number | null                            // a REQUIRED check did not pass (the scan:gate marker): never in a prospect-facing preview
 }
 export interface ProofRun { jobId: string; tenantId: string; status: string; finishedAt: number | null; spendUsd: number | null }
 export interface ProofInput { run: ProofRun; inferredOffer: { text: string; sourceUrl: string } | null; leads: ProofLeadRow[] }
@@ -66,7 +69,9 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
     const company = clean(l.company).replace(/\[removed\]/g, '').replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim()
     if (!company || !l.evidence_excerpt?.trim()) continue
     if (!isHttps(l.source_url) || isIllustration(l.source_url) || urlCarriesContact(l.source_url)) continue
-    if (l.date_status !== 'verified' || !l.event_date) continue
+    // #1176: the day must be PROVEN by the cited source, the rule the lead's own card uses (eventDayVerified); date_status 'verified' is
+    // never written by a scan any more. A required check that did not pass (held) never reaches a prospect-facing preview (#796).
+    if (!l.event_date || !eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: new Date(now) }) || Number(l.gate_held) === 1) continue
     const t = strictDay(l.event_date)
     if (t === null || t < oldest || t > now) continue
     const key = company.toLowerCase()
@@ -85,8 +90,10 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
 }
 
 const RUN_SQL = 'SELECT id, user_id, status, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?'
-const LEADS_SQL = `SELECT id, company, signal, source_url, evidence_excerpt, event_date, date_status, review_reason, quarantined_at,
-  evidence_purged_at, confidence, score FROM leads WHERE scan_job_id = ?`
+const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_status, l.event_date_proof, l.signal_kind, l.review_reason, l.quarantined_at,
+  l.evidence_purged_at, l.confidence, l.score,
+  CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed') THEN 1 ELSE 0 END AS gate_held
+  FROM leads l WHERE l.scan_job_id = ?`
 
 // Load one run for the tenant that owns it. Another tenant's run id reads as not found: a preview never crosses tenants.
 export async function loadProofInput(db: Db, tenantId: string, jobId: string, extra: { inferredOffer: ProofInput['inferredOffer']; spendUsd: number | null }): Promise<ProofInput | null> {

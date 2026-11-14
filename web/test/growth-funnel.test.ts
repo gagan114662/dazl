@@ -29,7 +29,7 @@ async function play(db: Db, tenant: string, at: number, o: { status?: string; ve
   await db.run(`INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, query, csv_domain, created_at, finished_at, verified)
     VALUES (?, ?, 'running', 'Biz', ?, ?, 'saas founders hiring', ?, ?, ?, ?)`,
   [id, tenant, marker, o.test ? 'test only' : 'Toronto', o.csv ? 'csv.example.test' : null, at, o.status === 'failed' ? null : at + 600, o.verified ?? 0])
-  for (let i = 0; i < (o.usable ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date) VALUES (?, ?, 'Synthetic Co', 'raised a seed round', 'https://news.example.test/a', 'verified', '2026-05-20')", [`${id}-u${i}`, id])
+  for (let i = 0; i < (o.usable ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date, event_date_proof) VALUES (?, ?, 'Synthetic Co', 'raised a seed round', 'https://news.example.test/a', 'unverified', '2026-05-20', 'page_bound')", [`${id}-u${i}`, id])
   // held leads: in review, or with no verified date, never make a run usable
   for (let i = 0; i < (o.held ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, review_reason) VALUES (?, ?, 'Synthetic Co', 'maybe hiring', 'https://news.example.test/b', 'unverified', 'identity')", [`${id}-h${i}`, id])
   // leads are only ever added to a running job (a store trigger); the run then ends as recorded

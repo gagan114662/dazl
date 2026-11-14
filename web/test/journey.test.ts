@@ -4,7 +4,7 @@ import { heldReason, journey, previewSplit, type JourneyJob, type PreviewLead } 
 
 const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
   id: 'l1', company: 'Bright Dental', signal: 'Opened a second office', source_url: 'https://news.example/a', evidence_excerpt: 'Bright Dental opened a second office',
-  event_date: '2026-10-01', date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'fits', icp_match: null,
+  event_date: '2026-10-01', date_status: 'unverified', day_verified: true, review_reason: null, fit: 4, intent: 4, why: 'fits', icp_match: null,
   company_domain: 'brightdental.example', contact: 'hello@brightdental.example', quarantined_at: null, confidence: 90, human_confirmed_at: null,
   currentness_held: false, window_held: false, enrichments: [], ...o,
 })
@@ -24,8 +24,9 @@ test('wrong-company, undated, out-of-window, unverified, rejected and in-review 
     ['source not verified', { evidence_excerpt: null, confidence: null }],
     ['outside your time window or undated', { window_held: true }],
     ['event timing unknown', { currentness_held: true }],
-    ['no verified date', { event_date: null, date_status: 'undated' }],
-    ['no verified date', { date_status: 'unverified' }],
+    ['no verified date', { event_date: null, date_status: 'undated', day_verified: false }],
+    ['no verified date', { day_verified: false }],   // a dated lead whose day no cited source proves
+    ['no verified date', { day_verified: undefined, date_status: 'verified' }],   // the retired verdict (pre 2026-10-23 rows, no proof) never counts, #1176
     ['not a fit', { fit: 0, intent: null }],
   ]
   for (const [why, o] of bad) assert.equal(heldReason(lead(o)), why, why)
