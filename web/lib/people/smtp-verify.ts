@@ -21,7 +21,6 @@
 //   - HELO name and MAIL FROM are configuration (SMTP_VERIFY_HELO required; SMTP_VERIFY_MAIL_FROM default verify@notify.dazl.ai).
 // OFF unless SMTP_VERIFY_ENABLED=1 and the configuration is complete (smtpConfigFromEnv). Outbound port 25 must be open on the box.
 import net from 'node:net'
-import dns from 'node:dns/promises'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { VerifierError } from './zerobounce.ts'
@@ -130,12 +129,12 @@ export function netConnect(host: string, port: number, timeoutMs: number, lookup
 
 const reverseIp = (ip: string) => ip.split('.').reverse().join('.')
 export const realEnv: SmtpEnv = {
-  resolveMx: d => dns.resolveMx(d),
-  resolveA: d => dns.resolve4(d),
+  resolveMx: async d => (await import('node:dns/promises')).resolveMx(d),
+  resolveA: async d => (await import('node:dns/promises')).resolve4(d),
   // Spamhaus answers 127.0.0.x for a listing; 127.255.255.x means the query was refused (an open or blocked resolver): no answer.
   resolveZen: async ip => {
     try {
-      const a = await dns.resolve4(`${reverseIp(ip)}.zen.spamhaus.org`)
+      const a = await (await import('node:dns/promises')).resolve4(`${reverseIp(ip)}.zen.spamhaus.org`)
       if (a.some(x => x.startsWith('127.255.255.'))) return 'unavailable'
       return a.some(x => x.startsWith('127.0.0.')) ? 'listed' : 'unavailable'
     } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOTFOUND' || (e as NodeJS.ErrnoException).code === 'ENODATA' ? 'clean' : 'unavailable' }
