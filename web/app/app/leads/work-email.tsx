@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
@@ -23,8 +23,11 @@ export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[
 }
 
 function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
-  const [lookups, setLookups] = useState<Record<string, Lookup>>(() => initial ? mergeLookups({}, initial.lookups) : {})
-  const [providers, setProviders] = useState<Providers | null>(initial?.providers ?? null)
+  const [ownLookups, setLookups] = useState<Record<string, Lookup>>({})
+  const [ownProviders, setProviders] = useState<Providers | null>(null)
+  // What the page's list read said (#1182) merged with what this panel learned since (mergeLookups never erases a newer result): derived, not copied into state.
+  const lookups = useMemo(() => initial ? mergeLookups(ownLookups, initial.lookups) : ownLookups, [ownLookups, initial])
+  const providers = ownProviders ?? initial?.providers ?? null
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
@@ -41,13 +44,12 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
     }).catch(() => { /* the button still works; the cost line just stays generic */ })
   }, [leadId])
 
+  const hasInitial = initial !== undefined
   useEffect(() => {
     mounted.current = true
-    if (!lazy && !initial) load()
+    if (!lazy && !hasInitial) load()
     return () => { mounted.current = false }
-  }, [load, lazy, initial === undefined])
-  // a later page read (after a confirm, a reload of the list) refreshes what is shown, never erasing a newer result (mergeLookups)
-  useEffect(() => { if (initial) { if (initial.providers) setProviders(initial.providers); setLookups(ls => mergeLookups(ls, initial.lookups)) } }, [initial])
+  }, [load, lazy, hasInitial])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
   const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])
