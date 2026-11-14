@@ -89,7 +89,9 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   assert.equal(readFileSync(path.join(units, 'dazl-backup.timer'), 'utf8').trim(), readFileSync(path.join(ops, 'dazl-backup.timer'), 'utf8').trim())
   assert.match(r.out, /systemctl enable --now dazl-backup\.timer dazl-backup-check\.timer/); assert.match(r.out, /systemctl start dazl-backup\.service/)
   const envFile = path.join(root, 'etc/dazl-backup/env'), env = envOf(envFile)
-  assert.deepEqual([env.DB_PATH, env.BACKUP_DIR, env.OFFHOST_DEST, env.OFFHOST_REQUIRED, env.DAZL_TOMBSTONE_LEDGER, env.OPS_ALERT_WEBHOOK_URL, env.BACKUP_RETENTION], [fx.source, backups, offhost, '1', ledger, 'https://alerts.example/hook', '0'])
+  assert.deepEqual([env.DB_PATH, env.BACKUP_DIR, env.OFFHOST_DEST, env.OFFHOST_REQUIRED, env.DAZL_TOMBSTONE_LEDGER, env.OPS_ALERT_WEBHOOK_URL, env.BACKUP_RETENTION], [fx.source, backups, offhost, '1', ledger, 'https://alerts.example/hook', '1'], 'retention is ON as installed')
+  assert.match(r.out, /retention ON: at most 48 local copies/)
+  assert.deepEqual([env.RETAIN_LOCAL, env.RETAIN_OFFHOST_HOURLY, env.RETAIN_OFFHOST_DAILY, env.RETAIN_OFFHOST_WEEKLY], ['48', '48', '14', '8'])
   assert.ok(!/DAZL_MASTER_KEY|SECRET|TOKEN/.test(readFileSync(envFile, 'utf8')), 'no secret in the env file')
   assert.ok(existsSync(path.join(root, ledger)), 'the empty ledger was created')
 
@@ -110,6 +112,11 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const root3 = path.join(T, 'root3'), bare = path.join(T, 'bare.env'); writeFileSync(bare, 'PORT=3104\n')
   r = install(['--root', root3, '--db', fx.source, '--user', 'appuser', '--backup-dir', backups, '--app-env', bare, '--no-start']); assert.equal(r.code, 0, r.out)
   assert.match(r.out, /WARNING: .* sets no DAZL_TOMBSTONE_LEDGER/); assert.match(r.out, /LOCAL ONLY/); assert.match(r.out, /--no-start: nothing enabled/)
+  // retention can be left off, but never silently: the installer says how many days the disk lasts
+  const root4 = path.join(T, 'root4')
+  r = install(['--root', root4, '--db', fx.source, '--user', 'appuser', '--backup-dir', backups, '--app-env', bare, '--no-start', '--no-retention']); assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /WARNING: retention is OFF \(--no-retention\): nothing is ever deleted\. \d+ MB of backups a day, \d+ MB free: the disk is FULL in about \d+ days/)
+  assert.equal(envOf(path.join(root4, 'etc/dazl-backup/env')).BACKUP_RETENTION, '0')
   assert.equal(envOf(path.join(root3, 'etc/dazl-backup/env')).DAZL_TOMBSTONE_LEDGER, '/var/lib/dazl-ledger/tombstones.jsonl')
   r = install([...args, '--status']); assert.equal(r.code, 0); assert.match(r.out, /prod-run\.sh: installed = this checkout/); assert.match(r.out, /newest local backup: NONE/)
 
@@ -126,9 +133,28 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   // a stale backup alerts (2 h on the box; 0 s here), through the same entry point
   const alertLog = path.join(T, 'alert.log'), alertCmd = path.join(T, 'alert.sh')
   writeFileSync(alertCmd, `#!/bin/sh\nprintf '%s\\n' "$1" >> ${alertLog}\n`); chmodSync(alertCmd, 0o755)
-  await new Promise(res => setTimeout(res, 1100))
+  await new Promise(res => setTimeout(res, 2300))   // the age is whole seconds and must EXCEED the limit
   r = run(entry, ['check'], { ...jobEnv, OPS_ALERT_WEBHOOK_URL: '', BACKUP_ALERT_CMD: alertCmd, BACKUP_MAX_AGE_S: '1', DRILL_MAX_AGE_S: '100000' }); assert.equal(r.code, 1, r.out)
   assert.match(readFileSync(alertLog, 'utf8'), /newest backup is \d+s old \(limit 1s\)/)
+
+  // low space alerts through the same check: under the free-space floor, and (retention off) too few days until full
+  r = run(entry, ['check'], { ...jobEnv, OPS_ALERT_WEBHOOK_URL: '', BACKUP_ALERT_CMD: alertCmd, BACKUP_MIN_FREE_MB: '999999999', BACKUP_ALERT_EVERY_S: '0' }); assert.equal(r.code, 1, r.out)
+  assert.match(readFileSync(alertLog, 'utf8'), /backup directory filesystem has \d+ MB free \(limit 999999999 MB\)/)
+  r = run(entry, ['check'], { ...jobEnv, OPS_ALERT_WEBHOOK_URL: '', BACKUP_ALERT_CMD: alertCmd, BACKUP_RETENTION: '0', BACKUP_MIN_DAYS_LEFT: '999999999', BACKUP_ALERT_EVERY_S: '0' }); assert.equal(r.code, 1, r.out)
+  assert.match(readFileSync(alertLog, 'utf8'), /retention is off \(BACKUP_RETENTION is not 1\) and the backup directory filesystem is full in about \d+ days/)
+  r = run(entry, ['check'], { ...jobEnv, OPS_ALERT_WEBHOOK_URL: '' }); assert.equal(r.code, 0, r.out); assert.match(r.out, /"retention":"on"/); assert.match(r.out, /"backup_dir_free_mb":\d+/)
+
+  // retention through the installed entry point: more runs than the limits leave exactly the limits, locally and off-host
+  const small = { ...jobEnv, RETAIN_LOCAL: '2', RETAIN_OFFHOST_HOURLY: '2', RETAIN_OFFHOST_DAILY: '1', RETAIN_OFFHOST_WEEKLY: '1' }
+  for (let i = 0; i < 3; i++) { await new Promise(res => setTimeout(res, 1100)); r = run(entry, ['backup'], small); assert.equal(r.code, 0, r.out) }
+  const localDbs = readdirSync(backups).filter(f => /^dazl-backup-.*\.db$/.test(f)).sort(), remoteCts = readdirSync(offhost).filter(f => /^dazl-backup-.*\.db\.age$/.test(f)).sort()
+  assert.equal(localDbs.length, 2, `4 runs, RETAIN_LOCAL=2: ${localDbs.join(' ')}`); assert.equal(remoteCts.length, 2, `off-host keeps 2: ${remoteCts.join(' ')}`)
+  assert.deepEqual(remoteCts.map(f => f.replace(/\.age$/, '')), localDbs, 'the two newest, on both sides')
+  assert.equal(readdirSync(offhost).filter(f => /^dazl-backup-.*\.db\.age\.json$/.test(f)).length, 2, 'manifests pruned with their copies')
+  // with retention off the same runs delete nothing
+  for (let i = 0; i < 2; i++) { await new Promise(res => setTimeout(res, 1100)); r = run(entry, ['backup'], { ...small, BACKUP_RETENTION: '0' }); assert.equal(r.code, 0, r.out) }
+  assert.equal(readdirSync(backups).filter(f => /^dazl-backup-.*\.db$/.test(f)).length, 4)
+  r = run(entry, ['backup'], small); assert.equal(r.code, 0, r.out); assert.equal(readdirSync(backups).filter(f => /^dazl-backup-.*\.db$/.test(f)).length, 2, 'and the next run with it on prunes back to the limit')
 
   // when nobody can tell which release is live the job FAILS (never a silent no-backup)
   setLive(null)
@@ -171,7 +197,8 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const other = path.join(T, 'other.txt'); spawnSync('age-keygen', ['-o', other]); chmodSync(other, 0o600)
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', other, '--out', path.join(T, 'r3')]); assert.equal(r.code, 1); assert.match(r.out, /could not decrypt/)
   // a tampered ciphertext is refused before decryption
-  const ct = path.join(offhost, readdirSync(offhost).find(f => /^dazl-backup-.*\.db\.age$/.test(f))!); const bytes = readFileSync(ct); bytes[bytes.length - 5] ^= 0xff; writeFileSync(ct, bytes)
+  const ct = path.join(offhost, readdirSync(offhost).filter(f => /^dazl-backup-.*\.db\.age$/.test(f)).sort().pop()!);   // the newest: the one a restore takes
+  const bytes = readFileSync(ct); bytes[bytes.length - 5] ^= 0xff; writeFileSync(ct, bytes)
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r4')]); assert.equal(r.code, 1); assert.match(r.out, /does not match its manifest sha256/)
   // a copy that decrypts to something else than the manifest says: failed, and NO plaintext is left behind
   const lie = JSON.parse(readFileSync(path.join(remote, `${good}.json`), 'utf8')); writeFileSync(path.join(remote, `${good}.json`), JSON.stringify({ ...lie, source_sha256: '0'.repeat(64) }))

@@ -19,6 +19,9 @@
 #                         A --ledger that differs from the app's own value is refused. Created empty if absent.
 #   --app-env FILE        the app's run env, read as data for DAZL_TOMBSTONE_LEDGER only (/home/ubuntu/dazl-pr16-run.env)
 #   --alert-url URL       https webhook for backup alerts (OPS_ALERT_WEBHOOK_URL); without it alerts go to the journal only
+#   --no-retention        leave retention OFF (BACKUP_RETENTION=0): nothing is ever deleted, and the installer prints how many
+#                         days the disk lasts. Default is ON: 48 local hourly copies; off-host 48 hourly + 14 daily + 8
+#                         weekly (the owner-approved numbers). The 15-minute check alerts on low space either way.
 #   --keep-env            an existing /etc/dazl-backup/env that differs from the options given is kept and used as it
 #                         is. Without this flag such a difference STOPS the install (exit 1, the differing settings
 #                         named), so an option is never silently ignored.
@@ -38,7 +41,7 @@ set -euo pipefail
 die() { echo "install-prod: $1" >&2; exit "${2:-1}"; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DB=/home/ubuntu/dazl-data/dazl-pr16.db; APP_USER=ubuntu; BACKUP_DIR=/var/backups/dazl; OFFHOST=; RECIP=/etc/dazl-backup/recipients.txt
-LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0; APP_ENV_GIVEN=0
+LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0; APP_ENV_GIVEN=0; RETENTION=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --db|--user|--backup-dir|--offhost|--recipients|--ledger|--app-env|--alert-url|--root)
@@ -47,6 +50,7 @@ while [ $# -gt 0 ]; do
       shift 2 ;;
     --no-start) START=0; shift ;;
     --keep-env) KEEP_ENV=1; shift ;;
+    --no-retention) RETENTION=0; shift ;;
     --status) MODE=status; shift ;;
     --uninstall) MODE=uninstall; shift ;;
     *) die "unknown option $1 (see the header of this file)" 2 ;;
@@ -113,6 +117,20 @@ else
   LEDGER_WARN="install-prod: WARNING: $APP_ENV sets no DAZL_TOMBSTONE_LEDGER (or cannot be read): the app is not writing a deletion ledger. Add DAZL_TOMBSTONE_LEDGER=$LEDGER to it and deploy; until then the off-host ledger copy is an empty file, not proof of no deletions."
 fi
 for d in "$BACKUP_DIR" "$(dirname "$LEDGER")"; do d=$(realpath -m -- "$d"); case "$d" in /|/etc|/var|/var/lib|/var/backups|/home|/usr|/tmp|/root) die "refusing to use the system directory $d itself: give a directory of its own" 2 ;; esac; done
+# --- space: every backup is a full copy on this disk, and a full disk stops the database
+space_dir=$ROOT$BACKUP_DIR; while [ ! -d "$space_dir" ]; do space_dir=$(dirname "$space_dir"); done
+free_mb=$(( $(df -Pk -- "$space_dir" | awk 'NR==2 {print $4}') / 1024 ))
+db_mb=1; if [ -f "$DB" ]; then db_mb=$(( ($(stat -c %s -- "$DB") + 1048575) / 1048576 )); fi
+SPACE_NOTE=
+if [ "$RETENTION" = 1 ]; then
+  need_mb=$(( db_mb * 48 * 2 ))   # the 48 kept copies, twice over for growth and the copy being written
+  [ "$free_mb" -ge "$need_mb" ] || die "not enough room for the retained backups: $BACKUP_DIR has $free_mb MB free, 48 copies of a $db_mb MB database need $(( db_mb * 48 )) MB (want $need_mb MB free). Free space or give another --backup-dir."
+  SPACE_NOTE="install-prod: retention ON: at most 48 local copies (about $(( db_mb * 48 )) MB of $free_mb MB free); off-host 48 hourly + 14 daily + 8 weekly"
+else
+  days=$(( free_mb / (db_mb * 24) ))
+  [ "$days" -ge 7 ] || die "retention is OFF and $BACKUP_DIR would be full in about $days days ($free_mb MB free, $(( db_mb * 24 )) MB of backups a day): refusing. Install without --no-retention, or free space first."
+  SPACE_NOTE="install-prod: WARNING: retention is OFF (--no-retention): nothing is ever deleted. $(( db_mb * 24 )) MB of backups a day, $free_mb MB free: the disk is FULL in about $days days. The 15-minute check alerts when under 14 days or 1024 MB remain."
+fi
 GROUP=$APP_USER; [ -n "$ROOT" ] || GROUP=$(id -gn "$APP_USER")
 own() { [ -n "$ROOT" ] || chown "$1" "$2"; }
 
@@ -132,7 +150,7 @@ DAZL_TOMBSTONE_LEDGER=$LEDGER
 OPS_ALERT_WEBHOOK_URL=$ALERT
 BACKUP_ALERT_EVERY_S=3600
 RCLONE_TIMEOUT_S=120
-BACKUP_RETENTION=0
+BACKUP_RETENTION=$RETENTION
 RETAIN_LOCAL=48
 RETAIN_OFFHOST_HOURLY=48
 RETAIN_OFFHOST_DAILY=14
@@ -198,6 +216,7 @@ ExecStart=/usr/bin/env bash /usr/local/lib/dazl-backup/prod-run.sh check"
 unit dazl-backup-check.timer "$(cat "$HERE/dazl-backup-check.timer")"
 echo "install-prod: installed ${NAMES[*]} and $LIB/{prod-run.sh,live-release.sh}"
 [ -n "$OFFHOST" ] || echo "install-prod: WARNING: no --offhost destination: backups are LOCAL ONLY (same disk). The box is not protected against losing the disk until one is set."
+echo "$SPACE_NOTE"
 [ -z "$LEDGER_WARN" ] || echo "$LEDGER_WARN"
 [ -n "$ALERT" ] || echo "install-prod: WARNING: no --alert-url: a stale or failed backup is written to the journal only."
 
