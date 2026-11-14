@@ -38,12 +38,12 @@ set -euo pipefail
 die() { echo "install-prod: $1" >&2; exit "${2:-1}"; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DB=/home/ubuntu/dazl-data/dazl-pr16.db; APP_USER=ubuntu; BACKUP_DIR=/var/backups/dazl; OFFHOST=; RECIP=/etc/dazl-backup/recipients.txt
-LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0
+LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0; APP_ENV_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --db|--user|--backup-dir|--offhost|--recipients|--ledger|--app-env|--alert-url|--root)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value" 2
-      case "$1" in --db) DB=$2 ;; --user) APP_USER=$2 ;; --backup-dir) BACKUP_DIR=$2 ;; --offhost) OFFHOST=$2 ;; --recipients) RECIP=$2 ;; --ledger) LEDGER=$2 ;; --app-env) APP_ENV=$2 ;; --alert-url) ALERT=$2 ;; --root) ROOT=${2%/} ;; esac
+      case "$1" in --db) DB=$2 ;; --user) APP_USER=$2 ;; --backup-dir) BACKUP_DIR=$2 ;; --offhost) OFFHOST=$2 ;; --recipients) RECIP=$2 ;; --ledger) LEDGER=$2 ;; --app-env) APP_ENV=$2; APP_ENV_GIVEN=1 ;; --alert-url) ALERT=$2 ;; --root) ROOT=${2%/} ;; esac
       shift 2 ;;
     --no-start) START=0; shift ;;
     --keep-env) KEEP_ENV=1; shift ;;
@@ -101,7 +101,8 @@ if [ -n "$OFFHOST" ]; then
 fi
 # the deletion ledger must be the file the APP writes: its own DAZL_TOMBSTONE_LEDGER (read as data, never sourced)
 app_ledger=
-if [ -r "$APP_ENV" ]; then app_ledger=$(sed -n 's/^\(export[[:space:]]\+\)\?DAZL_TOMBSTONE_LEDGER=//p' "$APP_ENV" | tail -1 | sed -e "s/^['\"]//" -e "s/['\"]\$//"); fi
+[ "$APP_ENV_GIVEN" = 0 ] || { [ -f "$APP_ENV" ] && [ -r "$APP_ENV" ]; } || die "--app-env $APP_ENV is not a readable file" 2
+if [ -f "$APP_ENV" ] && [ -r "$APP_ENV" ]; then app_ledger=$(sed -n 's/^\(export[[:space:]]\+\)\?DAZL_TOMBSTONE_LEDGER=//p' "$APP_ENV" | tail -1 | sed -e "s/^['\"]//" -e "s/['\"]\$//"); fi
 LEDGER_WARN=
 if [ -n "$app_ledger" ]; then
   [ -z "$LEDGER" ] || [ "$LEDGER" = "$app_ledger" ] || die "--ledger $LEDGER is not the app's DAZL_TOMBSTONE_LEDGER ($app_ledger in $APP_ENV): the copy would be of a file the app never writes"
@@ -111,7 +112,7 @@ else
   LEDGER=${LEDGER:-$LEDGER_DEFAULT}
   LEDGER_WARN="install-prod: WARNING: $APP_ENV sets no DAZL_TOMBSTONE_LEDGER (or cannot be read): the app is not writing a deletion ledger. Add DAZL_TOMBSTONE_LEDGER=$LEDGER to it and deploy; until then the off-host ledger copy is an empty file, not proof of no deletions."
 fi
-for d in "$BACKUP_DIR" "$(dirname "$LEDGER")"; do case "$d" in /|/etc|/var|/var/lib|/var/backups|/home|/usr|/tmp|/root) die "refusing to use the system directory $d itself: give a directory of its own" 2 ;; esac; done
+for d in "$BACKUP_DIR" "$(dirname "$LEDGER")"; do d=$(realpath -m -- "$d"); case "$d" in /|/etc|/var|/var/lib|/var/backups|/home|/usr|/tmp|/root) die "refusing to use the system directory $d itself: give a directory of its own" 2 ;; esac; done
 GROUP=$APP_USER; [ -n "$ROOT" ] || GROUP=$(id -gn "$APP_USER")
 own() { [ -n "$ROOT" ] || chown "$1" "$2"; }
 
@@ -144,6 +145,8 @@ if [ -f "$ENVF" ]; then
   if [ "$(cat "$ENVF")" = "$want" ]; then echo "install-prod: $ENVF already has these settings"
   else
     differ=$( { diff <(grep -E '^[A-Z_]+=' "$ENVF" | sort) <(printf '%s\n' "$want" | grep -E '^[A-Z_]+=' | sort) || true; } | sed -n 's/^[<>] \([A-Z_]*\)=.*/\1/p' | sort -u | tr '\n' ' ' || true)
+    have_ledger=$(sed -n 's/^DAZL_TOMBSTONE_LEDGER=//p' "$ENVF" | tail -1)
+    [ -z "$app_ledger" ] || [ "$have_ledger" = "$app_ledger" ] || die "$ENVF copies the ledger '$have_ledger' but the app writes '$app_ledger' ($APP_ENV): fix DAZL_TOMBSTONE_LEDGER in $ENVF (--keep-env does not cover this)"
     [ "$KEEP_ENV" = 1 ] || die "$ENVF exists and differs from the options given in: ${differ}. Nothing was changed in it. Edit it by hand, move it away and run again, or pass --keep-env to install with the file as it is."
     echo "install-prod: $ENVF exists and is KEPT as it is (--keep-env); it differs from the options given in: ${differ}"
   fi

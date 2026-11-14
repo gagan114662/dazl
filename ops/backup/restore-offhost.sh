@@ -91,5 +91,5 @@ rpo=null
 if [ "$created" != - ]; then rpo=$(python3 -c 'import sys,datetime;print(int((datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))).total_seconds()))' "$created") || rpo=null; fi
 printf '{"type":"offhost_restore","ok":true,"restored":"%s","backup_created_at":"%s","rpo_s":%s,"restore_ms":%s,"fetch_ms":%s,"decrypt_ms":%s,"verify_ms":%s,"integrity":"ok","rows":%s,"compare_rows":%s,"rows_match":%s}\n' \
   "$db" "$created" "$rpo" "$((t3-t0))" "$((t1-t0))" "$((t2-t1))" "$((t3-t2))" "$rc" "$cc" "$same"
+[ "$same" != false ] || die "row counts differ from --compare (see the line above); the restored copy was removed"
 ok=1
-[ "$same" != false ] || die "row counts differ from --compare (see the line above)"

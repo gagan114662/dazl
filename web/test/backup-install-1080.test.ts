@@ -72,6 +72,8 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   // a --ledger that is not the app's own, and a system directory as the backup directory, are refused; nothing written
   r = install([...args, '--ledger', path.join(T, 'elsewhere.jsonl')]); assert.equal(r.code, 1); assert.match(r.out, /is not the app's DAZL_TOMBSTONE_LEDGER/)
   r = install([...args, '--backup-dir', '/var/lib']); assert.equal(r.code, 2); assert.match(r.out, /refusing to use the system directory/)
+  for (const d of ['/var/lib/', '//', '/var//backups/', '/etc/../var/lib']) { r = install([...args, '--backup-dir', d]); assert.equal(r.code, 2, `${d}: ${r.out}`) }
+  r = install([...args.map(a => a === appEnv ? path.join(T, 'typo.env') : a)]); assert.equal(r.code, 2); assert.match(r.out, /--app-env .* is not a readable file/)
   assert.ok(!existsSync(path.join(root, 'etc/systemd/system')))
 
   r = install(); assert.equal(r.code, 0, r.out)
@@ -97,7 +99,10 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   writeFileSync(envFile, readFileSync(envFile, 'utf8').replace(/^OFFHOST_DEST=.*$/m, 'OFFHOST_DEST=').replace(/^OFFHOST_REQUIRED=1$/m, 'OFFHOST_REQUIRED=0') + 'BACKUP_RETENTION_NOTE=edited\n')
   // the file on the box says "local only" while the command asks for an off-host copy: the install STOPS and names the settings
   r = install(); assert.equal(r.code, 1, r.out); assert.match(r.out, /differs from the options given in: .*OFFHOST_DEST/); assert.match(r.out, /OFFHOST_REQUIRED/)
-  r = install([...args, '--keep-env']); assert.equal(r.code, 0, r.out); assert.match(r.out, /exists and is KEPT/); assert.match(readFileSync(envFile, 'utf8'), /BACKUP_RETENTION_NOTE=edited/)
+  r = install([...args, '--keep-env']); assert.equal(r.code, 0, r.out); assert.match(r.out, /exists and is KEPT/)
+  // --keep-env never covers a ledger path that is not the app's own
+  const kept = readFileSync(envFile, 'utf8'); writeFileSync(envFile, kept.replace(/^DAZL_TOMBSTONE_LEDGER=.*$/m, 'DAZL_TOMBSTONE_LEDGER=/var/lib/other/x.jsonl'))
+  r = install([...args, '--keep-env']); assert.equal(r.code, 1, r.out); assert.match(r.out, /copies the ledger .* but the app writes/); writeFileSync(envFile, kept); assert.match(readFileSync(envFile, 'utf8'), /BACKUP_RETENTION_NOTE=edited/)
   writeFileSync(envFile, readFileSync(envFile, 'utf8').replace(/^OFFHOST_DEST=$/m, `OFFHOST_DEST=${offhost}`).replace(/^OFFHOST_REQUIRED=0$/m, 'OFFHOST_REQUIRED=1'))
   r = install([...args, '--keep-env']); assert.equal(r.code, 0, r.out)
   assert.match(r.out, /already exists: left as it is/); assert.equal(mode(path.join(root, backups)), '750')
@@ -154,6 +159,12 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', 'rclone:fake:', '--identity', id, '--out', viaRclone, '--compare', fx.source], { PATH: `${fakeBin}:${process.env.PATH}` }); assert.equal(r.code, 0, r.out)
   const rep2 = JSON.parse(r.stdout.trim().split('\n').pop()!); assert.equal(rep2.rows_match, true); assert.equal(path.basename(rep2.restored), good.replace(/\.age$/, ''))
   assert.match(r.out, /WARNING: manifest dazl-backup-20200101T000000Z-00000000\.db\.age\.json skipped \(not readable JSON\)/); assert.match(r.out, /WARNING: manifest dazl-backup-20200102T000000Z-00000001\.db\.age\.json skipped \(not a dazl-offhost-copy manifest for its own file\)/)
+  // counts that differ from --compare: exit 1 and the restored copy is removed
+  const fewer = path.join(T, 'fewer.db'); copyFileSync(fx.source, fewer); { const d = new Database(fewer); d.exec('PRAGMA foreign_keys=OFF; DELETE FROM leads'); d.close() }
+  if ((new Database(fx.source, { readonly: true }).prepare('SELECT count(*) AS n FROM leads').get() as { n: number }).n > 0) {
+    r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r0'), '--compare', fewer]); assert.equal(r.code, 1, r.out); assert.match(r.out, /"rows_match":false/)
+    assert.deepEqual(readdirSync(path.join(T, 'r0')).filter(f => f.endsWith('.db')), [])
+  }
   // refusals: an existing --out, an identity others can read, the wrong identity
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', out]); assert.equal(r.code, 2); assert.match(r.out, /already exists/)
   chmodSync(id, 0o644); r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r2')]); assert.equal(r.code, 2); assert.match(r.out, /readable by others/); chmodSync(id, 0o600)
