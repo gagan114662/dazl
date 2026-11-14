@@ -46,7 +46,7 @@ test('#381 the data: 8 of the 23 real candidates came from walled / aggregator h
 })
 
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
-import { GROUND_MAX_OUT, groundingFits, groundLeads, groundPrompt, mergeGrounded, quoteOnPage, sameCompanyName, ScanStopped, ScanTimedOut, snippetCandidates } from '../lib/scan/runner.ts'
+import { GROUND_MAX_OUT, groundingFits, groundLeads, groundPrompt, mergeGrounded, parseLeads, quoteOnPage, sameCompanyName, ScanStopped, ScanTimedOut, snippetCandidates } from '../lib/scan/runner.ts'
 import { callCostUsd, SpendAccountingFailed, SpendGuard } from '../lib/llm/spend-guard.ts'
 import type { Hit } from './helpers/acceptance-harness.ts'
 // Runner level fixture. REAL: the request and the profile of staging job 4f6581f2 (Toronto dental). SYNTHETIC: titles, snippets, pages and model replies.
@@ -251,4 +251,21 @@ test('#381 board queries (review): a request in another language lets the profil
 test('#381 hosts (review): a walled name must be the registrable domain, not any label', () => {
   for (const u of ['https://threads.acme.com/x', 'https://indeed.com.evil.example/x', 'https://x.acme.io/y']) assert.equal(isLoginWalled(u), false, u)
   for (const u of ['https://www.glassdoor.co.uk/x', 'https://au.indeed.com/x', 'https://www.linkedin.com/jobs/1']) assert.equal(isLoginWalled(u), true, u)
+})
+
+// REAL scans, 2026-11-14 (chicago-law at fc0294b3 and f622b297, 3 searches / 4 page reads): 2 of 9 scans ended `unbounded_fallback_hold` with 0 candidates after a paid
+// extraction call. The logged reply of one (4,507 characters, 9 items, complete, closed with "]") did not parse as JSON, so all 9 candidates were thrown away.
+// SYNTHETIC below: the shape of such a reply (one item with an unescaped double quote inside its quote, one with a trailing comma), not the logged text.
+test('#381 parseLeads: one malformed item in the reply loses that item, not the whole reply (before: null, the scan ended with 0 candidates)', () => {
+  const item = (company: string, url: string, excerpt: string) => `{\n  "name": "",\n  "company": "${company}",\n  "contact": null,\n  "signal": "${company} expanded in Chicago",\n  "source_url": "${url}",\n  "excerpt": "${excerpt}",\n  "event_date": "2026-10-13",\n  "score": 90\n}`
+  const urls = ['https://a.example/1', 'https://b.example/2', 'https://c.example/3']
+  const broken = '```json\n[\n' + [item('Karns & Karns', urls[0], 'Karns & Karns has announced the opening of a new office location in Lincoln Park'), item('Benesch', urls[1], 'Benesch said "we are growing in Chicago" as it added two partners'), item('Milbank', urls[2], 'Milbank launches in Chicago, hiring a practice leader')].join(',\n') + '\n]\n```'
+  assert.throws(() => JSON.parse(broken.slice(broken.indexOf('['), broken.lastIndexOf(']') + 1)), 'the reply as a whole is not JSON')
+  assert.deepEqual(parseLeads(broken, urls)?.map(l => l.company), ['Karns & Karns', 'Milbank'], 'the two valid items survive; the broken one is not repaired or guessed')
+  // unchanged: a valid reply, a reply with no usable item, and no array at all
+  const valid = '[' + [item('Karns & Karns', urls[0], 'q one two three'), item('Milbank', urls[2], 'q four five six')].join(',') + ']'
+  assert.deepEqual(parseLeads(valid, urls)?.map(l => l.company), ['Karns & Karns', 'Milbank'])
+  assert.equal(parseLeads('[not json', urls), null); assert.equal(parseLeads('[{"company": "x" "broken"}]', urls), null); assert.equal(parseLeads('no json here', urls), null)
+  // a salvaged item still has to cite an allowed URL, like any other
+  assert.deepEqual(parseLeads(broken, [urls[2]])?.map(l => l.company), ['Milbank'])
 })

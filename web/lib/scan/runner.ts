@@ -148,6 +148,16 @@ function str(v: unknown, max: number): string {
 
 // Parse model output into leads. A lead is kept only if it cites a URL the
 // vendor really returned, so invented sources are dropped.
+// #381 (yield, real scans 2026-11-14): a complete extraction reply of 9 candidates was invalid JSON in ONE item, the whole reply was thrown away and the scan ended with
+// 0 candidates (2 of 9 Chicago scans of that day). When the array does not parse as a whole, each item is parsed on its own and the ones that parse are kept; the broken
+// item is lost, the others are not. Nothing is repaired or guessed: an item is used only when it is valid JSON by itself. No item parses -> null, as before.
+function salvageItems(arrayText: string): unknown[] | null {
+  const items: unknown[] = []
+  for (const chunk of arrayText.slice(1, -1).split(/(?<=\})\s*,\s*(?=\{)/)) {
+    try { const o: unknown = JSON.parse(chunk.trim().replace(/,\s*$/, '')); if (o && typeof o === 'object' && !Array.isArray(o)) items.push(o) } catch { /* this item is lost */ }
+  }
+  return items.length > 0 ? items : null
+}
 export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | null {
   const start = text.indexOf('[')
   const end = text.lastIndexOf(']')
@@ -156,7 +166,8 @@ export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | nul
   try {
     raw = JSON.parse(text.slice(start, end + 1))
   } catch {
-    return null
+    raw = salvageItems(text.slice(start, end + 1))
+    if (!raw) return null
   }
   if (!Array.isArray(raw)) return null
   const allowed = new Set(citedUrls.map(u => u.replace(/\/$/, '')))
