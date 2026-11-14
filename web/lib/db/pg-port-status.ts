@@ -68,6 +68,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/currentness.ts': 0,
   'lib/outreach/draft-llm.ts': 0,
   'lib/outreach/followups.ts': 1,
+  'lib/outreach/home-ready.ts': 0,
   'lib/outreach/launch-policy.ts': 0,
   'lib/outreach/ledger.ts': 0,
   'lib/outreach/lifecycle.ts': 0,
