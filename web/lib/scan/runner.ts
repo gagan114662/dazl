@@ -706,26 +706,33 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   }).immediate()
 }
 
-// The four honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. A source that
-// FAILED (source_error) is never a budget stop, and raising the budget would not have searched further. Sources that ran
+// The honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. Sources that ran
 // clean and found nothing (no_discovery) searched everything the run was allowed to use. Sources that could not conclude
 // (unbounded_fallback_hold) stop the run rather than start the unpriceable web-search research call.
+// #1157 (prod, austin-roofing 2026-11-14: TinyFish refused by the day's allowance, then the news API unreachable, shown as
+// "Failed - search:news had an error"): ONE source failing never decides the stop on its own.
+//  - The web search refused by the daily allowance is named first: it is the main source, it never ran, and it is what the
+//    person can act on (wait for the day to turn over). A news failure beside it is still in the report and on the source row.
+//  - A failed source beside one that ran CLEAN and found nothing is a concluded search with one source missing (no_discovery;
+//    the outcome names the source that could not be searched): the run degrades, it does not fail.
+//  - source_error is left for the case it describes: a source failed and NO source ran clean. Never a budget stop.
 export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): string {
   const failed = (s: string | null) => !!s && /^(?:error|limited)/.test(s)
   const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
   const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
-  if (failed(news) || failed(tf)) return 'source_error'
   // The TinyFish search was refused by the platform's own daily allowance (this account's per-day units, or its share of the platform's)
   // before any request: nothing was searched because the allowance was used up, not because the sources could not conclude. Its own
   // stop, so the run says the allowance is the reason and that trying again after the UTC day turns over (or with another setting) can search.
   if (tf === 'skipped_cap') return 'search_allowance_reached'
+  if ((failed(news) && !clean(tf)) || (failed(tf) && !clean(news))) return 'source_error'
   // #1037 item 1: a first play where no lead source could run at all (news switched off / not run, TinyFish not run or refused
   // before any request): nothing was searched, so this is not a held fallback. Its own code, so the run says so. Scoped to first
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
   const notRun = (x: string | null) => !x || /^skipped/.test(x)
   if (first5 && notRun(news) && notRun(tf)) return 'no_lead_source'
   // A news stage that recorded skipped_* never ran: it neither concluded nor blocks TinyFish's clean result from concluding.
-  if (clean(news) || (notRun(news) && clean(tf))) return 'no_discovery'
+  // ...and a news stage that FAILED does not either (#1157): TinyFish searched and found nothing, with news missing.
+  if (clean(news) || ((notRun(news) || failed(news)) && clean(tf))) return 'no_discovery'
   return 'unbounded_fallback_hold'
 }
 
