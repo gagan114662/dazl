@@ -2,7 +2,7 @@
 //   curl -o sub-est2022.csv https://www2.census.gov/programs-surveys/popest/datasets/2020-2022/cities/totals/sub-est2022.csv
 //   node --experimental-strip-types scripts/gen-us-city-ranks.mts sub-est2022.csv > lib/sources/us-city-ranks.ts
 import { readFileSync } from 'node:fs'
-import { STATES } from '../lib/sources/jobboards.ts'
+import { STATES } from '../lib/sources/us-states.ts'
 const ABBR = new Map(Object.entries(STATES).map(([a, n]) => [n, a]))
 const SUFFIXES = [' city and borough', ' consolidated government', ' metropolitan government', ' metro government', ' unified government', ' municipality', ' borough', ' village', ' town', ' city']
 const rows = readFileSync(process.argv[2], 'utf8').replace(/^﻿/, '').split('\n').slice(1).filter(Boolean)
@@ -16,7 +16,9 @@ for (const row of rows) {
   let n = c[8].replace(/\s*\(balance\)$/, '')
   for (let i = 0; i < 2; i++) for (const s of SUFFIXES) if (n.endsWith(s)) { n = n.slice(0, -s.length); break }
   // consolidated names are also known by their first part ("Nashville-Davidson" is Nashville, "Louisville/Jefferson County" is Louisville, "Boise City" is Boise)
-  const names = new Set([n]); for (const part of n.split(/[/-]/)) if (part.trim().length >= 3) names.add(part.trim())
+  // ONLY for consolidated cities (SUMLEV 170, or a city-county name like "Macon-Bibb County" / "Lexington-Fayette urban county"): an ordinary
+  // incorporated place keeps its whole name ("Winston-Salem", "Wilkes-Barre" are not "Winston" / "Barre"). A "... County" part is never a city alias.
+  const names = new Set([n]); if (c[0] === '170' || /[/-].*\bcounty\b/i.test(n)) for (const part of n.split(/[/-]/)) if (part.trim().length >= 3 && !/\bcounty\b/i.test(part)) names.add(part.trim())
   for (const x of [...names]) if (/ City$/.test(x) && x.length > 8) names.add(x.replace(/ City$/, ''))
   for (const x of names) { const k = `${x}|${st}`; best.set(k, Math.max(best.get(k) ?? 0, pop)) }
 }

@@ -1,4 +1,5 @@
 import { US_CITY_RANKS } from './us-city-ranks.ts'
+import { STATES } from './us-states.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
@@ -12,7 +13,7 @@ import { postingDay } from './ats-posting.ts'
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
 // Dates: Greenhouse `first_published`, Ashby `publishedAt` and Lever `createdAt` only. `updated_at` is never used as the posting date.
 // Only the documented API hosts (Greenhouse, Ashby, Lever, plus the Hacker News Algolia host for discovery) are ever requested, and only for board tokens that pass a strict pattern.
-export const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
+export { STATES }
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
