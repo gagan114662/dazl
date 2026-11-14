@@ -599,7 +599,7 @@ export function scanJobBudgetMs(env: Record<string, string | undefined> = proces
 // attempt, still running), so a live scan keeps its claim and one whose process is gone, or that is stuck inside one await,
 // stops renewing and is reaped.
 export function assertOwned(db: Database.Database, job: Job): void {
-  if (db.prepare("UPDATE scan_jobs SET claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status = 'running' AND attempts = ?").run(job.id, job.attempts).changes !== 1) throw new ScanStopped()
+  if (db.prepare("UPDATE scan_jobs SET claimed_at = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(Math.floor(Date.now() / 1000), job.id, job.attempts).changes !== 1) throw new ScanStopped()
   const d = jobDeadlines.get(job)
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
