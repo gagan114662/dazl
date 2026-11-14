@@ -1,0 +1,19 @@
+{
+ "_note": "Real Shopify store data captured 2026-11-14 for #763: www.sunspel.com/meta.json (place fields), its product record and the product page text as the TinyFish fetcher returned it (markdown). Used by test/shopify-source-763.test.ts.",
+ "meta": {
+  "name": "Sunspel",
+  "city": "Nottingham",
+  "province": "England",
+  "country": "GB",
+  "myshopify_domain": "sunspel.myshopify.com"
+ },
+ "product": {
+  "title": "Men's Cotton Poplin Pyjama Set in White/Navy/Light Blue",
+  "handle": "mens-cotton-poplin-pyjama-set-in-white-navy-light-blue-mpjs5515-mtrs5516-stay",
+  "body_html": "<p>Soft, lightweight cotton poplin makes this pyjama set comfortable for sleeping and relaxed wear at home. Cut to a regular fit with an easy shape, the shirt has an open revere collar, side vents, oversized shell buttons and a single chest pocket, while the trousers have an elasticated waist with an a</p>"
+ },
+ "page": {
+  "title": "Men's Cotton Poplin Pyjama Set in White/Navy/Light Blue | Sunspel",
+  "text": "# Cotton Poplin Pyjama Set\n\n\u00a3300\n\nColour: White/Navy Pinstripe\n\nCotton Poplin Pyjama Shirt\n\nXS\n\nS\n\nM\n\nOnly 1 left\n\nL\n\nOnly 1 left\n\nXL\n\nOnly 1 left\n\nXXL\n\nOnly 1 left\n\nCotton Poplin Pyjama Trouser\n\nXS\n\nOnly 1 left\n\nS\n\nM\n\nOnly 1 left\n\nL\n\nXL\n\nOnly 1 left\n\nXXL\n\nOnly 1 left\n\n##### \n\nSoft, lightweight cotton poplin makes this pyjama set comfortable for sleeping and relaxed wear at home. Cut to a regular fit with an easy shape, the shirt has an open revere collar, side vents, oversized shell buttons and a single chest pocket, while the trousers have an elasticated waist with an adjustable front drawcord, side-seam pockets and a back patch pocket.\n\nThe cotton poplin draws on Sunspel\u2019s longstanding expertise in cotton underwear.\n\nProduct Code Shirt: MPJS5515-STAY  \nProduct Code Trouser: MTRS5516-STAY\n\n##### \n\n* Regular fit\n* Model is 6'2\", chest 37\" and wears a size M\n\n##### \n\n* Regular fit\n* Elasticated waist\n* Model is 6'2\" and wears a size M\n\n##### \n\n* Delivery within 1-3 working days.\n* \u00a35 or free for orders over \u00a3200.\n* Shopping from another country? Change your location using the country selector.\n* For full delivery and returns information, *click here**.*\n* Shopping for a loved one? You can add a gift box to your order in the cart.\n\n##### \n\nWe accept the following payment methods:\n\n* Payments are accepted via credit card, debit card, PayPal, Apple Pay, Google Pay and Shop Pay with a valid billing and shipping address\n* Accepted cards are Visa, Mastercard, American Express, Discover, Diners Club, Maestro and UnionPay"
+ }
+}
