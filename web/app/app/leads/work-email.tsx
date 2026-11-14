@@ -12,11 +12,13 @@ type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailbo
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
-export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[] }) {
+// lazy (#1036, the review lane): no request when the block mounts. A page can show many review rows; each would otherwise read
+// the same providers and its own lookups on load. The first click reads what it needs (a stored result is replayed by the POST, free).
+export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
   return <WorkEmailFor key={p.leadId} {...p} />
 }
 
-function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailTarget[] }) {
+function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean }) {
   const [lookups, setLookups] = useState<Record<string, Lookup>>({})
   const [providers, setProviders] = useState<Providers | null>(null)
   const [busy, setBusy] = useState<Record<string, boolean>>({})
@@ -37,9 +39,9 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
 
   useEffect(() => {
     mounted.current = true
-    load()
+    if (!lazy) load()
     return () => { mounted.current = false }
-  }, [load])
+  }, [load, lazy])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
   const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])
@@ -58,7 +60,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
       const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string }
       if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
       if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
-      else if (r.ok && j.status === 'no_key') text = 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment.'
+      else if (r.ok && j.status === 'no_key') text = 'The company website does not print an address for this person, and no Apollo or People Data Labs key is set to look further. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
     setMsg(m => ({ ...m, [key]: text })); setBusy(b => ({ ...b, [key]: false }))
@@ -83,7 +85,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
             {v && v.showAddress && l?.address && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border ${v.checked ? 'border-green-600/40 text-green-800 bg-green-50' : 'border-amber-500/40 text-amber-800 bg-amber-50'}`} data-testid="work-email-address" data-checked={v.checked ? 'true' : 'false'}>
-                <span className="font-mono">{l.address}</span>
+                <span className="font-mono break-all">{l.address}</span>
                 <span className="text-[10px] uppercase tracking-wide">{v.checked ? (l.status === 'published' ? 'published' : l.status === 'unverified' ? 'checked' : 'verified') : 'not checked'}</span>
               </span>
             )}

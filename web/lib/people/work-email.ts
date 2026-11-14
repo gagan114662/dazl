@@ -26,6 +26,7 @@
 // ('pending' row) BEFORE any paid call, so a double click, a second tab or a retry while it runs pays once.
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
+import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
@@ -34,10 +35,17 @@ import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
-import { companySearchEligible } from '../scan/find-contact-eligible.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
-import { linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailTargets } from './work-email-eligible.ts'
+import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
+import { fixtureAvailable } from '../outreach/test-fixture.ts'
+import { stagingFakePdl } from '../enrich/pdl.ts'
+
+// #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
+// DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
+// operator's real ZeroBounce allowance is ever spent on a synthetic person.
+export const workEmailFixtureFakesOn = (env: Record<string, string | undefined> = process.env): boolean =>
+  stagingFakePdl(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1'
 
 export const WORK_EMAIL_STATUSES = ['pending', 'verified', 'published', 'unverified', 'not_found', 'not_us', 'rejected', 'error', 'uncertain'] as const
 export type WorkEmailStatus = typeof WORK_EMAIL_STATUSES[number]
@@ -119,7 +127,7 @@ export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
 
-interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; icp: string | null }
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
 
 const isUS = (c: string | null) => !!c && /^(?:united states(?: of america)?|usa?|u\.s\.a?\.?)$/i.test(c.trim())
 const domainOf = (address: string) => (address.split('@')[1] ?? '').toLowerCase()
@@ -181,11 +189,19 @@ export async function findWorkEmail(
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   if (typeof target !== 'string' || !target || target.length > TARGET_KEY_MAX) return { status: 'not_eligible', detail: 'no such person on this lead' }
-  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, j.icp
+  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
+  // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
+  // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
+  // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
+  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
-  if (!companySearchEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  if (!workEmailLeadEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  // #1036: the test-only work-email fixture lead is looked up ONLY on the test tenant with the staging fake PDL on (never a real
+  // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
+  const fixture = isWorkEmailFixtureLead(lead)
+  if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const site = identityOf({ id: lead.id, contact: lead.contact }, rows)
   if (!siteSettled(site)) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
@@ -232,12 +248,14 @@ export async function findWorkEmail(
   const notes: string[] = []
   let incomplete = false
   const allowed = workEmailProviders(db, tenantId)
-  const pdlOff = allowed.pdlNeedsOptIn
+  // The fixture never uses Apollo, so the opt-in that only gates PDL-after-Apollo does not apply to it: its saved PDL key runs.
+  const pdlAllowed = fixture ? allowed.pdl || allowed.pdlNeedsOptIn : allowed.pdl
+  const pdlOff = !fixture && allowed.pdlNeedsOptIn
   const loadKey = (c: string, P: string): string | null => {
     try { const k = getEnabledCredential(db, tenantId, c, deps.master); if (typeof k === 'string' && k) return k } catch { /* recorded below */ }
     notes.push(`${P} key could not be read`); incomplete = true; return null
   }
-  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo ? loadKey('enrich:apollo', 'Apollo') : null, pdl: allowed.pdl ? loadKey('enrich:pdl', 'People Data Labs') : null }
+  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }

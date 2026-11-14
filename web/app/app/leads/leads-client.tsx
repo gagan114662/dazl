@@ -34,7 +34,7 @@ import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import WorkEmail from './work-email'
-import { siteSettled, targetKey, workEmailTargets } from '@/lib/people/work-email-eligible'
+import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
@@ -44,6 +44,7 @@ import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/r
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { runStatus } from '@/lib/run-status'
+import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { Icon } from '../ui/icons'
@@ -1240,7 +1241,7 @@ export default function LeadsClient() {
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
-                  {!l.quarantined_at && companySearchEligible(l) && (() => {
+                  {!l.quarantined_at && workEmailLeadEligible(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
                     if (!siteSettled(site)) return null
                     const who = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
@@ -1382,6 +1383,8 @@ export default function LeadsClient() {
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />
+                {/* #1036: the buyer's work email does not wait for the review (lib/people/work-email-review-lane.ts): same targets, same lookup. */}
+                {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} targets={t} lazy /></div> : null })()}
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
                   <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>

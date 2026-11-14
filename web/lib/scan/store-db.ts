@@ -10,7 +10,7 @@
 // The status-transition and running-job triggers stay in the schema on both engines; nothing here bypasses them.
 import { randomBytes } from 'node:crypto'
 import type { Db, Param, Tx, TxBody } from '../db/client.ts'
-import { CANCEL_HOLD_S, MAX_ATTEMPTS, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
+import { CANCEL_HOLD_S, MAX_ATTEMPTS, REAP_STAGING_CHECKS_SQL, STAGING_CHECK_DEAD_S, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
 
 const nowS = () => Math.floor(Date.now() / 1000)
@@ -67,6 +67,7 @@ export async function reapStaleRunningJobs(db: Db, now = nowS()): Promise<number
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - STALE_RUNNING_S])).changes
+  await db.run(REAP_STAGING_CHECKS_SQL, [now, now - STAGING_CHECK_DEAD_S]) // #1036: a staging check that lost its process
   if (changes > 0) await settleReapedTrial(db, now) // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
   return changes
 }
