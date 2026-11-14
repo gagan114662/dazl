@@ -1,4 +1,4 @@
-// #1099 root cause 7: the local matrix runner's measuring code (lib/scan/matrix-score.ts) and its script. No network, no model:
+// #1099 root cause 7: the local matrix runner's measuring code (scripts/matrix-score.mts) and its script. No network, no model:
 // stored rows measured as the staging matrix measures them, one real stubbed scan through the runner, and the script's refusals.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -10,7 +10,7 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { measureCase, verdict, matrixTable, type CaseResult, type MatrixThresholds } from '../lib/scan/matrix-score.ts'
+import { measureCase, verdict, matrixTable, type CaseResult, type MatrixThresholds } from '../scripts/matrix-score.mts'
 import { heldReason } from '../lib/journey.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 

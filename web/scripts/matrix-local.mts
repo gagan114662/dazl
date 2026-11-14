@@ -31,7 +31,7 @@ import { migrateSourceStats } from '../lib/search/trace.ts'
 import { migrateSourceRuns } from '../lib/scan/source-runs.ts'
 import { migrateMemory } from '../lib/memory.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { measureCase, verdict, matrixTable, type CaseResult, type MatrixCase, type MatrixThresholds } from '../lib/scan/matrix-score.ts'
+import { measureCase, verdict, matrixTable, type CaseResult, type MatrixCase, type MatrixThresholds } from './matrix-score.mts'
 
 const argv = process.argv.slice(2)
 const flag = (n: string) => argv.includes(`--${n}`)

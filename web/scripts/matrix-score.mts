@@ -1,13 +1,13 @@
 // The location x category matrix's own numbers, measured from a finished scan's stored rows: the same columns Hermes's staging
 // matrix prints (candidates, ready, named %, email %, dated %, location+category %, time) and the same pass rule
 // (~/work/scorecard/matrix.json thresholds). "Ready" is the product's own rule (lib/outreach/lead-hold.ts, the one Home and the
-// Leads page use), so a change to what ready means moves this table with it. Relative imports only: web/scripts/matrix-local.mts runs it.
+// Leads page use), so a change to what ready means moves this table with it. A dev tool on the runner's own throwaway SQLite store (scripts/, outside the Postgres port audit like scoreboard.mts); web/scripts/matrix-local.mts runs it.
 import type Database from 'better-sqlite3'
-import { listLeads } from './store.ts'
-import { enrichmentsForLeads, type Enrichment } from '../connectors/store.ts'
-import { companyKey } from './evidence.ts'
-import { eventDayVerified } from './scoreboard.ts'
-import { leadHoldReason, timingOptsFor } from '../outreach/lead-hold.ts'
+import { listLeads } from '../lib/scan/store.ts'
+import { enrichmentsForLeads, type Enrichment } from '../lib/connectors/store.ts'
+import { companyKey } from '../lib/scan/evidence.ts'
+import { eventDayVerified } from '../lib/scan/scoreboard.ts'
+import { leadHoldReason, timingOptsFor } from '../lib/outreach/lead-hold.ts'
 
 export interface MatrixThresholds { ready_leads_min: number; named_contact_min_pct: number; dated_source_min_pct: number; location_category_match_min_pct: number; per_case_confirm_cap_usd: number }
 export interface MatrixCase { id: string; label: string; seller?: string; offer?: string; query: string; expect: { location_keywords: string[]; category_keywords: string[] } }
