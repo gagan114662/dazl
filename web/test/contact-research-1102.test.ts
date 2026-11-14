@@ -81,7 +81,7 @@ test('#1102 nothing from the model\'s memory: a name, title, quote, source or pr
     ['a longer-named company in a news line', person('Kim Park', 'Owner', 'S5', 'Kim Park, Owner of Brightloop Dental Supplies'), 'title_at_another_organisation'],
     ['a past role', person('Pat Old', 'Former Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'past_role'],
     ['a past role hidden in the quote ("Former" sits between the name and the title)', person('Pat Old', 'Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'title_not_next_to_name'],
-    ['not a buyer role', person('Hy Gene', 'Dental Hygienist', 'S4', 'Hy Gene - Dental Hygienist - Brightloop Dental'), 'not_a_buyer_role'],
+    ['not a buyer role', person('Hy Gene', 'Dental Hygienist', 'S4', 'Hy Gene - Dental Hygienist - Brightloop Dental'), 'title_has_other_words'],
   ]
   for (const [what, answer, why] of cases) {
     const s = stubs([[PROFILE_HIT, OTHER_CO, FORMER, HYGIENIST, { url: 'https://news.example.test/supplies', title: 'Supplier news', snippet: 'Kim Park, Owner of Brightloop Dental Supplies, on the Toronto market.' }], []], answer)
@@ -177,8 +177,8 @@ test('#1102 grounding: a title that is another person\'s, a longer name, a past 
     ['a name that is the start of a longer name', SRC('Team', 'Joann Smith, Owner of Brightloop Dental.' + D), person('Ann Smith', 'Owner', 'S1', 'ann Smith, Owner of Brightloop Dental'), 'name_not_in_source'],
     ['"Former" dropped from the quote', SRC('News', 'Former owner Jane Roe sold Brightloop Dental last year.' + D), person('Jane Roe', 'owner', 'S1', 'owner Jane Roe sold Brightloop Dental'), 'past_role'],
     ['another company\'s CEO in the same sentence', SRC('News', 'Brightloop Dental was acquired by Globex Health in Toronto; Globex CEO Jane Roe said more deals follow.' + D), person('Jane Roe', 'CEO', 'S1', 'CEO Jane Roe said'), 'title_at_another_organisation'],
-    ['a department head is not a decision-maker', SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), 'not_a_buyer_role'],
-    ['a vice president is not the president', SRC('Team', 'Jane Roe, Vice President at Brightloop Dental.' + D), person('Jane Roe', 'Vice President', 'S1', 'Jane Roe, Vice President at Brightloop Dental'), 'not_a_buyer_role'],
+    ['a department head is not a decision-maker', SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), 'title_has_other_words'],
+    ['a vice president is not the president', SRC('Team', 'Jane Roe, Vice President at Brightloop Dental.' + D), person('Jane Roe', 'Vice President', 'S1', 'Jane Roe, Vice President at Brightloop Dental'), 'title_has_other_words'],
   ]
   for (const [what, hit, answer, why] of cases) {
     const r = await ground(hit, answer); assert.equal(r.status, 'not_grounded', what); assert.equal(r.refused, why, what); assert.equal(r.person, null, what)
@@ -224,9 +224,9 @@ test('#1102 grounding round 2: testimonials, non-decision-maker titles, another 
     ['off-site: a patient who owns a bakery', SRC('News', 'Brightloop Dental patient Mark Stone, owner, Stone Bakery, praised it.' + D), person('Mark Stone', 'owner', 'S1', 'Mark Stone, owner'), 'title_at_another_organisation'],
     ['off-site: a sponsor', SRC('News', 'Brightloop Dental sponsor CEO Sam Park, Globex, spoke.' + D), person('Sam Park', 'CEO', 'S1', 'CEO Sam Park'), 'title_at_another_organisation'],
     ['she retired in the next sentence', SRC('News', 'Jane Roe, Owner of Brightloop Dental. She retired in 2019.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
-    ['a principal engineer', SRC('Team', 'Ann Ruiz, Principal Engineer at Brightloop Dental.' + D), person('Ann Ruiz', 'Principal Engineer', 'S1', 'Ann Ruiz, Principal Engineer at Brightloop Dental'), 'not_a_buyer_role'],
-    ['a product owner', SRC('Team', 'Ann Ruiz, Product Owner at Brightloop Dental.' + D), person('Ann Ruiz', 'Product Owner', 'S1', 'Ann Ruiz, Product Owner at Brightloop Dental'), 'not_a_buyer_role'],
-    ['a chief of staff', SRC('Team', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental.' + D), person('Ann Ruiz', 'Chief of Staff to the CEO', 'S1', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental'), 'not_a_buyer_role'],
+    ['a principal engineer', SRC('Team', 'Ann Ruiz, Principal Engineer at Brightloop Dental.' + D), person('Ann Ruiz', 'Principal Engineer', 'S1', 'Ann Ruiz, Principal Engineer at Brightloop Dental'), 'title_has_other_words'],
+    ['a product owner', SRC('Team', 'Ann Ruiz, Product Owner at Brightloop Dental.' + D), person('Ann Ruiz', 'Product Owner', 'S1', 'Ann Ruiz, Product Owner at Brightloop Dental'), 'title_has_other_words'],
+    ['a chief of staff', SRC('Team', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental.' + D), person('Ann Ruiz', 'Chief of Staff to the CEO', 'S1', 'Ann Ruiz, Chief of Staff to the CEO at Brightloop Dental'), 'title_has_other_words'],
     ['the founder of a different company next to ours', SRC('News', 'Brightloop Dental partner Jane Roe, founder of Roe Labs, spoke.' + D), person('Jane Roe', 'founder', 'S1', 'Jane Roe, founder'), 'title_at_another_organisation'],
     ['another person\'s title joined by "and the"', SRC('Team', 'At Brightloop Dental receptionist Jane Roe and the owner Bob Lee welcome you.' + D), person('Jane Roe', 'owner', 'S1', 'Jane Roe and the owner'), 'title_not_next_to_name'],
     ['another person\'s title before an "and"', SRC('Team', 'Sam Lee, owner, and Jane Roe, hygienist at Brightloop Dental in Toronto.' + D), person('Jane Roe', 'Owner', 'S1', 'owner, and Jane Roe'), 'title_not_next_to_name'],
@@ -341,4 +341,44 @@ test('#1102 grounding round 4: a period after an abbreviation is not a sentence 
   for (const [what, r] of bad) assert.notEqual(r.status, 'found', `${what}: ${JSON.stringify(r.person)}`)
   const good = await Promise.all([own('Dr. Jane Roe, Owner, Brightloop Dental', 'Jane Roe', 'Owner', 'Jane Roe, Owner'), own('Jane Roe, Owner and lead dentist, founded Brightloop Dental in 2014.', 'Jane Roe', 'Owner and lead dentist', 'Jane Roe, Owner and lead dentist')])
   good.forEach((r, i) => assert.equal(r.status, 'found', `good #${i}: ${JSON.stringify(r)}`))
+})
+
+// ---- round 5: the TITLE the model returns may not carry another business ("Owner of Stone Bakery" is its natural answer on a testimonial card) ----
+test('#1102 grounding round 5: a title that names another business is refused, whatever the text around it says', async () => {
+  const OWN4 = 'https://brightloopdental.example/reviews'
+  const own = (text: string, name: string, title: string, quote: string, kind: 'page' | 'search' = 'search') => researchContactSource(text, name, title, quote, OWN4, kind)
+  const bad: [string, { status: string; person: unknown }][] = [
+    ['title "Owner of Stone Bakery"', await own('"Best dentist in town!" - Mark Stone, Owner of Stone Bakery', 'Mark Stone', 'Owner of Stone Bakery', 'Mark Stone, Owner of Stone Bakery')],
+    ['title "Owner, Stone Bakery"', await own('Best dentist! - Mark Stone, Owner, Stone Bakery', 'Mark Stone', 'Owner, Stone Bakery', 'Mark Stone, Owner, Stone Bakery')],
+    ['title "Owner Stone Bakery"', await own('Best dentist! Mark Stone Owner Stone Bakery', 'Mark Stone', 'Owner Stone Bakery', 'Mark Stone Owner Stone Bakery')],
+    ['title "Owner at Stone Bakery" (page)', await own('Best dentist! Mark Stone, Owner at Stone Bakery', 'Mark Stone', 'Owner at Stone Bakery', 'Mark Stone, Owner at Stone Bakery', 'page')],
+    ['title "Owner of a local bakery" (page)', await own('Best dentist! Mark Stone, Owner of a local bakery', 'Mark Stone', 'Owner of a local bakery', 'Mark Stone, Owner of a local bakery', 'page')],
+    ['title "Stone Bakery owner" (page)', await own('Stone Bakery owner Mark Stone says thanks.', 'Mark Stone', 'Stone Bakery owner', 'Stone Bakery owner Mark Stone', 'page')],
+    ['; clause', await own('Best dentist! Mark Stone, Owner; runs the bakery next door', 'Mark Stone', 'Owner', 'Mark Stone, Owner')],
+    [': clause', await own('Best dentist! Mark Stone, Owner: the bakery down the street', 'Mark Stone', 'Owner', 'Mark Stone, Owner')],
+  ]
+  for (const [what, r] of bad) assert.notEqual(r.status, 'found', `${what}: ${JSON.stringify(r.person)}`)
+  // The company's own name inside the title, and a requested role, still pass.
+  const ok1 = await own('Jane Roe, Owner of Brightloop Dental', 'Jane Roe', 'Owner of Brightloop Dental', 'Jane Roe, Owner of Brightloop Dental'); assert.equal(ok1.status, 'found', JSON.stringify(ok1))
+  const ok2 = await own('Jane Roe, Owner and lead dentist', 'Jane Roe', 'Owner and lead dentist', 'Jane Roe, Owner and lead dentist'); assert.equal(ok2.status, 'found', JSON.stringify(ok2))
+})
+async function researchContactSource(text: string, name: string, title: string, quote: string, url: string, kind: 'page' | 'search'): Promise<{ status: string; person: unknown; refused: string | null }> {
+  const s = stubs([[], []], person(name, title, 'S1', quote))
+  void s
+  const { groundPerson } = await import('../lib/people/contact-research.ts')
+  const g = groundPerson({ name, title, source: 'S1', quote, linkedin_source: null }, [{ id: 'S1', url, title: 'Reviews', text, kind }], { ...INPUT, where: [] })
+  return 'person' in g ? { status: 'found', person: g.person, refused: null } : { status: 'not_grounded', person: null, refused: g.refused }
+}
+
+test('#1102 grounding round 5b: every occurrence of the quote is judged; a lower-case continuation of the company name is another business', async () => {
+  const G = (_title: string, text: string, url: string, quote: string, kind: 'page' | 'search' = 'search') => researchContactSource(text, 'Jane Roe', 'Owner', quote, url, kind)
+  // A headline repeats the name and title; the snippet says whose owner she is (the first occurrence alone looked fine).
+  const bad = [
+    await (async () => { const { groundPerson } = await import('../lib/people/contact-research.ts'); const g = groundPerson({ name: 'Jane Roe', title: 'Owner', source: 'S1', quote: 'Jane Roe, Owner', linkedin_source: null }, [{ id: 'S1', url: 'https://news.example.test/x', title: 'Jane Roe, Owner | Brightloop Dental', text: 'Jane Roe, Owner of Globex Health, which bought Brightloop Dental last year.' + D, kind: 'search' }], { ...INPUT, where: [] }); return 'person' in g ? 'found' : g.refused })(),
+    (await G('', 'Jane Roe, Owner. Jane Roe, Owner of Globex Health, a sister company that Brightloop Dental belongs to.', 'https://brightloopdental.example/team', 'Jane Roe, Owner', 'page')).status,
+    (await G('', 'Jane Roe, Owner of Brightloop Dental supplies store.' + D, 'https://news.example.test/x', 'Jane Roe, Owner of Brightloop Dental')).status,
+    (await G('', 'Jane Roe, Owner - Brightloop Dental supplies.' + D, 'https://news.example.test/x', 'Jane Roe, Owner')).status,
+  ]
+  bad.forEach((r, i) => assert.notEqual(r, 'found', `bad #${i}`))
+  const ok = await G('', 'Jane Roe, Owner of Brightloop Dental said hello.' + D, 'https://news.example.test/x', 'Jane Roe, Owner of Brightloop Dental'); assert.equal(ok.status, 'found', JSON.stringify(ok))
 })

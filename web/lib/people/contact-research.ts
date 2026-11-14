@@ -156,14 +156,14 @@ const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down
 //   6. a company NAME is not a company (company-tie.ts, Hermes decision on #1164): off the company's own site, the source must also name
 //      the lead's CONFIRMED website (the only tie); the requested place, when there is one, must agree;
 //   7. a LinkedIn URL is kept only when a search RETURNED it and the parser reads that result as the same person at this company.
-export function groundPerson(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+function groundAt(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput, nth: number): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
   const src = sources.find(s => s.id === answer.source)
   if (!src) return { refused: 'source_not_shown' }
   const text = `${src.title}. ${src.text}`   // the source title is its own sentence: it is never the first words of the snippet
   const hay = norm(text), quote = norm(answer.quote)
   if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
   if (answer.title.length < 2 || answer.title.length > 80) return { refused: 'title_unusable' }
-  const at = hay.indexOf(quote)
+  let at = -1; for (let k = 0; k <= nth; k++) { at = hay.indexOf(quote, at + 1); if (at === -1) break }
   if (at === -1) return { refused: 'quote_not_in_source' }
   if (!hasWord(hay, answer.name)) return { refused: 'name_not_in_source' }
   if (!hasWord(hay, answer.title)) return { refused: 'title_not_in_source' }
@@ -220,7 +220,15 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   const [sLo, sHi] = sentenceOf(at + span[0]); const [pLo] = sentenceOf(Math.max(0, sLo - 1))
   // Search results are short, so the WHOLE result (title and snippet) is the window; a page is bounded to the sentence around the person and the one before
   // it (a testimonial card puts the organisation in the sentence before the name). The person's own name and title are never "another organisation".
-  const personWords = new Set([...answer.name.split(/\s+/), ...answer.title.split(/\s+/)].map(w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))
+  // The TITLE the model returned is checked too (it is the model's own words, and "Owner of Stone Bakery" is its natural answer on a testimonial card):
+  // it may contain only title / filler words, words of a requested role, and this company; any other word makes it another business's.
+  const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|founder|co-?founder|owner|co-?owner|ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
+  const roleWords = new Set((input.roles ?? []).flatMap(r => String(r).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(Boolean))
+  const cwTitle = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+  const tw = answer.title.split(/[^\p{L}\p{N}&'’-]+/u).filter(Boolean)
+  const odd = tw.filter(w => !(TITLE_OK.test(w) || FILLER.test(w) || roleWords.has(w.toLowerCase()) || whereWords.has(w.toLowerCase())))
+  if (odd.length > 0 && !(cwTitle.length > 0 && cwTitle.every(w => odd.map(o => companyKey(o)).includes(w)) && odd.length <= cwTitle.length)) return { refused: 'title_has_other_words' }
+  const personWords = new Set([...answer.name.split(/\s+/)].map(w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))
   // (For a search result the window is the part the quote is in: the snippet, or the title line of a profile result; a page: the sentence and the one before.)
   const titleLen = tidy(src.title).length + 2
   const inTitle = at < titleLen
@@ -231,12 +239,17 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
   // After the title and a separator, a bare noun clause ("owner, runs the bakery next door", "owner - the bakery down the street") is another business too:
   // the clause must be empty, this company, or only ordinary title / filler / place words.
+  const CONNECT = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|welcomes?|opens?|opened)$/i
+  // The words right after the company's name: a legal suffix, a requested place or an ordinary connector / title word; anything business-like in
+  // lower case ("Brightloop Dental supplies store") is another business.
+  const strayAfterCompany = (words: string[]): boolean => { const w0 = words.slice(0, 1)[0]; return !!w0 && /^\p{Ll}/u.test(w0) && !w0.includes('.') && w0.toLowerCase() !== (input.domain ?? '').toLowerCase().split('.')[0] && !(CONNECT.test(w0) || FILLER.test(w0) || SUFFIX_OK.test(w0) || whereWords.has(w0.toLowerCase())) }
   const afterAll = tail.split(/[.!?]\s/)[0]
-  const clause = /^\s*[,(\-–—/|·]\s*([^,.;)]{1,60})/u.exec(afterAll)?.[1]
+  const clause = /^\s*[,(\-–—/|·:;]\s*([^,.;)]{1,60})/u.exec(afterAll)?.[1]
   if (clause) {
     const ws = clause.trim().split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')).filter(Boolean)
     const cw0 = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean), cl = companyKey(ws.join(' ')).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
     const containsCompany = cw0.length > 0 && cl.some((_, i) => cw0.every((w, j) => cl[i + j] === w))   // "founded Brightloop Dental", "retired in 2019 from Brightloop Dental"
+    if (cl.length >= cw0.length && cw0.length > 0 && cw0.every((w, i) => w === cl[i]) && strayAfterCompany(ws.slice(cw0.length))) return { refused: 'title_at_another_organisation' }
     if ((cl.length > 0 && cw0.slice(0, Math.min(cw0.length, cl.length)).every((w, i) => w === cl[i])) || containsCompany) { /* starts with this company: the window rule above already judged what else is there */ } else {
     const plain = ws.every(w => /^(?:and|the|of|at|in|a|an|since|is|was|has|have|here|our|my|dds|dmd|md)$/i.test(w) || FILLER.test(w) || SUFFIX_OK.test(w) || whereWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) || personWords.has(w.toLowerCase()))
     if (!plain && !thisCompany(ws.join(' '))) return { refused: 'title_at_another_organisation' }
@@ -248,6 +261,9 @@ export function groundPerson(answer: { name: string; title: string; source: stri
     // The phrase must start with this company's name as whole words (the short form "Brightloop" for "Brightloop Dental Group" is a whole-word start too).
     const n = Math.min(cw.length, pw.length)
     if (!(n > 0 && cw.slice(0, n).every((w, i) => w === pw[i]))) return { refused: 'title_at_another_organisation' }
+    // ... and nothing business-like continues the name in lower case ("Brightloop Dental supplies store"): the words right after it must be a legal
+    // suffix, a requested place or an ordinary connector / title word.
+    if (pw.length >= cw.length && strayAfterCompany(phrase.trim().split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')).filter(Boolean).slice(cw.length))) return { refused: 'title_at_another_organisation' }
   }
   const rest = tail.split(/[.!?]\s/)[0]
   if (PAST_AFTER.test(rest)) return { refused: 'past_role' }
@@ -299,6 +315,15 @@ export function groundPerson(answer: { name: string; title: string; source: stri
     else linkedin = url
   }
   return { person: { name: answer.name, title: answer.title, linkedin, source_url: src.url, quote: answer.quote, place }, linkedin_refused }
+}
+
+// The quote may appear more than once in a source (a headline that repeats the name and title, then a sentence that says whose owner she is): EVERY
+// occurrence is judged, and any refusal wins.
+export function groundPerson(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+  const first = groundAt(answer, sources, input, 0)
+  if ('refused' in first) return first
+  for (let n = 1; n < 6; n++) { const r = groundAt(answer, sources, input, n); if ('refused' in r) { if (r.refused === 'quote_not_in_source') break; return r } }
+  return first
 }
 
 export async function researchContact(input: ResearchInput, deps: ResearchDeps): Promise<ResearchResult> {
