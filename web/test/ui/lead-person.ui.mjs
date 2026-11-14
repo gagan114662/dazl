@@ -7,6 +7,7 @@
 //      the "search result, not verified as current" label; a site-listed person with a source link; "No buyer named
 //      yet" for a lead with nobody and for a lead whose only person has a former title (never shown);
 //   2. the first play (mode first5): once the play is done, each first-play card shows the same line;
+//   1b. held leads ("Needs your review" rows) show the same line: the stored person with the LinkedIn link, or "No buyer named yet";
 //   3. the lines fit at 390px (no element past the screen edge).
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -37,13 +38,31 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const J = 'f'.repeat(24)
 const READ = { source: 'https://www.dazl.ai/', sells: 'Signal-based prospecting for small B2B teams',
   icp: { summary: 'B2B SaaS teams hiring their first sellers', who: ['Head of Sales', 'Founder'], industries: ['B2B SaaS'], where: ['London, UK'], sizes: ['1-50 employees'], signals: ['Hiring an SDR or AE'], exclude: ['Enterprises'] } }
-const ppl = (connector, value, url) => ({ connector, kind: 'person', value, label: null, source_url: url, source_date: '2026-11-08', confidence: null })
+// A search result is stored with what tied it to the company beyond its name (lib/people/company-tie.ts); `label` overrides it.
+const TIED = 'public search result (profile title), not verified as current staff; company confirmed beyond its name: the result names its website'
+const ppl = (connector, value, url, label) => ({ connector, kind: 'person', value, label: label !== undefined ? label : connector === 'search:people' ? TIED : null, source_url: url, source_date: '2026-11-08', confidence: null })
 const lead = (id, company, enrichments, o = {}) => ({ id, name: '', company, contact: null, signal: `${company} is hiring its first SDR`, source_url: `https://boards.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} is hiring its first SDR`, event_date: '2026-11-02', date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, fit: 5, intent: 4, action: 3, why: `${company} posted its first SDR role this month.`, signals: null, icp_match: null, enrichments, events: [], ...o })
 const LEADS = [
   lead('1'.repeat(24), 'Northwind Labs', [ppl('search:people', 'Maya Chen, Head of Sales', 'https://uk.linkedin.com/in/maya-chen-nw')]),
   lead('2'.repeat(24), 'Kitebase', [ppl('sitecrawl', 'Omar Haddad, Co-founder', 'https://kitebase.example/team')]),
   lead('3'.repeat(24), 'Harbor Analytics', []),
   lead('4'.repeat(24), 'Gramercy Cloud', [ppl('search:people', 'Pat Lee, Former Head of Sales', 'https://www.linkedin.com/in/pat-lee-gc')]),
+]
+// Held for review (not cards): the same line on the "Needs your review" rows. Invented rows: a held lead with a stored
+// search:people person, and one with nobody stored.
+const HELD = [
+  lead('5'.repeat(24), 'Pagewake', [ppl('search:people', 'Marta Solberg, Regional Sales Director', 'https://www.linkedin.com/in/marta-solberg-test')], { review_reason: 'quote_unconfirmed' }),
+  lead('6'.repeat(24), 'Corvane', [], { review_reason: 'blocked_by_site' }),
+  // someone else's customer: the company itself is in doubt, so its row names nobody (no line at all), even with a person stored
+  lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'counterparty_signal' }),
+  // no company (a person row, e.g. an imported commenter): no line either
+  lead('8'.repeat(24), '', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'quote_unconfirmed', name: 'Nobody Corp Person' }),
+  // held when a free scan ran out of budget (its company may never have been checked): no line, even with a person stored
+  lead('a'.repeat(24), 'Suds Ledger POS', [ppl('search:people', 'Anya Braun, Head of Sales', 'https://www.linkedin.com/in/anya-braun-test')], { review_reason: 'trial_budget_reached' }),
+  // a result stored by the company NAME alone (before the tie rule): it may be another business, so the row names nobody
+  lead('b'.repeat(24), 'Voxline', [ppl('search:people', 'Evan Other, Head of Sales', 'https://www.linkedin.com/in/evan-other-test', 'public search result (profile title), not verified as current staff')], { review_reason: 'quote_unconfirmed' }),
+  // rejected by the user: no line
+  lead('9'.repeat(24), 'Tracewell', [], { review_reason: 'quote_unconfirmed', quarantined_at: 1 }),
 ]
 const f5lead = l => ({ id: l.id, company: l.company, name: null, signal: l.signal, source_url: l.source_url, event_date: l.event_date, published_at: null, fit_pct: 100, provisional: false })
 const F5 = { target: 5, found: 4, verified: 4, enriching: false, next: { action: 'wider_search', label: 'Search wider' }, state: 'partial', finding_more: false, reason: null, message: '4 of 5 verified from the free sources. You can search wider.', leads: LEADS.map(f5lead), sources: [{ source: 'search:news', state: 'done', status: 'ok', note: null, candidates: 6, accepted: 4, review: 0, rejected: 2 }], failed_sources: [], can_continue: true }
@@ -71,7 +90,7 @@ async function context(width, height) {
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/scan' && m === 'POST') return json({ job_id: J })
     if (p === '/api/scan/status') { st.polls++; const done = st.polls >= 2; return json({ job_id: J, status: done ? 'done' : 'running', lead_count: 4, icp: READ.icp, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'B2B SaaS teams hiring their first SDR', first5: done ? F5 : { ...F5, state: 'finding', finding_more: true, verified: 0, leads: [] } }) }
-    if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: LEADS })
+    if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: [...LEADS, ...HELD] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: true, trial: null })
     if (p === '/api/enrich/held') return json({ held: [] })
@@ -94,7 +113,23 @@ async function leadsPage(width, height, tag) {
     else assert.equal(await line.getAttribute('data-empty'), 'true')
   }
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
+  // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
+  const held = page.getByTestId('review-row'); assert.equal(await held.count(), 7)
+  { const vx = held.filter({ hasText: 'Voxline' }).getByTestId('lead-person'); assert.match((await vx.innerText()).trim(), /^No buyer named: a search found people at a company with this name, but nothing confirms it is this company, so none is shown/, 'a name-only search match is never the row\'s person, and the row says why'); assert.doesNotMatch(await held.filter({ hasText: 'Voxline' }).innerText(), /Evan Other/) }
+  assert.equal(await held.filter({ hasText: 'Suds Ledger POS' }).getByTestId('lead-person').count(), 0, 'a budget-held row shows no person line')
+  assert.equal(await held.getByTestId('lead-person').count(), 3, 'only the three searchable held company rows carry a line')
+  assert.equal(await held.filter({ hasText: 'Nobody Corp Person' }).getByTestId('lead-person').count(), 0, 'a row with no company shows no person line')
+  assert.equal(await held.filter({ hasText: 'Tracewell' }).getByTestId('lead-person').count(), 0, 'a rejected lead shows no person line')
+  assert.equal(await held.filter({ hasText: 'Meshgate' }).getByTestId('lead-person').count(), 0, 'a hold that puts the company in doubt shows no person line')
+  assert.doesNotMatch(await held.filter({ hasText: 'Meshgate' }).innerText(), /Anders Smed|No buyer named yet/)
+  const pd = held.filter({ hasText: 'Pagewake' }).getByTestId('lead-person'); assert.equal(await pd.count(), 1)
+  assert.equal((await pd.innerText()).replace(/\s+/g, ' ').trim(), 'Marta Solberg · Regional Sales Director · LinkedIn (search result, not verified as current)')
+  assert.equal(await pd.getByTestId('lead-person-linkedin').getAttribute('href'), 'https://www.linkedin.com/in/marta-solberg-test')
+  const cs = held.filter({ hasText: 'Corvane' }).getByTestId('lead-person'); assert.equal(await cs.count(), 1)
+  assert.equal((await cs.innerText()).trim(), 'No buyer named yet'); assert.equal(await cs.getAttribute('data-empty'), 'true')
+  assert.equal(await held.getByTestId('lead-person-find').count(), 0, 'a held row offers no Find contact (it is not confirmed)')
   assert.equal(await fitsAt(page, '[data-testid=lead-person], [data-testid=lead-person] *'), 0, `person lines fit at ${width}px`)
+  if (shotDir) await held.first().screenshot({ path: path.join(shotDir, `leads-held-named-${tag}.png`) })
   if (shotDir) { await cards.first().screenshot({ path: path.join(shotDir, `leads-card-named-${tag}.png`) }); await cards.nth(2).screenshot({ path: path.join(shotDir, `leads-card-none-${tag}.png`) }); await page.screenshot({ path: path.join(shotDir, `leads-page-${tag}.png`) }) }
   assert.deepEqual(st.writes, [], 'viewing the leads writes nothing')
   await ctx.close()
