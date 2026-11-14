@@ -2055,6 +2055,21 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
   }
   return n
 }
+// #1122: the crawl's one web search for a company's own site. undefined = no search for this scan: a free-trial scan (its searches are prepaid
+// before finish; nothing is reserved after it) or no search source configured. Each call re-checks that the scan is still this attempt's.
+export function siteSearchFor(db: Database.Database, job: { id: string; user_id: string; attempts: number; funded_by?: string | null }, o: { fetchImpl?: typeof fetch; signal?: AbortSignal; env?: Record<string, string | undefined> } = {}): ((q: string) => Promise<{ ok: true; urls: string[] } | { ok: false; reason: string }>) | undefined {
+  const env = o.env ?? process.env
+  if (job.funded_by === 'trial' || !tinyfishEnabled(env)) return undefined
+  const spent = { searches: 0 }
+  return async q => {
+    if (!postFinishAlive(db, job)) return { ok: false, reason: 'scan_not_active' }
+    try {
+      migrateTinyfish(db)
+      const r = await tfSearch(db, job.user_id, q.slice(0, 300), {}, spent, { env: { ...env, TINYFISH_SEARCHES_PER_SCAN: String(MAX_SITE_SEARCHES_PER_SCAN) }, ...(o.signal ? { signal: o.signal } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) })
+      return r.ok ? { ok: true, urls: r.hits.map(h => h.url) } : { ok: false, reason: String(r.reason) }
+    } catch (e) { return { ok: false, reason: e instanceof SpendRefused ? 'spend_limit' : 'failed' } }
+  }
+}
 
 // Bounded post-processing, shared by the main scan path and the CSV company
 // path: crawl + enrichment run under one cooperative abort deadline. When it
@@ -2077,15 +2092,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
       // #1122: a lead found on a third-party page gets ONE web search for its company's own site when the page links none and no name-built
       // site is confirmed. The scan's existing search source (TinyFish), a small allowance of its own on top of the tenant / global daily caps
       // tfSearch enforces; never on a free-trial scan (its searches are prepaid before finish) and never once the scan is no longer this attempt's.
-      const siteSpent = { searches: 0 }
-      const siteSearch = (job.funded_by !== 'trial' && tinyfishEnabled()) ? async (q: string): Promise<{ ok: true; urls: string[] } | { ok: false; reason: string }> => {
-        if (!postFinishAlive(db, job)) return { ok: false, reason: 'scan_not_active' }
-        try {
-          migrateTinyfish(db)
-          const r = await tfSearch(db, job.user_id, q.slice(0, 300), {}, siteSpent, { env: { ...process.env, TINYFISH_SEARCHES_PER_SCAN: String(MAX_SITE_SEARCHES_PER_SCAN) }, signal: postCtrl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) })
-          return r.ok ? { ok: true, urls: r.hits.map(h => h.url) } : { ok: false, reason: String(r.reason) }
-        } catch (e) { return { ok: false, reason: e instanceof SpendRefused ? 'spend_limit' : 'failed' } }
-      } : undefined
+      const siteSearch = siteSearchFor(db, job, { fetchImpl: deps.fetchImpl, signal: postCtrl.signal })
       await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(siteSearch ? { siteSearch } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))

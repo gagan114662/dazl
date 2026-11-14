@@ -138,3 +138,24 @@ test('#1122 a held lead whose page blocked us is searched too, the blocked host 
   const after = first.lead('L1')
   assert.equal(after.domain, 'tdotdental.ca'); assert.deepEqual(after.unresolved, [], 'the stale reason is removed once a site is confirmed')
 })
+
+test('#1122 the runner\'s site search: never on a free-trial scan, never without a search source, never once the scan is not this attempt\'s; otherwise the search source\'s hit URLs, at most the scan\'s allowance', async () => {
+  const { siteSearchFor } = await import('../lib/scan/runner.ts')
+  const { MAX_SITE_SEARCHES_PER_SCAN } = await import('../lib/connectors/sitecrawl.ts')
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const id = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id)
+  const job = { id, user_id: 'A', attempts: 1, funded_by: 'user' }
+  const env = { TINYFISH_API_KEY: 'tf-test' }
+  let calls = 0
+  const fetchImpl = (async () => { calls++; return new Response(JSON.stringify({ results: [{ url: 'https://tdotdental.example/', title: 'TDot Dental', snippet: 's' }, { url: 'https://www.yelp.ca/biz/tdot', title: 'y', snippet: 's' }] }), { status: 200 }) }) as unknown as typeof fetch
+  assert.equal(siteSearchFor(db, { ...job, funded_by: 'trial' }, { env, fetchImpl }), undefined, 'a free-trial scan spends only the searches it reserved before finish')
+  assert.equal(siteSearchFor(db, job, { env: {}, fetchImpl }), undefined, 'no search source configured')
+  const search = siteSearchFor(db, job, { env, fetchImpl })!
+  assert.deepEqual(await search('"TDot Dental" Toronto official website'), { ok: true, urls: ['https://tdotdental.example/', 'https://www.yelp.ca/biz/tdot'] })
+  for (let i = 1; i < MAX_SITE_SEARCHES_PER_SCAN; i++) assert.equal((await search(`q${i}`)).ok, true)
+  assert.deepEqual(await search('one too many'), { ok: false, reason: 'cap' }, 'the scan\'s own allowance, on top of the tenant and global daily caps')
+  assert.equal(calls, MAX_SITE_SEARCHES_PER_SCAN, 'a refused search is never sent')
+  const stale = siteSearchFor(db, { ...job, attempts: 2 }, { env, fetchImpl })!
+  assert.deepEqual(await stale('q'), { ok: false, reason: 'scan_not_active' }); assert.equal(calls, MAX_SITE_SEARCHES_PER_SCAN)
+})
