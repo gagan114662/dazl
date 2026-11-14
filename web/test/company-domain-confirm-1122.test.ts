@@ -115,10 +115,10 @@ test('#1122 NEGATIVE: the contact-page place and the short name are for a SEARCH
   assert.deepEqual(kept(guess), NOTHING)
   assert.equal(sc.shortCompanyName('Bento Cafe YVR'), null); assert.equal(sc.shortCompanyName('d-7 Roofing'), null); assert.equal(sc.shortCompanyName('Smith & Sons'), null, 'a one-word remainder is a common word, not a name')
   assert.equal(sc.shortCompanyName('Queen Street Dental Centre'), 'Queen Street Dental'); assert.equal(sc.shortCompanyName('Johnson and Johnson'), null)
-  assert.equal(sc.structuredAddressText(ld({ '@type': 'Dentist', name: 'Queen Street Dental', address: { streetAddress: '200 Queen St W', addressLocality: 'Toronto', addressRegion: 'ON', postalCode: 'M5V 1Z4' } }), 'Queen Street Dental'), '200 Queen St W, Toronto, ON M5V 1Z4')
-  assert.equal(sc.structuredAddressText(ld({ '@type': 'Dentist', name: 'Queen Street Dental', address: { addressLocality: 'Toronto' } }), 'Queen Street Dental'), '', 'a city without its region is not an address')
-  assert.equal(sc.structuredAddressText(ld({ name: 'Queen Street Dental', address: { streetAddress: '1 A St', addressLocality: 'Toronto', addressRegion: 'ON' } }), 'Queen Street Dental'), '', 'an address on a node that is not typed as an organisation is not the site\'s own')
-  assert.equal(sc.structuredAddressText('<script type="application/ld+json">{bad</script>' + ld(Array(300_000).fill(0)), 'Queen Street Dental'), '')
+  assert.equal(sc.structuredAddressText(ld({ '@type': 'Dentist', name: 'Queen Street Dental', address: { streetAddress: '200 Queen St W', addressLocality: 'Toronto', addressRegion: 'ON', postalCode: 'M5V 1Z4' } }), ['Queen Street Dental']), '200 Queen St W, Toronto, ON M5V 1Z4')
+  assert.equal(sc.structuredAddressText(ld({ '@type': 'Dentist', name: 'Queen Street Dental', address: { addressLocality: 'Toronto' } }), ['Queen Street Dental']), '', 'a city without its region is not an address')
+  assert.equal(sc.structuredAddressText(ld({ name: 'Queen Street Dental', address: { streetAddress: '1 A St', addressLocality: 'Toronto', addressRegion: 'ON' } }), ['Queen Street Dental']), '', 'an address on a node that is not typed as an organisation is not the site\'s own')
+  assert.equal(sc.structuredAddressText('<script type="application/ld+json">{bad</script>' + ld(Array(300_000).fill(0)), ['Queen Street Dental']), '')
 })
 
 // ---------- council round 1 (all three found ways a short name could be confirmed without a real address) ----------
@@ -131,7 +131,9 @@ test('#1122 council: a SHORT name is confirmed only by a POSTAL address in the r
   assert.deepEqual(kept(list), NOTHING, 'a list of cities served is not an address')
   // the real Tadco shape: several offices, one of them a full postal address in the requested city -> binds, and the rows say a short name was used
   const offices = await run({ ...base, sites: { 'tadcoroofing.example': { '/': html(`<h1>TADCO Roofing</h1><p>The commercial roofing specialists of Texas.</p>${PROSE}<a href="/contact">Contact</a><footer>902 E. Owassa Rd, Edinburg, TX 78542 5440 Guhn Rd Houston, TX 77040 4437 Supply Court, Bldg 4, Austin, TX 78744</footer>`), '/contact': html('Email: info@tadcoroofing.example') } } })
-  assert.equal(offices.domain, 'tadcoroofing.example')
+  assert.deepEqual(kept(offices), NOTHING, 'three office addresses in a footer with no company name before them: not provably its own (the real tadcoroofing.com footer is written this way)')
+  const labelled = await run({ ...base, sites: { 'tadcoroofing.example': { '/': html(`<h1>TADCO Roofing</h1>${PROSE}<a href="/contact">Contact</a>`), '/contact': html('<p>TADCO Roofing - Austin office: 4437 Supply Court, Bldg 4, Austin, TX 78744</p><p>TADCO Roofing - Houston office: 5440 Guhn Rd, Houston, TX 77040</p> Email: info@tadcoroofing.example') } } })
+  assert.equal(labelled.domain, 'tadcoroofing.example', 'the name, an office label, then the address in the requested city and state')
   assert.ok(sc.postalAddressInCity('4437 Supply Court, Bldg 4, Austin, TX 78744', ['Austin, Texas'])); assert.ok(sc.postalAddressInCity('200 Queen Street West, Toronto, ON M5V 1Z4', ['Toronto, Ontario']))
   for (const t of ['We have completed projects in Austin, Texas and beyond.', 'Austin, Texas; Dallas, Texas', '77 Peachtree St, Atlanta, GA 30303. Projects in Austin, TX 78701', '1 Elm St, Tulsa, OK 74103']) assert.equal(sc.postalAddressInCity(t, ['Austin, Texas']), false, t)
   assert.equal(sc.postalAddressInCity('1 Main St, Austin, TX 78701', []), false, 'a request with no city confirms no short name')
@@ -142,7 +144,7 @@ test('#1122 council: a short-name bind says so on its rows (the identity check a
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Austin, Texas'] }), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run('L1', job, 'Tadco Roofing & Waterproofing', null, 's', 'https://www.linkedin.example/p', 'Tadco Roofing & Waterproofing is hiring', 90, 85)
-  const home = html(`<h1>TADCO Roofing</h1>${PROSE}<a href="/contact">Contact</a><footer>4437 Supply Court, Bldg 4, Austin, TX 78744</footer>`)
+  const home = html(`<h1>TADCO Roofing</h1>${PROSE}<a href="/contact">Contact</a><footer>TADCO Roofing, 4437 Supply Court, Bldg 4, Austin, TX 78744</footer>`)
   const get: Get = async url => { const u = new URL(url); const h = u.hostname.replace(/^www\./, ''); if (h === 'linkedin.example') return { status: 200, body: html('x'), finalUrl: url }; if (h !== 'tadcoroofing.example') return null; return u.pathname === '/robots.txt' ? { status: 200, body: '', finalUrl: url } : u.pathname === '/' ? { status: 200, body: home, finalUrl: url } : u.pathname === '/contact' ? { status: 200, body: html('Email: info@tadcoroofing.example'), finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, siteSearch: async () => ({ ok: true, urls: ['https://tadcoroofing.example/'] }) })
   const rows = db.prepare("SELECT kind, label FROM lead_enrichments WHERE kind IN ('domain_check', 'email')").all() as { kind: string; label: string }[]
@@ -165,7 +167,7 @@ test('#1122 council: a structured address that belongs to someone else (a review
   const ad = (city: string, region: string, zip: string) => ({ '@type': 'PostalAddress', streetAddress: '12 Oak St', addressLocality: city, addressRegion: region, postalCode: zip })
   const node = { '@type': 'RoofingContractor', name: 'TADCO Roofing', address: ad('Dallas', 'TX', '75201'), review: { '@type': 'Review', author: { '@type': 'Person', address: ad('Austin', 'TX', '78701') } },
     parentOrganization: { '@type': 'Organization', address: ad('Austin', 'TX', '78702') }, areaServed: { '@type': 'City', address: ad('Austin', 'TX', '78703') }, event: { '@type': 'Event', location: { '@type': 'Place', address: ad('Austin', 'TX', '78704') } } }
-  assert.equal(sc.structuredAddressText(ld(node), 'Tadco Roofing'), '12 Oak St, Dallas, TX 75201')
+  assert.equal(sc.structuredAddressText(ld(node), ['Tadco Roofing']), '12 Oak St, Dallas, TX 75201')
   const r = await run({ company: 'Tadco Roofing & Waterproofing', where: ['Austin, Texas'], urls: ['https://tadcoroofing.example/'],
     sites: { 'tadcoroofing.example': { '/': html(`<h1>TADCO Roofing</h1>${PROSE}<a href="/contact">Contact</a>${ld(node)}`), '/contact': html('Email: info@tadcoroofing.example') } } })
   assert.deepEqual(kept(r), NOTHING, 'the site is in Dallas; the Austin addresses on it are other people\'s')
@@ -192,10 +194,10 @@ test('#1122 council (opus S1-S7): seven wrong-site shapes that bound at the firs
 test('#1122 council (R8): a page of unclosed <script> tags costs linear time, and addresses are read from every page as short lines, never as prose', () => {
   const hostile = '<script type="application/ld+json" '.repeat(18_000)   // ~650 KB, under the crawl's page cap
   const t0 = Date.now()
-  assert.deepEqual(sc.ldJsonBlocks(hostile), []); assert.equal(sc.structuredAddressText(hostile, 'Restor Dental'), ''); assert.deepEqual(sc.jsonLdCompanySites('Restor Dental', hostile), []); assert.deepEqual(sc.postalAddressSnippets(hostile), [])
+  assert.deepEqual(sc.ldJsonBlocks(hostile), []); assert.equal(sc.structuredAddressText(hostile, ['Restor Dental']), ''); assert.deepEqual(sc.jsonLdCompanySites('Restor Dental', hostile), []); assert.deepEqual(sc.postalAddressSnippets(hostile, ['Restor Dental']), [])
   assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0} ms`)
   assert.deepEqual(sc.ldJsonBlocks('<SCRIPT type="application/ld+json">{"a":1}</SCRIPT><script>x</script><script type=\'application/ld+json\'>[2]</script>'), ['{"a":1}', '[2]'])
-  assert.deepEqual(sc.postalAddressSnippets('<p>We serve Austin, Texas.</p><footer>4437 Supply Court, Bldg 4, <b>Austin</b>, TX 78744 &nbsp; 200 Queen Street West, Toronto, ON M5V 1Z4</footer>'), ['4437 Supply Court, Bldg 4, Austin , TX 78744', '200 Queen Street West, Toronto, ON M5V 1Z4'])
+  assert.deepEqual(sc.postalAddressSnippets('<p>We serve Austin, Texas.</p><footer>TADCO Roofing, 4437 Supply Court, Bldg 4, <b>Austin</b>, TX 78744 &nbsp; 200 Queen Street West, Toronto, ON M5V 1Z4</footer>', ['Tadco Roofing']), ['4437 Supply Court, Bldg 4, Austin , TX 78744'], 'only the address right after the company name')
 })
 
 test('#1122 council round 2: the address must be in the request\'s own REGION - Austin, MN is not Austin, Texas; London, ON is not London, UK; a request with no state or province confirms nothing by address', async () => {
@@ -245,10 +247,10 @@ test('#1122 council round 2 (opus N4-N8): an address on another page that is a d
   ]
   for (const [name, c] of cases) assert.deepEqual(kept(await run(c)), NOTHING, name)
   // what still counts: the top-level organisation named as the company (also inside @graph); an address beside the company's name on another page
-  assert.equal(sc.structuredAddressText(ld({ '@graph': [{ '@type': 'WebSite', name: 'x' }, { '@type': 'RoofingContractor', name: 'TADCO Roofing', address: austin }] }), 'Tadco Roofing'), '500 Congress Ave, Austin, TX 78701')
-  assert.equal(sc.structuredAddressText(ld({ '@type': 'Organization', name: 'Review host', review: { '@type': 'Review', author: { '@type': 'Organization', name: 'TADCO Roofing', address: austin } } }), 'Tadco Roofing'), '', 'an organisation that is a review\'s author is not a top-level node')
-  assert.deepEqual(sc.postalAddressSnippets('<p>Authorised dealers: Roof Depot, 500 Congress Ave, Austin, TX 78701</p><p>Gerken Roofing, 77 Congress Ave, Austin, TX 78701</p>', 'Gerken Roofing'), ['77 Congress Ave, Austin, TX 78701'])
-  assert.deepEqual(sc.postalAddressSnippets('<p>500 Congress Ave, Austin, TX 78701</p>', 'Abc'), [], 'a name too short to tell apart selects nothing')
+  assert.equal(sc.structuredAddressText(ld({ '@graph': [{ '@type': 'WebSite', name: 'x' }, { '@type': 'RoofingContractor', name: 'TADCO Roofing', address: austin }] }), ['Tadco Roofing']), '500 Congress Ave, Austin, TX 78701')
+  assert.equal(sc.structuredAddressText(ld({ '@type': 'Organization', name: 'Review host', review: { '@type': 'Review', author: { '@type': 'Organization', name: 'TADCO Roofing', address: austin } } }), ['Tadco Roofing']), '', 'an organisation that is a review\'s author is not a top-level node')
+  assert.deepEqual(sc.postalAddressSnippets('<p>Authorised dealers: Roof Depot, 500 Congress Ave, Austin, TX 78701</p><p>Gerken Roofing, 77 Congress Ave, Austin, TX 78701</p>', ['Gerken Roofing']), ['77 Congress Ave, Austin, TX 78701'])
+  assert.deepEqual(sc.postalAddressSnippets('<p>Abc, 500 Congress Ave, Austin, TX 78701</p>', ['Abc']), [], 'a name too short to tell apart selects nothing')
 })
 
 test('#1122 council round 2: on another page only the company\'s OWN address counts, and it must be in the requested city: an own office only in Tulsa confirms nothing; own offices in Austin and Houston bind', async () => {
@@ -257,4 +259,38 @@ test('#1122 council round 2: on another page only the company\'s OWN address cou
   assert.deepEqual(kept(tulsa), NOTHING)
   const ok = await run({ company: 'Gerken Roofing', where: A, urls: ['https://gerkenroofing-co.example/'], sites: { 'gerkenroofing-co.example': { '/': html(`<h1>Gerken Roofing</h1>${PROSE}<a href="/contact">Contact</a>`), '/contact': html('<p>Gerken Roofing, 77 Congress Ave, Austin, TX 78701</p><p>Gerken Roofing, 5440 Guhn Rd, Houston, TX 77040</p> Email: info@gerkenroofing-co.example') } } })
   assert.equal(ok.domain, 'gerkenroofing-co.example', 'offices in Austin and Houston: the requested city is one of its own')
+})
+
+test('#1122 council round 3: a line ABOUT the company is not the company\'s address - testimonial, dealer list, "installed the roof at", supplier, partner, featured project - on any page, the homepage included; an own address in another state refuses', async () => {
+  const A = ['Austin, Texas']
+  const site = (home: string, pages: Record<string, string> = {}) => ({ '/': html(`${home}${PROSE}<a href="/contact">Contact</a><a href="/about">About</a><a href="/locations">Locations</a>`), '/contact': html('Email: hi@x.example'), ...pages })
+  const G = (pages: Record<string, string>, home = '<h1>Gerken Roofing</h1>') => ({ company: 'Gerken Roofing', where: A, urls: ['https://gerkenroofing-co.example/'], sites: { 'gerkenroofing-co.example': site(home, pages) } })
+  const T = (pages: Record<string, string>, home = '<h1>TADCO Roofing</h1>') => ({ company: 'Tadco Roofing & Waterproofing', where: A, urls: ['https://tadcoroofing.example/'], sites: { 'tadcoroofing.example': site(home, pages) } })
+  const cases: [string, Parameters<typeof run>[0]][] = [
+    ['E2 own office in Tulsa; a short testimonial names the company right before the client\'s Austin address', G({ '/contact': html('<p>Gerken Roofing, 1 Elm St, Tulsa, OK 74103</p>'), '/about': html('<p>"Gerken Roofing did a great job" - Acme Foods, 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['X5 "TADCO Roofing dealers: Roof Depot, <Austin address>"', T({ '/locations': html('<p>TADCO Roofing dealers: Roof Depot, 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['X4 "TADCO Roofing installed the roof at <Austin address>"', T({ '/about': html('<p>TADCO Roofing installed the roof at 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['X12 the same with its own office in Dallas', T({ '/contact': html('<p>TADCO Roofing, 100 Elm St, Dallas, TX 75201</p>'), '/about': html('<p>TADCO Roofing completed the roof at 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['F2 the full-name version', G({ '/about': html('<p>Gerken Roofing installed the roof at 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['X11 "based in Oklahoma. Our supplier ABC Supply, <Austin address>"', T({ '/about': html('<p>About TADCO Roofing. We are based in Oklahoma. Our supplier ABC Supply, 500 Congress Ave, Austin, TX 78701.</p>') })],
+    ['X1 homepage: own office in Dallas, an installation partner in Austin', T({}, '<h1>TADCO Roofing</h1><p>TADCO Roofing, 100 Elm St, Dallas, TX 75201. Our Austin installation partner: Roof Depot, 500 Congress Ave, Austin, TX 78701</p>')],
+    ['X2 homepage: only a featured project in Austin', T({}, '<h1>TADCO Roofing</h1><p>Featured project: Capitol Plaza, 500 Congress Ave, Austin, TX 78701</p>')],
+    ['X13 own office in Tulsa beside the name, and a roof it completed in Austin', T({ '/contact': html('<p>TADCO Roofing, 1 Elm St, Tulsa, OK 74103</p>'), '/about': html('<p>TADCO Roofing completed the roof at 500 Congress Ave, Austin, TX 78701</p>') })],
+    ['an own office in Austin AND an own office in another state: not confirmed this way (fail closed)', T({ '/contact': html('<p>TADCO Roofing, 77 Congress Ave, Austin, TX 78701</p><p>TADCO Roofing, 1 Elm St, Tulsa, OK 74103</p>') })],
+    ['X7 a top-level organisation with a LONGER name', T({}, `<h1>TADCO Roofing</h1>${ld({ '@type': 'LocalBusiness', name: 'TADCO Roofing Supply Dallas', address: { streetAddress: '500 Congress Ave', addressLocality: 'Austin', addressRegion: 'TX', postalCode: '78701' } })}`)],
+    ['E1 full name, the homepage says it serves Austin, its own office (beside its name) is in Tulsa', G({ '/contact': html('<p>Gerken Roofing, 1 Elm St, Tulsa, OK 74103</p>') }, '<h1>Gerken Roofing</h1><p>Proudly serving Austin, Texas.</p>')],
+  ]
+  for (const [name, c] of cases) assert.deepEqual(kept(await run(c)), NOTHING, name)
+  const own = (t: string, n = ['Gerken Roofing']) => sc.postalAddressSnippets(`<p>${t}</p>`, n).length
+  for (const t of ['Gerken Roofing, 77 Congress Ave, Austin, TX 78701', 'Gerken Roofing - Austin office: 77 Congress Ave, Austin, TX 78701', 'Gerken Roofing HQ 77 Congress Ave, Austin, TX 78701', 'GERKEN ROOFING | 77 Congress Ave, Austin, TX 78701']) assert.equal(own(t), 1, t)
+  for (const t of ['"Gerken Roofing did a great job" - Acme Foods, 500 Congress Ave, Austin, TX 78701', 'Gerken Roofing dealers: Roof Depot, 500 Congress Ave, Austin, TX 78701', 'Gerken Roofing installed the roof at 500 Congress Ave, Austin, TX 78701', 'Featured project: 500 Congress Ave, Austin, TX 78701', '77 Congress Ave, Austin, TX 78701']) assert.equal(own(t), 0, t)
+  assert.equal(sc.ownAddressOutsideRegions('77 Congress Ave, Austin, TX 78701 . 1 Elm St, Tulsa, OK 74103', A), true); assert.equal(sc.ownAddressOutsideRegions('77 Congress Ave, Austin, TX 78701 . 5440 Guhn Rd, Houston, TX 77040', A), false); assert.equal(sc.ownAddressOutsideRegions('1 Elm St, Tulsa, OK 74103', ['Texas']), false)
+})
+
+test('#1122 council round 3: only a SEARCHED site collects own addresses and can be confirmed by one - a name-built guess with a perfect own address in the requested city is judged as on #1219', async () => {
+  // company "Gerken Roofing" -> the guess gerkenroofing.com; its homepage states no place, its contact page gives its own Austin address: still refused
+  const r = await run({ company: 'Gerken Roofing', where: ['Austin, Texas'], urls: [],
+    sites: { 'gerkenroofing.com': { '/': html(`<h1>Gerken Roofing</h1>${PROSE}<a href="/contact">Contact</a>`), '/contact': html('<p>Gerken Roofing, 77 Congress Ave, Austin, TX 78701</p> Email: info@gerkenroofing.com') } } })
+  assert.deepEqual(kept(r), NOTHING)
+  assert.ok(r.audit.some(a => a.lookup === 'gerkenroofing.com' && /location unconfirmed/.test(a.status)), JSON.stringify(r.audit))
 })

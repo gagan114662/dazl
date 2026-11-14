@@ -178,19 +178,22 @@ export function ldJsonBlocks(html: string): string[] {
   return out
 }
 // Postal addresses written out on a page ("4437 Supply Court, Bldg 4, Austin, TX 78744"): street number and street, city, two-letter region,
-// postal code. Tags are dropped in one linear pass; at most 20 per page. These, and nothing else from a site's other pages, feed the place
-// confirmation of a searched site: a city named in running text is not an address.
+// postal code. Tags are dropped in one linear pass; at most 20 per page.
 const POSTAL_ADDRESS = /\b\d{1,6}[A-Za-z]?\s+[^,.;|\n<>]{3,60}(?:,\s*[^,.;|\n<>]{1,30})?,\s*[\p{L} .'-]{2,40},\s*[A-Z]{2}\b\.?,?\s+(?:\d{5}(?:-\d{4})?|[A-Z]\d[A-Z]\s?\d[A-Z]\d)\b/gu
-export function postalAddressSnippets(html: string, besideName?: string): string[] {
+// The address is the company's OWN only when the company's name is written DIRECTLY before it: "Gerken Roofing, 77 Congress Ave, Austin, TX
+// 78701", "TADCO Roofing - Austin office: 4437 Supply Court, ...". Between the name and the street number only punctuation and a short office
+// label may stand. A sentence about the company ("Gerken Roofing installed the roof at ..."), a dealer, a client, a supplier or a project line
+// does not qualify, on any page, the homepage included (council round 3).
+const OWN_LABEL = /[\s,:;|()\u2013\u2014-]*(?:(?:hq|headquarters|head office|main office|corporate office|office|location|address|mailing address|visit us(?: at)?|find us(?: at)?|(?:[\p{L}.']{2,20}\s){0,2}(?:office|location|branch))[\s,:;|()\u2013\u2014-]*)?$/iu
+export function postalAddressSnippets(html: string, names: string[]): string[] {
+  const wants = names.map(norm).filter(w => w.length >= 6)
+  if (wants.length === 0) return []
   const text = html.slice(0, 800_000).replace(/<[^>]{0,2000}>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
-  const want = besideName === undefined ? null : norm(besideName)
-  if (want !== null && want.length < 4) return []
   const out: string[] = []; let seen = 0
   for (const m of text.matchAll(POSTAL_ADDRESS)) {
     if (++seen > 200) break
-    // besideName: the address counts only when the company's name stands right BEFORE it (within 100 characters: "Acme Roofing, 1 Main St, ..."):
-    // on a page other than the homepage an address may be a dealer's, a client's or a project's (council round 2).
-    if (want !== null && !norm(text.slice(Math.max(0, m.index - 100), m.index)).includes(want)) continue
+    const before = norm(text.slice(Math.max(0, m.index - 110), m.index).replace(OWN_LABEL, ''))
+    if (!wants.some(w => before.endsWith(w))) continue
     out.push(m[0].slice(0, 160)); if (out.length >= 20) break
   }
   return out
@@ -487,8 +490,8 @@ export function contactPaths(homeHtml: string, home: URL): string[] {
 
 // #1122: the postal address a page declares in its structured data (schema.org PostalAddress), written out as "street, City, REGION postal"
 // so the same place checks that read running text can read it. Bounded walk; unreadable data gives ''.
-export function structuredAddressText(html: string, company: string): string {
-  const want = norm(company); if (want.length < 4) return ''
+export function structuredAddressText(html: string, names: string[]): string {
+  const wants = names.map(norm).filter(w => w.length >= 6); if (wants.length === 0) return ''
   const out: string[] = []
   for (const block of ldJsonBlocks(html)) {
     let root: unknown; try { root = JSON.parse(block) } catch { continue }
@@ -504,7 +507,7 @@ export function structuredAddressText(html: string, company: string): string {
       const types = [rec['@type']].flat().filter((x): x is string => typeof x === 'string')
       if (types.length === 0 || types.some(t => NOT_ORG_TYPE.test(t)) || !types.some(t => ORG_TYPE.test(t))) continue
       const name = typeof rec.name === 'string' ? norm(rec.name) : ''
-      if (!name || !(name === want || (name.includes(want) && want.length >= 5) || (want.includes(name) && name.length >= 8))) continue
+      if (!name || !wants.includes(name)) continue   // the node IS this company, by its full or its short name: a longer or shorter name is another organisation
       for (const a of [rec.address].flat().slice(0, 12)) {
         if (!a || typeof a !== 'object' || Array.isArray(a)) continue
         const ad = a as Record<string, unknown>
@@ -529,6 +532,14 @@ function regionCodeOf(region: string): { code: string; country: 'US' | 'CA' } | 
   for (const [code, name] of Object.entries(CA_PROVINCES)) if (name === low || (code === 'NL' && low === 'newfoundland')) return { code, country: 'CA' }
   for (const [code, name] of Object.entries(US_STATES)) if (String(name).toLowerCase() === low) return { code, country: 'US' }
   return null
+}
+// Is one of these own addresses in a state or province the request does not name? (The request's regions are those of its "City, Region"
+// entries; a request with none answers false: nothing to compare with.)
+export function ownAddressOutsideRegions(ownAddresses: string, where: string[]): boolean {
+  const asked = new Set(where.map(w => { const p = w.split(','); return p.length >= 2 ? regionCodeOf(p[1])?.code : undefined }).filter((x): x is string => !!x))
+  if (asked.size === 0) return false
+  for (const m of ownAddresses.slice(0, 40_000).matchAll(/,\s*([A-Z]{2})\b\.?,?\s+(?:\d{5}|[A-Z]\d[A-Z])/g)) if (!asked.has(m[1])) return true
+  return false
 }
 export function postalAddressInCity(text: string, where: string[]): boolean {
   if (!text) return false
@@ -590,7 +601,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, ownAddressesFor?: string): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; siteText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, ownAddressesFor?: string[]): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; siteText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -658,7 +669,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // #1122 (only when ownAddressesFor names the company, i.e. for a searched site): the site's OWN postal addresses - those written on the
     // homepage, those on another page it read that stand beside the company's name, and the address of a top-level organisation node named as the
     // company in its structured data. They can confirm the place when the homepage states none; they never clear what the homepage itself says.
-    const sitePlain: string[] = ownAddressesFor ? [structuredAddressText(home.body, ownAddressesFor), ...postalAddressSnippets(home.body)] : []
+    const sitePlain: string[] = ownAddressesFor ? [structuredAddressText(home.body, ownAddressesFor), ...postalAddressSnippets(home.body, ownAddressesFor)] : []
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
       if (stopped()) { stoppedBy = 'aborted'; break }
@@ -913,7 +924,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
-    const readSite = async (cand: string, company: string, wantAddresses = false): Promise<Crawled> => {   // wantAddresses: a searched site, whose own postal addresses are collected (#1122)
+    const readSite = async (cand: string, company: string, ownNames?: string[]): Promise<Crawled> => {   // ownNames: a searched site, whose own postal addresses are collected under these names (#1122)
       const c = siteRead.get(cand)
       if (c) {
         if (c.homeNorm === undefined) return c
@@ -940,7 +951,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs, wantAddresses ? company : undefined)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs, ownNames)
       siteRead.set(cand, r)
       return r
     }
@@ -977,13 +988,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // text, a list of places served, the city inside the company's own name: none of these is an address. Every other candidate is unchanged.
         const searched = searchedHosts.has(cand)
         const short = searched ? shortCompanyName(l.company, where) : null
-        r = await readSite(cand, short ?? l.company, searched)
+        r = await readSite(cand, short ?? l.company, searched ? [l.company, ...(short ? [short] : [])] : undefined)
         const fullNamed = !short || !!r.homeNorm?.includes(norm(l.company))
         if (short && !fullNamed) shortBound.set(cand, short); else shortBound.delete(cand)
         const pt = r.homeText
-        const addressed = searched && !unread(r) && postalAddressInCity(`${r.homeText ?? ''} . ${r.siteText ?? ''}`, where)
-        // The site's own addresses are also held against the request: one in another state or country refuses a searched site, wherever it stands.
-        if (searched && !unread(r) && where.length > 0 && r.siteText && ownAddressElsewhere(`${pt ?? ''} . ${r.siteText}`, where)) {
+        const addressed = searched && !unread(r) && postalAddressInCity(r.siteText ?? '', where)   // only the site's OWN addresses (siteText), never free text
+        // The site's own addresses are also held against the request: ONE of them in another state or province refuses a searched site, whatever
+        // else it lists (a company with offices in several states is not confirmed this way: fail closed).
+        if (searched && !unread(r) && r.siteText && ownAddressOutsideRegions(r.siteText, where)) {
           const reason = `contact rejected: location mismatch ${firstPlaceLabel(r.siteText) ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: reason, results: 0 })
           recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason, sourceUrl: `https://${cand}/` })
