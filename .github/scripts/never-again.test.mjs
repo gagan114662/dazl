@@ -39,6 +39,12 @@ test('the gates NEVER-AGAIN.md names are still wired', () => {
   assert.match(read('ops/prod/test_prod_prebuilt.py'), /def test_the_deploy_script_contains_no_build_step/, '#1 prod')
   assert.match(read('ops/staging/deploy.sh'), /REFUSED: no on-box build/, '#1 staging')
   assert.match(read('.github/workflows/release-preflight.yml'), /unittest discover -s ops -p 'test_\*\.py'/, '#1: ops/test_never_again.py runs')
+  // #12: the gate the doc cites must still exist (deleting it must turn a check red, like the gates above), and the entry must
+  // still say what it is about: a reworded or swapped-out entry fails here
+  assert.match(read('ops/test_never_again.py'), /class ScriptsThatOpenADatabaseAreClassified/, '#12: the no-hand-write-to-prod gate')
+  assert.match(read('ops/test_never_again.py'), /def test_no_script_runs_the_sqlite3_command_line/, '#12: the sqlite3 command-line ban')
+  const e12 = entries.find(e => /^12\. /.test(e)) ?? ''
+  for (const w of ['production database', 'sqlite3', 'ScriptsThatOpenADatabaseAreClassified', 'product', 'only sees the command line']) assert.ok(e12.includes(w), `entry 12 no longer mentions "${w}"`)
   assert.ok(existsSync(path.join(repo, '.github/workflows/live-check-gate.yml')), '#3')
 })
 

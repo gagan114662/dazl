@@ -253,7 +253,8 @@ def cli_uses(text):
         code = line.strip()
         if code.startswith(('#', '//', '*')) or re.search(r'\bimport\s+sqlite3\b|\bfrom\s+sqlite3\b', code):
             continue
-        if re.search(r"""(?:^|[\s;|&`('"$])sqlite3(?:\s+[-"'$/\w.<]|\s*$)""", code) and not re.search(r'sqlite3\.\w', code):
+        # an optional path in front (/usr/bin/sqlite3, ./sqlite3) and an optional .exe: the bare name is not the only way to run it
+        if re.search(r"""(?:^|[\s;|&`('"$])(?:[\w.\-/]*/)?sqlite3(?:\.exe)?(?:\s+[-"'$/\w.<]|\s*$)""", code) and not re.search(r'sqlite3\.(?!exe\b)\w', code):
             out.append(code[:120])
     return out
 
@@ -306,10 +307,14 @@ class ScriptsThatOpenADatabaseAreClassified(unittest.TestCase):
             self.assertEqual(len(writable_opens(w)), 1, w)
         for c in ('sqlite3 /var/lib/dazl/app.db "INSERT INTO spend VALUES (1)"', 'ssh box sqlite3 app.db "delete from spend_ledger where id=1"',
                   'sqlite3 "$db" <<EOF', 'echo "DELETE FROM a" | sqlite3 db', 'sqlite3 db < fix.sql', 'sqlite3 db ".import x y"',
-                  'sqlite3 "$db" "select count(*) from users"', 'x=$(sqlite3 $DB .tables)'):
+                  'sqlite3 "$db" "select count(*) from users"', 'x=$(sqlite3 $DB .tables)',
+                  # a path in front of the name (Hermes review at d87d03a7): the incident's own shape with an absolute path
+                  '/usr/bin/sqlite3 /var/lib/dazl/app.db "INSERT INTO spend VALUES (1)"', 'ssh box /usr/bin/sqlite3 app.db "UPDATE a SET b=1 WHERE id=2"',
+                  './sqlite3 app.db "INSERT INTO a VALUES (1)"', 'sqlite3.exe db "INSERT INTO a VALUES (1)"', 'ssh dazl-box "/usr/local/bin/sqlite3 app.db .tables"'):
             self.assertEqual(len(cli_uses(c)), 1, c)
         for c in ('import sqlite3', 'import os, sqlite3, sys', 'from sqlite3 import connect', 'except sqlite3.Error:', "src = sqlite3.connect('file:%s?mode=ro' % p, uri=True)",
-                  '# sqlite3 x "DELETE FROM y"', "[ -d \"$REL/web/node_modules/better-sqlite3\" ] || fail"):
+                  '# sqlite3 x "DELETE FROM y"', "[ -d \"$REL/web/node_modules/better-sqlite3\" ] || fail",
+                  "src = sqlite3.connect('file:%s?mode=ro' % x, uri=True)", 'import sqlite3 as s', 'x = sqlite3.Row'):
             self.assertEqual(cli_uses(c), [], c)
 
 
