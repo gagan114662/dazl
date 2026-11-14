@@ -398,7 +398,7 @@ test('GET /api/growth/funnel: owners of the configured growth workspace only', (
 bothEngines('#1176 usable leads: a retired verified status without proof, a posting day on a non-hiring trigger, a future day and a failed required check do not activate an account', async ({ db }) => {
   await user(db, G, 'founder@growth.dazl-fixture.co', T0 - 100 * DAY)
   await member(db, G, G, 'owner')
-  for (const [t, email] of [['NEG', 'neg@usable.dazl-fixture.co'], ['POS', 'pos@usable.dazl-fixture.co']]) { await user(db, t, email, T0); await member(db, t, t, 'owner') }
+  for (const [t, email] of [['NEG', 'neg@usable.dazl-fixture.co'], ['POS', 'pos@usable.dazl-fixture.co'], ['POS2', 'pos2@usable.dazl-fixture.co']]) { await user(db, t, email, T0); await member(db, t, t, 'owner') }
   const run = (tenant: string, at: number) => play(db, tenant, at, { status: 'running', verified: 1 })   // leads are added while it runs, then it finishes
   const add = (id: string, n: string, o: { status: string; proof: string | null; signal: string; date: string }) => db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date, event_date_proof) VALUES (?, ?, 'Synthetic Co', ?, 'https://news.example.test/' || ?, ?, ?, ?)", [`${id}-${n}`, id, o.signal, n, o.status, o.date, o.proof])
   const neg = await run('NEG', T0 + DAY)
@@ -411,6 +411,11 @@ bothEngines('#1176 usable leads: a retired verified status without proof, a post
   const pos = await run('POS', T0 + DAY)
   await add(pos, 'good', { status: 'unverified', proof: 'page_bound', signal: 'opened a second office', date: '2026-05-20' })
   await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [pos])
+  const pos2 = await run('POS2', T0 + DAY)
+  await add(pos2, 'good2', { status: 'unverified', proof: 'ats_structured', signal: 'hiring a sales manager', date: '2026-05-20' })
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [pos2])
   const t = (await funnelReport(db, G, { now: NOW, env: ENV })).cohorts[0]
-  assert.deepEqual(t.setup, { abandoned_setup: 0, runs_failed: 0, zero_result: 1, activated: 1 })
+  // Asymmetric on purpose: two proven accounts and one that is not. On main (reading the retired status) the roles swap, 1 activated and 2 zero_result,
+  // so a totals check that passed with the roles swapped cannot pass there.
+  assert.deepEqual(t.setup, { abandoned_setup: 0, runs_failed: 0, zero_result: 1, activated: 2 })
 })

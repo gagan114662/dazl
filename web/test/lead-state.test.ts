@@ -105,6 +105,13 @@ test('#352 Home and the Leads view agree for every reason, dated or undated, wit
   }
 })
 
+test('#1176 the cause label fails closed on a row with no day_verified flag: a dated row is "undated" until the card\'s proof says the day is proven', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' }
+  assert.equal(researchCause(lead({ ...dated, day_verified: undefined, review_reason: null })), 'undated', 'no flag: never read as proven')
+  assert.equal(researchCause(lead({ ...dated, day_verified: false, review_reason: null })), 'undated')
+  assert.equal(researchCause(lead({ ...dated, day_verified: true, review_reason: null })), 'unsupported', 'a proven day: the cause is something else')
+})
+
 test('#352 the original gap: a visible no_event_evidence lead is actionable review on Home (not "cannot make it ready"); sales_hiring_check_failed is research on both', () => {
   const ne = lead({ id: 'n', review_reason: 'no_event_evidence', event_date: '2026-10-20', date_status: 'unverified', day_verified: true })
   const j = journey({ profile, jobs: [job], leads: [ne], drafts: null })

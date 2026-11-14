@@ -102,7 +102,7 @@ const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_ex
   FROM leads l WHERE l.scan_job_id = ?`
 
 // Load one run for the tenant that owns it. Another tenant's run id reads as not found: a preview never crosses tenants.
-export async function loadProofInput(db: Db, tenantId: string, jobId: string, extra: { inferredOffer: ProofInput['inferredOffer']; spendUsd: number | null }): Promise<ProofInput | null> {
+export async function loadProofInput(db: Db, tenantId: string, jobId: string, extra: { inferredOffer: ProofInput['inferredOffer']; spendUsd: number | null; now?: number }): Promise<ProofInput | null> {
   const job = await db.get<{ id: string; user_id: string; status: string; finished_at: number | null; icp: string | null; query: string | null }>(RUN_SQL, [jobId, tenantId])
   if (!job) return null
   const leads = await db.all<ProofLeadRow>(LEADS_SQL, [job.id])
@@ -110,6 +110,6 @@ export async function loadProofInput(db: Db, tenantId: string, jobId: string, ex
   return {
     run: { jobId: job.id, tenantId, status: job.status, finishedAt: job.finished_at === null ? null : Number(job.finished_at), spendUsd: extra.spendUsd },
     inferredOffer: extra.inferredOffer,
-    leads: leads.map(l => ({ ...l, gate_held: held.has(l.id), window_held: windowHeld({ event_date: l.event_date, icp: job.icp, query: job.query }, new Date()), score: Number(l.score), confidence: l.confidence === null ? null : Number(l.confidence), quarantined_at: l.quarantined_at === null ? null : Number(l.quarantined_at), evidence_purged_at: l.evidence_purged_at === null ? null : Number(l.evidence_purged_at) })),
+    leads: leads.map(l => ({ ...l, gate_held: held.has(l.id), window_held: windowHeld({ event_date: l.event_date, icp: job.icp, query: job.query }, new Date(extra.now ?? Date.now())), score: Number(l.score), confidence: l.confidence === null ? null : Number(l.confidence), quarantined_at: l.quarantined_at === null ? null : Number(l.quarantined_at), evidence_purged_at: l.evidence_purged_at === null ? null : Number(l.evidence_purged_at) })),
   }
 }

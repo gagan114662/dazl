@@ -28,6 +28,12 @@ export async function seedStaging(raw: Database.Database, password: string, now 
   const existing = raw.prepare('SELECT id FROM users WHERE email = ?').get(DEMO_EMAIL) as { id: string } | undefined
   if (existing) {
     raw.prepare('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ?').run(now, existing.id)
+    // A demo database seeded before #1176 holds its leads as the retired date_status 'verified' with no proof, which no reader counts any more:
+    // give the demo tenant's OWN seeded rows the proof column the fresh seed writes. Idempotent (the filter no longer matches after one pass);
+    // never a non-demo row (the seed's own dedup_key prefix, this tenant's own scans).
+    raw.prepare(`UPDATE leads SET date_status = 'unverified', event_date_proof = 'page_bound'
+      WHERE dedup_key LIKE 'staging-demo:%' AND date_status = 'verified' AND event_date_proof IS NULL AND event_date IS NOT NULL
+        AND scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id = ?)`).run(existing.id)
     return { created: false, tenant: existing.id }
   }
 
