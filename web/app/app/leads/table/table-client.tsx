@@ -29,11 +29,11 @@ export default function TableClient() {
 
   // the remembered sort applies when the address carries none
   useEffect(() => {
-    if (sp.get('sort')) { try { localStorage.setItem('leads-table-sort', sp.get('sort') as string) } catch { /* private mode */ } setSortReady(true); return }
+    if (sp.get('sort')) { try { localStorage.setItem('leads-table-sort', sp.get('sort') as string) } catch { /* private mode */ } queueMicrotask(() => setSortReady(true)); return }
     let s: string | null = null
     try { s = localStorage.getItem('leads-table-sort') } catch { /* private mode */ }
     if (s === 'date') router.replace(`/app/leads/table?sort=date${page > 1 ? `&page=${page}` : ''}`)   // the fetch waits for this address
-    else setSortReady(true)
+    else queueMicrotask(() => setSortReady(true))
   }, [sp, router, page])
 
   useEffect(() => {
@@ -48,7 +48,7 @@ export default function TableClient() {
   }, [sort, page, reload, sortReady])
   useEffect(() => { queueMicrotask(() => setOpen(null)) }, [sort, page])   // a panel never stays open on whichever row now sits at its index
 
-  const rows = data?.rows ?? []
+  const rows = useMemo(() => data?.rows ?? [], [data])
   const cur = open != null ? rows[open] ?? null : null
   const panelHead = useCallback((el: HTMLElement | null) => { el?.focus() }, [])
   const go = useCallback((i: number) => setOpen(i >= 0 && i < rows.length ? i : null), [rows.length])
