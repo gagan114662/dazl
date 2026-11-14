@@ -30,7 +30,9 @@ test('proxy.ts answers the probe first (before the session lookup) with a 400, a
   // Next reads `config` statically, so the matcher is written out in proxy.ts: it must be the one this module names
   const m = /export const config = \{ matcher: (\[.*\]) \}/.exec(src)
   assert.ok(m, 'the matcher is one literal line')
-  assert.deepEqual(new Function(`return ${m![1]}`)(), ['/app/:path*', '/api/:path*', SERVER_ACTION_PROBE_MATCHER])
+  // the literal, read as JSON (single quotes and bare keys normalised): no evaluation of source text
+  const literal = JSON.parse(m![1].replace(/'/g, '"').replace(/([{,]\s*)([a-z]+):/g, '$1"$2":'))
+  assert.deepEqual(literal, ['/app/:path*', '/api/:path*', SERVER_ACTION_PROBE_MATCHER])
 })
 // The behaviour itself (a real POST with Next-Action -> 400 on a production build, and an ordinary page still 200) is checked by
 // test/smoke/app-pages.smoke.mjs, which CI runs on the built app.
