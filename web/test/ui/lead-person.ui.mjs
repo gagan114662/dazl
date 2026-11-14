@@ -39,7 +39,7 @@ const J = 'f'.repeat(24)
 const READ = { source: 'https://www.dazl.ai/', sells: 'Signal-based prospecting for small B2B teams',
   icp: { summary: 'B2B SaaS teams hiring their first sellers', who: ['Head of Sales', 'Founder'], industries: ['B2B SaaS'], where: ['London, UK'], sizes: ['1-50 employees'], signals: ['Hiring an SDR or AE'], exclude: ['Enterprises'] } }
 // A search result is stored with what tied it to the company beyond its name (lib/people/company-tie.ts); `label` overrides it.
-const TIED = 'public search result (profile title), not verified as current staff; company confirmed beyond its name: the result names the requested city'
+const TIED = 'public search result (profile title), not verified as current staff; company confirmed beyond its name: the result names its website'
 const ppl = (connector, value, url, label) => ({ connector, kind: 'person', value, label: label !== undefined ? label : connector === 'search:people' ? TIED : null, source_url: url, source_date: '2026-11-08', confidence: null })
 const lead = (id, company, enrichments, o = {}) => ({ id, name: '', company, contact: null, signal: `${company} is hiring its first SDR`, source_url: `https://boards.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} is hiring its first SDR`, event_date: '2026-11-02', date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, fit: 5, intent: 4, action: 3, why: `${company} posted its first SDR role this month.`, signals: null, icp_match: null, enrichments, events: [], ...o })
 const LEADS = [
@@ -115,7 +115,7 @@ async function leadsPage(width, height, tag) {
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
   // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
   const held = page.getByTestId('review-row'); assert.equal(await held.count(), 7)
-  { const vx = held.filter({ hasText: 'Voxline' }).getByTestId('lead-person'); assert.equal((await vx.innerText()).trim(), 'No buyer named yet', 'a name-only search match is never the row\'s person'); assert.doesNotMatch(await held.filter({ hasText: 'Voxline' }).innerText(), /Evan Other/) }
+  { const vx = held.filter({ hasText: 'Voxline' }).getByTestId('lead-person'); assert.match((await vx.innerText()).trim(), /^No buyer named: a search found people at a company with this name, but nothing confirms it is this company, so none is shown/, 'a name-only search match is never the row\'s person, and the row says why'); assert.doesNotMatch(await held.filter({ hasText: 'Voxline' }).innerText(), /Evan Other/) }
   assert.equal(await held.filter({ hasText: 'Suds Ledger POS' }).getByTestId('lead-person').count(), 0, 'a budget-held row shows no person line')
   assert.equal(await held.getByTestId('lead-person').count(), 3, 'only the three searchable held company rows carry a line')
   assert.equal(await held.filter({ hasText: 'Nobody Corp Person' }).getByTestId('lead-person').count(), 0, 'a row with no company shows no person line')

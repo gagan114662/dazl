@@ -143,7 +143,7 @@ test('legacy verified date status is a claimed event day, never "confirmed on th
 // Instinct #191/#196 review: recommendation selection, not only scoring. A sole Former / Not / Assistant-to row must not
 // become the card's "who", whichever connector stored it.
 // A search result row as the search stores it now: its label says what tied it to the company beyond the name (company-tie.ts).
-const TIED = 'public search result (profile title), not verified as current staff; company confirmed beyond its name: the result names the requested city'
+const TIED = 'public search result (profile title), not verified as current staff; company confirmed beyond its name: the result names its website'
 const row = (connector: string, name: string, title: string): Row => ({ connector, kind: 'person', value: `${name}, ${title}`, label: connector === 'search:people' ? TIED : 'x', source_url: 'https://x.example/team' })
 const whoOf = (rows: Row[], roles: string) => card({ enrichments: [dom('brightteeth.example', 'evidence_own_domain', 'https://brightteeth.example/news'), email, ...rows] }, roles)
 test('card: a sole contradicted stored person is never the recommended who, for every connector; the row is not erased', () => {

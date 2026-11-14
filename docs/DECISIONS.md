@@ -21,17 +21,14 @@ saw. This replaces decision 3 of 2026-11-10 on #1037 only in "one search per rea
 names nobody yet, ready leads first.
 
 Added the same day after Hermes-PC's review of PR #1164 (5 of 9 stored search people on staging were at a different
-business with the same name): **a company name alone never ties a search result to a lead.** A public profile search
-result is stored only when its own text also names the lead's confirmed website, gives a company of that name with a
-Y Combinator batch right after it (for a lead found on its YC company page; the lead's own batch is not stored, so
-the batch itself is not compared), or names the city the request names
-(`lib/people/company-tie.ts`); otherwise it is refused and counted. The city tie is the weakest (a same-name business
-in the same city would pass) and is kept because the place rule was already the product's answer to same-name
-businesses; a country, state, province or area is never a tie, and a city counts only when it is on the place rule's own list of cities, written bare or with its
-region ("Toronto", "Chicago, Illinois"); a city that list does not carry ("Austin", "Sydney") does not tie. Reviewer sign-off on keeping the city tie is asked for in PR
-#1164. Results stored earlier by the name alone stay listed, labelled "matched by the company name only
-- this may be a different business with the same name", and are never the lead's person, the export's best person or
-a work-email target. This lowers how many leads name a person; a wrong person at another business is worse than none.
+business with the same name), decided by Hermes (delegated by the owner): **a company name alone never ties a search
+result to a lead, and the only tie is the lead's confirmed website.** A public profile search result is stored only when
+its own text names the lead's crawl-confirmed website (`lib/people/company-tie.ts`); otherwise it is refused and counted.
+A Y Combinator-batch tie and a requested-city tie were built and dropped: free-text patterns kept leaking a same-name
+business on new wordings, and a wrong name is worse than none. Results stored earlier by the name alone stay listed,
+labelled "matched by the company name only - this may be a different business with the same name", and are never the
+lead's person, the export's best person or a work-email target; a card whose only people are such rows says why none is
+shown. This lowers how many leads name a person, on purpose; the grounded lookup of #1102 is the path to naming more.
 
 ## 2026-11-13: adaptive discovery round on by default (#381, PR #1132)
 

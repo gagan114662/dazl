@@ -83,7 +83,7 @@ test('CSV neutralises formulas in every person/title/link/source/why field', asy
 // Assistant-to row is not Best Person and not the card's who, for stored rows of every connector.
 import { recommendedPerson, contactsFromEnrichments } from '../lib/people/rank.ts'
 // A search result row as the search stores it now: its label says what tied it to the company beyond the name (company-tie.ts).
-const TIED = tiedLabel(LABEL, 'place')
+const TIED = tiedLabel(LABEL, 'domain')
 async function oneLead(who: string[], people: [string, string, string][]) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })

@@ -124,18 +124,18 @@ const stage = (r: Awaited<ReturnType<typeof runFixture>>) => {
   return rep.enrichment.find(x => x.stage === 'people_search')
 }
 
-test('#1037 THROUGH THE RUNNER: a scan whose only lead is held for review still names its person, and the run report counts the search', async () => {
+test('#1037 THROUGH THE RUNNER (the reviewer\'s real run): a held lead with no confirmed website is searched, but a result tied by the company name only is refused, counted and never stored', async () => {
   const queries: string[] = []
   const r = await runFixture(fx(queries))
   const lead = r.db.prepare("SELECT id, review_reason FROM leads WHERE company = 'Pagewake'").get() as { id: string; review_reason: string | null } | undefined
   assert.ok(lead, 'the candidate was kept'); assert.ok(lead!.review_reason, `it is held for review (${lead!.review_reason}), not ready`)
   assert.equal(queries.length, 1, 'one people search ran for the held lead'); assert.match(queries[0], /^site:linkedin\.com\/in "Pagewake" \("Account Executive" OR "Sales Manager" OR "VP Sales"\)$/)
   const st = stage(r)
-  assert.equal(st?.status, 'ok', JSON.stringify(st))
-  assert.deepEqual(st?.detail, { people_stored: 2, eligible: 1, held_eligible: 1, searched: 1, results: 2, profile_results: 2 })
-  const p = leadPerson(r.db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('person','contact')").all(lead!.id), WHO.join('; '))
-  assert.equal(p?.name, 'Marta Solberg'); assert.equal(p?.title, 'Regional Sales Director'); assert.equal(p?.linkedin, 'https://www.linkedin.com/in/marta-solberg-test')
-  assert.ok((r.db.prepare("SELECT review_reason FROM leads WHERE id = ?").get(lead!.id) as { review_reason: string | null }).review_reason, 'the hold stands: a named person does not make the lead ready')
+  assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st))
+  assert.deepEqual(st?.detail, { people_stored: 0, eligible: 1, held_eligible: 1, searched: 1, results: 2, profile_results: 2, refused_company_unconfirmed: 2 })
+  assert.equal((r.db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector = 'search:people' AND kind = 'person'").get() as { n: number }).n, 0)
+  assert.equal(leadPerson(r.db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('person','contact')").all(lead!.id), WHO.join('; ')), null, 'the row reads "No buyer named"')
+  assert.ok((r.db.prepare("SELECT review_reason FROM leads WHERE id = ?").get(lead!.id) as { review_reason: string | null }).review_reason, 'the hold stands')
 })
 
 const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '5', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.01', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
@@ -158,16 +158,6 @@ test('#1037 THROUGH THE RUNNER (review finding 3): a people search that no longe
   assert.deepEqual(refused, [{ kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }])
 })
 
-test('#1037 THROUGH THE RUNNER, a request with no place (the reviewer\'s real run): the result is tied by the company name only, so nobody is stored and the report counts the refusal', async () => {
-  const queries: string[] = []
-  const r = await runFixture(fx(queries, { modelIcp: { ...RICP, where: [] } }))
-  assert.equal(queries.length, 1, 'the search ran')
-  const st = stage(r)
-  assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st))
-  assert.equal(st?.detail?.refused_company_unconfirmed, 2); assert.equal(st?.detail?.people_stored, 0); assert.equal(st?.detail?.profile_results, 2)
-  assert.equal((r.db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE connector = 'search:people' AND kind = 'person'").get() as { n: number }).n, 0)
-})
-
 const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
 
 test('#1037 THROUGH THE RUNNER, free trial: the held lead\'s one search is reserved from the trial reserve before it runs (one search price, inside the reserve)', async () => {
@@ -177,7 +167,7 @@ test('#1037 THROUGH THE RUNNER, free trial: the held lead\'s one search is reser
   const lead = t.db.prepare("SELECT review_reason FROM leads WHERE company = 'Pagewake'").get() as { review_reason: string | null } | undefined
   assert.ok(lead?.review_reason, 'held for review on the trial scan too')
   assert.equal(queries.length, 1); assert.equal(control.length, 0)
-  assert.equal(stage(t)?.status, 'ok', JSON.stringify(stage(t)))
+  assert.equal(stage(t)?.status, 'attempted_no_result', JSON.stringify(stage(t))); assert.equal(stage(t)?.detail?.refused_company_unconfirmed, 2)
   assert.ok(Math.abs((reserved(t) - reserved(off)) - 0.01) < 1e-9, `exactly one search price reserved for the held lead's search (${reserved(t)} vs ${reserved(off)})`)
   assert.ok(reserved(t) <= 1, 'inside the trial reserve')
 })

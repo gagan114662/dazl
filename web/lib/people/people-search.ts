@@ -245,7 +245,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
       if (stats) stats.results += r.hits.length
       const ties = new Map<string, CompanyTie>()
       // The website counts as a tie only when it is the lead's CONFIRMED domain (a guessed one may be the same-name business's).
-      const tieLead = { company: l.company, source_url: l.source_url, confirmed_domain: l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null }
+      const tieLead = { company: l.company, confirmed_domain: l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null }
       const people = r.hits.map(h => ({ h, p: profileHit(h, l.company) }))
         .filter((x): x is { h: SearchHit; p: { name: string; title: string } } => {
           if (typeof x.p === 'string') { refuse(x.p); return false }
@@ -260,7 +260,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
           const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
           // A company NAME is not a company (company-tie.ts): beyond the name, the result must name the lead's website, the organisation
           // the lead was found through, or the requested place. A name-only match is refused and counted, never stored.
-          if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, tieLead, where, v === 'agrees'); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
+          if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, tieLead); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
           const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
           refuse('place')
           if (!refused.has(reason) && !(deps.alive && !deps.alive())) { refused.add(reason); try { recordContactRejection(db, tenantId, l.id, { connector: CONNECTOR, reason, sourceUrl: x.h.url.split('?')[0] }) } catch { /* the refusal note never blocks the search */ } }

@@ -54,7 +54,7 @@ test('#1037 run report: a pass that sent no search never reads as "no profile re
     assert.equal(peopleTraceMessage(0, null, stats), 'no lead was eligible for a people search (0 searches run)') }
   // First play: every eligible lead already names its person.
   { const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]]); const stats = newPeopleStats()
-    addEnrichment(db, 'A', 'L-meshgate', { connector: 'search:people', kind: 'person', value: 'Anders Smed, VP of Sales Development & PG', label: tiedLabel(LABEL, 'place'), confidence: null, source_url: 'https://www.linkedin.com/in/anders-smed-test', source_date: '2026-11-13', retrieved_at: 1 })
+    addEnrichment(db, 'A', 'L-meshgate', { connector: 'search:people', kind: 'person', value: 'Anders Smed, VP of Sales Development & PG', label: tiedLabel(LABEL, 'domain'), confidence: null, source_url: 'https://www.linkedin.com/in/anders-smed-test', source_date: '2026-11-13', retrieved_at: 1 })
     const s = stub(); assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats, maxCompanies: 10, skipNamed: true }), 0)
     assert.deepEqual(s.companies, []); assert.equal(stats.already_named, 1)
     assert.equal(peopleTraceMessage(0, null, stats), 'every eligible lead already names its person (0 searches run)') }

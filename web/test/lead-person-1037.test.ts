@@ -11,9 +11,10 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { confirmDomain, domainOf } from './helpers/people-held-fixture.ts'
 
 // A search result row as the search stores it now: its label says what tied it to the company beyond the name.
-const P = (value: string, source_url: string, connector = 'search:people', kind = 'person') => ({ kind, value, label: connector === 'search:people' ? tiedLabel(LABEL, 'place') : 'x', source_url, connector })
+const P = (value: string, source_url: string, connector = 'search:people', kind = 'person') => ({ kind, value, label: connector === 'search:people' ? tiedLabel(LABEL, 'domain') : 'x', source_url, connector })
 const LI = 'https://www.linkedin.com/in/jane-doe-1'
 
 // ---- the row rule (lib/people/lead-person.ts) ----
@@ -76,15 +77,15 @@ test('row: the best buyer-role match is named first; an off-role titled person i
 })
 
 // ---- the first-play people pass (lib/people/people-search.ts) ----
-// The request names a city and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
-const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: ['Chicago, Illinois'], signals: [], exclude: [], country: 'US', language: 'en' }
+// Every lead has a crawl-confirmed website and every result names it: a company NAME alone no longer ties a result to a lead (company-tie.ts).
+const ICP = { summary: 's', who: ['Head of Sales'], industries: [], sizes: [], where: [], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '500', TINYFISH_PER_MINUTE: '500' }
 function setup(n: number) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateTinyfish(db); resetTinyfishState()
   const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(ICP), job)
   const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
-  for (let i = 0; i < n; i++) ins.run(`L${i}`, job, `Company${String.fromCharCode(65 + i)}${String.fromCharCode(65 + i)} Labs`, null, 's', `https://news.example.test/${i}`, 'e', 90, 100 - i)
+  for (let i = 0; i < n; i++) { ins.run(`L${i}`, job, `Company${String.fromCharCode(65 + i)}${String.fromCharCode(65 + i)} Labs`, null, 's', `https://news.example.test/${i}`, 'e', 90, 100 - i); confirmDomain(db, `L${i}`, domainOf(`Company${String.fromCharCode(65 + i)}${String.fromCharCode(65 + i)} Labs`)) }
   return { db, job }
 }
 // Answers each profile search with one matching person for the company named in the query.
@@ -93,7 +94,7 @@ function stub() {
   const f = (async (u: string) => {
     const q = new URL(u).searchParams.get('query') ?? ''; queries.push(q)
     const company = /"([^"]+)"/.exec(q)?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Chicago, Illinois, United States · Head of Sales' }] }))
+    return new Response(JSON.stringify({ results: [{ url: `https://www.linkedin.com/in/pat-lee-${queries.length}`, title: `Pat Lee - Head of Sales - ${company} | LinkedIn`, snippet: `Head of Sales · ${domainOf(company)}` }] }))
   }) as unknown as typeof fetch
   return { f, queries }
 }
@@ -206,13 +207,14 @@ const rowPerson = (r: Awaited<ReturnType<typeof runFixture>>) => {
   return leadPerson(r.db.prepare('SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(l!.id), 'Founder')
 }
 
-test('THE FIRST PLAY (first5): people_search runs (ok, not skipped) and the ready lead names Jane Doe, Founder, with her LinkedIn', async () => {
+test('THE FIRST PLAY (first5): people_search runs (not skipped), and with no confirmed website the profile result is refused: the row names nobody (Hermes decision, #1164)', async () => {
   const people: string[] = []
   const r = await runFixture(fx({}, people))
   assert.equal(r.calls.searches.length, 0, 'still no TinyFish lead search in first5: only the capped people search runs')
   assert.equal(people.length, 1); assert.match(people[0], /"Brightloop"/)
-  const st = stage(r); assert.equal(st?.status, 'ok', JSON.stringify(st)); assert.notEqual(st?.status, 'skipped')
-  assert.deepEqual(rowPerson(r), { name: 'Jane Doe', title: 'Founder', linkedin: 'https://uk.linkedin.com/in/jane-doe-bl', source: null, via: 'a public LinkedIn search result (not verified as current)', current: false })
+  const st = stage(r); assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st)); assert.notEqual(st?.status, 'skipped')
+  assert.equal(st?.detail?.refused_company_unconfirmed, 1); assert.equal(st?.detail?.people_stored, 0)
+  assert.equal(rowPerson(r), null, '"Jane Doe, Founder" at a company called Brightloop is not shown without anything beyond the name')
 })
 
 test('THE FIRST PLAY with nobody found: people_search is attempted_no_result (not skipped) and the row reads "No buyer named yet"', async () => {
@@ -238,12 +240,12 @@ test('kill switch PEOPLE_SEARCH_ENABLED=0 still wins on the first play', async (
 const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-test-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '1', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '5', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_ENABLED: '1', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.01', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
 const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
 
-test('FREE TRIAL first play: the people search runs, is paid from the trial reserve (one search = one search price), and names the person', async () => {
+test('FREE TRIAL first play: the people search runs and is paid from the trial reserve (one search = one search price); the unconfirmed result is refused', async () => {
   const people: string[] = [], control: string[] = []
   const t = await withEnv(TRIAL_ENV, () => runFixture(fx({ fundedBy: 'trial', model: 'claude-sonnet-4-5' }, people)))
   const off = await withEnv({ ...TRIAL_ENV, DAZL_FIRST_PLAY_PEOPLE_SEARCHES: '0' }, () => runFixture(fx({ fundedBy: 'trial', model: 'claude-sonnet-4-5' }, control)))
-  assert.equal(stage(t)?.status, 'ok', JSON.stringify(stage(t))); assert.equal(people.length, 1); assert.equal(control.length, 0)
-  assert.equal(rowPerson(t)?.name, 'Jane Doe')
+  assert.equal(stage(t)?.status, 'attempted_no_result', JSON.stringify(stage(t))); assert.equal(stage(t)?.detail?.refused_company_unconfirmed, 1); assert.equal(people.length, 1); assert.equal(control.length, 0)
+  assert.equal(rowPerson(t), null)
   assert.ok(Math.abs((reserved(t) - reserved(off)) - 0.01) < 1e-9, `exactly one search price reserved for the people step (${reserved(t)} vs ${reserved(off)})`)
   assert.ok(reserved(t) <= 1, 'inside the trial reserve')
 })
@@ -310,7 +312,7 @@ test('review: on the pass deadline the in-flight search is awaited (no paid call
   const { db, job } = setup(2); let settled = false
   const f = (async (u: string) => { await new Promise(r => setTimeout(r, 250)); settled = true
     const company = /"([^"]+)"/.exec(new URL(u).searchParams.get('query') ?? '')?.[1] ?? 'x'
-    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: 'Chicago, Illinois, United States · Head of Sales' }] })) }) as unknown as typeof fetch
+    return new Response(JSON.stringify({ results: [{ url: 'https://www.linkedin.com/in/late-lee', title: `Late Lee - Head of Sales - ${company} | LinkedIn`, snippet: `Head of Sales · ${domainOf(company)}` }] })) }) as unknown as typeof fetch
   const why: string[] = []
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f, maxCompanies: 10, skipNamed: true, deadlineMs: 30, onStop: w => why.push(w) })
   assert.equal(settled, true, 'findPeople returned only after the search it started had ended')
