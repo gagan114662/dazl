@@ -1,7 +1,9 @@
 // Legacy verified labels came from nearby dates, not event association proof.
 // Preserve the stored claim, never promote it to an established occurrence.
-export function eventDateCopy(eventDate: string | null, _status: string | null, timing?: 'proof_backed' | 'unconfirmed' | null, opts: { dayVerified?: boolean; windowMissed?: boolean } = {}): string {
+export function eventDateCopy(eventDate: string | null, _status: string | null, timing?: 'proof_backed' | 'unconfirmed' | null, opts: { dayVerified?: boolean; windowMissed?: boolean; announced?: boolean } = {}): string {
   if (!eventDate) return 'event date unknown - current need not confirmed'
+  // an announcement day (lib/scan/announcement.ts): the cited source's own publication day for the story that announces the event, not a day it states for the event
+  if (opts.announced && (timing === 'proof_backed' || opts.dayVerified)) return `${eventDate} (announced that day on the cited source; the day it took effect may differ${opts.windowMissed ? '; outside the requested recency window' : ''} - current need unconfirmed)`
   // Proof-backed (page_bound / ats_structured): the association IS what the proof establishes, so the line stops
   // saying "claimed / association unconfirmed" (#498 whole-card coherence). Current need stays unconfirmed either way.
   if (timing === 'proof_backed') return `${eventDate} (event day verified on the cited source; current need unconfirmed)`

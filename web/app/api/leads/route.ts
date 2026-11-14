@@ -14,6 +14,7 @@ import { savedGradeWhy } from '@/lib/scan/leads-view'
 import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
+import { isAnnouncementDay } from '@/lib/scan/announcement'
 import { jobWindowDays } from '@/lib/scan/window'
 import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
   // "with event" only when the existing timing proof backs a current event, never from the lookalike fit itself.
   const la = lookalikeOf(job)
   const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts); const tr = timingUnconfirmedReason(l, timingOpts)
-    return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
+    return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), day_announced:isAnnouncementDay((l as typeof l & {event_date_proof_note?:string|null}).event_date_proof_note), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),

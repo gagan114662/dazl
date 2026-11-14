@@ -1,4 +1,5 @@
-// An event date the SOURCE PAGE itself declares as structured data (schema.org JSON-LD): an Event's startDate, a JobPosting's datePosted. This is the one page-derived date that may
+// An event date the SOURCE PAGE itself declares as structured data (schema.org JSON-LD): an Event's startDate, a JobPosting's datePosted, and (#878, the press-release rule below) a
+// NewsArticle's datePublished for a story that announces the event. This is the one page-derived date that may
 // finish an undated candidate, and only under these rules (the window / stale / future gate then judges it exactly like a date the model read from the quote):
 //   - the node must be about THIS company (Event: its organizer / name / location names the company; JobPosting: hiringOrganization names it),
 //   - the kind must fit what the lead claims (a JobPosting date never dates a funding round; an Event date never dates a hiring claim),
@@ -6,12 +7,27 @@
 //     and a matching place (an Event with a place must share a word with the claim's own text or the request's place; a place-less online Event can only date a webinar / conference claim);
 //     a JobPosting must share a role word with what the claim says is being hired. No match = no date: the candidate stays undated and held, a nearby date is never borrowed,
 //   - exactly one distinct date across all qualifying nodes (several = a list of items: none is this lead's),
-//   - a real calendar day. datePublished / dateModified / dateCreated are publication or update stamps and are never read here (page-timing.ts keeps them as labels only).
+//   - a real calendar day. dateModified / dateCreated are update stamps and are never read here; datePublished is read ONLY by the press-release rule, never for a blog, a roundup or an
+//     evergreen page (page-timing.ts keeps every other publication day as a label only).
+// The press-release rule (#878; measured on real press releases of four Chicago law firms, which all carried a NewsArticle datePublished and were held as "outside_window_undated"): a page whose
+// schema.org NewsArticle names a single datePublished (agreeing with the page's own publication metadata when it has one) dates the lead when ALL of: the story's headline / page title names this
+// company; the claim and the quote announce a COMPLETED event (joined, expanded, opened, launched, raised ...) with no plan or future in them ("will", "plans to", "coming soon", "to open", "upon its
+// opening"); the quote carries no date of its own (no year, no month with a day, no "last year" / "years ago"); the title is not a roundup / guide / list. The day is the ANNOUNCEMENT day: the lead's timing note says so, and a later gate still judges
+// it exactly like any date (stale, future, window).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { ANNOUNCEMENT_NOTE } from './announcement.ts'
 import { isCountryOrRegion, countryFromField, countriesIn, regionOf, regionsIn, countryOfRegion } from './countries.ts'
 
-export type DateKind = 'Event' | 'JobPosting'
+export type DateKind = 'Event' | 'JobPosting' | 'NewsArticle'
 export interface StructuredDate { date: string; kind: DateKind }
+// How the day is proven (leads.event_date_proof, lib/scan/scoreboard.ts): a JobPosting day of a hiring claim is the posting page's own structured publish day (ats_structured, as for a board record);
+// a NewsArticle day is page_bound, with the basis said in the note. The caller never gets a day without its proof.
+export interface StructuredProof { proof: 'page_bound' | 'ats_structured'; note: string }
+export const structuredProof = (d: StructuredDate): StructuredProof | null => d.kind === 'JobPosting'
+  ? { proof: 'ats_structured', note: "the job posting's own structured publish date (schema.org JobPosting datePosted) on this posting's page" }
+  : d.kind === 'NewsArticle'
+    ? { proof: 'page_bound', note: `${ANNOUNCEMENT_NOTE} (schema.org NewsArticle datePublished): the story announces this event that day; the day it took effect may differ` }
+    : null   // an Event's startDate keeps the behaviour it always had: a date, no proof
 
 const HIRING = /\b(?:hir(?:e|es|ed|ing)|recruit\w*|jobs?|roles?|positions?|vacanc\w+|openings?)\b/i
 const EVENTISH = /\b(?:open(?:s|ed|ing)?|launch(?:es|ed|ing)?|webinar|conference|summit|event|expo|workshop|ceremony|grand opening)\b/i
@@ -27,13 +43,56 @@ const TYPE_RES: [EventType, RegExp][] = [
 export const eventTypesOf = (text: string): Set<EventType> => new Set(TYPE_RES.filter(([, re]) => re.test(text)).map(([t]) => t))
 const stringValuesOf = (v: unknown, out: string[] = [], depth = 0): string[] => { if (depth > 3 || v == null) return out; if (typeof v === 'string') out.push(v); else if (Array.isArray(v)) for (const x of v.slice(0, 10)) stringValuesOf(x, out, depth + 1); else if (typeof v === 'object') for (const x of Object.values(v as object).slice(0, 20)) stringValuesOf(x, out, depth + 1); return out }
 
+// A COMPLETED event stated in the past or perfect tense. "Is pleased to announce" and "has joined" count; "will", a plan, "soon", "to open" or "upon its opening" do not (the event is still ahead, so the
+// story's day is not the event's day, and a quote that mixes a done thing with a future one is not read: it stays held).
+const DONE = /\b(?:announce[sd]?|pleased to announce|expanding|growing|continues? to grow|(?:continuing|continues) to grow|addition of|has joined|have joined|joined|joins|appoint(?:s|ed)|opens?|opened|launch(?:es|ed)|expands?|expanded|expansion|raise[sd]?|acquire[sd]?|hire[sd]?|welcomes?|welcomed|adds?|added|unveil(?:s|ed)|secure[sd]?|arrival of|continues? (?:the|its) expansion|bolsters?|strengthens?)\b/i
+const AHEAD = /\b(?:will|shall|plans? to|planning|plan to|soon|upcoming|expected to|set to|to open|to launch|intends?|aims? to|looking to|hopes? to|coming|upon (?:its|the) opening|later this|slated|scheduled to|is scheduled|going to (?:open|launch|be)|to be (?:opened|launched|completed)|on track to|(?:this|next) (?:spring|summer|fall|autumn|winter)|next (?:month|year|week|quarter))\b/i
+const EVERGREEN_TITLE = /\b(?:top \d*|best|guide|how to|ways to|tips|checklist|versus|vs\.?|list of|reviews?|roundup|comparison|directory|\d+ (?:best|top|ways|tips))\b/i
+export const announcesDoneEvent = (text: string): boolean => DONE.test(text) && !AHEAD.test(text)
 export function kindsFor(claim: string): DateKind[] {
   const k: DateKind[] = []
   if (HIRING.test(claim)) k.push('JobPosting')
   if (EVENTISH.test(claim)) k.push('Event')
+  if (announcesDoneEvent(claim)) k.push('NewsArticle')
   return k
 }
 
+// The company as a posting title writes it: its full name, or its name without a trailing generic word ("Queen Street Dental" for "Queen Street Dental Centre"), at least two words left.
+const GENERIC_TAIL = new Set(['centre', 'center', 'clinic', 'clinics', 'group', 'llc', 'inc', 'ltd', 'co', 'company', 'corp', 'corporation', 'llp', 'pllc', 'pc', 'the'])
+const namesLoosely = (text: string, key: string): boolean => {
+  if (hasPhrase(text, key)) return true
+  const t = key.split(' ').filter(Boolean); while (t.length > 2 && GENERIC_TAIL.has(t[t.length - 1])) t.pop()
+  return t.length >= 2 && t.join(' ') !== key && hasPhrase(text, t.join(' '))
+}
+// The company the headline names must be THE company, not a longer name that starts with it ("Apex Clean Energy Opens ..." is not "Apex"): right after the name comes a verb or a
+// function word, an apostrophe-s, punctuation, or the end. A capitalised word that is not a headline verb ("Apex Clean ...") is a longer name.
+const HEAD_AFTER = new Set(['s', 'to','and','with','in','on','for','at','is','has','have','was','by','of','from','as','a','an','the','its','adds','added','announces','announced','appoints','bolsters','builds','expands','expanded','expanding','grows','growing','hires','joins','joined','launches','launched','names','opens','opened','opening','raises','raised','strengthens','secures','unveils','welcomes','continues','acquires','acquired','brings','establishes','relocates','moves','extends','deepens','boosts','enters','lands','taps','signs','promotes','elects','appointed','introduces','completes','celebrates','hosts','wins','partners','partnered','receives','named','earns','selects','selected','debuts','kicks','cuts','breaks','begins','starts','adds','invests','plans','officially','now','is'])
+const SUFFIX = new Set(['llp', 'llc', 'inc', 'ltd', 'co', 'corp', 'pllc', 'pc'])
+const fold = (w: string): string => w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase()
+// Markup often keeps HTML entities inside JSON-LD strings ("Karns &#038; Karns ... Opens New Office"): read the character the entity stands for.
+const NAMED_ENTITY: Record<string, string> = { amp: '&', apos: "'", quot: '"', lt: '<', gt: '>', nbsp: ' ', ndash: '-', mdash: '-', rsquo: "'", lsquo: "'" }
+const unEntity = (s: string): string => s.replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,6}));/gi, (m, dec, hex, name) => {
+  if (name) return NAMED_ENTITY[name.toLowerCase()] ?? m
+  const cp = dec ? Number(dec) : parseInt(hex, 16)
+  return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m
+})
+const headlineSubject = (headline: string, company: string): boolean => {
+  const ct = company.trim().split(/[\s\-/|]+/).filter(Boolean).map(fold).filter(Boolean); while (ct.length > 1 && SUFFIX.has(ct[ct.length - 1])) ct.pop()   // the headline may drop "LLP"
+  const ht = headline.replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|[’']/g, ' ').split(/[\s\-/|]+/).filter(Boolean)   // "Benesch's" -> "Benesch s": the possessive token is a HEAD_AFTER word
+  const norms = ht.map(fold)
+  for (let i = 0; i + ct.length <= norms.length; i++) {
+    if (!ct.every((t, k) => norms[i + k] === t)) continue
+    let j = i + ct.length; while (SUFFIX.has(norms[j] ?? '')) j++   // "Armstrong Teasdale LLP Expands ..." / "Acme, Inc. Opens ..."
+    const next = norms[j]
+    if (next === undefined || next === '' || HEAD_AFTER.has(next) || /^[a-z]/.test(ht[j] ?? '')) return true
+  }
+  return false
+}
+// A quote that dates its own event is the quote's to date (the verifier's day binding), never the story's publication day: any year, a month with a day, or a relative past ("last year", "years ago",
+// "previously") means the story may be about something that happened before it ran (a case study, a retrospective, "in March 2025 X opened ..."), so the publication day is not read.
+const MON_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
+const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?) ago\\b|\\bpreviously\\b|\\bback in\\b|\\b(?:19|20)\\d0s\\b|\\b(?:decades?|centur(?:y|ies)|generations?) ago\\b|\\b(?:past|last) (?:decades?|centur(?:y|ies)|generations?)\\b`, 'i')
+const quoteDatesItself = (quote: string): boolean => OWN_DATE.test(quote)
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/.exec(v.trim()); if (!m) return null
@@ -224,7 +283,11 @@ function postingMatches(o: Record<string, unknown>, claim: string, key: string):
   return role.every(t => claimToks.has(t) || claimToks.has(t.replace(/s$/, '')) || claimToks.has(`${t}s`))
 }
 const ROLE_FILLER = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'in', 'at', 'to', 'with', 'm', 'f', 'd', 'w'])
-export function resolveStructuredDate(blocks: string[] | undefined, company: string, claim: string, where: string[] = []): StructuredDate | null {
+// The page the blocks came from, for the press-release rule: its title (the story's headline), the lead's quote, and the page's own publication metadata.
+// news: true ONLY for the page the lead itself cites (finishUndatedLeads, the recheck): a NewsArticle on some other page (a company's own site read to find a date, resolution.ts) is never the lead's story.
+// publishedConflict: the page's markup names two or more different publication days (fetch-page.ts), so none is the story's own: hold.
+export interface PageContext { title?: string | null; quote?: string | null; published?: string | null; news?: boolean; publishedConflict?: boolean }
+export function resolveStructuredDate(blocks: string[] | undefined, company: string, claim: string, where: string[] = [], ctx: PageContext = {}): StructuredDate | null {
   const kinds = kindsFor(claim), key = companyKey(company)
   if (!blocks?.length || kinds.length === 0 || key.length < 2) return null
   const found = new Map<string, StructuredDate>()
@@ -235,7 +298,21 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
       const types = typesOf(o)
       if (kinds.includes('JobPosting') && types.includes('JobPosting')) {
         const d = day(o.datePosted)
-        if (d && namesOf(o.hiringOrganization).some(n => hasPhrase(norm(n), key)) && postingMatches(o, claim, key)) found.set(`JobPosting|${d}`, { date: d, kind: 'JobPosting' })
+        // the posting names this company as its employer, OR (a clinic listed under its parent group, "123Dentist" for "Queen Street Dental Centre") its own headline / title names the company
+        const desc = typeof o.description === 'string' ? norm(o.description.replace(/<[^>]*>/g, ' ')) : ''
+        const named = namesOf(o.hiringOrganization).some(n => hasPhrase(norm(n), key))
+          || ([o.headline, o.title, o.name].some(h => typeof h === 'string' && namesLoosely(norm(h), key)) && hasPhrase(desc, key))   // the title says it and the posting's own text says it in full
+        if (d && named && postingMatches(o, claim, key)) found.set(`JobPosting|${d}`, { date: d, kind: 'JobPosting' })
+      }
+      if (ctx.news === true && !ctx.publishedConflict && kinds.includes('NewsArticle') && types.includes('NewsArticle')) {
+        const d = day(o.datePublished)
+        // the story's OWN headline when the node has one (a node about another company is not rescued by the page's title), else the page title
+        const headline = [typeof o.headline === 'string' && o.headline.trim() ? unEntity(o.headline) : (ctx.title ?? '')].filter(Boolean)
+        const quote = ctx.quote ?? ''
+        const stated = ctx.published && /^\d{4}-\d{2}-\d{2}$/.test(ctx.published) ? ctx.published : null
+        // the story's own headline names the company, announces a completed event in the quote as well as the claim, is no roundup, and the page's own metadata (when it has any) says the same day
+        if (d && headline.some(h => hasPhrase(norm(h), key) && headlineSubject(h, company)) && ![...headline, ctx.title ?? ''].some(h => EVERGREEN_TITLE.test(h)) && (!stated || stated === d)
+          && announcesDoneEvent(claim) && (quote === '' || announcesDoneEvent(quote)) && !(quote && quoteDatesItself(quote))) found.set(`NewsArticle|${d}`, { date: d, kind: 'NewsArticle' })
       }
       if (kinds.includes('Event') && types.some(t => /Event$/.test(t))) {
         const d = day(o.startDate)
@@ -251,8 +328,8 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
 
 // Bounded finishing pass for undated candidates: at most `max` of them, one fetch each (the verifier's cached page, so normally none). Mutates the candidate: event_date and a timing_note
 // that says where the date came from. It decides nothing about the window - the caller's window gate judges the new date like any other.
-export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null }>(
-  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[] } | { fail: string } | null>, max = 6, where: string[] = [],
+export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null }>(
+  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; title?: string; published?: string | null; publishedConflict?: boolean } | { fail: string } | null>, max = 6, where: string[] = [],
 ): Promise<{ company: string; date: string; kind: DateKind; url: string }[]> {
   const done: { company: string; date: string; kind: DateKind; url: string }[] = []
   let tried = 0
@@ -262,10 +339,12 @@ export async function finishUndatedLeads<T extends { company: string; signal: st
     let page: Awaited<ReturnType<typeof fetchPage>> = null
     try { page = await fetchPage(l.source_url) } catch { page = null }
     if (!page || 'fail' in page) continue
-    const r = resolveStructuredDate(page.structured, l.company, `${l.signal} ${l.excerpt}`, where)
+    const r = resolveStructuredDate(page.structured, l.company, `${l.signal} ${l.excerpt}`, where, { title: page.title, quote: l.excerpt, published: page.published, news: true, publishedConflict: page.publishedConflict })
     if (!r) continue
     l.event_date = r.date
-    l.timing_note = `event date ${r.date} read from the page's own structured data (schema.org ${r.kind}), not from the quote`
+    l.timing_note = r.kind === 'NewsArticle' ? `event date ${r.date}: the announcement's own publication day (schema.org NewsArticle datePublished), not a day read from the quote` : `event date ${r.date} read from the page's own structured data (schema.org ${r.kind}), not from the quote`
+    const pr = structuredProof(r)
+    if (pr) { l.event_date_proof = pr.proof; l.event_date_proof_note = pr.note }
     done.push({ company: l.company, date: r.date, kind: r.kind, url: l.source_url })
   }
   return done
