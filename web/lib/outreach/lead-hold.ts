@@ -4,7 +4,7 @@
 import type Database from 'better-sqlite3'
 import { currentnessHeld, leadWindowHeld } from './currentness.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
-import { surfaceStoredIntent, TIMING_REQUESTED } from '../scan/scoreboard.ts'
+import { eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '../scan/scoreboard.ts'
 import { jobWindowDays } from '../scan/window.ts'
 import { heldReason, type PreviewLead } from '../journey.ts'
 
@@ -16,7 +16,7 @@ export const timingOptsFor = (job: { query: string | null; icp: string | null })
 
 // null = ready; otherwise the first failing check's own words.
 export function leadHoldReason(db: Database.Database, tenantId: string, lead: Record<string, unknown> & { id: string }, enrichments: unknown[], timing: TimingOpts, at: Date): string | null {
-  const row = { ...lead, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments,
+  const row = { ...lead, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
     window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null }
   return heldReason(row as unknown as PreviewLead)
 }
