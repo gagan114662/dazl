@@ -187,12 +187,12 @@ CI runs the whole path on synthetic data on every PR (`release-gate.yml`, step "
 
 Everything above is proved on synthetic data in CI. What closes #360 is this, run by Instinct, with the reports attached to the issue. No production data leaves the host unencrypted, and sending is never enabled on the replacement.
 
-**A. On the production host, as root** (after install steps 1 to 6 with the R2 destination):
+**A. On the production host, as root** (after install steps 1 to 6 with the S3 destination):
 
 ```bash
 systemctl start dazl-backup.service dazl-config-backup.service dazl-backup-check.service
 journalctl -u dazl-backup -u dazl-config-backup -u dazl-backup-check -n 30 --no-pager   # backup ok, config_copy ok, "ok":true
-rclone --config /home/<app-user>/.config/rclone/rclone.conf lsf r2:dazl-backups | tail   # dazl-backup-*.age(.json), dazl-config-*.tar.age(.json)
+rclone --config /home/<app-user>/.config/rclone/rclone.conf lsf s3:dazl-backups | tail   # dazl-backup-*.age(.json), dazl-config-*.tar.age(.json)
 ```
 
 **B. Missed and failed backup alerts** (on the host, with `OPS_ALERT_WEBHOOK_URL` set):
@@ -200,7 +200,7 @@ rclone --config /home/<app-user>/.config/rclone/rclone.conf lsf r2:dazl-backups 
 ```bash
 systemctl stop dazl-backup.timer          # no new backup: after 2 h the 15-minute check alerts "newest backup ... old"
 journalctl -u dazl-backup-check -n 5 --no-pager; systemctl start dazl-backup.timer
-sudo -u <app-user> env $(grep -v '^#' /etc/dazl-backup/env | xargs) OFFHOST_DEST=rclone:r2:dazl-backups-missing \
+sudo -u <app-user> env $(grep -v '^#' /etc/dazl-backup/env | xargs) OFFHOST_DEST=rclone:s3:dazl-backups-missing \
   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --state-dir /var/tmp/dazl-alert-drill   # an unreadable destination: exit 1 and one delivered alert
 ```
 
@@ -208,7 +208,7 @@ sudo -u <app-user> env $(grep -v '^#' /etc/dazl-backup/env | xargs) OFFHOST_DEST
 
 ```bash
 cd <release>/web
-node --experimental-strip-types scripts/backup/replacement-drill.mts --mode keys --offhost rclone:r2:dazl-backups \
+node --experimental-strip-types scripts/backup/replacement-drill.mts --mode keys --offhost rclone:s3:dazl-backups \
   --identity ~/keys/data-identity.txt --config-identity ~/keys/config-identity.txt --key-file ~/keys/master.key \
   --work-dir /var/tmp/dazl-keydrill-$(date -u +%Y%m%dT%H%M%SZ) --report ~/key-drill-report.json
 # then copy key-drill-report.json to the host's /var/backups/dazl/key-drill-report.json and set KEY_DRILL_REPORT (step 7)
@@ -217,9 +217,9 @@ node --experimental-strip-types scripts/backup/replacement-drill.mts --mode keys
 **D. Replacement host** (a temporary instance, no DNS, no inbound 80/443 from the internet; stopwatch the manual steps):
 
 ```bash
-# provision (stopwatch: P s), then install Node 22, age, rclone, git; the R2 rclone remote (read-only token is enough)
+# provision (stopwatch: P s), then install Node 22, age, rclone, git; the S3 rclone remote (read-only token is enough)
 git clone https://github.com/gagan114662/dazl && cd dazl && git checkout <release sha> && cd web && npm ci && npm run build   # stopwatch: I s
-node --experimental-strip-types scripts/backup/replacement-drill.mts --offhost rclone:r2:dazl-backups \
+node --experimental-strip-types scripts/backup/replacement-drill.mts --offhost rclone:s3:dazl-backups \
   --identity ~/keys/data-identity.txt --config-identity ~/keys/config-identity.txt --key-file ~/keys/master.key \
   --work-dir /var/tmp/dazl-replacement-$(date -u +%Y%m%dT%H%M%SZ) --app "$PWD" --report-dir ~/restore-reports \
   --manual provision=P,install=I,dns=D --rpo-target-s 3600 --rto-target-s 14400
@@ -266,15 +266,10 @@ Each step's time is recorded in the report to measure the RTO.
 | An alert destination for stale or failed backups (`OPS_ALERT_WEBHOOK_URL`, for example a free Slack incoming webhook) | owner | free |
 | A first isolated drill on the host, then a replacement-host drill, each report attached to #360 | Instinct | free on the existing host; a temporary replacement instance costs its hourly price for the hours it runs |
 
-**Off-host destination.** Decision (Hermes, under delegation, 2026-11-03): Cloudflare R2 through rclone (`OFFHOST_DEST=rclone:r2:dazl-backups`), on the free tier (10 GB-month, no egress fees: the database with this retention stays far below it, so no spend). Instinct creates the bucket and a bucket-scoped token on the dazl Cloudflare account; if that account is not available, the next choice is Backblaze B2's free 10 GB, then S3 (paid, needs Gagan's approval). Nothing below is set up.
+**Off-host destination.** Decision (Gagan, 2026-11-12, #1111): dazl runs on AWS only, so the off-host copy goes to Amazon S3 through rclone (`OFFHOST_DEST=rclone:s3:dazl-backups`, an rclone remote of type `s3` named `s3`). This replaces the 2026-11-03 choice of a non-AWS free tier. The bucket is private, in a second region from the host, written by a bucket-scoped IAM user that can put and read objects but not delete them. Nothing below is set up: creating the bucket and the IAM user needs access to the AWS account.
 
-**Off-host options.** List prices change, so check before choosing.
-- **Free:**
-  - Cloudflare R2 free tier: 10 GB-month of storage, no egress fees.
-  - Backblaze B2: first 10 GB free.
-  - A second machine the owner already has, reached with rsync over SSH.
-- **Low cost on the existing AWS account:**
-  - S3 Standard: about $0.023 per GB-month. For a database of tens to hundreds of MB with the retention above, that is cents per month.
-  - EBS snapshots through Data Lifecycle Manager: DLM itself is free, and snapshots are billed per GB-month of changed blocks.
+**Off-host options, all on the existing AWS account.** List prices change, so check before choosing.
+- S3 Standard (the decision above): about $0.023 per GB-month. For a database of tens to hundreds of MB with the retention above, that is cents per month.
+- EBS snapshots through Data Lifecycle Manager, in addition: DLM itself is free, and snapshots are billed per GB-month of changed blocks. A snapshot is not an encrypted copy the host cannot read back, so it does not replace the S3 copy.
 
-  Either is a paid service, so the owner must approve it.
+Both are paid services. The amounts are cents per month, and the owner approves the spend when the bucket is created.

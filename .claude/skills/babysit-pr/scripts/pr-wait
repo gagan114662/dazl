@@ -62,7 +62,7 @@ from typing import Any, NoReturn
 GATING_BOTS = ("greptile", "macroscope")
 ADVISORY_BOTS = ("coderabbit",)
 # CI and deploy bots report through checks. Their PR comments are status reports.
-STATUS_BOTS = ("github-actions", "vercel", "netlify", "railway", "cloudflare")
+STATUS_BOTS = ("github-actions", "vercel", "netlify", "railway")
 STATE_DIR = Path.home() / ".local" / "state" / "pr-wait"
 # A state file older than this describes an old session. Start a fresh baseline
 # instead of replaying hours of comments as new events.

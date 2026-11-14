@@ -41,6 +41,17 @@ These are implemented safeguards. The pending live safety checks above are still
 
 The web app calls configured workers over HTTP. Do not remove those services merely because they run separately. Connectors remain subject to their documented consent, platform-terms and access restrictions; their presence does not authorize automated use of a platform.
 
+## Infrastructure: AWS only
+
+Owner decision, 2026-11-12 (#1111): dazl runs on AWS only. No other cloud, CDN, DNS or edge provider is used for dazl's own infrastructure.
+
+- **Hosting:** one AWS EC2 host runs the web app (production and staging) behind Caddy. The optional workers are plain Node services for the same kind of host (`worker/README.md`, `session-worker/README.md`).
+- **DNS:** `dazl.ai` is moving to Amazon Route 53. The move is pending (#1111): until the nameservers are switched at the registrar, the records are still served by the previous DNS provider. New records go to Route 53.
+- **Email dazl sends itself** (sign-up confirmation and other system mail, `web/lib/system-mail.ts`): Resend, on the sending domain `notify.dazl.ai`. Outreach is sent from each customer's own connected Gmail, not from dazl.
+- **Backups off the host:** Amazon S3 (`docs/RECOVERY.md`); not set up yet.
+
+The edge-runtime prototype that used to live under `worker/` (its TypeScript `src/`, database migrations and deploy config) was never deployed and has been removed. `worker/` now holds only the Node advanced-connectors service.
+
 ## Local development
 
 Use Node.js 22 or newer. Run the web app from `web/`:

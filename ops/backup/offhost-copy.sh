@@ -8,7 +8,7 @@
 # 3. <name>.age and a manifest <name>.age.json (plaintext and ciphertext sha256, bytes, the backup's createdAt, recipient
 #    public keys; no data) go to OFFHOST_DEST:
 #      - a directory (a mounted remote, or a second disk for tests): written as .partial, then renamed, then re-hashed;
-#      - rclone:REMOTE:PATH (any rclone remote: Cloudflare R2, Backblaze B2, S3, SFTP...): `rclone copyto`, then the
+#      - rclone:REMOTE:PATH (an rclone remote; production uses Amazon S3, dazl is AWS only): `rclone copyto`, then the
 #        uploaded object is read back and its sha256 compared.
 #    A copy whose read-back hash differs is a failure (exit 1).
 # 4. Then the tombstone ledger (#359; DAZL_TOMBSTONE_LEDGER, the same path the app writes). A restore re-applies tenant
