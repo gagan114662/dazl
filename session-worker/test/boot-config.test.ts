@@ -1,4 +1,4 @@
-// #1037 (F-go step 1): the worker carries tenants' session cookies, so it listens on 127.0.0.1 unless HOST names another address,
+// #1037 (F-go step 1): the worker carries tenants' session cookies, so it listens on 127.0.0.1 unless WORKER_HOST names another address,
 // and it refuses to start without a token or with a bad port (a process that 401s everything would look healthy to systemd).
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,11 +23,21 @@ test('listens on 127.0.0.1 by default: reachable on loopback, refused on the mac
   } finally { await reap(c) }
 })
 
-test('HOST names another address when the operator asks for it', async () => {
+test('WORKER_HOST names another address when the operator asks for it', async () => {
+  if (!outside) return
+  const port = 4800 + Math.floor(Math.random() * 400)
+  const c = boot({ ADVANCED_WORKER_TOKEN: 'tok-boot', PORT: String(port), WORKER_HOST: '0.0.0.0' })
+  try { assert.ok(await up(`http://${outside}:${port}/health`)) } finally { await reap(c) }
+})
+
+test('an inherited HOST (shells and CI export it) does not move the worker off loopback', async () => {
   if (!outside) return
   const port = 4800 + Math.floor(Math.random() * 400)
   const c = boot({ ADVANCED_WORKER_TOKEN: 'tok-boot', PORT: String(port), HOST: '0.0.0.0' })
-  try { assert.ok(await up(`http://${outside}:${port}/health`)) } finally { await reap(c) }
+  try {
+    assert.ok(await up(`http://127.0.0.1:${port}/health`))
+    await assert.rejects(fetch(`http://${outside}:${port}/health`, { signal: AbortSignal.timeout(3000) }))
+  } finally { await reap(c) }
 })
 
 test('refuses to start without a token, or with a port that is not a port', async () => {

@@ -7,7 +7,7 @@
 # 2. session-worker/ at exactly <commit>, by `git archive` from the checkout, into /opt/dazl-session-worker/releases/<commit>
 #    (root-owned, read-only to the worker), and the instance's symlink /opt/dazl-session-worker/<env> pointed at it;
 # 3. the instance's env file /etc/dazl-session-worker/<env>.env when it does not exist: PORT (staging 8788, prod 8787),
-#    HOST=127.0.0.1 and ADVANCED_WORKER_TOKEN: the app's own value when --token-from names the app's env file (so the app needs
+#    WORKER_HOST=127.0.0.1 and ADVANCED_WORKER_TOKEN: the app's own value when --token-from names the app's env file (so the app needs
 #    no new token), else a new random one; mode 0640 root:dazl-session. An existing file is kept as it is,
 #    so re-running never rotates the token under a running app;
 # 4. the unit template, then `systemctl enable` + `restart` of dazl-session-worker@<env>, and a health check on 127.0.0.1;
@@ -19,6 +19,12 @@ set -euo pipefail
 
 ENV_NAME=${1:-}; REPO=${2:-}; SHA=${3:-}; TOKEN_FROM=
 if [ "${4:-}" = --token-from ]; then TOKEN_FROM=${5:-}; [ -n "$TOKEN_FROM" ] || { echo "install.sh: --token-from needs a file" >&2; exit 1; }; elif [ -n "${4:-}" ]; then echo "install.sh: unknown argument ${4}" >&2; exit 1; fi
+# The app's token, read as data: the last ADVANCED_WORKER_TOKEN line (as systemd and deploy-prod.sh take it), `export` and trailing spaces
+# allowed, single or double quotes dropped. A symlink is refused (root must not follow a link placed in the app user's home).
+app_token() {
+  [ -f "$TOKEN_FROM" ] && [ ! -L "$TOKEN_FROM" ] && [ -r "$TOKEN_FROM" ] || fail "--token-from $TOKEN_FROM is not a readable regular file"
+  { sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?ADVANCED_WORKER_TOKEN=//p' "$TOKEN_FROM" || true; } | tail -1 | sed -e 's/[[:space:]]*$//' -e "s/^'\(.*\)'\$/\\1/" -e 's/^"\(.*\)"$/\1/'
+}
 ROOT=${SW_ROOT:-/opt/dazl-session-worker}
 ETC=${SW_ETC:-/etc/dazl-session-worker}
 UNIT_DIR=${SW_UNIT_DIR:-/etc/systemd/system}
@@ -59,19 +65,25 @@ if [ ! -f "$ENVF" ]; then
   umask 077
   if [ -n "$TOKEN_FROM" ]; then
     # one KEY=value line, read as data (never sourced); surrounding single or double quotes are dropped
-    tok=$(sed -n 's/^ADVANCED_WORKER_TOKEN=//p' "$TOKEN_FROM" 2>/dev/null | tail -1 | sed -e "s/^'\(.*\)'\$/\1/" -e 's/^"\(.*\)"$/\1/')
+    tok=$(app_token)
     [[ $tok =~ ^[A-Za-z0-9._~+/=-]{16,512}$ ]] || fail "$TOKEN_FROM has no usable ADVANCED_WORKER_TOKEN (16+ characters, no spaces or quotes)"
   else
     tok=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
   fi
-  printf 'PORT=%s\nHOST=127.0.0.1\nADVANCED_WORKER_TOKEN=%s\n' "$PORT" "$tok" > "$ENVF.tmp"
+  printf 'PORT=%s\nWORKER_HOST=127.0.0.1\nADVANCED_WORKER_TOKEN=%s\n' "$PORT" "$tok" > "$ENVF.tmp"
   mv -T "$ENVF.tmp" "$ENVF"
   unset tok
+fi
+if [ -n "$TOKEN_FROM" ]; then
+  # the worker keeps its token across re-runs; when the operator names the app's env, the two must agree (neither is printed)
+  [ "$(sed -n 's/^ADVANCED_WORKER_TOKEN=//p' "$ENVF" | tail -1)" = "$(app_token)" ] || fail "the token in $ENVF differs from the one in $TOKEN_FROM: remove $ENVF to take the app's token, or set the app's token to the worker's"
 fi
 ${SW_CHOWN:-chown} "root:$USER_NAME" "$ENVF"; chmod 0640 "$ENVF"
 PORT_NOW=$(sed -n 's/^PORT=//p' "$ENVF" | tail -1)
 [[ $PORT_NOW =~ ^[0-9]+$ ]] || fail "$ENVF has no PORT"
-grep -q '^HOST=127\.0\.0\.1$' "$ENVF" || fail "$ENVF must keep HOST=127.0.0.1 (the worker carries session cookies)"
+# systemd keeps the LAST assignment of a key, so the last WORKER_HOST line decides; a HOST line is refused outright (an older file's spelling).
+[ "$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?WORKER_HOST=//p' "$ENVF" | tail -1)" = 127.0.0.1 ] && ! grep -qE '^[[:space:]]*(export[[:space:]]+)?HOST=' "$ENVF" \
+  || fail "$ENVF must keep WORKER_HOST=127.0.0.1 as its only address line (the worker carries session cookies)"
 
 # 4. the unit, then the service
 install -m 0644 "$HERE/dazl-session-worker@.service" "$UNIT_DIR/dazl-session-worker@.service"
@@ -84,6 +96,9 @@ for _ in $(seq 1 "$HEALTH_TRIES"); do
   sleep 0.5
 done
 [ "$ok" = 1 ] || fail "dazl-session-worker@$ENV_NAME did not answer on 127.0.0.1:$PORT_NOW/health (journalctl -u dazl-session-worker@$ENV_NAME)"
+# ... and the answer must be this unit's, not another process on the port (the unit would then crash-loop on EADDRINUSE)
+sleep "${SW_SETTLE_S:-2}"
+$SYSTEMCTL is-active --quiet "dazl-session-worker@$ENV_NAME.service" || fail "dazl-session-worker@$ENV_NAME is not active although 127.0.0.1:$PORT_NOW answered: another process holds the port (ss -ltnp)"
 
 # 5. the app's two lines, for the operator to add to the app's env (never printed here)
 ( umask 077; { echo "ADVANCED_WORKER_URL=http://127.0.0.1:$PORT_NOW"; grep '^ADVANCED_WORKER_TOKEN=' "$ENVF"; } > "$ETC/$ENV_NAME.app-env" )

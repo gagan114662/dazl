@@ -16,7 +16,7 @@ User=dazl-session
 Group=dazl-session
 # A symlink install.sh points at the reviewed copy of session-worker/ for this instance (a git archive of one commit).
 WorkingDirectory=/opt/dazl-session-worker/%i
-# PORT, HOST and ADVANCED_WORKER_TOKEN only. Never the app's env file: the worker needs none of its secrets.
+# PORT, WORKER_HOST and ADVANCED_WORKER_TOKEN only. Never the app's env file: the worker needs none of its secrets.
 EnvironmentFile=/etc/dazl-session-worker/%i.env
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/node --max-old-space-size=64 --experimental-strip-types --no-warnings src/server.ts

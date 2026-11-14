@@ -9,8 +9,8 @@ import { fetchEngagers, fetchPosts, isEngagerKind } from './linkedin-engagers.ts
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
 // The worker carries tenants' session cookies: it listens on the loopback interface unless the operator names another address
-// (HOST). It used to listen on every interface, so a box without a firewall rule exposed it (#1037, F-go step 1).
-const HOST = (process.env.HOST ?? '').trim() || '127.0.0.1'
+// (WORKER_HOST; not HOST, which shells and CI often export for other things). It used to listen on every interface, so a box without a firewall rule exposed it (#1037, F-go step 1).
+const HOST = (process.env.WORKER_HOST ?? '').trim() || '127.0.0.1'
 // Without a token every request would be refused with 401 while the process looked healthy: refuse to start instead, so the
 // service manager reports the misconfiguration.
 if (!TOKEN.trim()) { console.error('dazl session worker: ADVANCED_WORKER_TOKEN is not set; not starting'); process.exit(2) }

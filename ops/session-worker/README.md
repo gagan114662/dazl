@@ -7,7 +7,7 @@ These two files run it.
 | file | what it is |
 | --- | --- |
 | `dazl-session-worker@.service` | systemd template, one instance per environment (`@staging`, `@prod`). User `dazl-session` (no home, no shell), its own env file only, read-only system view, 192 MB cap. |
-| `install.sh` | as root: creates the user, puts `session-worker/` at one commit (`git archive`) under `/opt/dazl-session-worker/releases/<sha>`, writes the instance's env file (port, `HOST=127.0.0.1`, token), installs and restarts the unit, checks `/health` on 127.0.0.1, and writes the app's two lines to a root-only file. |
+| `install.sh` | as root: creates the user, puts `session-worker/` at one commit (`git archive`) under `/opt/dazl-session-worker/releases/<sha>`, writes the instance's env file (port, `WORKER_HOST=127.0.0.1`, token), installs and restarts the unit, checks `/health` on 127.0.0.1, and writes the app's two lines to a root-only file. |
 
 Ports: staging 8788, prod 8787 (the app ports are 3200, 3104 and 3105). Memory, measured on Node 22 with the unit's ExecStart:
 92 MB resident idle, 106 MB peak after 40 requests.
