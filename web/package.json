@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "matrix:local": "node --experimental-strip-types --no-warnings scripts/matrix-local.mts",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

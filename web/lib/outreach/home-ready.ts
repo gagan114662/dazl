@@ -11,11 +11,8 @@
 import { getScanDb } from '@/lib/scan/service'
 import { getJob, listLeads } from '@/lib/scan/store'
 import { enrichmentsForLeads } from '@/lib/connectors/store'
-import { currentnessHeld, leadWindowHeld } from '@/lib/outreach/currentness'
-import { requiredGateHeld } from '@/lib/scan/held-state'
-import { surfaceStoredIntent, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
-import { jobWindowDays } from '@/lib/scan/window'
-import { heldReason, type PreviewLead } from '@/lib/journey'
+import { leadHoldReason, timingOptsFor } from '@/lib/outreach/lead-hold'
+import type { PreviewLead } from '@/lib/journey'
 import { companyKey } from '@/lib/scan/evidence'
 import { RESULTS_WINDOW_DAYS } from '@/lib/outreach/home-results'
 
@@ -56,8 +53,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
   scan: for (const { id, n } of jobs) {
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
-    const windowDays = jobWindowDays(job as never)
-    const timingOpts = { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(job.query ?? '') }
+    const timingOpts = timingOptsFor(job)
     const leads = (listLeads(db, tenantId, id, perScan, false) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; company_domain?: string | null; company: string; quarantined_at?: unknown })[])
       .filter(l => Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged
     const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id))
@@ -70,9 +66,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
       if (judgedLeads >= maxLeads) { capped = true; whole = false; break }
       judgedLeads++
       // the hold fields exactly as GET /api/leads computes them, for this lead only
-      const row = { ...l, intent: surfaceStoredIntent(l as never, timingOpts).intent, enrichments: enr[l.id] ?? [],
-        window_held: leadWindowHeld(db, tenantId, l.id, at), currentness_held: currentnessHeld(db, tenantId, l.id, at), gate_held: requiredGateHeld(db, tenantId, l.id) !== null }
-      const why = heldReason(row as never)
+      const why = leadHoldReason(db, tenantId, l as never, enr[l.id] ?? [], timingOpts, at)   // lib/outreach/lead-hold.ts: the one rule
       if (!v) { v = { lead_id: l.id, company: l.company || 'Unnamed company', job_id: id, ready: !why, reason: why ?? '' }; companies.push(v) }
       else if (!why) { v.ready = true; v.reason = ''; v.job_id = id; v.lead_id = l.id; v.company = l.company || v.company }   // held in a newer scan, ready in this one: ready wins
       for (const k of keys) byKey.set(k, v)
