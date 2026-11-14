@@ -43,31 +43,63 @@ test('synthetic news shapes: a German story, an investor\'s own news page, custo
   free('Acme Foods', 'https://zapier.com/blog/x', 'Zapier blog', 'Acme Foods is using more automation. Zapier wrote about the trend.')
 })
 
-test('a vendor\'s customer story is still held: every wording main held (the council\'s list)', () => {
-  // 1. the headline proper names both, or the title labels itself a customer story
-  held('Acme', 'https://zendesk.com/customer/acme', 'How Acme scaled support with Zendesk', 'Read the story.')
-  held('Acme', 'https://notion.so/customers/acme', 'Acme cut onboarding time by 40% with Notion', 'Teams are using docs.')
-  held('Acme', 'https://vercel.com/customers/acme', 'Why Acme moved to Vercel', 'The team is now shipping daily.')
-  held('Orbitly', 'https://acmecrm.com/customers/orbitly', 'Customer story: Orbitly runs on AcmeCRM', 'Orbitly raised a seed round.')
-  held('Acme', 'https://stripe.com/customers/acme', 'Acme | Customer story | Stripe', 'The team is now faster.')
+// A vendor's own customer page, as a marketing site builds it: the brand's navigation, then the story. Filed under a customer path.
+const vendorPage = (brand: string, story: string) => `${brand} Product Solutions Use cases Customers Pricing Sign in Start free. ${story} Teams are using ${brand} every day.`
+test('a page the brand files under its customers (/customers/, /case-studies/ ...) is judged as on main: whatever the story\'s wording', () => {
+  for (const [host, path, title, story] of [
+    ['snowflake.com', '/en/customers/all-customers/case-study/northwind/', 'Northwind | Snowflake', 'Northwind cut its reporting time from days to minutes.'],
+    ['snowflake.com', '/customers/northwind', 'Customer stories', '"We chose Snowflake because it scaled with us," says Jane Doe, VP of Data at Northwind.'],
+    ['notion.so', '/customers/northwind', 'Customers', 'With Notion, Northwind replaced six tools with one connected workspace.'],
+    ['airtable.com', '/customer-stories/northwind', 'Customers', "Northwind's team runs everything in Airtable, from launches to hiring."],
+    ['hubspot.com', '/case-studies/northwind', 'Case studies', 'Since adopting HubSpot, Northwind has doubled its inbound pipeline.'],
+    ['segment.com', '/customers/northwind', 'Customers', 'Segment gave Northwind a single view of its customer.'],
+    ['linear.app', '/customers/northwind', 'Customers', 'Linear is how Northwind builds product.'],
+    ['ramp.com', '/customers/northwind', 'How Northwind closes its books 8 days faster', 'Ramp customer story. Northwind is a 300-person logistics company.'],
+    ['zendesk.com', '/customer/northwind', 'How Northwind scaled support with Zendesk', 'Northwind answers 10,000 tickets a month.'],
+    ['okta.com', '/success-stories/northwind', 'Northwind - Customers - Okta', 'Northwind standardizes on Okta for workforce identity.'],
+  ] as const) held('Northwind', `https://${host}${path}`, title, vendorPage(title.includes('|') || title.includes(' - ') ? title.split(/ [|-] /).pop()! : host.split('.')[0][0].toUpperCase() + host.split('.')[0].slice(1), story))
+  // ... and a NEWS site that happens to have such a path is still judged by the proximity rule there (kept as on main)
+  held('mika', 'https://finsmes.com/customers/mika', 'mika Raises €6M in Seed Funding', FINSMES)
+})
+
+test('any other page (a blog, a news section): the relationship must be written - in the headline, or in one sentence', () => {
+  // 1. the headline proper says it
+  held('Acme', 'https://zendesk.com/blog/acme', 'How Acme scaled support with Zendesk', 'Read the story.')
+  held('Acme', 'https://notion.so/blog/acme', 'Acme cut onboarding time by 40% with Notion', 'Read the story.')
+  held('Acme', 'https://vercel.com/blog/acme', 'Why Acme moved to Vercel', 'The team ships daily.')
+  held('Orbitly', 'https://acmecrm.com/stories/orbitly', 'Customer story: Orbitly runs on AcmeCRM', 'Orbitly raised a seed round.')
+  // a headline that only names both says no relationship: an investor's or a list's own news page
+  free('Kontist', 'https://earlybird.com/news/kontist', 'Earlybird leads Kontist Series B', 'Kontist raised €20M. The company intends to use the funds to grow.')
+  free('mika', 'https://finsmes.com/x', 'mika uses AI - FinSMEs', 'The company raised money.')   // the site name after the separator is not the headline
+  free('Acme', 'https://sifted.eu/x', 'Acme joins the Sifted 100 list', 'Founders read it. Startups use the list to hire.')
   // 2. one sentence: the company uses the brand
   for (const [brandHost, text] of [['zapier.com', 'Brightloop uses Zapier for its sales workflows and saved 20 hours a week.'], ['shopify.com', 'Brightloop switched to Shopify last spring.'], ['shopify.com', 'After a long search Brightloop chose Shopify.'],
     ['twilio.com', 'Brightloop is powered by Twilio.'], ['okta.com', 'Brightloop trusts Okta to secure 10,000 employees.'], ['salesforce.com', 'Brightloop selected Salesforce.'], ['mongodb.com', 'Brightloop migrated to MongoDB Atlas.'],
     ['servicenow.com', 'Brightloop deployed ServiceNow.'], ['slack.com', 'Brightloop rolled out Slack.'], ['hubspot.com', 'Brightloop partnered with HubSpot.'], ['stripe.com', 'Brightloop moved its global payments to Stripe.'],
     ['atlassian.com', 'Brightloop builds faster on Atlassian.'], ['linear.app', 'Brightloop is a Linear customer since 2024.'], ['zapier.com', 'Brightloop became a Zapier customer in 2019 and now uses it daily.'], ['zapier.com', 'Brightloop is now a Zapier customer.'],
-    ['zapier.com', 'How Brightloop automated 40 hours a week with Zapier.']] as const) held('Brightloop', `https://${brandHost}/customers/brightloop`, 'Customers', text)
+    ['zapier.com', 'How Brightloop automated 40 hours a week with Zapier.'], ['zendesk.com', 'Brightloop scaled support with Zendesk.'], ['intercom.com', 'Brightloop turned to Intercom when its support volume tripled.'],
+    ['hubspot.com', 'Brightloop Logistics, Inc. implemented HubSpot across 12 offices.'], ['workday.com', 'Brightloop went live on Workday in 90 days.']] as const) held('Brightloop', `https://${brandHost}/blog/brightloop`, 'Blog', text)
   // 3. one sentence: the brand serves the company
-  held('Brightloop', 'https://workday.com/customers/x', 'Customers', 'Workday was chosen by Brightloop.')
-  held('Brightloop', 'https://intercom.com/customers/x', 'Customers', 'Intercom helps Brightloop resolve 50% of questions.')
-  held('Brightloop', 'https://gong.io/customers/x', 'Customers', 'Gong customer Brightloop grows win rate 20%.')
+  held('Brightloop', 'https://workday.com/blog/x', 'Blog', 'Workday was chosen by Brightloop.')
+  held('Brightloop', 'https://intercom.com/blog/x', 'Blog', 'Intercom helps Brightloop resolve 50% of questions.')
+  held('Brightloop', 'https://gong.io/blog/x', 'Blog', 'Gong customer Brightloop grows win rate 20%.')
+  held('Brightloop', 'https://segment.com/blog/x', 'Blog', 'Segment gave Brightloop a single view of its customer.')
   // 4. a customer list beside the brand
   held('Salesforce', 'https://linear.app/now/sharing-growth', 'Sharing growth with the people building Linear', 'Linear grew fast. Salesforce and Figma, which both became customers earlier this year.')
+  // "with <outlet>" and "with participation from <investor>" are not a use of the brand; navigation text is not a sentence about the company
+  free('Kontist', 'https://techcrunch.com/2026/10/kontist', 'Kontist raises €20M', 'Kontist CEO Jane Roe announced the round in an interview with TechCrunch. The company will use the funds to hire.')
+  free('Kontist', 'https://sifted.eu/articles/kontist', 'Kontist raises €20M', 'Kontist shared the numbers exclusively with Sifted on Tuesday. Founders use Sifted.')
+  free('Kontist', 'https://heliad.com/news/kontist', 'Kontist raises €20M', 'Kontist raised €20M with participation from Heliad. It is now hiring.')
+  free('Kontist', 'https://finsmes.com/2026/10/kontist', 'Kontist Raises $20M', 'FinSMEs Our Clients Kontist Raises $20M in Series B Funding By FinSMEs. The company intends to use the funds.')
+  // knowingly given up outside a customer path: a relationship worded some other way
+  free('Northwind', 'https://notion.so/blog/northwind', 'Blog', 'With Notion, Northwind replaced six tools with one connected workspace.')
 })
 
 test('names as they are written: a legal suffix\'s period does not end the sentence; a non-Latin company name is matched', () => {
-  held('Acme, Inc.', 'https://zapier.com/customers/acme', 'Customers', 'Acme, Inc. uses Zapier to automate sales.')
-  held('Acme Corp', 'https://zapier.com/customers/acme', 'Customers', 'Acme Corp. uses Zapier to automate sales.')
-  held('Рога и копыта', 'https://zapier.com/customers/x', 'Customers', 'Рога и копыта uses Zapier for everything.')
+  held('Acme, Inc.', 'https://zapier.com/blog/acme', 'Blog', 'Acme, Inc. uses Zapier to automate sales.')
+  held('Acme Corp', 'https://zapier.com/blog/acme', 'Blog', 'Acme Corp. uses Zapier to automate sales.')
+  held('Рога и копыта', 'https://zapier.com/blog/x', 'Blog', 'Рога и копыта uses Zapier for everything.')
+  free('Рога', 'https://zapier.com/blog/x', 'Blog', 'Рогатый uses Zapier for everything.')   // a longer word that starts with the name is not the name
 })
 
 test('the relationship must be written in ONE sentence, or the list must be beside the brand', () => {
@@ -79,14 +111,21 @@ test('the relationship must be written in ONE sentence, or the list must be besi
   free('Zapier', 'https://zapier.com/blog/x', 'Zapier blog', 'Zapier uses Zapier for everything.')
 })
 
-test('a short verified passage (the recheck path) is judged by the same rule, without the page title', () => {
-  assert.equal(cp('Brightloop', 'https://zapier.com/customers/x', 'Brightloop | Zapier', 'unrelated page text', 'Brightloop uses Zapier for its sales workflows.'), 'source_owner:zapier')
-  assert.equal(cp('mika', 'https://finsmes.com/x', 'How mika works with FinSMEs', FINSMES, 'mika, a Berlin, Germany-based provider, raised €6M in Seed funding.'), null, 'the passage decides; the title is not read with it')
+test('a short verified passage (the recheck path) is judged by the same rule, without the page title; the verifier hands it over already lower-cased', () => {
+  assert.equal(cp('Brightloop', 'https://zapier.com/blog/x', 'Brightloop | Zapier', 'unrelated page text', 'brightloop uses zapier for its sales workflows.'), 'source_owner:zapier')
+  assert.equal(cp('Acme', 'https://zapier.com/blog/x', 'x', 'unrelated', 'acme inc. uses zapier to automate sales.'), 'source_owner:zapier', 'a lower-cased legal suffix does not end the sentence')
+  assert.equal(cp('Acme Corp', 'https://zapier.com/blog/x', 'x', 'unrelated', 'acme corp. uses zapier to automate sales.'), 'source_owner:zapier')
+  assert.equal(cp('mika', 'https://finsmes.com/x', 'mika uses FinSMEs', FINSMES, 'mika a berlin germany based provider raised 6m in seed funding.'), null, 'the passage decides; the title is not read with it')
 })
 
-test('known and kept (as on main): the brand in the headline itself, and a brand that is a common word', () => {
-  // Sifted's own list page about the company: the brand is part of the headline
-  assert.equal(cp('Acme', 'https://sifted.eu/x', 'Acme joins the Sifted 100 list', 'Founders read it.'), 'source_owner:sifted')
-  // "ramp" the word, on ramp.com: not told apart from the brand
+test('the gaps are bounded: the brand must follow the verb closely, and the verb the company', () => {
+  free('Brightloop', 'https://zapier.com/blog/x', 'Blog', `Brightloop ${'is a maker of industrial fasteners and fittings for the automotive and aerospace industries and '.repeat(1)}many more sectors besides, and it uses Zapier.`)
+  free('Brightloop', 'https://zapier.com/blog/x', 'Blog', 'Brightloop uses tools like HubSpot, Slack, Notion, Asana and Zapier.')
+  held('Brightloop', 'https://zapier.com/blog/x', 'Blog', 'Brightloop CEO J. R. Smith uses Zapier every day.')   // an initial's period does not end the sentence
+  held('Brightloop', 'https://linear.app/blog/x', 'Blog', 'Brightloop is a long-time Linear enterprise customer.')
+  held('Salesforce', 'https://linear.app/now/x', 'News', 'Linear announced a milestone. We welcomed Salesforce and Figma as customers this quarter.')
+})
+
+test('known and kept (as on main): a brand that is a common word is not told apart from the brand', () => {
   assert.equal(cp('Acme', 'https://ramp.com/blog/x', 'Ramp news', 'Acme is using the funds to ramp up hiring. Ramp news.'), 'source_owner:ramp')
 })
