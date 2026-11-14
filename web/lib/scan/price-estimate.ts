@@ -164,8 +164,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     // which the estimate cannot see, so there it overstates (never understates).
     const site = i.payer !== 'trial' && b?.paid_fallback !== false && env.SITECRAWL_ENABLED !== '0' ? SITE_SEARCHES_PER_SCAN : 0
     // #1102: the named-person lookups after the scan (grounded-people.ts). A MAXIMUM, with the step's own policy: none on a trial or with paid
-    // steps off (this branch is never a first play); a scheduled run, another vendor's key or no TinyFish also make none, so there it overstates.
-    const grounded = i.payer !== 'trial' && b?.paid_fallback !== false && groundedLookupsOn(env)
+    // steps off (this branch is never a first play) or on another vendor's key; a scheduled run or no TinyFish also make none, so there it overstates.
+    const grounded = i.payer !== 'trial' && b?.paid_fallback !== false && groundedLookupsOn(env) && /^claude/i.test(model)   // an Anthropic key only (the step asks for a Claude model)
     const gSearch = grounded ? GROUNDED_SEARCHES_PER_SCAN : 0, gRead = grounded ? GROUNDED_READS_PER_SCAN : 0
     const searchMax = (tfSearch ?? 0) * (searches + site + gSearch) + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })

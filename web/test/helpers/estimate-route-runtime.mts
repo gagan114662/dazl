@@ -284,7 +284,9 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   try { await fn() } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
-const modelRowsOf = (e: Est) => e.estimate.rows.filter(r => r.kind === 'model')
+// The scan's OWN model rows. The named-person lookup (#1102) is a model row too, but always on its own fixed model (shown by name on its row and
+// pinned in test/grounded-council-1102), so it is left out of "every row names the scan's model".
+const modelRowsOf = (e: Est) => e.estimate.rows.filter(r => r.kind === 'model' && r.id !== 'named_person_lookup')
 
 test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price (not claude-sonnet-4-5), and the started job keeps that estimate', async () => {
   await withEnv({ DAZL_OPENAI_MODEL: undefined }, async () => {
