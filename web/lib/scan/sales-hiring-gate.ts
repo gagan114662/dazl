@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenSpan, PREMISES_ADJ, STREET, closedBanner, CLAUSE_CLOSED } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
@@ -83,9 +83,316 @@ export function stageOk(clause: string, stage: Stage): boolean {
   const letter = stage.slice(7)
   return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
 }
-export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
-  return clauses(excerpt ?? '').some(c => {
-    if (!fundingAsked) { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+// #878 (reviews on #1130, design at 77e509ac and 89e021f3): every event main already read (verb-first openings included) is
+// read with main's code unchanged. Only the opening forms this PR adds (noun-first, grand opening, an ordinal, a new
+// premises meeting "location") are accepted, and only when the WHOLE quote, before and after the opening, attributes the
+// opening to the lead. One of:
+//   (i)   the opening's own subject is first-person ("Our new clinic ...", "We opened ...", "Grand opening of our new
+//         clinic"): it is the poster's, unless the quote has an @handle / #tag that is not the lead's, or congrats /
+//         proud of / happy for / excited for aimed at someone other than the poster;
+//   (ii)  the lead (its name, handle or tag) is named, and nothing else name-like, no third-person pronoun (they / their /
+//         them / its / his / her, inside the opening too: "Grand opening of their new clinic") and no unnamed party ("our
+//         neighbours", "our friends", "the bright smiles team") appears anywhere;
+//   (iii) nothing name-like, no handle, no pronoun and no congrats-type language appears anywhere ("New dental clinic now
+//         open in Parkdale").
+// Name-like: an @handle or #tag; the target of congrats / kudos / shoutout / proud of / happy for / excited for (any case,
+// so "so proud of bright smiles" counts); a run of capitalised words, less stop words, months, weekdays and the request's
+// own place words. The opening itself and its own place ("in Parkdale", "at 11 Yorkville Ave", ", Toronto") are not read.
+// When in doubt the opening is not the lead's (unknown); main gave unknown for all of these forms.
+const THIRD_PERSON = /\b(?:they|their|theirs|them|its|his|her)\b/i
+const CAP_STOP = new Set(['the', 'a', 'an', 'big', 'news', 'congrats', 'congratulations', 'visit', 'proud', 'thanks', 'thank', 'you', 'welcome', 'hello', 'hi', 'hey', 'looking', 'try', 'our', 'we', 'us', 'it', 'its', 'their', 'they', 'this', 'that', 'these', 'those', 'new', 'now', 'open', 'opened', 'opening', 'today', 'great', 'exciting', 'excited', 'thrilled', 'huge', 'happy', 'grand', 'just', 'also', 'come', 'book', 'call', 'check', 'join', 'meet', 'say', 'stop', 'shoutout', 'introducing', 'announcing', 'update', 'wow', 'love', 'growing', 'finally', 'officially', 'sadly', 'good', 'here', 'there', 'what', 'who', 'why', 'when', 'how', 'is', 'are', 'and', 'or', 'in', 'at', 'on', 'to', 'for', 'of', 'from', 'by', 'with', 'i', 'my', 'me', 'your', 'all', 'everyone', 'brand', 'yes', 'so', 'more', 'best', 'first', 'second', 'third', 'next', 'last', 'one', 'home', 'clinic', 'location', 'office', 'store', 'team', 'did', 'now', 'offered', 'available'])
+const PREMISES_WORD = /^(?:clinics?|offices?|locations?|dental|dentistry|health|centre|center|studios?|practices?)$/
+const MONTH_DAY = /^(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:rs(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)$/i
+const CONGRATS = /\b(?:congrat\w*|kudos|shout-?outs?|hats\s+off|cheers\s+to|well\s+done|proud\s+(?:of|for)|happy\s+for|excited\s+for|thrilled\s+for)\b[,!]?\s*(?:(?:to|for|of|on|at|with)\s+)?/gi
+const UNNAMED = /\b(?:our|my)\s+(?:[\w'’-]+\s+)?(?:neighbou?rs|friends|colleagues|partners|pals|peers)\b/i
+// The request's own place words ("Dental clinics in Toronto" -> toronto): a place the request names is no other company.
+export function requestPlaces(query: string | null | undefined): Set<string> {
+  const out = new Set<string>()
+  for (const m of (query ?? '').matchAll(/\b(?:in|near|around|across)\s+([A-Z][\w-]*(?:\s+[A-Z][\w-]*)*)/g)) for (const w of wordsOf(m[1])) out.add(w)
+  return out
+}
+// The end of an opening's own place phrase after `end`: "in Parkdale", "at 11 Yorkville Ave", "on Hwy 27", "in the GTA",
+// ", Toronto" (capitalised words or numbers only, so "run by the bright smiles team" is never swallowed).
+function placeEnd(text: string, end: number): number {
+  // words never run across a sentence end ("in Parkdale. Congrats Bright Smiles" stops at "Parkdale")
+  const RUN = String.raw`(?:\d+[\w-]*\s+)?(?:[A-Z][\w'’-]*|\d+)(?:[ \t]+(?:[A-Z][\w'’-]*|\d+))*`
+  // a lower-case place: one or two words, never one that brings in someone ("in parkdale", not "in parkdale run by ...")
+  const LC = String.raw`(?!(?:by|with|from|for|and|run|hosted|says|said|of|a|an|the|our|their|its)\b)[a-z][\w'’-]*`
+  const STEP = new RegExp(String.raw`^(?:[ \t]+(?:[Ii][Nn]|[Aa][Tt]|[Oo][Nn]|[Nn]ear)[ \t]+(?:the[ \t]+|THE[ \t]+)?(?:heart[ \t]+of[ \t]+)?(?:${RUN}|${LC}(?:[ \t]+${LC})?(?=[ \t]*(?:$|[.,;:!?\n)#]|[ \t]-)))|[ \t]*,[ \t]*[A-Z][\w'’-]*(?=[ \t]*(?:$|[.,;:!?\n)])))`)
+  for (let m = STEP.exec(text.slice(end)); m && m[0].length; m = STEP.exec(text.slice(end))) end += m[0].length
+  return end
+}
+// The @handles in a text, and the #tags that may be a business name. A #tag that splits wholly into generic words
+// (#newclinic, #grandopening, #dentist, #toronto, the request's own places) is no name; any other tag (#brightsmiles)
+// is, and fails a new-form opening closed unless it is the lead's.
+const TAG_WORDS = ['new', 'grand', 'opening', 'open', 'now', 'official', 'officially', 'clinic', 'clinics', 'dental', 'dentist', 'dentists', 'dentistry', 'office', 'location', 'store', 'shop', 'studio', 'practice', 'local', 'community', 'support', 'small', 'business', 'shoplocal', 'toronto', 'gta', 'canada', 'ontario', 'the', 'and', 'in', 'our', 'my', 'day', 'week', 'ortho', 'orthodontics', 'invisalign', 'hygiene', 'patients', 'hiring', 'jobs', 'growing', 'expansion', 'celebrate', 'celebrating', 'ribbon', 'cutting', 'neighbourhood', 'neighborhood']   // never words practice names are made of (family, care, smile ...)
+function genericTag(tag: string, places: ReadonlySet<string>): boolean {
+  const t = tag.toLowerCase().replace(/[^a-z]/g, ''), words = [...TAG_WORDS, ...places]
+  const ok: boolean[] = [true]   // ok[i]: t.slice(0, i) splits into generic words
+  for (let i = 1; i <= t.length; i++) ok[i] = words.some(w => w.length <= i && ok[i - w.length] && t.slice(i - w.length, i) === w)
+  return t !== '' && ok[t.length]
+}
+function handlesIn(text: string, places: ReadonlySet<string>): string[] {
+  return [...text.matchAll(/[@#][A-Za-z0-9_.]+/g)].filter(m => m[0][0] === '@' || !genericTag(m[0].slice(1), places)).map(m => '@' + m[0].slice(1).replace(/\.+$/, ''))
+}
+type Party = { name: string | null }   // null: a party the quote refers to but does not name ("our neighbours", "them")
+function congratsTargets(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(CONGRATS)) {
+    const x = text.slice((m.index ?? 0) + m[0].length).split(/[!.,;:?\n]|\s[-–—]\s|\s(?:for|on|and|who|which|as|with)\s/i)[0].trim().replace(/["“”'‘’]/g, '').trim()
+    out.push(x.replace(/^(?:(?:the|all\s+the)\s+)?(?:whole\s+)?(?:team|folks|crew|staff|everyone|people|gang)\s+(?:over\s+)?at\s+/i, '').replace(/^(?:our|my)\s+(?:good\s+)?friends\s+(?:over\s+)?at\s+/i, ''))
+  }
+  return out
+}
+const SELF = /^(?:us|me|ourselves|everyone|all|you(?:\s+all)?|(?:our|the)\s+(?:whole\s+)?team|(?:whole\s+)?team)?$/i
+// Every party the text names or refers to, other than through the poster's own "we / our".
+function parties(text: string, company: string, places: ReadonlySet<string>): Party[] {
+  const out: Party[] = []
+  for (const h of handlesIn(text, places)) out.push({ name: h })
+  for (const t of congratsTargets(text)) {
+    const bare = t.replace(/[@#][A-Za-z0-9_.]+/g, '').trim()
+    if (SELF.test(bare)) continue
+    if (UNNAMED.test(bare) || /^(?:them|they|her|him)\b/i.test(bare)) out.push({ name: null })
+    else if (wordsOf(bare).some(w => !CAP_STOP.has(w))) out.push({ name: bare })
+  }
+  if (UNNAMED.test(text)) out.push({ name: null })
+  // the subject of any sentence before is / are / has / was ("open door clinic is growing", "Amazing is growing") is a
+  // party unless it is the lead or a pronoun; so is whoever follows "team at" ("the team at grand clinic")
+  for (const m of text.matchAll(/(?:^|[.!?\n]\s*)["“'‘]?([^.!?\n]+?)\s+(?:is|are|has|have|was|were)\b/gi)) {
+    const subj = m[1].trim()
+    if (/^(?:we|i|it|he|she|they|you|this|that|there|here|our\s+team|everyone|(?:our|my|the)\s+(?:new\s+)?(?:clinic|office|location|space|team|doors?))$/i.test(subj) || wordsOf(subj).length === 0) continue
+    out.push({ name: subj })
+  }
+  for (const m of text.matchAll(/\bteam\s+at\s+([^.!?,\n]+)/gi)) out.push({ name: m[1].trim() })
+  for (const m of text.matchAll(/\bthe\s+((?:[\w'’-]+\s+){1,3})team\b/gi)) if (!nameIsLead(m[1].trim(), company)) out.push({ name: null })
+  for (const m of text.matchAll(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g)) {
+    if (nameIsLead(m[0], company)) { out.push({ name: m[0] }); continue }
+    const key = (w: string) => w.toLowerCase().replace(/’/g, "'").replace(/'s?$|[^a-z0-9&'-]/g, '')
+    // a capitalised run, less stop words, months, weekdays and places, is a name when it keeps 2+ words, a premises or
+    // practice word ("Open Door Clinic", "The Community Clinic", "Hello Clinic"), or a word off the allow-list ("Invisalign")
+    const words = m[0].split(/[ \t]+/).map(key).filter(k => k !== '' && !MONTH_DAY.test(k) && !places.has(k))
+    const kept = words.filter(k => !CAP_STOP.has(k) && !CTA_WORDS.has(k))
+    if (kept.length >= 2 || words.some(k => PREMISES_WORD.test(k)) || kept.some(k => !ALLOW.has(k))) out.push({ name: kept.length ? kept.join(' ') : m[0] })
+  }
+  return out
+}
+// A new-form opening at [at, end] of `excerpt` (its own clause has `prefix` before it) is the lead's own.
+// Party markers, in any case: wording that brings in another practice or person without a capitalised name. "welcome(s)
+// <x>", "<x> dental / location / team / family / practice / clinic" for an x that is not the lead, "says / said <x>",
+// "reposted / shared <x>", "<lead> and <x>", "with <x>", "a new neighbour", "down the street", "next door".
+// The words a sign-off or attribution may carry that name no one (stop words and the call-to-action words).
+const CTA_WORDS = new Set(['come', 'visit', 'see', 'soon', 'book', 'booking', 'today', 'now', 'walk', 'walk-ins', 'ins', 'welcome', 'say', 'hi', 'us', 'you', 'all', 'of', 'at', 'the', 'team', 'online', 'call', 'stop', 'drop', 'pop', 'in', 'by'])
+// A sign-off or attribution that names a party other than the lead, in any case: "love, <x>", "xo <x>", "cheers, <x>",
+// "- <x>" / "— <x>" at the end, "from / by / hosted by / brought to you by / part of / at / via <x>". <x> is up to 4
+// words that are not stop words, call-to-action words, places of the request or the opening, or the lead.
+function signOffOther(text: string, lead: string, places: ReadonlySet<string>): boolean {
+  const named = (x: string) => {
+    if (/[@#][A-Za-z0-9_]/.test(x)) return true
+    const ws = x.split(/\s+/).slice(0, 4).filter(w => { const k = w.toLowerCase().replace(/['’]s?$|[^a-z0-9&'-]/g, ''); return k !== '' && !CAP_STOP.has(k) && !CTA_WORDS.has(k) && !places.has(k) && !MONTH_DAY.test(k) })
+    return ws.length > 0 && !(lead !== '' && nameIsLead(ws.join(' '), lead))
+  }
+  const after = (i: number) => text.slice(i).split(/[.,!?;:\n()]|\s[-–—]\s/)[0].trim()
+  for (const m of text.matchAll(/\b(?:love|xo+|cheers|from|by|hosted\s+by|brought\s+to\s+you\s+by|part\s+of|at|via)\b[,:]?\s*/gi)) if (named(after((m.index ?? 0) + m[0].length))) return true
+  const tail = /(?:^|\s)[-–—]\s*([^-–—\n]+?)\s*[.!]*\s*$/.exec(text)
+  return !!tail && named(tail[1])
+}
+const TEAM_ADJ = new Set(['same', 'great', 'whole', 'amazing', 'awesome', 'wonderful', 'entire', 'friendly', 'dedicated', 'caring', 'new', 'care', 'love', 'thanks', 'thank', 'you'])
+function partyMarker(quote: string, lead: string, places: ReadonlySet<string> = new Set()): boolean {
+  // the lead's own name never marks another party ("Family Dental Care is growing")
+  let text = lead === '' ? quote : quote.replace(new RegExp(lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => ' '.repeat(m.length))
+  if (lead !== '') text = text.replace(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g, m => (nameIsLead(m, lead) ? ' '.repeat(m.length) : m))
+  if (signOffOther(text, lead, places)) return true
+  if (/\bwelcomes?\s+(?!to\b|you\b|all\b|everyone\b|new\s+patients\b|walk-?ins\b)[\w@#]/i.test(text)) return true
+  if (/\b(?:says|said|reposted|shared|retweeted|regrammed)\b|\bwith\s+[\w@#]|\ba\s+new\s+neighbou?r|\bdown\s+the\s+street\b|\bnext\s+door\b/i.test(text)) return true
+  for (const m of text.matchAll(/\b((?:[\w'’-]+\s+){1,3})(?:dental|location|team|family|practice|clinic)\b/gi)) {
+    // only a team's own adjectives are no name here ("same great team"); "the community clinic" is a practice
+    const x = m[1].trim().split(/\s+/).filter(w => !CAP_STOP.has(w.toLowerCase().replace(/['’]s?$/, '')) && !TEAM_ADJ.has(w.toLowerCase()) && !DESCRIPTIVE.has(w.toLowerCase())).join(' ')
+    if (x !== '' && !(lead !== '' && nameIsLead(x, lead))) return true
+  }
+  // "<lead> and <x>": read on the quote itself, with the lead's name in place
+  for (const m of quote.matchAll(/((?:[\w&'’@.-]+\s+){1,5})and\s+[\w@#]/gi)) {
+    const ws = m[1].trim().split(/\s+/)
+    for (let k = 1; k <= ws.length; k++) if (lead !== '' && nameIsLead(ws.slice(-k).join(' '), lead)) return true
+  }
+  return false
+}
+// "<Lead> is / has / opened / 's ...": the lead is the lead-in subject of the sentence.
+function leadSubject(sentence: string, lead: string): boolean {
+  const m = /^\s*(.+?)(?:\s+(?:is|are|was|were|has|have|had|just|opened|opens)\b|['’]s\b)/i.exec(sentence)
+  return !!m && nameIsLead(m[1].replace(/^[^\w@]+/, ''), lead)
+}
+// What a quote may say besides a nobody-named opening: generic tags, emoji, punctuation and a short call to action.
+const CTA = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi)|book\s+(?:now|today)|see\s+you\s+soon|now\s+booking|walk-?ins\s+welcome)\b/gi
+// A new-form opening at [at, end] of `excerpt` (its own clause has `prefix` before it) is the lead's own. Strict, by
+// design (review on #1130 at d010a0c3): main gives unknown for every new form, so failing closed loses nothing against
+// main. The rest of the quote is everything but the opening and its own place ("in Parkdale", ", Toronto").
+//   (i)   first person ("Our new clinic ...", "We opened ...", "Grand opening of our new clinic"): the rest names no one
+//         but the lead (no capitalised name past stop words, months, weekdays and places; no @handle; no business-name
+//         #tag; no congrats target), and has no party marker.
+//   (ii)  the lead named: the same, and a third-person pronoun only where the lead is the lead-in subject of the
+//         pronoun's own sentence or the one before ("Family Dental Care is growing. Their new clinic is now open").
+//   (iii) nobody named: the rest is empty, or only generic #tags, emoji, punctuation and a call to action ("Book now").
+// #878 (review on #1130 at e0eb5d61): for a first-person or lead-named opening, the rest of the quote may say ONLY
+// these: common function words and opening / celebration words, a call to action, thanks to patients or staff, the
+// request's places, street addresses, phone numbers and opening hours, emoji, punctuation and generic #tags. Any other
+// word ("bright smiles", "network", "owner", "competition", "told reporters") fails the opening closed.
+const ALLOW = new Set(('a an the and or but so to of in on at for with as is are was be been am it this that these those ' +
+  'we we\'re we\'ve we\'ll our ours us you your you\'re i i\'m me my all any some every more most very just now here there ' +
+  'what when where how no yes can will do have has had get got go come see let make new great good best amazing awesome ' +
+  'wonderful beautiful lovely happy excited exciting thrilled proud pleased delighted grateful thankful thank thanks share ' +
+  'sharing announce announcing finally officially official big news update today day week month year time patients patient ' +
+  'staff team community neighbourhood neighborhood same address location locations clinic office space home doors door open ' +
+  'opened opening grand celebrate celebrating celebration growing grow accepting serving ready welcome welcoming love ' +
+  'congrats congratulations hello hi hey everyone soon visit book booking online call link bio by up business second third ' +
+  'fourth fifth another bigger larger brand st street ave avenue rd road blvd dr drive unit suite floor').split(' '))
+const CTA_PHRASES = /\b(?:come\s+(?:visit(?:\s+us)?|see\s+us|say\s+hi|by)|stop\s+by|drop\s+by|say\s+hi|book\s+(?:now|today|online)|link\s+in\s+bio|see\s+you\s+soon|now\s+booking|walk-?ins\s+welcome)\b/gi
+const DOMAIN = /\b(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+)\.(?:com|ca|net|org|co|io|dental|dentist|clinic|health|info|biz|us|uk|care)\b(?:\/\S*)?/gi
+// The words of `rest` that are not on the allow-list (with the lead's own names, handles, tags and domains, generic
+// tags, places, addresses, phone numbers and hours removed first).
+function unlisted(rest: string, lead: string, places: ReadonlySet<string>, pronouns: boolean): string[] {
+  let t = rest.replace(DOMAIN, ' ')
+    .replace(/[@#][A-Za-z0-9_.]+/g, ' ')
+    .replace(new RegExp(lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
+    .replace(/(?<![\w@#.])[A-Z][\w&'’.-]*(?:[ \t]+[A-Z][\w&'’.-]*)*/g, m => (nameIsLead(m, lead) ? ' ' : m))
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, ' ')
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}\s*[-–]\s*\d{1,2}\b/gi, ' ')
+    .replace(CTA_PHRASES, ' ')
+  t = t.replace(/\bthanks?\s+(?:you\s+)?(?:to\s+)?(?:(?:all|our|my)\s+)*(?:(?:amazing|wonderful|loyal|great|lovely)\s+)*(?:patients|staff|team|community)(?:\s+and\s+(?:patients|staff|team|community))?\b/gi, ' ')
+  return t.toLowerCase().replace(/’/g, "'").split(/[^a-z0-9']+/).map(w => w.replace(/^'+|'+$/g, '')).filter(w => w !== '' &&
+    !ALLOW.has(w) && !CTA_WORDS.has(w) && !places.has(w) && !MONTH_DAY.test(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w) &&
+    !(pronouns && THIRD_PERSON.test(w)))
+}
+// A domain or URL host is a party unless its label is the lead's ("brightsmiles.com" is another practice).
+const domainsOther = (text: string, lead: string) => [...text.matchAll(DOMAIN)].some(m => !nameIsLead('@' + m[1], lead))
+// The frame of an opening match: qualifiers, the premises nouns and the open verbs ("Grand opening of our new clinic",
+// "Our 5th location is now open", "opened a new office").
+const OPENING_FRAME = new Set(('our its their the a an new brand grand opening of second third fourth fifth another additional is are has have ' +
+  'now officially finally open opened opening opens location locations office offices clinic clinics store stores branch branches site sites ' +
+  'restaurant restaurants studio studios practice practices warehouse warehouses showroom showrooms shop shops gym gyms salon salons ' +
+  'factory factories hq headquarters').split(' '))
+// a business word in the opening's place span ("in Sunrise Wellness", "in Maple Medical"; review round 10 R19): the span names a practice, not a place
+const PRACTICE_WORD = /^(?:dental|dentistry|dentists?|smiles?|orthodontics?|clinic|practice|studio|centre|center|group|health|wellness|medical|medicine|care|physio|chiro(?:practic)?)$/i
+// The lead named only to set it apart ("Not Metro City Dentistry", "the same space as Metro City Dentistry").
+const contrastsLead = (text: string, lead: string) => new RegExp(String.raw`\b(?:not|than|as|like|from|next\s+(?:door\s+)?to|instead\s+of|unlike)\s+(?:the\s+)?` + lead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text)
+export function openingAttributable(excerpt: string, at: number, end: number, prefix: string, company: string | null | undefined, places: ReadonlySet<string> = new Set()): boolean {
+  const lead = company ?? ''
+  if (lead === '') return false
+  const match = excerpt.slice(at, end), stop = placeEnd(excerpt, end)
+  // the opening's own place words are places too ("#parkdale" after "now open in Parkdale")
+  // R13: the opening's own place never hides a practice ("open at Bright Smiles Dental in Parkdale")
+  // R16: the opening's own words (between "new" and the premises noun, and a place inside it) are read too: only the
+  // opening's frame, an ordinal, a premises adjective (dental, flagship ...), the lead's words and places may be there
+  // ("New Bright Smiles Clinic is now open" is another practice's)
+  const inner = /^(.*?)\b(?:in|at|on|near)\s+(.+)$/i.exec(match)
+  const placeWords = [...wordsOf(excerpt.slice(end, stop)), ...(inner ? wordsOf(inner[2]) : [])], leadWords = new Set(wordsOf(lead))
+  if (placeWords.some(w => PRACTICE_WORD.test(w) && !leadWords.has(w))) return false
+  // Hermes at cc18ffd5: "at / inside <Name>" names a venue or business, not a place ("now open at Dr Lee's", "at Sunrise
+  // Wellness", "at Dentalcorp Parkdale"). After at / inside the opening may only name a street address, the request's
+  // own place, or the lead itself; "in / on <Name>" stay place readings
+  for (const m of excerpt.slice(at, stop).matchAll(/\b(?:at|inside)\s+/gi)) {
+    const phrase = excerpt.slice(at + (m.index ?? 0) + m[0].length, stop).split(/\s+(?:in|on|near|at|inside)\s+|[,.;:!?\n()]/i)[0].trim()
+    const words = wordsOf(phrase).filter(w => w !== 'the')
+    if (phrase === '' || STREET.test(phrase) || (words.length > 0 && words.every(w => places.has(w))) || nameIsLead(phrase, lead)) continue
+    return false
+  }
+  for (const m of (inner ? inner[2] : '').matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
+  const fillPlaces = new Set([...places, ...placeWords])
+  const fill = wordsOf(inner ? inner[1] : match)
+  if (fill.some(w => !OPENING_FRAME.has(w) && !PREMISES_ADJ.test(w) && !leadWords.has(w) && !fillPlaces.has(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w))) return false
+  // R17: a fill carrying any of the lead's words must be the lead's whole name, not a part of it ("New Metro Dental
+  // Clinic" or "City Dental office" for Metro City Dentistry is another practice)
+  // In mixed-case text the capitalised words of the fill are a name ("Grand opening of our new Family Dental Clinic"):
+  // less frame words and places, they must be the lead's name
+  const fillText = inner ? inner[1] : match
+  const mixed = /[a-z]/.test(excerpt) && /[A-Z]/.test(excerpt) && !match.split(/\s+/).every(w => /^[A-Z0-9]/.test(w))
+  const capped = mixed ? fillText.split(/\s+/).filter(w => /^[A-Z]/.test(w)).map(w => w.replace(/[^\w&'’-]/g, '')).filter(w => !OPENING_FRAME.has(w.toLowerCase()) && !fillPlaces.has(w.toLowerCase())) : []
+  if (capped.length > 0 && !nameIsLead(capped.join(' '), lead)) return false
+  // (only the lead's distinctive words count: "dental" in "New dental clinic" for Eleven Dental is an adjective)
+  if (fill.some(w => leadWords.has(w) && !PREMISES_ADJ.test(w) && !DESCRIPTIVE.has(w))) {
+    const named = fill.filter(w => !OPENING_FRAME.has(w) && !/^\d+(?:st|nd|rd|th)?$/.test(w) && (leadWords.has(w) || (!PREMISES_ADJ.test(w) && !fillPlaces.has(w))))
+    if (!nameIsLead(named.join(' '), lead)) return false
+  }
+  // a place run carrying the lead's words must be the lead itself ("at Metro City Dentistry North" is not)
+  for (const m of excerpt.slice(end, stop).matchAll(/[A-Z][\w&'’-]*(?:[ \t]+[A-Z][\w&'’-]*)*/g)) if (wordsOf(m[0]).some(w => leadWords.has(w)) && !nameIsLead(m[0], lead)) return false
+  if (contrastsLead(excerpt, lead)) return false
+  const where = new Set([...places, ...placeWords])
+  const rest = excerpt.slice(0, at) + ' . ' + excerpt.slice(stop)
+  if (domainsOther(rest, lead)) return false
+  const ps = [...parties(rest, lead, where), ...[...rest.matchAll(DOMAIN)].map(m => ({ name: '@' + m[1] }))]
+  const onlyLead = ps.every(p => p.name !== null && nameIsLead(p.name, lead)) && !partyMarker(rest, lead, where)
+  if (/^(?:grand\s+opening\s+of\s+)?our\b/i.test(match) || /\b(?:we|we['’](?:re|ve)|our)\s+(?:[a-z]+\s+){0,2}$/i.test(prefix) || /^(?:we|we['’](?:re|ve))\s*$/i.test(prefix.trim())) return onlyLead && unlisted(rest, lead, where, false).length === 0
+  if (ps.length > 0) {
+    if (!onlyLead || unlisted(rest, lead, where, true).length > 0) return false
+    // every third-person pronoun (in the rest or the opening) must have the lead as its sentence's lead-in subject
+    const blanked = excerpt.slice(0, stop).replace(/\b(?:its|their)\s+doors\b/gi, m => ' '.repeat(m.length)) + excerpt.slice(stop)
+    const sentences: [number, string][] = []
+    for (const m of blanked.matchAll(/[^.!?\n]+/g)) sentences.push([m.index ?? 0, m[0]])
+    for (const m of blanked.matchAll(new RegExp(THIRD_PERSON.source, 'gi'))) {
+      const k = sentences.findIndex(([i, t]) => (m.index ?? 0) >= i && (m.index ?? 0) < i + t.length)
+      if (k < 0 || !(leadSubject(sentences[k][1], lead) || (k > 0 && leadSubject(sentences[k - 1][1], lead)))) return false
+    }
+    return true
+  }
+  // (iii) nobody named: no third-person pronoun, the opening's own included ("Grand opening of their new clinic"), and
+  // nothing else in the quote but generic tags, emoji, punctuation and a call to action
+  if (THIRD_PERSON.test(rest.replace(/\b(?:its|their)\s+doors\b/gi, ' ') + ' ' + match)) return false
+  const left = rest.replace(/#[A-Za-z0-9_]+/g, t => (genericTag(t.slice(1), where) ? ' ' : t)).replace(CTA, ' ').replace(/[^\p{L}\p{N}#@]+/gu, ' ').trim()
+  return left === ''
+}
+// Corporate and descriptive words a name may carry around the lead's own words ("Acme Software", "Acme HQ", "Metro City
+// Dental Centre"); a place word ("North", a city) is not one of them.
+const DESCRIPTIVE = new Set(['software', 'hq', 'labs', 'lab', 'technologies', 'technology', 'tech', 'inc', 'group', 'centre', 'center', 'clinic', 'clinics', 'dental', 'dentistry', 'studio', 'studios', 'co', 'corp', 'ltd', 'llc', 'limited', 'plc', 'the', 'and', 'of', 'dds', 'dmd'])
+const core = (x: string) => wordsOf(x).filter(w => !DESCRIPTIVE.has(w))
+// A name is the lead's only when, without corporate / descriptive words, it is exactly the lead's name: "Acme Software",
+// "Metro City Dental Centre", "Bright Smiles" for "Bright Smiles Dental Studio". One shared word ("Bright Family Dentistry"
+// for "Family Dental Care"), a missing one ("Metro Dental") or an extra one ("Metro City Dentistry North", "Smile Dental
+// Studio Brampton") is another practice. An @handle or a one-word name is the lead's when it is the lead's whole name
+// joined, or its own words joined followed only by descriptive words ("@metrocitydentistry", "@metro_city_dental";
+// never "@notmetrocitydentistry", "@metrocitydentistrynorth", "@kingcitydental").
+export function nameIsLead(name: string, company: string): boolean {
+  const own = core(company).length ? core(company) : wordsOf(company)
+  if (own.length === 0) return false
+  const words = wordsOf(name)
+  if (name.startsWith('@') || (words.length === 1 && own.length > 1)) {
+    const h = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+    if (h === wordsOf(company).join('')) return true
+    const joined = own.join('')
+    if (!h.startsWith(joined)) return false
+    let rest = h.slice(joined.length)
+    for (let prev = ''; rest !== '' && prev !== rest;) { prev = rest; for (const d of DESCRIPTIVE) if (rest.startsWith(d)) { rest = rest.slice(d.length); break } }
+    return rest === ''
+  }
+  const theirs = core(name).length ? core(name) : words
+  return theirs.join(' ') === own.join(' ')
+}
+// The non-funding gate exactly as main read it: any event (an opening included) in a clause whose subject is the lead.
+const mainClauseEvent = (c: string, company: string | null | undefined): boolean => { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventSignal(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }
+export const quoteShowsEventMain = (excerpt: string | null, company?: string | null): boolean => clauses(excerpt ?? '').some(c => mainClauseEvent(c, company))
+// A new-form opening (found by `match` in a clause) the quote shows as the lead's: its clause subject is not another
+// company, the place is not reported closed (a banner anywhere, or a closure in its own clause), and it is attributable.
+// A new-form opening (found by `match` in a clause, as [start, end]) the quote shows as the lead's: its clause subject is
+// not another company, the place is not reported closed (a banner anywhere, or a closure in its own clause), and the
+// whole quote attributes it to the lead (openingAttributable).
+export function newOpeningShown(quote: string, company: string | null | undefined, match: (clause: string) => [number, number] | null, places: ReadonlySet<string> = new Set(), not?: RegExp): boolean {
+  // the attribution reads grow faster than the text: read at most the first 2,000 characters (a stored quote is 400)
+  const excerpt = quote.slice(0, 2000)
+  if (closedBanner(excerpt)) return false
+  return clauses(excerpt).some(c => {
+    const span = match(c)
+    // the lead's own handle or tag in front of the opening is no other subject ("@metrocitydentistry new clinic now open")
+    if (!span) return false
+    const front = company ? c.slice(0, span[0]).replace(/[@#][A-Za-z0-9_.]+/g, h => (nameIsLead('@' + h.slice(1), company) ? ' ' : h)) : c.slice(0, span[0])
+    if ((not && not.test(c)) || CLAUSE_CLOSED.test(c) || subjectIsOther(front, company)) return false
+    const base = Math.max(0, excerpt.indexOf(c))
+    return openingAttributable(excerpt, base + span[0], base + span[1], c.slice(0, span[0]), company, places)
+  })
+}
+// places: the request's own place words (requestPlaces), when the caller has the request.
+export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null, places: ReadonlySet<string> = new Set()): boolean => { void signal
+  const all = excerpt ?? ''
+  // main's reading, plus a noun-first opening (#878) that is the lead's own
+  if (!fundingAsked) return quoteShowsEventMain(all, company) || newOpeningShown(all, company, c => nounFirstOpenSpan(c, company), places)
+  return clauses(all).some(c => {
     if (!mentionsFunding(c) || FUNDING_NEG.test(c) || FUNDING_HYPO.test(c)) return false
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
@@ -212,6 +519,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const eventDays = or ? or.event.within_days ?? windowDays : windowDays, hireDays = or ? or.hiring.within_days ?? windowDays : windowDays
   const fundingAsked = requestAsksFunding(job.query, job.icp)
   const where = whereOf(job.icp)
+  const places = requestPlaces(job.query)   // #878: the request's own place words are no other company in an opening's quote
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
   const leads = db.prepare(
     `SELECT id, company, company_domain, evidence_excerpt, signal, why, dedup_key, source_url, event_date, event_date_proof FROM leads
@@ -244,7 +552,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       const eventQuotes = quotes.filter((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, eventDays, now, i === 0 && !or))
       const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
       // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
-      const eventShown = eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))
+      const eventShown = eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage, places))
       if (or && eventShown) { passed++; passedIds.push(l.id); continue }   // the OR's event branch is proven: the hiring branch is not needed (no board lookup)
       // Under an OR, a hiring quote is proof only with its own date inside the hiring branch's clock (the lead's row date for its own quote).
       const hireQuotes = or ? quotes.filter((q, i) => { const dt = i === 0 ? l.event_date : q.date, t = dt ? Date.parse(dt) : NaN; return Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 }) : quotes

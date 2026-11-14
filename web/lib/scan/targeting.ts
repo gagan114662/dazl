@@ -15,6 +15,7 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
+import { NOUN_FIRST_OPEN_SRC, nounFirstOk } from '../search/page-class.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -90,8 +91,15 @@ function techAtoms(q: string, add: (a: Atom) => void): void {
   }
 }
 
-const EVENTS: { event: string; re: RegExp; object?: number }[] = [
-  { event: 'open', re: /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi, object: 1 },
+// object: the capture group(s) naming the event's object; with several, the first one the match filled.
+// #878 (staging, 2026-11-12): openings are as often worded noun-first, as social posts and local press write them
+// ("New dental clinic now open in Parkdale", "our 5th location is officially open", "Grand opening of our new clinic"),
+// as verb-first ("opened a new location"). The noun-first forms are the strict shared pattern in page-class.ts
+// (NOUN_FIRST_OPEN_SRC: never hours, availability, a future or someone else's opening).
+// ok: an extra check a match must pass (the noun-first opening's allow-list, page-class.ts nounFirstOk); a verb-first
+// match (group 1) is not subject to it.
+const EVENTS: { event: string; re: RegExp; object?: number | number[]; ok?: (text: string, m: RegExpMatchArray, company?: string | null) => boolean }[] = [
+  { event: 'open', re: new RegExp(String.raw`\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|fourth|fifth|\d+(?:st|nd|rd|th)|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b` + '|' + NOUN_FIRST_OPEN_SRC, 'gi'), object: [1, 2, 3], ok: (text, m, company) => !!m[1] || nounFirstOk(text, m, company) },
   { event: 'launch', re: /\b(?:launched|launching|launches|released|unveiled)\s+(?:(?:a|an|its|their|new|first)\s+)*([a-z][\w-]*)/gi, object: 1 },
   { event: 'expand', re: /\b(?:expanded|expanding|expands|expansion)(?:\s+(?:into|to|in)\s+([a-z][\w-]*))?/gi, object: 1 },
   { event: 'acquire', re: /\b(?:acquired|acquires|acquisitions?|merged|merger)\b/gi },
@@ -164,7 +172,7 @@ function findAtoms(q: string): Atom[] {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
   // 4. Other events.
-  for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
+  for (const e of EVENTS) for (const m of q.matchAll(e.re)) if (!e.ok || e.ok(q, m)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: objectOf(e, m) })
   return atoms.sort((a, b) => a.start - b.start)
 }
 
@@ -379,16 +387,39 @@ export function evaluatePlan(plan: QueryPlan, proofs: Readonly<Record<string, Om
 
 // Whether a text shows the event family (and object, when the request names one) a condition asks for: the same patterns the compiler reads.
 export function eventMatches(event: string | undefined, object: string | undefined, text: string): boolean { return eventMatchIndex(event, object, text) >= 0 }
-// Where in the text the event (and object) first shows, or -1.
-export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number {
-  const e = EVENTS.find(x => x.event === event)
-  if (!e) return -1
-  for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
-    if (!object || !e.object) return m.index ?? 0
-    if ((m[e.object] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return m.index ?? 0
-  }
-  return -1
+// The object an event match names (lower case, singular), from the first of the event's object groups that matched.
+function objectOf(e: { event: string; object?: number | number[] }, m: RegExpMatchArray): string {
+  const groups = e.object === undefined ? [] : Array.isArray(e.object) ? e.object : [e.object]
+  const g = groups.map(i => m[i]).find(x => typeof x === 'string' && x !== '')
+  if (!g) return ''
+  // an opening's premises noun, singular: "offices" -> office, "branches" -> branch (only ch/sh/x/ss + es loses the e).
+  // Every other event keeps main's stem exactly (review on #1130 at 89e021f3): "tomatoes" -> tomato, "services" -> servic.
+  return e.event === 'open' ? g.toLowerCase().replace(/(?:(?<=ch|sh|x|ss)es|s)$/, '') : g.toLowerCase().replace(/(?:es|s)$/, '')
 }
+// The verb-first opening exactly as main read it before #878 (no ordinals, no noun-first forms, and a request for a new
+// "location" met only by "location"): a match here keeps main's reading unchanged (review on #1130 at 77e509ac).
+const MAIN_OPEN = /\b(?:opened|opening|opens|open)\s+(?:(?:a|an|its|their|new|second|third|another|additional)\s+)+(locations?|offices?|clinics?|stores?|branch(?:es)?|sites?|restaurants?|studios?|practices?|warehouses?|factor(?:y|ies)|hq|headquarters|showrooms?|shops?|gyms?|salons?)\b/gi
+export function mainOpenMatches(object: string | undefined, text: string): boolean {
+  for (const m of text.matchAll(new RegExp(MAIN_OPEN.source, 'gi'))) if (!object || (m[1] ?? '').toLowerCase().replace(/(?:es|s)$/, '') === object) return true
+  return false
+}
+// Where in the text the event (and object) first shows ([start, end]), or null.
+// company: the lead, so a noun-first opening is read with the same company-aware allow-list as the sales-hiring gate.
+export function eventMatchSpan(event: string | undefined, object: string | undefined, text: string, company?: string | null): [number, number] | null {
+  const e = EVENTS.find(x => x.event === event)
+  if (!e) return null
+  for (const m of text.matchAll(new RegExp(e.re.source, 'gi'))) {
+    if (e.ok && !e.ok(text, m, company)) continue
+    const span: [number, number] = [m.index ?? 0, (m.index ?? 0) + m[0].length]
+    if (!object || !e.object) return span
+    const got = objectOf(e, m)
+    // a request for a new "location" is met by any new premises (a clinic, an office, a store ...); a named kind needs that kind
+    if (got === object || (object === 'location' && e.event === 'open' && got !== '')) return span
+  }
+  return null
+}
+// Where in the text the event (and object) first shows, or -1.
+export function eventMatchIndex(event: string | undefined, object: string | undefined, text: string): number { return eventMatchSpan(event, object, text)?.[0] ?? -1 }
 
 // ---- The plan as the person sees it, BEFORE the search (#876 / #752) ----
 // A serialisable, human-worded view of the compiled plan: the same tree the gates evaluate, with each condition said in plain words (a completed hire is
