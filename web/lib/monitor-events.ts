@@ -29,7 +29,7 @@ import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from './db/client.ts'
 import { windowStatus } from './scan/window.ts'
 import { eventDayVerified } from './scan/scoreboard.ts'
-import { alertHolderStep, claimAlertStep, lockAlertsStep, migratePlayAlerts, sameEventAs, seedPlayAlertsStep, type AlertKeys } from './play-alerts.ts'
+import { alertHolderStep, alertKindOf, claimAlertStep, HIRING_KINDS, lockAlertsStep, migratePlayAlerts, sameEventAs, seedPlayAlertsStep, type AlertKeys } from './play-alerts.ts'
 
 export function migrateMonitorEvents(db: Database.Database): void {
   db.exec(`
@@ -131,7 +131,7 @@ export const verified = (l: RunLead): boolean => l.review_reason == null && l.co
 // (the grader's list has no order: a posting graded ["expansion", "hiring"] is still a hiring lead).
 export const OTHER_EVENT_KINDS: ReadonlySet<string> = new Set(['raised_funding', 'funding', 'leadership_change', 'product_launch', 'expansion', 'tech_stack_change', 'partnership',
   'rebranding', 'layoffs', 'new_website', 'event_presence', 'customer_win', 'pricing_change', 'integration_launch'])
-export const HIRING_SIGNALS: ReadonlySet<string> = new Set(['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence'])
+export const HIRING_SIGNALS: ReadonlySet<string> = HIRING_KINDS   // one list: the alert record (lib/play-alerts.ts) matches a board-dated lead against the same labels
 // Signals that describe the company's standing, not a dated event of their own: they follow the card's rule.
 export const AMBIENT_SIGNALS: ReadonlySet<string> = new Set(['press_mention', 'community_activity', 'founder_post', 'compliance_driver', 'seasonal_driver', 'accelerator'])
 const gradedHiring = (signals: string | null | undefined): boolean => {
@@ -266,7 +266,7 @@ export function* foldRunEvents(t: Tx, a: { userId: string; monitorId: string; ru
         [randomBytes(12).toString('hex'), a.userId, a.monitorId, a.runId, evKey, d.kind, l.company.slice(0, 150), latency, a.now])
       out.alerts.push({ kind: d.kind, company: l.company, event_key: evKey, latency_s: latency })
       // the company is alerted: no weekly / daily play mails it as new after this (the first holder keeps the row)
-      if (d.kind !== 'now_reachable') yield* claimAlertStep(t, { tenantId: a.userId, keys, playKind: 'monitor', playId: a.monitorId, jobId: job, eventDate: l.event_date, signalKind: l.signal_kind, now: a.now })
+      if (d.kind !== 'now_reachable') yield* claimAlertStep(t, { tenantId: a.userId, keys, playKind: 'monitor', playId: a.monitorId, jobId: job, eventDate: l.event_date, signalKind: alertKindOf(l), now: a.now })
     }
     yield* t.run(`INSERT INTO monitor_cursors (monitor_id, source, last_event_at, last_checked_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (monitor_id, source) DO UPDATE SET last_checked_at = excluded.last_checked_at,
