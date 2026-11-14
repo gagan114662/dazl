@@ -112,7 +112,6 @@ class InstallTest(unittest.TestCase):
         rel = self.root / 'releases' / self.sha / 'session-worker'
         self.assertEqual((self.root / 'staging').resolve(), rel.resolve())
         self.assertEqual((rel / 'src' / 'server.ts').read_bytes(), subprocess.check_output(['git', '-C', str(REPO), 'show', f'{self.sha}:session-worker/src/server.ts']))
-        self.assertFalse((rel / 'test').exists() and not (rel / 'src').exists())
         # the env file: loopback, the port, a 64-hex token; never world-readable; the token is never printed
         envf = (self.etc / 'staging.env').read_text()
         tok = re.search(r'(?m)^ADVANCED_WORKER_TOKEN=([0-9a-f]{64})$', envf).group(1)
@@ -149,6 +148,22 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.etc / 'prod.env').read_text(), first, 'a re-run never rotates the token under a running app')
         self.assertEqual(self.get('/health')[0], 200)
+
+    def test_the_apps_existing_token_is_reused(self):
+        appenv = self.tmp / 'app.env'
+        appenv.write_text("DATABASE=x\nADVANCED_WORKER_TOKEN='Abc123_existing-app-token'\nOTHER=y\n")
+        r = self.install('staging', str(REPO), self.sha, '--token-from', str(appenv))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('ADVANCED_WORKER_TOKEN=Abc123_existing-app-token\n', (self.etc / 'staging.env').read_text())
+        self.assertEqual(self.get('/fetch', token='Abc123_existing-app-token', body=b'{"platform":"facebook","query":"q","session":"ssssssssssssssssssss"}')[0], 200)
+        self.assertNotIn('DATABASE', (self.etc / 'staging.env').read_text(), 'nothing else is copied from the app env')
+        # an app env without a usable token is refused before anything is written
+        shutil.rmtree(self.etc)
+        appenv.write_text('ADVANCED_WORKER_TOKEN=\n')
+        r = self.install('staging', str(REPO), self.sha, '--token-from', str(appenv))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('no usable ADVANCED_WORKER_TOKEN', r.stderr)
+        self.assertFalse((self.etc / 'staging.env').exists())
 
     def test_refusals_change_nothing(self):
         for args, why in [(('dev', str(REPO), self.sha), 'usage'), (('staging', str(REPO), self.sha[:12]), '40-character'),

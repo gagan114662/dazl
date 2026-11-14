@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Install or update the dazl session worker for one environment (#1037, F-go step 1). Run as root on the box:
 #
-#   install.sh <staging|prod> <repo checkout> <commit sha>
+#   install.sh <staging|prod> <repo checkout> <commit sha> [--token-from <the app's env file>]
 #
 # 1. a system user `dazl-session` (no home, no shell) when it does not exist;
 # 2. session-worker/ at exactly <commit>, by `git archive` from the checkout, into /opt/dazl-session-worker/releases/<commit>
 #    (root-owned, read-only to the worker), and the instance's symlink /opt/dazl-session-worker/<env> pointed at it;
 # 3. the instance's env file /etc/dazl-session-worker/<env>.env when it does not exist: PORT (staging 8788, prod 8787),
-#    HOST=127.0.0.1 and a new random ADVANCED_WORKER_TOKEN, mode 0640 root:dazl-session. An existing file is kept as it is,
+#    HOST=127.0.0.1 and ADVANCED_WORKER_TOKEN: the app's own value when --token-from names the app's env file (so the app needs
+#    no new token), else a new random one; mode 0640 root:dazl-session. An existing file is kept as it is,
 #    so re-running never rotates the token under a running app;
 # 4. the unit template, then `systemctl enable` + `restart` of dazl-session-worker@<env>, and a health check on 127.0.0.1;
 # 5. /etc/dazl-session-worker/<env>.app-env (mode 0600 root): the two lines the APP's env needs (ADVANCED_WORKER_URL and the
@@ -16,7 +17,8 @@
 # Nothing here touches the app, its env file, its database or Caddy. Every path can be moved for tests (SW_* variables below).
 set -euo pipefail
 
-ENV_NAME=${1:-}; REPO=${2:-}; SHA=${3:-}
+ENV_NAME=${1:-}; REPO=${2:-}; SHA=${3:-}; TOKEN_FROM=
+if [ "${4:-}" = --token-from ]; then TOKEN_FROM=${5:-}; [ -n "$TOKEN_FROM" ] || { echo "install.sh: --token-from needs a file" >&2; exit 1; }; elif [ -n "${4:-}" ]; then echo "install.sh: unknown argument ${4}" >&2; exit 1; fi
 ROOT=${SW_ROOT:-/opt/dazl-session-worker}
 ETC=${SW_ETC:-/etc/dazl-session-worker}
 UNIT_DIR=${SW_UNIT_DIR:-/etc/systemd/system}
@@ -55,7 +57,13 @@ mkdir -p "$ETC"; chmod 0755 "$ETC"
 ENVF=$ETC/$ENV_NAME.env
 if [ ! -f "$ENVF" ]; then
   umask 077
-  tok=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+  if [ -n "$TOKEN_FROM" ]; then
+    # one KEY=value line, read as data (never sourced); surrounding single or double quotes are dropped
+    tok=$(sed -n 's/^ADVANCED_WORKER_TOKEN=//p' "$TOKEN_FROM" 2>/dev/null | tail -1 | sed -e "s/^'\(.*\)'\$/\1/" -e 's/^"\(.*\)"$/\1/')
+    [[ $tok =~ ^[A-Za-z0-9._~+/=-]{16,512}$ ]] || fail "$TOKEN_FROM has no usable ADVANCED_WORKER_TOKEN (16+ characters, no spaces or quotes)"
+  else
+    tok=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+  fi
   printf 'PORT=%s\nHOST=127.0.0.1\nADVANCED_WORKER_TOKEN=%s\n' "$PORT" "$tok" > "$ENVF.tmp"
   mv -T "$ENVF.tmp" "$ENVF"
   unset tok
