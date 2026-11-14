@@ -200,7 +200,7 @@ test('#1095 live check: a bare US city of a US profile resolves to its most popu
   assert.equal(profilePlaceText('Austin', 'GB'), null)
   for (const w of ['Fintech', 'Greater Austin', 'San Francisco Bay Area', 'Remote', 'Austin and Dallas', 'austin']) assert.equal(profilePlaceText(w, 'US'), null, w)
   // entries that already resolve are unchanged, with or without a country
-  assert.deepEqual(['Austin, TX', 'Austin, Texas', 'Texas', 'London'].map(w => profilePlaceText(w, undefined)), ['Austin, TX', 'Austin, TX', 'Texas', 'London'])
+  assert.deepEqual(['Austin, TX', 'Austin, Texas', 'Texas', 'London'].map(w => profilePlaceText(w, undefined)), ['Austin, TX', 'Austin, Texas', 'Texas', 'London'], 'an entry placeIn already reads is kept as written')
   assert.equal(bareUsCity('Austin')?.abbr, 'TX')
   // the text it returns is one placeIn resolves, so the request the board source reads names the place
   assert.equal(placeIn(`${REQUEST} in ${profilePlaceText('Austin', 'US')}`)?.name, 'Austin, TX')
@@ -227,4 +227,21 @@ test('#1095 live check: two profile entries naming the same place are one place;
   const x = await runFixture(f2)
   assert.equal((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status, 'skipped_no_place')
   assert.ok(!two.seen.some(u => u.includes('greenhouse')))
+})
+
+// Review at ca63ac3a (Hermes-PC): a profile place "<City>, <non-US country>" lost the board source ("Toronto, Canada" named the place "Toronto", which placeIn does not read alone).
+// The shapes are the repo's own fixtures'; with a profile naming no state, the source must still run for them.
+test('#1095 review: a profile place "<City>, <Country>" keeps the board source as written (8 shapes lost it), and the text appended is the entry itself', async () => {
+  for (const [w, c] of [['Toronto, Canada', 'CA'], ['Manchester, UK', 'GB'], ['Leeds, UK', 'GB'], ['Bristol, UK', 'GB'], ['Berlin, Germany', 'DE'], ['Dubai, UAE', 'AE'], ['Gurugram, India', 'IN'], ['Ciudad de México, México', 'MX']] as const) {
+    assert.equal(profilePlaceText(w, c), w, w)
+    assert.ok(placeIn(`${REQUEST} in ${profilePlaceText(w, c)}`), `${w}: the request the board source reads names the place`)
+  }
+  for (const [w, c] of [['Toronto, Canada', 'CA'], ['Manchester, UK', 'GB']] as const) {
+    const { http, seen } = boards()
+    const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: [w], country: c }
+    const x = await runFixture(f)
+    const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
+    assert.ok(run && run.status !== 'skipped_no_place', `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
+    assert.ok(seen.some(u => u.includes('greenhouse')), `${w}: boards were read`)
+  }
 })

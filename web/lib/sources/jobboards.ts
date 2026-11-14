@@ -141,12 +141,16 @@ export function bareUsCity(name: string): { city: string; abbr: string } | null 
 }
 // The place text a profile's `where` entry names for the board source, or null: what placeIn reads from "in <entry>", else (a US profile only)
 // a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
-export function profilePlaceText(where: string, country?: string | null): string | null {
-  const direct = placeIn(`in ${where}`); if (direct) return direct.name
+// `text` is what is appended to the request (an entry placeIn already reads is appended AS WRITTEN: a Place's name is not always readable back, "Toronto, Canada" names
+// the place "Toronto", which placeIn does not resolve alone: review at ca63ac3a, 8 non-US shapes lost the board source); `name` is the place's identity, the de-dupe key.
+export function profilePlace(where: string, country?: string | null): { text: string; name: string } | null {
+  const direct = placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
   if (!/^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
   const b = bareUsCity(where); if (!b) return null
-  return placeIn(`in ${b.city}, ${b.abbr}`)?.name ?? null
+  const text = `${b.city}, ${b.abbr}`, p = placeIn(`in ${text}`)
+  return p ? { text, name: p.name } : null
 }
+export const profilePlaceText = (where: string, country?: string | null): string | null => profilePlace(where, country)?.text ?? null
 // A profile listing a city AND its state ("Austin", "Texas") names one place: the state entry is absorbed by the city entry of that state.
 export function absorbStates(places: string[]): string[] {
   return places.filter(p => { const abbr = Object.keys(STATES).find(a => STATES[a] === p); return !(abbr && places.some(q => q !== p && q.endsWith(`, ${abbr}`))) })
