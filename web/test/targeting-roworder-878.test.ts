@@ -14,7 +14,7 @@ const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, 
 const NEWS = 'https://news.example/brightloop-seed'
 const lead = (quote: string, date: string | null, url = NEWS): ProofLead => ({ company: 'Brightloop', company_domain: 'brightloop.example', evidence_excerpt: quote, signal: null, source_url: url, event_date: date })
 const RAISE = 'Brightloop raised a 3m seed round led by Example Ventures.'
-const posting = (id: string, date: string, url = `https://boards.example/brightloop/${id}`): ProofRow => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR ${id} - posted`, source_url: url, source_date: date })
+const posting = (id: string, date: string, url = `https://boards.example/brightloop/${id}`): ProofRow => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR - Outbound ${id} - posted ${date}`, source_url: url, source_date: date })   // the stored shape of a dated posting row (signals/ats-gtm.ts postingEvidence)
 // every ordering of a small list
 const perms = <T>(xs: T[]): T[][] => xs.length <= 1 ? [xs] : xs.flatMap((x, i) => perms([...xs.slice(0, i), ...xs.slice(i + 1)]).map(r => [x, ...r]))
 

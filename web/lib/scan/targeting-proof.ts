@@ -8,6 +8,7 @@ import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedS
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
+import { requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
@@ -137,16 +138,70 @@ export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], 
 // Newest posting first; ties broken on URL then text, so the proof (and the date it records) is the same whatever order the rows came in.
 const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a.source_date) || a.source_url.localeCompare(b.source_url) || a.value.localeCompare(b.value)
 
+// #879: what a stored job-board row can prove. The scan stores several shapes under kind 'hiring' / 'hiring-role' and only two of them are a
+// dated posting of this company:
+//   - a posting row: "<title> - posted <date>" (signals/ats-gtm.ts postingEvidence; the careers check's "Open [sales ]role on its careers
+//     page: <title> - posted <date>"), whose row date IS that posting date;
+//   - the dated summary "<n>+ sales/GTM roles posted, newest <date>", which names no single title.
+// Everything else proves nothing about a hiring condition, whatever date the row carries: a listing-audit row (kind 'hiring-role': "title
+// listed on the board; its posting date was not read", or a long-open posting; its row date is the day the board was READ), an open-role
+// count ("139 open roles": any roles, row date = read date), a careers vacancy with no posting date, and any row marked "Unconfirmed: "
+// (the board was found by company name; it is not established as this company's).
+const UNCONFIRMED = /^Unconfirmed: /
+const POSTED = /^(?:Open (?:sales )?role on its careers page: )?(.*\S)\s+- posted (\d{4}-\d{2}-\d{2})$/
+const GTM_SUMMARY = /^\d+\+? sales\/GTM roles? posted, newest (\d{4}-\d{2}-\d{2})$/
+type Posting = { title: string | null; date: string; row: ProofRow }
+type NotPosting = { why: 'unconfirmed' | 'audit' | 'undated'; title: string | null; row: ProofRow }
+const bareTitle = (v: string) => v.replace(UNCONFIRMED, '').replace(/^Open (?:sales )?role on its careers page: /, '').replace(/\s+- posted \d{4}-\d{2}-\d{2}$/, '').trim()
+function readPosting(r: ProofRow): Posting | NotPosting {
+  if (UNCONFIRMED.test(r.value)) return { why: 'unconfirmed', title: bareTitle(r.value) || null, row: r }
+  if (r.kind !== 'hiring') return { why: 'audit', title: bareTitle(r.value) || null, row: r }
+  const p = POSTED.exec(r.value)
+  if (p && p[2] === r.source_date && isDate(p[2])) return { title: p[1].trim(), date: p[2], row: r }
+  const g = GTM_SUMMARY.exec(r.value)
+  if (g && g[1] === r.source_date && isDate(g[1])) return { title: null, date: g[1], row: r }
+  return { why: 'undated', title: null, row: r }
+}
+// The role a hiring condition asks for, read by the matcher the sales-hiring gate uses (hiring-role-match.ts): a named title must be the
+// posting's title (CRM administrator is not Account Executive); a condition that names no title, or only "sales", takes any sales / GTM title.
+function roleFits(c: Condition): (title: string | null) => boolean {
+  const named = c.role ? requestedHiringRoles(`hiring ${c.role}`) : []
+  if (named.length) return t => !!t && !!matchedHiringRole(t, named)
+  if (c.role && !isGtmRole(c.role)) return () => false   // a role the matcher cannot read is never proven by a row
+  return t => t === null || isGtmRole(t)                 // t === null: the dated sales/GTM summary
+}
+const HIRING_ROW = (r: ProofRow) => (r.kind === 'hiring' || r.kind === 'hiring-role') && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string'
+const link = (u: string) => /^https?:/.test(u) ? { source_url: u } : {}
+
 // The candidate proofs of a condition, best first. Only hiring can have more than one: every posting inside its now-clock, then the
 // lead's own quote when that passes too. Every other kind has exactly one. Without a relative clock the first candidate is the proof.
 function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
   if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
   const now = ctx.now ?? Date.now()
-  const gtm = !c.role || isGtmRole(c.role)
-  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
-    .sort(postingOrder)
-    .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
-  const rest = ownProof(c, lead, [], ctx)
+  const fits = roleFits(c)
+  const read = rows.filter(HIRING_ROW).sort(postingOrder).map(readPosting)
+  const dated = read.filter((x): x is Posting => !('why' in x))
+  const postings = dated.filter(x => fits(x.title) && onClock(x.date, clockOf(c), now) === 'in')
+    .map((x): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${x.row.value}), ${x.date}`, ...link(x.row.source_url), date: x.date }))
+  let rest = ownProof(c, lead, [], ctx)
+  // A pass that rests on the gate's record names the page that record rests on, when the scan stored one (a confirmed posting or careers row for the role).
+  if (rest.truth === 'pass' && !rest.source_url) {
+    // Only a page the gate could have passed on: a posting inside the gate's own window, or the careers check's vacancy with no posting date.
+    const gateDays = parseWindowDays(ctx.query ?? '') ?? 90
+    const page = read.find(x => x.row.kind === 'hiring' && ('why' in x ? x.why === 'undated' : onClock(x.date, gateDays, now) === 'in') && fits(x.title ?? (bareTitle(x.row.value) || null)) && /^https?:/.test(x.row.source_url))
+    if (page) rest = { ...rest, reason: `${rest.reason}; read on ${page.row.source_url}`, source_url: page.row.source_url }
+  }
+  // Nothing proves it: say what the stored rows DO show and why that is not this condition, with the row it was read on.
+  if (rest.truth !== 'pass' && !postings.length && read.length) {
+    const role = c.role || 'a sales role'
+    const other = dated.find(x => x.title !== null && !fits(x.title)) ?? dated.find(x => !fits(x.title)), late = dated.find(x => fits(x.title)), unc = read.find((x): x is NotPosting => 'why' in x && x.why === 'unconfirmed' && fits(x.title)), audit = read.find((x): x is NotPosting => 'why' in x && x.why === 'audit' && fits(x.title))
+    const near = late ? { row: late.row, why: late.title === null ? `the dated summary of its sales / GTM postings (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` : `the posting for this role (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` }
+      : unc ? { row: unc.row, why: `a board lists ${unc.title ?? role}, but that board is not established as this company's` }
+      : audit ? { row: audit.row, why: `the board lists ${audit.title ?? role}, but its posting date was not read` }
+      : other ? { row: other.row, why: other.title !== null ? `the dated postings stored for this company are for other roles (${other.title}), not ${role}` : `only a dated summary of its sales / GTM postings is stored (${other.row.value}), which names no single posting for ${role}` }
+      : (() => { const u = read.find((x): x is NotPosting => 'why' in x && x.why === 'undated'); return u ? { row: u.row, why: `its board was read (${u.row.value.slice(0, 80)}), but no posting for this role with its own posting date is stored` } : null })()
+    if (near) rest = { truth: 'unknown', reason: `no dated posting shows this company hiring ${role}: ${near.why}`.slice(0, 300), ...link(near.row.source_url), ...(late ? { date: late.date } : {}) }
+  }
   return postings.length && rest.truth !== 'pass' ? postings : [...postings, rest]
 }
 
