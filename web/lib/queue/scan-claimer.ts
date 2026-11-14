@@ -9,6 +9,8 @@
 //            queue is shared but the scan rows are still per instance; the runner's storage port (next step) makes it
 //            getDb() too. The claim rules do not change between the two.
 // One kick:
+//   0. Park: a pending scan that still holds a reserved paid call is never started (parkPendingReservedJobs); the
+//      reap below ends it accounting_uncertain.
 //   1. Reap: a running scan stale past the lease (its worker died) goes back to pending, or, at the attempt cap
 //      (MAX_ATTEMPTS), fails as 'timeout': the legacy reaper's own statement (reapStaleJobs), so a scan is never run a
 //      fourth time on either path.
@@ -16,6 +18,7 @@
 //      has a saved key, or the scan is trial-funded) gets a queue item with the scan's id. Idempotent; a terminal item
 //      for a scan that is pending again is retired and re-enqueued (a new scheduling epoch; scan_jobs.attempts keeps
 //      counting).
+//   2b. A live scan keeps its claim (renewScanLeases): its row's renewed claim time is copied to its queue item.
 //   3. While this instance has a free run slot: claim one item (round-robin across tenants, at most
 //      SCAN_PER_TENANT_MAX of one tenant's scans claimed at once across every instance), then bind the scan row with the runner's own guard
 //      (pending -> running, attempts + 1). A row that is already finished, cancelled or failed completes the item
@@ -25,7 +28,10 @@
 import type { Db } from '../db/client.ts'
 import { captureError } from '../ops/errors.ts'
 import { MAX_ATTEMPTS, STALE_RUNNING_S } from '../scan/store.ts'
+import { parkPendingReservedJobs } from '../scan/store-db.ts'
 import { DbQueue } from './db.ts'
+import { instanceId } from '../ops/instance.ts'
+import { isStaging } from '../staging.ts'
 
 // Off unless DAZL_SCAN_SHARED_QUEUE is exactly 1. Any other set value (a typo, ' 1', 'true') stays off, today's
 // in-process claimer, and is reported once so the operator sees the flag did not take.
@@ -53,6 +59,21 @@ export function scanPerTenantLimit(env: Record<string, string | undefined> = pro
   return Number(raw.trim())
 }
 
+// TEST-ONLY, staging only (#836): a pause between a scan's claim and its run. Read only with DAZL_ENV=staging AND
+// DAZL_STAGING_SCAN_HOLD_MS set to 1..120000; production never reads it, and any other value is no pause. During the
+// pause the scan is running under this instance's claim and has made no paid request, so restarting the instance in
+// that window shows the restart path whole: the exit hook hands the scan and its claim back and the other worker runs
+// it (attempt 2). Without the pause a restart usually lands inside a paid request, where the scan is deliberately not
+// re-run (accounting_uncertain after the lease: lib/scan/store.ts reapStaleJobs), so that path could not be shown on
+// demand. Nothing else changes: the same claim, bind, run and settle.
+export function stagingScanHoldMs(env: Record<string, string | undefined> = process.env): number {
+  if (!isStaging(env)) return 0
+  const raw = env.DAZL_STAGING_SCAN_HOLD_MS?.trim()
+  if (!raw || !/^\d{1,6}$/.test(raw)) return 0
+  const n = Number(raw)
+  return n >= 1 && n <= 120_000 ? n : 0
+}
+
 // The row claimKeyedJob returns, column for column.
 const JOB_COLUMNS = 'id, user_id, business_name, industry, location, attempts, query, icp, sources, funded_by, watch_id, csv_domain, run_budget, spend_reserved_usd'
 export interface ClaimedScan { id: string; user_id: string; attempts: number }
@@ -70,22 +91,55 @@ export interface SharedScanDeps<J extends ClaimedScan> {
   // per-tenant claim limit; default scanPerTenantLimit()
   perTenantInFlight?: number
   now?: () => number
+  // This instance, recorded on every claim it takes (work_queue.claimed_by and claim_log); default instanceId(), the
+  // id /api/health reports. log: one line per claim and per settle; default the process log (the service journal).
+  owner?: string
+  log?: (line: string) => void
+  // the staging-only pause before a claimed scan runs; default stagingScanHoldMs() (0 outside staging)
+  holdMs?: number
 }
 
 import { settleReapedTrial } from '../billing/trial-reap.ts'
 const nowS = () => Math.floor(Date.now() / 1000)
 
-// The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter.
+// The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter. As there, a
+// reserved paid call of ANY attempt ends the scan accounting_uncertain: an earlier attempt's unsettled call may have been
+// billed just the same, and a scan parked for one (parkPendingReservedJobs) must end here, not bounce back to pending.
 export async function reapStaleScans(domain: Db, leaseSeconds: number, now: number): Promise<number> {
   const changes = (await domain.run(
-    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
-       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
-       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.attempt = scan_jobs.attempts AND c.status = 'reserved') OR attempts >= ? THEN ? ELSE finished_at END,
+    `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
+       error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,
+       finished_at = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN ? ELSE finished_at END,
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
     [MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, now, now - leaseSeconds])).changes
   if (changes > 0) await settleReapedTrial(domain, now)
   return changes
+}
+
+// A live scan keeps its queue claim. The scan row's claim time is renewed by every paid call (lib/scan/spend-cap.ts);
+// the queue item's lease was written once, at the claim. Without this, a scan running past the lease lost its queue
+// claim while still alive: the other process kept claiming and releasing the item until it dead-lettered, and the
+// tenant's claimed count dropped during a live run. Each kick copies the scan row's newer claim time onto its claimed
+// item (compare-and-set on the old lease, so a claim that changed meanwhile is untouched). A scan whose worker died
+// stops renewing its row, so its item's lease still runs out. At most one read and one write per claimed scan.
+export async function renewScanLeases(queue: Db, domain: Db, leaseSeconds: number): Promise<number> {
+  const claimed = await queue.all<{ id: string; tenant_id: string; lease_expires_at: number | null }>(
+    "SELECT id, tenant_id, lease_expires_at FROM work_queue WHERE status = 'claimed' AND kind = 'scan'")
+  let n = 0
+  for (const c of claimed) {
+    // Only a RUNNING scan's lease is renewed, and nothing else is done to a claim here. In particular a claim whose
+    // scan row has ended or gone back to pending is not closed or released by a kick: from outside, a row a stopping
+    // instance ended looks the same as one the runner itself marked accounting_uncertain while its run carries on
+    // (post-finish work), and releasing that claim would give the account a second scan under a live run. A stopping
+    // instance releases its own claims itself (requeueInFlightForShutdown) when the queue is on its handle; with the
+    // queue elsewhere (Postgres) such a claim waits for its lease.
+    const row = await domain.get<{ claimed_at: number | null }>("SELECT claimed_at FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'running'", [c.id, c.tenant_id])
+    const until = row?.claimed_at == null ? null : Number(row.claimed_at) + leaseSeconds
+    if (until === null || c.lease_expires_at === null || until <= Number(c.lease_expires_at)) continue
+    n += (await queue.run("UPDATE work_queue SET lease_expires_at = ? WHERE id = ? AND status = 'claimed' AND lease_expires_at = ?", [until, c.id, c.lease_expires_at])).changes
+  }
+  return n
 }
 
 export async function mirrorScans(domain: Db, q: DbQueue, now: number): Promise<number> {
@@ -116,38 +170,60 @@ export async function kickSharedScanQueue<J extends ClaimedScan>(d: SharedScanDe
   const clock = d.now ?? nowS
   const q = new DbQueue(d.queue)
   const perTenant = d.perTenantInFlight ?? scanPerTenantLimit()
+  const owner = d.owner ?? instanceId()
+  const log = d.log ?? ((line: string) => console.log(line))
+  // A pending scan that still holds a reserved paid call (data from before #594) is never started: parked and ended
+  // accounting_uncertain by the reap below, exactly as the in-process claimer does (lib/scan/store-db.ts).
+  await parkPendingReservedJobs(d.domain)
   await reapStaleScans(d.domain, lease, clock())
   await mirrorScans(d.domain, q, clock())
+  await renewScanLeases(d.queue, d.domain, lease)
   while (d.slots.available()) {
     // Fair service (#355). Round-robin: a free slot goes to the tenant served longest ago. Per-tenant limit: a tenant
     // with perTenant scans claimed gets no more until one settles, so one tenant's backlog or slow provider cannot hold
     // every slot while another tenant's scan waits. The scan lane: only scan claims count against these caps, so
     // runtime-worker items (lib/workers) never take a scan's place, nor scans theirs. No global cap beyond this
     // instance's run slots.
-    const claim = await q.claim({ kinds: ['scan'], lane: true, leaseSeconds: lease, now: clock(), perTenantInFlight: perTenant, maxInFlight: 1_000_000, order: 'round_robin' })
+    const claim = await q.claim({ kinds: ['scan'], lane: true, leaseSeconds: lease, now: clock(), perTenantInFlight: perTenant, maxInFlight: 1_000_000, order: 'round_robin', owner })
     if (!claim) return
     // The bind is scoped to the item's tenant as well as its id: an item whose tenant is not the scan's owner (a
     // corrupted or hand-made row) binds nothing and completes, so the per-tenant limit is never charged to the wrong
     // tenant and the scan is re-mirrored under its owner on the next kick.
     const job = await d.domain.get<J>(
       `UPDATE scan_jobs SET status = 'running', attempts = attempts + 1, claimed_at = ?
-       WHERE id = ? AND user_id = ? AND status = 'pending' RETURNING ${JOB_COLUMNS}`,
+       WHERE id = ? AND user_id = ? AND status = 'pending'
+         AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')
+       RETURNING ${JOB_COLUMNS}`,
       [clock(), claim.item.id, claim.item.tenantId])
     if (!job) {
       const row = await d.domain.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ? AND user_id = ?', [claim.item.id, claim.item.tenantId])
-      if (!row || (row.status !== 'pending' && row.status !== 'running')) await q.complete(claim.token) // finished or cancelled: nothing to run
-      else await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
+      // No scan was started under this claim; the journal says why, so a queue item that ends without a "claimed" line is
+      // explained: the scan already ended (its own row has the outcome), or another attempt still holds it.
+      if (!row || (row.status !== 'pending' && row.status !== 'running')) {
+        await q.complete(claim.token) // finished or cancelled: nothing to run
+        log(`[shared-queue] nothing to run scan=${claim.item.id} token=${claim.token} scan_status=${row?.status ?? 'missing'} instance=${owner}`)
+      } else {
+        await q.fail(claim.token, { retryable: true, error: 'domain_row_not_bindable' }) // a live attempt holds it
+        log(`[shared-queue] not taken scan=${claim.item.id} token=${claim.token} scan_status=${row.status} instance=${owner} (${row.status === 'running' ? 'another attempt holds it' : 'the scan changed between the claim and the bind'}; retried later)`)
+      }
       continue
     }
     const bound = { ...job, attempts: Number(job.attempts) } as J
     d.slots.acquire()
     const token = claim.token
+    // The journal's side of the claim record (#836): scan id, the scan's attempt, the fencing token and this instance.
+    // No tenant id and nothing of the scan's content.
+    log(`[shared-queue] claimed scan=${bound.id} attempt=${bound.attempts} token=${token} instance=${owner}`)
     const untrack = d.track?.(bound, token)
-    void d.run(bound)
+    const hold = d.holdMs ?? stagingScanHoldMs()
+    if (hold > 0) log(`[shared-queue] staging hold scan=${bound.id} attempt=${bound.attempts} ms=${hold} instance=${owner} (test-only: no paid request until it ends)`)
+    void (hold > 0 ? new Promise<void>(r => setTimeout(r, hold)).then(() => d.run(bound)) : d.run(bound))
       .catch(e => { d.onCrash(bound, e); return 'failed' as const })
       .then(async outcome => {
-        if (outcome === 'done') await q.complete(token)
-        else await q.fail(token, { retryable: outcome === 'retry', error: outcome === 'retry' ? 'executor_retry' : 'executor_failed' })
+        // applied=false: the token no longer owned the item (handed back, reaped or re-claimed), so nothing changed
+        const applied = outcome === 'done' ? await q.complete(token)
+          : (await q.fail(token, { retryable: outcome === 'retry', error: outcome === 'retry' ? 'executor_retry' : 'executor_failed' })) !== 'stale'
+        log(`[shared-queue] settled scan=${bound.id} attempt=${bound.attempts} token=${token} outcome=${outcome} applied=${applied} instance=${owner}`)
       })
       .catch(e => { captureError(e, { source: 'worker', where: 'shared-queue:settle', tenantId: bound.user_id, ref: bound.id }) })
       .finally(() => { untrack?.(); d.slots.release() })

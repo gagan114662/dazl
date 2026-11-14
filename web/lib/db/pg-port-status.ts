@@ -132,6 +132,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/trial.ts': 0,
   'lib/scan/tech-fixture.ts': 0,
   'lib/scan/verification-fixture.ts': 0,
+  'lib/scan/worker.ts': 0,
   'lib/scan/work-email-fixture.ts': 0,
   'lib/search/news-attribution.ts': 1,
   'lib/search/trace.ts': 1,

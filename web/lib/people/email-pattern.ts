@@ -145,7 +145,7 @@ function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean
   // Known limits, stated rather than guessed at: a preceding name word cannot be told from a label ("Tom Maya Thornton" reads like
   // "Contact Maya Thornton"), and a firm word not on the list below ("Maya Thornton Staffing") is not recognised. Up to 12 places per
   // page are read (72 per site); a page that prints the address more often than that before another person's card is not fully seen.
-  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?! +(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?!\\s+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
   let found = false
   const rest = raw.replace(own, () => { found = true; return ' | ' })
   return { rest: nameWords(rest), found }

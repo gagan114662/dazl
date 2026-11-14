@@ -43,6 +43,15 @@ test('#1173 row 6: firm words "Mortgage" / "Financial" after the name are not he
   assert.equal(pub('<p>Ask Maya Thornton Mortgage staff: maya@x.com</p>'), null)
   assert.equal(pub('<p>Maya Thornton Financial: maya@x.com</p>'), null)
 })
+test('#1173 row 6 (review 166faa9a): the firm word is refused through every kind of HTML whitespace, in an attribute value and in <pre>, incl. a word main already had', () => {
+  for (const w of ['Mortgage', 'Financial', 'Realty']) for (const sep of [' ', '\t', '\n', '\r\n', '\u00a0', '  ', ' \t ']) {
+    assert.equal(pub(`<div data-s="Maya Thornton${sep}${w}: maya@x.com"></div>`), null, `data attribute, ${JSON.stringify(sep)} + ${w}`)
+    assert.equal(pub(`<pre>Maya Thornton${sep}${w}: maya@x.com</pre>`), null, `<pre>, ${JSON.stringify(sep)} + ${w}`)
+  }
+  // controls: her own address in the same shapes still publishes
+  assert.equal(pub('<div data-s="Maya Thornton\t maya@x.com"></div>'), 'maya@x.com')
+  assert.equal(pub('<p>Maya Thornton, Broker/Owner: maya@x.com</p>'), 'maya@x.com')
+})
 test('#1173 review: an ordinary agent card (own data record + photo + profile link + mailto) still publishes; URL slugs and file names are not a second person', () => {
   const cardHtml = (first: string, last: string) => `<div class="team-member__container" data-search-string="${first} ${last} ${first.toLowerCase()}@x.com" data-tags="[]" > <a class="team-member__link" href="/agent/${first.toLowerCase()}-${last.toLowerCase()}"> <div class="team-member__image"><img src="/wp-content/uploads/${first.toLowerCase()}-${last.toLowerCase()}-headshot.jpg" alt="${first} ${last}"></div> <span class="team-member__name">${first} ${last}</span> <a href="mailto:${first.toLowerCase()}@x.com">Email</a></a></div>`
   assert.equal(pub(cardHtml('Maya', 'Thornton')), 'maya@x.com')
