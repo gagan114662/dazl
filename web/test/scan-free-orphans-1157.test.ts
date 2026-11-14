@@ -113,3 +113,114 @@ bothEngines('#1157 a scan whose process died is reaped just past the window and 
   assert.deepEqual(await row(db, inside), { status: 'running', error: null })
   assert.deepEqual(await row(db, past), { status: 'pending', error: null })
 })
+
+// ---- review round 1 -------------------------------------------------------------------------------------------------------
+import { migrateScanSpendCap, runWithScanSpend, scanCapConfig, scanSpendCalls, spendAttemptUncertain } from '../lib/scan/spend-cap.ts'
+import { migrateKeys } from '../lib/llm/key-store.ts'
+import { kickQueueRunner, type ScanExecutor } from '../lib/scan/queue-runner.ts'
+import { migrateTinyfish, tfSearch, resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { createJob as createJobSync, createQueryJob } from '../lib/scan/store.ts'
+const MARKED: Call = { kind: 'tinyfish.search', reserve: 0 } // + reason 'maybe_billed': a free call the live attempt flagged (a 402)
+
+test('#1157 a free call answered 402 leaves a DURABLE maybe-billed mark, so a later reaper does not settle it as free', async () => {
+  resetTinyfishState()
+  const db = new Database(':memory:'); migrateScan(db); migrateTinyfish(db)
+  const id = createQueryJob(db, 'A', { query: 'free 402' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = 1 WHERE id = ?").run(id)
+  const f = (async () => new Response('{}', { status: 402 })) as unknown as typeof fetch
+  const uncertain = await runWithScanSpend({ db, jobId: id, tenantId: 'A', attempt: 1, cap: scanCapConfig({}), accountLimits: null, clock: () => T0 }, async () => { await tfSearch(db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
+  assert.equal(uncertain, true)
+  const calls = await scanSpendCalls(db, id, 'A')
+  assert.deepEqual(calls.map(c => [c.kind, c.status, c.reserve_usd]), [['tinyfish.search', 'reserved', 0]])
+  assert.equal((db.prepare('SELECT reason FROM scan_spend_calls WHERE scan_job_id = ?').get(id) as { reason: string | null }).reason, 'maybe_billed')
+  // the process dies here; the reaper finds the scan stale: it must end closed, not be re-queued
+  db.prepare('UPDATE scan_jobs SET claimed_at = 1 WHERE id = ?').run(id)
+  Legacy.reapStaleRunningJobs(db)
+  assert.deepEqual(db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id), { status: 'failed', error: 'accounting_uncertain' })
+})
+
+bothEngines('#1157 a free row marked maybe_billed stays reserved and ends the scan closed in the Db reaper and the queue-mode reaper', async ({ db }) => {
+  await seedUsers(db)
+  const mark = async (id: string) => db.run("UPDATE scan_spend_calls SET reason = 'maybe_billed' WHERE scan_job_id = ?", [id])
+  const a = await stale(db, A, 1, [MARKED]); await mark(a)
+  await S.reapStaleJobs(db, T0 + 10 * 3600)
+  assert.deepEqual(await row(db, a), { status: 'failed', error: 'accounting_uncertain' })
+  assert.equal((await spend(db, a))[0].status, 'reserved')
+  const c = await stale(db, A, 1, [MARKED]); await mark(c)
+  await reapStaleScans(db, 60, T0 + 3600)
+  assert.deepEqual(await row(db, c), { status: 'failed', error: 'accounting_uncertain' })
+})
+
+test('#1157 shutdown hand-back: a free row marked maybe_billed still ends the scan closed', () => {
+  const h = new Database(':memory:'); migrateScan(h); const now = Math.floor(Date.now() / 1000)
+  h.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts, claimed_at, created_at) VALUES ('m', ?, 'Biz', 'manufacturing', 'Bangalore', 'running', 1, ?, ?)").run(A, now, T0)
+  h.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, reason, created_at) VALUES ('m-c', ?, 'm', 1, 'tinyfish.search', 0, 'reserved', 'maybe_billed', ?)").run(A, T0)
+  const untrack = trackInFlight({ id: 'm', user_id: A, attempts: 1 } as never)
+  requeueInFlightForShutdown(h); untrack()
+  assert.deepEqual(h.prepare("SELECT status, error FROM scan_jobs WHERE id = 'm'").get(), { status: 'failed', error: 'accounting_uncertain' })
+})
+
+// the SQLite queue runner binds a stale running scan itself (it never calls the reaper): SETTLE_FREE_ORPHANS_BIND_SQL
+function queueSetup() {
+  const db = new Database(':memory:'); migrateScan(db); migrateScanSpendCap(db); migrateKeys(db)
+  const id = createJobSync(db, 'A', { business_name: 'Biz', industry: 'manufacturing', location: 'Bangalore' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ?, funded_by = 'trial' WHERE id = ?").run(Math.floor(Date.now() / 1000) - 100000, id)
+  const call = (job: string, tenant: string, kind: string, usd: number, reason: string | null = null) => db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, reason, created_at) VALUES (?, ?, ?, 1, ?, ?, 'reserved', ?, 1)").run(`${job}-${kind}-${usd}`, tenant, job, kind, usd, reason)
+  return { db, id, call }
+}
+const st = (db: Database.Database, id: string) => db.prepare('SELECT status, error, attempts FROM scan_jobs WHERE id = ?').get(id)
+const neverRun: ScanExecutor = async () => { throw new Error('executor must not run: a possibly-billed attempt is never re-run') }
+
+test('#1157 queue-runner bind: a stale scan with a free call reserved is bound and re-run (row settled); another scan is untouched', async () => {
+  const { db, id, call } = queueSetup(); call(id, 'A', 'tinyfish.fetch', 0)
+  // tenant B's LIVE scan (claimed now) with its own free call in flight: the bind of A's scan must not settle it
+  const other = createJobSync(db, 'B', { business_name: 'Other', industry: 'software', location: 'Toronto' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ?, funded_by = 'trial' WHERE id = ?").run(Math.floor(Date.now() / 1000), other)
+  call(other, 'B', 'tinyfish.fetch', 0)
+  let ran = 0
+  const run: ScanExecutor = async (d, job) => { ran++; d.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(Math.floor(Date.now() / 1000), job.id); return 'done' }
+  await kickQueueRunner(db, {} as never, run, { leaseSeconds: 1000 })
+  assert.equal(ran, 1, 'the scan was bound and ran again')
+  assert.deepEqual(st(db, id), { status: 'done', error: null, attempts: 2 })
+  assert.deepEqual(db.prepare('SELECT status, actual_usd, reason FROM scan_spend_calls WHERE scan_job_id = ?').get(id), { status: 'settled', actual_usd: 0, reason: 'interrupted_free' })
+  assert.deepEqual(db.prepare('SELECT status, reason FROM scan_spend_calls WHERE scan_job_id = ?').get(other), { status: 'reserved', reason: null }, "another tenant's live call is untouched")
+  assert.deepEqual(st(db, other), { status: 'running', error: null, attempts: 1 })
+})
+for (const [name, kind, usd, reason] of [['a priced TinyFish call', 'tinyfish.fetch', 0.002, null], ['a model call beside it', 'llm.anthropic', 0.05, null], ['a free call marked maybe_billed', 'tinyfish.search', 0, 'maybe_billed']] as const) {
+  test(`#1157 queue-runner bind: ${name} still ends the scan accounting_uncertain, never re-run`, async () => {
+    const { db, id, call } = queueSetup(); call(id, 'A', kind, usd, reason)
+    if (kind === 'llm.anthropic') call(id, 'A', 'tinyfish.fetch', 0) // the free row beside a priced one does not open the scan
+    await kickQueueRunner(db, {} as never, neverRun, { leaseSeconds: 1000 })
+    assert.deepEqual(st(db, id), { status: 'failed', error: 'accounting_uncertain', attempts: 1 })
+  })
+}
+
+test('#1157 Postgres read-path reaper (pg-mem): a free call reserved is settled and the scan re-queued; a priced or marked one ends it closed', async () => {
+  const { newDb, DataType } = await import('pg-mem')
+  const { readFileSync } = await import('node:fs')
+  const mem = newDb()
+  mem.public.registerFunction({ name: 'char_length', args: [DataType.text], returns: DataType.integer, implementation: (x: string) => x.length, impure: false })
+  mem.public.registerFunction({ name: 'btrim', args: [DataType.text], returns: DataType.text, implementation: (x: string) => x.trim(), impure: false })
+  mem.public.registerFunction({ name: 'floor', args: [DataType.float], returns: DataType.float, implementation: (x: number) => Math.floor(x), impure: false })
+  mem.public.none(readFileSync(new URL('../scripts/pg-migrate/schema.sql', import.meta.url), 'utf8'))
+  const { Pool } = mem.adapters.createPg(); const pool = new Pool()
+  const { pgLeadsRead } = await import('../lib/db/leads-read-pg.ts')
+  const old = Math.floor(Date.now() / 1000) - 100000, fresh = Math.floor(Date.now() / 1000)
+  const job = (id: string, claimed = old) => pool.query("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, attempts, claimed_at) VALUES ($1, 'u1', 'running', 'B', 'i', 'l', $2, 1, $3)", [id, old, claimed])
+  const reserve = (id: string, kind: string, usd: number, reason: string | null = null) => pool.query("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, reason, created_at) VALUES ($1, 'u1', $2, 1, $3, $4, 'reserved', $5, 1)", [`c-${id}`, id, kind, usd, reason])
+  await job('free'); await reserve('free', 'tinyfish.fetch', 0)
+  await job('priced'); await reserve('priced', 'tinyfish.fetch', 0.002)
+  await job('marked'); await reserve('marked', 'tinyfish.search', 0, 'maybe_billed')
+  await job('live', fresh); await reserve('live', 'tinyfish.fetch', 0)
+  const pg = pgLeadsRead(pool as never)
+  await pg.getJob('u1', 'free')
+  const s = async (id: string) => (await pool.query('SELECT status, error FROM scan_jobs WHERE id = $1', [id])).rows[0]
+  const c = async (id: string) => (await pool.query('SELECT status, reason FROM scan_spend_calls WHERE scan_job_id = $1', [id])).rows[0]
+  assert.deepEqual(await s('free'), { status: 'pending', error: null })
+  assert.deepEqual(await c('free'), { status: 'settled', reason: 'interrupted_free' })
+  assert.deepEqual(await s('priced'), { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(await s('marked'), { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(await c('marked'), { status: 'reserved', reason: 'maybe_billed' })
+  assert.deepEqual(await s('live'), { status: 'running', error: null })
+  assert.deepEqual(await c('live'), { status: 'reserved', reason: null }, 'a live attempt keeps its reservation')
+})

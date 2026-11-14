@@ -170,5 +170,5 @@ export interface QueueAdapter {
   depth(opts?: { tenantId?: string; kind?: string; status?: WorkStatus }): number
 }
 
-export const DEFAULT_LEASE_S = 20 * 60 // == STALE_RUNNING_S in web/lib/scan/store.ts
+export const DEFAULT_LEASE_S = 20 * 60 // the generic queue default for items claimed with no lease of their own. Scans do NOT use it: they pass STALE_RUNNING_S (web/lib/scan/store.ts, about 195 s since #1157)
 export const DEFAULT_MAX_ATTEMPTS = 3 // == MAX_ATTEMPTS in web/lib/scan/store.ts

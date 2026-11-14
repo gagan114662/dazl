@@ -375,7 +375,13 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   let done = false
   return {
     id, kind, usd,
-    uncertain() { done = true; uncertainAttempts.add(ctx) },
+    // #1157: the maybe-billed fact must outlive this process. The row stays 'reserved' either way; without a durable mark a free (US$0)
+    // call flagged here (a 402 billing error) would look like any free call a lost attempt left behind, and lib/scan/free-orphans.ts would settle it at $0.
+    uncertain() {
+      done = true; uncertainAttempts.add(ctx)
+      void db.run("UPDATE scan_spend_calls SET reason = 'maybe_billed' WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved'", [id, ctx.tenantId, ctx.jobId])
+        .catch(e => captureError(e, { source: 'worker', where: 'scan-spend-cap:mark-uncertain', tenantId: ctx.tenantId, ref: ctx.jobId }))
+    },
     rejected(status) {
       // A 404 is not scoped: no source shows an Apollo not-found is unbilled or harmless, so it keeps the attempt-wide stop (PDL's
       // documented, unbilled 404 no-match never calls rejected()).

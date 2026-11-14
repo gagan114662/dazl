@@ -4,9 +4,10 @@
 // allowance (lib/scan/spend-cap.ts unitCostUsd). Nothing could have been billed for it, so the row is settled at $0 and the scan is
 // treated as any other interrupted one (given back to pending, or ended 'timeout' on its last attempt) instead of failing with
 // "a paid step may already have been billed" and discarding everything it found. This mirrors freeFailure in lib/search/tinyfish.ts
-// (the same rule for a call that fails inside a live process). A priced row, any other kind of call, and every spend cap are
+// (the same rule for a call that fails inside a live process). A free call a live attempt flagged maybe billed (a 402) carries reason
+// 'maybe_billed' (spend-cap.ts uncertain()) and is NOT settled here. A priced row, any other kind of call, and every spend cap are
 // untouched. Portable SQL (SQLite and Postgres); '?' placeholders, numbered for Postgres by numbered().
-const FREE_ORPHAN = "UPDATE scan_spend_calls SET status = 'settled', actual_usd = 0, reason = 'interrupted_free', settled_at = ? WHERE status = 'reserved' AND reserve_usd = 0 AND kind IN ('tinyfish.search', 'tinyfish.fetch')"
+const FREE_ORPHAN = "UPDATE scan_spend_calls SET status = 'settled', actual_usd = 0, reason = 'interrupted_free', settled_at = ? WHERE status = 'reserved' AND reserve_usd = 0 AND kind IN ('tinyfish.search', 'tinyfish.fetch') AND reason IS NULL"
 
 // params: now, cutoff. The scans a reaper is about to end: running, claim older than the cutoff.
 export const SETTLE_FREE_ORPHANS_STALE_SQL = `${FREE_ORPHAN} AND scan_job_id IN (SELECT id FROM scan_jobs WHERE status = 'running' AND claimed_at < ?)`
