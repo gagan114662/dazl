@@ -1,0 +1,86 @@
+{
+ "thresholds": {
+  "ready_leads_min": 10,
+  "named_contact_min_pct": 80,
+  "dated_source_min_pct": 70,
+  "location_category_match_min_pct": 90,
+  "per_case_confirm_cap_usd": 0.5,
+  "total_cap_usd": 4.0,
+  "spot_check_leads_per_case": 5
+ },
+ "cases": [
+  {
+   "id": "toronto-dental",
+   "label": "B2B SaaS -> Toronto dental clinics",
+   "seller": "ChairSide",
+   "offer": "Online booking and patient recall software for dental clinics",
+   "query": "Dental clinics in Toronto, Ontario that opened a new location or are hiring front-desk staff in the last 90 days",
+   "expect": {
+    "location_name": "Toronto, Ontario, Canada",
+    "location_keywords": [
+     "toronto",
+     "ontario",
+     "north york",
+     "scarborough",
+     "etobicoke",
+     "mississauga",
+     "gta",
+     ", on ",
+     " on,",
+     "canada"
+    ],
+    "category_name": "Dental clinics / dentistry",
+    "category_keywords": [
+     "dental",
+     "dentist",
+     "dentistry",
+     "orthodont",
+     "endodont",
+     "periodont",
+     "oral health",
+     "hygienist",
+     "clinic"
+    ]
+   }
+  },
+  {
+   "id": "berlin-fintech",
+   "label": "Berlin fintech startups after funding",
+   "seller": "LedgerLift",
+   "offer": "Compliance and reconciliation tooling for fintech companies",
+   "query": "Fintech startups in Berlin, Germany that raised a funding round in the last 90 days",
+   "expect": {
+    "location_name": "Berlin, Germany",
+    "location_keywords": [
+     "berlin",
+     "germany",
+     "german",
+     "deutschland",
+     "kreuzberg",
+     "mitte",
+     "prenzlauer",
+     "charlottenburg",
+     ".de",
+     "gmbh"
+    ],
+    "category_name": "Fintech / financial technology startups",
+    "category_keywords": [
+     "fintech",
+     "financial technology",
+     "payments",
+     "payment",
+     "banking",
+     "neobank",
+     "finance",
+     "financial",
+     "insurtech",
+     "lending",
+     "wallet",
+     "crypto",
+     "regtech",
+     "treasury"
+    ]
+   }
+  }
+ ]
+}
