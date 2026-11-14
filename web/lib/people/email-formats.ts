@@ -103,6 +103,8 @@ export function guessFromLearnedFormat(db: Database.Database, tenantId: string, 
   const confirmed = confirmedAddressesAt(db, tenantId, domain)
   const learned = rankConfirmed(domain, confirmed)
   if (!learned) return null
+  // a one-name format ('john@') names nobody in particular: another John on the site, one the crawl did not list, would own it too
+  if (learned.format === 'first' || learned.format === 'last') return null
   // this person's own confirmed address is the published tier, not a guess
   if (confirmed.some(c => c.name.first === name.first && c.name.last === name.last)) return null
   const local = localFor(learned.format, name)
@@ -132,6 +134,8 @@ export function guessFor(db: Database.Database, tenantId: string, leadId: string
   // two different guesses for the same person: which one is theirs is not settled, so neither is shown
   if (new Set(mine.map(r => r.address)).size !== 1) return null
   const r = mine[0]
+  // a person who now has a confirmed address of their own has the published tier: a stale guess is not shown beside it
+  if (confirmedAddressesAt(db, tenantId, domainOf(r.address)).some(c => c.name.first === want.first && c.name.last === want.last)) return null
   if (r.verification === 'undeliverable' || r.verification === 'refused') return null
   const label = candidateLabel(r)
   const verified = label === 'guessed, verified'
@@ -141,7 +145,7 @@ export function guessFor(db: Database.Database, tenantId: string, leadId: string
     person: r.person.split(',')[0] ?? r.person, address: r.address, label: verified ? 'guessed, verified' : 'guessed, unverified',
     state: verified ? 'verified' : r.verification === 'catch_all' ? 'catch_all' : r.verification === 'uncertain' || r.verification === 'pending' ? 'uncertain' : 'not_checked',
     verifier: verified ? r.verifier : null, checked_at: verified ? r.checked_at : null,
-    format: r.format, confidence: r.confidence, domain, learned_from: learned?.evidence ?? [],
+    format: r.format, confidence: r.confidence, domain, learned_from: learned && learned.format === r.format ? learned.evidence : [], // only what taught THIS guess's format
   }
 }
 

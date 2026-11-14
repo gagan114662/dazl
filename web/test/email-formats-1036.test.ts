@@ -194,7 +194,25 @@ test('#1036 mailbox-check counter: honest when nothing can run (off, no verifier
   assert.equal((await u({ ...env, EMAIL_VERIFY_MONTHLY_CAP: '3' })).state, 'month_spent')
 })
 
-test('#1036 the privacy text matches what ships: guessed candidates are unverified, never emailed, shown only where Find work email found nothing and only labelled', () => {
+test('#1036 the privacy text matches what ships: guessed candidates are unverified, never emailed, shown only for a buyer the site prints no address for, and only labelled', () => {
   const text = PRIVACY.flatMap(sec => sec.paragraphs).join('\n')
   assert.match(text, /labelled "guessed, unverified"/); assert.doesNotMatch(text, /never shown to you or emailed/)
+})
+
+test("#1036 review fixes: a one-name format builds no guess; a stored guess disappears once the person has a confirmed address; another tenant's confirmed addresses never teach this tenant's format", async () => {
+  // 'first' format learned from two people: john@ could be any John on the site, so nobody gets it
+  const a = seed(); published(a.db, 'A', 'x', 'Pat Kim, Owner', `pat@${SITE}`); published(a.db, 'A', 'x', 'Sue Ray, Partner', `sue@${SITE}`)
+  assert.equal(learnedFormat(a.db, 'A', SITE)!.format, 'first')
+  assert.equal((await findWorkEmail(a.db, 'A', a.lead, DANA, { env: ON, now: NOW })).guess, undefined)
+  assert.equal(n(a.db, "SELECT count(*) n FROM email_candidates WHERE tier = 'guessed'"), 0)
+  // a guess exists; the person's own address is then published: the guess is no longer shown
+  const b = seed(); twoConfirmed(b.db)
+  assert.equal((await findWorkEmail(b.db, 'A', b.lead, DANA, { env: ON, now: NOW })).guess?.address, `dana.lee@${SITE}`)
+  assert.equal(guessesForLead(b.db, 'A', b.lead, ON).length, 1)
+  published(b.db, 'A', b.lead, 'Dana Lee, Practice Manager', `dlee@${SITE}`)
+  assert.equal(guessesForLead(b.db, 'A', b.lead, ON).length, 0)
+  // tenant B's confirmed addresses teach tenant A nothing
+  const c = seed(); twoConfirmed(c.db, 'B')
+  assert.equal(learnedFormat(c.db, 'A', SITE), null)
+  assert.equal((await findWorkEmail(c.db, 'A', c.lead, DANA, { env: ON, now: NOW })).guess, undefined)
 })

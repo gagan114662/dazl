@@ -123,7 +123,7 @@ function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: Work
                   </span>
                   {c.checked && <button type="button" className="underline text-[#111]" onClick={() => void copy(g.address)}>{copied === g.address ? 'Copied' : 'Copy'}</button>}
                   <span className={c.checked ? 'text-green-800' : 'text-amber-800'}><span className="font-medium">{c.headline}.</span> {c.note}</span>
-                  <span className="text-gray-600" data-testid="work-email-guess-source">{c.learned}{g.learned_from.filter(e => e.url).slice(0, 2).map(e => <a key={e.address} className="underline text-[#111] ml-1" href={e.url!} target="_blank" rel="noopener noreferrer nofollow">page</a>)}</span>
+                  <span className="text-gray-600" data-testid="work-email-guess-source">{c.learned}{g.learned_from.filter(e => e.url && /^https?:\/\//i.test(e.url)).slice(0, 2).map(e => <a key={e.address} className="underline text-[#111] ml-1" href={e.url!} target="_blank" rel="noopener noreferrer nofollow">page</a>)}</span>
                 </span>
               )
             })()}
