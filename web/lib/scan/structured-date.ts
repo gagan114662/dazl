@@ -69,6 +69,13 @@ const namesLoosely = (text: string, key: string): boolean => {
 const HEAD_AFTER = new Set(['s', 'to','and','with','in','on','for','at','is','has','have','was','by','of','from','as','a','an','the','its','adds','added','announces','announced','appoints','bolsters','builds','expands','expanded','expanding','grows','growing','hires','joins','joined','launches','launched','names','opens','opened','opening','raises','raised','strengthens','secures','unveils','welcomes','continues','acquires','acquired','brings','establishes','relocates','moves','extends','deepens','boosts','enters','lands','taps','signs','promotes','elects','appointed','introduces','completes','celebrates','hosts','wins','partners','partnered','receives','named','earns','selects','selected','debuts','kicks','cuts','breaks','begins','starts','adds','invests','plans','officially','now','is'])
 const SUFFIX = new Set(['llp', 'llc', 'inc', 'ltd', 'co', 'corp', 'pllc', 'pc'])
 const fold = (w: string): string => w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase()
+// Markup often keeps HTML entities inside JSON-LD strings ("Karns &#038; Karns ... Opens New Office"): read the character the entity stands for.
+const NAMED_ENTITY: Record<string, string> = { amp: '&', apos: "'", quot: '"', lt: '<', gt: '>', nbsp: ' ', ndash: '-', mdash: '-', rsquo: "'", lsquo: "'" }
+const unEntity = (s: string): string => s.replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z]{2,6}));/gi, (m, dec, hex, name) => {
+  if (name) return NAMED_ENTITY[name.toLowerCase()] ?? m
+  const cp = dec ? Number(dec) : parseInt(hex, 16)
+  return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m
+})
 const headlineSubject = (headline: string, company: string): boolean => {
   const ct = company.trim().split(/[\s\-/|]+/).filter(Boolean).map(fold).filter(Boolean); while (ct.length > 1 && SUFFIX.has(ct[ct.length - 1])) ct.pop()   // the headline may drop "LLP"
   const ht = headline.replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|[’']/g, ' ').split(/[\s\-/|]+/).filter(Boolean)   // "Benesch's" -> "Benesch s": the possessive token is a HEAD_AFTER word
@@ -300,7 +307,7 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
       if (ctx.news === true && !ctx.publishedConflict && kinds.includes('NewsArticle') && types.includes('NewsArticle')) {
         const d = day(o.datePublished)
         // the story's OWN headline when the node has one (a node about another company is not rescued by the page's title), else the page title
-        const headline = [typeof o.headline === 'string' && o.headline.trim() ? o.headline : (ctx.title ?? '')].filter(Boolean)
+        const headline = [typeof o.headline === 'string' && o.headline.trim() ? unEntity(o.headline) : (ctx.title ?? '')].filter(Boolean)
         const quote = ctx.quote ?? ''
         const stated = ctx.published && /^\d{4}-\d{2}-\d{2}$/.test(ctx.published) ? ctx.published : null
         // the story's own headline names the company, announces a completed event in the quote as well as the claim, is no roundup, and the page's own metadata (when it has any) says the same day

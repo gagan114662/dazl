@@ -160,6 +160,14 @@ test('#878 review 2: hyphenated longer names are held; LLP/Inc and common press 
   assert.deepEqual(newsDay('Century 21 Real Estate', 'Century 21 Real Estate Opens Chicago Office', 'Century 21 Real Estate opened a new office in Chicago.'), D)
 })
 
+test('#878 matrix 2026-11-14 (real page, karnsandkarns.com press release): an HTML entity inside the JSON-LD headline does not hide the company', () => {
+  const co = 'Karns & Karns Personal Injury and Accident Attorneys'
+  const D = { date: '2026-09-30', kind: 'NewsArticle' }
+  const quote = 'Karns & Karns Personal Injury and Accident Attorneys opened a new office location in Lincoln Park, Chicago.'
+  for (const h of ['Karns &#038; Karns Personal Injury and Accident Attorneys Opens New Office Location in Lincoln Park Chicago', 'Karns &amp; Karns Personal Injury and Accident Attorneys Opens New Office Location in Lincoln Park Chicago', 'Karns &#x26; Karns Personal Injury and Accident Attorneys Opens New Office Location in Lincoln Park Chicago'])
+    assert.deepEqual(newsDay(co, h, quote), D, h)
+})
+
 test('#878 review: the CSV export carries the proof note, so an announcement day is worded as one there too', () => {
   const db = new Database(':memory:'); migrateScan(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
