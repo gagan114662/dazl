@@ -75,3 +75,11 @@ test('#1183 an UNLISTED title in a filter control cannot pair into a person (cut
   const rows = ['Joy Manager, Managing Partner', 'Will Owner, Managing Partner'].map(value => ({ connector: 'enrich:apollo', kind: 'person', value, label: null, source_url: URL_, source_date: '2026-11-13', confidence: null, retrieved_at: 1_794_000_000 }))
   assert.deepEqual(contactsFromEnrichments(rows, ROLES, 1_794_000_000_000).map(p => p.name).sort(), ['Joy Manager', 'Will Owner'], 'stored provider people with role-like surnames survive')
 })
+
+test('#1183 an UNMARKED list of titles (no filter class) stores nobody; a real person who shares no title word is still stored', () => {
+  const li = (ts: string[]) => `<ul>${ts.map(t => `<li>${t}</li>`).join('')}</ul>`
+  const page = (body: string) => `<html><body>${PROSE}${body}</body></html>`
+  assert.deepEqual(extractPeople(page(li(['Managing Member', 'Managing Partner'])), URL_, ROLES), [])
+  const real = extractPeople(page('<div class="person"><h3>Jane Doe</h3><p>Managing Partner</p></div>' + li(['Managing Member', 'Managing Partner'])), URL_, ROLES)
+  assert.deepEqual(real.map(p => p.value), ['Jane Doe, Managing Partner'])
+})

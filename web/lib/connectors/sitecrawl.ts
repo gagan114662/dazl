@@ -317,6 +317,7 @@ export function buyerTitle(title: string, buyerRoles?: string): boolean {
 }
 const HEAD_MARK = '\u0001H'
 const FORMER_SECTION = /\b(?:alumni|alumnae|former\s+(?:team|staff|members?|employees?|leadership|colleagues)|past\s+(?:team|staff|members?|employees?|leadership)|previous\s+(?:team|staff|members?)|in\s+memoriam|emeriti)\b/i
+const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'this', 'your', 'team'])
 export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
@@ -347,6 +348,11 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // listed beside them, so they are removed before the lower-case word test.
   const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
+  const titleWords = new Set<string>()
+  const addWords = (t: string) => { for (const w of titleNorm(t).split(' ')) if (w.length >= 4 && !TITLE_STOP.has(w)) titleWords.add(w) }
+  for (const r of (buyerRoles ?? '').split(';')) addWords(r)
+  for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
+  const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
   const add = (name: string, title: string, viaJson = false) => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
     if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
@@ -364,7 +370,9 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1]) add(lines[i], lines[i + 1])
+    // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
+    // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i])) add(lines[i], lines[i + 1])
   }
   // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
   return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
