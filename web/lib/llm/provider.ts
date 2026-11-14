@@ -100,7 +100,10 @@ async function settleScanSpend(hold: SpendHold | null, d: DetailedCompletion): P
 type Obj = Record<string, unknown>
 const arr = (v: unknown): Obj[] => (Array.isArray(v) ? (v as Obj[]) : [])
 
-export const anthropicProvider: Provider = {
+// One Anthropic provider per model: the model is a property of the provider OBJECT, so every guard that prices a call by
+// configuredModel() (lib/llm/spend-guard.ts, lib/scan/spend-cap.ts) prices the model the call really asks for.
+function anthropic(modelOf: () => string): Provider {
+  const self: Provider = {
   // RETIRED (#379): the model's own web search can never run priced - its search-result tokens are bounded by
   // nothing dazl sends, so no estimate, reserve or ledger can cover it. Every budget form already refused it
   // ('research_unbounded'); the method now refuses unconditionally at the provider boundary, before any network
@@ -110,10 +113,10 @@ export const anthropicProvider: Provider = {
     throw new SpendRefused('research_unbounded')
   },
   configuredModel() {
-    return process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'
+    return modelOf()
   },
   async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 10): Promise<DetailedCompletion> {
-    const requested = anthropicProvider.configuredModel!()
+    const requested = self.configuredModel!()
     const hold = await reserveScanSpend('llm.anthropic', () => modelCostUsd(requested, prompt, maxTokens))
     let json: Record<string, unknown>
     try {
@@ -137,9 +140,15 @@ export const anthropicProvider: Provider = {
     return out
   },
   async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
-    return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
+    return (await self.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
   },
+  }
+  return self
 }
+export const anthropicProvider: Provider = anthropic(() => process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5')
+// The same provider asking for one named model (#1102: the contact lookup asks for Haiku first, whatever the deployment's default
+// is). Only a model with a listed price can run: the spend guards refuse any other before a request is made (model_unpriced).
+export const anthropicWithModel = (model: string): Provider => anthropic(() => model)
 
 export const openaiProvider: Provider = {
   // RETIRED (#379): the model's own web search can never run priced - its search-result tokens are bounded by

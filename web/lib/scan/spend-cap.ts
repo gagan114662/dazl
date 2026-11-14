@@ -119,6 +119,12 @@ export const DEFAULT_UNIT_USD: Partial<Record<keyof typeof UNIT_PRICE_ENV, numbe
 export const SCAN_MODEL_PRICES_USD_PER_M: Readonly<Record<string, { in: number; out: number }>> = Object.freeze({
   ...PRICES_USD_PER_M,
   'gpt-4.1': { in: 3.5, out: 14 },
+  // #1102 (contact lookup). Listed at USD 0.10 in / 0.50 out per 1M for prompts up to 100K tokens and 0.50 / 2.50 beyond
+  // (platform.claude.com/docs/en/about-claude/pricing, read 2026-11-13). Priced here at the HIGHER tier for every call, so a
+  // reservation or settlement can only over-count, never under; its thinking tokens are output tokens, inside max_tokens. Listed
+  // only here (scan and account spend), not in PRICES_USD_PER_M: a trial read and an operator-named owner pool still price exactly
+  // one model, and refuse this one (model_unpriced) before any request.
+  'claude-haiku-5-5': { in: 0.5, out: 2.5 },
 })
 // A served model id with a release date (claude-sonnet-4-5-20250929, gpt-4.1-2025-04-14) is priced as its listed alias.
 export function scanModelPrice(model: string | null | undefined): { in: number; out: number } | null {
