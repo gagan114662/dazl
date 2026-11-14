@@ -7,6 +7,8 @@ import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, pl
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
+import { checkAccount, connectionStatus, createPairing, disconnect, recordAccountForTenant } from '@/lib/advanced/linkedin-connect'
+import { readEnabledCredential } from '@/lib/connectors/store'
 import { denied, stale } from '@/lib/workspace-access'
 
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
@@ -16,8 +18,10 @@ export async function GET() {
   const db = await getDb()
   const f = advFlags()
   const st = await connectorStatus(db, user.tenantId)
+  // One-click Connect LinkedIn (the dazl Connect extension): connected / account name / last sync. Never a secret.
+  const linkedinConnect = f.linkedin ? await connectionStatus(db, user.tenantId) : null
   return NextResponse.json({
-    available: f.enabled, version: CONSENT_VERSION,
+    available: f.enabled, version: CONSENT_VERSION, linkedin_connect: linkedinConnect,
     // The three platforms the UI offers. allowed = the operator has switched it on for this server.
     platforms: await Promise.all(UI_PLATFORMS.map(async p => {
       const c = st.find(x => x.connector === connectorId(p))
@@ -68,6 +72,26 @@ export async function POST(req: NextRequest) {
     if (ok && await setEnabled(db, user.tenantId, connectorId(p), body.enabled)) await audit(user, req, { action: body.enabled ? 'connector.enabled' : 'connector.disabled', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ ok })
   }
+  // Connect LinkedIn, step 1: a one-time pairing code for the dazl Connect extension (10 minutes, single use, this workspace only).
+  if (body.action === 'pair' && p === 'linkedin') {
+    const rl = await rateLimit(`adv-pair:${user.tenantId}`, 10, 60 * 60 * 1000)
+    if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
+    if (!(await readConsent(db, user.tenantId, scopeFor(p)))) return NextResponse.json({ error: 'Accept the risk notice first' }, { status: 403 })
+    if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
+    const pairing = await createPairing(db, user.tenantId, user.actorId)
+    await audit(user, req, { action: 'credential.pairing_started', resource: 'social', id: p, summary: { platform: p } })
+    return NextResponse.json({ code: pairing.code, expires_at: pairing.expires_at })
+  }
+  // "Test connection": ONE read of the saved session's own profile; names the account (at most 6 per workspace per hour).
+  if (body.action === 'test' && p === 'linkedin') {
+    const rl = await rateLimit(`adv-me:${user.tenantId}`, 6, 60 * 60 * 1000)
+    if (!rl.ok) return NextResponse.json({ error: 'Too many checks. Try again later.' }, { status: 429 })
+    const session = await readEnabledCredential(db, user.tenantId, connectorId(p))
+    if (!session) return NextResponse.json({ ok: false, outcome: 'not_connected' })
+    const me = await checkAccount(session)
+    if (me.ok) await recordAccountForTenant(db, user.tenantId, me)
+    return NextResponse.json(me.ok ? { ok: true, name: me.name } : { ok: false, outcome: me.outcome })
+  }
   if (body.action === 'save') {
     const rl = (await rateLimit(`adv:${user.tenantId}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
@@ -90,7 +114,8 @@ export async function DELETE(req: NextRequest) {
 
   const p = req.nextUrl.searchParams.get('platform')
   if (!isAdvPlatform(p)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const ok = await removeCredential(await getDb(), user.tenantId, connectorId(p))
+  // LinkedIn: Disconnect also revokes the dazl Connect extension's device and any pending pairing code.
+  const ok = p === 'linkedin' ? await disconnect(await getDb(), user.tenantId) : await removeCredential(await getDb(), user.tenantId, connectorId(p))
   if (ok) await audit(user, req, { action: 'credential.removed', resource: 'social', id: p, summary: { platform: p } })
   return NextResponse.json({ ok })
 }
