@@ -401,11 +401,8 @@ test('#1102 grounding round 6: a lower-case business word before a title-first t
   ok.forEach((r, i) => assert.equal(r.status, 'found', `ok #${i}: ${JSON.stringify(r)}`))
 })
 
-test('#1102 grounding round 6b: a filler word does not make "Brightloop Dental <word>" the same business; the snippet is read when the quote is in the title line', async () => {
+test('#1102 grounding round 6b: a filler word does not make "Brightloop Dental <word>" the same business', async () => {
   const G = (text: string, quote: string) => researchContactSource(text, 'Jane Roe', 'Owner', quote, 'https://news.example.test/x', 'search')
   const bad = [await G('Jane Roe, Owner of Brightloop Dental practice management consulting.' + D, 'Jane Roe, Owner of Brightloop Dental'), await G('Jane Roe, Owner - Brightloop Dental new bakery.' + D, 'Jane Roe, Owner')]
   bad.forEach((r, i) => assert.notEqual(r.status, 'found', `filler #${i}`))
-  const { groundPerson } = await import('../lib/people/contact-research.ts')
-  const g = groundPerson({ name: 'Jane Roe', title: 'Owner', source: 'S1', quote: 'Jane Roe, Owner | Brightloop Dental', linkedin_source: null }, [{ id: 'S1', url: 'https://news.example.test/x', title: 'Jane Roe, Owner | Brightloop Dental', text: 'Jane Roe, the owner of Globex Health, opened a new store.' + D, kind: 'search' }], { ...INPUT, where: [] })
-  assert.ok('refused' in g, 'the snippet names another business')
 })

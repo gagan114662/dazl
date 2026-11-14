@@ -233,9 +233,10 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // (For a search result the window is the part the quote is in: the snippet, or the title line of a profile result; a page: the sentence and the one before.)
   const titleLen = tidy(src.title).length + 2
   const inTitle = at < titleLen
-  // A profile result whose quote is in the title line: the WHOLE result is the window (the snippet may say whose owner she is).
+  // A profile result whose quote is in the title line: the title line is the window. (Its snippet carries places and degrees that a whole-result window would
+  // refuse; a snippet naming another business next to the same name is a known, two-coincidence limit, stated in the PR.)
   const windowStart = src.kind === 'page' ? pLo : inTitle ? 0 : titleLen
-  const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll : rawAll.slice(titleLen)
+  const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll.slice(0, titleLen - 2) : rawAll.slice(titleLen)
   const left = windowText.slice(0, at + span[0] - windowStart), right = windowText.slice(at + span[1] - windowStart)
   const foreign = (seg: string) => foreignRun(seg.split(/\s+/).map(w => personWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) ? '' : w).join(' ').replace(/\s+/g, ' '))
   if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
