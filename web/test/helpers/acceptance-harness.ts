@@ -42,6 +42,7 @@ export interface Fixture {
   searchStatusFor?: (n: number) => number | undefined   // per-search HTTP status (0-based); overrides hitsFor for that search (a mid-run source failure)
   tinyfishOff?: boolean                    // TINYFISH_API_KEY is not set: the TinyFish stage is skipped entirely
   onVerify?: (db: Database.Database, jobId: string) => void   // called once, while the verifier is fetching (the scan is still running)
+  sources?: string                         // the job's stored sources JSON (the user's explicit source selection), set before the claim
   beforeRun?: (db: Database.Database) => void | Promise<void>   // called once with the job claimed, before the scan starts (state an earlier play left)
 
   reviewedIcp?: object                     // a profile submitted with the job: stored as POST /api/scan stores it (normalizeIcp); no inference is run
@@ -73,6 +74,7 @@ export async function runFixture(f: Fixture) {
     createQueryJob(db, 'A', { query: f.request, icp: JSON.stringify(icp), icpReviewed: f.icpReviewed === true, ...(f.runBudget ? { runBudget: f.runBudget } : {}) })
   }
   if (f.fundedBy) { migrateTrialBudget(db); db.prepare('UPDATE scan_jobs SET funded_by = ?').run(f.fundedBy) }   // the trial tables, so settleTrialReservation finds its table (no reservation row: admission is the route's job)
+  if (f.sources) db.prepare('UPDATE scan_jobs SET sources = ?').run(f.sources)
   const job = claimKeyedJob(db)!
   await f.beforeRun?.(db)
   const calls = { afters: [] as (string | null)[], searches: [] as string[], tfFetchBatches: [] as string[][], ownFetch: [] as string[], prompts: [] as string[], research: [] as true[] }
