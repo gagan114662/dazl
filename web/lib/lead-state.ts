@@ -48,7 +48,7 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
   if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries
   if (l.window_held) return 'older'
-  if (l.currentness_held || !date || l.date_status !== 'verified') return 'undated'
+  if (l.currentness_held || !date || l.day_verified !== true) return 'undated'   // #1176: the card's proof (day_verified), not the retired date_status 'verified'
   return 'unsupported'
 }
 
