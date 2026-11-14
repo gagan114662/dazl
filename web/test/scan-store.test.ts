@@ -161,9 +161,9 @@ test('the stale-running window is floored above the longest paid vendor call - a
   const orig = console.error
   console.error = (...a: unknown[]) => { errs.push(String(a[0])) }
   try {
-    assert.equal(staleRunningSeconds({}), 20 * 60, 'default unchanged')
+    assert.equal(staleRunningSeconds({}), MIN_STALE_RUNNING_S, 'the default is the floor (#1157: about 3 min, not 20)')
     assert.equal(staleRunningSeconds({ SCAN_STALE_RUNNING_S: '5000' }), 5000, 'a value above the floor passes through')
-    assert.ok(MIN_STALE_RUNNING_S >= Math.ceil(LLM_TIMEOUT_MS / 1000) * 2, 'the floor is computed from the real max call timeout (no retries exist)')
+    assert.ok(MIN_STALE_RUNNING_S >= Math.ceil(LLM_TIMEOUT_MS / 1000) + 45, 'the floor is computed from the real max call timeout plus a 45 s margin (no retries exist)')
     assert.equal(staleRunningSeconds({ SCAN_STALE_RUNNING_S: '60' }), MIN_STALE_RUNNING_S, 'a too-small window is clamped UP to the floor')
     assert.equal(errs.length, 1, 'the clamp is loud, never silent')
     assert.match(errs[0], /clamped UP/)

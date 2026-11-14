@@ -11,8 +11,8 @@ const FREE_ORPHAN = "UPDATE scan_spend_calls SET status = 'settled', actual_usd 
 
 // params: now, cutoff. The scans a reaper is about to end: running, claim older than the cutoff.
 export const SETTLE_FREE_ORPHANS_STALE_SQL = `${FREE_ORPHAN} AND scan_job_id IN (SELECT id FROM scan_jobs WHERE status = 'running' AND claimed_at < ?)`
-// params: now, jobId. One scan whose attempt this process owns and is handing back.
-export const SETTLE_FREE_ORPHANS_JOB_SQL = `${FREE_ORPHAN} AND scan_job_id = ?`
+// params: now, jobId, attempt. The attempt this process owns and is handing back: its own rows only.
+export const SETTLE_FREE_ORPHANS_JOB_SQL = `${FREE_ORPHAN} AND scan_job_id = ? AND attempt = ?`
 // params: now, jobId, tenantId, cutoff. One queued scan about to be bound: pending, or running with a claim older than the cutoff.
 export const SETTLE_FREE_ORPHANS_BIND_SQL = `${FREE_ORPHAN} AND scan_job_id IN (SELECT id FROM scan_jobs WHERE id = ? AND user_id = ? AND (status = 'pending' OR (status = 'running' AND claimed_at <= ?)))`
 

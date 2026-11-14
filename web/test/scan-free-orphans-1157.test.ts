@@ -224,3 +224,37 @@ test('#1157 Postgres read-path reaper (pg-mem): a free call reserved is settled 
   assert.deepEqual(await s('live'), { status: 'running', error: null })
   assert.deepEqual(await c('live'), { status: 'reserved', reason: null }, 'a live attempt keeps its reservation')
 })
+
+// ---- review round 2 -------------------------------------------------------------------------------------------------------
+import { assertOwned } from '../lib/scan/runner.ts'
+test('#1157 a phase boundary renews the claim of a live attempt (so unpaid work longer than the window is not reaped), and only of that attempt', () => {
+  const db = new Database(':memory:'); migrateScan(db); const now = Math.floor(Date.now() / 1000)
+  const mk = (id: string, status: string, attempts: number) => db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts, claimed_at, created_at) VALUES (?, ?, 'Biz', 'manufacturing', 'Bangalore', ?, ?, ?, ?)").run(id, A, status, attempts, now - Legacy.STALE_RUNNING_S - 5, T0)
+  mk('live', 'running', 1); mk('other', 'running', 1)
+  assertOwned(db, { id: 'live', user_id: A, attempts: 1 } as never)
+  Legacy.reapStaleRunningJobs(db)
+  assert.deepEqual(db.prepare("SELECT status FROM scan_jobs WHERE id = 'live'").get(), { status: 'running' }, 'the live attempt was past the window with no paid call, renewed at its phase boundary, and is not reaped')
+  assert.deepEqual(db.prepare("SELECT status FROM scan_jobs WHERE id = 'other'").get(), { status: 'pending' }, 'a scan that did not reach a boundary is reaped as before')
+  // a re-claimed scan: the OLD attempt's boundary stops it and renews nothing
+  mk('taken', 'running', 2)
+  assert.throws(() => assertOwned(db, { id: 'taken', user_id: A, attempts: 1 } as never), /scan_stopped/)
+  assert.equal((db.prepare("SELECT claimed_at FROM scan_jobs WHERE id = 'taken'").get() as { claimed_at: number }).claimed_at, now - Legacy.STALE_RUNNING_S - 5)
+})
+
+test('#1157 Postgres read path: a PENDING scan holding a free reserved call (parked first) is settled and stays runnable, not failed', async () => {
+  const { newDb, DataType } = await import('pg-mem')
+  const { readFileSync } = await import('node:fs')
+  const mem = newDb()
+  mem.public.registerFunction({ name: 'char_length', args: [DataType.text], returns: DataType.integer, implementation: (x: string) => x.length, impure: false })
+  mem.public.registerFunction({ name: 'btrim', args: [DataType.text], returns: DataType.text, implementation: (x: string) => x.trim(), impure: false })
+  mem.public.registerFunction({ name: 'floor', args: [DataType.float], returns: DataType.float, implementation: (x: number) => Math.floor(x), impure: false })
+  mem.public.none(readFileSync(new URL('../scripts/pg-migrate/schema.sql', import.meta.url), 'utf8'))
+  const { Pool } = mem.adapters.createPg(); const pool = new Pool()
+  const { pgLeadsRead } = await import('../lib/db/leads-read-pg.ts')
+  const old = Math.floor(Date.now() / 1000) - 100000
+  await pool.query("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, created_at, attempts, claimed_at) VALUES ('p', 'u1', 'pending', 'B', 'i', 'l', $1, 1, NULL)", [old])
+  await pool.query("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('c-p', 'u1', 'p', 1, 'tinyfish.fetch', 0, 'reserved', 1)")
+  await pgLeadsRead(pool as never).getJob('u1', 'p')
+  assert.deepEqual((await pool.query("SELECT status, error FROM scan_jobs WHERE id = 'p'")).rows[0], { status: 'pending', error: null })
+  assert.deepEqual((await pool.query("SELECT status, reason FROM scan_spend_calls WHERE id = 'c-p'")).rows[0], { status: 'settled', reason: 'interrupted_free' })
+})

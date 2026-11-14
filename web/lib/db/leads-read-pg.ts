@@ -54,12 +54,13 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
       // A PENDING row with a reserved call (the pre-#594 shape) takes the legal pending->running step first - claimed_at = 0 is
       // older than any cutoff and attempts is NOT bumped, so no executor ever runs it; statement 1 below ends it accounting_uncertain,
       // exactly like the store.ts / store-db.ts reapers. The whole claim class closes on the read path too.
-      await pg.query(numbered(SETTLE_FREE_ORPHANS_STALE_SQL), [Math.floor(Date.now() / 1000), cutoff]) // #1157: a free (US$0) call left reserved is not 'maybe billed'
       await pg.query(
         `UPDATE scan_jobs SET status = 'running', claimed_at = 0
          WHERE status = 'pending'
            AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
       )
+      // #1157: a free (US$0) call left reserved is not 'maybe billed'. After the park, so a parked pending row is covered too.
+      await pg.query(numbered(SETTLE_FREE_ORPHANS_STALE_SQL), [Math.floor(Date.now() / 1000), cutoff])
       await pg.query(
         `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = CAST(floor(extract(epoch from now())) AS BIGINT), claimed_at = NULL
          WHERE status = 'running' AND claimed_at < $1
