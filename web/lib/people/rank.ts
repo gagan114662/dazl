@@ -122,6 +122,10 @@ export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company w
 
 // Where a listed person came from, for one ranked contact: a crawled person whose page is not established as the
 // company's own website (currency reason set) is NOT "the company website" (#781).
+// True when a lead's people are ALL name-only search matches (nameOnly), SEC-historical rows aside, and at least one is: the Leads row and
+// the opportunity card then say WHY nobody is shown. A lead with any other person (a tied search result, a site listing) is not in this case.
+export const onlyNameOnly = (people: readonly { nameOnly?: boolean; historical?: boolean }[]): boolean => people.some(p => p.nameOnly) && people.every(p => p.nameOnly || p.historical)
+
 export function peopleSourceText(p: { connector: string; verified?: ContactCurrency; nameOnly?: boolean }): string {
   if (p.nameOnly) return NAME_ONLY_SOURCE
   if (p.connector === 'sitecrawl' && p.verified?.reason) return 'a crawled website page (listed with this title; not established as the company website)'

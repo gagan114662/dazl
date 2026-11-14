@@ -22,7 +22,7 @@ import { opportunityCard } from '../lib/scan/opportunity.ts'
 import { bestPeople } from '../lib/people/best-person.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
-import { contactsFromEnrichments, peopleSourceText } from '../lib/people/rank.ts'
+import { contactsFromEnrichments, onlyNameOnly, peopleSourceText } from '../lib/people/rank.ts'
 import { isWorkEmailTarget } from '../lib/people/work-email-eligible.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
 
@@ -122,6 +122,19 @@ test('#1037 rows already stored by the name alone are no longer the lead\'s pers
   assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, 'Casey Flynn')
 })
 
+test('#1037 the "why nobody is shown" reason: only when every listed person is name-only (SEC history aside)', () => {
+  const R = WHO.join('; ')
+  const bare = { kind: 'person', value: 'Devon Marsh, Founder & CEO', label: LABEL, source_url: 'https://www.linkedin.com/in/person-d-test', connector: 'search:people' }
+  const tied = { kind: 'person', value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'domain'), source_url: 'https://www.linkedin.com/in/person-c-test', connector: 'search:people' }
+  const site = { kind: 'person', value: 'Dana Lee, CEO', label: 'x', source_url: 'https://acme.example/team', connector: 'sitecrawl' }
+  const sec = { kind: 'person', value: 'Old Officer, Chief Executive', label: 'x', source_url: 'https://sec.example/f', connector: 'signals:sec-form-d' }
+  assert.equal(onlyNameOnly(contactsFromEnrichments([bare], R)), true, 'a bare-label row alone')
+  assert.equal(onlyNameOnly(contactsFromEnrichments([bare, tied], R)), false, 'a tied person beside it: no reason')
+  assert.equal(onlyNameOnly(contactsFromEnrichments([bare, site], R)), false, 'a site listing beside it: no reason')
+  assert.equal(onlyNameOnly(contactsFromEnrichments([bare, sec], R)), true, 'SEC history beside it: the row and the card agree')
+  assert.equal(onlyNameOnly(contactsFromEnrichments([], R)), false); assert.equal(onlyNameOnly(contactsFromEnrichments([tied], R)), false)
+})
+
 test('#1037 a person stored by the name alone gets the tie when a later search finds them naming the confirmed website (profile, date and time replaced; counted once)', async () => {
   const { db, job } = setup(ICP, { Garage: 'withgarage.com' })
   addEnrichment(db, 'A', 'L-garage', { connector: 'sitecrawl', kind: 'domain', value: 'withgarage.com|evidence_own_domain', label: 'domain-basis-v1:evidence_own_domain', confidence: null, source_url: 'https://withgarage.com/', source_date: '2026-11-13', retrieved_at: 1 })
@@ -150,5 +163,9 @@ test('#1037 review finding 3: a search refused by the scan\'s spend cap is count
     assert.deepEqual(w, [want], thrown.message)
   }
   assert.equal(sent, 0)
+  // A refusal that comes back at the moment the job is lost is still not a search that ran (the decrement runs before the alive check).
+  { const st = newPeopleStats(); const w: string[] = []
+    await findPeople(db, 'A', job, { env, fetchImpl: f, stats: st, alive: (() => { let n = 0; return () => ++n <= 1 })(), onStop: x => w.push(x), charge: async () => { throw new SpendRefused('ownership_lost') } })
+    assert.equal(st.searched, 0); assert.deepEqual(w, ['ownership_lost']) }
 })
 
