@@ -30,7 +30,7 @@ export default function CompetitorsPanel() {
   }
 
   if (failed) return <div id="competitors" className="card p-6 mb-4 scroll-mt-6"><h2 className="font-semibold mb-1">Competitors</h2><p className="text-sm" role="alert" data-testid="competitors-unread">Could not load your competitors, so they cannot be edited right now. Refresh to retry.</p></div>
-  if (!loaded) return null
+  if (!loaded) return <div id="competitors" className="scroll-mt-6" />   // the anchor exists while loading, so /app/settings#competitors lands here on a direct visit
   return (
     <div id="competitors" className="card p-6 mb-4 scroll-mt-6">
       <h2 className="font-semibold mb-1">Competitors</h2>

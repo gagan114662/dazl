@@ -18,6 +18,10 @@ test('#1192 the Settings section nav links Memory and Competitors, and every lin
   assert.deepEqual(SETTINGS_SECTIONS.find(([id]) => id === 'competitors'), ['competitors', 'Competitors'])
   assert.equal(new Set(ids).size, ids.length, 'no id twice')
   for (const id of ids) assert.ok(source.includes(`id="${id}"`), `the nav link #${id} has an element with that id on /app/settings or in one of its panels`)
+  // the Competitors anchor exists in every state of its panel (loading, failed, loaded): a direct visit to /app/settings#competitors lands on it
+  const panel = readFileSync(new URL('competitors-panel.tsx', dir), 'utf8')
+  assert.match(panel, /if \(!loaded\) return <div id="competitors"/)
+  assert.equal((panel.match(/id="competitors"/g) ?? []).length, 3, 'one anchor per render state (loading, failed, loaded), never two at once')
   // page.tsx renders the nav from this list, not from a second copy
   const page = readFileSync(new URL('page.tsx', dir), 'utf8')
   assert.match(page, /SETTINGS_SECTIONS\.map\(/)
