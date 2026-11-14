@@ -211,6 +211,8 @@ function oneAtATime<T>(host: string, f: () => Promise<T>): Promise<T> {
 }
 
 const unknown = (detail: string): VerifyAnswer => ({ outcome: 'unknown', detail: detail.slice(0, 160) })
+// An answer reached with no request leaving this server (VerifyAnswer.noCall): the caller gives its allowance back.
+const offline = (a: VerifyAnswer): VerifyAnswer => ({ ...a, noCall: true })
 // Recipient-unknown replies (RFC 5321 / 3463: 550 mailbox unavailable, 551 user not local, 553 mailbox name not allowed).
 const NO_SUCH_USER_CODES = new Set([550, 551, 553])
 // A recipient-unknown answer only: with an enhanced status code it must be 5.1.x (bad destination mailbox). A 550 5.7.1 (blocked sender,
@@ -221,18 +223,26 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
   migrateSmtpVerify(db)
   return {
     name,
+    // Why no check can run right now, from the ledger alone (no network): port 25 shut, or the sending address already known as listed.
+    blockedNow(): string | null {
+      const now = env.now()
+      if (port25Blocked(db, now)) return 'outbound mail port 25 appears to be shut from this server, so no mailbox can be checked'
+      const z = row(db, `zen:${cfg.egressIp}`)
+      if (z?.v === 'listed' && z.updated_at > now - ZEN_RECHECK_S) return 'the sending address is listed by Spamhaus ZEN; mailbox checks are stopped'
+      return null
+    },
     async verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> {
       const m = /^([a-z0-9._%+-]{1,64})@([a-z0-9.-]{1,253}\.[a-z]{2,})$/i.exec(address.trim())
-      if (!m) return unknown('not an address')
+      if (!m) return offline(unknown('not an address'))
       const domain = m[2].toLowerCase()
       address = `${m[1]}@${m[2]}` // the validated form only: nothing the caller sent past the match (a CRLF) reaches the wire
-      if (signal?.aborted) return unknown('aborted')
+      if (signal?.aborted) return offline(unknown('aborted'))
       // the breaker: a listed sending IP probes nobody
-      if (await zenStatus(db, cfg, env) === 'listed') throw new VerifierError('stop', 'the sending address is listed by Spamhaus ZEN; mailbox checks are stopped')
+      if (await zenStatus(db, cfg, env) === 'listed') throw Object.assign(new VerifierError('stop', 'the sending address is listed by Spamhaus ZEN; mailbox checks are stopped'), { noCall: true })
       const now = env.now()
       let fact = getDomainFact(db, domain, now)
       // a domain whose server accepts everything is answered from the cache: no connection at all
-      if (fact?.catchAll === true) return { outcome: 'catch_all', detail: 'the mail server accepts every address (cached)' }
+      if (fact?.catchAll === true) return offline({ outcome: 'catch_all', detail: 'the mail server accepts every address (cached)' })
       let mx = fact?.mx ?? null
       if (!mx) {
         try {
@@ -240,24 +250,24 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
           mx = list[0]?.exchange?.toLowerCase().replace(/\.$/, '') ?? null
         } catch (e) {
           const code = (e as NodeJS.ErrnoException).code
-          if (code === 'ENOTFOUND') return { outcome: 'undeliverable', detail: 'the domain does not exist' }
+          if (code === 'ENOTFOUND') return offline({ outcome: 'undeliverable', detail: 'the domain does not exist' })
           if (code === 'ENODATA') {
             // no MX record: the domain's own address is the implicit MX (RFC 5321 5.1)
             try { if ((await env.resolveA(domain)).length) mx = domain } catch { /* below */ }
-            if (!mx) return { outcome: 'undeliverable', detail: 'the domain has no mail server' }
-          } else return unknown('the mail server could not be looked up')
+            if (!mx) return offline({ outcome: 'undeliverable', detail: 'the domain has no mail server' })
+          } else return offline(unknown('the mail server could not be looked up'))
         }
-        if (!mx) return { outcome: 'undeliverable', detail: 'the domain has no mail server' }
+        if (!mx) return offline({ outcome: 'undeliverable', detail: 'the domain has no mail server' })
         setDomainFact(db, domain, { mx, catchAll: fact?.catchAll ?? null }, now)
         fact = { mx, catchAll: fact?.catchAll ?? null, at: now }
       }
       const host = mx
       return oneAtATime(host, async (): Promise<VerifyAnswer> => {
-        if (signal?.aborted) return unknown('aborted') // the caller's budget ran out while this call waited its turn
+        if (signal?.aborted) return offline(unknown('aborted')) // the caller's budget ran out while this call waited its turn
         const t0 = env.now()
-        if (port25Blocked(db, t0)) return unknown('outbound mail port 25 appears to be shut from this server, so no mailbox can be checked')
+        if (port25Blocked(db, t0)) return offline(unknown('outbound mail port 25 appears to be shut from this server, so no mailbox can be checked'))
         const until = backoffUntil(db, host, t0)
-        if (until) return unknown(`the mail server asked us to wait; trying again after ${new Date(until * 1000).toISOString().slice(11, 16)} UTC`)
+        if (until) return offline(unknown(`the mail server asked us to wait; trying again after ${new Date(until * 1000).toISOString().slice(11, 16)} UTC`))
         let conn: SmtpConn | null = null, abortHandler: (() => void) | null = null
         const bail = (e: unknown): VerifyAnswer => { noteBackoff(db, host, env.now()); return unknown(e instanceof Error ? e.message : 'connection failed') }
         try {

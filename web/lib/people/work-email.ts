@@ -32,7 +32,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifierMonthlyCap, verifyDailyCap, VerifySlotRefused } from './email-pattern.ts'
+import { emailGuessEnabled, publishedCandidateFor, releaseVerifySlot, reserveVerifySlot, verifierFromEnv, verifierMonthlyCap, verifyDailyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -324,6 +324,7 @@ async function checkMailbox(db: Database.Database, tenantId: string, leadId: str
   const verifier = verifierFromEnv(env, deps.fetchImpl, db)
   const dailyCap = verifyDailyCap(env), monthCap = verifier ? verifierMonthlyCap(env, verifier.name) : 0
   if (!verifier || !emailGuessEnabled(env) || dailyCap === 0 || monthCap === 0) return
+  if (verifier.blockedNow?.()) return // it cannot run now (port 25 shut, sender blocklisted): nothing reserved, the row stays "found, not checked"
   const nowS = deps.now ?? Math.floor(Date.now() / 1000)
   // The same reservation as the scan's guess checks (#849 inventory): refused (a cap, or another tab took it) = no call.
   // The claim moves updated_at, so another open tab sees 'pending' (checking) rather than a finished row.
@@ -335,10 +336,20 @@ async function checkMailbox(db: Database.Database, tenantId: string, leadId: str
     return
   }
   let out: (typeof MAILBOX_CHECKS)[number] = 'uncertain'
+  let noCall = false
   try {
     const a = await verifier.verify(address)
+    noCall = a?.noCall === true
     out = a?.outcome === 'deliverable' ? 'valid' : a?.outcome === 'catch_all' ? 'catch_all' : a?.outcome === 'undeliverable' ? 'undeliverable' : a?.outcome === 'refused' ? 'refused' : 'uncertain'
-  } catch { out = 'uncertain' }
+  } catch (e) { out = 'uncertain'; noCall = (e as { noCall?: boolean })?.noCall === true }
+  if (noCall) {
+    // No request left this server: the monthly allowance is given back, and when nothing was learned the row is unchecked again.
+    releaseVerifySlot(db, verifier.name, nowS)
+    if (out === 'uncertain') {
+      try { db.prepare("UPDATE work_email_lookups SET mailbox_check = NULL, mailbox_checked_at = NULL, mailbox_verifier = NULL, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(Math.max(Math.floor(Date.now() / 1000), nowS) + 1, tenantId, leadId, target) } catch (e) { console.error('[work-email] mailbox check not released:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+      return
+    }
+  }
   // updated_at moves again so another open tab's merge (mergeLookups) takes the settled row
   try { db.prepare("UPDATE work_email_lookups SET mailbox_check = ?, updated_at = ? WHERE tenant_id = ? AND lead_id = ? AND target = ? AND mailbox_check = 'pending'").run(out, Math.max(Math.floor(Date.now() / 1000), nowS) + 1, tenantId, leadId, target) }
   catch (e) { console.error('[work-email] mailbox check not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }

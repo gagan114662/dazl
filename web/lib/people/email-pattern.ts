@@ -264,10 +264,14 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 // ---- part 3: mailbox verification ----
 export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 export type Verification = typeof VERIFICATIONS[number]
-export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string }
+// noCall: the answer was reached WITHOUT any request leaving this server (a cached answer, a DNS-only answer, a stop or a backoff already
+// in force): the verifier's own allowance is given back, and an 'unknown' one leaves the address unchecked (releaseVerifySlot).
+export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverable' | 'unknown' | 'refused'; detail?: string; noCall?: boolean }
 // A provider adapter. Tests inject a fake. Production: ZeroBounce's free tier when ZEROBOUNCE_API_KEY is set, else none (today's
 // behaviour: candidates stay 'guessed', unverified).
-export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
+// blockedNow (optional, synchronous, no network): why NO check can run right now (port 25 shut, the sending address blocklisted), or null.
+// Asked BEFORE a slot is reserved, so a check that cannot run costs nothing.
+export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer>; blockedNow?(): string | null }
 // #1036 dazl's own SMTP mailbox check comes first when it is switched on and fully configured (smtp-verify.ts); it needs the database
 // for its per-domain cache, rate counters and breaker, so a caller without one cannot get it and falls back to the free-tier provider.
 export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch, db?: Database.Database): MailboxVerifier | null {
@@ -316,6 +320,8 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)
   const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
+  const blocked = rows.length ? verifier.blockedNow?.() ?? null : null
+  if (blocked) { run.stopped = blocked.slice(0, 160); return run } // nothing reserved, nothing marked: the addresses stay unchecked
   for (const { address } of rows) {
     if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
     // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.
@@ -329,12 +335,20 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
     }
     let v: Verification = 'uncertain'
     let stop: string | null = null
-    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
+    let noCall = false
+    try { const a = await verifier.verify(address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain'; noCall = a?.noCall === true } catch (e) { v = 'uncertain'; noCall = (e as { noCall?: boolean })?.noCall === true; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
     // Cut off by our own deadline mid-call: no answer, so the address goes back to unchecked (a later run may check it). Its slot
     // stays counted in both caps (the request may have reached the provider): an over-count, never an under-count.
     if (v === 'uncertain' && !stop && opts.signal?.aborted) {
       db.prepare("UPDATE email_candidates SET verification = 'none' WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(tenantId, leadId, address)
       run.aborted = true; break
+    }
+    if (noCall) {
+      releaseVerifySlot(db, vname, nowS)
+      if (v === 'uncertain') { // no request was made and nothing was learned: unchecked again, and it no longer counts against the tenant's day
+        db.prepare("UPDATE email_candidates SET verification = 'none', checked_at = NULL WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(tenantId, leadId, address)
+        continue
+      }
     }
     db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'").run(v, tenantId, leadId, address)
     run.checked++
@@ -353,6 +367,11 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
 export class VerifySlotRefused extends Error {
   readonly reason: 'cap' | 'lost'
   constructor(reason: 'cap' | 'lost') { super(`mailbox check refused: ${reason}`); this.reason = reason }
+}
+// Gives one monthly allowance back (a check that never left this server): never below zero.
+export function releaseVerifySlot(db: Database.Database, vname: string, nowS: number): void {
+  const monthKey = new Date(nowS * 1000).toISOString().slice(0, 7)
+  db.prepare('UPDATE email_verify_usage SET n = n - 1 WHERE verifier = ? AND month = ? AND n > 0').run(vname.slice(0, 40), monthKey)
 }
 export async function reserveVerifySlot(db: Database.Database, s: { tenantId: string; verifier: string; nowS: number; dailyCap: number; monthCap: number }, mark: () => boolean): Promise<void> {
   const dayStart = s.nowS - (s.nowS % 86_400), monthKey = new Date(s.nowS * 1000).toISOString().slice(0, 7), vname = s.verifier.slice(0, 40)
