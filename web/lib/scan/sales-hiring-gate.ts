@@ -29,6 +29,9 @@ import { WHY_MAX } from './score.ts'
 //   - after it: the end, a separator (, - ( / | :) or a level (I, II, III) - a word straight after it ("Account Executive Manager",
 //     "... Talent Community", "... Internship", "... Program") is another title.
 // It fails closed: a real variant outside this shape ("Enterprise Account Executive MSP, DACH") is held, never passed on a guess.
+// A standing pool cannot be told from a segment by shape ("Account Executive – Sales Talent Pool: Register Your Interest" on a live
+// board, review at b86f2172), so those are a short named list: a title naming one anywhere is held.
+const STANDING_POOL = /\b(?:talent\s+(?:pool|community|network|pipeline)|register\s+your\s+interest|future\s+opportunit(?:y|ies)|general\s+(?:interest|application)|evergreen|intern(?:ship)?s?)\b/i
 const LEVEL = /^(?:senior|sr\.?|junior|jr\.?|principal|staff|lead|founding|first|associate|enterprise|strategic|commercial|corporate|mid[-\s]?market|midmarket|smb|sme|named|major|key|global|regional|field|inside|outside|growth|new|business|[A-Z]{2,6})$/
 const AFTER_ROLE = /^\s*(?:$|[,\-–—(/|:]|(?:I{1,3}|IV|V|[1-5])\s*(?:$|[,\-–—(/|:]))/
 const SEGMENT_ROLE = /^\s*[,\-–—(/|:]\s*(?:team\s+)?(?:manager|lead|director|head|vp|recruiter|engineer|trainer|coordinator|assistant)s?\b/i
@@ -37,7 +40,10 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   const t = m.term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
   const hit = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
   if (!hit) return null
-  const before = title.slice(0, hit.index).trim(), after = title.slice(hit.index + hit[0].length)
+  if (STANDING_POOL.test(title)) return null
+  // "Mid Market" is one level word written as two; a bracketed abbreviation straight after the role ("Commercial Account Executive
+  // (CAE) Manager") is skipped, so the word after it is judged as coming straight after the role
+  const before = title.slice(0, hit.index).trim().replace(/\bmid\s+market\b/gi, 'Mid-Market'), after = title.slice(hit.index + hit[0].length).replace(/^\s*\([A-Z]{2,6}\)/, '')
   // level words are matched whatever their case; a segment code (SLED, MSP, EMEA) only as written in capitals
   if (before && !before.split(/\s+/).every(w => LEVEL.test(w) || LEVEL.test(w.toLowerCase()))) return null
   if (!AFTER_ROLE.test(after) || SEGMENT_ROLE.test(after)) return null

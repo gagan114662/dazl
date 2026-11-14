@@ -107,6 +107,8 @@ test('#1095 review at 54953a0a: a capitalised phrase before ", <State>" is not a
   // review at 910ebe60: a request naming two cities is not narrowed to the first (main: no place)
   assert.equal(placeIn('account executives in Austin, TX and in Dallas, TX'), null)
   assert.equal(placeIn('in Austin, TX and Dallas, TX'), null)
+  for (const q of ['in Austin, TX, Dallas, TX', 'in Austin, TX; Dallas, TX', 'in Austin, TX / Dallas, TX', 'in Austin, TX & Dallas, TX', 'in Austin, TX or Dallas, TX']) assert.equal(placeIn(q), null, q)
+  for (const q of ['in Austin, TX, United States', 'account executives in Austin, TX, hiring now', 'in Austin, TX; remote is fine']) assert.equal(placeIn(q)?.name, 'Austin, TX', q)
   assert.equal(placeIn('in Austin, TX or near Austin, TX')?.name, 'Austin, TX', 'the same city twice is one place')
 })
 
@@ -119,7 +121,7 @@ test('#1095 review: a profile naming SEVERAL places is never narrowed to its fir
   assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
 })
 
-test('#1095 live trial request on the REAL NinjaOne board: the profile\'s "Austin, TX" runs the free job-board source and an Austin posting becomes a READY, board-dated lead with its hiring row', async () => {
+test('#1095 live trial request on the REAL NinjaOne board: the profile\'s "Austin, TX" runs the free job-board source and an Austin posting becomes a source-checked, board-dated lead with its hiring row', async () => {
   const { http, seen } = boards()
   const x = await runFixture(fx(http))
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
@@ -127,9 +129,9 @@ test('#1095 live trial request on the REAL NinjaOne board: the profile\'s "Austi
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'the board of a company this scan found was read')
   const details = seen.filter(u => /\/jobs\/\d+$/.test(u)).map(u => +u.split('/').pop()!)
   assert.ok(details.length > 0 && details.every(id => AUSTIN.includes(id)), `only Austin postings were detail-fetched (not "Texas, USA", Singapore, Germany ...): ${details}`)
-  const ready = x.leads.filter(l => !l.review_reason)
-  const gh = ready.find(l => AUSTIN.some(id => l.source_url === GH(id)))
-  assert.ok(gh, `a ready lead cites an Austin NinjaOne posting: ${JSON.stringify(x.leads.map(l => [l.company, l.source_url, l.review_reason]))}`)
+  const checked = x.leads.filter(l => !l.review_reason)
+  const gh = checked.find(l => AUSTIN.some(id => l.source_url === GH(id)))
+  assert.ok(gh, `a source-checked lead (no review reason) cites an Austin NinjaOne posting: ${JSON.stringify(x.leads.map(l => [l.company, l.source_url, l.review_reason]))}`)
   const id = gh!.source_url.split('/').pop()!
   assert.equal(gh!.event_date, moved(REAL.postings[id].first_published).slice(0, 10), 'dated by the board\'s own first-published day')
   // the vacancy is the record's TITLE; the stored quote is the posting's own (boilerplate) sentence

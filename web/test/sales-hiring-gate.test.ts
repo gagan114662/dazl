@@ -837,5 +837,10 @@ test('#1095 review: the real NinjaOne / AlertMedia account-executive titles are 
   for (const t of ['Team Lead Account Executive - Italy & Spain', 'Technical Recruiter, Account Executive Team', 'Manager, Account Executive', 'Account Executive Support Specialist']) assert.equal(titleIsRole(t, roles), null, t)
   // review at 910ebe60: decided by the title's shape, so titles no word list anticipated are held too
   for (const t of ['Chief of Staff to the Account Executive org', 'Sales Development Representative to Account Executive Program', 'Account Executive Talent Community', 'Future Opportunities - Account Executive', 'Account Executive Internship', 'Sales Engineer for Account Executives', 'Director of Account Executive Operations', 'Account Executive Manager', 'Account Executive - Manager, West', 'Account Executive Enablement']) assert.equal(titleIsRole(t, roles), null, t)
+  // review at b86f2172, live titles copied verbatim: a standing pool (bitwarden job 7930504003) and a manager role behind a
+  // bracketed abbreviation (sigmacomputing job 7767734003) are held; the same shapes written out are held too
+  for (const t of ['Account Executive – Sales Talent Pool: Register Your Interest', 'Commercial Account Executive (CAE) Manager - EMEA', 'Account Executive (Talent Community)', 'Account Executive - Future Opportunities', 'Account Executive: General Interest', 'Account Executive, Internship']) assert.equal(titleIsRole(t, roles), null, t)
+  // live titles that ARE the opening: purestorage ("Community" is not a talent community), Datadog ("Mid Market" as two words), an abbreviation alone
+  for (const t of ['Account Executive, Federal (Intelligence Community)', 'Mid Market Account Executive', 'Mid-Market Account Executive', 'Commercial Account Executive (CAE)', 'Account Executive (SMB) - West']) assert.ok(titleIsRole(t, roles), t)
   for (const t of ['Senior Account Executive', 'Account Executive II', 'Account Executive (Austin)', 'Account Executive - Mid-Market', 'Sr. Account Executive, Enterprise', 'Founding Account Executive', 'Account Executives']) assert.ok(titleIsRole(t, roles), t)
 })
