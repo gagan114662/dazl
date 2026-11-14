@@ -44,6 +44,27 @@ const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|w
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
   return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
+// An expansion a press release words without the verb "expand" (#878, real releases): THIS company, as the sentence's own subject, grows / bolsters /
+// strengthens / builds out / broadens / deepens / adds to ITS OWN practice, group, team, presence, footprint, bench, capability, office or operations
+// ("Armstrong Teasdale is continuing to grow its Corporate Services Group's Chicago presence with the addition of Partner ..."), or the company announces
+// that someone has joined IT ("the firm", or its name) in "its growing / expanding" practice or group. Strict on purpose: the company's name must come
+// right before the verb, with only a completed / in-progress auxiliary between ("is", "has", "continues to", "is continuing to"), so intent ("looking to
+// grow", "poised to"), failure ("unable to grow"), hearsay and another subject ("X said Beta grew its team", "helps clients grow their team") never pass.
+// The grown unit must be the company's own ("its", no other possessor, not a "team page"), and a clause that also states a cut is not read.
+// Only for an expand condition with no named object ("expanded into Europe" still needs the literal reader).
+const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const GROWN_UNIT = String.raw`(?:practices?|groups?|teams?|presence|footprint|bench|capabilit(?:y|ies)|offices?|operations?)`
+const UNIT_FILLER = String.raw`(?:(?!(?:and|or|of|for|clients?|customers?|partners?|rivals?|competitors?)\b)(?:${GROWN_UNIT}['’]s|[\w&.-]+)\s+){0,6}?`
+const GROW_VERB = String.raw`(?:(?:is|are|has\s+been|have\s+been)\s+(?:continuing\s+to\s+grow|growing|bolstering|strengthening|building\s+out|broadening|deepening|adding\s+to)|(?:continues|has\s+continued|continued)\s+to\s+(?:grow|bolster|strengthen|build\s+out|broaden|deepen|add\s+to)|(?:has|have)\s+(?:grown|bolstered|strengthened|built\s+out|broadened|deepened|added\s+to)|(?:grew|grows|bolster(?:s|ed)|strengthen(?:s|ed)|builds\s+out|built\s+out|broaden(?:s|ed)|deepen(?:s|ed)|add(?:s|ed)\s+to))`
+const SUFFIX_OPT = String.raw`(?:,?\s+(?:LLP|LLC|PLLC|P\.?C\.?|Inc\.?|Ltd\.?))?`
+const SHRINK = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing)|from\s+\d+\s+to\s+\d+)\b/i
+function growthShown(quote: string, company: string): boolean {
+  const co = company.trim(); if (co.length < 2) return false
+  const name = `${reEsc(co).replace(/\s+/g, String.raw`\s+`)}${SUFFIX_OPT}`
+  const own = new RegExp(String.raw`^(?:today,?\s+)?${name}\s+(?:(?:also|further|today|again|significantly)\s+)?${GROW_VERB}\s+its\s+${UNIT_FILLER}${GROWN_UNIT}\b(?!\s+(?:page|pages|site|bios?|website|section)\b)`, 'i')
+  const joined = new RegExp(String.raw`^${name}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+[^,;]{2,80}?\s+(?:has|have)\s+joined\s+(?:the\s+(?:firm|company)|${name})\b[^,;]{0,60}?\bits\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}\b`, 'i')
+  return clauses(quote).some(k => !EVENT_NOT.test(k) && !SHRINK.test(k) && (own.test(k) || joined.test(k)))
+}
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".
 const clockOf = (c: Condition): number | null => c.since_days ?? c.within_days
@@ -182,7 +203,8 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const literal = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const shows = literal || (c.event === 'expand' && !c.object && growthShown(quote, lead.company))
       return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
