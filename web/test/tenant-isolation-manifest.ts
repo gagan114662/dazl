@@ -87,6 +87,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/[lead]/warm-path', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/warm-path', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/evidence', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
+  { path: 'leads/table', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'leads/export', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'export' },
   { path: 'leads/hiring-feed', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'leads/hiring-feed', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },

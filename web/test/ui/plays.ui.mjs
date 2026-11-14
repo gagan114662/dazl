@@ -118,7 +118,7 @@ try {
     const nav = page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Plays', includeHidden: true })
     await nav.waitFor({ state: 'attached', timeout: 15000 })
     assert.equal(await nav.getAttribute('href'), '/app/plays')
-    assert.equal(await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Leads', includeHidden: true }).getAttribute('href'), '/app/leads?latest=1', 'Leads opens results')
+    assert.equal(await page.locator('nav[aria-label=Main]').getByRole('link', { name: 'Leads', includeHidden: true }).getAttribute('href'), '/app/leads/table', 'Leads opens the table')
     // The audit's exact steps: the held run is on screen (heading "Leads", its held lead), then a real click on Plays.
     await page.getByText('Synthetic Dental Leeds', { exact: true }).first().waitFor({ timeout: 15000 })
     assert.equal(await page.locator('h1').last().textContent(), 'Leads')
