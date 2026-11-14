@@ -1,0 +1,41 @@
+# /etc/systemd/system/dazl-inbound-mail.service (ops/inbound-mail/README.md)
+# Inbound SMTP for dazl.ai on port 25, as its own unprivileged user. The only capability it keeps is binding a low port.
+[Unit]
+Description=dazl.ai inbound mail receiver (SMTP :25 -> app /internal/admin/inbound-email)
+After=network-online.target
+Wants=network-online.target
+# The switch: the unit does nothing until this file exists (ops/inbound-mail/README.md, "Switch").
+ConditionPathExists=/etc/dazl-inbound-mail/enabled
+
+[Service]
+Type=simple
+User=dazl-mail
+Group=dazl-mail
+# Root-only file (0600 root:root), read by systemd before it drops to User=. No secret is written in this unit.
+EnvironmentFile=/etc/dazl-inbound-mail/env
+Environment=DAZL_INBOUND_CONFIG=/etc/dazl-inbound-mail/config.json
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/dazl-inbound-mail/receiver.py serve
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+ReadWritePaths=/var/spool/dazl-inbound
+# The box has 1.8 GB for prod + staging: this service must never be what runs it out of memory.
+MemoryHigh=128M
+MemoryMax=192M
+OOMScoreAdjust=300
+SyslogIdentifier=dazl-inbound-mail
+
+[Install]
+WantedBy=multi-user.target

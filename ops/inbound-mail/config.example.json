@@ -1,0 +1,28 @@
+{
+  "_about": "dazl inbound mail receiver (ops/inbound-mail/README.md). Installed as /etc/dazl-inbound-mail/config.json. Keys starting with _ are comments. Secrets are NOT here: see /etc/dazl-inbound-mail/env.",
+  "listen_host": "0.0.0.0",
+  "listen_port": 25,
+  "hostname": "mail.dazl.ai",
+  "domains": ["dazl.ai"],
+
+  "_backend_url": "The app's inbound endpoint on loopback. Production is blue/green on :3104/:3105: point this at the port Caddy serves (grep reverse_proxy /etc/caddy/Caddyfile) and update it after a deploy that switches ports.",
+  "backend_url": "http://127.0.0.1:3104/internal/admin/inbound-email",
+
+  "_fallback_forward": "The human inbox (the Worker's REPLY_FALLBACK_FORWARD). PLACEHOLDER: Hermes fills it in on the box. Empty = app mail that cannot be handled gets a 451, and other addresses are refused with 451, until it is set.",
+  "fallback_forward": "",
+
+  "_routes": "Address routing table. action: backend (the app contract) | forward (to 'to', or to fallback_forward when 'to' is absent) | reject ('reason'). PLACEHOLDER for the rest of the Cloudflare Email Routing rules: Hermes supplies the list; until then every other @dazl.ai address goes to fallback_forward (default_route), which is what the Cloudflare catch-all does today.",
+  "routes": {
+    "reply@dazl.ai": { "action": "backend" }
+  },
+  "default_route": { "action": "forward" },
+
+  "never_reply_to": [],
+  "reply_from_mode": "rewrite",
+  "spool_dir": "/var/spool/dazl-inbound",
+  "spool_days": 30,
+  "tls_cert": "/etc/dazl-inbound-mail/tls/fullchain.pem",
+  "tls_key": "/etc/dazl-inbound-mail/tls/privkey.pem",
+  "rate": { "connections_per_minute": 30, "messages_per_minute": 20, "max_concurrent_per_ip": 5, "max_concurrent": 40 },
+  "max_parallel_deliveries": 2
+}
