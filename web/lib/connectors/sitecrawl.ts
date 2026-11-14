@@ -385,6 +385,7 @@ const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contac
 // contact: ..."), careers ("send your CV to ..."), privacy / legal notices (a named officer), blog and author pages. Linked pages
 // first (the site's own navigation), then the usual paths. Never a page contactPaths already reads; never a file or a query URL.
 export const EVIDENCE_PAGES = 4
+export const EVIDENCE_BUDGET_MS = 20_000 // the evidence read's own wall-clock budget per site (never above the crawl budget)
 const EVIDENCE_HINT = /(press|news|media|newsroom|careers?|jobs|join-us|privacy|legal|imprint|impressum|datenschutz|blog|authors?|insights|investors?)/i
 export function evidencePaths(homeHtml: string, home: URL): string[] {
   const skip = new Set(contactPaths(homeHtml, home))
@@ -512,12 +513,26 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     if (onPage && stoppedBy !== 'aborted' && stoppedBy !== 'time' && !timeStop && !abortStop) {
       const paths = evidencePaths(home.body, new URL(home.finalUrl)).filter(p => robots.allows(p)).slice(0, EVIDENCE_PAGES)
       const gap = Math.max(gapMs, robots.delayMs)
+      // Bounded on its own (review 4b3b9025): crawlSite's deadline is over by the time `later` runs, so the evidence read has its own
+      // wall-clock budget (EVIDENCE_BUDGET_MS, never above the crawl budget) - no fetch starts after it, no gap is waited out past it,
+      // and a fetch gets only the time that is left. It shares the per-host politeness clock (lastHit) with every other crawl in this
+      // process, so two jobs reading the same site still keep the gap between them.
       if (paths.length) later = async () => {
+        const until = Date.now() + Math.min(crawlBudgetBound(budgetMs), EVIDENCE_BUDGET_MS)
+        const h = new URL(origin).hostname
         for (const p of paths) {
-          if (signal?.aborted) return
-          if (!(await sleepAbort(gap, signal))) return
+          if (signal?.aborted || Date.now() >= until) return
+          // the slot is taken BEFORE the wait, so two reads of one host queued at the same moment are still a gap apart
+          const at = Math.max(Date.now(), (lastHit.get(h) ?? 0) + gap)
+          if (at >= until) return
+          lastHit.set(h, at)
+          if (at > Date.now() && !(await sleepAbort(at - Date.now(), signal))) return
+          const left = until - Date.now()
+          if (left <= 0) return
+          const bound = AbortSignal.timeout(Math.max(1, Math.min(TIMEOUT_MS, left)))
           let r: Awaited<ReturnType<Get>> = null
-          try { r = await get(origin + p, { signal: signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS) }) } catch { r = null }
+          try { r = await get(origin + p, { signal: signal ? (AbortSignal as unknown as { any(s: AbortSignal[]): AbortSignal }).any([signal, bound]) : bound }) } catch { r = null }
+          if (signal?.aborted || Date.now() > until) return // an answer that arrived after the budget is not used
           if (!r || r.status >= 400) continue
           onPage(r.body, r.finalUrl, r.status)
         }

@@ -495,8 +495,10 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const ctxOwners = contextOwners(seen, allNames)
   const shaped = shapeOwners(seen.map(s2 => s2.address.split('@')[0]), [...allNames, ...ctxOwners])
   let pattern = rankPattern([...new Set([...locals, ...seen.map(s2 => s2.address.split('@')[0])])], [...allNames, ...ctxOwners, ...shaped])
-  // A format supported ONLY by the shape of the addresses (no name printed with any of them) is never 'high': medium at most.
-  if (pattern && pattern.confidence === 'high' && pattern.supporters.every(p2 => shaped.some(x => x.first === p2.first && x.last === p2.last))) pattern = { ...pattern, confidence: 'medium', score: 60 }
+  // A format that leans on the SHAPE of an address (no name printed with it) for ANY of its supporters is never 'high': medium at most.
+  // 'high' is what the mailbox check probes, so every supporter of a 'high' format must be a person named on the site or beside the address.
+  const namedOwner = (p2: Name) => [...allNames, ...ctxOwners].some(x => x.first === p2.first && x.last === p2.last)
+  if (pattern && pattern.confidence === 'high' && pattern.supporters.some(p2 => !namedOwner(p2) && shaped.some(x => x.first === p2.first && x.last === p2.last))) pattern = { ...pattern, confidence: 'medium', score: 60 }
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
@@ -512,6 +514,13 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(tenantId, leadId, site, pattern.format, pattern.support, pattern.confidence, pattern.score, pattern.runnerUp, JSON.stringify(evidence))
   const hasPub = new Set(published.map(x => nameKey(x.name)))
+  // One generation of guesses per site (review 4b3b9025 #2). The crawl records guesses twice - after the main read and again after the
+  // evidence pages - and a later read can change the format or its confidence. UNCHECKED guesses on this site made under another
+  // format are removed, and the ones kept take the pattern's confidence, so the mailbox check (which probes 'high' only) can never
+  // be left probing the format the completed read decided against. Checked rows keep their history.
+  const onSite = `%@${site.toLowerCase()}`
+  db.prepare("DELETE FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND lower(address) LIKE ? AND format <> ?").run(tenantId, leadId, onSite, pattern.format)
+  db.prepare("UPDATE email_candidates SET confidence = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND lower(address) LIKE ? AND format = ?").run(pattern.confidence, tenantId, leadId, onSite, pattern.format)
   // Distinct people per guessed local part: a local two different people would both get is nobody's guess.
   const guessOwners = new Map<string, Set<string>>()
   for (const x of names) {

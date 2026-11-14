@@ -6,8 +6,8 @@ import net from 'node:net'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { VerifierError } from '../lib/people/zerobounce.ts'
-import { verifierFromEnv, verifierMonthlyCap } from '../lib/people/email-pattern.ts'
-import { looksLikeShutPort, NOT_CATCH_ALL_TTL_S, netConnect, backoffUntil, FACT_TTL_S, PORT25_FAILS, port25Blocked, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
+import { migrateEmailGuess, verifierFromEnv, verifierMonthlyCap, verifyCandidates } from '../lib/people/email-pattern.ts'
+import { looksLikeShutPort, NOT_CATCH_ALL_TTL_S, netConnect, backoffUntil, FACT_TTL_S, PORT25_FAILS, port25Blocked, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, strictLookup, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
 
 interface Fake { port: number; log: string[]; conns: () => number; maxConcurrent: () => number; close: () => Promise<void> }
 // answer(rcpt) -> reply line "250 ok" / "550 no such user" / "450 try later"; greeting overrides the 220 banner.
@@ -320,4 +320,83 @@ test('#1036 smtp review R7: a caller that is already aborted while it WAITS for 
     assert.equal((await first).outcome, 'deliverable'); assert.equal((await second).outcome, 'unknown')
     assert.equal(connects, 1, 'only the first caller connected')
   } finally { await f.close() }
+})
+
+// ---- review of 4b3b9025 (Hermes-PC, 2026-11-14) ----
+test('#1036 smtp review 4b3b9025 #1: the STRICT address guard - IPv4-mapped IPv6 in hex form, 6to4 and Teredo forms of loopback / private addresses are never connected to', async () => {
+  const hostile = ['::ffff:7f00:1', '::ffff:a00:5', '::ffff:c0a8:1', '2002:7f00:1::', '2001:0000:0:0:0:0:7f00:1', '::ffff:127.0.0.1', '127.0.0.1', '::1', 'fe80::1', 'fc00::1', '169.254.169.254']
+  for (const ip of hostile) await assert.rejects(realEnv.connect(ip, 25, 500), /blocked_address/, `literal ${ip}`)
+  // ... and by NAME: whatever the MX host resolves to is checked at connect time (the lookup net.connect itself uses)
+  const viaLookup = (addrs: { address: string; family: number }[]) => new Promise<unknown[]>(res => strictLookup('mx.hostile.test', { all: true }, (...a: unknown[]) => res(a), ((_h: string, _o: unknown, cb: (e: Error | null, a: { address: string; family: number }[]) => void) => cb(null, addrs)) as never))
+  for (const ip of hostile) { const [err] = await viaLookup([{ address: ip, family: ip.includes(':') ? 6 : 4 }]); assert.match(String((err as Error)?.message), /blocked_address/, `resolved ${ip}`) }
+  const [mixErr] = await viaLookup([{ address: '93.184.216.34', family: 4 }, { address: '::ffff:7f00:1', family: 6 }])
+  assert.match(String((mixErr as Error)?.message), /blocked_address/, 'one private address among public ones refuses the host (rebinding)')
+  const ok = await viaLookup([{ address: '93.184.216.34', family: 4 }])
+  assert.equal(ok[0], null); assert.deepEqual(ok[1], [{ address: '93.184.216.34', family: 4 }], 'a public address is passed through')
+  assert.match(String((await viaLookup([]))[0]), /blocked_address/, 'no address at all is refused')
+})
+
+test('#1036 smtp review 4b3b9025 #3: a caller\'s abort mid-dialog is not the mail server\'s failure - no backoff is recorded for the host', async () => {
+  const { db, fake, v } = await setup(to => (to.startsWith('dazl-check-') ? '550 5.1.1 no such user' : ''))   // the address RCPT is never answered
+  try {
+    const a = await v.verify('dana.lee@acme.test', AbortSignal.timeout(300))
+    assert.equal(a.outcome, 'unknown'); assert.equal(fake.conns(), 1, 'the dialog had started')
+    assert.equal(backoffUntil(db, '127.0.0.1', clock), 0, 'no backoff after an abort')
+    assert.equal((db.prepare("SELECT count(*) AS n FROM smtp_verify_state WHERE k LIKE 'bo:%'").get() as { n: number }).n, 0)
+  } finally { await fake.close() }
+})
+
+test('#1036 smtp review 4b3b9025 #4: a connect that never happens (timeout: port 25 shut) made no request - noCall, so the caller refunds it; scan guesses stay unchecked and uncounted', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); migrateEmailGuess(db)
+  const timeout = async () => { throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+  let n = 0
+  const v = smtpMailboxVerifier(db, cfgFor(25), envFor({ connect: (async () => { n++; return timeout() }) as SmtpEnv['connect'], resolveMx: async d => [{ exchange: `mx.${d}`, priority: 1 }] }))
+  const direct = await v.verify('dana.lee@one.test')
+  assert.deepEqual([direct.outcome, direct.noCall], ['unknown', true]); assert.match(direct.detail ?? '', /port 25 may be shut/)
+  const add = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('T', 'L1', ?, ?, 'first.last', 'homepage address: Austin, TX 78701', 'guessed', 'high')")
+  add.run('Ann Roe, CEO', 'ann.roe@two.test'); add.run('Bo Lin, CFO', 'bo.lin@three.test'); add.run('Cy Ost, COO', 'cy.ost@four.test')
+  const run = await verifyCandidates(db, 'T', 'L1', v, { env: { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '10' } })
+  assert.equal(n, PORT25_FAILS, 'three timeouts in all, then the check is off: the third address made no attempt')
+  assert.equal(run.checked, 0)
+  assert.equal((db.prepare("SELECT COALESCE(SUM(n), 0) AS n FROM email_verify_usage").get() as { n: number }).n, 0, 'no monthly allowance is used by a check that never connected')
+  assert.deepEqual(db.prepare("SELECT verification, checked_at FROM email_candidates ORDER BY address").all(), [0, 1, 2].map(() => ({ verification: 'none', checked_at: null })), 'unchecked, and nothing counts against the tenant\'s day')
+  assert.equal(port25Blocked(db, clock), true)
+})
+
+test('#1036 smtp review 4b3b9025 (xhawk): a bare 550 whose text is a policy refusal is unknown - never "undeliverable", never cached as "rejects unknown addresses"', async () => {
+  for (const text of ['550 blocked by policy', '550 relay denied', '550 rejected: listed at zen.spamhaus.org', '550 SPF check failed', '550 Access denied']) {
+    const { db, fake, v } = await setup(() => text)
+    try {
+      const a = await v.verify('dana.lee@acme.test')
+      assert.equal(a.outcome, 'unknown', text); assert.equal(getDomainFact(db, 'acme.test', clock)?.catchAll ?? null, null, `${text}: nothing cached`)
+    } finally { await fake.close() }
+  }
+  // a plain no-such-user answer, with or without an enhanced code, still is one
+  for (const text of ['550 no such user here', '550 5.1.1 The email account that you tried to reach does not exist', '550 mailbox unavailable', '551 user not local']) {
+    const { fake, v } = await setup(to => (to.startsWith('dazl-check-') ? '550 5.1.1 no such user' : text))
+    try { assert.equal((await v.verify('dana.lee@acme.test')).outcome, 'undeliverable', text) } finally { await fake.close() }
+  }
+})
+
+test('#1036 smtp review 4b3b9025 (xhawk): checks for one domain queued together spend the catch-all probe once, not once per address', async () => {
+  const { fake, v } = await setup(normal)
+  try {
+    const out = await Promise.all(['a.one@acme.test', 'b.two@acme.test', 'c.three@acme.test', 'd.nouser@acme.test'].map(a => v.verify(a)))
+    assert.deepEqual(out.map(o => o.outcome), ['deliverable', 'deliverable', 'deliverable', 'undeliverable'])
+    assert.equal(rcpts(fake).filter(l => /dazl-check-/.test(l)).length, 1, 'one probe for the domain')
+    assert.equal(rcpts(fake).length, 5, '1 probe + 4 addresses')
+  } finally { await fake.close() }
+})
+
+test('#1036 smtp review 4b3b9025 (xhawk): the port-25 stop is cleared by a server GREETING, not by a bare TCP accept', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const mute = net.createServer(sock => { sock.on('error', () => {}) })   // accepts the connection and never says anything (a transparent proxy)
+  await new Promise<void>(r => mute.listen(0, '127.0.0.1', r))
+  try {
+    const now = clock
+    db.prepare("INSERT INTO smtp_verify_state (k, n, hold_until, v, updated_at) VALUES ('p25', 2, 0, NULL, ?)").run(now)   // two timeouts so far
+    const v = smtpMailboxVerifier(db, { ...cfgFor((mute.address() as net.AddressInfo).port), commandMs: 300 }, envFor())
+    assert.equal((await v.verify('dana.lee@acme.test')).outcome, 'unknown')
+    assert.equal((db.prepare("SELECT n FROM smtp_verify_state WHERE k = 'p25'").get() as { n: number }).n, 2, 'a silent accept does not reset the count')
+  } finally { await new Promise<void>(r => mute.close(() => r())) }
 })

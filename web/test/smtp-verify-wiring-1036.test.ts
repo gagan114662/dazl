@@ -68,7 +68,7 @@ test('#1036 port 25 shut: the scan\'s guesses are not reserved, marked or counte
   assert.match(v?.blockedNow?.() ?? '', /port 25 appears to be shut/)
   const run = await verifyCandidates(db, T, 'L1', v, { env: SMTP_FAKE })
   assert.equal(run.checked, 0); assert.match(run.stopped ?? '', /port 25/)
-  assert.equal(used(db), 0, 'no allowance used')
+  assert.equal((db.prepare('SELECT count(*) AS n FROM email_verify_usage').get() as { n: number }).n, 0, 'no ledger row was ever written: nothing was reserved')
   assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE verification = 'none'").get() as { n: number }).n, 3, 'every address is still unchecked')
   assert.equal((db.prepare('SELECT count(*) AS n FROM email_candidates WHERE checked_at IS NOT NULL').get() as { n: number }).n, 0, 'nothing counts against the tenant\'s day')
 })
@@ -95,5 +95,8 @@ test('#1036 port 25 shut: Find work email\'s mailbox check reserves nothing and 
   const r = await findWorkEmail(db, T, f.leadId, `${p.name}|${p.title}`, { master, env, fetchImpl: (async () => { throw new Error('no network') }) as typeof fetch }) as { row: { mailbox_check: string | null; address: string | null } }
   assert.equal(r.row.mailbox_check ?? null, null, 'not checked: nothing implies a verified address')
   assert.ok(r.row.address, 'the found address is still shown as found')
-  assert.equal(used(db), 0)
+  // "reserves nothing" means no reservation was ever made: no ledger row at all (a row refunded back to 0 would be the refund path,
+  // not this gate), and the lookup row was never marked as being checked.
+  assert.equal((db.prepare('SELECT count(*) AS n FROM email_verify_usage').get() as { n: number }).n, 0, 'no email_verify_usage row exists')
+  assert.deepEqual(db.prepare('SELECT mailbox_check, mailbox_checked_at, mailbox_verifier FROM work_email_lookups WHERE lead_id = ? AND target LIKE ?').get(f.leadId, 'Valid%'), { mailbox_check: null, mailbox_checked_at: null, mailbox_verifier: null })
 })
