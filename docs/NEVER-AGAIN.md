@@ -137,3 +137,27 @@ Times are US Eastern unless marked Z.
   passing C$10. A task that does not name its spend limit and the running total runs free checks only.
 - **Enforced by (note-only):** the coordinator's task files name the limit and the running total; the reviewer checks
   that each paid test posted its cost. Nothing in this repo meters spend on tests.
+
+## 13. A lane wrote to staging env through the ops door and wiped the trial allowlist
+
+- **Mistake:** a Hermes verifier lane probing the staging ops door called the endpoint that OVERWRITES an env value with
+  the request body (`POST /__ops/env/set?env=staging&key=...`) and wiped the staging trial allowlist (the `DAZL_TRIAL_*`
+  allowlist). It was restored from the box's automatic pre-probe backup and the entry count was verified, and nothing
+  else was touched - but a read-only-intended check had destroyed live staging configuration.
+- **Date:** 2026-11-13 ~22:40.
+- **Rule:** lanes, builders and agents may only READ through the ops door (`/env` keys, `/db`, `/logs`, `/outbox`,
+  `/job`). No lane, builder or agent calls any ops-door endpoint that writes or overwrites an env value or a setting
+  (`/env/set`, `&unset=1`, `/mail/enable`, and anything equivalent). Changing staging or prod configuration is the
+  owner's alone, done deliberately, with the current value recorded first.
+- **Enforced by (automated):** `ops/ops_read.sh` is the only ops-door client in this repo: it forces `-G` (GET), names
+  no HTTP method itself, and refuses - before making any request - every argument that would change the method or send
+  a body (`-X`, `--request`, `-d`/`--data*`, `-F`, `-T`, `-I`) and every env/setting-write or environment-changing path
+  whatever the method (`/env/set`, `/env/unset`, `/config/set`, `/settings/set`, `/secrets/set`, `&unset=1`,
+  `/mail/enable`, `/deploy/*`, `/rollback`, `/restart/*`). `ops/test_ops_read_only.py` runs the script for real on each
+  of those and fails if any is accepted, if the client gains a method or a write path, or if any script under `ops/**`
+  POSTs an env-write ops endpoint (with a negative control that the scanner fires on the exact call that caused this
+  entry). `.github/scripts/ops-read-only.test.mjs` keeps that test wired into
+  `.github/workflows/never-again-gates.yml`, which runs on every pull request. Limit: the gate covers this repo. A lane
+  can still run raw `curl` on the host, so the coordinator's host-side client
+  (`~/work/opsdoor/ops_read.sh`, outside this repo) carries the same refusals and the reviewer/verifier briefs list the
+  env-write endpoints as forbidden; nothing in the ops door itself distinguishes a lane's token from the owner's.
