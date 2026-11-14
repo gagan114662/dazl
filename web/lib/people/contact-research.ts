@@ -190,7 +190,7 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   // every capitalised or numbered run must be this company (or its short form / legal suffix), a requested place, or an ordinary title / filler word;
   // and an "of / at / for / with / from" phrase after the title must lead to this company ("owner of a local bakery" does not).
   const SUFFIX_OK = /^(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty|dds|dmd|md|mba|cpa|phd|esq)\.?$/i
-  const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
+  const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
   const whereWords = new Set((input.where ?? []).flatMap(w => String(w).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w => w.length >= 3))
   const thisCompany = (org: string): boolean => {
     const ow = org.replace(/^the\s+/i, '').split(/\s+/).map(w => companyKey(w)).filter(Boolean), cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
@@ -212,14 +212,43 @@ export function groundPerson(answer: { name: string; title: string; source: stri
     }
     return null
   }
-  const sentenceStart = (() => { const cut = rawAll.slice(0, at + span[0]); const i = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? ')); return i < 0 ? 0 : i + 2 })()
-  const before = rawAll.slice(Math.max(sentenceStart, at + span[0] - 45), at + span[0])
+  // Sentence boundaries that survive abbreviations ("Globex Inc. CEO Jane Roe", "Dr. Jane Roe", "King St. Mark Stone", "J. Smith"): the period after one
+  // is masked in a same-length copy before the text is split.
+  const masked = rawAll.replace(/\b(?:Inc|Ltd|Co|Corp|Dr|Mr|Ms|Mrs|Jr|Sr|St|Est|est|vs|etc|No|Ave|Blvd)\./g, m => m.slice(0, -1) + '\u0001').replace(/\b\p{Lu}\./gu, m => m.slice(0, -1) + '\u0001')
+  const ends: number[] = [0]; for (const m of masked.matchAll(/[.!?]+\s+/g)) ends.push(m.index + m[0].length)
+  const sentenceOf = (i: number): [number, number] => { let lo = 0, hi = rawAll.length; for (const e of ends) { if (e <= i) lo = e; else { hi = e; break } } return [lo, hi] }
+  const [sLo, sHi] = sentenceOf(at + span[0]); const [pLo] = sentenceOf(Math.max(0, sLo - 1))
+  // Search results are short, so the WHOLE result (title and snippet) is the window; a page is bounded to the sentence around the person and the one before
+  // it (a testimonial card puts the organisation in the sentence before the name). The person's own name and title are never "another organisation".
+  const personWords = new Set([...answer.name.split(/\s+/), ...answer.title.split(/\s+/)].map(w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))
+  // (For a search result the window is the part the quote is in: the snippet, or the title line of a profile result; a page: the sentence and the one before.)
+  const titleLen = tidy(src.title).length + 2
+  const inTitle = at < titleLen
+  const windowStart = src.kind === 'page' ? pLo : inTitle ? 0 : titleLen
+  const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll.slice(0, titleLen - 2) : rawAll.slice(titleLen)
+  const left = windowText.slice(0, at + span[0] - windowStart), right = windowText.slice(at + span[1] - windowStart)
+  const foreign = (seg: string) => foreignRun(seg.split(/\s+/).map(w => personWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) ? '' : w).join(' ').replace(/\s+/g, ' '))
+  if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
+  // After the title and a separator, a bare noun clause ("owner, runs the bakery next door", "owner - the bakery down the street") is another business too:
+  // the clause must be empty, this company, or only ordinary title / filler / place words.
   const afterAll = tail.split(/[.!?]\s/)[0]
-  // 45 characters, never ending inside a word (a cut-off "Que" or "201" would read as a name or a number).
-  const after = afterAll.length > 45 ? afterAll.slice(0, 45).replace(/[\p{L}\p{N}&'’-]*$/u, '') : afterAll
-  if (foreignRun(before) || foreignRun(after)) return { refused: 'title_at_another_organisation' }
+  const clause = /^\s*[,(\-–—/|·]\s*([^,.;)]{1,60})/u.exec(afterAll)?.[1]
+  if (clause) {
+    const ws = clause.trim().split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')).filter(Boolean)
+    const cw0 = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean), cl = companyKey(ws.join(' ')).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    const containsCompany = cw0.length > 0 && cl.some((_, i) => cw0.every((w, j) => cl[i + j] === w))   // "founded Brightloop Dental", "retired in 2019 from Brightloop Dental"
+    if ((cl.length > 0 && cw0.slice(0, Math.min(cw0.length, cl.length)).every((w, i) => w === cl[i])) || containsCompany) { /* starts with this company: the window rule above already judged what else is there */ } else {
+    const plain = ws.every(w => /^(?:and|the|of|at|in|a|an|since|is|was|has|have|here|our|my|dds|dmd|md)$/i.test(w) || FILLER.test(w) || SUFFIX_OK.test(w) || whereWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) || personWords.has(w.toLowerCase()))
+    if (!plain && !thisCompany(ws.join(' '))) return { refused: 'title_at_another_organisation' }
+    }
+  }
   const phrase = /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
-  if (phrase) { const cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean); const pw = companyKey(phrase).split(/[^\p{L}\p{N}]+/u).filter(Boolean); if (!(pw.length > 0 && cw.length > 0 && pw[0] === cw[0])) return { refused: 'title_at_another_organisation' } }
+  if (phrase) {
+    const cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean), pw = companyKey(phrase).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+    // The phrase must start with this company's name as whole words (the short form "Brightloop" for "Brightloop Dental Group" is a whole-word start too).
+    const n = Math.min(cw.length, pw.length)
+    if (!(n > 0 && cw.slice(0, n).every((w, i) => w === pw[i]))) return { refused: 'title_at_another_organisation' }
+  }
   const rest = tail.split(/[.!?]\s/)[0]
   if (PAST_AFTER.test(rest)) return { refused: 'past_role' }
   // "Jane Roe, Owner. She retired in 2019.": a pronoun in the next sentence that says she / he left.

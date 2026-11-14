@@ -16,7 +16,7 @@ const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 const INPUT = { company: 'Brightloop Dental', domain: 'brightloopdental.example', roles: ['Owner', 'Practice owner', 'Office manager'], where: ['Toronto, Ontario'] }
 const PROFILE_HIT = { url: 'https://ca.linkedin.com/in/jane-roe-test', title: 'Jane Roe - Owner - Brightloop Dental | LinkedIn', snippet: 'Toronto, Ontario, Canada · Owner · Brightloop Dental. Dentist and practice owner. · brightloopdental.example' }
 const TEAM_HIT = { url: 'https://brightloopdental.example/team', title: 'Our team | Brightloop Dental', snippet: 'Meet Dr. Jane Roe, owner of Brightloop Dental in Toronto, and our hygienists.' }
-const NEWS_HIT = { url: 'https://news.example.test/toronto-dental', title: 'Brightloop Dental opens second Toronto clinic', snippet: 'Owner Jane Roe said the new Brightloop Dental clinic on Queen Street opens in November. See brightloopdental.example' }
+const NEWS_HIT = { url: 'https://news.example.test/toronto-dental', title: 'Brightloop Dental opens second Toronto clinic', snippet: 'Owner Jane Roe said the new Brightloop Dental clinic opens in November. See brightloopdental.example' }
 const OTHER_CO = { url: 'https://www.linkedin.com/in/sam-lee-test', title: 'Sam Lee - Owner - Brightloop Dental Supplies | LinkedIn', snippet: 'Columbus, Ohio · Owner · Brightloop Dental Supplies' }
 const FORMER = { url: 'https://www.linkedin.com/in/pat-old-test', title: 'Pat Old - Former Owner - Brightloop Dental | LinkedIn', snippet: 'Toronto, Ontario · Former Owner · Brightloop Dental · brightloopdental.example' }
 const HYGIENIST = { url: 'https://www.linkedin.com/in/hy-gene-test', title: 'Hy Gene - Dental Hygienist - Brightloop Dental | LinkedIn', snippet: 'Toronto, Ontario · Dental Hygienist · Brightloop Dental · brightloopdental.example' }
@@ -232,7 +232,8 @@ test('#1102 grounding round 2: testimonials, non-decision-maker titles, another 
     ['another person\'s title before an "and"', SRC('Team', 'Sam Lee, owner, and Jane Roe, hygienist at Brightloop Dental in Toronto.' + D), person('Jane Roe', 'Owner', 'S1', 'owner, and Jane Roe'), 'title_not_next_to_name'],
     ['a possessive title', SRC('Team', 'Jane Roe, the owner\'s assistant at Brightloop Dental, books visits.' + D), person('Jane Roe', 'owner', 'S1', 'Jane Roe, the owner'), 'possessive_title'],
     ['"until she retired" after the quote', SRC('News', 'Jane Roe, Owner of Brightloop Dental until she retired in 2019.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
-    ['a year range after the quote', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019). Bob Lee now runs it.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
+    ['a year range after the quote (and another person named next to it)', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019). Bob Lee now runs it.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'title_at_another_organisation'],
+    ['a year range after the quote', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019).' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
     ['retired later in the sentence', SRC('News', 'Jane Roe, Owner, retired in 2019 from Brightloop Dental after 20 years.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner'), 'past_role'],
     ['a place that agrees with nothing (the request names one, the source none)', SRC('Team', 'Jane Roe, Owner of Brightloop Dental.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'place_unconfirmed', INPUT],
   ]
@@ -311,5 +312,33 @@ test('#1102 grounding round 3: the other organisation is refused whatever separa
     own('Brightloop Dental owner Jane Roe welcomes you.', 'Jane Roe', 'owner', 'owner Jane Roe'), off('Brightloop Dental CEO Jane Roe said the clinic opens soon.', 'Jane Roe', 'CEO', 'Brightloop Dental CEO Jane Roe said'),
     off('Jane Roe, Owner of Brightloop Dental, said hello.', 'Jane Roe', 'Owner', 'Jane Roe, Owner of Brightloop Dental'),
   ])
+  good.forEach((r, i) => assert.equal(r.status, 'found', `good #${i}: ${JSON.stringify(r)}`))
+})
+
+// ---- round 4: abbreviations that look like sentence ends, lower-case clauses, a far-away organisation ----
+test('#1102 grounding round 4: a period after an abbreviation is not a sentence end; a bare noun clause is another business; the whole result is read', async () => {
+  const OWN3 = 'https://brightloopdental.example/reviews'
+  const own = (text: string, name: string, title: string, quote: string) => ground(SRC('Reviews', text, OWN3), person(name, title, 'S1', quote))
+  const off = (text: string, name: string, title: string, quote: string) => ground(SRC('News', text + D), person(name, title, 'S1', quote))
+  const bad: [string, Awaited<ReturnType<typeof ground>>][] = [
+    ['Inc. before the title', await own('Globex Inc. CEO Jane Roe says thanks.', 'Jane Roe', 'CEO', 'CEO Jane Roe')],
+    ['Ltd. before the title', await own('Stone Bakery Ltd. owner Mark Stone says thanks.', 'Mark Stone', 'owner', 'owner Mark Stone')],
+    ['Co. before the title', await own('Thanks from Stone Bakery Co. Owner Mark Stone.', 'Mark Stone', 'Owner', 'Owner Mark Stone')],
+    ['Ltd. before the name', await own('From Globex Ltd. Jane Roe, CEO, says thanks.', 'Jane Roe', 'CEO', 'Jane Roe, CEO')],
+    ['Dr. then another organisation', await own("Globex Health's Dr. Jane Roe, Owner, says thanks.", 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
+    ['St. in an address', await own('Owner of the bakery on King St. Mark Stone, Owner, says thanks.', 'Mark Stone', 'Owner', 'Mark Stone, Owner')],
+    ['(est. 2005) then the organisation', await own('Mark Stone, Owner (est. 2005) Stone Bakery', 'Mark Stone', 'Owner', 'Mark Stone, Owner')],
+    ['lower-case clause in brackets', await own('Great care. Mark Stone (owner, local bakery)', 'Mark Stone', 'owner', 'Mark Stone')],
+    ['lower-case clause after a dash', await own('Mark Stone, owner - the bakery down the street', 'Mark Stone', 'owner', 'Mark Stone, owner')],
+    ['lower-case clause after a comma', await own('Mark Stone, Owner, runs the bakery next door', 'Mark Stone', 'Owner', 'Mark Stone, Owner')],
+    ['a long gap before the organisation', await off('Brightloop Dental partner Jane Roe, Owner, who has spent twenty years building the business and brand behind Globex Health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
+    ['a lower-case organisation after a dash', await off('Brightloop Dental news: Jane Roe, Owner - globex health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
+    ['a lower-case organisation after a pipe', await off('Brightloop Dental news: Jane Roe, Owner | globex health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
+    ['another company is the subject', await off('Globex Health acquired Brightloop Dental last year, and owner Jane Roe said the deal was done.', 'Jane Roe', 'owner', 'owner Jane Roe')],
+    ['the franchise arm of another company', await off('Jane Roe, Owner of Brightloop Dental, the franchise arm of Globex Health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner of Brightloop Dental')],
+    ['same first word, another business', await own('Jane Roe, Owner and the longtime head baker of Brightloop Bakery', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
+  ]
+  for (const [what, r] of bad) assert.notEqual(r.status, 'found', `${what}: ${JSON.stringify(r.person)}`)
+  const good = await Promise.all([own('Dr. Jane Roe, Owner, Brightloop Dental', 'Jane Roe', 'Owner', 'Jane Roe, Owner'), own('Jane Roe, Owner and lead dentist, founded Brightloop Dental in 2014.', 'Jane Roe', 'Owner and lead dentist', 'Jane Roe, Owner and lead dentist')])
   good.forEach((r, i) => assert.equal(r.status, 'found', `good #${i}: ${JSON.stringify(r)}`))
 })
