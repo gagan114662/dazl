@@ -12,6 +12,8 @@ const HOME: Item = { href: '/app', label: 'Home', icon: 'home', match: p => p ==
 const GROUPS: { title: string; items: Item[] }[] = [
   { title: 'Find', items: [
     // Plays = saved, repeating searches and their schedules; Leads = searching and every run's results.
+    // #1043: what dazl knows about your business (profile, Memory, Competitors), editable, with plays built from it
+    { href: '/app/business', label: 'Your business', icon: 'spark', match: p => p.startsWith('/app/business') },
     { href: '/app/plays', label: 'Plays', icon: 'plays', match: p => p.startsWith('/app/plays') },
     { href: '/app/leads?latest=1', label: 'Leads', icon: 'leads', match: p => p === '/app/leads' },
   ] },
