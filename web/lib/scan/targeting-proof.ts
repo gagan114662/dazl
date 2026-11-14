@@ -44,6 +44,21 @@ const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|w
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
   return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
+// An expansion a press release words without the verb "expand" (#878, real releases): the company GROWS / bolsters / strengthens / builds out / adds to
+// ITS OWN practice, group, team, presence, footprint or office ("is continuing to grow its Corporate Services Group's Chicago presence with the addition
+// of Partner ..."), or someone has JOINED its growing / expanding practice ("has joined the firm as a partner in its growing Intellectual Property Practice
+// Group"). Same guards as every event clause: this company is the subject, and the clause is not denied, planned, conditional or hearsay. Read only for an
+// expand condition with no named object ("expanded into Europe" still needs the literal reader).
+const GROWN_UNIT = String.raw`(?:practices?|groups?|teams?|presence|footprint|bench|capabilit(?:y|ies)|offices?|operations?)`
+const GROWS_OWN = new RegExp(String.raw`\b(?:grow(?:s|ing)?|grew|grown|bolster(?:s|ed|ing)?|strengthen(?:s|ed|ing)?|build(?:s|ing)?\s+out|built\s+out|broaden(?:s|ed|ing)?|deepen(?:s|ed|ing)?|add(?:s|ed|ing)?\s+to)\s+(?:its|their|our)\s+(?:[\w&'’.-]+\s+){0,6}?${GROWN_UNIT}\b`, 'i')
+const JOINED_GROWING = new RegExp(String.raw`\b(?:has|have)?\s*join(?:ed|s)\b[^.;]{0,80}?\b(?:its|the\s+firm'?s|the\s+company'?s)\s+(?:growing|expanding)\s+(?:[\w&'’.-]+\s+){0,6}?${GROWN_UNIT}\b`, 'i')
+function growthShown(quote: string, company: string): boolean {
+  return clauses(quote).some(k => {
+    if (EVENT_NOT.test(k)) return false
+    const g = GROWS_OWN.exec(k); if (g) return !subjectIsOther(k.slice(0, g.index), company)
+    return JOINED_GROWING.test(k) && !!norm(company) && ` ${norm(k)} `.includes(` ${norm(company)} `)   // the joiner is the subject there, so the clause itself must name this company
+  })
+}
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".
 const clockOf = (c: Condition): number | null => c.since_days ?? c.within_days
@@ -182,7 +197,8 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const literal = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const shows = literal || (c.event === 'expand' && !c.object && growthShown(quote, lead.company))
       return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
