@@ -10,7 +10,10 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { measureCase, verdict, matrixTable, type CaseResult, type MatrixThresholds } from '../scripts/matrix-score.mts'
+import { measureCase, verdict, matrixTable, DEFINITIONS, type CaseResult, type MatrixCase, type MatrixThresholds } from '../scripts/matrix-score.mts'
+import { runCase, spentUsd, sellerLineFor } from '../scripts/matrix-run.mts'
+import { parseEnvFile } from '../scripts/matrix-env.mts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { heldReason } from '../lib/journey.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
@@ -121,9 +124,63 @@ test('the script: --dry prints the plan and exits 2 naming the missing keys; a r
   assert.match(dry.stdout, /TINYFISH_API_KEY MISSING; Anthropic key MISSING/)
   const live = run('--matrix', matrix)
   assert.equal(live.status, 2); assert.match(live.stderr, /No model key/); assert.match(live.stderr, /Not running/)
+  // unfenced on purpose: the net fence removes key variables from the environment, and this run must see one. It refuses before any request (no TinyFish key).
   const tf = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/matrix-local.mts', '--matrix', matrix], { cwd: dir, env: { ...env, MATRIX_ANTHROPIC_KEY: 'sk-ant-x' }, encoding: 'utf8', timeout: 60000 })
   assert.equal(tf.status, 2); assert.match(tf.stderr, /TINYFISH_API_KEY is required/)
   assert.equal(run('--matrix', matrix, '--cases', 'nope', '--dry').status, 2, 'an unknown case is refused')
   const high = run('--dry', '--matrix', matrix, '--cap', '9')
   assert.match(high.stdout, /cap US\$0\.50 each/, 'a higher --cap never raises the US$0.50 lane cap')
+})
+
+test('measureCase: a company is one company whether or not each lead has the domain (Home\'s domain-or-name merge)', () => {
+  const { db, lead } = seed()
+  lead('a1', { company: 'Smile Dental', domain: 'smile.example' }); lead('a2', { company: 'Smile Dental' })   // the same name, one with a domain and one without
+  const m = measureCase(db, 'A', 'j1', { expect })
+  assert.equal(m.leads, 2)
+  assert.equal(m.ready + Object.values(m.held).reduce((x, y) => x + y, 0), 1, 'one company, not two')
+})
+
+test('spentUsd: a call the cap refused is not spend; settled calls at their reported cost, reserved at their worst case', () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES ('j9', 'A', 'x', '-', '-', 'q', 'running', ?)").run(NOW)
+  const call = (id: string, reserve: number, actual: number | null, status: string) => db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, created_at) VALUES (?, 'A', 'j9', 1, 'llm', ?, ?, ?, ?)").run(id, reserve, actual, status, NOW)
+  call('c1', 0.2, 0.05, 'settled'); call('c2', 0.1, null, 'reserved'); call('c3', 0.4, null, 'refused')
+  assert.equal(spentUsd(db, 'j9'), 0.15, '0.05 settled + 0.10 reserved; the refused 0.40 was never sent')
+  assert.equal(spentUsd(db, 'nope'), 0)
+})
+
+test('runCase: the case runs under its own run budget (max_usd) and the staging seller line; a hung run is INCOMPLETE, stopped, and cannot pass', async () => {
+  const master = randomBytes(32)
+  const db = new Database(':memory:'); migrateAllSqlite(db); saveKey(db, 'matrix-x', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const logged: string[] = []; const err = console.error; console.error = (...a: unknown[]) => { logged.push(a.join(' ')) }
+  const c: MatrixCase = { id: 'x', label: 'x', seller: 'ChairSide', offer: 'Online booking for dental clinics', query: 'Dental clinics in Toronto that opened a new location', expect }
+  const hang = new Promise<string>(() => {})
+  const providers = { anthropic: { research: () => hang, complete: () => hang }, openai: { research: () => hang, complete: () => hang } }
+  let r: CaseResult
+  try { r = await runCase(db, c, { tenant: 'matrix-x', cap: 0.5, timeoutS: 0.3, thresholds: T, deps: { providers: providers as never, master, sourceHttp: (() => hang) as never, newsHttp: (() => hang) as never, crawlGet: (() => hang) as never, score: false } }) } finally { console.error = err }
+  const row = db.prepare('SELECT run_budget, seller, status, error FROM scan_jobs WHERE user_id = ?').get('matrix-x') as { run_budget: string; seller: string; status: string; error: string | null }
+  assert.deepEqual(JSON.parse(row.run_budget), { max_usd: 0.5 }, 'the case\'s own US$0.50 budget is on the job row')
+  assert.equal(row.seller, 'Online booking for dental clinics'); assert.equal(sellerLineFor(c), row.seller)
+  assert.equal(r.error, 'scan_timeout', JSON.stringify(r)); assert.equal(r.status, 'INCOMPLETE'); assert.equal(r.pass, false)
+  assert.equal(row.status, 'failed', 'the abandoned run is stopped: later paid reservations are refused')
+  assert.ok(r.usd !== null && r.usd <= 0.5, 'the printed US$ stays under the cap')
+  assert.deepEqual(logged.filter(l => /no such table/i.test(l)), [], 'no pipeline step fails on a missing table: the store has every table the app\'s has')
+})
+
+test('the env file: quotes, inline comments, = in values, export; an empty shell value does not block it', () => {
+  const e = parseEnvFile(['# a comment', 'TINYFISH_API_KEY="abc" # staging', "MATRIX_ANTHROPIC_KEY='sk-ant-x=y'", 'export SITECRAWL_ENABLED=1', 'NEWS_SEARCH_ENABLED=0   # off', '', 'BAD LINE', 'EMAIL_GUESS_ENABLED=', '  TINYFISH_FETCHES_PER_SCAN = 40  '].join('\n'))
+  assert.deepEqual(e, { TINYFISH_API_KEY: 'abc', MATRIX_ANTHROPIC_KEY: 'sk-ant-x=y', SITECRAWL_ENABLED: '1', NEWS_SEARCH_ENABLED: '0', EMAIL_GUESS_ENABLED: '', TINYFISH_FETCHES_PER_SCAN: '40' })
+})
+
+test('the table prints its definitions, and the script refuses a bad cap or timeout', () => {
+  const t = matrixTable([], T, { commit: 'x', date: 'y' })
+  for (const d of DEFINITIONS) assert.ok(t.includes(d))
+  assert.match(t, /usd: settled model and paid-vendor calls/); assert.match(t, /icp: inferred by the runner/)
+  const dir = fileURLToPath(new URL('../', import.meta.url))
+  const matrix = fileURLToPath(new URL('./fixtures/matrix-1099.json', import.meta.url))
+  const run = (...a: string[]) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/matrix-local.mts', '--matrix', matrix, '--dry', ...a], { cwd: dir, env: { ...process.env, TINYFISH_API_KEY: '', MATRIX_ANTHROPIC_KEY: '' } as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 60000 })
+  assert.match(run('--timeout', 'x').stderr, /--timeout must be a number of seconds above 0/)
+  assert.match(run('--timeout', '0').stderr, /--timeout must be a number/)
+  assert.match(run('--cap', '-1').stderr, /per-case cap must be a number above 0/)
+  assert.match(run('--cap', 'abc').stderr, /per-case cap must be a number above 0/)
 })

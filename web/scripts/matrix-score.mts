@@ -1,6 +1,7 @@
-// The location x category matrix's own numbers, measured from a finished scan's stored rows: the same columns Hermes's staging
-// matrix prints (candidates, ready, named %, email %, dated %, location+category %, time) and the same pass rule
-// (~/work/scorecard/matrix.json thresholds). "Ready" is the product's own rule (lib/outreach/lead-hold.ts, the one Home and the
+// The location x category matrix's numbers, measured from a finished scan's stored rows: the columns Hermes's staging matrix
+// prints (candidates, ready, named %, email %, dated %, location+category %, time) against the same thresholds
+// (~/work/scorecard/matrix.json). The DEFINITIONS are the product's, not matrix.py's (see DEFINITIONS below): compare a local
+// row with a local row, before and after a change. "Ready" is the product's own rule (lib/outreach/lead-hold.ts, the one Home and the
 // Leads page use), so a change to what ready means moves this table with it. A dev tool on the runner's own throwaway SQLite store (scripts/, outside the Postgres port audit like scoreboard.mts); web/scripts/matrix-local.mts runs it.
 import type Database from 'better-sqlite3'
 import { listLeads } from '../lib/scan/store.ts'
@@ -32,7 +33,9 @@ export function measureCase(db: Database.Database, tenantId: string, jobId: stri
   const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id)) as Record<string, Enrichment[]>
   const loc = c.expect.location_keywords.map(k => k.toLowerCase()), cat = c.expect.category_keywords.map(k => k.toLowerCase())
   let named = 0, email = 0, dated = 0, match = 0
-  const ready = new Set<string>(), seen = new Map<string, string | null>()   // company key -> first hold reason (null = ready)
+  // one verdict per COMPANY, matched the way Home's tile and "seen before" match: the same domain OR the same normalised name
+  // (a lead with a domain and one without, both "Smile Dental", are one company); ready wins
+  const byKey = new Map<string, { ready: boolean; why: string | null }>(), companies: { ready: boolean; why: string | null }[] = []
   for (const l of leads) {
     const e = enr[l.id] ?? []
     const company = (l.company ?? '').trim()
@@ -42,13 +45,17 @@ export function measureCase(db: Database.Database, tenantId: string, jobId: stri
     if (l.source_url && eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: at })) dated++
     const text = `${l.company ?? ''} ${l.name ?? ''} ${l.signal ?? ''} ${l.evidence_excerpt ?? ''} ${l.source_url ?? ''} ${l.company_domain ?? ''}`.toLowerCase()
     if (loc.some(k => text.includes(k)) && cat.some(k => text.includes(k))) match++
-    const key = l.company_domain ? `d:${l.company_domain.trim().toLowerCase()}` : `n:${companyKey(company) || l.id}`
+    const keys = [l.company_domain ? `d:${l.company_domain.trim().toLowerCase()}` : '', company ? `n:${companyKey(company)}` : ''].filter(k => k.length > 2)
+    if (!keys.length) keys.push(`id:${l.id}`)
     const why = leadHoldReason(db, tenantId, l, e, timing, at)
-    if (why === null) { ready.add(key); seen.set(key, null) } else if (!seen.has(key)) seen.set(key, why)
+    let v = keys.map(k => byKey.get(k)).find(Boolean)
+    if (!v) { v = { ready: why === null, why }; companies.push(v) } else if (why === null && !v.ready) { v.ready = true; v.why = null }
+    for (const k of keys) byKey.set(k, v)
   }
   const held: Record<string, number> = {}
-  for (const [key, why] of seen) if (why !== null && !ready.has(key)) held[why] = (held[why] ?? 0) + 1
-  return { candidates: Number(job.candidates ?? 0), leads: leads.length, ready: ready.size, named_pct: pct(named, leads.length), email_pct: pct(email, leads.length), dated_pct: pct(dated, leads.length), match_pct: pct(match, leads.length), held }
+  for (const v of companies) if (!v.ready && v.why !== null) held[v.why] = (held[v.why] ?? 0) + 1
+  const ready = companies.filter(v => v.ready).length
+  return { candidates: Number(job.candidates ?? 0), leads: leads.length, ready, named_pct: pct(named, leads.length), email_pct: pct(email, leads.length), dated_pct: pct(dated, leads.length), match_pct: pct(match, leads.length), held }
 }
 
 // The pass rule, with its reasons in the words the staging table uses.
@@ -61,6 +68,13 @@ export function verdict(m: CaseMetrics, t: MatrixThresholds): { pass: boolean; w
   return { pass: why.length === 0, why }
 }
 
+export const DEFINITIONS = [
+  'ready: companies (one per domain or normalised name) the product shows ready (lib/outreach/lead-hold.ts, the rule Home and Leads use); staging counts leads with no review reason',
+  'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
+  'usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it',
+  'icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run',
+]
+
 export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { commit: string; date: string }): string {
   const pass = rows.filter(r => r.pass).length
   const head = `MATRIX local @ ${meta.commit} ${meta.date}: ${pass}/${rows.length} PASS (per case: >=${t.ready_leads_min} ready, >=${t.named_contact_min_pct}% named, >=${t.dated_source_min_pct}% dated, >=${t.location_category_match_min_pct}% in place and category; cap US$${t.per_case_confirm_cap_usd}/case)`
@@ -69,5 +83,5 @@ export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { com
   const w = cols.map((c, i) => Math.max(c.length, ...body.map(b => b[i].length)))
   const line = (cells: string[]) => cells.map((c, i) => c.padEnd(w[i])).join('  ')
   const held = rows.filter(r => !r.pass).map(r => `  ${r.id}: ${r.error ? `${r.error}; ` : ''}${r.why.join('; ')}${Object.keys(r.held).length ? ` | held: ${Object.entries(r.held).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}` : ''}`)
-  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held].join('\n')
+  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held, '', 'definitions:', ...DEFINITIONS.map(d => `  ${d}`)].join('\n')
 }
