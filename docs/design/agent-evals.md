@@ -361,7 +361,7 @@ a lead it calls `contradicts`. It has no send or tool authority.
   - After the run, `scripts/judge-validation-import.mts --artifact <result.json> --expect-sha256 <sha the run printed>
     --write` (no key, no network; `lib/evals/judge-validation-import.ts`) turns the run's redacted artifact into what
     the gate and the reports read: the claim's consumption, `test/fixtures/evals/judges/verdicts.jsonl` (every answer,
-    both judges, both splits) and one calibration entry per judge in `judges.lock.json`.
+    both judges, both splits; the log is append-only, so the run's records are added to the existing ones and nothing is removed) and one calibration entry per judge in `judges.lock.json`.
     - Only the claimed run's artifact is accepted: run id, approval, model, machine, corpus, code hashes and the claim's
       own sha256 must match, and the file's sha256 must be the one the run printed on the box (`--expect-sha256`,
       required until the claim is consumed; after that the recorded `artifact_sha256` is the check).
@@ -377,6 +377,7 @@ a lead it calls `contradicts`. It has no send or tool authority.
       choice: one PR that both edits the scoring code and replaces the committed artifact and its recorded sha256 is
       not re-scored by CI, so any PR touching the artifact or the claim's record needs a reviewer. A scoring file that
       cannot be read is refused, never treated as changed.
+    - What one run can and cannot show for #785: one approved run is one stored run per judge, so drift between runs of the same judge version cannot be shown by it (`--report` says so: a version with one run cannot show drift under its own fingerprint). The per-version and per-condition rates and the critical-false-positive gate are what it delivers; drift needs later runs, appended to the same log.
     - A failed or stopped run imports no verdict and no entry (the lock's entries are cleared); it only consumes the
       claim. The artifact must name which of the two key variables paid (`run_guard.key_env`).
     - The lock's calibration entries are exactly the run's (nothing else is carried over). The files are written to
@@ -402,7 +403,13 @@ a lead it calls `contradicts`. It has no send or tool authority.
       `created_at` and `expires_at` (at most 7 days apart). The runner recomputes every field and refuses, with nothing
       claimed or sent, when there is no claim, more than one entry, any mismatch, any extra or missing key, an expired
       claim, or a consumed one. A stale or wrong checkout, another machine, other inputs or changed code cannot run.
-    - The state dir is stable: it is named in the reviewed claim (absolute, no default). Any other dir is refused.
+    - The state dir is stable: it is named in the reviewed claim, and any other dir is refused. It lives under the running
+      user's own home, never a system directory: `--state-dir`, else the environment variable
+      `DAZL_JUDGE_VALIDATION_STATE_DIR`, else `<home>/.dazl/judge-validation` (the committed claim names
+      `/home/ubuntu/.dazl/judge-validation`, the app user's home on the box). `--execute` creates it with `mkdir -p`, mode
+      0700, and refuses a directory that is group- or world-accessible; plan-only creates nothing. No root, no `/etc`, no
+      `sudo`. Run as another user, or with the variable set to another path, the claim does not match and `--execute`
+      refuses until a reviewed claim names that path (plan-only prints it).
     - Then, before the first request, the run is consumed locally with exclusive creates: the approval claim in the
       state dir, then a host claim outside it (`~/.dazl/judge-validation.host-claim`), then the run marker and ledger.
       Any leftover refuses. A run that crashes keeps them, so a rerun refuses on that machine (same or new HOME, since the

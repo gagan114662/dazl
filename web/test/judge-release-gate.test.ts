@@ -15,28 +15,40 @@ import { CLAIM_SUPPORT_SPEC, claimSupportJudge, harnessFor, readVerdictLog, RELE
 
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
-const LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+const COMMITTED_LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+// The lock as it stood before the one real-model calibration was imported (#784): no calibration entries. The tests below are
+// about the gate's mechanics, so they must not depend on what that one run found; the committed lock and verdict log are checked
+// by the state-aware CI-gate test (test/judge-release-gate.test.ts) and by test/judge-validation-import.test.ts.
+const LOCK: JudgeLock = { ...COMMITTED_LOCK, judges: [] }
 const AT = '2026-11-10T00:00:00Z', SRC = 'test: simulated real-model calibration'
 const INPUTS = await releaseInputs(CORPUS)
 // The CI path: the committed lock and the committed stored-verdict log, read exactly as scripts/judges.mts --gate reads them.
 const COMMITTED_VERDICTS = readVerdictLog(VERDICT_LOG)
-const gate = (judges: ReleaseJudgeInput[] = INPUTS, lock: JudgeLock = LOCK, corpus: JudgeCorpus = CORPUS, drift = undefined as Parameters<typeof releaseGate>[0]['drift'], verdicts: string | null = COMMITTED_VERDICTS) => releaseGate({ lock, corpus, judges, verdicts, drift })
+// the baseline has no stored verdicts either
+const BASELINE_VERDICTS: string | null = null
+const gate = (judges: ReleaseJudgeInput[] = INPUTS, lock: JudgeLock = LOCK, corpus: JudgeCorpus = CORPUS, drift = undefined as Parameters<typeof releaseGate>[0]['drift'], verdicts: string | null = BASELINE_VERDICTS) => releaseGate({ lock, corpus, judges, verdicts, drift })
 const swap = (id: string, input: ReleaseJudgeInput) => INPUTS.map(j => j.spec.id === id ? input : j)
 const claimInput = (build: JudgeBuild = claimSupportJudge, spec = CLAIM_SUPPORT_SPEC) => harnessFor(CORPUS, spec, build)
 // a "real" calibration of the claim judge's current fingerprint, simulated with a stub behind the judge's real spec
 const realRun = (stub: keyof typeof STUB_MODELS) => calibrate(claimSupportJudge(CORPUS, STUB_MODELS[stub](), CLAIM_SUPPORT_SPEC), CORPUS)
 
-test('CI gate: the committed code, lock and corpus are releasable; every registered judge was checked on its exact fingerprint; uncalibrated verdicts do not count', () => {
-  const d = gate()
-  assert.equal(d.release, 'allowed', d.blocks.join('\n'))
-  assert.deepEqual(d.corpus, { id: CORPUS.id, hash: LOCK.corpus.hash, frozen: true })
-  assert.deepEqual(d.judges.map(j => j.id).sort(), LOCK.registered.map(r => r.id).sort())
+test('CI gate: the committed code, lock and corpus give the release decision the committed calibration entries imply; every registered judge was checked on its exact fingerprint', () => {
+  // Before the one approved real-model run is imported, no calibration entry exists: nothing counts, release is allowed.
+  // After it, the expectation follows the committed entries (the run's own result), not a hand-edited assertion.
+  const calibrated = COMMITTED_LOCK.judges.length > 0
+  const d = gate(INPUTS, COMMITTED_LOCK, CORPUS, undefined, COMMITTED_VERDICTS)
+  const critical = COMMITTED_LOCK.judges.some(e => !e.ok || e.critical_fp.length > 0) // a failed calibration blocks release, with or without a critical false positive
+  if (!calibrated) { assert.equal(COMMITTED_VERDICTS, null, 'no stored-verdict log before the run is imported'); assert.equal(d.release, 'allowed', d.blocks.join('\n')) }
+  else assert.equal(d.release, critical ? 'blocked' : 'allowed', d.blocks.join('\n'))
+  assert.deepEqual(d.corpus, { id: CORPUS.id, hash: COMMITTED_LOCK.corpus.hash, frozen: true })
+  assert.deepEqual(d.judges.map(j => j.id).sort(), COMMITTED_LOCK.registered.map(r => r.id).sort())
   for (const j of d.judges) {
     assert.equal(j.changed, false); assert.equal(j.fingerprint, j.registered_fingerprint)
     assert.deepEqual(j.harness.map(h => [h.stub, h.ok]), Object.keys(STUB_MODELS).map(s => [s, s === 'truthful']), `${j.id}: only the truthful stub passes`)
-    assert.equal(j.real_model.usable, false, `${j.id} has no real-model calibration`)
+    const entry = COMMITTED_LOCK.judges.find(e => e.fingerprint === j.fingerprint)
+    assert.equal(j.real_model.usable, !!entry && entry.ok && !critical, `${j.id}: counts only with a passing calibration entry of exactly this fingerprint`)
   }
-  assert.ok(d.limits.some(l => /scan_verification_judge: verdicts do not count .* never pass/.test(l)))
+  assert.ok(d.limits.some(l => /scan_verification_judge: verdicts do not count .* never pass/.test(l)) || calibrated)
   assert.ok(d.limits.some(l => /not ground truth/.test(l)) && d.limits.some(l => /not that any real model is accurate/.test(l)))
 })
 

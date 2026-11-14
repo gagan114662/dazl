@@ -10,14 +10,14 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { detectDrift, parseStoredVerdicts, releaseGate, renderVerdictHistory, verdictHistory, type JudgeCorpus, type JudgeLock } from '../lib/evals/judge.ts'
+import { calibrate, detectDrift, parseStoredVerdicts, releaseGate, renderVerdictHistory, toStoredVerdicts, verdictHistory, type JudgeCorpus, type JudgeLock } from '../lib/evals/judge.ts'
 import {
-  checkClaims, claimFor, codeHashes, fingerprintOf, readKeyFromEnv, runValidation,
+  checkClaims, claimFor, codeHashes, fingerprintOf, judgeSpec, readKeyFromEnv, runValidation,
   APPROVAL, CLAIM_CODE_FILES, KEY_ENV, RUN_RECORD_CONTRACT, STAGING_KEY_ENV,
   type RunDeps, type RunInputs, type TransportRequest, type TransportResponse,
 } from '../lib/evals/judge-validation-run.ts'
 import { importValidationArtifact, ARTIFACT_FIXTURE, LOCK_FIXTURE, VERDICT_LOG_FIXTURE } from '../lib/evals/judge-validation-import.ts'
-import { claimCall, releaseInputs, scanCall, STUB_MODELS } from './helpers/judge-stubs.ts'
+import { claimCall, claimSupportJudge, releaseInputs, scanCall, STUB_MODELS } from './helpers/judge-stubs.ts'
 
 const WEB = new URL('../', import.meta.url)
 const read = (f: string) => readFileSync(new URL(f, WEB), 'utf8')
@@ -89,7 +89,7 @@ test('#784 #785 a completed run imports into the claim\'s consumption, a stored-
   assert.equal(usable.claim_support, true, 'the claim judge is calibrated on this model: its verdicts count')
   assert.equal(usable.scan_verification_judge, false, 'the registered scan judge runs on the tenant\'s own provider: one model\'s calibration does not make it count')
   // before the import neither counted
-  const before = releaseGate({ lock: JSON.parse(LOCK_TEXT) as JudgeLock, corpus: CORPUS, judges: await releaseInputs(CORPUS), verdicts: null })
+  const before = releaseGate({ lock: { ...(JSON.parse(LOCK_TEXT) as JudgeLock), judges: [] }, corpus: CORPUS, judges: await releaseInputs(CORPUS), verdicts: null }) // the lock before any import
   assert.deepEqual(before.judges.map(j => j.real_model.usable), [false, false])
   // #785: per version and per condition, from the stored answers
   for (const judge of ['claim_support', 'scan_verification_judge']) {
@@ -169,7 +169,7 @@ test('#784 #785 the committed files agree with each other: with the run\'s artif
     return
   }
   const artifactText = readFileSync(artifact, 'utf8')
-  const r = await importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS })
+  const r = await importValidationArtifact({ artifactText, recordText: read('lib/evals/judge-validation-runs.json'), lockText: LOCK_TEXT, corpus: CORPUS, existingLog: existsSync(log) ? readFileSync(log, 'utf8') : null })
   assert.deepEqual(r.problems, [])
   assert.equal(record.claims[0].artifact_sha256, sha(artifactText), 'the claim is consumed by this artifact')
   assert.equal(read('lib/evals/judge-validation-runs.json'), r.recordText)
@@ -184,7 +184,7 @@ test('#784 the committed record holds the one pre-call claim for the approved ru
   assert.equal(record.contract, RUN_RECORD_CONTRACT); assert.equal(record.claims.length, 1)
   const c = record.claims[0]
   assert.equal(c.run_id, 'jv-396-20261113'); assert.equal(c.approval, APPROVAL); assert.equal(c.model, MODEL); assert.equal(c.cap_usd, 3)
-  assert.equal(c.machine_fingerprint, 'c47e12eefff9cc06540aee767185845087a56318dc86fbe65e90608167659fc4'); assert.equal(c.state_dir, '/var/lib/dazl-judge-validation')
+  assert.equal(c.machine_fingerprint, 'c47e12eefff9cc06540aee767185845087a56318dc86fbe65e90608167659fc4'); assert.equal(c.state_dir, '/home/ubuntu/.dazl/judge-validation', 'under the app user\'s own home: no root, no /var/lib')
   assert.deepEqual(Object.keys(c.code_sha256 as object), [...CLAIM_CODE_FILES])
   for (const h of Object.values(c.code_sha256 as Record<string, string>)) assert.match(h, /^[0-9a-f]{64}$/)
   assert.ok(Date.parse(String(c.expires_at)) - Date.parse(String(c.created_at)) <= 7 * 86_400_000)
@@ -220,7 +220,8 @@ test('#784 #785 the import command: checks only by default, writes nothing on a 
   const before = [read('lib/evals/judge-validation-runs.json'), LOCK_TEXT]
   const r = cli(['--artifact', f, '--expect-sha256', sha(x.artifactText), '--write'])
   assert.equal(r.status, 2); assert.match(r.stderr, /REFUSED \(nothing written\)/); assert.match(r.stderr, /the artifact is run val-1, the claim is for jv-396-20261113/)
-  const noSha = cli(['--artifact', f, '--write']); assert.equal(noSha.status, 2); assert.match(noSha.stderr, /give the artifact sha256 the run printed/)
+  const noSha = cli(['--artifact', f, '--write']); assert.equal(noSha.status, 2)
+  if (!JSON.parse(read('lib/evals/judge-validation-runs.json')).claims.some((c: Record<string, unknown>) => Object.hasOwn(c, 'artifact_sha256'))) assert.match(noSha.stderr, /give the artifact sha256 the run printed/)
   assert.equal(cli(['--artifact', f, '--expect-sha256', 'not-a-sha']).status, 2)
   assert.deepEqual(readdirSync(new URL('test/fixtures/evals/judges/', WEB)).filter(n => n.endsWith('.import-tmp')), [], 'no temporary file is left behind')
   assert.deepEqual([read('lib/evals/judge-validation-runs.json'), read(LOCK_FIXTURE)], before)
@@ -313,4 +314,38 @@ test('#784 after consumption: while the scoring code is the run\'s, the committe
   // the same file while the code is still the run\'s is re-scored and refused; so is the unconsumed case, whatever the code
   assert.match((await importValidationArtifact({ artifactText: older, recordText: JSON.stringify(rec), lockText: LOCK_TEXT, corpus: CORPUS })).problems.join('\n'), /these fields differ: limits/)
   assert.match((await importValidationArtifact({ artifactText: older, recordText: honest.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(older), currentCode: drifted })).problems.join('\n'), /these fields differ: limits/)
+})
+
+test('#785 the verdict log is append-only: importing the run keeps every earlier run (two drifted ones still block), re-importing the same run adds nothing, and a log that cannot be compared or already holds this run id with other content refuses', async () => {
+  const x = await run()
+  const spec = judgeSpec('claim_support', MODEL)
+  const earlier = async (stub: keyof typeof STUB_MODELS, runId: string, at: string) => toStoredVerdicts(await calibrate(claimSupportJudge(CORPUS, STUB_MODELS[stub](), spec), CORPUS), CORPUS, runId, at).map(v => JSON.stringify(v))
+  // two historical runs of the claim judge on this model whose answers differ (the baseline is the first one); the run imported
+  // after them answers like the second, so against the kept baseline it is drift, and against nothing it would not be
+  const history = [...await earlier('gullible', 'hist-1', '2026-11-01T00:00:00Z'), ...await earlier('truthful', 'hist-2', '2026-11-02T00:00:00Z')].join('\n') + '\n'
+  assert.ok(detectDrift(parseStoredVerdicts(history), { judge: 'claim_support' }).some(d => d.status === 'drifted'), 'the history is a real drift')
+  const r = await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(x.artifactText), existingLog: history })
+  assert.deepEqual(r.problems, [])
+  assert.ok(r.verdictLog!.startsWith(history), 'every earlier line is kept, in place')
+  assert.deepEqual([...new Set(parseStoredVerdicts(r.verdictLog!).map(v => v.run))], ['hist-1', 'hist-2', 'val-1'])
+  assert.ok(detectDrift(parseStoredVerdicts(r.verdictLog!), { judge: 'claim_support' }).some(d => d.status === 'drifted'), 'the drift is still reported')
+  const d = releaseGate({ lock: JSON.parse(r.lockText!) as JudgeLock, corpus: CORPUS, judges: await releaseInputs(CORPUS), verdicts: r.verdictLog! })
+  assert.equal(d.release, 'blocked', 'and it still blocks the release')
+  // what the old whole-file replacement did: the history gone, one run left, nothing to compare, so nothing blocks on drift
+  const replaced = r.verdictLog!.slice(history.length)
+  assert.ok(detectDrift(parseStoredVerdicts(replaced), { judge: 'claim_support' }).every(x => x.status === 'insufficient'), 'without the earlier runs the drift would be invisible')
+  assert.match(d.blocks.join('\n'), /drift/i)
+  // the documented recovery (run the same command again): the run is already in the log, nothing is added or lost
+  const consumed = r.recordText!
+  const again = await importValidationArtifact({ artifactText: x.artifactText, recordText: consumed, lockText: r.lockText!, corpus: CORPUS, existingLog: r.verdictLog! })
+  assert.deepEqual([again.problems, again.verdictLog], [[], r.verdictLog])
+  // the same run id with other content in the log: history is not rewritten
+  const tail = r.verdictLog!.slice(history.length).replace('"answer":"supported"', '"answer":"unknown"')
+  const tampered = history + tail
+  assert.notEqual(tampered, r.verdictLog)
+  assert.match((await importValidationArtifact({ artifactText: x.artifactText, recordText: consumed, lockText: r.lockText!, corpus: CORPUS, existingLog: tampered })).problems.join('\n'), /already holds run val-1 with other content|stored-verdict log/)
+  // an unreadable log refuses
+  assert.match((await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(x.artifactText), existingLog: 'not json\n' })).problems.join('\n'), /the stored-verdict log: verdict log line 1: not JSON/)
+  // a v1 record (no judge version) refuses too
+  assert.match((await importValidationArtifact({ artifactText: x.artifactText, recordText: x.recordText, lockText: LOCK_TEXT, corpus: CORPUS, expectSha256: sha(x.artifactText), existingLog: '{"v":1}\n' })).problems.join('\n'), /v1 record/)
 })

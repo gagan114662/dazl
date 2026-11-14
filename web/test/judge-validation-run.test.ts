@@ -530,7 +530,7 @@ test('the original gap: a second run with the same claim from another HOME, stat
   // Leftovers in the claimed state dir (crashed marker, junk, an approval claim only, a ledger only) each refuse.
   for (const [name, file, text] of [['crashed', 'old.run.json', JSON.stringify({ run_id: 'old', status: 'started', started_at: 'x' })], ['junk marker', 'junk.run.json', '{not json'],
     ['null marker', 'n.run.json', 'null'], ['number marker', 'k.run.json', '7'], ['approval claim only', 'initial.approval', 'other'], ['a ledger only', 'x.ledger.jsonl', '']] as const) {
-    const d = tmp(); mkdirSync(join(d, 'runs'), { recursive: true }); writeFileSync(join(d, 'runs', file), text)
+    const d = tmp(); mkdirSync(join(d, 'runs'), { recursive: true, mode: 0o700 }); writeFileSync(join(d, 'runs', file), text)
     await refusedWith(inputs(d), { runRecord: recordFile([claimOf(inputs(d))]) }, /earlier validation run exists|already holds run files/, name)
   }
 })
@@ -621,12 +621,17 @@ test('the committed record is valid and holds the one claim for the approved run
   const rec = readRunRecord(runRecordPath())
   assert.ok(!('problem' in rec), JSON.stringify(rec)); if (!('problem' in rec)) assert.equal(rec.claims.length, 1, 'exactly one claim (test/judge-validation-import.test.ts checks its fields)')
   const t = stub(), r = await runValidation(inputs(tmp()), { transport: t.transport, secrets: [KEY], corpus: CORPUS, now: () => NOW, hostClaim: join(tmp(), 'host-claim'), machineFingerprint: () => FP_A })
-  assert.equal(r.status, 'refused'); assert.match(r.problems.join(), /claim run_id does not match this run/); assert.match(r.problems.join(), /the claim is for another machine/); assert.equal(t.requests, 0)
+  // Before the approved run is imported the committed claim is unconsumed and this other run, machine or input is refused on the
+  // claim's own fields; after it (artifact_sha256 and ended_at recorded by the import PR) every run is refused as consumed.
+  const consumed = !('problem' in rec) && isObj(rec.claims[0]) && Object.hasOwn(rec.claims[0], 'artifact_sha256')
+  assert.equal(r.status, 'refused'); assert.equal(t.requests, 0)
+  if (consumed) assert.match(r.problems.join(), /is consumed \(its run is recorded\): there is no rerun/)
+  else { assert.match(r.problems.join(), /claim run_id does not match this run/); assert.match(r.problems.join(), /the claim is for another machine/) }
   assert.match(hostClaimPath(), /[\\/]\.dazl[\\/]judge-validation\.host-claim$/)
   const lib = readFileSync(new URL('lib/evals/judge-validation-run.ts', WEB), 'utf8'), cliSrc = readFileSync(new URL('scripts/judge-validation-run.mts', WEB), 'utf8')
-  assert.doesNotMatch(lib, /process\.env|approved_rerun|RERUN_APPROVAL|approvedRerun|defaultStateDir|--approved-rerun/, 'the library reads no env var and has no rerun or default-state-dir path')
-  assert.deepEqual([...cliSrc.matchAll(/process\.env/g)].length, 1, 'the CLI hands process.env to readKeyFromEnv only')
-  assert.match(cliSrc, /readKeyFromEnv\(process\.env\)/)
+  assert.doesNotMatch(lib, /process\.env|approved_rerun|RERUN_APPROVAL|approvedRerun|--approved-rerun/, 'the library reads no env var and has no rerun path (its state-dir default takes the environment as an argument)')
+  assert.deepEqual([...cliSrc.matchAll(/process\.env/g)].length, 2, 'the CLI hands process.env to readKeyFromEnv and defaultStateDir only')
+  assert.match(cliSrc, /readKeyFromEnv\(process\.env\)/); assert.match(cliSrc, /defaultStateDir\(process\.env\)/)
   assert.doesNotMatch(cliSrc, /hostClaim|runRecord|machineFingerprint|homedir/, 'the CLI cannot move the run-once records or the fingerprint')
   assert.equal([...cliSrc.matchAll(/runValidation\(/g)].length, 1)
   assert.match(cliSrc, /runValidation\(args\.inputs, \{ transport: anthropicTransport\(key\), secrets: \[key\], corpus, keyEnv: keyName \}\)/, 'the CLI passes no code hashes, fingerprint or record path (the key\'s NAME is recorded, never its value)')
@@ -711,7 +716,7 @@ test('the command line: plan-only by default, every input required, the paid pat
   const without = (flag: string) => { const k = full.indexOf(flag); return full.filter((_, j) => j !== k && j !== k + 1) }
   const none = cli([]); assert.equal(none.status, 2); assert.match(none.stderr, /REFUSED/)
   const noCap = cli(without('--cap-usd')); assert.equal(noCap.status, 2); assert.match(noCap.stderr, /capUsd is required/)
-  for (const [flag, re] of [['--model', /model is required/], ['--state-dir', /stateDir is required/], ['--fx-source', /fxSource is required/], ['--fee-basis', /feeBasis is required/]] as const) {
+  for (const [flag, re] of [['--model', /model is required/], ['--fx-source', /fxSource is required/], ['--fee-basis', /feeBasis is required/]] as const) {
     const r = cli(without(flag)); assert.equal(r.status, 2, flag); assert.match(r.stderr, re, flag)
   }
   const relDir = cli([...without('--state-dir'), '--state-dir', 'relative/dir']); assert.equal(relDir.status, 2); assert.match(relDir.stderr, /absolute/)
@@ -723,7 +728,7 @@ test('the command line: plan-only by default, every input required, the paid pat
   assert.equal(existsSync(join(CLI_HOME, '.dazl')), false, 'plan only writes no host claim')
   // Plan-only needs no claim, and prints the one this machine, these inputs and this checkout need, for review.
   assert.match(plan.stdout, /the pre-call claim this run needs in lib\/evals\/judge-validation-runs\.json/)
-  assert.match(plan.stdout, /--execute would refuse now:\n {2}(claim run_id does not match this run|machine fingerprint unavailable)/) // the committed record holds the approved run's claim (#784), not this one
+  assert.match(plan.stdout, /--execute would refuse now:\n {2}(claim run_id does not match this run|machine fingerprint unavailable|the claim for jv-396-20261113 is consumed)/) // the committed record holds the approved run's claim (#784), consumed once its result is imported, not this one
   const printed = plan.stdout.match(/\n(\{\n[\s\S]*?\n\})\n/)
   if (process.platform === 'darwin' || existsSync('/etc/machine-id')) {
     assert.ok(printed, plan.stdout)
@@ -734,4 +739,31 @@ test('the command line: plan-only by default, every input required, the paid pat
   // The net fence clears *KEY* variables, so --execute here has no key: it must refuse with nothing sent.
   const exec = cli([...full, '--execute']); assert.equal(exec.status, 2); assert.match(exec.stderr, new RegExp(`${KEY_ENV} is not set`))
   assert.ok(!(none.stdout + none.stderr + plan.stdout + plan.stderr + exec.stdout + exec.stderr).includes(KEY))
+})
+
+test('#784 the state directory: --state-dir, else DAZL_JUDGE_VALIDATION_STATE_DIR, else <home>/.dazl/judge-validation; created mkdir -p mode 0700 by the run only (plan-only writes nothing); a group- or world-accessible one is refused; no root, no /var/lib', async () => {
+  const { defaultStateDir, STATE_DIR_ENV } = await import('../lib/evals/judge-validation-run.ts')
+  assert.equal(defaultStateDir({}, '/home/ubuntu'), '/home/ubuntu/.dazl/judge-validation')
+  assert.equal(defaultStateDir({ [STATE_DIR_ENV]: '/srv/x/jv' }, '/home/ubuntu'), '/srv/x/jv')
+  assert.equal(defaultStateDir({ [STATE_DIR_ENV]: '  ' }, '/home/ubuntu'), '/home/ubuntu/.dazl/judge-validation', 'blank is unset')
+  // the command line, plan-only, with HOME as the test's CLI home: the default path appears in the claim it prints and nothing is created
+  const today = new Date().toISOString().slice(0, 10)
+  const base = ['--run-id', 'cli-sd', '--model', MODEL, '--cap-usd', '3', '--fx-cad-per-usd', '1.4', '--fx-date', today, '--fx-source', FX_URL, '--fee-rate', '0.13', '--fee-basis', FEE_BASIS]
+  const home = tmp()
+  const planIn = (env: Record<string, string>, extra: string[] = []) => spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', 'scripts/judge-validation-run.mts', ...base, ...extra], { cwd: fileURLToPath(WEB), encoding: 'utf8', env: { ...process.env, HOME: home, ...env } as NodeJS.ProcessEnv, timeout: 60_000 })
+  const noEnv = planIn({}); assert.equal(noEnv.status, 0, noEnv.stderr)
+  assert.match(noEnv.stdout, new RegExp(`"state_dir": "${home}/\\.dazl/judge-validation"`)); assert.equal(existsSync(join(home, '.dazl')), false, 'plan only creates nothing')
+  const viaEnv = planIn({ [STATE_DIR_ENV]: '/elsewhere/jv' }); assert.match(viaEnv.stdout, /"state_dir": "\/elsewhere\/jv"/)
+  const viaFlag = planIn({ [STATE_DIR_ENV]: '/elsewhere/jv' }, ['--state-dir', '/flag/jv']); assert.match(viaFlag.stdout, /"state_dir": "\/flag\/jv"/)
+  assert.equal(planIn({ [STATE_DIR_ENV]: 'relative/jv' }).status, 2, 'a relative path is refused')
+  // the run itself: created mkdir -p, private; an existing group/world-accessible directory is refused before anything is sent
+  const stateParent = tmp(), stateDir = join(stateParent, 'a', 'b', 'jv')
+  const t = stub(), inp = inputs(stateDir)
+  const ok = await runV(inp, deps(t))
+  assert.equal(String(ok.status), 'completed', JSON.stringify(ok.problems))
+  const { statSync } = await import('node:fs')
+  assert.equal(statSync(stateDir).mode & 0o777, 0o700, 'the state dir is private'); assert.equal(statSync(join(stateDir, 'runs')).mode & 0o777, 0o700)
+  const loose = join(tmp(), 'loose'); mkdirSync(join(loose, 'runs'), { recursive: true }); (await import('node:fs')).chmodSync(loose, 0o755)
+  const t2 = stub(), refused = await runV(inputs(loose), deps(t2))
+  assert.equal(refused.status, 'refused'); assert.match(refused.problems.join(), /is not private \(mode 755\)/); assert.equal(t2.requests, 0)
 })

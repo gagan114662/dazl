@@ -15,7 +15,11 @@ import { claimSupportJudge, scanJudgeTemplate, scanVerificationJudge, STUB_MODEL
 
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
-const LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+const COMMITTED_LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+// The lock as it stood before the one real-model calibration was imported (#784): no calibration entries. The tests below are
+// about the gate's mechanics, so they must not depend on what that one run found; the committed lock and verdict log are checked
+// by the state-aware CI-gate test (test/judge-release-gate.test.ts) and by test/judge-validation-import.test.ts.
+const LOCK: JudgeLock = { ...COMMITTED_LOCK, judges: [] }
 // sim-model-*: a stub standing in for a named real model, so its report can be locked in these gate tests
 const SRC = 'test: simulated real-model calibration'
 const SPEC: JudgeSpec = { id: 'claim_support', version: 1, model: 'sim-model-a', prompt_version: 1 }

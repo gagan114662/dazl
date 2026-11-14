@@ -31,7 +31,7 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
-  calibrate, claimJudge, corpusHash, lockEntry, parseStoredVerdicts, toStoredVerdicts,
+  calibrate, claimJudge, corpusHash, detectDrift, lockEntry, parseStoredVerdicts, toStoredVerdicts,
   type CalibrationReport, type JudgeAdapter, type JudgeCorpus, type JudgeLock, type JudgeLockEntry, type JudgeOutcome, type Split, type StoredVerdict,
 } from './judge.ts'
 import { APPROVAL, CLAIM_CODE_FILES, FIXED, codeHashes, JUDGE_IDS, KEY_ENV, RUN_RECORD_CONTRACT, SPLITS, STAGING_KEY_ENV, VALIDATION_CONTRACT, judgeSpec, planRun, scanJudgeTemplate, type Artifact, type JudgeId } from './judge-validation-run.ts'
@@ -48,7 +48,9 @@ const CONSUMED = ['artifact_sha256', 'ended_at'] as const
 // expectSha256: the artifact sha256 the run printed where it ran. Required to consume a claim (the first import); once
 // the claim is consumed, the recorded sha256 is the check and this is optional.
 // currentCode: sha256 of this checkout's runner code files (codeHashes()); tests pass their own.
-export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string; currentCode?: Record<string, string> }
+// existingLog: the committed stored-verdict log's text (null or absent when there is none). The log is append-only (lib/evals/judge.ts, scripts/judges.mts --verdicts
+// appends to it): the importer parses and validates it first, keeps every line, and appends this run's records.
+export interface ImportInput { artifactText: string; recordText: string; lockText: string; corpus: JudgeCorpus; expectSha256?: string; currentCode?: Record<string, string>; existingLog?: string | null }
 // The files that decide a report's score: calibrate() and the judges' prompts, and the runner's fixed settings.
 export const SCORING_FILES: readonly string[] = Object.freeze(['lib/evals/judge.ts', 'lib/evals/judge-validation-run.ts', 'lib/scan/runner.ts'])
 export interface ImportResult {
@@ -156,8 +158,23 @@ export async function importValidationArtifact(i: ImportInput): Promise<ImportRe
     }
   } catch (e) { problems.push(`the artifact's reports cannot be stored: ${e instanceof Error ? e.message : String(e)}`) }
   if (problems.length) return { problems }
-  const verdictLog = verdicts.map(v => JSON.stringify(v)).join('\n') + '\n'
-  try { parseStoredVerdicts(verdictLog) } catch (e) { return { problems: [`the verdict log this artifact gives does not parse: ${e instanceof Error ? e.message : String(e)}`] } }
+  // The log is append-only: this run's records are appended to the existing log, never written over it. A re-import of the same
+  // run (the documented recovery after a cut-short write) finds its records already there and changes nothing; the same run id
+  // with other content, or an existing log that does not parse or cannot be compared, refuses.
+  const mine = verdicts.map(v => JSON.stringify(v))
+  let verdictLog: string
+  try {
+    const existing = typeof i.existingLog === 'string' && i.existingLog.trim() ? i.existingLog : ''
+    const prior = existing ? parseStoredVerdicts(existing) : []
+    const there = prior.filter(v => v.run === a.run_id).map(v => JSON.stringify(v))
+    if (there.length) {
+      if (there.length !== mine.length || [...there].sort().join('\n') !== [...mine].sort().join('\n')) return { problems: [`the stored-verdict log already holds run ${a.run_id} with other content than this artifact gives: refusing to rewrite history`] }
+      verdictLog = existing.endsWith('\n') ? existing : existing + '\n'
+    } else verdictLog = (existing ? (existing.endsWith('\n') ? existing : existing + '\n') : '') + mine.join('\n') + '\n'
+    const all = parseStoredVerdicts(verdictLog)
+    const invalid = JUDGE_IDS.flatMap(judge => detectDrift(all, { judge }).filter(d => d.status === 'invalid').map(d => `${judge} (${d.origin}, ${d.split}): ${d.problems.join('; ')}`))
+    if (invalid.length) return { problems: [`the stored-verdict log with this run does not compare: ${invalid.join(' | ')}`] }
+  } catch (e) { return { problems: [`the stored-verdict log: ${e instanceof Error ? e.message : String(e)}`] } }
   // There is one approved run, so the lock's calibration entries are exactly this run's: nothing else is carried over.
   const lockText = JSON.stringify({ ...lock, judges: entries }, null, 1) + '\n'
   return { problems: [], recordText, lockText, verdictLog, entries, verdicts, artifact_sha256, run_id: a.run_id, results: true }

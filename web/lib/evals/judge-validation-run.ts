@@ -39,7 +39,7 @@
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import {
@@ -89,6 +89,15 @@ export const RUN_RECORD_CONTRACT = 'dazl.judge-validation-runs/2'
 export const CLAIM_MAX_DAYS = 7
 export const MACHINE_FINGERPRINT_PREFIX = 'dazl.judge-validation/machine/1:'
 export const hostClaimPath = (): string => join(homedir(), '.dazl', 'judge-validation.host-claim')
+// Where the run's local state (the run marker, the ledger, the redacted result) lives: under the running user's own home,
+// never a system directory, so no root is needed. The command line takes it from STATE_DIR_ENV, else this default, unless
+// --state-dir names one. The committed claim binds the exact path, so a different user or directory is refused until a
+// reviewed claim names it. `env` is passed in: this library reads no environment variable itself.
+export const STATE_DIR_ENV = 'DAZL_JUDGE_VALIDATION_STATE_DIR'
+export const defaultStateDir = (env: Record<string, string | undefined>, home: string = homedir()): string => {
+  const set = env[STATE_DIR_ENV]
+  return typeof set === 'string' && set.trim() ? set.trim() : join(home, '.dazl', 'judge-validation')
+}
 
 const sha = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex')
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -629,7 +638,12 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const claim_sha256 = sha(JSON.stringify(record.claims[0]))
   const hostClaim = deps.hostClaim ?? hostClaimPath()
   let prior: RunMarker[]
-  try { mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }); prior = priorRuns(i.stateDir) } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
+  try {
+    mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }) // mkdir -p, private
+    // the run's records are private to the running user: a group- or world-accessible directory is refused, not tolerated
+    for (const d of [i.stateDir, runsDir(i.stateDir)]) if ((statSync(d).mode & 0o077) !== 0) return { status: 'refused', problems: [`state directory ${d.slice(0, 200)} is not private (mode ${(statSync(d).mode & 0o777).toString(8)}): chmod 700 it, then run again; nothing was sent`] }
+    prior = priorRuns(i.stateDir)
+  } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
   if (prior.length) return { status: 'refused', problems: [`an earlier validation run exists in the state directory (${prior.map(r => `${String(r.run_id).slice(0, 64)}:${String(r.status).slice(0, 16)}`).join(', ')}): ${NO_RERUN}`] }
   // Any other leftover (an approval claim with no run file, a ledger, a result) also refuses: the directory must be fresh.
   let leftovers: string[]

@@ -6,7 +6,7 @@
 //
 // Without --write it only checks the artifact against the committed claim and says what it would write. With --write it
 // writes, in this checkout: the claim's consumption (lib/evals/judge-validation-runs.json), the artifact itself
-// (test/fixtures/evals/judges/validation-run.result.json), the stored-verdict log (verdicts.jsonl) and the calibration
+// (test/fixtures/evals/judges/validation-run.result.json), the stored-verdict log (verdicts.jsonl; append-only: this run's records are added to what is there, nothing is removed) and the calibration
 // entries of judges.lock.json. Commit them together by a reviewed PR; `npm test` then checks them against the artifact.
 // --expect-sha256 is required until the claim is consumed: it is the sha256 the run printed on the machine it ran on, so
 // no other file can consume the claim. Each report is re-scored from its recorded answers first (and again by CI for as
@@ -30,7 +30,8 @@ if (!path || unknown.length || (expect !== undefined && !/^[0-9a-f]{64}$/.test(e
 let artifactText: string
 try { artifactText = readFileSync(path, 'utf8') } catch { console.error('judge validation import: REFUSED (nothing written)\n  the artifact file cannot be read'); process.exit(2) }
 const corpus = JSON.parse(readFileSync(at('test/fixtures/evals/judges/corpus.synthetic.json'), 'utf8')) as JudgeCorpus
-const r = await importValidationArtifact({ artifactText, expectSha256: expect, recordText: readFileSync(at(RUN_RECORD_FILE), 'utf8'), lockText: readFileSync(at(LOCK_FIXTURE), 'utf8'), corpus })
+const existingLog = (() => { try { return readFileSync(at(VERDICT_LOG_FIXTURE), 'utf8') } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e } })()
+const r = await importValidationArtifact({ artifactText, existingLog, expectSha256: expect, recordText: readFileSync(at(RUN_RECORD_FILE), 'utf8'), lockText: readFileSync(at(LOCK_FIXTURE), 'utf8'), corpus })
 if (r.problems.length) { console.error(`judge validation import: REFUSED (nothing written)\n  ${r.problems.join('\n  ')}`); process.exit(2) }
 console.log(`judge validation import: run ${r.run_id}, artifact sha256 ${r.artifact_sha256}`)
 if (!r.results) console.log('  the run has NO results (it failed or stopped): the claim is consumed, no verdict and no lock entry is written')
