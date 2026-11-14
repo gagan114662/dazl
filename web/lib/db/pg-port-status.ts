@@ -84,6 +84,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/outreach/store.ts': 1,
   'lib/outreach/test-fixture.ts': 0,
   'lib/people/email-pattern.ts': 2,
+  'lib/people/grounded-people.ts': 0,
   'lib/people/people-search.ts': 0,
   'lib/people/sec-officers.ts': 0,
   'lib/people/work-email.ts': 0,
