@@ -99,12 +99,12 @@ export async function readStore(host: string, http: SafeGet, o: { countries: str
   let best: { day: string; created: string; title: string; handle: string; quote: string } | null = null
   for (const p of products) {
     const day = inWindow(p.published_at), created = inWindow(p.created_at), title = str(p.title), handle = str(p.handle)
-    if (!day || !created || !title || !handle || !/^[a-z0-9][a-z0-9-]*$/i.test(handle)) continue
+    if (!day || !created || created > day || !title || !handle || !/^[a-z0-9][a-z0-9-]*$/i.test(handle)) continue // created after published is not a sane record
     const text = plain(str(p.body_html) ?? ''), quote = (text.length >= 20 ? text : title).slice(0, 300)
     if (quote.length < 20) continue
     if (!best || day > best.day) best = { day, created, title, handle, quote }
   }
-  if (!best) return null // a readable store with no product created AND published inside the window: not a lead for this request
+  if (!best) { note?.('no_new_listing'); return null } // a readable store in the right country with no product created AND published inside the window: reported, not a lead
   return { host, name: plain(str(meta.name) ?? host).slice(0, 80) || host, city: str(meta.city), province: str(meta.province), country, productUrl: `https://${host}/products/${best.handle}`, productTitle: best.title.slice(0, 160), publishedAt: best.day, createdAt: best.created, quote: best.quote }
 }
 

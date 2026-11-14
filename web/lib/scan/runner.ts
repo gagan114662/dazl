@@ -35,7 +35,6 @@ import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
-import { placeAgreement } from './place-agreement.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
 import { reconcileRunReport, type CandidateAudit, type UrlRecord } from './run-report.ts'
@@ -341,13 +340,10 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const dropped: Record<string, number> = {}
   const drop = (r: string) => { dropped[r] = (dropped[r] ?? 0) + 1 }
   // #763: where the candidate's company is. statedPlaces carries a place a structured source states for the company ITSELF, keyed by the
-  // candidate's source URL (a Shopify store's own meta.json: "Barnsley, England, United Kingdom"). When that place agrees with the request,
-  // it answers the question: a product page that also names where an item ships or is made no longer reads as "another place". A stated
-  // place that does not agree changes nothing: the page is judged exactly as before.
-  const placeFor = (page: Parameters<typeof ownPlaceAgreement>[0], c: LeadDraft) => {
-    const stated = statedPlaces?.get(canonUrl(c.source_url))
-    return stated && placeAgreement(stated, geo, c.company) === 'agrees' ? 'agrees' as const : ownPlaceAgreement(page, geo, c.company, c.excerpt)
-  }
+  // candidate's source URL (a Shopify store's own meta.json). It is handed to the place check as one more sentence of the company's own
+  // block (lib/scan/own-block.ts): it answers a page that merely mentions another place, and never overrules a page that places the
+  // company itself elsewhere. No stated place for this candidate: the page is judged exactly as before.
+  const placeFor = (page: Parameters<typeof ownPlaceAgreement>[0], c: LeadDraft) => ownPlaceAgreement(page, geo, c.company, c.excerpt, statedPlaces?.get(canonUrl(c.source_url)) ?? null)
   // Instrumentation only (scan/run-report.ts): the fate of each candidate and why. Never read by a decision.
   const noted = new Map<LeadDraft, CandidateAudit>()
   const note = (c: LeadDraft, outcome: CandidateAudit['outcome'], reason: string | null, origin?: string | null) => {

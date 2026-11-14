@@ -47,10 +47,14 @@ export function ownBlock(text: string, company: string, title = '', excerpt = ''
 }
 
 // Place agreement on the candidate's own block only. `no_geography` when the request names no place.
-export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = ''): PlaceVerdict {
+// stated (#763): a place a structured source states for the company ITSELF (a Shopify store's own meta.json: "Barnsley, England,
+// United Kingdom"). It is read as one more sentence of the company's own block, by the same rules. So it can answer a page that merely
+// MENTIONS another place (where an item is made or ships from), and it cannot overrule a page that places the company itself elsewhere
+// ("X is headquartered in Berlin"): placeAgreement checks that binding first, and it outranks any mention of the requested place.
+export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = '', stated: string | null = null): PlaceVerdict {
   const probe = placeAgreement('', where, company)
   if (probe === 'no_geography') return probe
   const block = ownBlock(page.text, company, page.title, excerpt, page.board)
   if (block === null) return 'unconfirmed'
-  return placeAgreement(`${page.title} ${block}`, where, company)
+  return placeAgreement(stated ? `${page.title} ${block} ${stated}.` : `${page.title} ${block}`, where, company)
 }

@@ -3,9 +3,10 @@
 //     "published" inside 90 days, with records created 300 to 800 days earlier (lucyandyak.com: newest "published" 2026-11-13, record
 //     created 2025-12-17; missoma.com: published 2026-11-10, created 2024-09-02). A candidate now needs a product whose record was
 //     CREATED and published inside the window.
-//  2. A store's own stated place (meta.json: city, province, country) is passed to the verifier's place check. Real product pages of
-//     three UK stores read "unconfirmed" (they name no place); one candidate in a matrix run was held location_mismatch because its
-//     page named another place. The stated place answers the question only when it agrees with the request.
+//  2. A store's own stated place (meta.json: city, province, country) is handed to the verifier's place check as one more sentence of
+//     the company's own block. It never overrules a page that places the company itself elsewhere, and for a city-level request it is
+//     evidence AGAINST a store in another city. On real product pages of three UK stores the place check read "unconfirmed" (no place
+//     named), which already passes, so no lead is shown to be rescued by it.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { placeOf, readStore, storeLead, type ShopifyStore } from '../lib/sources/shopify.ts'
@@ -28,6 +29,15 @@ test('#763 a re-published old product is not a new product: the record must be c
   assert.deepEqual([s?.productTitle, s?.createdAt, s?.publishedAt], ['Emmerson - Card Holder Organic Cotton in Tulip', '2026-11-01', '2026-11-03'])
   // created inside the window but published before it cannot happen; created inside, published in the FUTURE (scheduled) is not live
   assert.equal(await readStore('lucyandyak.com', store(product('Scheduled', 'scheduled', '2026-11-10T10:00:00+00:00', '2026-12-01T09:00:00+00:00')), O), null)
+  // window edges and broken records: the floor day and today are inside; a record with no created_at, or created after it was published, is not kept
+  const edge = (c: string | null, p: string) => readStore('lucyandyak.com', store({ ...product('Edge', 'edge', c ?? '', p), ...(c === null ? { created_at: null as unknown as string } : {}) }), O)
+  assert.equal((await edge('2026-08-16T00:00:00+00:00', '2026-08-16T12:00:00+00:00'))?.createdAt, '2026-08-16', 'the first day of the 90-day window is inside')
+  assert.equal(await edge('2026-08-15T23:59:00+00:00', '2026-11-14T08:00:00+00:00'), null, 'one day before the window: a re-listing')
+  assert.equal((await edge('2026-11-14T01:00:00+00:00', '2026-11-14T02:00:00+00:00'))?.publishedAt, '2026-11-14', 'today is inside')
+  assert.equal(await edge(null, '2026-11-10T09:00:00+00:00'), null, 'no created_at: not a provably new record')
+  assert.equal(await edge('2026-11-10T09:00:00+00:00', '2026-11-03T09:00:00+00:00'), null, 'created after published is not a sane record')
+  const notes: string[] = []
+  assert.equal(await readStore('lucyandyak.com', relisted, O, c => notes.push(c)), null); assert.deepEqual(notes, ['no_new_listing'], 'a readable store dropped by this rule is reported')
   assert.match(storeLead(s!).signal, /added a new product listing "Emmerson - Card Holder Organic Cotton in Tulip" \(record created 2026-11-01, published 2026-11-03\)\.$/)
   assert.doesNotMatch(storeLead(s!).signal, /launched/, 'the signal says what the data says: a new listing, not a launch')
 })
@@ -43,20 +53,32 @@ const QUOTE = 'Comfy organic cotton boxer shorts in a bright kelly green, cut fo
 const URL_ = 'https://lucyandyak.com/products/emmerson-card-holder-in-tulip'
 const cand = () => [{ name: '', company: 'Lucy & Yak', contact: null, signal: 'Lucy & Yak added a new product listing', source_url: URL_, score: 80, excerpt: QUOTE, event_date: null }]
 const pageSaying = (extra: string) => async () => ({ text: `Lucy & Yak\n${QUOTE}\n${extra}`, title: 'Lucy & Yak', retrievedAt: 1_700_000_000 })
-const reasons = (o: Awaited<ReturnType<typeof verifyLeads>>) => [...o.review.map(l => l.review_reason), ...o.leads.map(() => 'passed'), ...Object.keys(o.dropped)]
-const ELSEWHERE = 'Lucy & Yak is headquartered in Berlin, Germany.'
+const fate = (o: Awaited<ReturnType<typeof verifyLeads>>) => ({ leads: o.leads.length, review: o.review.map(l => l.review_reason), dropped: Object.keys(o.dropped) })
+const run = (extra: string, where: string[], stated?: [string, string]) => verifyLeads(cand() as never, pageSaying(extra) as never, NOW, undefined, null, undefined, undefined, where, undefined, stated ? new Map([stated]) : undefined)
+const PASSED = { leads: 1, review: [], dropped: [] }, MISMATCH = { leads: 0, review: ['location_mismatch'], dropped: [] }
+const UK = 'Barnsley, England, United Kingdom'
 
-test('#763 verifier: a page that places the company elsewhere is a mismatch; the store own stated place, when it agrees with the request, answers it; a stated place that disagrees changes nothing', async () => {
-  const where = ['United Kingdom']
-  const none = await verifyLeads(cand() as never, pageSaying(ELSEWHERE) as never, NOW, undefined, null, undefined, undefined, where)
-  assert.ok(reasons(none).includes('location_mismatch'), `without a stated place the page decides: ${JSON.stringify(reasons(none))}`)
-  const agrees = await verifyLeads(cand() as never, pageSaying(ELSEWHERE) as never, NOW, undefined, null, undefined, undefined, where, undefined, new Map([[URL_, 'Barnsley, England, United Kingdom']]))
-  assert.ok(!reasons(agrees).includes('location_mismatch'), `the store's own stated UK place answers the place question: ${JSON.stringify(reasons(agrees))}`)
-  const disagrees = await verifyLeads(cand() as never, pageSaying(ELSEWHERE) as never, NOW, undefined, null, undefined, undefined, where, undefined, new Map([[URL_, 'Austin, Texas, United States']]))
-  assert.ok(reasons(disagrees).includes('location_mismatch'), 'a stated place outside the request never rescues a mismatch')
-  const otherUrl = await verifyLeads(cand() as never, pageSaying(ELSEWHERE) as never, NOW, undefined, null, undefined, undefined, where, undefined, new Map([['https://other.example/products/x', 'Barnsley, England, United Kingdom']]))
-  assert.ok(reasons(otherUrl).includes('location_mismatch'), "another candidate's stated place is not this one's")
-  // a page with no place at all behaves as before, with or without a stated place
-  const plain = await verifyLeads(cand() as never, pageSaying('Free returns within 30 days.') as never, NOW, undefined, null, undefined, undefined, where)
-  assert.ok(!reasons(plain).includes('location_mismatch'))
+test('#763 verifier: a stated place NEVER overrules a page that places the company itself elsewhere (no bar-lowering)', async () => {
+  const bound = 'Lucy & Yak is headquartered in Berlin, Germany.'
+  assert.deepEqual(fate(await run(bound, ['United Kingdom'])), MISMATCH)
+  assert.deepEqual(fate(await run(bound, ['United Kingdom'], [URL_, UK])), MISMATCH, 'the store saying "United Kingdom" about itself does not rescue a page that says the company is in Berlin')
+})
+
+test('#763 verifier: a page that names no place passes as before; the stated place is evidence AGAINST a store outside a city-level request', async () => {
+  const plain = 'Free returns within 30 days.'
+  assert.deepEqual(fate(await run(plain, ['United Kingdom'])), PASSED)
+  assert.deepEqual(fate(await run(plain, ['United Kingdom'], [URL_, UK])), PASSED)
+  // a page that merely mentions another place was not a mismatch before and is not one now
+  assert.deepEqual(fate(await run('Made in Portugal. Dispatched from our Lisbon warehouse.', ['United Kingdom'], [URL_, UK])), PASSED)
+  // "stores in London": the page alone cannot tell; the store's own stated city can
+  assert.deepEqual(fate(await run(plain, ['London'])), PASSED, 'without a stated place a page that names no place is not rejected')
+  assert.deepEqual(fate(await run(plain, ['London'], [URL_, UK])), MISMATCH, 'a store that states Barnsley is not a London store')
+  assert.deepEqual(fate(await run(plain, ['London'], [URL_, 'London, England, United Kingdom'])), PASSED, 'a store that states London is')
+})
+
+test('#763 verifier: the stated place belongs to its own candidate only (keyed by the source URL, a trailing slash ignored)', async () => {
+  const plain = 'Free returns within 30 days.'
+  assert.deepEqual(fate(await run(plain, ['London'], ['https://other.example/products/x', UK])), PASSED, "another candidate's stated place is not this one's")
+  assert.deepEqual(fate(await run(plain, ['London'], [`${URL_}/`, UK])), PASSED, 'a key that is not the canonical URL never matches: no stated place, judged as before')
+  assert.deepEqual(fate(await run(plain, ['London'], [URL_, UK])), MISMATCH)
 })
