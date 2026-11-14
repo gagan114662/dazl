@@ -50,8 +50,19 @@ export function counterpartySignal(c: Candidate, page: Page, passage: string): s
   const hay = norm(passage || `${page.title} ${page.text.slice(0, 3000)}`)
   if (!hay.includes(brand)) return null
   if (!CUSTOMER_PHRASE.test(hay)) return null
-  // The lead's company must appear near the brand mention (same 200-char window).
-  const at = hay.indexOf(brand)
-  const window = hay.slice(Math.max(0, at - 200), at + 200)
-  return window.includes(company) ? `source_owner:${brand}` : null
+  // The customer relationship itself must be stated between the two names (#878, matrix berlin-fintech 2026-11-14). The old rule only asked
+  // for the lead's company within 200 characters of the brand and a customer word ANYWHERE in the first 3,000 characters, so every news
+  // article about a company was held as "the publisher's customer story": the publisher's name sits beside the headline, and "the company
+  // intends to use the funds" is in every funding article ("mika Raises EUR 6M in Seed Funding - FinSMEs"). Now one of:
+  //  - the lead's company, then a customer verb, then the brand, in one sentence ("Brightloop uses Zapier for its sales workflows");
+  //  - a customer LIST that names the lead's company, near the brand ("Linear grew fast. Salesforce and Figma, which both became customers").
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const uses = new RegExp(`\\b${esc(company)}\\b[^.]{0,80}?\\b(?:chose|chooses|chosen|switched to|runs on|run on|running on|use|uses|using|adopted|adopts|adopting|standardized on|joined|joins|joining|is a customer of|are customers of)\\b[^.]{0,40}?\\b${esc(brand)}\\b`)
+  if (uses.test(hay)) return `source_owner:${brand}`
+  const listed = /\b(?:became|become|becomes|becoming|is now|are now|as|our|new|latest)\s+(?:an?\s+|\w+\s+)?customers?\b/
+  for (let at = hay.indexOf(brand); at >= 0; at = hay.indexOf(brand, at + brand.length)) {
+    const window = hay.slice(Math.max(0, at - 200), at + 200)
+    if (window.includes(company) && listed.test(window)) return `source_owner:${brand}`
+  }
+  return null
 }
