@@ -59,6 +59,11 @@ export const PEOPLE_SEARCHES_MAX = 5 // lib/people/people-search.ts MAX_COMPANIE
 // or none, leaves it on (as the other default-on sources: sitecrawl, news, people search).
 export const ADAPTIVE_SEARCHES = 3
 export const ADAPTIVE_FETCHES = 6
+// #1036 4b: after the scan, a lead whose source page links no company website gets ONE web search for "<company> <place>" so the
+// crawl can read the company's own site (lib/scan/runner.ts siteFinderFor). At most this many per scan, each under the same tenant /
+// global TinyFish caps as every search. Same policy as the adaptive round: never a free-trial scan, never a first play, never a run
+// with paid_fallback=false, never a scheduled play run. The count lives here so the price estimate (bundled into the browser) states it in its maxima.
+export const SITE_SEARCHES_PER_SCAN = 6
 export const adaptiveDiscoveryOn = (env: Record<string, string | undefined>): boolean => (env.DAZL_ADAPTIVE_DISCOVERY_ENABLED ?? '').trim() !== '0'
 // Profile generation is ONE request with a known maximum size. icpPrompt JSON-encodes the 600-char request and 300-char seller
 // text, and JSON.stringify turns one control char (U+0000) into 6 ASCII bytes (\u0000), which beats a 3-byte BMP char, a 2-byte
@@ -79,7 +84,7 @@ function peopleSearchExclusion(n: number, firstPlay: boolean): string | null {
 }
 export const BUDGET_EXCLUDED_PATHS = [
   `Profile generation (/api/scan/icp) - a separate request before the run: one call, at most 800 output tokens, about $${profileGenerationWorstCaseUsd().toFixed(3)} worst case at the highest listed price (computed, unguarded; a model without a listed price is not covered by this number)`,
-  `TinyFish search and fetch - bounded by COUNT, not dollars: at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan and ${DEFAULT_TINYFISH.tenantDaily} units per tenant per day (defaults); a scan you start that verifies no lead in its first round may make one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages (never a free-trial scan, a run with paid_fallback=false or a play's run; unless the operator has turned it off); what a unit costs is TinyFish's pricing, not known to dazl`,
+  `TinyFish search and fetch - bounded by COUNT, not dollars: at most ${DEFAULT_TINYFISH.searchesPerScan} searches and ${DEFAULT_TINYFISH.fetchesPerScan} fetched pages per scan and ${DEFAULT_TINYFISH.tenantDaily} units per tenant per day (defaults); a scan you start that verifies no lead in its first round may make one more round of at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages (never a free-trial scan, a run with paid_fallback=false or a play's run; unless the operator has turned it off); after the scan, at most ${SITE_SEARCHES_PER_SCAN} more searches find the website of leads whose source page links none (same exclusions); what a unit costs is TinyFish's pricing, not known to dazl`,
   'Free sources: GDELT news search, public job boards, SEC Form D, the company-site crawl - no model cost',
   peopleSearchExclusion(PEOPLE_SEARCHES_MAX, false)!,
   'Autopilot and every outreach action (drafting, AI rewrite, follow-ups, replies) - separate features on their own keys and switches; a job with a budget does NOT start autopilot',

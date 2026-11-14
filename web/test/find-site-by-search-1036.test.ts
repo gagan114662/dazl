@@ -53,3 +53,59 @@ test('crawlJob: a findSites that throws or answers nothing falls back to the nam
   await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, findSites: async () => { throw new Error('search down') } })
   assert.deepEqual(db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'domain'").all(), [])
 })
+
+// The runner's search step itself (siteFinderFor): the real tfSearch with a stubbed TinyFish answer; no network.
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { siteFinderFor } from '../lib/scan/runner.ts'
+import { SITE_SEARCHES_PER_SCAN } from '../lib/scan/run-budget.ts'
+
+const tfAnswer = (urls: string[]) => new Response(JSON.stringify({ results: urls.map(url => ({ url, title: 't', snippet: 's' })) }), { status: 200, headers: { 'content-type': 'application/json' } })
+const withKey = async (f: () => Promise<void>) => { const had = process.env.TINYFISH_API_KEY; process.env.TINYFISH_API_KEY = 'test-key-not-real'; try { await f() } finally { if (had === undefined) delete process.env.TINYFISH_API_KEY; else process.env.TINYFISH_API_KEY = had } }
+const JOB = { id: 'j'.repeat(24), user_id: 'tenant-A' } as Parameters<typeof siteFinderFor>[1]
+
+test('siteFinderFor: off without TinyFish; with it, one search per lead "<company> <place> official website", only own-site hosts returned, and the tenant\'s daily count moves', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const had = process.env.TINYFISH_API_KEY; delete process.env.TINYFISH_API_KEY
+  try { assert.equal(siteFinderFor(db, JOB, {}), undefined, 'no TinyFish key: the crawl guesses from the name as before') } finally { if (had !== undefined) process.env.TINYFISH_API_KEY = had }
+  await withKey(async () => {
+    const asked: string[] = []
+    const fetchImpl = (async (u: string | URL) => { asked.push(new URL(String(u)).searchParams.get('query') ?? ''); return tfAnswer(['https://www.instagram.com/tdotdental/', 'https://tdotdental.ca/', 'https://www.yelp.ca/biz/tdot-dental']) }) as typeof fetch
+    const find = siteFinderFor(db, JOB, { fetchImpl })!
+    assert.deepEqual(await find('TDot Dental', ['Toronto, Ontario']), ['tdotdental.ca'])
+    assert.deepEqual(asked, ['TDot Dental Toronto, Ontario official website'])
+    assert.deepEqual(await find('TDot Dental', []), ['tdotdental.ca']); assert.equal(asked[1], 'TDot Dental official website')
+  })
+})
+
+test('siteFinderFor: at most SITE_SEARCHES_PER_SCAN searches per scan; a failed search answers nothing; a refused key stops further searches', async () => {
+  await withKey(async () => {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    let n = 0
+    const find = siteFinderFor(db, JOB, { fetchImpl: (async () => { n++; return tfAnswer(['https://harbordental.example/']) }) as typeof fetch })!
+    for (let i = 0; i < SITE_SEARCHES_PER_SCAN + 3; i++) await find('Harbor Dental', ['Austin'])
+    assert.equal(n, SITE_SEARCHES_PER_SCAN, 'the cap holds')
+    const db2 = new Database(':memory:'); migrateAllSqlite(db2)
+    let m = 0
+    const refused = siteFinderFor(db2, JOB, { fetchImpl: (async () => { m++; return new Response('{}', { status: 401 }) }) as typeof fetch })!
+    assert.deepEqual(await refused('Harbor Dental', ['Austin']), [])
+    assert.deepEqual(await refused('Other Dental', ['Austin']), [])
+    assert.equal(m, 1, 'a rejected key is not asked again in this scan')
+    const aborted = siteFinderFor(db2, JOB, { fetchImpl: (async () => { m++; return tfAnswer([]) }) as typeof fetch }, AbortSignal.abort())!
+    assert.deepEqual(await aborted('Harbor Dental', ['Austin']), []); assert.equal(m, 1, 'nothing is sent after the post-finish deadline')
+  })
+})
+
+test('siteFinderFor policy: never on a first play or a run with paid steps off (those scans keep the name-guessed domains); the estimate states the searches', async () => {
+  await withKey(async () => {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    assert.equal(siteFinderFor(db, JOB, { first5: true }), undefined)
+    assert.equal(siteFinderFor(db, JOB, { paidFallback: false }), undefined)
+    assert.equal(typeof siteFinderFor(db, JOB, {}), 'function')
+  })
+  const { estimateRun } = await import('../lib/scan/price-estimate.ts')
+  const row = (o: Record<string, unknown>, env: Record<string, string> = {}) => estimateRun({ budget: null, payer: 'you', env, ...o } as Parameters<typeof estimateRun>[0]).rows.find(r => r.id === 'tinyfish_search')
+  const on = row({}), off = row({}, { SITECRAWL_ENABLED: '0' }), noPaid = row({ budget: { paid_fallback: false } }), trial = row({ payer: 'trial' })
+  assert.equal(on!.units.max - off!.units.max, SITE_SEARCHES_PER_SCAN, 'the estimate counts the company-website searches')
+  assert.match(on!.note, /at most 6 company-website searches/)
+  assert.doesNotMatch(off!.note, /company-website/); assert.doesNotMatch(noPaid?.note ?? '', /company-website/); assert.doesNotMatch(trial?.note ?? '', /company-website/)
+})

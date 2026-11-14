@@ -81,7 +81,7 @@ import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, pe
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
-import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, adaptiveDiscoveryOn } from './run-budget.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, SITE_SEARCHES_PER_SCAN, adaptiveDiscoveryOn } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -1206,7 +1206,6 @@ export interface RunDeps {
   first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
-export const SITE_SEARCHES_PER_SCAN = 6
 const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
 
 // A free-trial scan whose budget refused a paid step (lib/billing/trial-budget.ts): it stops with what it has. Nothing
@@ -2068,6 +2067,31 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // work (outreach sends, e.g. Gmail per the runJob audit) and has no cancel
 // protocol, so it is awaited to completion - the slot is held through it,
 // never freed beneath it.
+// #1036 4b: the company's own website from a web search, for leads whose evidence page links none (an Instagram post, a LinkedIn job,
+// a jobleads listing, a news article). One TinyFish search per such lead, at most SITE_SEARCHES_PER_SCAN per scan, each under the
+// tenant / global / per-minute caps tfSearch enforces, the scan's own spend budget. Only hosts that can
+// be the company's own (sitecrawl.ts companyHostsFromSearch) are returned; crawlJob still runs the homepage name check and the place
+// check on each before anything is recorded. undefined when TinyFish is off: the crawl then guesses domains from the name as before.
+// A search the scan's budget refuses ends the searching for this scan (nothing was sent); it never ends the crawl.
+export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+  // Policy (run-budget.ts SITE_SEARCHES_PER_SCAN): never a free-trial scan (its reserve is planned for the lead and people searches),
+  // never a first play, never a run that switched paid steps off. Those scans keep the name-guessed domains.
+  if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || trialCharges.get(job)) return undefined
+  // ... and never a scheduled play run (a watch's or a monitor's): it runs unattended under the caps it was confirmed with
+  if (job.watch_id || isMonitorRun(db, job)) return undefined
+  let asked = 0, stopped = false
+  return async (company, where) => {
+    if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return []
+    asked++
+    const query = `${company} ${where[0] ?? ''} official website`.replace(/\s+/g, ' ').trim()
+    try {
+      const r = await tfSearch(db, job.user_id, query, {}, { searches: 0 }, { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(signal ? { signal } : {}) })
+      if (!r.ok) { if (r.reason !== 'unavailable') stopped = true; return [] } // a cap, a rate limit, a rejected key: no further search this scan
+      return companyHostsFromSearch(company, r.hits)
+    } catch { stopped = true; return [] }
+  }
+}
+
 export async function runPostFinishBounded(db: Database.Database, job: Job, deps: RunDeps, trace: EnrichmentTrace = new EnrichmentTrace()): Promise<void> {
   const postCtrl = new AbortController()
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
@@ -2075,17 +2099,9 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
     else {
-      // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (TinyFish, at most
-      // SITE_SEARCHES_PER_SCAN per scan, under the tenant / global caps tfSearch enforces); the result host still has to pass the
-      // homepage name check and the place check before it is recorded. Off when TinyFish is off or a test crawl `get` is injected.
-      const spentSites = { searches: 0 }
-      const findSites = !deps.crawlGet && tinyfishEnabled() ? async (company: string, where: string[]) => {
-        if (spentSites.searches >= SITE_SEARCHES_PER_SCAN) return []
-        spentSites.searches++
-        const r = await tfSearch(db, job.user_id, `${company} ${where[0] ?? ''} official website`.replace(/\s+/g, ' ').trim(), {}, { searches: 0 }, { charge: trialCharges.get(job), signal: postCtrl.signal })
-        return r.ok ? companyHostsFromSearch(company, r.hits) : []
-      } : undefined
-      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
+      const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }

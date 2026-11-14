@@ -260,21 +260,22 @@ test('#851 trial payer: the trial always runs under its reserve guard, so an unp
 })
 
 test('#381 the estimate states the adaptive round in its maxima wherever the round can run (on by default; off with "0", on a trial or with paid steps off)', async () => {
-  const { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } = await import('../lib/scan/run-budget.ts')
+  const { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } = await import('../lib/scan/run-budget.ts')
   const priced = { DAZL_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_PRICE_TINYFISH_FETCH_USD: '0.002' }
   const rows = (e: ReturnType<typeof estimateRun>) => Object.fromEntries(e.rows.map(r => [r.id, r]))
   const on = rows(estimateRun({ budget: null, payer: 'you', env: priced }))
-  assert.equal(on.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + ADAPTIVE_SEARCHES + PEOPLE_SEARCHES_MAX)
+  // #1036 4b: plus the company-website searches after the scan (never on a trial, never with paid steps off)
+  assert.equal(on.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + ADAPTIVE_SEARCHES + PEOPLE_SEARCHES_MAX + SITE_SEARCHES_PER_SCAN)
   assert.equal(on.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)
   assert.equal(on.extraction.units.max, 4)
   assert.match(on.tinyfish_search.note, /one more round, only when the first round verifies no lead/)
   assert.ok(Math.abs(on.tinyfish_fetch.usd!.max - 0.002 * (DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)) < 1e-9, 'the dollar maximum includes the extra pages')
-  for (const [why, e] of [
-    ['turned off', estimateRun({ budget: null, payer: 'you', env: { ...priced, DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' } })],
-    ['paid steps off', estimateRun({ budget: { paid_fallback: false }, payer: 'you', env: priced })],
+  for (const [why, e, site] of [
+    ['turned off', estimateRun({ budget: null, payer: 'you', env: { ...priced, DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' } }), SITE_SEARCHES_PER_SCAN],
+    ['paid steps off', estimateRun({ budget: { paid_fallback: false }, payer: 'you', env: priced }), 0],
   ] as const) {
     const r = rows(e)
-    assert.equal(r.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + PEOPLE_SEARCHES_MAX, why)
+    assert.equal(r.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + PEOPLE_SEARCHES_MAX + site, why)
     assert.equal(r.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan, why)
     assert.equal(r.extraction.units.max, 3, why)
   }
