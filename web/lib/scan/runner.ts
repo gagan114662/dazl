@@ -151,6 +151,7 @@ function str(v: unknown, max: number): string {
 // #381 (yield, real scans 2026-11-14): a complete extraction reply of 9 candidates was invalid JSON in ONE item, the whole reply was thrown away and the scan ended with
 // 0 candidates (2 of 9 Chicago scans of that day). When the array does not parse as a whole, each item is parsed on its own and the ones that parse are kept; the broken
 // item is lost, the others are not. Nothing is repaired or guessed: an item is used only when it is valid JSON by itself. No item parses -> null, as before.
+// Only the TinyFish extraction step asks for this (opts.salvage): the research paths retry on an unusable reply, and that stays as it is.
 function salvageItems(arrayText: string): unknown[] | null {
   const items: unknown[] = []
   for (const chunk of arrayText.slice(1, -1).split(/(?<=\})\s*,\s*(?=\{)/)) {
@@ -158,7 +159,7 @@ function salvageItems(arrayText: string): unknown[] | null {
   }
   return items.length > 0 ? items : null
 }
-export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | null {
+export function parseLeads(text: string, citedUrls: string[], opts: { salvage?: boolean } = {}): LeadDraft[] | null {
   const start = text.indexOf('[')
   const end = text.lastIndexOf(']')
   if (start < 0 || end <= start) return null
@@ -166,7 +167,7 @@ export function parseLeads(text: string, citedUrls: string[]): LeadDraft[] | nul
   try {
     raw = JSON.parse(text.slice(start, end + 1))
   } catch {
-    raw = salvageItems(text.slice(start, end + 1))
+    raw = opts.salvage ? salvageItems(text.slice(start, end + 1)) : null
     if (!raw) return null
   }
   if (!Array.isArray(raw)) return null
@@ -312,8 +313,8 @@ export const GROUND_MAX_OUT = 4000
 const flatText = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
 export const quoteOnPage = (excerpt: string | null | undefined, pageText: string) => !!excerpt && flatText(excerpt).length >= 20 && flatText(pageText).includes(flatText(excerpt))
 // #381 (review): the model is asked for "prospects on these pages", so it can rename a candidate ("Flynn Companies" for "Flynn Group of Companies"), return one
-// twice, or return a company it was never given. A grounded item may only replace a candidate that went in: matched on the same page (the page's only candidate by
-// page alone; otherwise by name), at most one per candidate, anything else dropped. The candidate keeps its own name, company and signal; only the quote (and a
+// twice, or return a company it was never given. A grounded item may only replace a candidate that went in: matched on the same page AND by name (exact, then
+// loose; for the page's only candidate a quote that names it is enough), at most one per candidate, anything else dropped. The candidate keeps its own name, company and signal; only the quote (and a
 // date or contact it lacked) comes from the page. So the number of candidates never changes.
 const GENERIC_NAME_WORDS = new Set(['group', 'of', 'and', 'companies', 'holdings', 'international', 'global', 'services', 'partners'])
 const nameWords = (company: string) => companyKey(company).split(' ').filter(w => w && !GENERIC_NAME_WORDS.has(w))
@@ -331,9 +332,12 @@ export function mergeGrounded(originals: LeadDraft[], grounded: LeadDraft[]): Ma
   const left: LeadDraft[] = []
   // exact names first, so a loose match never takes the item that belongs to another candidate of the page
   for (const g of grounded) { const o = originals.find(o => page(o) === page(g) && !out.has(o) && companyKey(o.company) === companyKey(g.company)); if (o) take(o, g); else left.push(g) }
+  // otherwise by a loose name match, or (the page's only candidate) a quote that itself names the candidate. An item about another company of the page matches nothing:
+  // its quote must never be attached to a candidate it does not name.
+  const named = (o: LeadDraft, g: LeadDraft) => sameCompanyName(o.company, g.company) || (!!companyKey(o.company) && hasPhrase(norm(g.excerpt ?? ''), norm(companyKey(o.company))))
   for (const g of left) {
     const same = originals.filter(o => page(o) === page(g))
-    take(same.length === 1 ? same[0] : same.find(o => !out.has(o) && sameCompanyName(o.company, g.company)), g)
+    take(same.length === 1 ? (named(same[0], g) ? same[0] : undefined) : same.find(o => !out.has(o) && sameCompanyName(o.company, g.company)), g)
   }
   return out
 }
@@ -1136,7 +1140,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
   const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
-  const parsed = parseLeads(text, items.map(i => i.url)) ?? null
+  const parsed = parseLeads(text, items.map(i => i.url), { salvage: true }) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
   if (diag) diag.info.extraction = extractionNote({ results: new Set(hits.map(h => h.url)).size, requested: urls.length, fetchedPages: f.ok ? f.pages : [], fetchError: !f.ok, items, parsed })
   return parsed
@@ -1747,7 +1751,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const snippetOnly = snippetCandidates(leads, diag.hitUrls, textUrls)
       // a candidate whose quote is already on its page needs no call (the verifier reads the same page; the fetch is the verifier's cached one, so each page is read once)
       const texts = new Map<string, string>()
-      await Promise.all([...new Set(snippetOnly.map(l => l.source_url))].map(async u => { const p = await fetchP(u).catch(() => null); if (p && !isFail(p) && p.text) texts.set(u, p.text) }))
+      if (snippetOnly.length > 0) assertOwned(db, job)   // no new page reads after a stop
+      await Promise.all([...new Set(snippetOnly.map(l => l.source_url))].slice(0, GROUND_MAX_PAGES).map(async u => { const p = await fetchP(u).catch(() => null); if (p && !isFail(p) && p.text) texts.set(u, p.text) }))
       const open = snippetOnly.filter(l => texts.has(l.source_url) && !quoteOnPage(l.excerpt, texts.get(l.source_url)!))
       // The pass must not take the room a trial or a budgeted run needs for its scoring, judge and people search (the guard flips to refused on any refused call, which
       // holds the leads): it runs only when the call's own reservation (the built prompt, priced as the guard prices it) fits under every dollar guard of this run; a

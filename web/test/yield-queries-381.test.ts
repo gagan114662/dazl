@@ -220,6 +220,11 @@ test('#381 mergeGrounded (review 1): one grounded item per candidate, matched on
   assert.deepEqual(got.get(flynn), { ...flynn, excerpt: 'new flynn', event_date: '2026-09-15' })
   assert.equal(got.get(armstrong)!.excerpt, 'new armstrong 1'); assert.equal(got.get(armstrong)!.company, 'Armstrong Teasdale')
   assert.equal(got.has(roof), false)
+  // (independent review) the page's ONLY candidate and an item about another company of that page: the quote is not attached (it does not name the candidate);
+  // an item under another label whose quote names the candidate is
+  const solo = d('Croke Fairchild Duarte & Beres', P, 'old croke')
+  assert.equal(mergeGrounded([solo], [d('Dechert', P, 'Dechert opened a Chicago office this month')]).size, 0, 'a quote about another company is never attached')
+  assert.equal(mergeGrounded([solo], [d('CFDB', P, 'Croke Fairchild Duarte & Beres opened a new office in Chicago')]).get(solo)?.excerpt, 'Croke Fairchild Duarte & Beres opened a new office in Chicago')
   assert.equal(sameCompanyName('Flynn Companies', 'Flynn Group of Companies'), true)
   assert.equal(sameCompanyName('Armstrong Teasdale LLP', 'Armstrong Teasdale'), true)
   assert.equal(sameCompanyName('Roof Royale', 'Armstrong Teasdale'), false)
@@ -255,17 +260,18 @@ test('#381 hosts (review): a walled name must be the registrable domain, not any
 
 // REAL scans, 2026-11-14 (chicago-law at fc0294b3 and f622b297, 3 searches / 4 page reads): 2 of 9 scans ended `unbounded_fallback_hold` with 0 candidates after a paid
 // extraction call. The logged reply of one (4,507 characters, 9 items, complete, closed with "]") did not parse as JSON, so all 9 candidates were thrown away.
-// SYNTHETIC below: the shape of such a reply (one item with an unescaped double quote inside its quote, one with a trailing comma), not the logged text.
+// SYNTHETIC below: the shape of such a reply (one item with an unescaped double quote inside its quote), not the logged text.
 test('#381 parseLeads: one malformed item in the reply loses that item, not the whole reply (before: null, the scan ended with 0 candidates)', () => {
   const item = (company: string, url: string, excerpt: string) => `{\n  "name": "",\n  "company": "${company}",\n  "contact": null,\n  "signal": "${company} expanded in Chicago",\n  "source_url": "${url}",\n  "excerpt": "${excerpt}",\n  "event_date": "2026-10-13",\n  "score": 90\n}`
   const urls = ['https://a.example/1', 'https://b.example/2', 'https://c.example/3']
   const broken = '```json\n[\n' + [item('Karns & Karns', urls[0], 'Karns & Karns has announced the opening of a new office location in Lincoln Park'), item('Benesch', urls[1], 'Benesch said "we are growing in Chicago" as it added two partners'), item('Milbank', urls[2], 'Milbank launches in Chicago, hiring a practice leader')].join(',\n') + '\n]\n```'
   assert.throws(() => JSON.parse(broken.slice(broken.indexOf('['), broken.lastIndexOf(']') + 1)), 'the reply as a whole is not JSON')
-  assert.deepEqual(parseLeads(broken, urls)?.map(l => l.company), ['Karns & Karns', 'Milbank'], 'the two valid items survive; the broken one is not repaired or guessed')
+  assert.deepEqual(parseLeads(broken, urls, { salvage: true })?.map(l => l.company), ['Karns & Karns', 'Milbank'], 'the two valid items survive; the broken one is not repaired or guessed')
+  assert.equal(parseLeads(broken, urls), null, '(independent review) only the extraction step asks for it: every other caller still gets null and retries as before')
   // unchanged: a valid reply, a reply with no usable item, and no array at all
   const valid = '[' + [item('Karns & Karns', urls[0], 'q one two three'), item('Milbank', urls[2], 'q four five six')].join(',') + ']'
   assert.deepEqual(parseLeads(valid, urls)?.map(l => l.company), ['Karns & Karns', 'Milbank'])
-  assert.equal(parseLeads('[not json', urls), null); assert.equal(parseLeads('[{"company": "x" "broken"}]', urls), null); assert.equal(parseLeads('no json here', urls), null)
+  for (const bad of ['[not json', '[{"company": "x" "broken"}]', 'no json here']) assert.equal(parseLeads(bad, urls, { salvage: true }), null, bad)
   // a salvaged item still has to cite an allowed URL, like any other
-  assert.deepEqual(parseLeads(broken, [urls[2]])?.map(l => l.company), ['Milbank'])
+  assert.deepEqual(parseLeads(broken, [urls[2]], { salvage: true })?.map(l => l.company), ['Milbank'])
 })
