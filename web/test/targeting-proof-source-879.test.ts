@@ -26,13 +26,12 @@ const FLEXPORT = [FLEX_SUMMARY, FLEX_POSTING, ...FLEX_AUDIT]
 // Qualtrics (staging): a posting from last week.
 const QUAL_SUMMARY: ProofRow = { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: '3+ sales/GTM roles posted, newest 2026-11-06', label: 'Account Executive - Benelux; Account Executive - Account Management Organization ; Account Executive - Account Management Organization  (3 of 3+ dated shown; 31 listed titles)', source_url: 'https://boards.greenhouse.io/qualtrics', source_date: '2026-11-06' }
 const QUAL_POSTING: ProofRow = { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Account Executive - Benelux - posted 2026-11-06', label: 'Requested role: account executives; Dublin, Ireland; Greenhouse; board updated 2026-11-13', source_url: 'https://www.qualtrics.com/careers/us/en/job/8355416?gh_jid=8355416', source_date: '2026-11-06' }
-// Justworks (staging): every row is marked unconfirmed - the board was found by company name only.
+// An unconfirmed board (staging, ops read 2026-11-13): the board was found by company name only, so every row it wrote is marked.
 const UNCONFIRMED_NOTE = 'board found under a domain matched by company name; the company-to-board relationship is not established'
-const JUSTWORKS: ProofRow[] = [
-  ...['Account Executive - In-Territory  (Austin, TX)', 'Account Executive - In-Territory (Chicago)'].map(t => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring-role', value: `Unconfirmed: ${t}`, label: `${UNCONFIRMED_NOTE}; Board listing audit (sales/GTM titles only): posting date read as older than the last 90 days `, source_url: 'https://boards.greenhouse.io/justworks', source_date: '2026-11-13' })),
-  // the dated shape an unconfirmed board gets (staging holds 7 of these, e.g. "Unconfirmed: Account Executive, Commercial - posted 2026-10-22")
-  { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Unconfirmed: Account Executive, Commercial - posted 2026-10-22', label: `${UNCONFIRMED_NOTE}; Remote - Germany; Greenhouse`, source_url: 'https://job-boards.greenhouse.io/justworks/jobs/6231864004', source_date: '2026-10-22' },
-]
+// Justworks: listing-audit rows only (25 'hiring-role' rows, no dated posting row).
+const JUSTWORKS: ProofRow[] = ['Account Executive - In-Territory  (Austin, TX)', 'Account Executive - In-Territory (Chicago)'].map(t => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring-role', value: `Unconfirmed: ${t}`, label: `${UNCONFIRMED_NOTE}; Board listing audit (sales/GTM titles only): posting date read as older than the last 90 days `, source_url: 'https://boards.greenhouse.io/justworks', source_date: '2026-11-13' }))
+// Vercel: the dated shape an unconfirmed board gets (a posting row, "Unconfirmed: " in front of the value).
+const VERCEL_UNCONFIRMED: ProofRow = { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Unconfirmed: Account Executive, Commercial - posted 2026-10-22', label: `${UNCONFIRMED_NOTE}; Remote - Germany; Greenhouse`, source_url: 'https://job-boards.greenhouse.io/vercel/jobs/6231864004', source_date: '2026-10-22' }
 // Production's shape (all 28 of its hiring rows): a count of open roles of ANY kind; the row date is the day the board was read.
 const COUNT_ROW: ProofRow = { connector: 'signals:lever', kind: 'hiring', value: '139 open roles', label: 'AI Deployment Strategist; AI Deployment Strategist; AI Deployment Strategist', source_url: 'https://jobs.lever.co/northpeak/15e7b82c-ebf3-477c-96b5-96a3b25e0663', source_date: '2026-10-22' }
 
@@ -73,14 +72,19 @@ test('#879 the row date of a listing-audit row is the day the board was read, ne
   }
 })
 
-test('#879 a board that is not established as the company\'s proves nothing, dated or not (Justworks: every row "Unconfirmed: ")', () => {
-  for (const what of ['account executives in the last 60 days', 'sales in the last 60 days', 'a CRM administrator in the last 30 days']) {
-    const p = prove(ask(what), lead('Justworks'), JUSTWORKS)
-    assert.equal(p.truth, 'unknown', `${what}: ${p.reason}`)
+test('#879 a board that is not established as the company\'s proves nothing, dated or not (Justworks: audit rows; Vercel: a dated posting row, both "Unconfirmed: ")', () => {
+  for (const [co, rows] of [['Justworks', JUSTWORKS], ['Vercel', [VERCEL_UNCONFIRMED]]] as const) {
+    for (const what of ['account executives in the last 60 days', 'sales in the last 60 days', 'a CRM administrator in the last 30 days']) {
+      const p = prove(ask(what), lead(co), [...rows])
+      assert.equal(p.truth, 'unknown', `${co}, ${what}: ${p.reason}`)
+    }
   }
   const p = prove(ask('account executives in the last 60 days'), lead('Justworks'), JUSTWORKS)
   assert.match(p.reason, /that board is not established as this company's/)
   assert.match(p.source_url ?? '', /greenhouse\.io\/justworks/)
+  const v = prove(ask('account executives in the last 60 days'), lead('Vercel'), [VERCEL_UNCONFIRMED])
+  assert.match(v.reason, /that board is not established as this company's/)
+  assert.equal(v.source_url, VERCEL_UNCONFIRMED.source_url)
 })
 
 test('#879 a count of open roles read on some day is not a dated sales posting (production\'s shape: "139 open roles", no sales title among them)', () => {
@@ -159,7 +163,7 @@ test('#879 a pass that rests on the sales-hiring gate\'s record names the page t
   assert.match(withPage.reason, /sales-hiring gate verified an open sales role.*read on https:\/\/northpeak\.example\/careers/)
   assert.equal(withPage.date, undefined, 'the read day is never passed off as a posting date')
   // an open-role count or an unconfirmed board is not that page
-  const bare = conditionProof(c, l, [COUNT_ROW, ...JUSTWORKS], gate)
+  const bare = conditionProof(c, l, [COUNT_ROW, ...JUSTWORKS, VERCEL_UNCONFIRMED], gate)
   assert.equal(bare.truth, 'pass')
   assert.equal(bare.source_url, undefined)
   // a posting far outside the gate's own window is not a page the gate can have passed on (it passed on the lead's quote): never cited
@@ -223,4 +227,46 @@ test('#879 the role matcher: abbreviations a request uses are read as the title;
   assert.equal(prove(ask('account executives in the last 30 days'), l, [row('Account Executive - posted roles team')]).truth, 'pass')
   const summaryOnly = prove(ask('account executives in the last 30 days'), lead('Qualtrics', 'qualtrics.com'), [QUAL_SUMMARY])
   assert.match(summaryOnly.reason, /only a dated summary of its sales \/ GTM postings is stored .* names no single posting for account executives/)
+})
+
+test('#879 radio / firmware / embedded postings are not the sales role a request for SDRs asks for (Hermes-PC review at 8074397a)', () => {
+  const l = lead('Northpeak Radio', 'northpeak.example')
+  const row = (t: string): ProofRow => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `${t} - posted 2026-11-05`, label: 'Remote; Greenhouse', source_url: 'https://job-boards.greenhouse.io/northpeak/jobs/9', source_date: '2026-11-05' })
+  for (const t of ['RF Engineer, SDR', 'SDR Firmware Engineer', 'Senior SDR/DSP Engineer', 'Embedded SDR Developer', 'SDR Systems Engineer (GNU Radio)', 'RF Engineer, SDR (Software Defined Radio)']) {
+    for (const req of ['startups hiring SDRs in the last 30 days', 'startups hiring sales development representatives in the last 30 days']) {
+      const q = req.replace('startups', 'Software'), p = prove(q, l, [row(t)])
+      assert.equal(p.truth, 'unknown', `${req} ~ ${t}: ${p.reason}`)
+    }
+  }
+  // the sales title still proves it, and so do the sales titles that name what they sell to or work beside
+  for (const t of ['Sales Development Representative', 'Senior SDR', 'SDR - Outbound', 'Sales Engineer / SDR', 'SDR, Inbound Sales']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'pass', t)
+  }
+  // a trade word nobody listed does not slip through: the rule is an allowlist (sales signal, or the acronym alone before the first separator)
+  for (const t of ['SDR Photonics Lead', 'SDR Kernel Contributor', 'Compositor, SDR', 'SDR Antenna Technician', 'SDR Validation Analyst']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  }
+  // what survives, stated: an abbreviating request ("an SDR") still matches a title that carries the same letters, exactly as before #879
+  assert.ok(matchedHiringRole('SDR Firmware Engineer', requestedHiringRoles('hiring an SDR')))
+  assert.equal(matchedHiringRole('SDR Firmware Engineer', requestedHiringRoles('hiring SDRs')), null)
+})
+
+test('#879 a trailing place code is not the role: ", AE" is the Emirates', () => {
+  const m = (title: string, request: string) => !!matchedHiringRole(title, requestedHiringRoles(`hiring ${request}`))
+  assert.equal(m('Customer Success Manager - Dubai, AE', 'an AE'), false)
+  assert.equal(m('Customer Success Manager - Dubai, AE', 'AE'), false)
+  assert.equal(m('Account Manager, AE', 'account executives'), false)
+  assert.ok(m('Enterprise AE', 'an AE'))
+  assert.ok(m('Account Executive, NY', 'account executives'), 'a place code after a real title does not hide the title')
+})
+
+test('#879 a summary row is not called a posting, and a cited link is always http(s)', () => {
+  const stale = prove(ask('sales in the last 30 days'), lead('Flexport', 'flexport.com'), [FLEX_SUMMARY])
+  assert.equal(stale.truth, 'unknown')
+  assert.match(stale.reason, /the dated summary of its sales \/ GTM postings \(1\+ sales\/GTM roles posted, newest 2026-09-21\) is outside this condition's 30-day window/)
+  assert.doesNotMatch(stale.reason, /the posting for this role/)
+  const bad: ProofRow = { ...QUAL_POSTING, source_url: 'about:blank' }
+  const p = prove(ask('account executives in the last 30 days'), lead('Qualtrics', 'qualtrics.com'), [bad])
+  assert.equal(p.truth, 'pass')
+  assert.equal(p.source_url, undefined, 'a non-http link is never offered as the proof link')
 })

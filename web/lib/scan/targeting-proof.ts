@@ -182,7 +182,7 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   const read = rows.filter(HIRING_ROW).sort(postingOrder).map(readPosting)
   const dated = read.filter((x): x is Posting => !('why' in x))
   const postings = dated.filter(x => fits(x.title) && onClock(x.date, clockOf(c), now) === 'in')
-    .map((x): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${x.row.value}), ${x.date}`, source_url: x.row.source_url, date: x.date }))
+    .map((x): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${x.row.value}), ${x.date}`, ...link(x.row.source_url), date: x.date }))
   let rest = ownProof(c, lead, [], ctx)
   // A pass that rests on the gate's record names the page that record rests on, when the scan stored one (a confirmed posting or careers row for the role).
   if (rest.truth === 'pass' && !rest.source_url) {
@@ -195,7 +195,7 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   if (rest.truth !== 'pass' && !postings.length && read.length) {
     const role = c.role || 'a sales role'
     const other = dated.find(x => x.title !== null && !fits(x.title)) ?? dated.find(x => !fits(x.title)), late = dated.find(x => fits(x.title)), unc = read.find((x): x is NotPosting => 'why' in x && x.why === 'unconfirmed' && fits(x.title)), audit = read.find((x): x is NotPosting => 'why' in x && x.why === 'audit' && fits(x.title))
-    const near = late ? { row: late.row, why: `the posting for this role (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` }
+    const near = late ? { row: late.row, why: late.title === null ? `the dated summary of its sales / GTM postings (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` : `the posting for this role (${late.row.value}) is outside this condition's ${clockOf(c)}-day window` }
       : unc ? { row: unc.row, why: `a board lists ${unc.title ?? role}, but that board is not established as this company's` }
       : audit ? { row: audit.row, why: `the board lists ${audit.title ?? role}, but its posting date was not read` }
       : other ? { row: other.row, why: other.title !== null ? `the dated postings stored for this company are for other roles (${other.title}), not ${role}` : `only a dated summary of its sales / GTM postings is stored (${other.row.value}), which names no single posting for ${role}` }
