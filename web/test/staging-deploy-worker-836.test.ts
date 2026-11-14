@@ -28,7 +28,11 @@ test('#836 the worker unit: the app\'s release, env file and user; the real work
   assert.match(unit, /^PartOf=dazl-staging\.service$/m)
   assert.match(unit, /^WantedBy=multi-user\.target$/m)
   assert.doesNotMatch(unit, /^(Wants|WantedBy|Requires)=.*dazl-staging\.service/m, 'starting the app does not start the worker: deploy.sh starts it after the app')
-  assert.match(unit, /^MemoryMax=\d+M$/m)
+  // the box has 1.8 GB for two production releases, staging and this worker, and production's deploy needs 300 MB free
+  // (Hermes review of #1161): the cap stays at or under 384M, with the heap and MemoryHigh below it
+  const mem = (k: string) => Number(new RegExp(`^${k}=(\\d+)M$`, 'm').exec(unit)?.[1])
+  const heap = Number(/--max-old-space-size=(\d+)/.exec(unit)?.[1])
+  assert.ok(mem('MemoryMax') <= 384 && mem('MemoryHigh') < mem('MemoryMax') && heap < mem('MemoryHigh'), `caps: max ${mem('MemoryMax')}M high ${mem('MemoryHigh')}M heap ${heap}M`)
   assert.match(unit, /^ExecCondition=\+\/usr\/bin\/test ! -e \/var\/lib\/dazl-staging-recovery\/pending$/m, 'a boot or a hand start never runs it while a recovery point is pending')
   assert.match(readFileSync(new URL('../../ops/staging/deploy.sh', import.meta.url), 'utf8'), /^RROOT=\$\{STAGING_RECOVERY_ROOT:-\/var\/lib\/dazl-staging-recovery\}$/m, 'the unit names deploy.sh\'s own recovery root')
   assert.match(unit, /^SuccessExitStatus=143$/m, 'the worker\'s SIGTERM exit is a normal stop, so Restart=on-failure does not fight a stop')
