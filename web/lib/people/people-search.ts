@@ -105,7 +105,7 @@ export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
   return out
 }
 
-type Lead = { id: string; company: string; review_reason: string | null; company_domain: string | null; source_url: string | null }
+type Lead = { id: string; company: string; review_reason: string | null; company_domain: string | null }
 // First-play options (#1037). maxCompanies: searches allowed in this pass (one per company), replacing MAX_COMPANIES.
 // skipNamed: leads that already have a titled person stored (e.g. listed on their own site) get no search.
 // charge: the free-trial scan's per-search charge (runner trialCharges); canSearch: checked before every search, false
@@ -183,7 +183,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     const geo = { ...(typeof who?.country === 'string' ? { location: who.country } : {}), ...(typeof who?.language === 'string' ? { language: who.language } : {}) }
     // Ready leads first (best fit first), then the held leads a search still makes sense for (SEARCHABLE_HOLDS), all inside the
     // one cap, and never a lead graded out of the list: a held lead never takes a search from a ready one. The job id is the tenant's own (checked above).
-    const leads = db.prepare(`SELECT id, company, review_reason, company_domain, source_url FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
+    const leads = db.prepare(`SELECT id, company, review_reason, company_domain FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
     const stats = deps.stats
     if (stats) { stats.eligible = leads.length; stats.held = leads.filter(l => l.review_reason !== null).length }
     const refuse = (why: string) => { if (stats) stats.refused[why] = (stats.refused[why] ?? 0) + 1 }
@@ -234,12 +234,12 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         await Promise.race([pending.catch(() => null), new Promise<null>(res => { drain = setTimeout(() => res(null), Math.max(0, deps.drainMs ?? TINYFISH_TIMEOUT_MS + 1_000)) })]).finally(() => clearTimeout(drain))
         deps.onStop?.('deadline'); break
       }
+      // Refused before anything was sent (the spend cap, a lost job, a trial scan's own budget): not a search that ran, even when the job was lost
+      // at the same moment.
+      if (!r.ok && (r.reason === 'ownership_lost' || r.reason === 'budget_kept' || r.reason === 'spend_cap')) { searched--; if (stats) stats.searched = searched }
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break } // lost the job while searching: nothing written
       // A search that got no answer (provider unavailable, our per-minute rate gate, a cap) is counted as failed, never as "searched, found nobody".
-      // Refused before anything was sent (a lost job, a trial scan's own budget): not a search that ran.
-      if (!r.ok && (r.reason === 'ownership_lost' || r.reason === 'budget_kept')) { searched--; if (stats) stats.searched = searched; deps.onStop?.(r.reason); break }
-      // Refused by the spend cap before anything was sent: not a search that ran.
-      if (!r.ok && r.reason === 'spend_cap') { searched--; if (stats) stats.searched = searched }
+      if (!r.ok && (r.reason === 'ownership_lost' || r.reason === 'budget_kept')) { deps.onStop?.(r.reason); break }
       if (!r.ok) { if (stats) { const why = FAILED_SEARCH.includes(r.reason) ? r.reason : 'other'; stats.failed[why] = (stats.failed[why] ?? 0) + 1 } if (r.reason === 'cap' || r.reason === 'quota' || r.reason === 'auth' || r.reason === 'spend_cap') { deps.onStop?.(r.reason); break } continue }
       const refused = new Set<string>()
       if (stats) stats.results += r.hits.length
@@ -258,8 +258,8 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
         // recorded on the lead (contact_location_mismatch / contact_location_unconfirmed) and the other results are still looked at.
         .filter(x => {
           const v = placeAgreement(`${x.h.title} ${x.h.snippet ?? ''}`, where, l.company)
-          // A company NAME is not a company (company-tie.ts): beyond the name, the result must name the lead's website, the organisation
-          // the lead was found through, or the requested place. A name-only match is refused and counted, never stored.
+          // A company NAME is not a company (company-tie.ts): beyond the name, the result must name the lead's CONFIRMED website
+          // (the only tie: Hermes decision on #1164). A name-only match is refused and counted, never stored.
           if (v === 'agrees' || v === 'no_geography') { const tie = companyTie(`${x.h.title} ${x.h.snippet ?? ''}`, tieLead); if (tie) { ties.set(x.h.url, tie); return true } refuse('company_unconfirmed'); return false }
           const reason = `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${(firstPlaceLabel(`${x.h.title} ${x.h.snippet ?? ''}`) ?? /^([A-Z][\p{L} .'-]+,\s*[A-Z][\p{L} .'-]+)/u.exec(x.h.snippet ?? '')?.[1] ?? (v === 'mismatch' ? 'another place' : 'no place named')).slice(0, 60)} vs ${leadPlaceLabel(where).slice(0, 60)}`
           refuse('place')

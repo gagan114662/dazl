@@ -144,7 +144,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   const history = people.filter(p => p.historical)
   if (history.length) assumptions.push(`${history.map(p => `${p.name}${p.title ? ` (${p.title})` : ''}`).join('; ')} named in an SEC Form D filing: history as of the filing, not a current role and not a contact. Not recommended for outreach.`)
-  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
+  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : people.every(p => p.historical || p.nameOnly) && people.some(p => p.nameOnly) ? 'a confirmed buyer (a search found people at a company with this name, but nothing confirms it is this company)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
   if (!ident && !citedEmail) missing.push('the company\'s own website')
   if (!draftable && !phone) missing.push('an email or phone')
   for (const u of unknown) missing.push(`${u} (not shown in the evidence)`)

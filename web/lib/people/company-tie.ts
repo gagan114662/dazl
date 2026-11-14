@@ -7,6 +7,7 @@
 // city) were dropped. Three council rounds kept finding wordings that leaked a same-name business through them ("London, Ontario"
 // read as London UK, "Web3 Garage (YC W24)", "Nautilus and Garage (YC S20)"), and a wrong name is worse than no name. dazl names
 // FEWER people here on purpose; the grounded lookup of #1102 is the path to naming more.
+// Known limit: the website only has to be NAMED in the result's text, not be the employer's own ("competitor of withgarage.com" ties).
 // Anything else is a name-only match: not stored. Pure (no data layer).
 export type CompanyTie = 'domain'
 export interface TieLead { company: string; confirmed_domain?: string | null }

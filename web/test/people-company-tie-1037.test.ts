@@ -114,6 +114,7 @@ test('#1037 rows already stored by the name alone are no longer the lead\'s pers
   const tiedRow = { ...bare, value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'domain'), source_url: 'https://www.linkedin.com/in/person-c-test' }
   const card = (rows: unknown[]) => opportunityCard({ ...lead, icp_match: null, enrichments: rows } as never, WHO.join('; '))
   assert.equal(card([bare]).who, null); assert.equal(card([bare, tiedRow]).who?.name, 'Casey Flynn')
+  assert.ok(card([bare]).missing.some(m => /^a confirmed buyer \(a search found people at a company with this name, but nothing confirms it is this company\)$/.test(m)), JSON.stringify(card([bare]).missing)); assert.ok(!card([bare]).missing.some(m => /past, negated/.test(m)), 'the false cause is gone')
   const { db } = setup(); const adb = sqliteDb(db); const job = (db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
   addEnrichment(db, 'A', 'L-garage', bare as never)
   assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, '')
