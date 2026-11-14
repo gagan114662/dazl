@@ -53,6 +53,17 @@ test('the same run with allowance left searches and finds the lead (the control)
   } finally { if (saved === undefined) delete process.env.NEWS_SEARCH_ENABLED; else process.env.NEWS_SEARCH_ENABLED = saved }
 })
 
+test('a CSV / company run started after the allowance is used up stops the same way (the company path records the cap too)', async () => {
+  const saved = { n: process.env.NEWS_SEARCH_ENABLED, t: process.env.TINYFISH_TENANT_DAILY }
+  process.env.NEWS_SEARCH_ENABLED = '0'; delete process.env.TINYFISH_TENANT_DAILY
+  try {
+    const r = await runFixture(base({ csvDomain: 'brightloop.example', beforeRun: usedUp }))
+    assert.equal(r.calls.searches.length, 0, 'nothing was sent to the search API')
+    assert.equal(status(r, 'search:tinyfish'), 'skipped_cap')
+    assert.equal(r.job.status, 'failed'); assert.equal(r.job.error, 'search_allowance_reached')
+  } finally { for (const [k, v] of [['NEWS_SEARCH_ENABLED', saved.n], ['TINYFISH_TENANT_DAILY', saved.t]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
+})
+
 test('stop classification: skipped_cap is the allowance; a hold stays a hold; a failed source stays a source error', () => {
   const at = (news: string | null, tf: string | null, first5 = false) => { const l = new SourceRunLedger(); if (news) l.record('search:news', news); if (tf) l.record('search:tinyfish', tf); return fallbackStopCode(l, first5) }
   assert.equal(at('skipped_disabled', 'skipped_cap'), 'search_allowance_reached')

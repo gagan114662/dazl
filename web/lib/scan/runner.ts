@@ -796,7 +796,7 @@ Only include an item if the quote names that company. Skip anything older than 1
 // TinyFish pass for a CSV company job: three fixed queries (no LLM planning call), then
 // the tenant's own model turns the collected pages into candidates. All searches and
 // fetches count against the same per-scan and per-tenant TinyFish caps as a manual scan.
-async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean }): Promise<LeadDraft[] | null> {
+async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean; capped?: boolean }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -809,6 +809,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
     const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
+    if (flags && !r.ok && r.reason === 'cap') flags.capped = true   // refused by the daily allowance before any send: its own state (skipped_cap), not a hold
     if (flags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { flags.attempted = true; if (!r.ok) flags.failed = true }
     if (!r.ok) {
       // A sent request that may have been billed or was rejected ENDS the attempt's paid work: never send the fetch
@@ -847,21 +848,21 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const complete = provider.complete
     let leads: LeadDraft[] | null = null
     if (complete && tinyfishEnabled()) {
-      const tfFlagsC = { attempted: false, failed: false }
+      const tfFlagsC = { attempted: false, failed: false, capped: false }
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl, tfFlagsC)
         // Same provenance as the query path: sent-and-failed is 'error' (partial results with a failed search are still an
         // error, never 'ok'); attempted-empty 'unavailable' (a clean zero); never-sent 'skipped_hold'.
-        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         // SpendRefused = the spend hold refused a call: skipped only when nothing was sent before it; a hold-stopped partial
         // reads 'unavailable' (neither skipped nor a vendor error). Anything else = a paid request ran and failed (error).
-        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : 'skipped_hold') : 'error')
+        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : 'error')
         // A refused paid call STOPS the run (the query path's #594 contract): never fall through to the paid research
         // fallback - after the first refusal there is no later reserve at all, refused or not. The terminal error names
         // the truth: a maybe-billed call is accounting_uncertain, a documented rejection is its own status, else the
