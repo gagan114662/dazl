@@ -20,5 +20,7 @@ jobs:
         run: node --test '.github/scripts/*.test.mjs'
       - name: No build on the box (ops/test_never_again.py)
         run: python3 -m unittest discover -s ops -p 'test_never_again.py' -v
+      - name: Lanes only read through the ops door (ops/test_ops_read_only.py)
+        run: python3 -m unittest discover -s ops -p 'test_ops_read_only.py' -v
       - name: shellcheck the deploy scripts (errors only)
         run: shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh ops/prod/run-release.sh ops/prod/check-installed.sh
