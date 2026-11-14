@@ -178,7 +178,6 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   }
   if (!span) return { refused: 'title_not_next_to_name' }
   const roleText = (input.roles ?? []).join('; ')
-  const names0 = names[0][0], titles0 = titles[0][0]
   // What follows the name-and-title: a possessive ("the owner's assistant"), "of / at <another organisation>" ("founder of Roe Labs", "Owner of Stone
   // Bakery"), and a past marker up to the end of the sentence. Checked on every source, the company's own site included (a testimonial or a case
   // study on its site names other people at other organisations).
