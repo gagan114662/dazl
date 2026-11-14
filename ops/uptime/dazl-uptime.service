@@ -1,0 +1,21 @@
+# External uptime probe for dazl (ops/uptime/probe.mjs; issue #1088). A systemd USER unit for a machine that is NOT the
+# production box. Install (as the user that will run it; no root needed):
+#   mkdir -p ~/.config/systemd/user ~/.config/dazl-uptime ~/.local/lib/dazl-uptime
+#   install -m 644 ops/uptime/probe.mjs ~/.local/lib/dazl-uptime/probe.mjs
+#   install -m 644 ops/uptime/dazl-uptime.service ops/uptime/dazl-uptime.timer ~/.config/systemd/user/
+#   install -m 600 /dev/null ~/.config/dazl-uptime/env   # then put ONE line in it: OPS_ALERT_WEBHOOK_URL=<the alert URL>
+#   systemctl --user daemon-reload && systemctl --user enable --now dazl-uptime.timer
+#   loginctl enable-linger "$USER"                        # keeps it running when nobody is logged in
+# Without systemd, the same thing from cron (every minute):
+#   * * * * * . ~/.config/dazl-uptime/env; export OPS_ALERT_WEBHOOK_URL; node ~/.local/lib/dazl-uptime/probe.mjs --state ~/.local/state/dazl-uptime.json >/dev/null 2>&1
+[Unit]
+Description=dazl external uptime probe (prod health, prod scheduler, staging health)
+
+[Service]
+Type=oneshot
+# the alert destination (a secret when it is a Telegram bot URL): mode 600, one line
+EnvironmentFile=%h/.config/dazl-uptime/env
+ExecStart=/usr/bin/env node %h/.local/lib/dazl-uptime/probe.mjs --state %h/.local/state/dazl-uptime.json
+# exit 1 = something is failing (already alerted or counting): not a unit failure worth a red journal every minute
+SuccessExitStatus=1
+TimeoutStartSec=60
