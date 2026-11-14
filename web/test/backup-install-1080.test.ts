@@ -7,7 +7,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,7 +56,9 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const id = path.join(T, 'identity.txt'); spawnSync('age-keygen', ['-o', id]); chmodSync(id, 0o600)
   const backups = path.join(T, 'backups'), offhost = path.join(T, 'offhost'), ledger = path.join(T, 'ledger', 'tombstones.jsonl'), recipients = path.join(T, 'recipients.txt')
   mkdirSync(offhost)
-  const args = ['--root', root, '--db', fx.source, '--user', 'appuser', '--backup-dir', backups, '--offhost', offhost, '--recipients', recipients, '--ledger', ledger, '--alert-url', 'https://alerts.example/hook']
+  // the app's own run env names the ledger: the installer reads it from there (as data), so the copy is of the file the app writes
+  const appEnv = path.join(T, 'app-run.env'); writeFileSync(appEnv, `PORT=3104\nexport DAZL_TOMBSTONE_LEDGER='${ledger}'\nDAZL_MASTER_KEY=not-read\n`)
+  const args = ['--root', root, '--db', fx.source, '--user', 'appuser', '--backup-dir', backups, '--offhost', offhost, '--recipients', recipients, '--app-env', appEnv, '--alert-url', 'https://alerts.example/hook']
   const install = (a = args) => run(path.join(ops, 'install-prod.sh'), a)
 
   // refused before anything is written: no recipients, then a PRIVATE key as recipients
@@ -67,7 +69,15 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const pub = readFileSync(id, 'utf8').match(/public key: (age1\S+)/)![1] + '\n'
   writeFileSync(path.join(root, recipients), pub); writeFileSync(recipients, pub)
 
+  // a --ledger that is not the app's own, and a system directory as the backup directory, are refused; nothing written
+  r = install([...args, '--ledger', path.join(T, 'elsewhere.jsonl')]); assert.equal(r.code, 1); assert.match(r.out, /is not the app's DAZL_TOMBSTONE_LEDGER/)
+  r = install([...args, '--backup-dir', '/var/lib']); assert.equal(r.code, 2); assert.match(r.out, /refusing to use the system directory/)
+  assert.ok(!existsSync(path.join(root, 'etc/systemd/system')))
+
   r = install(); assert.equal(r.code, 0, r.out)
+  assert.ok(!/WARNING: .*DAZL_TOMBSTONE_LEDGER/.test(r.out), 'the app names its ledger: no warning')
+  const mode = (f: string) => (statSync(f).mode & 0o777).toString(8)
+  assert.deepEqual([mode(path.join(root, 'etc/dazl-backup')), mode(path.join(root, 'etc/dazl-backup/env')), mode(path.join(root, backups)), mode(path.join(root, ledger)), mode(path.join(root, 'usr/local/lib/dazl-backup/prod-run.sh'))], ['750', '640', '700', '600', '755'])
   const units = path.join(root, 'etc/systemd/system')
   assert.deepEqual(readdirSync(units).sort(), ['dazl-backup-check.service', 'dazl-backup-check.timer', 'dazl-backup.service', 'dazl-backup.timer'])
   const svc = readFileSync(path.join(units, 'dazl-backup.service'), 'utf8'), chk = readFileSync(path.join(units, 'dazl-backup-check.service'), 'utf8')
@@ -82,12 +92,25 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   assert.ok(existsSync(path.join(root, ledger)), 'the empty ledger was created')
 
   // idempotent, and an env file the operator edited is kept
-  writeFileSync(envFile, readFileSync(envFile, 'utf8') + 'BACKUP_RETENTION_NOTE=edited\n')
-  r = install(); assert.equal(r.code, 0, r.out); assert.match(r.out, /exists and is KEPT/); assert.match(readFileSync(envFile, 'utf8'), /BACKUP_RETENTION_NOTE=edited/)
+  chmodSync(path.join(root, backups), 0o750)   // the operator changed the existing directory: a re-run leaves it alone
+  r = install(); assert.equal(r.code, 0, r.out); assert.match(r.out, /already has these settings/)   // same options: a plain re-run is fine
+  writeFileSync(envFile, readFileSync(envFile, 'utf8').replace(/^OFFHOST_DEST=.*$/m, 'OFFHOST_DEST=').replace(/^OFFHOST_REQUIRED=1$/m, 'OFFHOST_REQUIRED=0') + 'BACKUP_RETENTION_NOTE=edited\n')
+  // the file on the box says "local only" while the command asks for an off-host copy: the install STOPS and names the settings
+  r = install(); assert.equal(r.code, 1, r.out); assert.match(r.out, /differs from the options given in: .*OFFHOST_DEST/); assert.match(r.out, /OFFHOST_REQUIRED/)
+  r = install([...args, '--keep-env']); assert.equal(r.code, 0, r.out); assert.match(r.out, /exists and is KEPT/); assert.match(readFileSync(envFile, 'utf8'), /BACKUP_RETENTION_NOTE=edited/)
+  writeFileSync(envFile, readFileSync(envFile, 'utf8').replace(/^OFFHOST_DEST=$/m, `OFFHOST_DEST=${offhost}`).replace(/^OFFHOST_REQUIRED=0$/m, 'OFFHOST_REQUIRED=1'))
+  r = install([...args, '--keep-env']); assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /already exists: left as it is/); assert.equal(mode(path.join(root, backups)), '750')
+  // an app env with no ledger: installed on the default path, with the warning that the app is not writing one
+  const root3 = path.join(T, 'root3'), bare = path.join(T, 'bare.env'); writeFileSync(bare, 'PORT=3104\n')
+  r = install(['--root', root3, '--db', fx.source, '--user', 'appuser', '--backup-dir', backups, '--app-env', bare, '--no-start']); assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /WARNING: .* sets no DAZL_TOMBSTONE_LEDGER/); assert.match(r.out, /LOCAL ONLY/); assert.match(r.out, /--no-start: nothing enabled/)
+  assert.equal(envOf(path.join(root3, 'etc/dazl-backup/env')).DAZL_TOMBSTONE_LEDGER, '/var/lib/dazl-ledger/tombstones.jsonl')
   r = install([...args, '--status']); assert.equal(r.code, 0); assert.match(r.out, /prod-run\.sh: installed = this checkout/); assert.match(r.out, /newest local backup: NONE/)
 
   // the hourly job, exactly as the unit runs it: the INSTALLED entry point, the env file's settings, the live release
   mkdirSync(path.dirname(ledger), { recursive: true }); writeFileSync(ledger, '')   // on the box install-prod.sh creates it; under --root it is created inside the root
+  assert.equal(env.DAZL_TOMBSTONE_LEDGER, ledger, "the app's own ledger path, read from its run env")
   const jobEnv = { ...env, ...LIVE }
   const entry = path.join(root, 'usr/local/lib/dazl-backup/prod-run.sh')
   r = run(entry, ['backup'], jobEnv); assert.equal(r.code, 0, r.out); assert.match(r.out, /"type":"backup","ok":true,.*"offhost":true/)
@@ -116,6 +139,21 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const src = new Database(fx.source, { readonly: true }), got = new Database(rep.restored, { readonly: true })
   for (const t of ['users', 'scan_jobs', 'leads']) assert.equal((got.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n, (src.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n, t)
   assert.deepEqual(rep.rows, rep.compare_rows); src.close(); got.close()
+  // through rclone (a stand-in `rclone` that serves a directory): an OLDER copy with a later file name, a damaged manifest and a
+  // stray file are at the destination too; the newest by copied_at is restored and each skipped one is named
+  const remote = path.join(T, 'remote'); mkdirSync(remote)
+  const good = readdirSync(offhost).find(f => /^dazl-backup-.*\.db\.age$/.test(f))!
+  for (const f of [good, `${good}.json`]) copyFileSync(path.join(offhost, f), path.join(remote, f))
+  const older = 'dazl-backup-29991231T000000Z-ffffffff.db.age', man = JSON.parse(readFileSync(path.join(offhost, `${good}.json`), 'utf8'))
+  writeFileSync(path.join(remote, older), 'not the newest'); writeFileSync(path.join(remote, `${older}.json`), JSON.stringify({ ...man, ciphertext: older, copied_at: '2020-01-01T00:00:00' }))   // older, later name, and a copied_at with no zone
+  writeFileSync(path.join(remote, 'dazl-backup-20200101T000000Z-00000000.db.age.json'), '{ not json')
+  writeFileSync(path.join(remote, 'dazl-backup-20200102T000000Z-00000001.db.age.json'), JSON.stringify({ ...man, ciphertext: '../../etc/passwd' }))
+  const fakeBin = path.join(T, 'fakebin'); mkdirSync(fakeBin)
+  writeFileSync(path.join(fakeBin, 'rclone'), `#!/usr/bin/env bash\nset -euo pipefail\nmap() { case "$1" in fake:*) echo "${remote}/\${1#fake:}" ;; *) echo "$1" ;; esac; }\ncase "$1" in\n  lsf) shift; pat=; while [ $# -gt 1 ]; do case "$1" in --include) pat=$2; shift 2 ;; *) shift ;; esac; done; cd "$(map "$1")"; for f in *; do [[ $f == $pat ]] && echo "$f"; done; true ;;\n  copyto) cp -- "$(map "$2")" "$(map "$3")" ;;\n  *) echo "fake rclone: $1 not supported" >&2; exit 9 ;;\nesac\n`); chmodSync(path.join(fakeBin, 'rclone'), 0o755)
+  const viaRclone = path.join(T, 'restore-rclone')
+  r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', 'rclone:fake:', '--identity', id, '--out', viaRclone, '--compare', fx.source], { PATH: `${fakeBin}:${process.env.PATH}` }); assert.equal(r.code, 0, r.out)
+  const rep2 = JSON.parse(r.stdout.trim().split('\n').pop()!); assert.equal(rep2.rows_match, true); assert.equal(path.basename(rep2.restored), good.replace(/\.age$/, ''))
+  assert.match(r.out, /WARNING: manifest dazl-backup-20200101T000000Z-00000000\.db\.age\.json skipped \(not readable JSON\)/); assert.match(r.out, /WARNING: manifest dazl-backup-20200102T000000Z-00000001\.db\.age\.json skipped \(not a dazl-offhost-copy manifest for its own file\)/)
   // refusals: an existing --out, an identity others can read, the wrong identity
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', out]); assert.equal(r.code, 2); assert.match(r.out, /already exists/)
   chmodSync(id, 0o644); r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r2')]); assert.equal(r.code, 2); assert.match(r.out, /readable by others/); chmodSync(id, 0o600)
@@ -124,6 +162,10 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   // a tampered ciphertext is refused before decryption
   const ct = path.join(offhost, readdirSync(offhost).find(f => /^dazl-backup-.*\.db\.age$/.test(f))!); const bytes = readFileSync(ct); bytes[bytes.length - 5] ^= 0xff; writeFileSync(ct, bytes)
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r4')]); assert.equal(r.code, 1); assert.match(r.out, /does not match its manifest sha256/)
+  // a copy that decrypts to something else than the manifest says: failed, and NO plaintext is left behind
+  const lie = JSON.parse(readFileSync(path.join(remote, `${good}.json`), 'utf8')); writeFileSync(path.join(remote, `${good}.json`), JSON.stringify({ ...lie, source_sha256: '0'.repeat(64) }))
+  r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', remote, '--identity', id, '--out', path.join(T, 'r5')]); assert.equal(r.code, 1); assert.match(r.out, /does not match the manifest's source_sha256/)
+  assert.deepEqual(readdirSync(path.join(T, 'r5')).filter(f => f.endsWith('.db')), [], 'no decrypted database left after a failed restore')
 
   // uninstall removes the units and the installed scripts, keeps the env file and the backups
   r = install([...args, '--uninstall']); assert.equal(r.code, 0, r.out)

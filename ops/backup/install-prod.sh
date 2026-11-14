@@ -14,8 +14,14 @@
 #   --offhost DEST        rclone:REMOTE:PATH or a mounted directory; with it OFFHOST_REQUIRED=1 (no fresh off-host
 #                         copy = an alert). Without it backups are LOCAL ONLY and the script says so.
 #   --recipients FILE     age PUBLIC keys for the off-host copy (/etc/dazl-backup/recipients.txt); required with --offhost
-#   --ledger PATH         the app's DAZL_TOMBSTONE_LEDGER       (/var/lib/dazl-ledger/tombstones.jsonl; created empty if absent)
+#   --ledger PATH         the app's DAZL_TOMBSTONE_LEDGER. Default: the value in --app-env; when the app sets none,
+#                         /var/lib/dazl-ledger/tombstones.jsonl with a WARNING (the app must be given the same path).
+#                         A --ledger that differs from the app's own value is refused. Created empty if absent.
+#   --app-env FILE        the app's run env, read as data for DAZL_TOMBSTONE_LEDGER only (/home/ubuntu/dazl-pr16-run.env)
 #   --alert-url URL       https webhook for backup alerts (OPS_ALERT_WEBHOOK_URL); without it alerts go to the journal only
+#   --keep-env            an existing /etc/dazl-backup/env that differs from the options given is kept and used as it
+#                         is. Without this flag such a difference STOPS the install (exit 1, the differing settings
+#                         named), so an option is never silently ignored.
 #   --no-start            install and enable nothing; print what would be started (for a review on the box)
 #   --root DIR            install under DIR instead of / and never call systemctl (tests)
 # What it writes:
@@ -23,7 +29,8 @@
 #   /etc/systemd/system/dazl-backup{,-check}.{service,timer}   the units (User = the app user)
 #   /etc/dazl-backup/env                                       ONLY when it does not exist (root:<app group>, 640); an
 #                                                              existing file is kept and compared, never rewritten
-#   the backup directory (app user, 700) and an empty ledger file when it is absent
+#   the backup directory (app user, 700) and an empty ledger file, each ONLY when absent: an existing directory or
+#   file is never re-owned or re-moded (it is checked, and a backup directory the app user cannot write is refused)
 # Then: systemctl daemon-reload, enable --now both timers, and one backup run right away so the first copy exists
 # before this script returns (its exit code is the script's). No secrets are read or written: the off-host recipients
 # are PUBLIC keys; rclone credentials stay in the app user's own rclone config (or the instance role).
@@ -31,20 +38,21 @@ set -euo pipefail
 die() { echo "install-prod: $1" >&2; exit "${2:-1}"; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DB=/home/ubuntu/dazl-data/dazl-pr16.db; APP_USER=ubuntu; BACKUP_DIR=/var/backups/dazl; OFFHOST=; RECIP=/etc/dazl-backup/recipients.txt
-LEDGER=/var/lib/dazl-ledger/tombstones.jsonl; ALERT=; ROOT=; START=1; MODE=install
+LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --db|--user|--backup-dir|--offhost|--recipients|--ledger|--alert-url|--root)
+    --db|--user|--backup-dir|--offhost|--recipients|--ledger|--app-env|--alert-url|--root)
       [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value" 2
-      case "$1" in --db) DB=$2 ;; --user) APP_USER=$2 ;; --backup-dir) BACKUP_DIR=$2 ;; --offhost) OFFHOST=$2 ;; --recipients) RECIP=$2 ;; --ledger) LEDGER=$2 ;; --alert-url) ALERT=$2 ;; --root) ROOT=${2%/} ;; esac
+      case "$1" in --db) DB=$2 ;; --user) APP_USER=$2 ;; --backup-dir) BACKUP_DIR=$2 ;; --offhost) OFFHOST=$2 ;; --recipients) RECIP=$2 ;; --ledger) LEDGER=$2 ;; --app-env) APP_ENV=$2 ;; --alert-url) ALERT=$2 ;; --root) ROOT=${2%/} ;; esac
       shift 2 ;;
     --no-start) START=0; shift ;;
+    --keep-env) KEEP_ENV=1; shift ;;
     --status) MODE=status; shift ;;
     --uninstall) MODE=uninstall; shift ;;
     *) die "unknown option $1 (see the header of this file)" 2 ;;
   esac
 done
-for v in "$DB" "$BACKUP_DIR" "$RECIP" "$LEDGER"; do [[ $v == /* && $v != *[[:space:]]* ]] || die "paths must be absolute with no spaces: '$v'" 2; done
+for v in "$DB" "$BACKUP_DIR" "$RECIP" "${LEDGER:-$LEDGER_DEFAULT}" "$APP_ENV"; do [[ $v == /* && $v != *[[:space:]]* ]] || die "paths must be absolute with no spaces: '$v'" 2; done
 [[ $APP_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || die "--user '$APP_USER' is not a user name" 2
 [ -z "$ALERT" ] || [[ $ALERT == https://* && $ALERT != *[[:space:]]* ]] || die "--alert-url must be an https URL" 2
 [ -z "$OFFHOST" ] || [[ $OFFHOST != *[[:space:]]* ]] || die "--offhost must have no spaces" 2
@@ -57,7 +65,8 @@ if [ "$MODE" = status ]; then
     if [ -f "$LIB/$f" ] && [ "$(sha256sum < "$LIB/$f")" = "$(sha256sum < "$HERE/$f")" ]; then echo "$f: installed = this checkout"; else echo "$f: MISSING or DIFFERS in $LIB"; fi
   done
   for n in "${NAMES[@]}"; do if [ -f "$UNITS/$n" ]; then echo "$n: installed"; else echo "$n: MISSING"; fi; done
-  if [ -f "$ENVF" ]; then echo "env: $ENVF present (OFFHOST_DEST $(grep -q '^OFFHOST_DEST=.\+' "$ENVF" && echo set || echo 'NOT set: local backups only'))"; else echo "env: $ENVF MISSING"; fi
+  if [ -f "$ENVF" ] && [ ! -r "$ENVF" ]; then echo "env: $ENVF present (not readable by $(id -un): run --status with sudo to see its settings)"
+  elif [ -f "$ENVF" ]; then echo "env: $ENVF present (OFFHOST_DEST $(grep -q '^OFFHOST_DEST=.\+' "$ENVF" && echo set || echo 'NOT set: local backups only'))"; else echo "env: $ENVF MISSING"; fi
   [ -n "$ROOT" ] || systemctl list-timers --all 'dazl-backup*' --no-pager 2>/dev/null || true
   newest=$(find "$ROOT$BACKUP_DIR" -maxdepth 1 -name 'dazl-backup-*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)
   if [ -n "$newest" ]; then echo "newest local backup: $(basename "$newest"), $(( $(date +%s) - $(stat -c %Y "$newest") )) s old"; else echo "newest local backup: NONE in $BACKUP_DIR"; fi
@@ -78,7 +87,8 @@ fi
 if [ -z "$ROOT" ]; then
   id -u "$APP_USER" >/dev/null 2>&1 || die "no user '$APP_USER' on this host"
   [ -f "$DB" ] || die "the database $DB does not exist (give --db)"
-  command -v node >/dev/null || die "node is not on root's PATH"
+  # node as the units will find it: the app user, systemd's default PATH (an nvm-only node would fail every run)
+  sudo -u "$APP_USER" env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sh -c 'command -v node >/dev/null' || die "node is not on the default PATH for $APP_USER (the units run /usr/bin/env node): link it into /usr/local/bin"
   if [ -n "$OFFHOST" ]; then
     command -v age >/dev/null || die "age is not installed (apt-get install -y age): needed for the encrypted off-host copy"
     case "$OFFHOST" in rclone:*) command -v rclone >/dev/null || die "rclone is not installed (apt-get install -y rclone)" ;; *) [ -d "$OFFHOST" ] || die "--offhost $OFFHOST is not a directory" ;; esac
@@ -89,6 +99,19 @@ if [ -n "$OFFHOST" ]; then
   if grep -q 'AGE-SECRET-KEY' "$ROOT$RECIP"; then die "$RECIP holds a PRIVATE key: public keys (age1...) only"; fi
   grep -Eq '^age1[0-9a-z]+$' "$ROOT$RECIP" || die "$RECIP has no age1... public key line"
 fi
+# the deletion ledger must be the file the APP writes: its own DAZL_TOMBSTONE_LEDGER (read as data, never sourced)
+app_ledger=
+if [ -r "$APP_ENV" ]; then app_ledger=$(sed -n 's/^\(export[[:space:]]\+\)\?DAZL_TOMBSTONE_LEDGER=//p' "$APP_ENV" | tail -1 | sed -e "s/^['\"]//" -e "s/['\"]\$//"); fi
+LEDGER_WARN=
+if [ -n "$app_ledger" ]; then
+  [ -z "$LEDGER" ] || [ "$LEDGER" = "$app_ledger" ] || die "--ledger $LEDGER is not the app's DAZL_TOMBSTONE_LEDGER ($app_ledger in $APP_ENV): the copy would be of a file the app never writes"
+  LEDGER=$app_ledger
+  [[ $LEDGER == /* && $LEDGER != *[[:space:]]* ]] || die "the app's DAZL_TOMBSTONE_LEDGER is not an absolute path with no spaces"
+else
+  LEDGER=${LEDGER:-$LEDGER_DEFAULT}
+  LEDGER_WARN="install-prod: WARNING: $APP_ENV sets no DAZL_TOMBSTONE_LEDGER (or cannot be read): the app is not writing a deletion ledger. Add DAZL_TOMBSTONE_LEDGER=$LEDGER to it and deploy; until then the off-host ledger copy is an empty file, not proof of no deletions."
+fi
+for d in "$BACKUP_DIR" "$(dirname "$LEDGER")"; do case "$d" in /|/etc|/var|/var/lib|/var/backups|/home|/usr|/tmp|/root) die "refusing to use the system directory $d itself: give a directory of its own" 2 ;; esac; done
 GROUP=$APP_USER; [ -n "$ROOT" ] || GROUP=$(id -gn "$APP_USER")
 own() { [ -n "$ROOT" ] || chown "$1" "$2"; }
 
@@ -119,16 +142,27 @@ EOF
 )
 if [ -f "$ENVF" ]; then
   if [ "$(cat "$ENVF")" = "$want" ]; then echo "install-prod: $ENVF already has these settings"
-  else echo "install-prod: $ENVF exists and is KEPT as it is (it differs from the options given; edit it by hand, or move it away and run again)"; fi
+  else
+    differ=$( { diff <(grep -E '^[A-Z_]+=' "$ENVF" | sort) <(printf '%s\n' "$want" | grep -E '^[A-Z_]+=' | sort) || true; } | sed -n 's/^[<>] \([A-Z_]*\)=.*/\1/p' | sort -u | tr '\n' ' ' || true)
+    [ "$KEEP_ENV" = 1 ] || die "$ENVF exists and differs from the options given in: ${differ}. Nothing was changed in it. Edit it by hand, move it away and run again, or pass --keep-env to install with the file as it is."
+    echo "install-prod: $ENVF exists and is KEPT as it is (--keep-env); it differs from the options given in: ${differ}"
+  fi
 else
   ( umask 027; printf '%s\n' "$want" > "$ENVF.tmp" ); chmod 640 "$ENVF.tmp"; own "root:$GROUP" "$ENVF.tmp"; mv -f "$ENVF.tmp" "$ENVF"
   echo "install-prod: wrote $ENVF"
 fi
 
 # --- directories the jobs need
-install -d -m 700 "$ROOT$BACKUP_DIR"; own "$APP_USER:$GROUP" "$ROOT$BACKUP_DIR"
+# created only when absent; something that already exists is the operator's: never re-owned, never re-moded
+if [ ! -e "$ROOT$BACKUP_DIR" ]; then install -d -m 700 "$ROOT$BACKUP_DIR"; own "$APP_USER:$GROUP" "$ROOT$BACKUP_DIR"; echo "install-prod: created $BACKUP_DIR (700, $APP_USER)"
+else
+  [ -d "$ROOT$BACKUP_DIR" ] && [ ! -L "$ROOT$BACKUP_DIR" ] || die "$BACKUP_DIR exists and is not a directory"
+  [ -n "$ROOT" ] || sudo -u "$APP_USER" test -w "$BACKUP_DIR" || die "$BACKUP_DIR exists but $APP_USER cannot write it (left as it is: fix its owner, or give another --backup-dir)"
+  echo "install-prod: $BACKUP_DIR already exists: left as it is"
+fi
 if [ ! -e "$ROOT$LEDGER" ]; then
-  install -d -m 750 "$(dirname "$ROOT$LEDGER")"; own "$APP_USER:$GROUP" "$(dirname "$ROOT$LEDGER")"
+  ld=$(dirname "$ROOT$LEDGER")
+  if [ ! -e "$ld" ]; then install -d -m 750 "$ld"; own "$APP_USER:$GROUP" "$ld"; fi
   install -m 600 /dev/null "$ROOT$LEDGER"; own "$APP_USER:$GROUP" "$ROOT$LEDGER"
   echo "install-prod: created the empty deletion ledger $LEDGER"
 fi
@@ -161,6 +195,7 @@ ExecStart=/usr/bin/env bash /usr/local/lib/dazl-backup/prod-run.sh check"
 unit dazl-backup-check.timer "$(cat "$HERE/dazl-backup-check.timer")"
 echo "install-prod: installed ${NAMES[*]} and $LIB/{prod-run.sh,live-release.sh}"
 [ -n "$OFFHOST" ] || echo "install-prod: WARNING: no --offhost destination: backups are LOCAL ONLY (same disk). The box is not protected against losing the disk until one is set."
+[ -z "$LEDGER_WARN" ] || echo "$LEDGER_WARN"
 [ -n "$ALERT" ] || echo "install-prod: WARNING: no --alert-url: a stale or failed backup is written to the journal only."
 
 if [ "$START" = 0 ]; then echo "install-prod: --no-start: nothing enabled. To start: systemctl daemon-reload && systemctl enable --now dazl-backup.timer dazl-backup-check.timer && systemctl start dazl-backup.service"; exit 0; fi

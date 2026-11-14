@@ -33,24 +33,34 @@ case "$DEST" in rclone:*) command -v rclone >/dev/null || die "rclone is not ins
 ms() { date +%s%3N; }
 t0=$(ms)
 mkdir -m 700 -- "$OUT"
+# a failed restore leaves no plaintext behind (the fetched ciphertext and manifests stay for inspection)
+db=; ok=0; trap '[ "$ok" = 1 ] || { [ -z "$db" ] || rm -f -- "${db:?}"; }' EXIT
 list() { case "$DEST" in rclone:*) rclone lsf --files-only --include 'dazl-backup-*.db.age.json' "$R" ;; *) find "$DEST" -maxdepth 1 -name 'dazl-backup-*.db.age.json' -printf '%f\n' ;; esac; }
 get() { case "$DEST" in rclone:*) rclone copyto "$R/$1" "$OUT/$1" ;; *) cp -- "$DEST/$1" "$OUT/$1" ;; esac; }
 
 # 1. fetch: every manifest is small; the newest by copied_at wins (a name alone is not trusted)
 mapfile -t manifests < <(list | sort)
 [ "${#manifests[@]}" -gt 0 ] || die "no dazl-backup-*.db.age.json manifest at the destination"
-for m in "${manifests[@]}"; do [[ $m =~ ^dazl-backup-[0-9A-Za-z._-]+\.db\.age\.json$ ]] || die "unexpected manifest name: $m"; get "$m"; done
+good=()
+for m in "${manifests[@]}"; do
+  if [[ $m =~ ^dazl-backup-[0-9A-Za-z._-]+\.db\.age\.json$ ]]; then get "$m"; good+=("$m"); else echo "restore-offhost: WARNING: skipped an unexpected name at the destination: $m" >&2; fi
+done
+[ "${#good[@]}" -gt 0 ] || die "no dazl-backup-*.db.age.json manifest at the destination"
+manifests=("${good[@]}")
 read -r name want_ct want_bytes want_src created < <(python3 - "$OUT" "${manifests[@]}" <<'PY'
 import json, sys, datetime
 out, best = sys.argv[1], None
 now = datetime.datetime.now(datetime.timezone.utc)
 for m in sys.argv[2:]:
+    def skip(why): print(f'restore-offhost: WARNING: manifest {m} skipped ({why}); an OLDER copy may be restored: check rpo_s', file=sys.stderr)
     try: d = json.load(open(f'{out}/{m}'))
-    except Exception: continue
-    if d.get('tool') != 'dazl-offhost-copy' or d.get('ciphertext') != m[:-5]: continue
-    try: at = datetime.datetime.fromisoformat(d['copied_at'].replace('Z', '+00:00'))
-    except Exception: continue
-    if at > now + datetime.timedelta(minutes=5): continue   # a copy from the future is not the newest
+    except Exception: skip('not readable JSON'); continue
+    if not isinstance(d, dict) or d.get('tool') != 'dazl-offhost-copy' or d.get('ciphertext') != m[:-5]: skip('not a dazl-offhost-copy manifest for its own file'); continue
+    try:
+        at = datetime.datetime.fromisoformat(d['copied_at'].replace('Z', '+00:00'))
+        if at.tzinfo is None: at = at.replace(tzinfo=datetime.timezone.utc)
+    except Exception: skip('no valid copied_at'); continue
+    if at > now + datetime.timedelta(minutes=5): skip('copied_at is in the future'); continue
     if best is None or at > best[0]: best = (at, d)
 if best is None: sys.exit(3)
 d = best[1]
@@ -71,8 +81,8 @@ chmod 600 -- "$db"
 t2=$(ms)
 
 # 3. verify
-[ "$(sqlite3 "file:$db?mode=ro" 'PRAGMA integrity_check' 2>&1)" = ok ] || die "integrity_check failed on the restored database"
-counts() { sqlite3 "file:$1?mode=ro" "select '{\"users\":'||(select count(*) from users)||',\"scan_jobs\":'||(select count(*) from scan_jobs)||',\"leads\":'||(select count(*) from leads)||'}'"; }
+[ "$(sqlite3 -readonly "$db" 'PRAGMA integrity_check' 2>&1)" = ok ] || die "integrity_check failed on the restored database"
+counts() { sqlite3 -readonly "$1" "select '{\"users\":'||(select count(*) from users)||',\"scan_jobs\":'||(select count(*) from scan_jobs)||',\"leads\":'||(select count(*) from leads)||'}'"; }
 rc=$(counts "$db") || die "the restored database has no users / scan_jobs / leads tables"
 cc=null; same=null
 if [ -n "$CMP" ]; then cc=$(counts "$CMP") || die "--compare has no users / scan_jobs / leads tables"; [ "$cc" = "$rc" ] && same=true || same=false; fi
@@ -81,4 +91,5 @@ rpo=null
 if [ "$created" != - ]; then rpo=$(python3 -c 'import sys,datetime;print(int((datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))).total_seconds()))' "$created") || rpo=null; fi
 printf '{"type":"offhost_restore","ok":true,"restored":"%s","backup_created_at":"%s","rpo_s":%s,"restore_ms":%s,"fetch_ms":%s,"decrypt_ms":%s,"verify_ms":%s,"integrity":"ok","rows":%s,"compare_rows":%s,"rows_match":%s}\n' \
   "$db" "$created" "$rpo" "$((t3-t0))" "$((t1-t0))" "$((t2-t1))" "$((t3-t2))" "$rc" "$cc" "$same"
+ok=1
 [ "$same" != false ] || die "row counts differ from --compare (see the line above)"

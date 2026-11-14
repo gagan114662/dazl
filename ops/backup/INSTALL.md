@@ -48,8 +48,20 @@ cd "$(bash ops/backup/live-release.sh)"        # the live release's checkout
 sudo bash ops/backup/install-prod.sh --offhost rclone:dazl-s3:<bucket>/prod --alert-url <https webhook>
 ```
 
-It checks first (user, database, node, age, rclone, public keys only), writes `/etc/dazl-backup/env` only when there is
-none, installs the four units, enables both timers and runs the first backup before it returns. Without `--offhost` it
+It checks first (user, database, node on the app user's default PATH, age, rclone, public keys only), writes
+`/etc/dazl-backup/env` only when there is none, installs the four units, enables both timers and runs the first backup
+before it returns. An existing env file that differs from the options given STOPS the install and names the differing
+settings (so `--offhost` is never silently ignored); `--keep-env` installs with the file as it is. An existing backup
+directory is left as it is (never re-owned); a system directory (`/`, `/var/lib`, ...) is refused.
+
+**The deletion ledger.** The off-host copy also ships the app's tombstone ledger (`DAZL_TOMBSTONE_LEDGER`, #359). The
+installer reads that path from the app's run env (`--app-env`, default `/home/ubuntu/dazl-pr16-run.env`, read as data)
+so it copies the file the app really writes. When the app's env sets none it installs on
+`/var/lib/dazl-ledger/tombstones.jsonl` and prints a WARNING: add `DAZL_TOMBSTONE_LEDGER=/var/lib/dazl-ledger/tombstones.jsonl`
+to the app's run env and deploy, otherwise the app cannot ledger a tenant deletion and the copied ledger is only an empty file.
+
+Run the installer from a checkout of a reviewed commit (the live release is one: `deploy-prod.sh` clones the deployed
+commit). It runs as root, so do not run it from a directory someone else has edited. Without `--offhost` it
 installs local backups only and says so in capitals; without `--alert-url` alerts go to the journal only (#1088 wires the
 destination).
 
@@ -65,14 +77,18 @@ sudo -u ubuntu bash -c 'set -a; . /etc/dazl-backup/env; bash /usr/local/lib/dazl
 
 ## 3. Prove a restore (acceptance 4)
 
-On a scratch host or directory that has the PRIVATE identity (not the box):
+On a scratch host or directory that has the PRIVATE identity (not the box). It needs READ access to the bucket: the
+box's role is not there, so give the scratch host its own read-only credentials (`s3:GetObject` on `prod/*` and
+`s3:ListBucket`), e.g. an operator profile with `rclone config create dazl-s3 s3 provider AWS env_auth true region <region>`:
 
 ```bash
 bash ops/backup/restore-offhost.sh --offhost rclone:dazl-s3:<bucket>/prod --identity dazl-data-identity.txt --out /var/tmp/dazl-restore-$(date -u +%Y%m%dT%H%M%SZ)
 ```
 
 One JSON line: the restored file, `rpo_s` (what losing the box at that moment would have lost), `restore_ms`,
-`integrity: ok` and the row counts of `users`, `scan_jobs` and `leads`. Compare them with production's (read-only, on the
+`integrity: ok` and the row counts of `users`, `scan_jobs` and `leads`. A damaged or foreign manifest at the destination
+is named in a WARNING and skipped (then an older copy may be the one restored: read `rpo_s`); a failed restore leaves no
+decrypted file behind. Compare them with production's (read-only, on the
 box): `sqlite3 "file:/home/ubuntu/dazl-data/dazl-pr16.db?mode=ro" "select count(*) from users; select count(*) from scan_jobs; select count(*) from leads"`.
 Starting the app on the copy with sending disabled is `scripts/backup/replacement-drill.mts` (docs/RECOVERY.md).
 Delete the restored copy afterwards: it is a full copy of production.
