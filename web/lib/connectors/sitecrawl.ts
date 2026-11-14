@@ -158,6 +158,27 @@ export const findCompanySite = (company: string, html: string, url: string) => f
 // obvious domains built from the company name. A probed domain is never trusted on its own: the
 // crawl still fetches the homepage and rejects it unless the company is named there (name_mismatch),
 // and robots.txt stays a hard rule. Key-free; no search API involved.
+// #1036 4b: a lead whose evidence page links no company site (an Instagram post, a LinkedIn job, a jobleads listing, a news article) used
+// to get only name-guessed domains ("moss.com" is not the Berlin fintech). Web-search results for "<company> <place>" name the real host.
+// Pure: which hosts in the results can be the company's OWN site. Hosts of directories, social networks, job boards and news are never
+// a company's own site; the host label must carry the company's name (norm(company) inside the label, or the label inside it) so a
+// result that merely mentions the company is dropped. The homepage name check and the place check in crawlJob still decide, exactly as
+// for a name-guessed domain (basis 'name_probe').
+const NOT_OWN_SITE = /(^|\.)(linkedin|instagram|facebook|twitter|x|youtube|tiktok|pinterest|yelp|indeed|glassdoor|jobleads|ziprecruiter|crunchbase|wikipedia|bloomberg|reuters|forbes|medium|reddit|google|bing|apple|amazon|yellowpages|bbb|mapquest|tripadvisor|clutch|g2|capterra|zoominfo|dnb|owler|pitchbook|builtin|wellfound|angel|sesamers|finovate|businesswire|prnewswire|globenewswire|substack|wordpress|blogspot|github|trustpilot|doordash|ubereats|opentable|booking|expedia|healthgrades|zocdoc|ratemds|ca411|canpages|yellowpages|411|manta|mapquest|clutch|sortlist|upwork|fiverr|goodfirms|designrush)\./i
+export function companyHostsFromSearch(company: string, hits: { url: string }[], max = 3): string[] {
+  const want = norm(company)
+  if (want.length < 4) return []
+  const out: string[] = []
+  for (const h of hits) {
+    let host: string; try { const u = new URL(h.url); if (u.protocol !== 'https:' && u.protocol !== 'http:') continue; host = u.hostname.toLowerCase().replace(/^www\./, '') } catch { continue }
+    if (NOT_OWN_SITE.test(host + '.') || /\.(gov|edu)(\.[a-z]{2})?$/.test(host)) continue
+    const label = host.split('.').slice(0, -1).filter(l => !['co', 'com', 'org', 'net', 'ac'].includes(l)).join('')
+    if (!label || !(label.includes(want) || (label.length >= 4 && want.includes(label)))) continue
+    if (!out.includes(host)) out.push(host)
+    if (out.length >= max) break
+  }
+  return out
+}
 export function probeDomains(company: string): string[] {
   const want = norm(company)
   if (want.length < 4 || want.length > 30) return []
@@ -662,7 +683,7 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
   return out
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -746,7 +767,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
         probed++
-        sites = probeDomains(l.company)
+        // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
+        let found: string[] = []
+        if (deps.findSites && !deps.signal?.aborted) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
+        sites = [...found, ...probeDomains(l.company).filter(d => !found.includes(d))]
         for (const d of sites) basisOf.set(d, 'name_probe')
         if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
