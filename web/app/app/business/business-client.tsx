@@ -112,15 +112,16 @@ export default function BusinessClient() {
   if (!data) return <div className="p-8 max-w-2xl"><p className="text-sm text-[#555]">Loading what dazl knows about your business...</p></div>
   const sections = businessSections(data.profile, data.memory, data.competitors)
   const plays = businessPlays(data.profile, data.competitors)
+  const hasSite = sections.some(x => x.items.some(i => i.source.kind === 'site'))
   return (
     <div className="p-4 sm:p-8 max-w-2xl">
       <h1 className="text-2xl font-semibold mb-1">Your business</h1>
-      <p className="text-sm text-[#555] mb-5">What dazl knows about your business. Every search and draft starts from it; change anything that is wrong. dazl has not read your website yet, so nothing here links back to a page on it; what you see comes from what you entered.</p>
+      <p className="text-sm text-[#555] mb-5">What dazl knows about your business. Every search and draft starts from it; change anything that is wrong. {hasSite ? 'Items from your website link to the page they came from.' : 'dazl has not read your website yet, so nothing here links back to a page on it.'}</p>
       {data.failed.length > 0 && <p className="text-sm mb-4" role="alert" data-testid="load-failed">Could not load your {data.failed.join(', ')}. Those sections may be incomplete; refresh to retry.</p>}
       <section className="card p-5 mb-6" aria-labelledby="h-plays" data-testid="plays">
         <h2 id="h-plays" className="font-semibold mb-2">Suggested plays</h2>
         {plays.length === 0 ? <p className="text-sm text-[#555]" data-testid="no-plays">{data.failed.includes('profile') ? 'Could not load your profile, so no plays yet. Refresh to retry.' : 'Add buyer roles and a buying signal below and dazl will suggest plays from them.'}</p>
-          : <><ul className="space-y-2">{plays.map(p => <li key={p.query}><Link className="underline break-words" href={`/app/leads?q=${encodeURIComponent(p.query)}&fresh=1`} data-testid="play">{p.query}</Link><span className="text-xs text-[#555]" data-testid="play-label"> {'\u2192'} fills in the search on Leads, starts nothing</span></li>)}</ul>
+          : <><ul className="space-y-2">{plays.map(p => <li key={p.query}><Link className="underline break-words" href={`/app/leads?q=${encodeURIComponent(p.query)}&fresh=1`} data-testid="play">{p.query}</Link><span className="text-xs text-[#555]" data-testid="play-label"> <span aria-hidden="true">{'\u2192'}</span> fills in the search on Leads, starts nothing</span></li>)}</ul>
             <p className="text-xs text-[#555] mt-2">Opens Leads with this search filled in. Nothing runs until you press Find leads and see the cost.</p></>}
       </section>
       {sections.map(s => <Section key={s.id} s={s} data={data} onSaved={() => void load()} open={openId === s.id} setOpen={v => setOpenId(v ? s.id : null)} />)}
