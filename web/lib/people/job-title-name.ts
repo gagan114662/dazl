@@ -1,6 +1,6 @@
 // #1183: a job title read as a person's name. A people page often carries a FILTER of titles (a datalist, a dropdown) whose options are
 // "Litigation Specialist", "Managing Partner", "Of Counsel": two neighbouring lines that look like "Name" + "Title". Real example:
-// https://www.armstrongteasdale.com/people/ stored the person "Litigation Specialist, Managing Partner", then showed them as "named on the
+// a law firm's people page stored the person "Litigation Specialist, Managing Partner", then showed them as "named on the
 // company's own website" and offered Find work email for "Litigation Specialist".
 // Pure (no db, network or node imports): the people reader (connectors/sitecrawl.ts extractPeople), the ranking of stored rows
 // (people/rank.ts, so a row stored earlier is not shown or offered either) and Find work email all use it.
