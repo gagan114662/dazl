@@ -40,7 +40,7 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { crawlJob, defaultGet, MAX_SITE_SEARCHES_PER_SCAN, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -2074,7 +2074,19 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
     else {
-      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #1122: a lead found on a third-party page gets ONE web search for its company's own site when the page links none and no name-built
+      // site is confirmed. The scan's existing search source (TinyFish), a small allowance of its own on top of the tenant / global daily caps
+      // tfSearch enforces; never on a free-trial scan (its searches are prepaid before finish) and never once the scan is no longer this attempt's.
+      const siteSpent = { searches: 0 }
+      const siteSearch = (job.funded_by !== 'trial' && tinyfishEnabled()) ? async (q: string): Promise<{ ok: true; urls: string[] } | { ok: false; reason: string }> => {
+        if (!postFinishAlive(db, job)) return { ok: false, reason: 'scan_not_active' }
+        try {
+          migrateTinyfish(db)
+          const r = await tfSearch(db, job.user_id, q.slice(0, 300), {}, siteSpent, { env: { ...process.env, TINYFISH_SEARCHES_PER_SCAN: String(MAX_SITE_SEARCHES_PER_SCAN) }, signal: postCtrl.signal, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) })
+          return r.ok ? { ok: true, urls: r.hits.map(h => h.url) } : { ok: false, reason: String(r.reason) }
+        } catch (e) { return { ok: false, reason: e instanceof SpendRefused ? 'spend_limit' : 'failed' } }
+      } : undefined
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(siteSearch ? { siteSearch } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }
