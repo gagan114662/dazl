@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { VerifierError } from '../lib/people/zerobounce.ts'
 import { verifierFromEnv, verifierMonthlyCap } from '../lib/people/email-pattern.ts'
-import { backoffUntil, FACT_TTL_S, PORT25_FAILS, port25Blocked, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
+import { looksLikeShutPort, NOT_CATCH_ALL_TTL_S, netConnect, backoffUntil, FACT_TTL_S, PORT25_FAILS, port25Blocked, getDomainFact, RCPT_PER_HOUR, realEnv, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE, ZEN_RECHECK_S, type SmtpConfig, type SmtpEnv } from '../lib/people/smtp-verify.ts'
 
 interface Fake { port: number; log: string[]; conns: () => number; maxConcurrent: () => number; close: () => Promise<void> }
 // answer(rcpt) -> reply line "250 ok" / "550 no such user" / "450 try later"; greeting overrides the 220 banner.
@@ -26,7 +26,7 @@ async function fakeSmtp(answer: (to: string) => string, greeting = '220 mx.fake.
         if (u.startsWith('EHLO')) sock.write('250-mx.fake.test\r\n250 PIPELINING\r\n')
         else if (u.startsWith('MAIL FROM')) { mailFrom = true; sock.write('250 ok\r\n') }
         else if (u.startsWith('RCPT TO') && !mailFrom) sock.write('503 5.5.1 need MAIL first\r\n') // as real servers do after an RSET
-        else if (u.startsWith('RCPT TO')) sock.write(`${answer(/<([^>]*)>/.exec(line)?.[1]?.toLowerCase() ?? '')}\r\n`)
+        else if (u.startsWith('RCPT TO')) { const r = answer(/<([^>]*)>/.exec(line)?.[1]?.toLowerCase() ?? ''); if (r) sock.write(`${r}\r\n`) } // '' = say nothing
         else if (u.startsWith('RSET')) { mailFrom = false; sock.write('250 ok\r\n') }
         else if (u.startsWith('QUIT')) { sock.write('221 bye\r\n'); sock.end() }
         else sock.write('502 not implemented\r\n')
@@ -39,7 +39,7 @@ async function fakeSmtp(answer: (to: string) => string, greeting = '220 mx.fake.
 const rcpts = (f: Fake) => f.log.filter(l => /^RCPT TO/i.test(l))
 let clock = 1_800_000_000
 const cfgFor = (port: number): SmtpConfig => ({ helo: 'verify.notify.dazl.ai', mailFrom: 'verify@notify.dazl.ai', egressIp: '203.0.113.7', port, connectMs: 3000, commandMs: 3000 })
-const envFor = (over: Partial<SmtpEnv> = {}): SmtpEnv => ({ ...realEnv, resolveMx: async () => [{ exchange: '127.0.0.1', priority: 10 }], resolveZen: async () => 'clean', now: () => clock, random: () => 'abc123', ...over })
+const envFor = (over: Partial<SmtpEnv> = {}): SmtpEnv => ({ ...realEnv, connect: (h, p, ms, r) => netConnect(h, p, ms, undefined, r), resolveMx: async () => [{ exchange: '127.0.0.1', priority: 10 }], resolveZen: async () => 'clean', now: () => clock, random: () => 'abc123', ...over })
 const setup = async (answer: (to: string) => string, over: Partial<SmtpEnv> = {}, greeting?: string) => {
   const db = new Database(':memory:'); migrateAllSqlite(db); const fake = await fakeSmtp(answer, greeting)
   return { db, fake, v: smtpMailboxVerifier(db, cfgFor(fake.port), envFor(over)) }
@@ -140,7 +140,7 @@ test('#1036 smtp: MX choice - the preferred (lowest number) host; no MX falls ba
   try {
     const db = new Database(':memory:'); migrateAllSqlite(db)
     const asked: string[] = []
-    const mkv = (over: Partial<SmtpEnv>) => smtpMailboxVerifier(db, cfgFor(f.port), envFor({ ...over, connect: async (h, p, t) => { asked.push(h); return realEnv.connect('127.0.0.1', p, t) } }))
+    const mkv = (over: Partial<SmtpEnv>) => smtpMailboxVerifier(db, cfgFor(f.port), envFor({ ...over, connect: async (h, p, t) => { asked.push(h); return netConnect('127.0.0.1', p, t) } }))
     await mkv({ resolveMx: async () => [{ exchange: 'backup.mx.test.', priority: 20 }, { exchange: 'primary.mx.test.', priority: 5 }] }).verify('dana.lee@one.test')
     assert.deepEqual(asked, ['primary.mx.test'], 'the preferred MX, trailing dot removed')
     asked.length = 0
@@ -209,4 +209,115 @@ test('#1036 smtp: three hosts in a row that never greet (port 25 shut) switch th
   clock += 3601; assert.ok(!port25Blocked(db, clock), 'after an hour it is tried again')
   const live = await fakeSmtp(normal)
   try { const v2 = smtpMailboxVerifier(db, cfgFor(live.port), envFor()); assert.equal((await v2.verify('dana.lee@acme.test')).outcome, 'deliverable'); assert.equal(port25Blocked(db, clock), false) } finally { await live.close() }
+})
+
+test('#1036 smtp: the real connect path refuses an MX that points at a non-public address (loopback, private, link-local, metadata) - no socket is opened', async () => {
+  const f = await fakeSmtp(normal)
+  try {
+    await assert.rejects(realEnv.connect('127.0.0.1', f.port, 2000), /blocked_address/)
+    assert.equal(f.conns(), 0, 'nothing connected')
+    for (const ip of ['10.0.0.5', '192.168.1.1', '169.254.169.254', '172.16.0.9', '100.64.0.1', '::1']) await assert.rejects(realEnv.connect(ip, 25, 500), /blocked_address/, ip)
+    // through the verifier: an attacker's domain whose MX is internal gets a day's backoff and an honest answer, and does not count as "port 25 shut"
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    const v = smtpMailboxVerifier(db, cfgFor(f.port), { ...envFor(), connect: realEnv.connect, resolveMx: async () => [{ exchange: '169.254.169.254', priority: 1 }] })
+    const a = await v.verify('x.user@evil.test')
+    assert.equal(a.outcome, 'unknown'); assert.match(String(a.detail), /not a public one/)
+    assert.equal(port25Blocked(db, clock), false); assert.equal(backoffUntil(db, '169.254.169.254', clock), clock + 86_400)
+  } finally { await f.close() }
+})
+
+// ---- independent review of the verifier (R1-R9) ----
+test('#1036 smtp review R1: hostile MX names - an internal address, localhost, the metadata address - are never connected to, through the REAL connect path', async () => {
+  for (const exchange of ['10.0.0.5', 'localhost', '169.254.169.254', '192.168.0.10']) {
+    const db = new Database(':memory:'); migrateAllSqlite(db); let reached = 0
+    const real = realEnv.connect
+    const v = smtpMailboxVerifier(db, cfgFor(25), { ...envFor(), connect: async (h, p, t, r) => { reached++; return real(h, p, t, r) }, resolveMx: async () => [{ exchange, priority: 1 }] })
+    const a = await v.verify('x.user@evil.test')
+    assert.equal(a.outcome, 'unknown', exchange); assert.match(String(a.detail), /not a public one/, exchange); assert.equal(port25Blocked(db, clock), false, `${exchange} is not a port-25 symptom`)
+    assert.equal(reached, 1, 'the guard sits inside the real connect: it was asked once and refused')
+  }
+})
+
+test('#1036 smtp review R2: only a timeout or no route counts as "port 25 shut"; refused connections and dead MX names never switch the check off for everyone', async () => {
+  assert.deepEqual([looksLikeShutPort(Object.assign(new Error('x'), { code: 'ETIMEDOUT' })), looksLikeShutPort(new Error('connect timeout')), looksLikeShutPort(Object.assign(new Error('x'), { code: 'EHOSTUNREACH' })), looksLikeShutPort(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })), looksLikeShutPort(Object.assign(new Error('x'), { code: 'ENOTFOUND' }))], [true, true, true, false, false])
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const v = smtpMailboxVerifier(db, cfgFor(25), envFor({ resolveMx: async d => [{ exchange: `mx.${d}`, priority: 1 }], connect: async () => { throw Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) } }))
+  for (let i = 0; i < 5; i++) await v.verify(`a.user@h${i}.test`)
+  assert.equal(port25Blocked(db, clock), false)
+})
+
+test('#1036 smtp review R3: a 550 that is a POLICY refusal (5.7.1) is unknown, never undeliverable, and is not cached as a catch-all answer', async () => {
+  const { db, fake, v } = await setup(() => '550 5.7.1 client host blocked')
+  try {
+    assert.equal((await v.verify('dana.lee@acme.test')).outcome, 'unknown')
+    assert.equal(getDomainFact(db, 'acme.test', clock)?.catchAll, null, 'nothing cached about catch-all')
+    assert.equal(rcpts(fake).length, 1, 'the probe was refused by policy, so the address was not even asked')
+  } finally { await fake.close() }
+  const g = await setup(to => (to.startsWith('dazl-check-') ? '550 5.1.1 no such user' : '550 5.7.1 sender blocked'))
+  try { assert.equal((await g.v.verify('dana.lee@acme.test')).outcome, 'unknown', 'a policy refusal on the address itself') } finally { await g.fake.close() }
+})
+
+test('#1036 smtp review R5: "rejects unknown addresses" is trusted for 7 days, not 30: a domain that moves behind an accept-all gateway is re-probed', async () => {
+  let acceptAll = false
+  const { db, fake, v } = await setup(to => (acceptAll ? '250 ok' : normal(to)))
+  try {
+    assert.equal((await v.verify('dana.lee@acme.test')).outcome, 'deliverable')
+    clock += NOT_CATCH_ALL_TTL_S - 60; acceptAll = true
+    assert.equal((await v.verify('ben.ross@acme.test')).outcome, 'deliverable', 'still inside the 7 days: the cached answer is used (documented limit)')
+    clock += 120
+    assert.equal(getDomainFact(db, 'acme.test', clock)?.catchAll, null, 'after 7 days the catch-all answer is stale; the MX is kept')
+    assert.equal((await v.verify('cara.diaz@acme.test')).outcome, 'catch_all', 'the domain flipped to accept-all and is now seen as such')
+  } finally { await fake.close() }
+})
+
+test('#1036 smtp review R6: only the validated address reaches the wire - a trailing CRLF adds no command, an embedded one is not an address', async () => {
+  const { fake, v } = await setup(normal)
+  try {
+    assert.equal((await v.verify('a.user@acme.test\r\nDATA')).outcome, 'unknown'); assert.equal(fake.conns(), 0)
+    assert.equal((await v.verify('  a.user@acme.test \r\n')).outcome, 'deliverable')
+    await new Promise(r => setTimeout(r, 100))
+    assert.ok(fake.log.every(l => l.length > 0 && !/^DATA/i.test(l)), JSON.stringify(fake.log))
+    assert.deepEqual(rcpts(fake).filter(l => l.includes('a.user')), ['RCPT TO:<a.user@acme.test>'], 'exactly the validated address, in one line')
+    assert.ok(!fake.log.includes('>'), 'no stray fragment of a split command')
+  } finally { await fake.close() }
+})
+
+test('#1036 smtp review R7: a caller whose budget is spent is not served; aborting mid-call closes the socket at once instead of waiting out the reply timeout', async () => {
+  const { fake, v } = await setup(to => (to.startsWith('dazl-check-') ? '550 5.1.1 no such user' : ''))   // the address RCPT is never answered
+  try {
+    const spent = AbortSignal.abort(); const c0 = fake.conns()
+    assert.equal((await v.verify('dana.lee@acme.test', spent)).outcome, 'unknown'); assert.equal(fake.conns(), c0, 'no connection for an aborted caller')
+    const t0 = Date.now(); const a = await v.verify('dana.lee@acme.test', AbortSignal.timeout(300))
+    assert.equal(a.outcome, 'unknown'); assert.ok(Date.now() - t0 < 2000, `returned in ${Date.now() - t0} ms, not the 3 s reply timeout`)
+  } finally { await fake.close() }
+})
+
+test('#1036 smtp review R8/R9: a server that streams endless "250-" lines is cut off; a reply split across TCP chunks is read; a 252 is not "deliverable"', async () => {
+  const flood = await setup(normal, {}, Array.from({ length: 2000 }, () => '250-x').join('\r\n'))
+  try { const t0 = Date.now(); assert.equal((await flood.v.verify('dana.lee@acme.test')).outcome, 'unknown'); assert.ok(Date.now() - t0 < 2500, 'cut off, not read to the timeout') } finally { await flood.fake.close() }
+  // split greeting: "22" then "0 hello"
+  const srv = net.createServer(sock => { sock.on('error', () => {}); sock.write('22'); setTimeout(() => sock.write('0 split.test ESMTP\r\n'), 60)
+    let buf = ''; let mf = false
+    sock.on('data', d => { buf += String(d); for (let i = buf.indexOf('\r\n'); i >= 0; i = buf.indexOf('\r\n')) { const l = buf.slice(0, i).toUpperCase(); buf = buf.slice(i + 2)
+      if (l.startsWith('EHLO')) sock.write('250-split.test\r\n250-SIZE 100\r\n250 8BITMIME\r\n'); else if (l.startsWith('MAIL')) { mf = true; sock.write('250 ok\r\n') }
+      else if (l.startsWith('RCPT') && mf) sock.write(l.includes('DAZL-CHECK') ? '550 5.1.1 no\r\n' : '252 cannot verify\r\n'); else if (l.startsWith('QUIT')) { sock.write('221 bye\r\n'); sock.end() } } }) })
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', r))
+  try {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    const a = await smtpMailboxVerifier(db, cfgFor((srv.address() as net.AddressInfo).port), envFor()).verify('dana.lee@split.test')
+    assert.equal(a.outcome, 'unknown', 'the split greeting and the multi-line EHLO were read, and a 252 is not an acceptance'); assert.match(String(a.detail), /252/)
+  } finally { await new Promise<void>(r => srv.close(() => r())) }
+})
+
+test('#1036 smtp review R7: a caller that is already aborted while it WAITS for the host is not served when its turn comes (no connection)', async () => {
+  const f = await fakeSmtp(normal)
+  try {
+    const db = new Database(':memory:'); migrateAllSqlite(db); let connects = 0; let open!: () => void; const gate = new Promise<void>(r => { open = r })
+    const v = smtpMailboxVerifier(db, cfgFor(f.port), envFor({ connect: async (_h, p, t, r) => { connects++; await gate; return netConnect('127.0.0.1', p, t, undefined, r) } }))
+    const first = v.verify('a.user@acme.test')                       // holds the host until the gate opens
+    const ctrl = new AbortController(); const second = v.verify('b.user@acme.test', ctrl.signal)
+    await new Promise(r => setTimeout(r, 50)); ctrl.abort(); open()
+    assert.equal((await first).outcome, 'deliverable'); assert.equal((await second).outcome, 'unknown')
+    assert.equal(connects, 1, 'only the first caller connected')
+  } finally { await f.close() }
 })

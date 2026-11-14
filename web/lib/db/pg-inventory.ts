@@ -41,6 +41,7 @@ export const LOCKS: { id: string; re: RegExp; note: string }[] = [
 // test/pg-inventory.test.ts until it is classified here.
 export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' | 'constant' ; note: string }> = {
   'lib/connectors/sitecrawl.ts:lastHit': { share: 'safe to lose', note: 'per-host crawl politeness delay; each instance waits on its own' },
+  'lib/people/smtp-verify.ts:queues': { share: 'safe to lose', note: 'per-MX-host queue that keeps this process to one connection per host at a time; the hourly RCPT counter and the backoff are in smtp_verify_state, so another process still obeys the same limits' },
   'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
   'lib/scan/place-agreement.ts:NEEDS_CAPITALS': { share: 'constant', note: 'which of those aliases must be written in capitals (ON, NY, NSW), filled once at load beside REGION_BY_ALIAS, then only read' },
   'lib/evals/contract.ts:BY_VERSION': { share: 'safe to lose', note: 'evaluation contracts frozen in this process, for the same-version-same-content check; the contract hash is persisted with each result, so another instance re-freezes and compares' },

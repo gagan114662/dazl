@@ -25,11 +25,15 @@ import dns from 'node:dns/promises'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { VerifierError } from './zerobounce.ts'
+import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import type { MailboxVerifier, VerifyAnswer } from './email-pattern.ts'
 
 export const SMTP_VERIFIER = 'smtp'
 export const SMTP_STAGING_FAKE = 'smtp-staging-fake'
 export const FACT_TTL_S = 30 * 86_400
+// The MX is kept 30 days; the answer "this domain rejects unknown addresses" only 7: a domain that moves behind an accept-all gateway must not
+// keep producing 'deliverable' for a month. After 7 days the catch-all probe is asked again (one extra RCPT).
+export const NOT_CATCH_ALL_TTL_S = 7 * 86_400
 export const RCPT_PER_HOUR = 60
 export const ZEN_RECHECK_S = 86_400
 const BACKOFF_BASE_S = 900, BACKOFF_MAX_S = 6 * 3600, HARD_BACKOFF_S = 86_400
@@ -45,6 +49,8 @@ export function smtpMonthlyCap(env: Record<string, string | undefined> = process
   return /^\d{1,6}$/.test(raw.trim()) ? Math.min(Number(raw.trim()), 20_000) : 0
 }
 
+// egressIp is the address the box's mail leaves from AS THE INTERNET SEES IT (on EC2, the public / Elastic IP, not an address on the
+// interface): it is only what the Spamhaus check looks up, so the box must have a single outbound address.
 export interface SmtpConfig { helo: string; mailFrom: string; egressIp: string; port: number; connectMs: number; commandMs: number }
 // Null (the check is not offered) unless SMTP_VERIFY_ENABLED=1 AND a HELO name and a valid IPv4 egress address are set: fail closed.
 export function smtpConfigFromEnv(env: Record<string, string | undefined> = process.env): SmtpConfig | null {
@@ -74,16 +80,19 @@ export interface SmtpEnv {
   resolveMx(domain: string): Promise<{ exchange: string; priority: number }[]>
   resolveA(domain: string): Promise<string[]>
   resolveZen(ip: string): Promise<'clean' | 'listed' | 'unavailable'>
-  connect(host: string, port: number, timeoutMs: number): Promise<SmtpConn>
+  connect(host: string, port: number, timeoutMs: number, replyMs?: number): Promise<SmtpConn>
   now(): number
   random(): string
 }
 
 // A real SMTP connection: replies are lines "250 text" or multi-line "250-text ... 250 text"; one reply is complete at the first
 // line whose fourth character is a space. Every wait has a timeout; a closed socket rejects pending reads.
-export function netConnect(host: string, port: number, timeoutMs: number): Promise<SmtpConn> {
+// `lookup`: how the host name is resolved. The real path passes guardedLookup (scan/fetch-page.ts), which refuses a host with ANY non-public
+// address (loopback, 10/8, 172.16/12, 192.168/16, link-local incl. 169.254.169.254, CGNAT, v6 unique-local) at connect time, so an MX record
+// a lead's domain points at an internal address can never make this server connect there. Tests connect to loopback fake servers without it.
+export function netConnect(host: string, port: number, timeoutMs: number, lookup?: typeof guardedLookup, replyMs: number = timeoutMs): Promise<SmtpConn> {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection({ host, port })
+    const sock = net.createConnection({ host, port, ...(lookup ? { lookup: lookup as net.LookupFunction } : {}) })
     let buf = '', ended: Error | null = null
     const waiting: { res: (r: SmtpReply) => void; rej: (e: Error) => void; t: NodeJS.Timeout }[] = []
     const ready: SmtpReply[] = []
@@ -94,6 +103,7 @@ export function netConnect(host: string, port: number, timeoutMs: number): Promi
       buf += d
       for (let i = buf.indexOf('\r\n'); i >= 0; i = buf.indexOf('\r\n')) {
         const line = buf.slice(0, i); buf = buf.slice(i + 2)
+        if (partial.length >= 100) { sock.destroy(); fail(new Error('reply too long')); return } // a hostile server streaming "250-x" lines
         partial.push(line)
         if (/^\d{3} ?/.test(line) && line[3] !== '-') {
           const code = Number(line.slice(0, 3)), text = partial.map(l => l.slice(4)).join(' ').slice(0, 300); partial = []
@@ -102,13 +112,13 @@ export function netConnect(host: string, port: number, timeoutMs: number): Promi
       }
       if (buf.length > 8192) { sock.destroy(); fail(new Error('reply too long')) }
     })
-    sock.on('error', e => { fail(e); reject(e) })
-    sock.on('close', () => fail(new Error('connection closed')))
     const connectTimer = setTimeout(() => { sock.destroy(); reject(new Error('connect timeout')) }, timeoutMs)
+    sock.on('error', e => { clearTimeout(connectTimer); fail(e); reject(e) })
+    sock.on('close', () => { clearTimeout(connectTimer); fail(new Error('connection closed')) })
     sock.once('connect', () => {
       clearTimeout(connectTimer)
       resolve({
-        reply: () => ready.length ? Promise.resolve(ready.shift()!) : ended ? Promise.reject(ended) : new Promise((res, rej) => { const t = setTimeout(() => { sock.destroy(); rej(new Error('reply timeout')) }, timeoutMs); waiting.push({ res, rej, t }) }),
+        reply: () => ready.length ? Promise.resolve(ready.shift()!) : ended ? Promise.reject(ended) : new Promise((res, rej) => { const t = setTimeout(() => { sock.destroy(); rej(new Error('reply timeout')) }, replyMs); waiting.push({ res, rej, t }) }),
         send: line => { sock.write(`${line}\r\n`) },
         // end() flushes the QUIT already written before the FIN; destroy() only if the peer never closes
         // resolves when the socket is really closed (or after 1 s): the per-host queue waits for it, so "one connection at a time" is true on the wire
@@ -130,7 +140,8 @@ export const realEnv: SmtpEnv = {
       return a.some(x => x.startsWith('127.0.0.')) ? 'listed' : 'unavailable'
     } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOTFOUND' || (e as NodeJS.ErrnoException).code === 'ENODATA' ? 'clean' : 'unavailable' }
   },
-  connect: netConnect,
+  // An IP-literal host skips the lookup entirely in net.connect, so a literal is checked here (an MX answer such as "169.254.169.254").
+  connect: (h, p, t, r) => net.isIP(h) && !isPublicIp(h) ? Promise.reject(new Error('blocked_address')) : netConnect(h, p, t, guardedLookup, r),
   now: () => Math.floor(Date.now() / 1000),
   random: () => randomBytes(6).toString('hex'),
 }
@@ -145,7 +156,7 @@ const put = (db: Database.Database, k: string, f: { n?: number; hold_until?: num
 export function getDomainFact(db: Database.Database, domain: string, now: number): DomainFact | null {
   const r = row(db, `dom:${domain}`)
   if (!r || r.updated_at < now - FACT_TTL_S || !r.v) return null
-  try { const f = JSON.parse(r.v) as DomainFact; return typeof f.mx === 'string' ? { mx: f.mx, catchAll: f.catchAll === true ? true : f.catchAll === false ? false : null, at: r.updated_at } : null } catch { return null }
+  try { const f = JSON.parse(r.v) as DomainFact; return typeof f.mx === 'string' ? { mx: f.mx, catchAll: f.catchAll === true ? true : f.catchAll === false && r.updated_at >= now - NOT_CATCH_ALL_TTL_S ? false : null, at: r.updated_at } : null } catch { return null }
 }
 export const setDomainFact = (db: Database.Database, domain: string, f: { mx: string; catchAll: boolean | null }, now: number) => put(db, `dom:${domain}`, { v: JSON.stringify({ mx: f.mx, catchAll: f.catchAll }) }, now)
 
@@ -174,6 +185,9 @@ export const clearBackoff = (db: Database.Database, mx: string, now: number) => 
 // next hour every check answers 'unknown' at once, without waiting out a connect timeout per host. Never 'valid'.
 export const PORT25_FAILS = 3, PORT25_HOLD_S = 3600
 export const port25Blocked = (db: Database.Database, now: number): boolean => { const r = row(db, 'p25'); return !!r && r.n >= PORT25_FAILS && r.updated_at > now - PORT25_HOLD_S }
+// Only failures that look like a filtered port count: a timeout, or no route. A refused connection proves the port is reachable, and a
+// name that does not resolve is the domain's problem, so neither may switch the verifier off for every tenant.
+export const looksLikeShutPort = (e: unknown): boolean => /timeout/i.test(e instanceof Error ? e.message : '') || ['ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes((e as NodeJS.ErrnoException | undefined)?.code ?? '')
 const notePort25Fail = (db: Database.Database, now: number) => { const r = row(db, 'p25'); put(db, 'p25', { n: r && r.updated_at > now - PORT25_HOLD_S ? r.n + 1 : 1 }, now) }
 const clearPort25 = (db: Database.Database, now: number) => { if (row(db, 'p25')?.n) put(db, 'p25', { n: 0 }, now) }
 
@@ -192,13 +206,17 @@ const queues = new Map<string, Promise<unknown>>()
 function oneAtATime<T>(host: string, f: () => Promise<T>): Promise<T> {
   const prev = queues.get(host) ?? Promise.resolve()
   const next = prev.then(f, f)
-  queues.set(host, next.catch(() => undefined))
+  const tail: Promise<void> = next.then(() => undefined, () => undefined).then(() => { if (queues.get(host) === tail) queues.delete(host) })
+  queues.set(host, tail)
   return next
 }
 
 const unknown = (detail: string): VerifyAnswer => ({ outcome: 'unknown', detail: detail.slice(0, 160) })
 // Recipient-unknown replies (RFC 5321 / 3463: 550 mailbox unavailable, 551 user not local, 553 mailbox name not allowed).
-const NO_SUCH_USER = new Set([550, 551, 553])
+const NO_SUCH_USER_CODES = new Set([550, 551, 553])
+// A recipient-unknown answer only: with an enhanced status code it must be 5.1.x (bad destination mailbox). A 550 5.7.1 (blocked sender,
+// bad rDNS, a blocklisting of our IP) is a refusal of US, says nothing about the mailbox, and is never cached as a catch-all answer.
+const noSuchUser = (r: SmtpReply): boolean => NO_SUCH_USER_CODES.has(r.code) && !/\b5\.[02-9]\.\d{1,3}\b/.test(r.text)
 
 export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env: SmtpEnv = realEnv, name: string = SMTP_VERIFIER): MailboxVerifier {
   migrateSmtpVerify(db)
@@ -208,6 +226,7 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
       const m = /^([a-z0-9._%+-]{1,64})@([a-z0-9.-]{1,253}\.[a-z]{2,})$/i.exec(address.trim())
       if (!m) return unknown('not an address')
       const domain = m[2].toLowerCase()
+      address = `${m[1]}@${m[2]}` // the validated form only: nothing the caller sent past the match (a CRLF) reaches the wire
       if (signal?.aborted) return unknown('aborted')
       // the breaker: a listed sending IP probes nobody
       if (await zenStatus(db, cfg, env) === 'listed') throw new VerifierError('stop', 'the sending address is listed by Spamhaus ZEN; mailbox checks are stopped')
@@ -235,15 +254,24 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
       }
       const host = mx
       return oneAtATime(host, async (): Promise<VerifyAnswer> => {
+        if (signal?.aborted) return unknown('aborted') // the caller's budget ran out while this call waited its turn
         const t0 = env.now()
         if (port25Blocked(db, t0)) return unknown('outbound mail port 25 appears to be shut from this server, so no mailbox can be checked')
         const until = backoffUntil(db, host, t0)
         if (until) return unknown(`the mail server asked us to wait; trying again after ${new Date(until * 1000).toISOString().slice(11, 16)} UTC`)
-        let conn: SmtpConn | null = null
+        let conn: SmtpConn | null = null, abortHandler: (() => void) | null = null
         const bail = (e: unknown): VerifyAnswer => { noteBackoff(db, host, env.now()); return unknown(e instanceof Error ? e.message : 'connection failed') }
         try {
-          try { conn = await env.connect(host, cfg.port, cfg.connectMs) } catch (e) { notePort25Fail(db, env.now()); throw e }
+          try { conn = await env.connect(host, cfg.port, cfg.connectMs, cfg.commandMs) }
+          catch (e) {
+            // an MX that points at a non-public address is the domain's doing, not a sign that port 25 is shut: a day's backoff, no stats
+            if (e instanceof Error && e.message === 'blocked_address') { noteBackoff(db, host, env.now(), true); return unknown('the mail server address is not a public one') }
+            if (looksLikeShutPort(e)) notePort25Fail(db, env.now())
+            throw e
+          }
           clearPort25(db, env.now())
+          abortHandler = () => { try { void conn?.close() } catch { /* closed */ } }
+          signal?.addEventListener('abort', abortHandler, { once: true })
           const cmd = async (line: string): Promise<SmtpReply> => { conn!.send(line); return conn!.reply() }
           const greet = await conn.reply()
           if (greet.code >= 500) { noteBackoff(db, host, env.now(), true); return unknown(`the mail server refused the connection (${greet.code})`) }
@@ -260,18 +288,18 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
             if (probe.code === 250 || probe.code === 251) { setDomainFact(db, domain, { mx: host, catchAll: true }, env.now()); return { outcome: 'catch_all', detail: 'the mail server accepts every address' } }
             // A second RCPT in the SAME transaction (no RSET: RSET also clears MAIL FROM, and real servers - Google among them - then
             // answer 503 bad sequence). A rejected recipient does not end the transaction.
-            if (NO_SUCH_USER.has(probe.code)) setDomainFact(db, domain, { mx: host, catchAll: false }, env.now())
+            if (noSuchUser(probe)) setDomainFact(db, domain, { mx: host, catchAll: false }, env.now())
             else { if (probe.code >= 400 && probe.code < 500) noteBackoff(db, host, env.now()); return unknown(`the mail server did not answer the test address (${probe.code})`) }
           }
           // 2. the address itself
           const a = await rcpt(address)
           if (!a) return unknown('the hourly limit for this mail server is used')
           if (a.code === 250 || a.code === 251) { clearBackoff(db, host, env.now()); return { outcome: 'deliverable', detail: `accepted by ${host}` } }
-          if (NO_SUCH_USER.has(a.code)) { clearBackoff(db, host, env.now()); return { outcome: 'undeliverable', detail: `no such mailbox at ${host} (${a.code})` } }
+          if (noSuchUser(a)) { clearBackoff(db, host, env.now()); return { outcome: 'undeliverable', detail: `no such mailbox at ${host} (${a.code})` } }
           if (a.code >= 400 && a.code < 500) { noteBackoff(db, host, env.now()); return unknown(`the mail server asked us to try later (${a.code})`) }
           return unknown(`the mail server declined to say (${a.code})`) // other 5xx: a policy answer, not proof about the mailbox; never retried
         } catch (e) { return bail(e) }
-        finally { try { conn?.send('QUIT') } catch { /* closing */ } ; try { await conn?.close() } catch { /* closed */ } }
+        finally { if (abortHandler) signal?.removeEventListener('abort', abortHandler); try { conn?.send('QUIT') } catch { /* closing */ } ; try { await conn?.close() } catch { /* closed */ } }
       })
     },
   }
