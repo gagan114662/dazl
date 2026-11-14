@@ -263,10 +263,6 @@ const US_CITY_STATE: Record<string, string> = { 'san francisco': 'california', '
 for (const [c, st] of Object.entries(US_CITY_STATE)) WORLD_CITIES[c] = { country: 'united states', state: st }
 // Bare names match in any case, except names that are also ordinary lower-case words (eau de cologne): capitals only.
 const BARE_CAPITAL_ONLY = new Set(['cologne'])
-// What a requested place IS, for callers that need a city and nothing wider (lib/people/company-tie.ts): the region a name is
-// (a country, US state, Canadian province, Australian state), and whether a bare name is one of the known cities.
-export const regionNamed = (name: string): boolean => typeof name === 'string' && (!!regionWritten(name.trim()) || REGION_BY_ALIAS.has(name.trim().toLowerCase().replace(/\s+/g, ' ')))
-export const knownCity = (name: string): boolean => typeof name === 'string' && Object.hasOwn(WORLD_CITIES, name.trim().toLowerCase().replace(/\s+/g, ' '))
 const BARE_CITY = new RegExp(`(?<![\\p{L}])(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => esc(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'giu')
 const plain = (s: string) => clean(s).replace(/[,.]+/g, ' ').replace(/ +/g, ' ').trim()
 
