@@ -6,6 +6,7 @@ import { findGroundedPeople, groundedPeopleSkip, newGroundedStats, readableSourc
 import { groundPerson, CONTACT_RESEARCH_MODEL, type ResearchInput, type Source } from '../lib/people/contact-research.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { setup, env, type Row } from './helpers/people-held-fixture.ts'
+import { SpendAccountingFailed } from '../lib/llm/spend-guard.ts'
 
 const STORY = 'https://news.example.test/acme-law-expands'
 const page = (text: string, title = 'Acme Law expands in Chicago'): Source[] => [{ id: 'S1', kind: 'page', url: STORY, title, text }]
@@ -13,23 +14,31 @@ const ans = (name: string, title: string, quote: string) => ({ name, title, sour
 const EV: ResearchInput = { company: 'Acme Law', domain: null, roles: ['Managing Partner'], where: ['Chicago, Illinois'], evidenceUrl: STORY }
 const why = (g: ReturnType<typeof groundPerson>) => ('refused' in g ? g.refused : `kept:${g.person.name}`)
 
-test('council: on the lead\'s source page, "of the <place> office" is this company\'s office only in the narrow case; another firm\'s office, an acquirer and another city are refused', () => {
-  // The case it exists for (chicago-law, real): the story is about the lead, and the person heads its office in the requested city.
-  assert.equal(why(groundPerson(ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office, added'), page('Acme Law added four partners. "A significant step," its chair said. Jane Roe, managing partner of the Chicago office, added, "Our team is growing."'), EV)), 'kept:Jane Roe')
-  const bad: [string, Source[], ReturnType<typeof ans>, ResearchInput?][] = [
-    ['the office of ANOTHER firm', page('Acme Law opened a new office downtown this week, adding twelve lawyers to its team. In other news, Jane Roe, managing partner of the Chicago office of Baker Hostetler, said the market is busy.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office of Baker Hostetler')],
+test('council: "of the <place> office" is this company\'s office only on the company\'s OWN site, for a requested place; never on a news story (it may quote either firm)', () => {
+  const OWN: ResearchInput = { company: 'Acme Law', domain: 'acmelaw.example', roles: ['Managing Partner'], where: ['Chicago, Illinois'] }
+  const ownPage = (text: string): Source[] => [{ id: 'S1', kind: 'page', url: 'https://acmelaw.example/news/expansion', title: 'Acme Law expands', text }]
+  const A = ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office')
+  assert.equal(why(groundPerson(A, ownPage('Acme Law added four partners. "A significant step," Alden Marsh said. Jane Roe, managing partner of the Chicago office, added, "Our team is growing."'), OWN)), 'kept:Jane Roe')
+  const bad: [string, Source[], ReturnType<typeof ans>, ResearchInput][] = [
+    ['own site: the office of ANOTHER firm', ownPage('Acme Law welcomes a guest. Jane Roe, managing partner of the Chicago office of Baker Hostetler, said the market is busy.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office of Baker Hostetler'), OWN],
+    ['own site: an office in another city, on a Chicago request', ownPage('Acme Law added four partners. Alden Marsh spoke first. Jane Roe, managing partner of the London office, said the team is growing.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the London office'), OWN],
+    ['own site: a request that names no place cannot confirm an office', ownPage('Acme Law added four partners. Alden Marsh spoke first. Jane Roe, managing partner of the Chicago office, said the team is growing.'), A, { ...OWN, where: [] }],
+    ['a story about two firms (headline names both)', page('Globex Legal hires three Acme Law partners. Jane Roe, managing partner of the Chicago office, said Globex is growing.', 'Globex Legal poaches Acme Law partners in Chicago'), A, EV],
+    ['a story about this firm quoting the other side', page('Acme Law lost its largest client to Globex Legal. "We are delighted," said Jane Roe, managing partner of the Chicago office.', 'Acme Law loses client'), A, EV],
+    ['a merger story, "our Chicago office"', page('Acme Law and Globex Legal will merge. Jane Roe, managing partner of our Chicago office, said the deal closes in May.', 'Acme Law, Globex merge'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of our Chicago office'), EV],
     ['"the company" is the acquirer', page('Acme Dental has been sold to Globex Health, a national chain. Jane Roe, CEO of the company, said the deal closes in May.', 'Acme Dental sold'), ans('Jane Roe', 'CEO', 'Jane Roe, CEO of the company'), { ...EV, company: 'Acme Dental', roles: ['CEO'] }],
-    ['"the firm" likewise', page('Acme Law is merging with Globex Legal. Jane Roe, managing partner of the firm, said the deal closes in May.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the firm')],
-    ['an office in another city, on a Chicago request', page('Acme Law added four partners. Jane Roe, managing partner of the London office, said the team is growing.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the London office')],
-    ['a request that names no place cannot confirm an office', page('Acme Law added four partners. Jane Roe, managing partner of the Chicago office, said the team is growing.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office'), { ...EV, where: [] }],
-    ['the story is not about this company (its title does not name it)', page('Acme Law is mentioned in passing. Jane Roe, managing partner of the Chicago office, said the market is busy.', 'Chicago legal market roundup'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office')],
+    ['"the firm" likewise', page('Acme Law is merging with Globex Legal. Jane Roe, managing partner of the firm, said the deal closes in May.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the firm'), EV],
+    ['the person\'s own sentence puts them in another city (source page)', page('Jane Roe, Managing Partner at Acme Law in London, said the team is growing.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner at Acme Law'), EV],
+    ['the same on the company\'s own site', ownPage('Jane Roe, Managing Partner at Acme Law in London, said the team is growing.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner at Acme Law'), OWN],
   ]
-  for (const [what, sources, a, input] of bad) assert.ok('refused' in groundPerson(a, sources, input ?? EV), `${what}: ${why(groundPerson(a, sources, input ?? EV))}`)
+  for (const [what, sources, a, input] of bad) assert.ok('refused' in groundPerson(a, sources, input), `${what}: ${why(groundPerson(a, sources, input))}`)
+  // The lead's source page still names a person tied to the company BY NAME.
+  assert.equal(why(groundPerson(ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner at Acme Law'), page('Jane Roe, Managing Partner at Acme Law, said the Chicago team is growing.'), EV)), 'kept:Jane Roe')
 })
 
 test('council: a role that has ended is refused even when the title is followed directly by the company', () => {
   const IN: ResearchInput = { company: 'Acme Dental', domain: null, roles: ['CEO'], where: [], evidenceUrl: STORY }
-  for (const text of ['Jane Roe, CEO of Acme Dental from 2010 to 2018, now runs Globex Health in Ohio.', 'Jane Roe, CEO of Acme Dental for a decade, now runs Globex Health in Ohio.', 'Jane Roe, founder of Acme Dental, has died at 81.', 'Jane Roe, CEO of Acme Dental through 2019, spoke at the event.'])
+  for (const text of ['Jane Roe, CEO of Acme Dental from 2010 to 2018, now runs Globex Health in Ohio.', 'Jane Roe, CEO of Acme Dental for a decade, now runs Globex Health in Ohio.', 'Jane Roe, founder of Acme Dental, has died at 81.', 'Jane Roe, CEO of Acme Dental through 2019, spoke at the event.', 'Jane Roe, CEO of Acme Dental from 2010-18, spoke at the event.', 'Jane Roe, CEO of Acme Dental, was succeeded by John Doe in March.', 'Jane Roe, CEO of Acme Dental, was replaced by John Doe in March.', 'Jane Roe, CEO of Acme Dental, was ousted in March.'])
     assert.ok('refused' in groundPerson(ans('Jane Roe', text.includes('founder') ? 'founder' : 'CEO', text.split(',').slice(0, 2).join(',')), page(text, 'Acme Dental news'), IN), text)
   // The plain present statement is still kept.
   assert.equal(why(groundPerson(ans('Jane Roe', 'CEO', 'Jane Roe, CEO of Acme Dental'), page('Jane Roe, CEO of Acme Dental, said the new clinic opens in May.', 'Acme Dental news'), IN)), 'kept:Jane Roe')
@@ -39,6 +48,7 @@ test('council: a source page on a job board or a publisher whose name the compan
   for (const [company, url] of [['Greenhouse Cafe', 'https://boards.greenhouse.io/greenhousecafe/jobs/123'], ['Breezy Bakery', 'https://breezybakery.breezy.hr/p/abc'], ['Fortune Dental', 'https://fortune.com/2026/05/01/dental-chains/'], ['Workable Solutions', 'https://apply.workable.com/workable-solutions/j/1']])
     assert.equal(sourceOwnSite(company, url), null, `${company} at ${url}`)
   assert.equal(sourceOwnSite('Roof Royale', 'https://roofroyale.example/careers'), 'roofroyale.example')
+  assert.equal(sourceOwnSite('Acme Inc', 'https://acme.example/news'), 'acme.example', 'a legal suffix is not part of the host name'); assert.equal(sourceOwnSite('The Acme Company', 'https://www.acme.example/x'), 'acme.example')
   for (const u of ['https://linkedin.com./in/x', 'https://www.linkedin.com/jobs/view/1', 'https://lnkd.in/abc', 'https://youtu.be/x', 'https://m.facebook.com/acme', 'ftp://news.example.test/x', 'nope'])
     assert.equal(readableSource(u, null), null, u)
   assert.equal(readableSource(STORY, null), STORY); assert.equal(readableSource(STORY, 'outside_window_undated'), STORY)
@@ -117,4 +127,26 @@ test('council: when the scan does not run the step at all', () => {
   assert.match(groundedPeopleSkip({ ...on, peopleCap: 0 }) ?? '', /DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0/)
   assert.match(groundedPeopleSkip({ ...on, vendor: 'openai' }) ?? '', /another vendor/)
   assert.match(groundedPeopleSkip({ ...on, trial: true }) ?? '', /free-trial/)
+})
+
+test('council round 2: the deadline cancels a hanging page read and NO model call is started after it; an unsaved cost stops the pass; a hold that questions the page gives no site', async () => {
+  // A page read that hangs until its signal fires (the lead has a confirmed website and an off-site source page).
+  const { db, job } = setup([['L-a', 'Pagewake', null, 90]])
+  const calls = { prompts: 0 }
+  const fetchImpl = ((u: string, init?: RequestInit) => new URL(String(u)).hostname === 'api.search.tinyfish.ai'
+    ? Promise.resolve(new Response(JSON.stringify({ results: [{ url: 'https://pagewake.example/team', title: 'Our team | Pagewake', snippet: 'Dana Okoye, Head of Sales at Pagewake in Chicago, Illinois.' }] })))
+    : new Promise<Response>((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))))) as unknown as typeof fetch
+  const provider: Provider = { research: async () => { throw new Error('never') }, configuredModel: () => CONTACT_RESEARCH_MODEL, completeDetailed: async () => { calls.prompts++; return { text: JSON.stringify(DANA), model: CONTACT_RESEARCH_MODEL, usage: { input_tokens: 1, output_tokens: 1 } } } }
+  assert.equal(await findGroundedPeople(db, 'A', job, { provider, apiKey: 'k', env, fetchImpl, deadlineMs: 200 }), 0)
+  await new Promise(res => setTimeout(res, 1500))
+  assert.equal(calls.prompts, 0, 'no paid model call after the deadline'); assert.equal(people(db), 0)
+  // A cost that could not be saved: no further lookups start.
+  const five = setup(FIVE); const h = harness({ complete: async () => { throw new SpendAccountingFailed(new Error('x')) } }); const stopped: string[] = []
+  assert.equal(await findGroundedPeople(five.db, 'A', five.job, { ...h.opts, onStop: w => stopped.push(w) }), 0)
+  assert.deepEqual(stopped, ['spend_unsaved']); assert.ok(h.calls.prompts <= 3, `at most the lookups already in flight: ${h.calls.prompts}`)
+  // quote_unconfirmed: the page itself is in question, so its host is not taken as the company's site (blocked_by_site is: the URL alone says it).
+  const q = setup([['L-a', 'Pagewake', 'quote_unconfirmed', 90]], undefined, { domains: false })
+  q.db.prepare("UPDATE leads SET source_url = 'https://www.pagewake.example/careers' WHERE id = 'L-a'").run()
+  const h2 = harness(); const stats = newGroundedStats()
+  assert.equal(await findGroundedPeople(q.db, 'A', q.job, { ...h2.opts, stats }), 0); assert.equal(stats.no_website, 1); assert.equal(h2.calls.searches + h2.calls.reads + h2.calls.prompts, 0)
 })

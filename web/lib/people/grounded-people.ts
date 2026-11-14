@@ -31,7 +31,8 @@ export function sourceOwnSite(company: string, sourceUrl: string | null): string
     // EXACTLY the company's name, never a shorter word it starts with: "Greenhouse Cafe" found on boards.greenhouse.io, "Fortune Dental" in a
     // fortune.com story and "Breezy Bakery" on breezybakery.breezy.hr are on someone else's site (the crawl's looser match is checked against the
     // homepage afterwards; nothing is fetched here, so the name must match whole).
-    if (own && flat(own.site.split('.')[0]) === flat(name)) return own.site
+    // ... the whole name as written or without its legal suffix / leading article ("Acme Inc", "The Acme Company" at acme.com: companyKey).
+    if (own && [flat(name), flat(companyKey(name))].includes(flat(own.site.split('.')[0]))) return own.site
   }
   return null
 }
@@ -73,7 +74,9 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
       const ck = companyKey(l.company); if (seen.has(ck)) continue   // one lookup per company; claimed only by a lead that is looked up (below)
       if (leadPerson(rowsOf.all(l.id, tenantId), roleText, now)) continue   // already names its person: nothing to look up
       const confirmed = l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null
-      const domain = confirmed ?? sourceOwnSite(l.company, l.source_url)
+      // The site is taken from the source page only when that page is this lead's settled evidence (ready or a date hold) or it refused the scan's
+      // fetch (the URL alone says whose site it is); never under a hold that leaves the page itself in question (the quote not confirmed, ...).
+      const domain = confirmed ?? (EVIDENCE_OK(l.review_reason) || (l.review_reason !== null && BLOCKED.has(l.review_reason)) ? sourceOwnSite(l.company, l.source_url) : null)
       // No website: the page the lead was found on is still its own evidence, and may name the person (one page read, one model call, no search).
       const evidence = readableSource(l.source_url, l.review_reason)
       if (!domain && !evidence) { stats.no_website++; continue }
@@ -101,7 +104,7 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
         if (e instanceof SpendAccountingFailed) { stop ??= 'spend_unsaved'; stats.failed.spend_unsaved = (stats.failed.spend_unsaved ?? 0) + 1; return }   // a cost that could not be saved: no further paid call in this pass
         stats.failed.error = (stats.failed.error ?? 0) + 1; return
       }
-      if (expired) return   // the pass ended while this lookup was in flight (its model call has its own, longer timeout): nothing is written late
+      if (expired || Date.now() >= deadline) { stop ??= 'deadline'; return }   // the pass ended while this lookup was in flight (its model call has its own, longer timeout): nothing is written late
       if (r.status === 'found' && r.person) {
         if (deps.alive && !deps.alive()) { stop ??= 'ownership_lost'; return }   // re-checked before the write: another process may hold the job now
         const p = r.person

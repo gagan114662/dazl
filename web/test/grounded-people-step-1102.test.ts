@@ -89,12 +89,12 @@ test('#1037 a lead found on its company\'s own site, whose page blocked the scan
 })
 
 test('#1037 a lead found on a press release or news story, with no website: that page alone is read (no search) and a person it ties to the company is kept', async () => {
-  // The real case (chicago-law, 2026-11-14): "<Name>, managing partner of the Chicago office, added, ..." in the story the lead was found on.
+  // A story the lead was found on, naming a person with a title AT the company by name.
   const STORY = 'https://news.example.test/pagewake-expands-chicago-office'
-  const page = 'Pagewake added partners Sam Lee and Kim Park to its newly opened Chicago office. "Their arrivals mark a significant step," Alden Marsh, chair of Pagewake\'s executive committee, said. Dana Okoye, Head of Sales of the Chicago office, added, "Our Chicago team is growing." Lee said, "Pagewake is a premier destination."'
+  const page = 'Pagewake added partners Sam Lee and Kim Park to its newly opened Chicago office. "Their arrivals mark a significant step," Alden Marsh, chair of Pagewake\'s executive committee, said. Dana Okoye, Head of Sales at Pagewake, added, "Our Chicago team is growing." Lee said, "Pagewake is a premier destination."'
   const { db, job } = setup([['L-a', 'Pagewake', null, 90]], undefined, { domains: false })
   foundOn(db, 'L-a', STORY)
-  const h = harness({ person: { name: 'Dana Okoye', title: 'Head of Sales', source: 'S1', quote: 'Dana Okoye, Head of Sales of the Chicago office, added', linkedin_source: null } }, page)
+  const h = harness({ person: { name: 'Dana Okoye', title: 'Head of Sales', source: 'S1', quote: 'Dana Okoye, Head of Sales at Pagewake, added', linkedin_source: null } }, page)
   const stats = newGroundedStats()
   assert.equal(await findGroundedPeople(db, 'A', job, { ...h.opts, stats }), 1)
   assert.deepEqual(stats, { ...NO_STATS, eligible: 1, source_page: 1, looked_up: 1, found: 1 })

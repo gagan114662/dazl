@@ -162,7 +162,7 @@ const NOT_TOP = { test: (t: string) => NOT_TOP_HARD.test(t) || NOT_TOP_SOFT.test
 // an engineer) are refused only when the scan did not ask for that role: a sales scan asks for "VP Sales" by name.
 const NEVER_BUYER = /\b(?:assistant|associate|deputy|interim|acting|chief of staff|to the)\b|['’]s\b/i
 // A past-role marker AFTER the quote, up to the end of the sentence ("... until she retired in 2019", "(2008-2019)").
-const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer|died|has died|passed away|the late)\b|\bnow\s+(?:runs|leads|heads|works|serves|owns|at|with)\b|\b(?:to|through)\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
+const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer|died|has died|passed away|the late|succeeded by|replaced by|ousted|fired|departed)\b|\b(?:19|20)\d{2}\s*[-–]\s*\d{2}\b|\bnow\s+(?:runs|leads|heads|works|serves|owns|at|with)\b|\b(?:to|through)\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
 
 const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
 const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|vice|vp|svp|evp|sales|revenue|marketing|operations|growth|commercial|business|development|global|regional|cro|cmo|coo|cfo|cto|founder|co-?founder|owner|co-?owner|ceo|co-?ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
@@ -211,17 +211,6 @@ function profilePosition(answer: Answer, src: Source, input: ResearchInput): { t
     return { title }
   }
   return { refused: past ? 'past_role' : 'profile_does_not_give_title_at_company' }
-}
-
-// A page title names the company in full or by the whole-word start of its name a headline uses ("Simpson Thacher Expands Chicago Office" for
-// "Simpson Thacher & Bartlett"): at least two words of it, or the whole name.
-function titleNamesCompany(title: string, company: string): boolean {
-  const words = companyKey(company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
-  for (let k = words.length; k >= Math.min(2, words.length); k--) {
-    if (words.slice(0, k).join('').length < 4) break
-    if (new RegExp(`(?<![\\p{L}\\p{N}])${words.slice(0, k).map(esc).join('[^\\p{L}\\p{N}]{1,3}')}(?![\\p{L}\\p{N}])`, 'iu').test(title)) return true
-  }
-  return false
 }
 
 // Every field the model returned is checked against the sources it was shown. Returns the person, or the first check that failed.
@@ -326,13 +315,13 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   // A page that is the company's by itself: its own confirmed site, or the page this lead was found on. There, "managing partner of the Chicago office",
   // "CEO of the firm" name the company's OWN unit: the title is tied to the company by the sentence, as if it named it.
   const dom1 = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
-  const pageTied = (!!dom1 && (hostOf(src.url) === dom1 || hostOf(src.url).endsWith(`.${dom1}`))) || (src.kind === 'page' && samePage(src.url, input.evidenceUrl))
-  // Narrow on purpose: only "<of|at> the <Place> office" followed by punctuation (never "office of <another firm>", never "the company" / "the firm",
-  // which may be an acquirer); the place must be one the request names; and on the lead's source page the page's own title must name this company
-  // (the story is about it). Anything else goes through the ordinary rules.
+  // Narrow on purpose: only on the company's OWN site (a news story about two firms can quote either firm's office head, so the page a lead was
+  // found on never qualifies); only "<of|at> the <Place> office" followed by punctuation (never "office of <another firm>", never "the company" /
+  // "the firm"); and the place must be one the request names. Anything else goes through the ordinary rules.
   const unitM = /^[\s,]*(?:of|at|for|in)\s+(?:the|our|its)\s+((?:\p{Lu}[\p{L}.'’-]+\s+){1,3})office(?=\s*(?:[,.;:!?)"”]|$))/u.exec(rawAll.slice(at + span[1], at + span[1] + 70))
   const whereU = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
-  const unitDirect = pageTied && !!unitM && whereU.length > 0 && placeAgreement(unitM[1], whereU, input.company) === 'agrees' && (hostOf(src.url) === dom1 && !!dom1 || (!!dom1 && hostOf(src.url).endsWith(`.${dom1}`)) || titleNamesCompany(src.title, input.company))
+  const onHost = !!dom1 && (hostOf(src.url) === dom1 || hostOf(src.url).endsWith(`.${dom1}`))
+  const unitDirect = onHost && !!unitM && whereU.length > 0 && placeAgreement(unitM[1], whereU, input.company) === 'agrees'
   // The title may run on in title words before the company ("CEO" quoted from "CEO and co-founder of Acme"). Never "|" or a dash: in a result title those lead to the SITE's name.
   const direct = unitDirect || companySpans(rawAll, input.company).some(([c0]) => {
     const gap = rawAll.slice(at + span[1], c0)
@@ -356,7 +345,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   }
   // After the title and a separator, a bare noun clause ("owner, runs the bakery next door", "owner - the bakery down the street") is another business too:
   // the clause must be empty, this company, or only ordinary title / filler / place words.
-  const CONNECT = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|welcomes?|opens?|opened)$/i
+  const CONNECT = /^(?:and|in|at|on|is|was|has|said|says|added|adds|told|noted|notes|commented|explained|stated|announced|wrote|the|a|an|for|with|since|until|from|to|who|which|that|welcomes?|opens?|opened)$/i
   // The words right after the company's name: a legal suffix, a requested place or an ordinary connector / title word; anything business-like in
   // lower case ("Brightloop Dental supplies store") is another business.
   const strayAfterCompany = (words: string[]): boolean => { const w0 = words.slice(0, 1)[0]; return !!w0 && /^\p{Ll}/u.test(w0) && !w0.includes('.') && w0.toLowerCase() !== (input.domain ?? '').toLowerCase().split('.')[0] && !(CONNECT.test(w0) || SUFFIX_OK.test(w0) || whereWords.has(w0.toLowerCase())) }
@@ -396,7 +385,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   if (isProfile) {
     // The existing parser decides: "Name - Title - Employer" / "Name - Title at Employer" with exactly this employer, not past, not ambiguous.
     return { refused: 'profile_not_a_search_result' }   // a profile is only ever a search result (LinkedIn is never fetched); groundPerson judges those
-  } else if (!onOwnSite && !(unitDirect && src.kind === 'page' && samePage(src.url, input.evidenceUrl))) {
+  } else if (!onOwnSite) {
     // The company is named right next to the person: within 40 characters of the name-and-title, with no sentence break and no
     // other capitalised name in between ("... acquired by Globex Health; Globex CEO Jane Roe" is Globex's CEO).
     const [a, b] = [at + span[0], at + span[1]]
@@ -409,6 +398,14 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   }
   const where = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
   const isEvidence = src.kind === 'page' && samePage(src.url, input.evidenceUrl)   // the lead's own source page, as read (never a search result that merely shares its URL)
+  // On the company's own site and on the lead's own source page the page as a whole is not asked to name the place (a team page names no city). But
+  // the person's OWN sentence must not put them somewhere else ("Managing Partner at Acme Law in London" on a Chicago request).
+  if ((onOwnSite || isEvidence) && where.length > 0) {
+    if (placeAgreement(rawAll.slice(sLo, sHi), where, input.company) === 'mismatch') return { refused: 'another_place' }
+    // ... also a bare city right after the person ("... at Acme Law in London, said"): a place the request does not name.
+    const inPlace = /\b(?:in|based in)\s+(\p{Lu}[\p{L}.'’-]+(?:\s+\p{Lu}[\p{L}.'’-]+){0,2})/u.exec(rawAll.slice(at + span[1], sHi))?.[1]
+    if (inPlace && !inPlace.split(/\s+/).some(w => whereWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) || FILLER.test(w)) && !thisCompany(inPlace)) return { refused: 'another_place' }
+  }
   const place = onOwnSite || isEvidence ? 'no_geography' as const : placeAgreement(text, where, input.company)
   // The product's own gate (people-search.ts): when the request names a place, the source must agree; one that names no place does not.
   if (place === 'mismatch') return { refused: 'another_place' }
@@ -559,6 +556,8 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   }
   if (sources.length === 0) return base('none', 'source_page_unreadable', { queries })
   const listed = sources.map(s => ({ id: s.id, url: s.url, title: s.title, kind: s.kind }))
+  // The caller's time is up (its signal cancelled a search or the page read): no paid model call is started after it.
+  if (deps.signal?.aborted) return base('search_failed', 'aborted', { queries, sources: listed })
   // One model call, no retry (a retried paid call could be billed twice). A spend refusal propagates to the caller.
   const det = await provider.completeDetailed(deps.apiKey, researchPrompt(input, sources), deps.fetchImpl, MAX_OUTPUT_TOKENS)
   usage.model = det.model ?? provider.configuredModel?.() ?? null
