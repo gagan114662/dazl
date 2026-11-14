@@ -4,7 +4,6 @@
 // products[{ title, handle, body_html, published_at }]. No network: the HTTP getter is a stub.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { collectShopifyStores, countriesIn, mentionsShopify, readStore, storeHosts, storeLead, storeListQueries, windowDaysIn } from '../lib/sources/shopify.ts'
 import type { HttpResult, SafeGet } from '../lib/sources/types.ts'
 
