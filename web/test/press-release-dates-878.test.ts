@@ -147,6 +147,19 @@ test('#878 review: the headline names THE company, not a longer name that starts
   assert.deepEqual(newsDay('Milbank LLP', 'Milbank Adds Leading Energy Partner', 'Milbank LLP is pleased to announce that a partner has joined the firm'), { date: '2026-09-30', kind: 'NewsArticle' })
 })
 
+test('#878 review 2: hyphenated longer names are held; LLP/Inc and common press verbs date; completed quotes with later/scheduled/century/generation date', () => {
+  const D = { date: '2026-09-30', kind: 'NewsArticle' }
+  assert.equal(newsDay('Acme', 'Acme-Beta Opens Chicago Office', 'Acme opened a new office in Chicago.'), null)
+  assert.equal(newsDay('Acme', 'Acme/Beta Opens Chicago Office', 'Acme opened a new office in Chicago.'), null)
+  assert.deepEqual(newsDay('Armstrong Teasdale', 'Armstrong Teasdale LLP Expands to Chicago', 'Armstrong Teasdale opened a new office in Chicago.'), D)
+  assert.deepEqual(newsDay('Acme', 'Acme, Inc. Opens Chicago Office', 'Acme opened a new office in Chicago.'), D)
+  assert.deepEqual(newsDay('Acme', 'Acme Celebrates Opening of Chicago Office', 'Acme opened a new office in Chicago.'), D)
+  assert.deepEqual(newsDay('Acme', 'Welcome to Acme: Acme Opens Chicago Office', 'Acme opened a new office in Chicago.'), D)
+  for (const q of ['Acme opened a new office in Chicago, two weeks later.', 'Acme opened a new office in Chicago and later hired a team.', 'Acme opened a next-generation lab in Chicago.', 'Acme opened a new office in Chicago, a regularly scheduled expansion.'])
+    assert.deepEqual(newsDay('Acme', 'Acme Opens Chicago Office', q), D, q)
+  assert.deepEqual(newsDay('Century 21 Real Estate', 'Century 21 Real Estate Opens Chicago Office', 'Century 21 Real Estate opened a new office in Chicago.'), D)
+})
+
 test('#878 review: the CSV export carries the proof note, so an announcement day is worded as one there too', () => {
   const db = new Database(':memory:'); migrateScan(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })

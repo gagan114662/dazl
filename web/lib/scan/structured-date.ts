@@ -46,7 +46,7 @@ const stringValuesOf = (v: unknown, out: string[] = [], depth = 0): string[] => 
 // A COMPLETED event stated in the past or perfect tense. "Is pleased to announce" and "has joined" count; "will", a plan, "soon", "to open" or "upon its opening" do not (the event is still ahead, so the
 // story's day is not the event's day, and a quote that mixes a done thing with a future one is not read: it stays held).
 const DONE = /\b(?:announce[sd]?|pleased to announce|expanding|growing|continues? to grow|(?:continuing|continues) to grow|addition of|has joined|have joined|joined|joins|appoint(?:s|ed)|opens?|opened|launch(?:es|ed)|expands?|expanded|expansion|raise[sd]?|acquire[sd]?|hire[sd]?|welcomes?|welcomed|adds?|added|unveil(?:s|ed)|secure[sd]?|arrival of|continues? (?:the|its) expansion|bolsters?|strengthens?)\b/i
-const AHEAD = /\b(?:will|shall|plans? to|planning|plan to|soon|upcoming|expected to|set to|to open|to launch|intends?|aims? to|looking to|hopes? to|coming|upon (?:its|the) opening|later this|later|slated|scheduled|going to|to be (?:opened|launched|completed)|on track to|(?:this|next) (?:spring|summer|fall|autumn|winter)|next (?:month|year|week|quarter))\b/i
+const AHEAD = /\b(?:will|shall|plans? to|planning|plan to|soon|upcoming|expected to|set to|to open|to launch|intends?|aims? to|looking to|hopes? to|coming|upon (?:its|the) opening|later this|slated|scheduled to|is scheduled|going to (?:open|launch|be)|to be (?:opened|launched|completed)|on track to|(?:this|next) (?:spring|summer|fall|autumn|winter)|next (?:month|year|week|quarter))\b/i
 const EVERGREEN_TITLE = /\b(?:top \d*|best|guide|how to|ways to|tips|checklist|versus|vs\.?|list of|reviews?|roundup|comparison|directory|\d+ (?:best|top|ways|tips))\b/i
 export const announcesDoneEvent = (text: string): boolean => DONE.test(text) && !AHEAD.test(text)
 export function kindsFor(claim: string): DateKind[] {
@@ -66,22 +66,25 @@ const namesLoosely = (text: string, key: string): boolean => {
 }
 // The company the headline names must be THE company, not a longer name that starts with it ("Apex Clean Energy Opens ..." is not "Apex"): right after the name comes a verb or a
 // function word, an apostrophe-s, punctuation, or the end. A capitalised word that is not a headline verb ("Apex Clean ...") is a longer name.
-const HEAD_AFTER = new Set(['s', 'to','and','with','in','on','for','at','is','has','have','was','by','of','from','as','a','an','the','its','adds','added','announces','announced','appoints','bolsters','builds','expands','expanded','expanding','grows','growing','hires','joins','joined','launches','launched','names','opens','opened','opening','raises','raised','strengthens','secures','unveils','welcomes','continues','acquires','acquired','brings','establishes','relocates','moves','extends','deepens','boosts','enters','lands','taps','signs','promotes','elects','appointed'])
+const HEAD_AFTER = new Set(['s', 'to','and','with','in','on','for','at','is','has','have','was','by','of','from','as','a','an','the','its','adds','added','announces','announced','appoints','bolsters','builds','expands','expanded','expanding','grows','growing','hires','joins','joined','launches','launched','names','opens','opened','opening','raises','raised','strengthens','secures','unveils','welcomes','continues','acquires','acquired','brings','establishes','relocates','moves','extends','deepens','boosts','enters','lands','taps','signs','promotes','elects','appointed','introduces','completes','celebrates','hosts','wins','partners','partnered','receives','named','earns','selects','selected','debuts','kicks','cuts','breaks','begins','starts','adds','invests','plans','officially','now','is'])
+const SUFFIX = new Set(['llp', 'llc', 'inc', 'ltd', 'co', 'corp', 'pllc', 'pc'])
+const fold = (w: string): string => w.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase()
 const headlineSubject = (headline: string, company: string): boolean => {
-  const ct = company.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase()).filter(Boolean)
-  const ht = headline.replace(/&#0?39;|&apos;|[’']/g, ' ').split(/\s+/).filter(Boolean)   // "Benesch's" -> "Benesch s": the possessive token is a HEAD_AFTER word
-  const norms = ht.map(w => w.replace(/[^\p{L}\p{N}&]/gu, '').toLowerCase())
+  const ct = company.trim().split(/[\s\-/|]+/).filter(Boolean).map(fold).filter(Boolean); while (ct.length > 1 && SUFFIX.has(ct[ct.length - 1])) ct.pop()   // the headline may drop "LLP"
+  const ht = headline.replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|[’']/g, ' ').split(/[\s\-/|]+/).filter(Boolean)   // "Benesch's" -> "Benesch s": the possessive token is a HEAD_AFTER word
+  const norms = ht.map(fold)
   for (let i = 0; i + ct.length <= norms.length; i++) {
     if (!ct.every((t, k) => norms[i + k] === t)) continue
-    const next = norms[i + ct.length]
-    return next === undefined || next === '' || HEAD_AFTER.has(next) || /^[a-z]/.test(ht[i + ct.length] ?? '')
+    let j = i + ct.length; while (SUFFIX.has(norms[j] ?? '')) j++   // "Armstrong Teasdale LLP Expands ..." / "Acme, Inc. Opens ..."
+    const next = norms[j]
+    if (next === undefined || next === '' || HEAD_AFTER.has(next) || /^[a-z]/.test(ht[j] ?? '')) return true
   }
-  return true   // the company was matched loosely (a suffix, an accent): the loose match stands
+  return false
 }
 // A quote that dates its own event is the quote's to date (the verifier's day binding), never the story's publication day: any year, a month with a day, or a relative past ("last year", "years ago",
 // "previously") means the story may be about something that happened before it ran (a case study, a retrospective, "in March 2025 X opened ..."), so the publication day is not read.
 const MON_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?'
-const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?|decades?) ago\\b|\\bpreviously\\b|\\bback in\\b|\\b(?:19|20)\\d0s\\b|\\b(?:decades?|centur(?:y|ies)|generations?)\\b`, 'i')
+const OWN_DATE = new RegExp(`\\b(?:19|20)\\d\\d\\b|\\b(?:${MON_RE})\\.?\\s+\\d{1,2}\\b|\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MON_RE})\\b|\\b(?:last|previous) (?:year|month|week|quarter)\\b|\\bearlier this (?:year|month)\\b|\\b(?:years?|months?|weeks?) ago\\b|\\bpreviously\\b|\\bback in\\b|\\b(?:19|20)\\d0s\\b|\\b(?:decades?|centur(?:y|ies)|generations?) ago\\b|\\b(?:past|last) (?:decades?|centur(?:y|ies)|generations?)\\b`, 'i')
 const quoteDatesItself = (quote: string): boolean => OWN_DATE.test(quote)
 const day = (v: unknown): string | null => {
   if (typeof v !== 'string') return null
