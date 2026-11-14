@@ -129,12 +129,14 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
 }
 
 // Whether the scan runs the step at all, and why not (the runner's trace note). Kill switch GROUNDED_PEOPLE_ENABLED=0; no search provider; the
-// operator's first-play people-search switch at 0; a scan on another vendor's key (the lookup asks for an Anthropic model); a free-trial scan.
-export function groundedPeopleSkip(o: { env?: Record<string, string | undefined>; searchEnabled: boolean; peopleCap: number | null; vendor: string; trial: boolean }): string | null {
+// operator's first-play people-search switch at 0; a scan on another vendor's key (the lookup asks for an Anthropic model); a free-trial scan; the
+// first play (first5), whose search, fetch and model counts are capped tightly and stated to the user up front.
+export function groundedPeopleSkip(o: { env?: Record<string, string | undefined>; searchEnabled: boolean; peopleCap: number | null; vendor: string; trial: boolean; firstPlay: boolean }): string | null {
   if ((o.env ?? process.env).GROUNDED_PEOPLE_ENABLED === '0') return 'GROUNDED_PEOPLE_ENABLED=0'
   if (!o.searchEnabled) return 'TinyFish search is not configured: no lookup can run'
   if (o.peopleCap === 0) return 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people lookups on the first play / trial scans'
   if (o.vendor !== 'anthropic') return 'the grounded lookup runs on an Anthropic key and this scan uses another vendor'
   if (o.trial) return 'free-trial scans keep their reserve for the checks after the scan'
+  if (o.firstPlay) return 'the first play stays inside its own small search and model budget: the lookup runs on full scans'
   return null
 }

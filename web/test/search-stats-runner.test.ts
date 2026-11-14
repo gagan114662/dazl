@@ -4,6 +4,9 @@
 // the query text, and the model writes those queries freely. This pins that every issued query carries the profile's
 // geography. The verifier is not touched.
 import { test } from 'node:test'
+// These tests pin the scan's OWN search, fetch and model calls. The grounded named-person step (#1102) runs after the scan and adds its own; it has
+// its own tests (grounded-people-step-1102, grounded-council-1102) and is switched off here so the pins stay about the scan.
+process.env.GROUNDED_PEOPLE_ENABLED = '0'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'

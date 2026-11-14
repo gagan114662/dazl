@@ -2,6 +2,9 @@
 // Narrow path from docs/design/blocked-source-verification.md: a candidate whose page dazl's OWN fetch could not read may be
 // checked against text TinyFish ALREADY returned for that exact URL in the same scan attempt, with every check unchanged.
 import { test } from 'node:test'
+// These tests pin the scan's OWN search, fetch and model calls. The grounded named-person step (#1102) runs after the scan and adds its own; it has
+// its own tests (grounded-people-step-1102, grounded-council-1102) and is switched off here so the pins stay about the scan.
+process.env.GROUNDED_PEOPLE_ENABLED = '0'
 import assert from 'node:assert/strict'
 import { randomBytes, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'

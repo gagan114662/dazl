@@ -128,9 +128,9 @@ test('council: a job lost AFTER the model call writes nothing; two leads of one 
 })
 
 test('council: when the scan does not run the step at all', () => {
-  const on = { env: {}, searchEnabled: true, peopleCap: null, vendor: 'anthropic', trial: false }
+  const on = { env: {}, searchEnabled: true, peopleCap: null, vendor: 'anthropic', trial: false, firstPlay: false }
   assert.equal(groundedPeopleSkip(on), null)
-  assert.equal(groundedPeopleSkip({ ...on, peopleCap: 10 }), null, 'a first play with its people cap above 0 runs it')
+  assert.match(groundedPeopleSkip({ ...on, firstPlay: true, peopleCap: 10 }) ?? '', /first play/)
   assert.match(groundedPeopleSkip({ ...on, env: { GROUNDED_PEOPLE_ENABLED: '0' } }) ?? '', /GROUNDED_PEOPLE_ENABLED=0/)
   assert.match(groundedPeopleSkip({ ...on, searchEnabled: false }) ?? '', /not configured/)
   assert.match(groundedPeopleSkip({ ...on, peopleCap: 0 }) ?? '', /DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0/)
