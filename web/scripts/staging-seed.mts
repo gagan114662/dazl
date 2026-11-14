@@ -64,6 +64,9 @@ export async function seedStaging(raw: Database.Database, password: string, now 
     const job = await createQueryJob(db, id, { query: s.query, icp: JSON.stringify(icp) }, at)
     await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?", [at, job])
     await finishJob(db, { id: job, attempts: 1 }, { status: 'done', error: null, leads: s.leads, candidates: s.leads.length + 3, dropped: { off_profile: 3 }, now: at + 300 })
+    // A proven event day is the PROOF column (the scanner has not written date_status 'verified' since 2026-10-23, #1176): the demo leads' days are
+    // synthetic page-tied dates, so Home and the Leads page read them as the card does.
+    raw.prepare("UPDATE leads SET date_status = 'unverified', event_date_proof = 'page_bound' WHERE scan_job_id = ? AND event_date IS NOT NULL").run(job)
   }
   // stub Gmail (staging only): connected, sends nothing
   startOAuth(raw, id, { env: { PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL, DAZL_ENV: 'staging' } as never })

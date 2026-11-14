@@ -100,3 +100,45 @@ test('HOLD: every emitted field obeys the privacy contract, URLs included; impos
   for (const event_date of ['2026-09-31', '2026-02-30', '2026-13-01', '2026-9-1', `${day(10)}T00:00:00Z`, 'October 20, 2026'])
     assert.equal(buildProofPreview(input([lead({ event_date })]), NOW).status, 'hold', event_date)
 })
+
+// #1176 (council review): the preview applies the holds Home applies to a lead with a proven day: the REQUIRED check's own verdict
+// (requiredGateHeldForJob: a failed marker, and the default-deny when the request needs the sales-hiring proof and no pass was recorded), the
+// run's own recency window, and a hold no confirmation lifts. The timing proof (domain + named person + published route) is NOT required:
+// a preview carries no person and no contact by contract, so that proof can never exist for it.
+bothEngines('#1176 loadProofInput: a lead with a proven day is held out of the preview by a failed or missing required check, the run\'s own window and an uncheckable cause', async ({ db }) => {
+  const SALES = 'B2B software companies hiring account executives'
+  const job = async (id: string, query: string, icp: string | null) => {
+    await db.run("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, query, icp) VALUES (?, 't1', 'pending', 'Synthetic', 'software', 'Toronto', ?, ?)", [id, query, icp])
+    await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [id])
+  }
+  const add = async (jobId: string, id: string, o: { date?: string; from?: string | null } = {}) => {
+    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, event_date, date_status, event_date_proof, confidence, score, human_confirmed_from) VALUES (?, ?, ?, 'Opened a clinic', 'https://news.test/x', 'We opened.', ?, 'unverified', 'page_bound', 80, 70, ?)", [id, jobId, `Co ${id}`, o.date ?? new Date().toISOString().slice(0, 10), o.from ?? null])
+  }
+  const mark = (leadId: string, kind: string, value: string) => db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, 't1', 'scan:gate', ?, ?, 'https://invalid.example/', '2026-11-13', 1)", [`m-${leadId}-${value}`, leadId, kind, value])
+  const done = async (id: string) => db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [Math.floor(Date.now() / 1000), id])
+  const extra = { inferredOffer: OFFER, spendUsd: null }
+  const companies = async (id: string) => { const p = buildProofPreview((await loadProofInput(db, 't1', id, extra))!); return p.status === 'ready' ? p.companies.map(c => c.company).sort() : [`hold:${p.reason}`] }
+
+  // a sales-hiring request: only the lead with a recorded PASS is shown; a failed marker and no record at all are held
+  await job('j-sales', SALES, null)
+  await add('j-sales', 'pass'); await mark('pass', 'gate_passed', 'requested_role_v1'); await mark('pass', 'gate_passed', 'sales_hiring')
+  await add('j-sales', 'norecord')
+  await add('j-sales', 'failed'); await mark('failed', 'gate_failed', 'sales_hiring_check_failed')
+  await done('j-sales')
+  assert.deepEqual(await companies('j-sales'), ['Co pass'])
+  // an ordinary request has no sales-hiring gate: a lead with no marker is shown, a failed marker still holds it
+  await job('j-plain', 'dental practices opening a new location', null)
+  await add('j-plain', 'plain'); await add('j-plain', 'plainfailed'); await mark('plainfailed', 'gate_failed', 'sales_hiring_check_failed')
+  await done('j-plain')
+  assert.deepEqual(await companies('j-plain'), ['Co plain'])
+  // the run's own recency window (7 days): a proven day 10 days old is outside it, however recent the preview's own 90 days are
+  await job('j-window', 'dental practices opening a new location in the last 7 days', JSON.stringify({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], window_days: 7 }))
+  await add('j-window', 'old', { date: new Date(Date.now() - 10 * 86400_000).toISOString().slice(0, 10) }); await add('j-window', 'fresh', { date: new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10) })
+  await done('j-window')
+  assert.deepEqual(await companies('j-window'), ['Co fresh'])
+  // a lead the user confirmed out of someone else's customer / another place / a closed opening stays out
+  await job('j-unc', 'dental practices opening a new location', null)
+  await add('j-unc', 'fine'); await add('j-unc', 'customer', { from: 'counterparty_signal' }); await add('j-unc', 'closed', { from: 'job_closed' })
+  await done('j-unc')
+  assert.deepEqual(await companies('j-unc'), ['Co fine'])
+})

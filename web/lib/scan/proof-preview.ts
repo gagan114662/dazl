@@ -7,6 +7,9 @@
 // hold: no proof message is built and nothing invented takes its place.
 import type { Db } from '../db/client.ts'
 import { eventDayVerified } from './scoreboard.ts'
+import { requiredGateHeldForJob } from './held-state.ts'
+import { windowHeld } from '../outreach/currentness.ts'
+import { uncheckableCause } from '../lead-state.ts'
 
 export const PROOF_MAX_COMPANIES = 5
 export const PROOF_EVIDENCE_DAYS = 90
@@ -16,7 +19,9 @@ export interface ProofLeadRow {
   event_date: string | null; date_status: string | null; review_reason: string | null; quarantined_at: number | null
   evidence_purged_at: number | null; confidence: number | null; score: number
   event_date_proof?: string | null; signal_kind?: string | null   // how the scan proved event_date (#460); the proof, not date_status, makes the day verified (#1176)
-  gate_held?: boolean | number | null                            // a REQUIRED check did not pass (the scan:gate marker): never in a prospect-facing preview
+  window_held?: boolean | null                                   // outside the run's own recency window (lib/outreach/currentness.ts windowHeld), as on Home
+  human_confirmed_from?: string | null
+  gate_held?: boolean | number | null                            // a REQUIRED check did not pass (lib/scan/held-state.ts requiredGateHeldForJob): never in a prospect-facing preview
 }
 export interface ProofRun { jobId: string; tenantId: string; status: string; finishedAt: number | null; spendUsd: number | null }
 export interface ProofInput { run: ProofRun; inferredOffer: { text: string; sourceUrl: string } | null; leads: ProofLeadRow[] }
@@ -72,6 +77,8 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
     // #1176: the day must be PROVEN by the cited source, the rule the lead's own card uses (eventDayVerified); date_status 'verified' is
     // never written by a scan any more. A required check that did not pass (held) never reaches a prospect-facing preview (#796).
     if (!l.event_date || !eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: new Date(now) }) || Number(l.gate_held) === 1) continue
+    // the run's own recency window and a hold no confirmation lifts (someone else's customer, another place, a closed opening) hold it here as on Home
+    if (l.window_held || uncheckableCause(l.review_reason) || uncheckableCause(l.human_confirmed_from)) continue
     const t = strictDay(l.event_date)
     if (t === null || t < oldest || t > now) continue
     const key = company.toLowerCase()
@@ -89,20 +96,20 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
   }
 }
 
-const RUN_SQL = 'SELECT id, user_id, status, finished_at FROM scan_jobs WHERE id = ? AND user_id = ?'
-const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_status, l.event_date_proof, l.signal_kind, l.review_reason, l.quarantined_at,
-  l.evidence_purged_at, l.confidence, l.score,
-  CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed') THEN 1 ELSE 0 END AS gate_held
+const RUN_SQL = 'SELECT id, user_id, status, finished_at, icp, query FROM scan_jobs WHERE id = ? AND user_id = ?'
+const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_status, l.event_date_proof, l.signal_kind, l.review_reason, l.human_confirmed_from, l.quarantined_at,
+  l.evidence_purged_at, l.confidence, l.score
   FROM leads l WHERE l.scan_job_id = ?`
 
 // Load one run for the tenant that owns it. Another tenant's run id reads as not found: a preview never crosses tenants.
 export async function loadProofInput(db: Db, tenantId: string, jobId: string, extra: { inferredOffer: ProofInput['inferredOffer']; spendUsd: number | null }): Promise<ProofInput | null> {
-  const job = await db.get<{ id: string; user_id: string; status: string; finished_at: number | null }>(RUN_SQL, [jobId, tenantId])
+  const job = await db.get<{ id: string; user_id: string; status: string; finished_at: number | null; icp: string | null; query: string | null }>(RUN_SQL, [jobId, tenantId])
   if (!job) return null
   const leads = await db.all<ProofLeadRow>(LEADS_SQL, [job.id])
+  const held = await requiredGateHeldForJob(db, tenantId, job.id)   // the draft guard's own verdict for every lead of this run (failed check, no pass record, report hold)
   return {
     run: { jobId: job.id, tenantId, status: job.status, finishedAt: job.finished_at === null ? null : Number(job.finished_at), spendUsd: extra.spendUsd },
     inferredOffer: extra.inferredOffer,
-    leads: leads.map(l => ({ ...l, score: Number(l.score), confidence: l.confidence === null ? null : Number(l.confidence), quarantined_at: l.quarantined_at === null ? null : Number(l.quarantined_at), evidence_purged_at: l.evidence_purged_at === null ? null : Number(l.evidence_purged_at) })),
+    leads: leads.map(l => ({ ...l, gate_held: held.has(l.id), window_held: windowHeld({ event_date: l.event_date, icp: job.icp, query: job.query }, new Date()), score: Number(l.score), confidence: l.confidence === null ? null : Number(l.confidence), quarantined_at: l.quarantined_at === null ? null : Number(l.quarantined_at), evidence_purged_at: l.evidence_purged_at === null ? null : Number(l.evidence_purged_at) })),
   }
 }

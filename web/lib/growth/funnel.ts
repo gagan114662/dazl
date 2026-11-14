@@ -169,9 +169,12 @@ async function load(db: Db, growth: string): Promise<Data> {
   // A run's usable leads: ready (no review reason, not rejected) and dated by a day the cited source PROVES - the lead card's own rule
   // (eventDayVerified, #1176). date_status 'verified' is no longer written by any scan, so counting on it made every run since
   // 2026-10-23 read as zero. The proof column narrows the read in SQL; the trigger compatibility is checked per lead.
+  // A lead whose required check failed (the scan:gate marker) is not usable; requiredGateHeld's default-deny and report holds need a per-tenant read
+  // and are not counted here, so this operator metric can read a little high for a sales-hiring request, never low.
   const usableByJob = new Map<string, number>()
   for (const l of await db.all<{ scan_job_id: string; event_date: string; event_date_proof: string; signal: string | null; signal_kind: string | null }>(
-    "SELECT scan_job_id, event_date, event_date_proof, signal, signal_kind FROM leads WHERE quarantined_at IS NULL AND review_reason IS NULL AND event_date IS NOT NULL AND event_date_proof IS NOT NULL")) {
+    "SELECT scan_job_id, event_date, event_date_proof, signal, signal_kind FROM leads WHERE quarantined_at IS NULL AND review_reason IS NULL AND event_date IS NOT NULL AND event_date_proof IS NOT NULL"
+    + " AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = leads.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')")) {
     if (eventDayVerified(l)) usableByJob.set(l.scan_job_id, (usableByJob.get(l.scan_job_id) ?? 0) + 1)
   }
   const jobs = (await db.all<Record<string, unknown>>(

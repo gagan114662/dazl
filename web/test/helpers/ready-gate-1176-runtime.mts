@@ -74,6 +74,10 @@ test('#1176 a structurally proven posting day: the real scan stores the proof, t
   assert.equal((l as { day_verified?: boolean }).day_verified, true, 'the lead card says: verified on the cited source')
   assert.equal(heldReason(l), 'event timing unknown', 'a machine-verified lead without a full timing proof stays held: the strict gate is unchanged')
   assert.equal(previewSplit([l]).opportunities.length, 0)
+  // the prospect-facing preview shows a signal with no person and no contact, so it does not (cannot) require the timing proof that needs a named
+  // person and a published route; it applies the day proof, the required check's verdict and the run's window
+  const asScanned = await loadProofInput(sqliteDb(x.db), 'A', row.scan_job_id, { inferredOffer: { text: 'Deal desk software', sourceUrl: 'https://prospect-clinicsoft.test/about' }, spendUsd: null })
+  assert.equal(buildProofPreview(asScanned!).status, 'ready')
 
   // 2. the user opens the source and uses it (the product's own button): ONLY the date gate was left, and it no longer blocks
   assert.equal(await confirmLeadReview(sqliteDb(x.db), 'A', row.id), true)
@@ -108,9 +112,10 @@ test('#1176 controls: the retired verdict without proof and a lead with no day n
   const home = await (await readyGET(new NextRequest('http://test/api/home/ready'))).json() as { ready: number; held: { reason: string }[] }
   assert.equal(home.ready, 0); assert.ok(home.held.some(h => h.reason === 'no verified date'), JSON.stringify(home.held))
   assert.equal(buildProofPreview((await loadProofInput(db, 'A', row.scan_job_id, { inferredOffer: { text: 'Deal desk software', sourceUrl: 'https://prospect-clinicsoft.test/about' }, spendUsd: null }))!).status, 'hold')
-  // (b) a lead with no event day at all
-  x.db.prepare("UPDATE leads SET event_date = NULL, date_status = 'undated' WHERE id = ?").run(row.id)
+  // (b) a lead with a recognised proof but NO event day at all: held for the day itself, whatever else is true of it
+  x.db.prepare("UPDATE leads SET event_date = NULL, date_status = 'undated', event_date_proof = 'ats_structured' WHERE id = ?").run(row.id)
   ;[l] = await apiLeads(row.scan_job_id)
+  assert.equal((l as { day_verified?: boolean }).day_verified, false)
   assert.notEqual(heldReason(l), null)
   assert.equal(previewSplit([l]).opportunities.length, 0)
 })
