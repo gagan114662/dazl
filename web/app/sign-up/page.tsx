@@ -1,6 +1,7 @@
 import { connection } from 'next/server'
 import { trialFundable } from '@/lib/billing/trial-budget'
 import SignUpForm from './sign-up-form'
+import { signUpFormError } from '@/lib/signup-form-fallback'
 
 // Runtime deployment availability only (#668): whether a trial is funded here is an env fact read at request time,
 // never baked into the build and never implying anything about this specific visitor's own trial eligibility or use.
@@ -17,7 +18,10 @@ import SignUpForm from './sign-up-form'
 // happened to have - connection() is what keeps this a live, per-request read; `instant = false` is what lets
 // cacheComponents allow a blocking (non-prerendered) route without a Suspense boundary.
 export const instant = false
-export default async function SignUp() {
+// #1116: when the form was posted natively (its script had not hydrated it), the route redirects back here with the
+// outcome as a short code: ?sent=1 or ?error=<code>. The page renders it on the server, so it shows with no script at all.
+export default async function SignUp({ searchParams }: { searchParams: Promise<{ sent?: string | string[]; error?: string | string[] }> }) {
   await connection()
-  return <SignUpForm trialFunded={trialFundable()} />
+  const q = await searchParams
+  return <SignUpForm trialFunded={trialFundable()} sentWithoutScript={q.sent === '1'} errorWithoutScript={signUpFormError(q.error)} />
 }
