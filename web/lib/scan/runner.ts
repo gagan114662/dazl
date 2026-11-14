@@ -41,7 +41,8 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
@@ -635,13 +636,16 @@ const uncertainSpend = new WeakSet<Job>()
 // A model request the vendor answered with a documented rejection (429, 400, ...): not retried, no further model request in this attempt,
 // and the scan ends with its own status. dazl does not claim the rejected request was uncharged.
 const rejectionCode = (status: number | undefined) => status === 429 ? 'provider_rate_limited' : 'provider_rejected'
-function flagAccounting(db: Database.Database, job: Job, p: Provider): Provider {
+function flagAccounting(db: Database.Database, job: Job, p: Provider, vendor: Vendor): Provider {
   // A request that may have been billed (ProviderError charge 'uncertain') ends the scan accounting_uncertain and no further model request is
   // made: stages that swallow errors cannot carry on and pay again. A vendor-declined (4xx) failure keeps the ordinary retry.
   const seen = async <T>(f: () => Promise<T>): Promise<T> => {
     if (uncertainSpend.has(job) || spendAttemptUncertain() || spendAttemptRejected() !== null) throw new SpendRefused('accounting_uncertain')
     try { return await f() } catch (e) {
       if (e instanceof SpendAccountingFailed) accountingFailed.add(job)
+      // #1167: the account limit refused this model call (a named account's own guard refuses before the transport): the attempt
+      // sends nothing more, and the refusal is in the ledger whichever layer refused
+      if (e instanceof SpendRefused && e.reason === OWNER_POOL_LIMIT_REASON) await noteAccountLimitRefusal(`llm.${vendor}`)
       if (e instanceof ProviderError && e.kind === 'retry' && e.charge === 'uncertain') uncertainSpend.add(job)
       else if (!(e instanceof ProviderError) && hasUnsettledCall(db, job)) uncertainSpend.add(job) // an unclassified failure with a request reserved and never settled: maybe billed
       throw e
@@ -710,6 +714,10 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
   const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
   if (failed(news) || failed(tf)) return 'source_error'
+  // The TinyFish search was refused by the platform's own daily allowance (this account's per-day units, or its share of the platform's)
+  // before any request: nothing was searched because the allowance was used up, not because the sources could not conclude. Its own
+  // stop, so the run says the allowance is the reason and that trying again after the UTC day turns over (or with another setting) can search.
+  if (tf === 'skipped_cap') return 'search_allowance_reached'
   // #1037 item 1: a first play where no lead source could run at all (news switched off / not run, TinyFish not run or refused
   // before any request): nothing was searched, so this is not a held fallback. Its own code, so the run says so. Scoped to first
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
@@ -718,6 +726,26 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   // A news stage that recorded skipped_* never ran: it neither concluded nor blocks TinyFish's clean result from concluding.
   if (clean(news) || (notRun(news) && clean(tf))) return 'no_discovery'
   return 'unbounded_fallback_hold'
+}
+
+// #1168: a numeric limit that refused a paid step EARLIER in this attempt (the profile or query-writing model call, whose refusal the
+// run survives by falling back to the request's own words) is still why the run could not search properly. When the run then ends
+// with nothing, that limit stop is what the user is told, never a later source failure or "nothing found". Read from the ledger
+// (scan_spend_calls): the first refused row of this attempt that is either the ACCOUNT limit (any paid step: at the day or month cap
+// the account sends nothing) or a numeric limit on a MODEL call. A render or TinyFish call refused by the per-scan cap is not one:
+// the run's own stages account for those, and it would relabel a genuine source failure as a budget stop.
+const MODEL_LIMIT_REASONS = ['over_limit', 'over_cap']
+export function earlierLimitRefusal(db: Database.Database, job: { id: string; user_id: string; attempts: number }): string | null {
+  try {
+    // by (user_id, scan_job_id): the table's index, and the job's own tenant
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
+      AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (${MODEL_LIMIT_REASONS.map(() => '?').join(',')}))) ORDER BY created_at, rowid LIMIT 1`).get(job.user_id, job.id, job.attempts, OWNER_POOL_LIMIT_REASON, ...MODEL_LIMIT_REASONS) as { reason: string } | undefined
+    return r?.reason ?? null
+  } catch (e) {
+    // the stop then keeps its older name: recorded, never silent
+    captureError(e, { source: 'worker', where: 'runner:earlier-limit-refusal', tenantId: job.user_id, ref: job.id })
+    return null
+  }
 }
 
 // A SpendRefused names why the spend layer refused the call (spend-guard.ts reason); the job error must preserve that
@@ -736,7 +764,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
     case 'accounting_uncertain': case 'accounting_unsettled': case 'reservation_not_saved':
     case 'reservation_invalid': case 'ledger_unavailable': case 'busy': return 'spend_accounting_unavailable'
     case 'ownership_lost': case 'scan_not_found': case 'scan_not_active': return 'ownership_lost'   // the run no longer owns an active job row
-    case 'cap_config_invalid': case 'kind_unknown': return 'spend_config_invalid'
+    case 'cap_config_invalid': case 'kind_unknown': case 'account_limits_missing': return 'spend_config_invalid'
     case 'provider_rejected': return 'provider_rejected'
     case 'units_invalid': case 'price_invalid': case 'price_unknown': case 'cost_invalid': return 'spend_config_invalid'
     default: return 'spend_refused'   // named, never silently a budget stop
@@ -755,8 +783,10 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
   if (e instanceof SpendAccountingFailed) { finish(db, job, 'failed', 'accounting_failed', null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused && spendAttemptRejected() !== null && !uncertainSpend.has(job) && !spendAttemptUncertain()) { finish(db, job, 'failed', rejectionCode(spendAttemptRejected()!), null, null, ledger); return 'failed' }
   if (e instanceof SpendRefused) {
-    const code = refusalCode(e, ledger)
-    ledger?.report({ stop: { code, spend_refusal_reason: e.reason } })
+    // #1168: the unpriceable-research refusal that ends an empty search can follow a real limit refusal earlier in the attempt
+    const limit = e.reason === 'research_unbounded' ? earlierLimitRefusal(db, job) : null
+    const code = refusalCode(limit ? new SpendRefused(limit) : e, ledger)
+    ledger?.report({ stop: { code, spend_refusal_reason: limit ?? e.reason, ...(limit ? { superseded_refusal_reason: e.reason } : {}) } })
     finish(db, job, 'failed', code, null, null, ledger)
     return 'failed'
   } // a refused call is never retried: attempts must not multiply spend
@@ -795,7 +825,7 @@ Only include an item if the quote names that company. Skip anything older than 1
 // TinyFish pass for a CSV company job: three fixed queries (no LLM planning call), then
 // the tenant's own model turns the collected pages into candidates. All searches and
 // fetches count against the same per-scan and per-tenant TinyFish caps as a manual scan.
-async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean }): Promise<LeadDraft[] | null> {
+async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean; capped?: boolean }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -808,6 +838,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
     const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
+    if (flags && !r.ok && r.reason === 'cap') flags.capped = true   // refused by the daily allowance before any send: its own state (skipped_cap), not a hold
     if (flags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { flags.attempted = true; if (!r.ok) flags.failed = true }
     if (!r.ok) {
       // A sent request that may have been billed or was rejected ENDS the attempt's paid work: never send the fetch
@@ -846,21 +877,21 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const complete = provider.complete
     let leads: LeadDraft[] | null = null
     if (complete && tinyfishEnabled()) {
-      const tfFlagsC = { attempted: false, failed: false }
+      const tfFlagsC = { attempted: false, failed: false, capped: false }
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl, tfFlagsC)
         // Same provenance as the query path: sent-and-failed is 'error' (partial results with a failed search are still an
         // error, never 'ok'); attempted-empty 'unavailable' (a clean zero); never-sent 'skipped_hold'.
-        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         // SpendRefused = the spend hold refused a call: skipped only when nothing was sent before it; a hold-stopped partial
         // reads 'unavailable' (neither skipped nor a vendor error). Anything else = a paid request ran and failed (error).
-        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : 'skipped_hold') : 'error')
+        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : 'error')
         // A refused paid call STOPS the run (the query path's #594 contract): never fall through to the paid research
         // fallback - after the first refusal there is no later reserve at all, refused or not. The terminal error names
         // the truth: a maybe-billed call is accounting_uncertain, a documented rejection is its own status, else the
@@ -890,8 +921,9 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
       // research/ground/judge calls. The error names what actually ended the search (source_error / no_discovery /
       // unbounded_fallback_hold) - the fallback's absence alone is not a budget stop.
       if (deps.paidFallback === false) {
-        const code = fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: null } })
+        const limit = earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1280,7 +1312,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // method here: the refusal is a property of the real provider, not of whatever provider a run was handed, so an
     // injected provider keeps its own (fixture) behaviour while no real run - guarded or not - can make the unpriced
     // call. A refused fallback surfaces as an honest budget_stopped finish, the same as a capped run.
-    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor]) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial)) }
+    const providers_ = spendLimit === null ? { ...baseProviders, [vendor]: flagAccounting(db, job, baseProviders[vendor], vendor) } : { ...baseProviders, [vendor]: flagAccounting(db, job, guardProvider(baseProviders[vendor], spendGuards, vendor === 'anthropic' && !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor) }
     if (jobMax !== null || owner || trial) deps = { ...deps, creditEnrichment: false } // a budgeted run adds no other paid enrichment
     // A trial scan makes no paid call outside its guard: no fallback to the model's web search (a trial with nothing
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
@@ -1339,7 +1371,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // #1037 item 1: the capped first-play fallback whose every search answered with zero hits searched clean and found nothing
         // ('empty'). Hits that could not be read or extracted stay 'unavailable' (never concluded).
         const zeroHits = (): boolean => { const t = summarizeTrace(diag.trace); return t.hits_complete === true && t.hits_raw === 0 }
-        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        // Nothing was sent. A refusal by the daily allowance ('cap': this account's units for the UTC day, or its fair share of the platform's)
+        // is 'skipped_cap' - the allowance is the cause. Anything else (the scan's own budget, a breaker) stays 'skipped_hold'.
+        const refusedBeforeSend = (): string => { const na = summarizeTrace(diag.trace).searches_not_attempted; return (na.cap || na.capacity) && !na.spend_refused ? 'skipped_cap' : 'skipped_hold' }
+        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : refusedBeforeSend()) : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
@@ -1445,8 +1480,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // An earlier SpendRefused names the stop by its OWN reason (refusalCode): only a real numeric cap refusal is a
         // budget stop - count_failed / model_unpriced / accounting / ownership refusals refuse at ANY budget, so
         // calling them budget_stopped would send the user to raise a budget that cannot fix it.
-        const code = budgetRefused ? refusalCode(new SpendRefused(budgetRefusal!), ledger) : fallbackStopCode(ledger, !!deps.first5)
-        ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal } })
+        const limit = budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)
+        const code = limit ? refusalCode(new SpendRefused(limit), ledger) : fallbackStopCode(ledger, !!deps.first5)
+        ledger.report({ stop: { code, spend_refusal_reason: limit } })
         finish(db, job, 'failed', code, null, 0, ledger)
         return 'failed'
       }
@@ -1458,9 +1494,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       } catch (e) {
         // The unbounded-research refusal can FOLLOW an earlier real spend refusal (the TinyFish path's): the earlier
         // refusal is the cause of the empty search, so its reason names the stop - the fallback's shape does not.
-        if (e instanceof SpendRefused && e.reason === 'research_unbounded' && budgetRefused) {
-          const code = refusalCode(new SpendRefused(budgetRefusal!), ledger)
-          ledger.report({ stop: { code, spend_refusal_reason: budgetRefusal, superseded_refusal_reason: e.reason } })
+        // #1168: the same holds for a limit that refused an earlier model call the run survived (earlierLimitRefusal)
+        const limit = e instanceof SpendRefused && e.reason === 'research_unbounded' ? (budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)) : null
+        if (limit) {
+          const code = refusalCode(new SpendRefused(limit), ledger)
+          ledger.report({ stop: { code, spend_refusal_reason: limit, superseded_refusal_reason: (e as SpendRefused).reason } })
           finish(db, job, 'failed', code, null, 0, ledger)
           return 'failed'
         }
