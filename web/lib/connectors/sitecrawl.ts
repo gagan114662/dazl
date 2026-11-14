@@ -159,7 +159,7 @@ const NOT_A_COMPANY_TLD = /\.(gov|edu|mil)(\.[a-z]{2})?$|(^|\.)gc\.ca$|(^|\.)gov
 // Only a node that IS an organisation (or is given as one: hiringOrganization, publisher, author, provider ...) names a company's site. A
 // JobPosting / Article / WebPage node's own url is the posting or story, not the employer, whatever its title says (council R1).
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
-// must not cost quadratic time, council R8). At most 20 blocks, each at most 200 KB.
+// must not cost quadratic time, council R8). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
 export function ldJsonBlocks(html: string): string[] {
   const out: string[] = []; const low = html.length <= 2_000_000 ? html.toLowerCase() : ''
   let i = 0
@@ -172,7 +172,7 @@ export function ldJsonBlocks(html: string): string[] {
     if (!/type\s*=\s*["']application\/ld\+json["']/.test(tag)) continue
     const close = low.indexOf('</script', i)
     if (close < 0) break
-    if (close - i <= 200_000) out.push(html.slice(i, close))
+    if (close - i <= 1_000_000) out.push(html.slice(i, close))
     i = close + 8
   }
   return out
