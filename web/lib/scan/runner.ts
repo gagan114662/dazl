@@ -76,7 +76,7 @@ import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-
 import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import { searchableCompanyCount } from '../people/searchable-holds.ts'
-import { findGroundedPeople, newGroundedStats } from '../people/grounded-people.ts'
+import { findGroundedPeople, groundedPeopleSkip, newGroundedStats } from '../people/grounded-people.ts'
 import { anthropicWithModel } from '../llm/provider.ts'
 import { CONTACT_RESEARCH_MODEL } from '../people/contact-research.ts'
 import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
@@ -1934,10 +1934,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // #1102 grounded named-person step: for the leads that still name nobody, one lookup each (search + at most one page read + one Haiku
     // call, every field checked in code against a source that was shown). Anthropic key only; never throws; kill switch GROUNDED_PEOPLE_ENABLED=0.
     // Only leads that have a website (confirmed, or their own source page's site) and still name nobody are looked up: at most 5 per scan.
-    if (process.env.GROUNDED_PEOPLE_ENABLED === '0') trace.note('grounded_people', 'skipped', 'GROUNDED_PEOPLE_ENABLED=0')
-    else if (!peopleSearchEnabled()) trace.note('grounded_people', 'skipped', 'TinyFish search is not configured: no lookup can run')
-    else if (vendor !== 'anthropic') trace.note('grounded_people', 'skipped', 'the grounded lookup runs on an Anthropic key and this scan uses another vendor')
-    else if (trial) trace.note('grounded_people', 'skipped', 'free-trial scans keep their reserve for the checks after the scan')
+    const gskip = groundedPeopleSkip({ searchEnabled: peopleSearchEnabled(), peopleCap, vendor, trial: !!trial })
+    if (gskip) trace.note('grounded_people', 'skipped', gskip)
     else try {
       const gstats = newGroundedStats(); const gstop: { why: string | null } = { why: null }
       migrateTinyfish(db)

@@ -39,7 +39,10 @@ const NAME = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[\p{Lu}][\p{L}'’-]{1,24}(?:\s+[\p{Lu
 // domain: the lead's CONFIRMED website (never a guessed one; the caller must supply only a confirmed one, this lookup trusts it): off the company's own site a source is kept only when its text names this website, so with no confirmed website only the company's own page can ground a person.
 // evidenceUrl: the page the LEAD was found on (a press release, a news story, a page of the company's site). It is this lead's own evidence, so a
 // person it names with a title at this company is this company's: no website tie is asked of it (the person must still be named next to the company).
-export interface ResearchInput { company: string; domain?: string | null; roles?: string[]; where?: string[]; evidenceUrl?: string | null }
+// domainConfirmed false: `domain` is the site the lead's own source page is on (derived, not a confirmed website). Pages ON it are the company's;
+// it never ties a source on ANOTHER site to the company (only a confirmed website does).
+export interface ResearchInput { company: string; domain?: string | null; domainConfirmed?: boolean; roles?: string[]; where?: string[]; evidenceUrl?: string | null }
+const tieDomain = (input: ResearchInput) => (input.domainConfirmed === false ? null : input.domain ?? null)
 const samePage = (a: string, b: string | null | undefined) => { try { const x = new URL(a), y = new URL(b ?? ''); const p = (u: URL) => `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}`; return p(x) === p(y) } catch { return false } }
 export interface Source { id: string; url: string; title: string; text: string; kind: 'search' | 'page' }
 export interface ResearchPerson { name: string; title: string; linkedin: string | null; source_url: string; quote: string; place: 'agrees' | 'no_geography' | 'unconfirmed' }
@@ -53,7 +56,8 @@ export interface ResearchResult {
   sources: { id: string; url: string; title: string; kind: 'search' | 'page' }[]
   usage: { searches: number; reads: number; model: string | null; input_tokens: number | null; output_tokens: number | null }
 }
-export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal; readPages?: boolean }   // readPages false: search results only, no page of the site is requested
+export interface ResearchDeps { db: DbLike; tenantId: string; provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; signal?: AbortSignal; readPages?: boolean; budget?: { spent: { searches: number; fetches: number }; searches: number; fetches: number } }
+// budget: a caller that makes several lookups (the scan step) hands in ONE count and its limits, so the limits bind across lookups, not per lookup.   // readPages false: search results only, no page of the site is requested
 
 const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
 const norm = (s: string) => tidy(s).toLowerCase().replace(/[’`]/g, "'")
@@ -158,7 +162,7 @@ const NOT_TOP = { test: (t: string) => NOT_TOP_HARD.test(t) || NOT_TOP_SOFT.test
 // an engineer) are refused only when the scan did not ask for that role: a sales scan asks for "VP Sales" by name.
 const NEVER_BUYER = /\b(?:assistant|associate|deputy|interim|acting|chief of staff|to the)\b|['’]s\b/i
 // A past-role marker AFTER the quote, up to the end of the sentence ("... until she retired in 2019", "(2008-2019)").
-const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
+const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer|died|has died|passed away|the late)\b|\bnow\s+(?:runs|leads|heads|works|serves|owns|at|with)\b|\b(?:to|through)\s+(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
 
 const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
 const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|vice|vp|svp|evp|sales|revenue|marketing|operations|growth|commercial|business|development|global|regional|cro|cmo|coo|cfo|cto|founder|co-?founder|owner|co-?owner|ceo|co-?ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
@@ -207,6 +211,17 @@ function profilePosition(answer: Answer, src: Source, input: ResearchInput): { t
     return { title }
   }
   return { refused: past ? 'past_role' : 'profile_does_not_give_title_at_company' }
+}
+
+// A page title names the company in full or by the whole-word start of its name a headline uses ("Simpson Thacher Expands Chicago Office" for
+// "Simpson Thacher & Bartlett"): at least two words of it, or the whole name.
+function titleNamesCompany(title: string, company: string): boolean {
+  const words = companyKey(company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+  for (let k = words.length; k >= Math.min(2, words.length); k--) {
+    if (words.slice(0, k).join('').length < 4) break
+    if (new RegExp(`(?<![\\p{L}\\p{N}])${words.slice(0, k).map(esc).join('[^\\p{L}\\p{N}]{1,3}')}(?![\\p{L}\\p{N}])`, 'iu').test(title)) return true
+  }
+  return false
 }
 
 // Every field the model returned is checked against the sources it was shown. Returns the person, or the first check that failed.
@@ -312,7 +327,12 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   // "CEO of the firm" name the company's OWN unit: the title is tied to the company by the sentence, as if it named it.
   const dom1 = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const pageTied = (!!dom1 && (hostOf(src.url) === dom1 || hostOf(src.url).endsWith(`.${dom1}`))) || (src.kind === 'page' && samePage(src.url, input.evidenceUrl))
-  const unitDirect = pageTied && /^[\s,]*(?:of|at|for|in)\s+(?:the|our|its)\s+(?:\p{Lu}[\p{L}.'’-]+\s+){0,3}(?:office|firm|practice|company|clinic)\b/u.test(rawAll.slice(at + span[1], at + span[1] + 70))
+  // Narrow on purpose: only "<of|at> the <Place> office" followed by punctuation (never "office of <another firm>", never "the company" / "the firm",
+  // which may be an acquirer); the place must be one the request names; and on the lead's source page the page's own title must name this company
+  // (the story is about it). Anything else goes through the ordinary rules.
+  const unitM = /^[\s,]*(?:of|at|for|in)\s+(?:the|our|its)\s+((?:\p{Lu}[\p{L}.'’-]+\s+){1,3})office(?=\s*(?:[,.;:!?)"”]|$))/u.exec(rawAll.slice(at + span[1], at + span[1] + 70))
+  const whereU = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
+  const unitDirect = pageTied && !!unitM && whereU.length > 0 && placeAgreement(unitM[1], whereU, input.company) === 'agrees' && (hostOf(src.url) === dom1 && !!dom1 || (!!dom1 && hostOf(src.url).endsWith(`.${dom1}`)) || titleNamesCompany(src.title, input.company))
   // The title may run on in title words before the company ("CEO" quoted from "CEO and co-founder of Acme"). Never "|" or a dash: in a result title those lead to the SITE's name.
   const direct = unitDirect || companySpans(rawAll, input.company).some(([c0]) => {
     const gap = rawAll.slice(at + span[1], c0)
@@ -394,7 +414,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   if (place === 'mismatch') return { refused: 'another_place' }
   if (place === 'unconfirmed') return { refused: 'place_unconfirmed' }
   // A company NAME is not a company (company-tie.ts, Hermes decision on #1164): off the company's own site, the source must name the lead's CONFIRMED website.
-  if (!onOwnSite && !isEvidence && !companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return { refused: 'company_unconfirmed' }
+  if (!onOwnSite && !isEvidence && !companyTie(text, { company: input.company, confirmed_domain: tieDomain(input) })) return { refused: 'company_unconfirmed' }
   // LinkedIn: only a URL a search returned, whose own result line the parser reads as this person at this company.
   let linkedin: string | null = null, linkedin_refused: string | null = null
   const lsrc = answer.linkedin_source ? sources.find(s => s.id === answer.linkedin_source) : isProfile ? src : null
@@ -417,7 +437,7 @@ function profileLinkRefusal(answer: Answer, lsrc: Source, input: ResearchInput):
   if (companySpans(tidy(text), input.company).length === 0) return 'profile_does_not_name_company'
   const where = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
   if (where.length > 0 && placeAgreement(text, where, input.company) === 'mismatch') return 'profile_in_another_place'
-  if (!companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return 'profile_company_unconfirmed'
+  if (!companyTie(text, { company: input.company, confirmed_domain: tieDomain(input) })) return 'profile_company_unconfirmed'
   return null
 }
 
@@ -430,7 +450,7 @@ function groundProfile(answer: Answer, src: Source, input: ResearchInput): { per
   const place = placeAgreement(text, where, input.company)
   if (place === 'mismatch') return { refused: 'another_place' }
   if (place === 'unconfirmed') return { refused: 'place_unconfirmed' }
-  if (!companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return { refused: 'company_unconfirmed' }
+  if (!companyTie(text, { company: input.company, confirmed_domain: tieDomain(input) })) return { refused: 'company_unconfirmed' }
   return { person: { name: answer.name, title: pos.title, linkedin: src.url.split('?')[0], source_url: src.url, quote: answer.quote, place }, linkedin_refused: null }
 }
 
@@ -516,9 +536,9 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   // Every model call here is on the account's spend limits; the provider handed in is the raw one.
   const provider = ownerGuarded(deps.db, deps.tenantId, deps.provider, deps.env)
   if (!provider.completeDetailed) return base('model_failed', 'no_model', { queries })
-  const env = { ...(deps.env ?? process.env), TINYFISH_SEARCHES_PER_SCAN: String(MAX_SEARCHES), TINYFISH_FETCHES_PER_SCAN: String(MAX_READS) }
+  const env = { ...(deps.env ?? process.env), TINYFISH_SEARCHES_PER_SCAN: String(deps.budget?.searches ?? MAX_SEARCHES), TINYFISH_FETCHES_PER_SCAN: String(deps.budget?.fetches ?? MAX_READS) }
   const tf = { env, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(deps.signal ? { signal: deps.signal } : {}) }
-  const spent = { searches: 0, fetches: 0 }
+  const spent = deps.budget?.spent ?? { searches: 0, fetches: 0 }
   const hits: SearchHit[] = []; const seen = new Set<string>(); let failed: string | null = null
   for (const q of queries) {
     const r = await tfSearch(deps.db, deps.tenantId, q, {}, spent, tf)
