@@ -19,12 +19,14 @@ test('council: "of the <place> office" never ties a title to the company (a stor
   const ownPage = (text: string): Source[] => [{ id: 'S1', kind: 'page', url: 'https://acmelaw.example/news/expansion', title: 'Acme Law expands', text }]
   const A = ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office')
   const bad: [string, Source[], ReturnType<typeof ans>, ResearchInput][] = [
-    ['own site: "of the Chicago office" with no firm named (a known, accepted miss)', ownPage('Acme Law added four partners. "A significant step," Alden Marsh said. Jane Roe, managing partner of the Chicago office, added, "Our team is growing."'), A, OWN],
+    ['own site: "of the Chicago office" with no firm named (refused: a known recall loss)', ownPage('Acme Law added four partners. "A significant step," Alden Marsh said. Jane Roe, managing partner of the Chicago office, added, "Our team is growing."'), A, OWN],
     ['own site: a lateral hire', ownPage('Globex Legal hired Jane Roe, managing partner of its Chicago office.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of its Chicago office'), OWN],
     ['own site: co-counsel', ownPage('We advised Globex Legal, whose Jane Roe, managing partner of the Chicago office, led the deal.'), A, OWN],
     ['a possessive place', page('Jane Roe, CEO of Acme Law\'s London branch, spoke.'), ans('Jane Roe', 'CEO', 'Jane Roe, CEO of Acme Law'), { ...EV, roles: ['CEO'] }],
     ['a place after a comma', page('Jane Roe, Managing Partner, Acme Law, London, said the team is growing.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner, Acme Law'), EV],
     ['a place in brackets', page('Jane Roe, Managing Partner at Acme Law (London), said the team is growing.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner at Acme Law'), EV],
+    ['a legal suffix with a period does not end her clause', page('Jane Roe, Managing Partner of Acme Law Inc. was named CEO of Globex Health.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner of Acme Law'), EV],
+    ['the same, another wording', page('Jane Roe, Managing Partner of Acme Law Corp. now leads Globex Health.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner of Acme Law'), { ...EV, where: [] }],
     ['named to another organisation in the same clause', page('Jane Roe, Managing Partner of Acme Law, was named CEO of Globex Health.'), ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner of Acme Law'), EV],
     ['own site: the office of ANOTHER firm', ownPage('Acme Law welcomes a guest. Jane Roe, managing partner of the Chicago office of Baker Hostetler, said the market is busy.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the Chicago office of Baker Hostetler'), OWN],
     ['own site: an office in another city, on a Chicago request', ownPage('Acme Law added four partners. Alden Marsh spoke first. Jane Roe, managing partner of the London office, said the team is growing.'), ans('Jane Roe', 'managing partner', 'Jane Roe, managing partner of the London office'), OWN],

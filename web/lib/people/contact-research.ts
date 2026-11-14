@@ -325,7 +325,8 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   })
   // ... but the rest of the person's OWN clause (to the next ";" or the sentence end) is still read: "CEO of Acme Dental's London branch", "CEO of Acme,
   // was named CEO of Globex Health", "Managing Partner, Acme Law, London" name another place or organisation for her.
-  if (direct && directEnd >= 0) { const rest = rawAll.slice(directEnd, Math.min(sHi, directEnd + 160)).split(/[;:“”"]|[.!?]\s/)[0]; if (foreign(rest)) return { refused: 'title_at_another_organisation' } }   // a quotation that follows is someone speaking, not her clause
+  // (Cut on the masked copy, same length as the raw text: the period of "Inc." / "Corp." right after the name does not end her clause.)
+  if (direct && directEnd >= 0) { const cut = masked.slice(directEnd, Math.min(sHi, directEnd + 160)).split(/[;:“”"]|[.!?]\s/)[0].length; const rest = rawAll.slice(directEnd, directEnd + cut); if (foreign(rest)) return { refused: 'title_at_another_organisation' } }   // a quotation that follows is someone speaking, not her clause
   // Otherwise the window rule: nothing else that reads as an organisation near the person (a testimonial card, a case study, a guest's byline).
   if (!direct && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
