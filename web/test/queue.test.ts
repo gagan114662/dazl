@@ -23,7 +23,7 @@ test('backoff: exponential growth, cap, deterministic under fixed rng', () => {
 })
 
 test('defaults mirror the scan store constants', () => {
-  assert.equal(DEFAULT_LEASE_S, 20 * 60) // STALE_RUNNING_S
+  assert.equal(DEFAULT_LEASE_S, 20 * 60) // the generic queue default; scans pass their own lease (STALE_RUNNING_S)
   assert.equal(DEFAULT_MAX_ATTEMPTS, 3) // MAX_ATTEMPTS
 })
 

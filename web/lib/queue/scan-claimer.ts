@@ -100,12 +100,14 @@ export interface SharedScanDeps<J extends ClaimedScan> {
 }
 
 import { settleReapedTrial } from '../billing/trial-reap.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL } from '../scan/free-orphans.ts'
 const nowS = () => Math.floor(Date.now() / 1000)
 
 // The legacy reaper (reapStaleJobs in lib/scan/store.ts and store-db.ts), with the lease as a parameter. As there, a
 // reserved paid call of ANY attempt ends the scan accounting_uncertain: an earlier attempt's unsettled call may have been
 // billed just the same, and a scan parked for one (parkPendingReservedJobs) must end here, not bounce back to pending.
 export async function reapStaleScans(domain: Db, leaseSeconds: number, now: number): Promise<number> {
+  await domain.run(SETTLE_FREE_ORPHANS_STALE_SQL, [now, now - leaseSeconds]) // #1157: a free (US$0) call left reserved is not 'maybe billed'
   const changes = (await domain.run(
     `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
        error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' WHEN attempts >= ? THEN 'timeout' ELSE error END,

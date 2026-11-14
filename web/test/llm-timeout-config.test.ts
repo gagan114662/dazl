@@ -30,12 +30,12 @@ test('configuredTimeoutMs: invalid overrides fall back loudly; unset/valid pass 
   } finally { console.error = orig }
 })
 
-test('the floor is computed from the configured constants, never hardcoded: max over paths x2', () => {
+test('the floor is computed from the configured constants, never hardcoded: max over paths plus a 45 s margin (#1157)', () => {
   const paths = { LLM_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS }
   for (const [name, ms] of Object.entries(paths)) assert.ok(Number.isFinite(ms) && ms > 0, `${name} is finite positive (${ms})`)
   assert.equal(MAX_PAID_CALL_MS, Math.max(...Object.values(paths)), 'the max is over every paid (reserved) call path')
-  assert.equal(MIN_STALE_RUNNING_S, Math.ceil(MAX_PAID_CALL_MS / 1000) * 2, 'the floor is the max call length x2')
-  for (const [name, ms] of Object.entries(paths)) assert.ok(MIN_STALE_RUNNING_S >= Math.ceil(ms / 1000) * 2, `the floor covers ${name} (${ms}ms) with an equal margin`)
+  assert.equal(MIN_STALE_RUNNING_S, Math.ceil(MAX_PAID_CALL_MS / 1000) + 45, 'the floor is the max call length plus a 45 s margin (settle write, clock skew)')
+  for (const [name, ms] of Object.entries(paths)) assert.ok(MIN_STALE_RUNNING_S >= Math.ceil(ms / 1000) + 45, `the floor covers ${name} (${ms}ms) with a 45 s margin`)
   assert.ok(staleRunningSeconds({}) >= MIN_STALE_RUNNING_S, 'the default stale window is never below the floor')
   assert.equal(staleRunningSeconds({ SCAN_STALE_RUNNING_S: '10' }), MIN_STALE_RUNNING_S, 'a below-floor override clamps UP')
 })

@@ -8,6 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
+import { SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
@@ -579,7 +580,7 @@ class ScanStopped extends Error { constructor() { super('scan_stopped') } }
 // Optional whole-scan budget: an ADMISSION guard, not a wall-clock maximum. It is checked only in assertOwned,
 // i.e. before a NEW phase starts, after the previous await has already returned. It cannot end an awaited call: a
 // provider/fetch call that never settles is bounded only by its own transport abort (SCAN_LLM_TIMEOUT_MS 150 s,
-// page 10 s, TinyFish 20 s, collectors 25 s) and, past that, by the 20 min lease reaper. OFF unless
+// page 10 s, TinyFish 20 s, collectors 25 s) and, past that, by the stale-scan lease reaper (about 3 min by default, lib/scan/store.ts). OFF unless
 // SCAN_JOB_BUDGET_MS is set, so default behavior (retries, quota, UI) is unchanged. Discovery scans only: CSV
 // company jobs are not cancellable and never get a deadline. A scan past it fails once as 'scan_timeout' (a
 // retry would repeat the same provider spend). Candidates are in memory until finish(): nothing partial is saved.
@@ -592,8 +593,13 @@ export function scanJobBudgetMs(env: Record<string, string | undefined> = proces
   if (!Number.isFinite(n) || n <= 0) { console.error('SCAN_JOB_BUDGET_MS invalid (need finite positive ms) - budget off'); return null }
   return n
 }
-function assertOwned(db: Database.Database, job: Job): void {
-  if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)) throw new ScanStopped()
+// #1157: the ownership check also RENEWS the claim. The stale-scan window (lib/scan/store.ts, about 3 min) was renewed only by paid
+// reserves and settles; a live attempt doing unpaid work (plain page reads, parsing, store writes) for longer than the window
+// would have been reaped and run again while still running. Every phase boundary now renews it, under the same fence (this
+// attempt, still running), so a live scan keeps its claim and one whose process is gone, or that is stuck inside one await,
+// stops renewing and is reaped.
+export function assertOwned(db: Database.Database, job: Job): void {
+  if (db.prepare("UPDATE scan_jobs SET claimed_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = ? AND status = 'running' AND attempts = ?").run(job.id, job.attempts).changes !== 1) throw new ScanStopped()
   const d = jobDeadlines.get(job)
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
@@ -2111,7 +2117,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // In-process scheduler (one Node process). The concurrency budget is shared
 // with the queue bridge via run-slots.ts - see that file for why.
 
-// Graceful-shutdown handoff. A restart used to leave a running scan 'running' until the 20 min stale lease
+// Graceful-shutdown handoff. A restart used to leave a running scan 'running' until the stale lease (then 20 min)
 // expired, with no progress and nothing visible to the user. This process records the attempts it is
 // executing; on SIGTERM it returns exactly those rows to 'pending' (same attempts counter, so MAX_ATTEMPTS
 // still bounds retries) and the next process claims them at once. Ownership is unchanged: the UPDATE is
@@ -2154,6 +2160,7 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
     try {
       n += db.transaction((): number => {
         const now = Math.floor(Date.now() / 1000)
+        db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.id, job.attempts) // #1157: this attempt's free (US$0) call left reserved is not 'maybe billed'
         const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")

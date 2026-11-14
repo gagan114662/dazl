@@ -18,7 +18,7 @@ function fixture(): { db: Database.Database; dir: string } {
       business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
       sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
     CREATE TABLE tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);
-    CREATE TABLE scan_spend_calls (id TEXT PRIMARY KEY, scan_job_id TEXT, attempt INTEGER, status TEXT);`)
+    CREATE TABLE scan_spend_calls (id TEXT PRIMARY KEY, user_id TEXT, scan_job_id TEXT, attempt INTEGER, kind TEXT, reserve_usd REAL, actual_usd REAL, status TEXT, reason TEXT, settled_at INTEGER); -- the columns of the real table that the queue bind reads (#1157)`)
   return { db, dir }
 }
 
@@ -235,7 +235,7 @@ test('bridge 2-process: two queue handles over one file never run a job twice', 
         business_name TEXT, industry TEXT, location TEXT, query TEXT, icp TEXT,
         sources TEXT, funded_by TEXT, watch_id TEXT, csv_domain TEXT);
       CREATE TABLE IF NOT EXISTS tenant_llm_keys (tenant_id TEXT, vendor TEXT, created_at INTEGER);
-      CREATE TABLE IF NOT EXISTS scan_spend_calls (id TEXT PRIMARY KEY, scan_job_id TEXT, attempt INTEGER, status TEXT);`)
+      CREATE TABLE IF NOT EXISTS scan_spend_calls (id TEXT PRIMARY KEY, user_id TEXT, scan_job_id TEXT, attempt INTEGER, kind TEXT, reserve_usd REAL, actual_usd REAL, status TEXT, reason TEXT, settled_at INTEGER); -- the columns of the real table that the queue bind reads (#1157)`)
     return db
   }
   const dbA = mkDb()

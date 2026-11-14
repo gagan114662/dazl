@@ -282,7 +282,7 @@ export interface SpendHold {
   // case, which only over-counts).
   settle(actualUsd: number | null): Promise<void>
   // The request may have been billed and its outcome is unknown: the row stays 'reserved' and this attempt makes no further paid request.
-  uncertain(): void
+  uncertain(): void | Promise<void>
   // The vendor refused the request (documented rejection status); call after settle(). The attempt stops paying and the scan ends with its own status
   // (a BYOK enrichment vendor: only that vendor stops, see VENDOR_SCOPED_REJECTION).
   rejected(status: number): void
@@ -375,7 +375,16 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   let done = false
   return {
     id, kind, usd,
-    uncertain() { done = true; uncertainAttempts.add(ctx) },
+    // #1157: the maybe-billed fact must outlive this process. The row stays 'reserved' either way; without a durable mark a free (US$0)
+    // call flagged here (a 402 billing error) would look like any free call a lost attempt left behind, and lib/scan/free-orphans.ts would settle it at $0.
+    uncertain() {
+      done = true; uncertainAttempts.add(ctx)
+      if (usd !== 0) return // a priced row is never a candidate for the free settle: nothing to mark
+      // awaited by the TinyFish paths (the only free calls). If the write fails the attempt is still closed in this process
+      // (uncertainAttempts): the mark only matters once the process is gone.
+      return db.run("UPDATE scan_spend_calls SET reason = 'maybe_billed' WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved'", [id, ctx.tenantId, ctx.jobId])
+        .then(() => undefined, e => { captureError(e, { source: 'worker', where: 'scan-spend-cap:mark-uncertain', tenantId: ctx.tenantId, ref: ctx.jobId }) })
+    },
     rejected(status) {
       // A 404 is not scoped: no source shows an Apollo not-found is unbilled or harmless, so it keeps the attempt-wide stop (PDL's
       // documented, unbilled 404 no-match never calls rejected()).

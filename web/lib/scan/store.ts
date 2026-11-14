@@ -3,6 +3,7 @@ import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
 import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
 import { APOLLO_TIMEOUT_MS } from '../enrich/apollo.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL } from './free-orphans.ts'
 import { PDL_TIMEOUT_MS } from '../enrich/pdl.ts'
 import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
 import { migrateSellerDecisions } from './intelligence-schema.ts'
@@ -18,18 +19,22 @@ import { ENRICH_STALE_S } from './enrichment.ts'
 
 // Floor for the stale-running window / queue lease: it must outlive the longest single paid vendor call (a model
 // completion: LLM_TIMEOUT_MS, no retries) or a LIVE attempt holding a reservation could be reaped and re-run while its
-// call is in flight - a double bill. The margin is one extra call length (clock skew, the settle write). claimed_at is
-// refreshed at reserve and at a real settle (spend-cap.ts), so the window only has to cover ONE call, not the scan.
-// The floor is computed from the ACTUAL configured timeout of every paid (reserved) call path: the longest a
-// reserve can stay open is its path's full timeout, so the max over paths (currently the 150s LLM call, vs 35s
-// render, 20s TinyFish, 15s enrich lookups) x2 is the bound + an equal margin. A new paid path with a longer
-// timeout RAISES the floor automatically once its constant is listed here.
+// call is in flight - a double bill. claimed_at is refreshed at reserve and at a real settle (spend-cap.ts), so the window
+// only has to cover ONE call, not the scan. The floor is computed from the ACTUAL configured timeout of every paid
+// (reserved) call path: the longest a reserve can stay open is its path's full timeout (currently the 150s LLM call, vs 35s
+// render, 20s TinyFish, 15s enrich lookups). A new paid path with a longer timeout RAISES the floor automatically once its
+// constant is listed here.
 export const MAX_PAID_CALL_MS = Math.max(LLM_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS)
-export const MIN_STALE_RUNNING_S = Math.ceil(MAX_PAID_CALL_MS / 1000) * 2
+// #1157: the floor is ONE call plus a margin, not two calls. The window is renewed at every reserve and every settle, so it has to
+// outlive a single open call; 45 s covers the settle write and clock skew. The 2x it replaced made the DEFAULT window 20 min: a scan
+// whose process died (a SIGKILL, an out-of-memory kill, a crash) sat 'running' for 20 minutes with no progress, then failed. The
+// default is now this floor, so such a scan ends in about 3 minutes (the next status read or tick reaps it). SCAN_STALE_RUNNING_S
+// still overrides it (never below the floor), so the old 20 minutes is one env var away.
+export const MIN_STALE_RUNNING_S = Math.ceil(MAX_PAID_CALL_MS / 1000) + 45
 export function staleRunningSeconds(env: Record<string, string | undefined> = process.env): number {
-  const raw = Number(env.SCAN_STALE_RUNNING_S || 20 * 60)
+  const raw = Number(env.SCAN_STALE_RUNNING_S || MIN_STALE_RUNNING_S)
   if (!(Number.isFinite(raw) && raw >= MIN_STALE_RUNNING_S)) {
-    console.error(`SCAN_STALE_RUNNING_S=${env.SCAN_STALE_RUNNING_S} is below the floor ${MIN_STALE_RUNNING_S}s (2x the ${MAX_PAID_CALL_MS}ms max paid vendor call timeout) - clamped UP; a shorter window could reap a live paid call and re-run it (double bill)`)
+    console.error(`SCAN_STALE_RUNNING_S=${env.SCAN_STALE_RUNNING_S} is below the floor ${MIN_STALE_RUNNING_S}s (the ${MAX_PAID_CALL_MS}ms max paid vendor call timeout plus a 45 s margin) - clamped UP; a shorter window could reap a live paid call and re-run it (double bill)`)
     return MIN_STALE_RUNNING_S
   }
   return raw
@@ -295,6 +300,7 @@ import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 export const STAGING_CHECK_DEAD_S = 180
 export const REAP_STAGING_CHECKS_SQL = "UPDATE scan_jobs SET status = 'failed', error = 'staging_check_interrupted', finished_at = ? WHERE status = 'running' AND business_name = 'dazl real-company Find work email check (staging test)' AND industry = 'staging check' AND location = 'staging check' AND claimed_at IS NULL AND created_at < ?"
 export function reapStaleRunningJobs(db: Database.Database): void {
+  { const n = Math.floor(Date.now() / 1000); db.prepare(SETTLE_FREE_ORPHANS_STALE_SQL).run(n, n - STALE_RUNNING_S) } // #1157: a free (US$0) call left reserved is not 'maybe billed'
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
     `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
