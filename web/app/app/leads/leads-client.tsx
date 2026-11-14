@@ -4,16 +4,18 @@ import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
-import { contactsFromEnrichments, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
+import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
 import { identityOf } from '@/lib/scan/opportunity'
-import { leadPerson, NO_BUYER } from '@/lib/people/lead-person'
+import { leadPerson, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
+import { peopleSearchable } from '@/lib/people/searchable-holds'
+import { NAME_ONLY_REASON } from '@/lib/people/company-tie'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
@@ -82,6 +84,15 @@ interface CsvRow { domain: string; status: 'pending' | 'skipped' | 'queued' | 'r
 interface CsvBatch { batch_id: string; total: number; note: string | null; counts: Record<string, number>; rows: CsvRow[]; quota_stop?: boolean }
 interface CommenterRow { profile_url: string; name: string; name_source: 'csv' | 'derived'; title: string | null; company: string | null; lead_id: string | null }
 interface CommenterBatch { batch_id: string; context: string; total: number; note: string | null; job_id: string | null; rows: CommenterRow[] }
+
+// #1037: the one person a lead names (lib/people/lead-person.ts), on a ready card and on a held row alike: name, title and a
+// LinkedIn or source link with its basis, or plainly "No buyer named yet" (children: what the row offers next to that text).
+const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
+function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
+  return p
+    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
+    : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+}
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
 function parseSignals(v: string | null): string[] {
@@ -1160,12 +1171,7 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
-                    {(() => {
-                      const p = lp
-                      return p
-                        ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
-                        : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{NO_BUYER}{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</div>
-                    })()}
+                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
                     {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
                         doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
@@ -1383,8 +1389,11 @@ export default function LeadsClient() {
           </>}
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
-              <div key={l.id} className="p-4 text-sm">
+              <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <div className="font-medium">{l.company || l.name}</div>
+                {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
+                    hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
+                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
                 <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
