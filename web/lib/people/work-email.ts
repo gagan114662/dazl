@@ -188,12 +188,14 @@ const failText = (e: unknown, P: string) => {
 
 type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 // What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
-interface Derived { person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
 export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
   const derived: Derived = {}
   const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
   // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
-  if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site) return r
+  // US only (docs/DECISIONS.md 2026-10-26): a play that names another country gets published addresses only, so no guess either. The paid
+  // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
+  if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
   let guess: GuessView | null = null
   try { guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), deps.env ?? process.env) }
   catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
@@ -227,6 +229,7 @@ async function lookupWorkEmail(
   try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
   const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
   const icpText = strs(icp.who).join('; ')
+  derived.foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].some(c => c !== 'US')
   const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   const want: WantPerson = { ...queryName(person.name)!, title: person.title, linkedin: person.linkedin }

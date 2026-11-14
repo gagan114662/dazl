@@ -1,6 +1,6 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { guessCopy, mergeLookups, nameKey, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type GuessShown, type ShownLookup } from '@/lib/people/work-email-eligible'
+import { guessCopy, mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type GuessShown, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
 // with the workspace's own Apollo / People Data Labs keys). Only a checked address (verified by the provider, printed on the
@@ -9,6 +9,7 @@ import { guessCopy, mergeLookups, nameKey, workEmailCopy, workEmailCostNote, PEN
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
 type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
+const guessKey = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase()
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
@@ -26,7 +27,10 @@ function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: Work
   const [copied, setCopied] = useState('')
   // guessed addresses (learned format), by person: the GET read survives a reload, the POST answer shows at once
   const [guesses, setGuesses] = useState<Record<string, GuessShown>>({})
-  const takeGuesses = useCallback((list: unknown) => { if (!Array.isArray(list)) return; setGuesses(g => { const n = { ...g }; for (const x of list) if (x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string') n[nameKey((x as GuessShown).person)] = x as GuessShown; return n }) }, [])
+  // The key is the person's name exactly as stored (case and spacing folded, punctuation kept): a letters-only key made "Ann A. Bell"
+  // and "Anna Bell" one person. `replace`: the GET read is the whole truth, so a guess the server no longer shows is dropped; the POST
+  // answer carries one person's guess and only merges.
+  const takeGuesses = useCallback((list: unknown, replace = false) => { if (!Array.isArray(list)) return; setGuesses(g => { const n: Record<string, GuessShown> = replace ? {} : { ...g }; for (const x of list) if (x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string') n[guessKey((x as GuessShown).person)] = x as GuessShown; return n }) }, [])
 
   const [reads, setReads] = useState(0)
   const mounted = useRef(false)
@@ -37,7 +41,7 @@ function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: Work
       if (!mounted.current) return
       if (j.providers) setProviders(j.providers)
       setLookups(ls => mergeLookups(ls, j.lookups))
-      takeGuesses(j.guesses)
+      takeGuesses(j.guesses, true)
     }).catch(() => { /* the button still works; the cost line just stays generic */ })
   }, [leadId, takeGuesses])
 
@@ -112,7 +116,7 @@ function WorkEmailFor({ leadId, targets, lazy }: { leadId: string; targets: Work
             {msg[t.key] ? <span className="text-gray-600" role="status">{msg[t.key]}</span> : null}
             {(() => {
               // A guess is offered only where nothing was found for the person: a found address is never joined by a guess.
-              const g = guesses[nameKey(t.name)]
+              const g = guesses[guessKey(t.name)]
               if (!g || (l && l.address && v?.showAddress)) return null
               const c = guessCopy(g)
               return (

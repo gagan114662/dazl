@@ -121,43 +121,64 @@ export function guessFromLearnedFormat(db: Database.Database, tenantId: string, 
   return guessFor(db, tenantId, leadId, p.name, env)
 }
 
-// The guess stored for this person on this lead, as it may be SHOWN: only with the flag on; an address the mailbox check found does
-// not exist or flagged do-not-mail is never returned. Read-only.
-export function guessFor(db: Database.Database, tenantId: string, leadId: string, personName: string, env: Record<string, string | undefined> = process.env): GuessView | null {
-  if (!emailGuessEnabled(env)) return null
+type GuessRow = { person: string; address: string; format: string; confidence: Confidence | null; verification: string; verifier: string | null; checked_at: number | null; country_basis: string | null; tier: string; source_url: string | null }
+// What this tenant confirmed at a domain and the format that supports, read once per domain per call (a lead card with many buyers
+// would otherwise rescan the same rows once per person).
+type DomainEvidence = Map<string, { confirmed: Confirmed[]; learned: LearnedFormat | null }>
+function evidenceAt(db: Database.Database, tenantId: string, domain: string, cache: DomainEvidence) {
+  let e = cache.get(domain)
+  if (!e) { const confirmed = confirmedAddressesAt(db, tenantId, domain); e = { confirmed, learned: rankConfirmed(domain, confirmed) }; cache.set(domain, e) }
+  return e
+}
+const storedGuesses = (db: Database.Database, tenantId: string, leadId: string): GuessRow[] => {
+  try { return db.prepare("SELECT person, address, format, confidence, verification, verifier, checked_at, country_basis, tier, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND country_basis IS NOT NULL ORDER BY address").all(tenantId, leadId) as GuessRow[] }
+  catch (e) { if (noTable(e)) return []; throw e }
+}
+
+// One person's guess, as it may be SHOWN, from the lead's stored guessed rows.
+function viewOf(db: Database.Database, tenantId: string, leadId: string, rows: GuessRow[], personName: string, cache: DomainEvidence): GuessView | null {
   const want = splitName(personName)
   if (!want) return null
-  let rows: { person: string; address: string; format: string; confidence: Confidence | null; verification: string; verifier: string | null; checked_at: number | null; country_basis: string | null; tier: string; source_url: string | null }[]
-  try { rows = db.prepare("SELECT person, address, format, confidence, verification, verifier, checked_at, country_basis, tier, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND country_basis IS NOT NULL ORDER BY address").all(tenantId, leadId) as typeof rows }
-  catch (e) { if (noTable(e)) return null; throw e }
   const mine = rows.filter(r => { const n = splitName(r.person.split(',')[0] ?? ''); return !!n && n.first === want.first && n.last === want.last })
   // two different guesses for the same person: which one is theirs is not settled, so neither is shown
   if (new Set(mine.map(r => r.address)).size !== 1) return null
   const r = mine[0]
+  const domain = domainOf(r.address)
+  const { confirmed, learned } = evidenceAt(db, tenantId, domain, cache)
   // a person who now has a confirmed address of their own has the published tier: a stale guess is not shown beside it
-  if (confirmedAddressesAt(db, tenantId, domainOf(r.address)).some(c => c.name.first === want.first && c.name.last === want.last)) return null
+  if (confirmed.some(c => c.name.first === want.first && c.name.last === want.last)) return null
   if (r.verification === 'undeliverable' || r.verification === 'refused') return null
   // a one-name guess (the crawl writes those too) names nobody in particular; never shown
   if (r.format === 'first' || r.format === 'last') return null
+  // The guess is shown only while the evidence that taught it still stands: the tenant's confirmed addresses must STILL support
+  // this very format and regenerate this very address (deleting the supporting rows, or a rival format taking over, hides it).
+  // The copy says "from addresses your workspace confirmed", so an address with no such basis today must not be shown.
+  if (!learned || learned.format !== r.format || `${localFor(learned.format, want)}@${domain}` !== r.address.toLowerCase()) return null
   // the same address already answered by a lookup as refused / undeliverable: it is not shown as a guess either
   try { if (db.prepare("SELECT 1 FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND lower(address) = ? AND mailbox_check IN ('refused','undeliverable') LIMIT 1").get(tenantId, leadId, r.address.toLowerCase())) return null } catch (e) { if (!noTable(e)) throw e }
   const label = candidateLabel(r)
   const verified = label === 'guessed, verified'
-  const domain = domainOf(r.address)
-  const learned = learnedFormat(db, tenantId, domain)
   return {
     person: r.person.split(',')[0] ?? r.person, address: r.address, label: verified ? 'guessed, verified' : 'guessed, unverified',
     state: verified ? 'verified' : r.verification === 'catch_all' ? 'catch_all' : r.verification === 'uncertain' || r.verification === 'pending' ? 'uncertain' : 'not_checked',
     verifier: verified ? r.verifier : null, checked_at: verified ? r.checked_at : null,
-    format: r.format, confidence: r.confidence, domain, learned_from: learned && learned.format === r.format ? learned.evidence : [], // only what taught THIS guess's format
+    format: r.format, confidence: r.confidence, domain, learned_from: learned.evidence,
   }
 }
 
-// Every shown guess of this lead (the GET read that survives a reload).
+// The guess stored for this person on this lead, as it may be SHOWN: only with the flag on; an address the mailbox check found does
+// not exist or flagged do-not-mail is never returned. Read-only.
+export function guessFor(db: Database.Database, tenantId: string, leadId: string, personName: string, env: Record<string, string | undefined> = process.env): GuessView | null {
+  if (!emailGuessEnabled(env)) return null
+  return viewOf(db, tenantId, leadId, storedGuesses(db, tenantId, leadId), personName, new Map())
+}
+
+// Every shown guess of this lead (the GET read that survives a reload). The lead's guessed rows are read once and each domain's
+// confirmed addresses and learned format are worked out once, however many people the lead has.
 export function guessesForLead(db: Database.Database, tenantId: string, leadId: string, env: Record<string, string | undefined> = process.env): GuessView[] {
   if (!emailGuessEnabled(env)) return []
-  let people: string[]
-  try { people = (db.prepare("SELECT DISTINCT person FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed'").all(tenantId, leadId) as { person: string }[]).map(r => r.person.split(',')[0] ?? r.person) }
-  catch (e) { if (noTable(e)) return []; throw e }
-  return people.map(p => guessFor(db, tenantId, leadId, p, env)).filter((g): g is GuessView => !!g)
+  const rows = storedGuesses(db, tenantId, leadId)
+  const cache: DomainEvidence = new Map()
+  const people = [...new Set(rows.map(r => r.person.split(',')[0] ?? r.person))]
+  return people.map(p => viewOf(db, tenantId, leadId, rows, p, cache)).filter((g): g is GuessView => !!g)
 }
