@@ -14,6 +14,8 @@ import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
 import { isStaging } from '../staging.ts'
+import { isSmtpVerifier, smtpConfigFromEnv, smtpMailboxVerifier, smtpMonthlyCap, SMTP_STAGING_FAKE } from './smtp-verify.ts'
+import { stagingSmtpEnv } from './smtp-staging-fake.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -266,7 +268,14 @@ export type VerifyAnswer = { outcome: 'deliverable' | 'catch_all' | 'undeliverab
 // A provider adapter. Tests inject a fake. Production: ZeroBounce's free tier when ZEROBOUNCE_API_KEY is set, else none (today's
 // behaviour: candidates stay 'guessed', unverified).
 export interface MailboxVerifier { name: string; verify(address: string, signal?: AbortSignal): Promise<VerifyAnswer> }
-export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): MailboxVerifier | null {
+// #1036 dazl's own SMTP mailbox check comes first when it is switched on and fully configured (smtp-verify.ts); it needs the database
+// for its per-domain cache, rate counters and breaker, so a caller without one cannot get it and falls back to the free-tier provider.
+export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch, db?: Database.Database): MailboxVerifier | null {
+  // TEST-ONLY: staging's fake SMTP server (smtp-verify.ts stagingSmtpEnv), never outside DAZL_ENV=staging. It runs the REAL verifier
+  // (cache, rate limit, backoff, catch-all probe) against scripted answers, so the labels can be seen on staging without port 25.
+  if (db && isStaging(env) && env.DAZL_STAGING_FAKE_SMTP === '1') return smtpMailboxVerifier(db, { helo: 'staging.dazl.test', mailFrom: 'verify@notify.dazl.ai', egressIp: '192.0.2.1', port: 25, connectMs: 1000, commandMs: 1000 }, stagingSmtpEnv(), SMTP_STAGING_FAKE)
+  const smtp = db ? smtpConfigFromEnv(env) : null
+  if (db && smtp) return smtpMailboxVerifier(db, smtp)
   // TEST-ONLY: staging's fake verifier (lib/people/zerobounce.ts zeroBounceStagingFetch), never outside DAZL_ENV=staging.
   if (isStaging(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1') return zeroBounceVerifier('staging-fake', zeroBounceStagingFetch, ZEROBOUNCE_STAGING_FAKE)
   const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
@@ -276,6 +285,8 @@ export function verifierFromEnv(env: Record<string, string | undefined> = proces
 // not a tenant's (a second deployment on the same key counts separately; the provider's own refusal stops it).
 // Default and ceiling: the provider's free allowance (ZeroBounce 100). EMAIL_VERIFY_MONTHLY_CAP can only lower it; anything that is
 // not a plain non-negative integer is 0 (no check). Never raised past the free tier: no setting buys checks (#899 decision).
+// The cap that applies to ONE verifier: dazl's own SMTP check has its own (smtp-verify.ts smtpMonthlyCap), a provider's is its free allowance.
+export const verifierMonthlyCap = (env: Record<string, string | undefined>, verifier: string): number => isSmtpVerifier(verifier) ? smtpMonthlyCap(env) : verifyMonthlyCap(env)
 export function verifyMonthlyCap(env: Record<string, string | undefined> = process.env): number {
   const raw = env.EMAIL_VERIFY_MONTHLY_CAP
   if (raw === undefined || raw.trim() === '') return ZEROBOUNCE_FREE_MONTHLY
@@ -299,8 +310,8 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   if (!verifier) return { ...run, skipped: 'no verifier configured' }
   const cap = verifyDailyCap(env)
   if (cap === 0) return { ...run, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
-  const monthCap = verifyMonthlyCap(env)
-  if (monthCap === 0) return { ...run, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
+  const monthCap = verifierMonthlyCap(env, verifier.name)
+  if (monthCap === 0) return { ...run, skipped: isSmtpVerifier(verifier.name) ? 'SMTP_VERIFY_MONTHLY_CAP is 0' : 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
   migrateEmailGuess(db)
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)

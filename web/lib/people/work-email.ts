@@ -32,7 +32,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifierMonthlyCap, verifyDailyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -111,13 +111,14 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
   const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
   const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
   const optIn = apollo && pdlSaved ? enrichFallbackEnabled(db, tenantId) : true
-  const verifier = verifierFromEnv(env)
-  let mailboxCheck = !!verifier && emailGuessEnabled(env) && verifyDailyCap(env) > 0 && verifyMonthlyCap(env) > 0
+  const verifier = verifierFromEnv(env, undefined, db)
+  const monthCapV = verifier ? verifierMonthlyCap(env, verifier.name) : 0
+  let mailboxCheck = !!verifier && emailGuessEnabled(env) && verifyDailyCap(env) > 0 && monthCapV > 0
   // A spent monthly allowance (the operator ledger) also means no check can run this month: no button that does nothing.
   if (mailboxCheck && verifier) {
     try {
       const used = (db.prepare('SELECT n FROM email_verify_usage WHERE verifier = ? AND month = ?').get(verifier.name.slice(0, 40), new Date().toISOString().slice(0, 7)) as { n: number } | undefined)?.n ?? 0
-      if (used >= verifyMonthlyCap(env)) mailboxCheck = false
+      if (used >= monthCapV) mailboxCheck = false
     } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
   }
   return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
@@ -320,8 +321,8 @@ export async function findWorkEmail(
 // Any failure leaves 'uncertain' (the slot stays counted). Never throws: the lookup's own result is already saved.
 async function checkMailbox(db: Database.Database, tenantId: string, leadId: string, target: string, address: string, deps: { fetchImpl?: typeof fetch; env?: Record<string, string | undefined>; now?: number }): Promise<void> {
   const env = deps.env ?? process.env
-  const verifier = verifierFromEnv(env, deps.fetchImpl)
-  const dailyCap = verifyDailyCap(env), monthCap = verifyMonthlyCap(env)
+  const verifier = verifierFromEnv(env, deps.fetchImpl, db)
+  const dailyCap = verifyDailyCap(env), monthCap = verifier ? verifierMonthlyCap(env, verifier.name) : 0
   if (!verifier || !emailGuessEnabled(env) || dailyCap === 0 || monthCap === 0) return
   const nowS = deps.now ?? Math.floor(Date.now() / 1000)
   // The same reservation as the scan's guess checks (#849 inventory): refused (a cap, or another tab took it) = no call.

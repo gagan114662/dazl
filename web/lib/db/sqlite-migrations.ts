@@ -44,6 +44,7 @@ import { migrateSourceStats } from '../search/trace.ts'
 import { migrateSourceReview } from '../scan/source-review.ts'
 import { migrateHiringFeed } from '../scan/job-feed.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
+import { migrateSmtpVerify } from '../people/smtp-verify.ts'
 import { migrateWorkEmail } from '../people/work-email.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
@@ -65,7 +66,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateFeedback, migrateKeys,
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
-    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess, migrateWorkEmail,
+    migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess, migrateSmtpVerify, migrateWorkEmail,
     migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers,
     migrateFirstParty, migrateNeedEvidence,
   ]

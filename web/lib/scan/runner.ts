@@ -2034,8 +2034,8 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
     // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
     if (emailGuessEnabled()) {
-      const verifier = verifierFromEnv(process.env, deps.fetchImpl)
-      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
+      const verifier = verifierFromEnv(process.env, deps.fetchImpl, db)
+      if (!verifier) trace.note('email_verify', 'skipped', 'no mailbox verifier (SMTP_VERIFY_ENABLED with its configuration, or ZEROBOUNCE_API_KEY): guessed addresses stay unverified')
       else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
       else try {
         const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAliveStrict(db, job) })
