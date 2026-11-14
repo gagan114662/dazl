@@ -237,3 +237,28 @@ test("#1036 review fixes 2: a crawl-written one-name guess and a guess a lookup 
   const panel = readFileSync(new URL('../app/app/settings/enrichment-panel.tsx', import.meta.url), 'utf8')
   assert.match(panel, /no checks allowed \(daily limit 0\)/); assert.match(panel, /state !== 'off' && <p data-testid="mailbox-checks-numbers"/)
 })
+
+test('#1036 review fixes 3: a foreign-area play gets no guess even with no key; a guess whose teaching evidence is gone or changed is hidden; the GET read works out each domain once', async () => {
+  // a Canada-targeted play, no provider key: lookupWorkEmail returns no_key before its foreign check, so findWorkEmail must stop the guess
+  const ca = seed(); twoConfirmed(ca.db)
+  ca.db.prepare('UPDATE scan_jobs SET icp = ? WHERE id = ?').run(JSON.stringify({ ...ICP, where: ['Toronto, Canada'] }), ca.job)
+  assert.equal((await findWorkEmail(ca.db, 'A', ca.lead, DANA, { env: ON, now: NOW })).guess, undefined, 'outside the US: published addresses only, no guess')
+  assert.equal(n(ca.db, "SELECT count(*) n FROM email_candidates WHERE tier = 'guessed'"), 0, 'and nothing was stored')
+  // the US play still gets its guess (control)
+  const us = seed(); twoConfirmed(us.db)
+  assert.equal((await findWorkEmail(us.db, 'A', us.lead, DANA, { env: ON, now: NOW })).guess?.address, `dana.lee@${SITE}`)
+  // the evidence that taught the format is deleted: the invented address is no longer shown
+  us.db.prepare("DELETE FROM email_candidates WHERE tier = 'published'").run()
+  assert.deepEqual(guessesForLead(us.db, 'A', us.lead, ON), [])
+  assert.equal(guessFor(us.db, 'A', us.lead, 'Dana Lee', ON), null)
+  // a rival format takes over (the tenant now confirms first-initial-last addresses): the stored first.last guess is hidden
+  const rival = seed(); twoConfirmed(rival.db)
+  await findWorkEmail(rival.db, 'A', rival.lead, DANA, { env: ON, now: NOW })
+  rival.db.prepare("DELETE FROM email_candidates WHERE tier = 'published'").run()
+  published(rival.db, 'A', 'other-lead', 'Pat Kim, Owner', `pkim@${SITE}`); published(rival.db, 'A', 'other-lead', 'Sue Ray, Partner', `sray@${SITE}`)
+  assert.equal(guessFor(rival.db, 'A', rival.lead, 'Dana Lee', ON), null, 'the stored guess was built on a format the evidence no longer supports')
+  // many people on one lead: every shown guess is still returned (one read per domain, not per person)
+  const many = seed(); twoConfirmed(many.db)
+  for (const [p, a] of [['Dana Lee, Practice Manager', `dana.lee@${SITE}`], ['Owen Park, Owner', `owen.park@${SITE}`]]) many.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('A', ?, ?, ?, 'first.last', ?, 'guessed', 'high')").run(many.lead, p, a, BASIS)
+  assert.deepEqual(guessesForLead(many.db, 'A', many.lead, ON).map(g => g.address).sort(), [`dana.lee@${SITE}`, `owen.park@${SITE}`])
+})
