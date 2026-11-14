@@ -171,7 +171,7 @@ export function boardQueries(request: string, icp: { signals?: string[]; where?:
 // hiring CTO Head of Product engineer jobs" for a request about funding rounds), and with a larger budget the model's cap of 6 left search slots unused. One query
 // per event the request names ("<who and where> <event> announcement"), aimed at dated pages (announcements, news, press). They fill the slots the model's queries
 // leave; they never replace a model query that follows the request.
-const HAPPENED = /\b(?:open(?:s|ed|ing)?|launch\w*|rais\w+|announc\w+|expand\w*|expansion|hir(?:e[ds]?|ing)|post(?:ed|ing)|acquir\w+|merg\w+|mov(?:ed|ing)|relocat\w+|appoint\w+|join(?:ed|ing)|add(?:ed|ing)|start(?:ed|ing)|switch\w*|migrat\w+|replatform\w*|rebrand\w*|redesign\w*|won|win(?:s|ning)?|clos(?:ed|ing)|receiv\w+|secur\w+|sign(?:ed|ing)|grow(?:n|ing)?|grew|new)\b/i
+const HAPPENED = /\b(?:open(?:s|ed|ing)?|launch\w*|rais\w+|announc\w+|expand\w*|expansion|hir(?:e[ds]?|ing)|post(?:ed|ing)|acquir\w+|merg\w+|mov(?:ed|ing)|relocat\w+|appoint\w+|join(?:ed|ing)|add(?:ed|ing)|start(?:ed|ing)|switch\w*|migrat\w+|replatform\w*|rebrand\w*|redesign\w*|won|win(?:s|ning)?|clos(?:ed|ing)|receiv\w+|secur\w+|sign(?:ed|ing)|grow(?:n|ing)?|grew)\b/i
 const WINDOW = /\s*(?:in|within|over|during)\s+the\s+(?:last|past)\s+\d+\s+(?:days?|weeks?|months?|years?)\.?/gi
 // `asked`: the queries the scan already has. An event they already cover goes last, so a free slot goes to an event nobody asked about yet (a real Chicago scan sent
 // three queries about "opened a new office" and none about "expanded a practice group", the request's second event).

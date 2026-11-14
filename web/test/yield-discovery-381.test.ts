@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { eventQueries, hiringQueryForNonHiringRequest, requestAsksHiring } from '../lib/search/direct-queries.ts'
 import { withExclusions, pickFetchUrls, isLoginWalled, QUERY_CAP } from '../lib/search/tinyfish.ts'
-import { fetchRankFor, oneReadPerStory, pageKindRank } from '../lib/scan/runner.ts'
+import { fetchRankFor, oneReadPerStory, pageKindRank, pagesAskHiring } from '../lib/scan/runner.ts'
 import { planRetry } from '../lib/scan/retry-plan.ts'
 
 interface Job { job: string; query: string; icp: { where: string[]; signals: string[] }; queries: string[]; urls: { url: string; selected: boolean }[]; candidates: { company: string; url: string; fate: string }[] }
@@ -99,7 +99,7 @@ test('#381 (review) event queries come only from a clause that names something t
   for (const r of MATRIX) assert.ok(eventQueries(r).length >= 3, r)
 })
 
-test('#381 (review) a hiring word that is the request\'s own category is not a leaked hiring ask; one rule decides "the request asks for hiring" everywhere', () => {
+test('#381 (review) a hiring word that is the request\'s own category is not a leaked hiring ask; the board queries, the query filter and the page ranking share one rule (the job-board SOURCE keeps its own)', () => {
   assert.equal(hiringQueryForNonHiringRequest('career coaching Chicago new location opened', 'Career coaching firms in Chicago that opened a new location'), false, 'the category word')
   assert.equal(hiringQueryForNonHiringRequest('staffing firm jobs Austin', 'Staffing firms in Austin that expanded'), true, '"jobs" is not in the request')
   // the page ranking used the raw request plus the profile signals: "opening a second location" and a profile signal about hiring both read as a hiring ask
@@ -171,4 +171,68 @@ test('#381 (real scan) one page read per story: the syndicated copy of a press r
   const t = [{ url: 'https://a.example/x1', title: 'Acme Law opens a second Chicago office | A News' }, { url: 'https://b.example/y2', title: 'Acme Law opens a second Chicago office - B Wire' }, { url: 'https://a.example/x3', title: 'Beta Law expands its tax practice group | A News' }]
   const r = oneReadPerStory(t, () => 0)
   assert.deepEqual(t.map(h => r(h.url)), [0, 0.9, 0])
+})
+
+// Second independent review (opus, 6/10 CHANGES): each point fails without its fix.
+test('#381 (review 2) a page two searches returned is one page, not a copy of itself; two pages of one site that share a section are not one story', () => {
+  const A = 'https://acme-law.com/news/acme-law-opens-new-chicago-office-downtown', B = 'https://beta.com/news/beta-law-chicago', C = 'https://gamma.com/about'
+  const hits = [A, B, A, C].map(url => ({ url, title: '' }))
+  const base = fetchRankFor(new Map(hits.map(h => [h.url, { date: null, title: '' }])), 90, false, new Date('2026-11-14T00:00:00Z'), false)
+  const r = oneReadPerStory(hits, base)
+  assert.equal(r(A), base(A), 'returned twice: still ranked as itself')
+  assert.equal(pickFetchUrls(hits.map(h => h.url), 1, r)[0], A)
+  // one site, one section in the address (5+ words), two different stories
+  const S1 = 'https://firm.example/category/firm-news-and-events-updates/opens-chicago', S2 = 'https://firm.example/category/firm-news-and-events-updates/hires-partner'
+  const r2 = oneReadPerStory([{ url: S1 }, { url: S2 }], () => 0)
+  assert.deepEqual([r2(S1), r2(S2)], [0, 0])
+})
+
+test('#381 (review 2) a request that asks for hiring in words the hiring list does not know keeps its hiring queries and its job pages', () => {
+  const request = 'Dental clinics in Toronto looking for a receptionist', icp = { signals: ['hiring receptionists'] }
+  assert.deepEqual(eventQueries(request), [], 'no event clause: nothing to search for instead')
+  assert.equal(pagesAskHiring(request, icp), true, 'the profile signals decide the page ranking, as before')
+  assert.equal(pagesAskHiring('Law firms in Chicago, Illinois that opened a new office', { signals: ['hiring a first sales rep'] }), false, 'a request with its own event: the request decides')
+  assert.equal(pagesAskHiring('Roofing companies in Austin, Texas that are hiring estimators', {}), true)
+})
+
+test('#381 (review 2) "new" is not an event: a place called New York or a state ("use new software") builds no query; a slug number is not an archive year', () => {
+  const qs = eventQueries('Law firms in Chicago that opened offices in Boston or New York')
+  assert.ok(qs.length >= 1 && qs.every(q => !/Chicago New York (?:announcement|news|press release)$/.test(q)), JSON.stringify(qs))
+  assert.deepEqual(eventQueries('Companies in Austin that use new accounting software'), [])
+  const now = new Date('2026-11-14T00:00:00Z')
+  for (const u of ['https://a.example/news/acme-opens-office-at-2000-main-street', 'https://a.example/news/1999-founded-firm-opens-office', 'https://a.example/p/1987-1234/acme-opens-office']) assert.equal(pageKindRank(u, '', true, now), 0, u)
+  assert.equal(pageKindRank('https://a.example/news/2019/old-office', '', true, now), 0.6)
+})
+
+// (review 2) the page order through the pipeline. REAL: the Chicago request and profile and three addresses of the 2026-11-14 scan (one press release on two sites, a
+// third firm's story), plus a real unrelated Greenhouse posting from the 2026-11-13 Chicago results. SYNTHETIC: titles and snippets; no page text (nothing is read back).
+test('#381 (review 2) runner: with 3 page reads the scan reads three different stories; the copy on another site waits', async () => {
+  const chicago = job('Law')
+  const ZAYED = 'https://prnewswire.com/news-releases/zayed-law-significantly-expands-chicago-office-302899256.html', COPY = 'https://easternprogress.com/zayed-law-significantly-expands-chicago-office/article_98792e10-fcbb-544e-8326-dff51883e6bd.html'
+  const KARNS = 'https://karnsandkarns.com/press/karns-karns-personal-injury-and-accident-attorneys-opens-new-office-location-in-lincoln-park-chicago', CROKE = 'https://crokefairchild.com/2026/10/croke-fairchild-duarte-beres-and-point-of-difference-strategies-announce-move-to-new-offices-at-222-n-lasalle-street'
+  const JOBP = chicago.urls.map(u => u.url).find(u => /greenhouse\.io/.test(u))!
+  assert.ok(JOBP, 'the real Chicago results held a Greenhouse posting')
+  // the profile's signals without any hiring signal (SYNTHETIC selection): with one, an older rule (jobPagesBehindEvents) already puts job pages behind, and this
+  // test would not see the new one
+  const NO_HIRING_SIGNALS = ['Opened a new office in the last 90 days', 'Expanded a practice group in the last 90 days']
+  const hit = (url: string, i: number) => ({ url, title: `Result ${i}`, snippet: `Synthetic snippet ${i} about a Chicago law firm.`, date: null as unknown as string })
+  const f: Fixture = { request: chicago.query, modelIcp: { ...chicago.icp, signals: NO_HIRING_SIGNALS, summary: chicago.query, who: ['Managing Partner'], industries: ['Law firms'], sizes: [], exclude: [], language: 'en', window_days: 90 }, modelQueries: ['Chicago law firm opened new office press release'], hits: [], hitsFor: n => n === 0 ? [JOBP, ZAYED, COPY, ZAYED, KARNS, CROKE].map(hit) : [], tfPages: {}, own: {}, extraction: [] }
+  const x = await withEnvVar('TINYFISH_FETCHES_PER_SCAN', '3', () => runFixture(f))
+  const read = x.calls.tfFetchBatches.flat()
+  assert.deepEqual([...read].sort(), [ZAYED, KARNS, CROKE].sort(), `three stories, not the copy: ${JSON.stringify(read)}`)
+})
+async function withEnvVar<T>(k: string, v: string, fn: () => Promise<T>): Promise<T> { const old = process.env[k]; process.env[k] = v; try { return await fn() } finally { if (old === undefined) delete process.env[k]; else process.env[k] = old } }
+
+// (review 2) the page-ranking call site. For 5 of the 7 real requests an older rule (jobPagesBehindEvents) already moves job pages behind event pages, so the new
+// rule shows only where that one does not apply. REAL: the Sydney request and its profile (agencies "posting about outbound": no hiring ask, no event clause, the older
+// rule is off), and three addresses of the 2026-11-13 Berlin results (a Greenhouse posting, two news pages). SYNTHETIC: titles and snippets.
+test('#381 (review 2) runner: a request that asks for no hiring reads the news pages before a job posting, also where the older compound-request rule is off', async () => {
+  const sydney = job('Marketing'), all = job('Fintech').urls.map(u => u.url)
+  assert.equal(pagesAskHiring(sydney.query, sydney.icp), false)
+  const JOBP = all.find(u => /greenhouse\.io/.test(u))!, NEWS = all.filter(u => !/greenhouse\.io|ashbyhq|lever\.co/.test(u) && !isLoginWalled(u) && pageKindRank(u, '', false) === 0).slice(0, 2)
+  assert.ok(JOBP && NEWS.length === 2, JSON.stringify({ JOBP, NEWS }))
+  const hit = (url: string, i: number) => ({ url, title: `Result ${i}`, snippet: `Synthetic snippet ${i} about a marketing agency in Sydney.`, date: null as unknown as string })
+  const f: Fixture = { request: sydney.query, modelIcp: { ...sydney.icp, summary: sydney.query, who: ['Founder'], industries: ['Marketing agencies'], sizes: [], exclude: [], language: 'en', window_days: 90 }, modelQueries: ['Sydney marketing agency outbound cold email'], hits: [], hitsFor: n => n === 0 ? [JOBP, ...NEWS].map(hit) : [], tfPages: {}, own: {}, extraction: [] }
+  const x = await withEnvVar('TINYFISH_FETCHES_PER_SCAN', '2', () => runFixture(f))
+  assert.deepEqual([...x.calls.tfFetchBatches.flat()].sort(), [...NEWS].sort(), 'the two news pages, not the job posting')
 })

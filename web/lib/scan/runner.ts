@@ -1042,7 +1042,10 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     // #381 (yield): a model query about hiring is dropped when the request never asked for hiring; the request's own event queries fill whatever slots the
     // model's queries leave (its cap of 6, a short or unusable reply); every open query excludes the hosts that can never be read.
     const sanitized = sanitizeQueries(plan.queries, job.query!)
-    const modelQs = sanitized.filter(x => !hiringQueryForNonHiringRequest(x, job.query!, icp.language))
+    // (review) only when the request itself names an event to search for instead: a request that asks for hiring in words the hiring list does not know
+    // ("looking for a receptionist") has no such event, and keeps the model's queries
+    const namesEvent = eventQueries(job.query!).length > 0
+    const modelQs = sanitized.filter(x => !(namesEvent && hiringQueryForNonHiringRequest(x, job.query!, icp.language)))
     const seenQ = new Set(modelQs.map(x => x.toLowerCase()))
     // how many: one for each model query dropped, plus the slots the model was never asked to fill (its cap of 6). A model that answers with fewer queries than it
     // was asked for is not topped up: the search count, and so the cost where searches are priced, stays what the plan asked for.
@@ -1073,7 +1076,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #380 / #204 Test B: under an OR plan ("seed funding OR are hiring sales") a job page can prove a branch on its own, so it is not ranked behind the event pages.
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
-  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, requestAsksHiring(job.query!, icp))   // the same rule as the board queries and the query filter (review)
+  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, pagesAskHiring(job.query!, icp))
   const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, oneReadPerStory(hits, fetchRank)) // exact duplicates removed, breadth first by host, nothing excluded; a second copy of one story is read after the other stories of its class
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
@@ -1122,14 +1125,25 @@ const storyKeys = (url: string, title = ''): string[] => {
   try { for (const seg of new URL(url).pathname.split('/')) { const w = words(seg.replace(/\.[a-z0-9]{2,5}$/i, '')); if (w.length >= 5) keys.push(w.join(' ')) } } catch { /* no address keys */ }
   return keys
 }
+// (review) A copy is the same story on ANOTHER site: two pages of one site that share a long path segment share a section, not a story. And a page that two
+// searches returned is one page, not a copy of itself (results are not de-duplicated before this point).
 export function oneReadPerStory(hits: { url: string; title?: string }[], rank: (u: string) => number): (u: string) => number {
-  const seen = new Set<string>(), later = new Set<string>()
+  const hostOf = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
+  const firstHost = new Map<string, string>(), done = new Set<string>(), later = new Set<string>()
   for (const h of hits.map((h, i) => ({ h, i, r: rank(h.url) })).sort((a, b) => a.r - b.r || a.i - b.i).map(x => x.h)) {
-    const keys = storyKeys(h.url, h.title)
-    if (keys.some(k => seen.has(k))) later.add(h.url); else for (const k of keys) seen.add(k)
+    const c = canonicalUrl(h.url) ?? h.url
+    if (done.has(c)) continue
+    done.add(c)
+    const keys = storyKeys(h.url, h.title), host = hostOf(h.url)
+    if (keys.some(k => firstHost.has(k) && firstHost.get(k) !== host)) later.add(c)
+    else for (const k of keys) if (!firstHost.has(k)) firstHost.set(k, host)
   }
-  return (u: string) => later.has(u) ? Math.floor(rank(u)) + 0.9 : rank(u)
+  return (u: string) => later.has(canonicalUrl(u) ?? u) ? Math.floor(rank(u)) + 0.9 : rank(u)
 }
+// (review) Whether job pages are event pages for this request: the request's own hiring ask (the board-query rule); and when the request names no event that
+// could be searched for instead, the profile's signals, as before (a hiring ask in words the hiring list does not know must not push job pages to the back).
+export const pagesAskHiring = (request: string, icp: { signals?: string[]; language?: string }): boolean =>
+  requestAsksHiring(request, icp) || (eventQueries(request).length === 0 && hasHiringSignal(request, icp.signals ?? []))
 // hiringAsked: a job posting reports the event only when the request asks for hiring; for any other request it is the least useful readable page (the real
 // Chicago list, a request about new offices, held three unrelated Greenhouse postings).
 export function pageKindRank(url: string, title = '', hiringAsked = true, now = new Date()): number {
@@ -1137,7 +1151,8 @@ export function pageKindRank(url: string, title = '', hiringAsked = true, now = 
   try { u = new URL(url) } catch { return 0.3 }
   if (isJobPage(url)) return hiringAsked ? 0 : 0.6
   // (review) a path dated before last year (/news/2019/...) is an archive page: it can never pass the date gate, so it is not preferred
-  const year = /(?:^|[/_-])((?:19|20)\d\d)(?=[/_-]|$)/.exec(u.pathname)
+  // the year must be a whole path segment (/news/2019/...): a number inside a headline slug ("opens-office-at-2000-main-street") is not a date
+  const year = /\/((?:19|20)\d\d)(?=\/|$)/.exec(u.pathname)
   if (year && Number(year[1]) < now.getUTCFullYear() - 1) return 0.6
   if (EVENT_PATH.test(u.pathname) || EVENT_WORDS.test(`${u.pathname.replace(/[-_/]+/g, ' ')} ${title}`)) return 0
   if (EVERGREEN_PATH.test(u.pathname)) return 0.6
