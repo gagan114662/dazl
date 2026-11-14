@@ -21,7 +21,7 @@ import { scanModelPrice } from '../scan/spend-cap.ts'
 import { tfSearch, tfFetch, markdownToText, type SearchHit } from '../search/tinyfish.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
-import { parseProfileHit, peopleQuery } from './people-search.ts'
+import { peopleQuery } from './people-search.ts'
 import { companyTie } from './company-tie.ts'
 import { roleContradicted, titleMatches } from './rank.ts'
 
@@ -82,7 +82,12 @@ export function researchQueries(input: ResearchInput): string[] {
   const roles = [...(input.roles ?? []).map(r => clean(r, 40)).filter(r => r.length >= 2), ...DECISION_MAKERS].filter((r, i, a) => a.findIndex(x => x.toLowerCase() === r.toLowerCase()) === i)
   const place = clean((input.where ?? [])[0] ?? '', 60)
   const out: string[] = []
-  const q1 = peopleQuery(company, roles.slice(0, 3)); if (q1) out.push(q1)
+  // A lead with a CONFIRMED website: its own site first (a team / about / leadership page names people with no tie question at all). Off the
+  // site a source must name that website to count (company-tie.ts), which a public profile result almost never does (measured 2026-11-14: 0 of 25),
+  // so the profile search is only made when there is no website to search.
+  const domain = clean(input.domain ?? '', 80).toLowerCase().replace(/^www\./, '')
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domain)) out.push(`site:${domain} (${roles.slice(0, 5).map(r => `"${r}"`).join(' OR ')})`.slice(0, 300))
+  else { const q1 = peopleQuery(company, roles.slice(0, 3)); if (q1) out.push(q1) }
   out.push(tidy(`"${company}" ${place} (${roles.slice(0, 4).map(r => `"${r}"`).join(' OR ')})`).slice(0, 300))
   return out.slice(0, MAX_SEARCHES)
 }
@@ -143,8 +148,60 @@ const TOP_ROLE = /^(?:(?:co-?)?founder|(?:co-?)?owner|ceo|chief executive(?: off
 const NOT_TOP_HARD = /\b(?:vice|vp|assistant|associate|deputy|interim|acting|engineer|consultant|designer|developer|architect|analyst|scientist|advisor|adviser|chief of staff|product owner|to the)\b|['’]s\b/i
 const NOT_TOP_SOFT = /\b(?:of marketing|of sales|of operations|of engineering|of finance|of hr)\b/i   // a department head: only when the scan did not ask for that role
 const NOT_TOP = { test: (t: string) => NOT_TOP_HARD.test(t) || NOT_TOP_SOFT.test(t) }
+// Never the person to contact, whatever the scan asked for ("Assistant VP of Sales", "the CEO's assistant"). The other NOT_TOP_HARD words (a vice-president,
+// an engineer) are refused only when the scan did not ask for that role: a sales scan asks for "VP Sales" by name.
+const NEVER_BUYER = /\b(?:assistant|associate|deputy|interim|acting|chief of staff|to the)\b|['’]s\b/i
 // A past-role marker AFTER the quote, up to the end of the sentence ("... until she retired in 2019", "(2008-2019)").
 const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down|resigned|sold the|left the|no longer)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/i
+
+const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
+const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|vice|vp|svp|evp|sales|revenue|marketing|operations|growth|commercial|business|development|global|regional|cro|cmo|coo|cfo|cto|founder|co-?founder|owner|co-?owner|ceo|co-?ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
+// Search snippets arrive as markdown ("### Founder at Acme - **Dates:** March 2022 – Present", "**Jane Roe, CEO**, Acme, comments", an image tag after a
+// heading). The marks are not words: they are removed before the model sees a result and before a quote is looked up in it.
+const plain = (x: string) => tidy(x.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\*\*|__/g, '').replace(/(^|\s)#{1,6}\s+/g, '$1'))
+type Answer = { name: string; title: string; source: string; quote: string; linkedin_source: string | null }
+
+// A PUBLIC PROFILE search result (linkedin.com/in/...) is about one person: the profile's owner, named at the start of the result's title. Real results
+// (measured 2026-11-14 on 25 leads) rarely put the role in that title: the title is "Jane Roe" or "Jane Roe - Acme", and the role is in the snippet as the
+// profile's own position line: "Founder at Acme - Dates: March 2022 – Present", "Vice President of Sales. Acme. Jan 2024 - Present", "CEO @ Acme".
+// So for a profile result the rule is not "the quote holds the name and the title" but:
+//   1. the result's title starts with exactly this person's name (the profile is theirs);
+//   2. the result states the title and, right after it (a separator, "at", "of", "@"), THIS company (companySpans: never a longer business name);
+//   3. that position is current: no past word before it, the dates after it (when shown) run to the present, and when no dates are shown no
+//      present-dated position is listed before it (profiles list the newest position first);
+//   4. the title is a buyer role or a top role, in ordinary title words.
+// Returns the title as stored (a company name the model left at its end is cut off) or the first check that failed.
+const CREDENTIAL = /,?\s+(?:phd|ph\.d\.?|mba|md|dds|dmd|cpa|esq|cfa|pmp)\.?$/i
+const RANGE = /(?:19|20)\d{2}\s*[-–—]\s*(present|current|now|today|(?:\p{L}{3,9}\.?\s+)?(?:19|20)\d{2})/iu
+const TO_COMPANY = /^[\s,.\-–—|·:(]*(?:(?:at|of|@)\s+)?(?:the\s+)?$/i
+function profilePosition(answer: Answer, src: Source, input: ResearchInput): { title: string } | { refused: string } {
+  if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
+  const owner = (src.title.replace(/\s*[|·]\s*LinkedIn.*$/i, '').split(/\s+[-–—|]\s+/)[0] ?? '').replace(CREDENTIAL, '')
+  if (norm(owner) !== norm(answer.name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, ''))) return { refused: 'profile_names_someone_else' }
+  // A company name the model kept at the end of the title ("CEO, Wavee AI") is not part of the title.
+  const inTitle = companySpans(answer.title, input.company)[0]
+  const title = inTitle ? tidy(answer.title.slice(0, inTitle[0]).replace(/[\s,@\-–—|·]+(?:(?:at|of)\s*)?$/i, '')) : answer.title
+  if (title.length < 2 || title.length > 80) return { refused: 'title_unusable' }
+  const roleText = (input.roles ?? []).join('; ')
+  const roleWords = new Set((input.roles ?? []).flatMap(r => String(r).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(Boolean))
+  if (title.split(/[^\p{L}\p{N}&'’-]+/u).filter(Boolean).some(w => !(TITLE_OK.test(w) || FILLER.test(w) || roleWords.has(w.toLowerCase())))) return { refused: 'title_has_other_words' }
+  if (roleContradicted(title, roleText) || PAST_NEAR.test(title)) return { refused: 'past_role' }
+  if (NEVER_BUYER.test(title) || (NOT_TOP_HARD.test(title) && titleMatches(title, roleText).length === 0)) return { refused: 'not_a_buyer_role' }
+  if (!(titleMatches(title, roleText).length > 0 || (TOP_ROLE.test(title) && !NOT_TOP.test(title)))) return { refused: 'not_a_buyer_role' }
+  const raw = tidy(`${src.title}. ${src.text}`), hay = norm(raw)
+  if (raw.length !== hay.length) return { refused: 'source_text_unstable' }
+  const company = companySpans(raw, input.company)
+  if (company.length === 0) return { refused: 'profile_of_another_employer' }
+  let past = false
+  for (const t of spans(hay, title)) for (const c of company) {
+    if (c[0] < t[1] || c[0] - t[1] > 14 || !TO_COMPANY.test(raw.slice(t[1], c[0]))) continue
+    if (PAST_NEAR.test(hay.slice(Math.max(0, t[0] - 30), t[0]))) { past = true; continue }
+    const dates = RANGE.exec(raw.slice(c[1], c[1] + 90))
+    if (dates ? !/^(?:present|current|now|today)$/i.test(dates[1]) : [...raw.slice(0, t[0]).matchAll(new RegExp(RANGE.source, 'giu'))].some(m => /^(?:present|current|now|today)$/i.test(m[1]))) { past = true; continue }
+    return { title }
+  }
+  return { refused: past ? 'past_role' : 'profile_does_not_give_title_at_company' }
+}
 
 // Every field the model returned is checked against the sources it was shown. Returns the person, or the first check that failed.
 //   1. the source is one that was shown, and the quote is in it;
@@ -156,11 +213,14 @@ const PAST_AFTER = /\b(?:until|retired|retiring|formerly|stepped down|steps down
 //   6. a company NAME is not a company (company-tie.ts, Hermes decision on #1164): off the company's own site, the source must also name
 //      the lead's CONFIRMED website (the only tie); the requested place, when there is one, must agree;
 //   7. a LinkedIn URL is kept only when a search RETURNED it and the parser reads that result as the same person at this company.
-function groundAt(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput, nth: number): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: number): { person: ResearchPerson; linkedin_refused: string | null; direct: boolean } | { refused: string; nearby?: true } {
   const src = sources.find(s => s.id === answer.source)
   if (!src) return { refused: 'source_not_shown' }
   const text = `${src.title}. ${src.text}`   // the source title is its own sentence: it is never the first words of the snippet
-  const hay = norm(text), quote = norm(answer.quote)
+  const hay = norm(text)
+  // The model may quote across the result's title and snippet as one line ("Jane Roe Owner, Acme" for the title "Jane Roe" and a snippet starting "Owner, Acme").
+  const t0 = norm(src.title), q0 = norm(answer.quote)
+  const quote = !hay.includes(q0) && q0.startsWith(`${t0} `) && hay.includes(`${t0}. ${q0.slice(t0.length + 1)}`) ? `${t0}. ${q0.slice(t0.length + 1)}` : q0
   if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
   if (answer.title.length < 2 || answer.title.length > 80) return { refused: 'title_unusable' }
   let at = -1; for (let k = 0; k <= nth; k++) { at = hay.indexOf(quote, at + 1); if (at === -1) break }
@@ -174,7 +234,9 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   let span: [number, number] | null = null
   for (const n of names) for (const t of titles) {
     const between = n[1] <= t[0] ? quote.slice(n[1], t[0]) : t[1] <= n[0] ? quote.slice(t[1], n[0]) : null
-    if (between !== null && between.length <= 24 && JOINER.test(between)) { span = [Math.min(n[0], t[0]), Math.max(n[1], t[1])]; break }
+    // ... or the result's title IS the name and the snippet starts with the title (a speaker or author page: "Jane Roe" / "Owner, Acme ...").
+    const titleIsName = between === '. ' && n[0] === 0 && at === 0 && n[1] === norm(src.title).length && t[0] === n[1] + 2
+    if (between !== null && between.length <= 24 && (JOINER.test(between) || titleIsName)) { span = [Math.min(n[0], t[0]), Math.max(n[1], t[1])]; break }
   }
   if (!span) return { refused: 'title_not_next_to_name' }
   const roleText = (input.roles ?? []).join('; ')
@@ -190,7 +252,6 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // every capitalised or numbered run must be this company (or its short form / legal suffix), a requested place, or an ordinary title / filler word;
   // and an "of / at / for / with / from" phrase after the title must lead to this company ("owner of a local bakery" does not).
   const SUFFIX_OK = /^(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty|dds|dmd|md|mba|cpa|phd|esq)\.?$/i
-  const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|she|he|they|her|his|their|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
   const CONNECT0 = /^(?:and|in|at|on|is|was|has|said|says|the|a|an|for|with|since|until|from|to|who|which|that|our|my|your|welcomes?|opens?|opened|by|as|of)$/i
   const whereWords = new Set((input.where ?? []).flatMap(w => String(w).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w => w.length >= 3))
   const thisCompany = (org: string): boolean => {
@@ -223,7 +284,6 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // it (a testimonial card puts the organisation in the sentence before the name). The person's own name and title are never "another organisation".
   // The TITLE the model returned is checked too (it is the model's own words, and "Owner of Stone Bakery" is its natural answer on a testimonial card):
   // it may contain only title / filler words, words of a requested role, and this company; any other word makes it another business's.
-  const TITLE_OK = /^(?:and|of|the|at|for|in|&|lead|head|senior|general|executive|chief|officer|manager|director|managing|partner|principal|founder|co-?founder|owner|co-?owner|ceo|president|dentist|doctor|dr|dds|dmd|md|mba|cpa|phd)$/i
   const roleWords = new Set((input.roles ?? []).flatMap(r => String(r).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(Boolean))
   const cwTitle = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
   const tw = answer.title.split(/[^\p{L}\p{N}&'’-]+/u).filter(Boolean)
@@ -239,7 +299,12 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   const windowText = src.kind === 'page' ? rawAll.slice(pLo, sHi) : inTitle ? rawAll.slice(0, titleLen - 2) : rawAll.slice(titleLen)
   const left = windowText.slice(0, at + span[0] - windowStart), right = windowText.slice(at + span[1] - windowStart)
   const foreign = (seg: string) => foreignRun(seg.split(/\s+/).map(w => personWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')) ? '' : w).join(' ').replace(/\s+/g, ' '))
-  if (foreign(left) || foreign(right)) return { refused: 'title_at_another_organisation' }
+  // "... is the Chief Revenue Officer at Acme, the leading AI Sales Platform": when THIS company follows the title directly ("at", "of", "@", a comma),
+  // the title is tied to it by the sentence itself ("Speakers: Jane Roe, Chief Revenue Officer, Acme; ...", "said Jane Roe, CEO and co-founder of Acme"):
+  // other capitalised words around it are the rest of the page, not another employer of hers.
+  const direct = companySpans(rawAll, input.company).some(([c0]) => c0 >= at + span[1] && c0 - (at + span[1]) <= 12 && /^[\s,·]*(?:(?:at|of|@|for|with)\s+)?(?:the\s+)?$/i.test(rawAll.slice(at + span[1], c0)))   // never "|" or a dash: in a result title those lead to the SITE's name
+  // Otherwise the window rule: nothing else that reads as an organisation near the person (a testimonial card, a case study, a guest's byline).
+  if (!direct && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
   // or a separator, never a lower-case business word.
   if (titles[0][0] < names[0][0]) {
@@ -286,15 +351,13 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   // Past: in the title, in the quote, or in the words right before the quote in the source ("Former owner Jane Roe" quoted from "owner").
   if (roleContradicted(answer.title, roleText) || PAST_NEAR.test(quote) || PAST_NEAR.test(hay.slice(Math.max(0, at - 30), at))) return { refused: 'past_role' }
   // A role the scan asked for passes as written; otherwise only a decision-maker title by itself (not a vice-president, an engineer, ...).
-  if (NOT_TOP_HARD.test(answer.title) || !(titleMatches(answer.title, roleText).length > 0 || (TOP_ROLE.test(answer.title) && !NOT_TOP.test(answer.title)))) return { refused: 'not_a_buyer_role' }
+  if (NEVER_BUYER.test(answer.title) || !(titleMatches(answer.title, roleText).length > 0 || (TOP_ROLE.test(answer.title) && !NOT_TOP.test(answer.title)))) return { refused: 'not_a_buyer_role' }
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const onOwnSite = !!domain && (hostOf(src.url) === domain || hostOf(src.url).endsWith(`.${domain}`))
   const isProfile = PROFILE.test(src.url.split('?')[0])
   if (isProfile) {
     // The existing parser decides: "Name - Title - Employer" / "Name - Title at Employer" with exactly this employer, not past, not ambiguous.
-    const parsed = src.kind === 'search' ? parseProfileHit({ url: src.url, title: src.title, snippet: src.text, date: null }, input.company) : null
-    if (!parsed) return { refused: 'profile_of_another_employer' }
-    if (norm(parsed.name) !== norm(answer.name) || !hasWord(norm(parsed.title), answer.title)) return { refused: 'profile_line_says_otherwise' }
+    return { refused: 'profile_not_a_search_result' }   // a profile is only ever a search result (LinkedIn is never fetched); groundPerson judges those
   } else if (!onOwnSite) {
     // The company is named right next to the person: within 40 characters of the name-and-title, with no sentence break and no
     // other capitalised name in between ("... acquired by Globex Health; Globex CEO Jane Roe" is Globex's CEO).
@@ -319,21 +382,47 @@ function groundAt(answer: { name: string; title: string; source: string; quote: 
   if (answer.linkedin_source && !lsrc) linkedin_refused = 'profile_source_not_shown'
   else if (lsrc) {
     const url = lsrc.url.split('?')[0]
-    const parsed = lsrc.kind === 'search' && PROFILE.test(url) ? parseProfileHit({ url: lsrc.url, title: lsrc.title, snippet: lsrc.text, date: null }, input.company) : null
     if (lsrc.kind !== 'search' || !PROFILE.test(url)) linkedin_refused = 'not_a_profile_result'
-    else if (!parsed) linkedin_refused = norm(lsrc.title.split(/\s+[-–—|]\s+/)[0] ?? '') === norm(answer.name) ? 'profile_does_not_name_company' : 'profile_names_someone_else'
-    else if (norm(parsed.name) !== norm(answer.name)) linkedin_refused = 'profile_names_someone_else'
-    else if (where.length > 0 && placeAgreement(`${lsrc.title} ${lsrc.text}`, where, input.company) === 'mismatch') linkedin_refused = 'profile_in_another_place'
-    // The profile's own text must name the lead's CONFIRMED website too: a profile at a same-name business is not this company's (company-tie.ts).
-    else if (!companyTie(`${lsrc.title} ${lsrc.text}`, { company: input.company, confirmed_domain: input.domain ?? null })) linkedin_refused = 'profile_company_unconfirmed'
-    else linkedin = url
+    else linkedin_refused = profileLinkRefusal(answer, lsrc, input)
+    if (!linkedin_refused) linkedin = url
   }
-  return { person: { name: answer.name, title: answer.title, linkedin, source_url: src.url, quote: answer.quote, place }, linkedin_refused }
+  return { person: { name: answer.name, title: answer.title, linkedin, source_url: src.url, quote: answer.quote, place }, linkedin_refused, direct }
+}
+
+// Why a profile result is not kept as this person's LinkedIn URL (null = kept): it must be THEIR profile, state a current position at this company (any
+// title: the pointer is about who they are, the title was judged on the cited source), agree with a requested place and name the confirmed website.
+function profileLinkRefusal(answer: Answer, lsrc: Source, input: ResearchInput): string | null {
+  const owner = (lsrc.title.replace(/\s*[|·]\s*LinkedIn.*$/i, '').split(/\s+[-–—|]\s+/)[0] ?? '').replace(CREDENTIAL, '')
+  if (norm(owner) !== norm(answer.name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, ''))) return 'profile_names_someone_else'
+  const text = `${lsrc.title}. ${lsrc.text}`
+  if (companySpans(tidy(text), input.company).length === 0) return 'profile_does_not_name_company'
+  const where = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
+  if (where.length > 0 && placeAgreement(text, where, input.company) === 'mismatch') return 'profile_in_another_place'
+  if (!companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return 'profile_company_unconfirmed'
+  return null
+}
+
+// A profile search result cited as the source: the profile rule (profilePosition), then the same place and website gates as any other source.
+function groundProfile(answer: Answer, src: Source, input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+  const pos = profilePosition(answer, src, input)
+  if ('refused' in pos) return pos
+  const text = `${src.title}. ${src.text}`
+  const where = (input.where ?? []).filter(w => typeof w === 'string' && w.trim())
+  const place = placeAgreement(text, where, input.company)
+  if (place === 'mismatch') return { refused: 'another_place' }
+  if (place === 'unconfirmed') return { refused: 'place_unconfirmed' }
+  if (!companyTie(text, { company: input.company, confirmed_domain: input.domain ?? null })) return { refused: 'company_unconfirmed' }
+  return { person: { name: answer.name, title: pos.title, linkedin: src.url.split('?')[0], source_url: src.url, quote: answer.quote, place }, linkedin_refused: null }
 }
 
 // The quote may appear more than once in a source (a headline that repeats the name and title, then a sentence that says whose owner she is): EVERY
 // occurrence is judged, and any refusal wins.
-export function groundPerson(answer: { name: string; title: string; source: string; quote: string; linkedin_source: string | null }, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+export function groundPerson(answer0: Answer, sources0: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+  // Markdown marks are not words (plain): the same cleaning on what was shown and on what the model quoted.
+  const sources = sources0.map(x => x.kind === 'search' ? { ...x, title: plain(x.title), text: plain(x.text) } : x)
+  const answer = { ...answer0, quote: plain(answer0.quote) }
+  const cited = sources.find(x => x.id === answer.source)
+  if (cited && cited.kind === 'search' && PROFILE.test(cited.url.split('?')[0])) return groundProfile(answer, cited, input)
   const first = groundAt(answer, sources, input, 0)
   if ('refused' in first) return first
   for (let n = 1; n < 40; n++) { const r = groundAt(answer, sources, input, n); if ('refused' in r) { if (r.refused === 'quote_not_in_source') break; return r } }
@@ -355,11 +444,13 @@ export function groundPerson(answer: { name: string; title: string; source: stri
         const mentionTitle = m[0].replace(new RegExp(n, 'u'), '').replace(/^[\s,\-–—|:()·•]+|[\s,\-–—|:()·•]+$/g, '').replace(/^(?:(?:is|was|as|the|our|its|their|a|an|dr\.?)\s+)+/, '').trim() || answer.title
         const r = groundAt({ ...answer, title: mentionTitle.length >= 2 ? mentionTitle : answer.title, quote: m[0] }, sources, input, k)
         // Only what says whose business it is counts for a mention under other words (its own title may not be a buyer role).
-        if ('refused' in r && ['title_at_another_organisation', 'possessive_title', 'past_role'].includes(r.refused)) return r
+        // When the cited words themselves tie the title to THIS company ("CEO and co-founder of Acme"), another mention can only take it back by saying
+        // the role is past; a mention that merely sits among other names ("Founded by Jane Roe (CEO) and Sam Lee (CTO)") says nothing against it.
+        if ('refused' in r && ['title_at_another_organisation', 'possessive_title', 'past_role'].includes(r.refused) && !(first.direct && r.nearby)) return { refused: r.refused }
       }
     }
   }
-  return first
+  return { person: first.person, linkedin_refused: first.linkedin_refused }
 }
 
 export async function researchContact(input: ResearchInput, deps: ResearchDeps): Promise<ResearchResult> {
@@ -385,7 +476,7 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
     for (const h of r.hits) { const u = h.url.split('#')[0]; if (!seen.has(u)) { seen.add(u); hits.push(h) } }
   }
   if (hits.length === 0) return base(failed ? 'search_failed' : 'none', failed ?? 'no_results', { queries })
-  const sources: Source[] = hits.slice(0, 20).map((h, i) => ({ id: `S${i + 1}`, url: h.url, title: tidy(h.title).slice(0, 200), text: tidy(h.snippet ?? '').slice(0, 400), kind: 'search' as const }))
+  const sources: Source[] = hits.slice(0, 20).map((h, i) => ({ id: `S${i + 1}`, url: h.url, title: plain(h.title).slice(0, 200), text: plain(h.snippet ?? '').slice(0, 400), kind: 'search' as const }))
   // One page read, only of the company's own site when a result is on its confirmed domain (a team / about page beats a snippet).
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   const own = domain ? sources.find(s => { const h = hostOf(s.url); return h === domain || h.endsWith(`.${domain}`) }) : undefined

@@ -1,6 +1,8 @@
 // #1102: the grounded named-person step of a scan. For the leads that still name nobody after the crawl and the profile search, ONE
 // grounded lookup each (lib/people/contact-research.ts: at most 2 searches, 1 page read, 1 Haiku call; every field checked in code
 // against the text of a source that was shown). A person is stored only when the lookup keeps one, with the source it was read from.
+// Only a lead with a CONFIRMED website is looked up: off the company's own site a source must name that website to count (Hermes decision
+// on #1164), so a lead with no confirmed website can never keep a person and no search or model call is spent on it (counted: no_website).
 // Inside the scan's own caps: at most MAX_LEADS leads, one lookup per company, a wall-clock deadline, and the scan's spend ledger
 // still binds every search and model call (a refusal stops the pass, it is not an error).
 import type Database from 'better-sqlite3'
@@ -19,8 +21,8 @@ export const MAX_LEADS = 5          // lookups per scan, best leads first
 export const CONCURRENCY = 3
 export const DEADLINE_MS = 100_000  // the whole pass; a scan must finish in minutes
 
-export interface GroundedStats { eligible: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
-export const newGroundedStats = (): GroundedStats => ({ eligible: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
+export interface GroundedStats { eligible: number; no_website: number; looked_up: number; found: number; none: number; refused: Record<string, number>; failed: Record<string, number> }
+export const newGroundedStats = (): GroundedStats => ({ eligible: 0, no_website: 0, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
 export interface GroundedOpts { provider: Provider; apiKey: string; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; maxLeads?: number; deadlineMs?: number; alive?: () => boolean; stats?: GroundedStats; onStop?: (why: string) => void }
 
 export async function findGroundedPeople(db: Database.Database, tenantId: string, jobId: string, deps: GroundedOpts): Promise<number> {
@@ -37,18 +39,20 @@ export async function findGroundedPeople(db: Database.Database, tenantId: string
     const leads = db.prepare(`SELECT id, company, company_domain FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ORDER BY (review_reason IS NOT NULL), COALESCE(fit, 0) DESC, rowid`).all(jobId) as { id: string; company: string; company_domain: string | null }[]
     const rowsOf = db.prepare(ROWS_SQL)
     const seen = new Set<string>()
-    const todo = leads.filter(l => {
-      const ck = companyKey(l.company); if (seen.has(ck)) return false; seen.add(ck)
-      return !leadPerson(rowsOf.all(l.id, tenantId), roleText, now)   // already names its person: nothing to look up
-    }).slice(0, deps.maxLeads ?? MAX_LEADS)
+    const todo: { id: string; company: string; domain: string }[] = []
+    for (const l of leads) {
+      const ck = companyKey(l.company); if (seen.has(ck)) continue; seen.add(ck)
+      if (leadPerson(rowsOf.all(l.id, tenantId), roleText, now)) continue   // already names its person: nothing to look up
+      if (!(l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain))) { stats.no_website++; continue }
+      if (todo.length < (deps.maxLeads ?? MAX_LEADS)) todo.push({ id: l.id, company: l.company, domain: l.company_domain })
+    }
     stats.eligible = todo.length
     const deadline = Date.now() + (deps.deadlineMs ?? DEADLINE_MS)
     let stop: string | null = null, next = 0
-    const one = async (l: { id: string; company: string; company_domain: string | null }) => {
-      const domain = l.company_domain && domainConfirmed(db, tenantId, l.id, l.company_domain) ? l.company_domain : null
+    const one = async (l: { id: string; company: string; domain: string }) => {
       stats.looked_up++
       let r: ResearchResult
-      try { r = await researchContact({ company: l.company, domain, roles, where }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
+      try { r = await researchContact({ company: l.company, domain: l.domain, roles, where }, { db, tenantId, provider: deps.provider, apiKey: deps.apiKey, env: deps.env, fetchImpl: deps.fetchImpl, signal: AbortSignal.timeout(Math.max(1_000, deadline - Date.now())) }) }
       catch (e) {
         if (e instanceof SpendRefused) { stop ??= `spend:${e.reason}`; stats.failed[`spend_${e.reason}`] = (stats.failed[`spend_${e.reason}`] ?? 0) + 1; return }
         stats.failed.error = (stats.failed.error ?? 0) + 1; return

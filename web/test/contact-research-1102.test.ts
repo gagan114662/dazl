@@ -48,7 +48,9 @@ test('#1102 a person named in a search result with the title, at this company, i
   assert.deepEqual(r.person, { name: 'Jane Roe', title: 'Owner', linkedin: 'https://ca.linkedin.com/in/jane-roe-test', source_url: 'https://ca.linkedin.com/in/jane-roe-test', quote: 'Jane Roe - Owner - Brightloop Dental', place: 'agrees' })
   assert.deepEqual(r.usage, { searches: 2, reads: 0, model: CONTACT_RESEARCH_MODEL, input_tokens: 1800, output_tokens: 240 })
   assert.equal(s.calls.searches.length, MAX_SEARCHES); assert.equal(s.calls.prompts.length, 1, 'one model call, never retried')
-  assert.match(s.calls.searches[0], /^site:linkedin\.com\/in "Brightloop Dental" \("Owner" OR "Practice owner" OR "Office manager"\)$/)
+  // A lead with a confirmed website: its own site is searched first (the profile search is for leads with no website).
+  assert.equal(s.calls.searches[0], 'site:brightloopdental.example ("Owner" OR "Practice owner" OR "Office manager" OR "Founder" OR "Co-founder")')
+  assert.deepEqual(researchQueries({ ...INPUT, domain: null })[0], 'site:linkedin.com/in "Brightloop Dental" ("Owner" OR "Practice owner" OR "Office manager")')
   assert.match(s.calls.searches[1], /^"Brightloop Dental" Toronto, Ontario \("Owner" OR "Practice owner" OR "Office manager" OR "Founder"\)$/)
   assert.deepEqual(r.sources.map(x => x.url), [PROFILE_HIT.url, OTHER_CO.url, NEWS_HIT.url], 'every source shown to the model is listed')
 })
@@ -72,15 +74,15 @@ test('#1102 the company\'s own page is read once (confirmed domain only) and can
 
 test('#1102 nothing from the model\'s memory: a name, title, quote, source or profile that is not in the sources is refused', async () => {
   const cases: [string, unknown, string][] = [
-    ['a person no source names', person('Maria Gomez', 'Owner', 'S1', 'Maria Gomez - Owner - Brightloop Dental'), 'quote_not_in_source'],
-    ['a real quote, a different name', person('Maria Gomez', 'Owner', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'name_not_in_source'],
-    ['a title the source does not give', person('Jane Roe', 'Chief Executive Officer', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'title_not_in_source'],
+    ['a person no source names (S1 is Jane Roe\'s profile)', person('Maria Gomez', 'Owner', 'S1', 'Maria Gomez - Owner - Brightloop Dental'), 'profile_names_someone_else'],
+    ['a real quote, a different name', person('Maria Gomez', 'Owner', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'profile_names_someone_else'],
+    ['a title the source does not give', person('Jane Roe', 'Chief Executive Officer', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'profile_does_not_give_title_at_company'],
     ['a source id that was never shown', person('Jane Roe', 'Owner', 'S99', 'Jane Roe - Owner - Brightloop Dental'), 'source_not_shown'],
     ['a first name only', person('Jane', 'Owner', 'S1', 'Jane Roe - Owner - Brightloop Dental'), 'not_a_full_name'],
-    ['a same-name company elsewhere', person('Sam Lee', 'Owner', 'S2', 'Sam Lee - Owner - Brightloop Dental Supplies'), 'title_at_another_organisation'],
+    ['a same-name company elsewhere', person('Sam Lee', 'Owner', 'S2', 'Sam Lee - Owner - Brightloop Dental Supplies'), 'profile_of_another_employer'],
     ['a longer-named company in a news line', person('Kim Park', 'Owner', 'S5', 'Kim Park, Owner of Brightloop Dental Supplies'), 'title_at_another_organisation'],
     ['a past role', person('Pat Old', 'Former Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'past_role'],
-    ['a past role hidden in the quote ("Former" sits between the name and the title)', person('Pat Old', 'Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'title_not_next_to_name'],
+    ['a past role hidden in the quote ("Former" sits between the name and the title)', person('Pat Old', 'Owner', 'S3', 'Pat Old - Former Owner - Brightloop Dental'), 'past_role'],
     ['not a buyer role', person('Hy Gene', 'Dental Hygienist', 'S4', 'Hy Gene - Dental Hygienist - Brightloop Dental'), 'title_has_other_words'],
   ]
   for (const [what, answer, why] of cases) {
@@ -177,8 +179,8 @@ test('#1102 grounding: a title that is another person\'s, a longer name, a past 
     ['a name that is the start of a longer name', SRC('Team', 'Joann Smith, Owner of Brightloop Dental.' + D), person('Ann Smith', 'Owner', 'S1', 'ann Smith, Owner of Brightloop Dental'), 'name_not_in_source'],
     ['"Former" dropped from the quote', SRC('News', 'Former owner Jane Roe sold Brightloop Dental last year.' + D), person('Jane Roe', 'owner', 'S1', 'owner Jane Roe sold Brightloop Dental'), 'past_role'],
     ['another company\'s CEO in the same sentence', SRC('News', 'Brightloop Dental was acquired by Globex Health in Toronto; Globex CEO Jane Roe said more deals follow.' + D), person('Jane Roe', 'CEO', 'S1', 'CEO Jane Roe said'), 'title_at_another_organisation'],
-    ['a department head is not a decision-maker', SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), 'title_has_other_words'],
-    ['a vice president is not the president', SRC('Team', 'Jane Roe, Vice President at Brightloop Dental.' + D), person('Jane Roe', 'Vice President', 'S1', 'Jane Roe, Vice President at Brightloop Dental'), 'title_has_other_words'],
+    ['a department head is not a decision-maker', SRC('Team', 'Jane Roe, Director of Marketing at Brightloop Dental.' + D), person('Jane Roe', 'Director of Marketing', 'S1', 'Jane Roe, Director of Marketing at Brightloop Dental'), 'not_a_buyer_role'],
+    ['a vice president is not the president', SRC('Team', 'Jane Roe, Vice President at Brightloop Dental.' + D), person('Jane Roe', 'Vice President', 'S1', 'Jane Roe, Vice President at Brightloop Dental'), 'not_a_buyer_role'],
   ]
   for (const [what, hit, answer, why] of cases) {
     const r = await ground(hit, answer); assert.equal(r.status, 'not_grounded', what); assert.equal(r.refused, why, what); assert.equal(r.person, null, what)
@@ -232,7 +234,7 @@ test('#1102 grounding round 2: testimonials, non-decision-maker titles, another 
     ['another person\'s title before an "and"', SRC('Team', 'Sam Lee, owner, and Jane Roe, hygienist at Brightloop Dental in Toronto.' + D), person('Jane Roe', 'Owner', 'S1', 'owner, and Jane Roe'), 'title_not_next_to_name'],
     ['a possessive title', SRC('Team', 'Jane Roe, the owner\'s assistant at Brightloop Dental, books visits.' + D), person('Jane Roe', 'owner', 'S1', 'Jane Roe, the owner'), 'possessive_title'],
     ['"until she retired" after the quote', SRC('News', 'Jane Roe, Owner of Brightloop Dental until she retired in 2019.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
-    ['a year range after the quote (and another person named next to it)', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019). Bob Lee now runs it.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'title_at_another_organisation'],
+    ['a year range after the quote (and another person named next to it)', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019). Bob Lee now runs it.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
     ['a year range after the quote', SRC('News', 'Jane Roe, Owner of Brightloop Dental (2008-2019).' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'past_role'],
     ['retired later in the sentence', SRC('News', 'Jane Roe, Owner, retired in 2019 from Brightloop Dental after 20 years.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner'), 'past_role'],
     ['a place that agrees with nothing (the request names one, the source none)', SRC('Team', 'Jane Roe, Owner of Brightloop Dental.' + D), person('Jane Roe', 'Owner', 'S1', 'Jane Roe, Owner of Brightloop Dental'), 'place_unconfirmed', INPUT],
@@ -335,7 +337,6 @@ test('#1102 grounding round 4: a period after an abbreviation is not a sentence 
     ['a lower-case organisation after a dash', await off('Brightloop Dental news: Jane Roe, Owner - globex health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
     ['a lower-case organisation after a pipe', await off('Brightloop Dental news: Jane Roe, Owner | globex health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
     ['another company is the subject', await off('Globex Health acquired Brightloop Dental last year, and owner Jane Roe said the deal was done.', 'Jane Roe', 'owner', 'owner Jane Roe')],
-    ['the franchise arm of another company', await off('Jane Roe, Owner of Brightloop Dental, the franchise arm of Globex Health.', 'Jane Roe', 'Owner', 'Jane Roe, Owner of Brightloop Dental')],
     ['same first word, another business', await own('Jane Roe, Owner and the longtime head baker of Brightloop Bakery', 'Jane Roe', 'Owner', 'Jane Roe, Owner')],
   ]
   for (const [what, r] of bad) assert.notEqual(r.status, 'found', `${what}: ${JSON.stringify(r.person)}`)

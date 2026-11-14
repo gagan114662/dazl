@@ -126,8 +126,7 @@ const stage = (r: Awaited<ReturnType<typeof runFixture>>) => {
 
 test('#1037 THROUGH THE RUNNER (the reviewer\'s real run): a held lead with no confirmed website is searched, but a result tied by the company name only is refused, counted and never stored', async () => {
   const queries: string[] = []
-  // These tests are about the profile-search pass: the grounded lookup (#1102) has its own test and is switched off here.
-  const r = await withEnv({ GROUNDED_PEOPLE_ENABLED: '0' }, () => runFixture(fx(queries)))
+  const r = await runFixture(fx(queries))
   const lead = r.db.prepare("SELECT id, review_reason FROM leads WHERE company = 'Pagewake'").get() as { id: string; review_reason: string | null } | undefined
   assert.ok(lead, 'the candidate was kept'); assert.ok(lead!.review_reason, `it is held for review (${lead!.review_reason}), not ready`)
   assert.equal(queries.length, 1, 'one people search ran for the held lead'); assert.match(queries[0], /^site:linkedin\.com\/in "Pagewake" \("Account Executive" OR "Sales Manager" OR "VP Sales"\)$/)
@@ -149,7 +148,7 @@ test('#1037 THROUGH THE RUNNER (review finding 3): a people search that no longe
   const queries: string[] = []
   // A search priced at USD 3.20 against the scan cap of USD 3.33: the lead search fits, the people search does not.
   // (No place in this request, as in the reviewer's run: with one, the candidate needs a second lead search, which is what would not fit.)
-  const r = await withEnv({ GROUNDED_PEOPLE_ENABLED: '0', DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '3.2' }, () => runFixture(fx(queries, { modelIcp: { ...RICP, where: [] } })))
+  const r = await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '3.2' }, () => runFixture(fx(queries, { modelIcp: { ...RICP, where: [] } })))
   assert.equal(queries.length, 0, 'nothing was sent')
   const st = stage(r)
   assert.equal(st?.status, 'attempted_no_result', JSON.stringify(st))

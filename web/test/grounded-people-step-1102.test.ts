@@ -17,8 +17,9 @@ const ROWS: Row[] = [
 ]
 const TEAM = { url: 'https://pagewake.example/team', title: 'Our team | Pagewake', snippet: 'Dana Okoye, Head of Sales at Pagewake in Chicago, Illinois, leads our revenue team.' }
 function harness(answer: unknown) {
-  const calls = { searched: [] as string[], prompts: 0 }
-  const fetchImpl = (async (u: string) => { calls.searched.push(/"([^"]+)"/.exec(new URL(String(u)).searchParams.get('query') ?? '')?.[1] ?? ''); return new Response(JSON.stringify({ results: [TEAM] })) }) as unknown as typeof fetch
+  const calls = { searched: [] as string[], reads: 0, prompts: 0 }
+  const fetchImpl = (async (u: string) => { const url = new URL(String(u)); if (url.hostname !== 'api.search.tinyfish.ai') { calls.reads++; return new Response(JSON.stringify({ results: [] })) }
+    const q = url.searchParams.get('query') ?? ''; calls.searched.push(/^site:(\S+)/.exec(q)?.[1] ?? /^"([^"]+)"/.exec(q)?.[1] ?? q); return new Response(JSON.stringify({ results: [TEAM] })) }) as unknown as typeof fetch
   const provider: Provider = { research: async () => { throw new Error('never') }, configuredModel: () => CONTACT_RESEARCH_MODEL, completeDetailed: async () => { calls.prompts++; return { text: JSON.stringify(answer), model: CONTACT_RESEARCH_MODEL, usage: { input_tokens: 1500, output_tokens: 120 } } } }
   return { calls, opts: { provider, apiKey: 'sk-test', env, fetchImpl } }
 }
@@ -31,8 +32,8 @@ test('#1102 a lead that names nobody gets one grounded lookup and the kept perso
   const stats = newGroundedStats()
   const n = await findGroundedPeople(db, 'A', job, { ...h.opts, stats })
   assert.equal(n, 1); assert.equal(h.calls.prompts, 1, 'one model call, for Pagewake only')
-  assert.deepEqual([...new Set(h.calls.searched.filter(Boolean))], ['Pagewake'], 'no search for the named lead or the in-doubt hold')
-  assert.deepEqual(stats, { eligible: 1, looked_up: 1, found: 1, none: 0, refused: {}, failed: {} })
+  assert.deepEqual([...new Set(h.calls.searched)], ['pagewake.example', 'Pagewake'], 'its own site, then the open web; no search for the named lead or the in-doubt hold')
+  assert.deepEqual(stats, { eligible: 1, no_website: 0, looked_up: 1, found: 1, none: 0, refused: {}, failed: {} })
   const rows = personRows(db, 'L-a')
   assert.equal(rows.length, 1); assert.equal(rows[0].connector, GROUNDED_CONNECTOR); assert.equal(rows[0].value, 'Dana Okoye, Head of Sales'); assert.equal(rows[0].source_url, TEAM.url)
   const p = leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = 'L-a' AND kind IN ('person','contact')").all(), HELD_WHO.join('; '))
@@ -53,4 +54,13 @@ test('#1102 a job of another tenant is never read, and a lost job writes nothing
   const h = harness({ person: { name: 'Dana Okoye', title: 'Head of Sales', source: 'S1', quote: 'Dana Okoye, Head of Sales at Pagewake', linkedin_source: null } })
   assert.equal(await findGroundedPeople(db, 'B', job, h.opts), 0); assert.equal(h.calls.prompts, 0)
   assert.equal(await findGroundedPeople(db, 'A', job, { ...h.opts, alive: () => false }), 0); assert.equal(personRows(db, 'L-a').length, 0)
+})
+
+test('#1102 a lead with no confirmed website is never looked up: no search, no model call, counted', async () => {
+  const { db, job } = setup(ROWS, undefined, { domains: false })
+  const h = harness({ person: { name: 'Dana Okoye', title: 'Head of Sales', source: 'S1', quote: 'Dana Okoye, Head of Sales at Pagewake', linkedin_source: null } })
+  const stats = newGroundedStats()
+  assert.equal(await findGroundedPeople(db, 'A', job, { ...h.opts, stats }), 0)
+  assert.equal(h.calls.searched.length, 0); assert.equal(h.calls.reads, 0); assert.equal(h.calls.prompts, 0)
+  assert.deepEqual(stats, { eligible: 0, no_website: 2, looked_up: 0, found: 0, none: 0, refused: {}, failed: {} })
 })

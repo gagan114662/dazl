@@ -1932,8 +1932,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       trace.note('people_search', status, peopleTraceMessage(n, stopped.why, stats), detail)
     } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
     // #1102 grounded named-person step: for the leads that still name nobody, one lookup each (search + at most one page read + one Haiku
-    // call, every field checked in code against a source that was shown). Anthropic key only; kill switch GROUNDED_PEOPLE_ENABLED=0; never throws.
-    if (process.env.GROUNDED_PEOPLE_ENABLED === '0') trace.note('grounded_people', 'skipped', 'GROUNDED_PEOPLE_ENABLED=0')
+    // call, every field checked in code against a source that was shown). Anthropic key only; never throws. OFF unless GROUNDED_PEOPLE_ENABLED=1: it adds
+    // searches and a model call per lead, and on the first real measurement (2026-11-14, 3 matrix markets) it named nobody new, so it is switched on per deployment.
+    if (process.env.GROUNDED_PEOPLE_ENABLED !== '1') trace.note('grounded_people', 'skipped', 'GROUNDED_PEOPLE_ENABLED is not 1')
     else if (!peopleSearchEnabled()) trace.note('grounded_people', 'skipped', 'TinyFish search is not configured: no lookup can run')
     else if (vendor !== 'anthropic') trace.note('grounded_people', 'skipped', 'the grounded lookup runs on an Anthropic key and this scan uses another vendor')
     else if (trial) trace.note('grounded_people', 'skipped', 'free-trial scans keep their reserve for the checks after the scan')
@@ -1941,7 +1942,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const gstats = newGroundedStats(); const gstop: { why: string | null } = { why: null }
       migrateTinyfish(db)
       const n = await findGroundedPeople(db, job.user_id, job.id, { provider: anthropicWithModel(CONTACT_RESEARCH_MODEL), apiKey: key, fetchImpl: deps.fetchImpl, stats: gstats, onStop: why => { gstop.why ??= why }, alive: () => postFinishAlive(db, job) })
-      trace.note('grounded_people', gstop.why === 'error' ? 'failed' : n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : `no lookup kept a person (${gstats.looked_up} looked up)`, { people_stored: n, eligible: gstats.eligible, looked_up: gstats.looked_up, found: gstats.found, none: gstats.none, ...Object.fromEntries(Object.entries(gstats.refused).map(([k, v]) => [`refused_${k}`, v])), ...Object.fromEntries(Object.entries(gstats.failed).map(([k, v]) => [`failed_${k}`, v])), ...(gstop.why ? { stopped: gstop.why } : {}) })
+      trace.note('grounded_people', gstop.why === 'error' ? 'failed' : n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : `no lookup kept a person (${gstats.looked_up} looked up; ${gstats.no_website} lead(s) with no confirmed website were not looked up)`, { people_stored: n, eligible: gstats.eligible, no_confirmed_website: gstats.no_website, looked_up: gstats.looked_up, found: gstats.found, none: gstats.none, ...Object.fromEntries(Object.entries(gstats.refused).map(([k, v]) => [`refused_${k}`, v])), ...Object.fromEntries(Object.entries(gstats.failed).map(([k, v]) => [`failed_${k}`, v])), ...(gstop.why ? { stopped: gstop.why } : {}) })
     } catch (e) { trace.note('grounded_people', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
