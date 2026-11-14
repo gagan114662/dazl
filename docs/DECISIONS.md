@@ -96,13 +96,3 @@ community sites). Paid enrichment stays bring-your-own-key only.
 
 Every change goes on a branch. Instinct reviews the diff, runs the tests and live scans, and approves
 before anything merges to main or is deployed.
-
-## 2026-11-13: guessed addresses are shown, labelled (#1036)
-
-Hermes's direction on #1036: a guessed address built from the company's learned format is shown on the lead card, never as
-"published". It reads "guessed, unverified" until a mailbox check answers valid ("guessed, verified"). Unchanged from
-2026-10-26: guesses stay US-only, off unless EMAIL_GUESS_ENABLED=1, and are never a draft recipient (drafts use published
-addresses only). The format is learned from the tenant's own confirmed addresses (published on the company's site, or the
-tenant's own provider-verified lookup), worked out on demand and never stored on its own. Settings > Enrichment shows the
-mailbox-check counter and cap, and says "Off" when guessing is off. The privacy text now says this and still needs the
-owner's approval ([NEEDS OWNER] stays).
