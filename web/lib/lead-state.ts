@@ -50,8 +50,9 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   if (l.window_held) return 'older'
   if (!date || l.day_verified !== true) return 'undated'   // #1176: the card's proof (day_verified), not the retired date_status 'verified'; no flag fails closed
   // #1176 reader 2 (prod 2121e61c: "Zayed Law: no usable event date." beside a card that says "verified on the cited source"): the day IS proven.
-  // What still holds the lead is the timing gate (currentnessHeld: no complete machine proof of a current need, no confirmation by the user), which
-  // the Leads page words as "the event day is verified against the cited source, but no current buying need was verified". Same fact, same words.
+  // What still holds the lead is the timing gate (currentnessHeld -> timingProofGap: domain, named person, route or record not all confirmed by the
+  // machine, and no confirmation by the user). heldState files the plain case of it as review (confirming the source makes it draftable); 'need'
+  // is what remains research for that reason.
   if (l.currentness_held) return 'need'
   return 'unsupported'
 }
@@ -74,6 +75,10 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   // A hold a look at the source can resolve is reviewable unless a time window holds the lead: confirming lifts the first, never the second.
   if (reviewIsActionable(l)) return { state: 'review', cause: null }
   if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
+  // #1176 reader 2 (council): a machine-verified lead with a PROVEN event day, no review reason, no window or required-check hold, held only by
+  // the timing gate, becomes draftable when the user confirms its source (confirmLeadReview; currentnessHeld then lets it through), and the
+  // Leads card offers exactly that ("I checked the source - use it"). So it is review, not research: Home counts it under "needs your review".
+  if (!r && why === 'event timing unknown' && l.currentness_held && l.day_verified === true && !!l.event_date && l.confidence != null && !l.window_held && !l.gate_held && !l.human_confirmed_at) return { state: 'review', cause: null }
   return { state: 'research', cause }
 }
 
@@ -83,15 +88,14 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
 export const CAUSE_TEXT: Record<ResearchCause, string> = {
   undated: 'no usable event date', older: 'event older than your time window', customer: "only another company's page names it, as their customer",
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
-  need: 'event day verified on the cited source, but no current buying need was verified',
+  need: 'event day verified on the cited source; the rest of the lead is not confirmed yet',
 }
 // Home's one-line reason under "Nothing ready - the leads found are research only". It used to say for every such play that none has
 // verified, dated evidence - false when a lead's day IS verified and only the buying need is not (#1176 reader 2).
 export function researchHint(causes: ResearchCause[]): string {
   const need = causes.filter(c => c === 'need').length
   if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
-  const who = need === causes.length ? (need === 1 ? 'Its event day is' : `Their event days are`) : `For ${need} of them the event day is`
-  return `${who} verified on the cited source, but no current buying need was verified, so nothing is ready. Each lead's reason is below.`
+  return `${need === causes.length ? (need === 1 ? 'Its event day is' : 'Their event days are') : `For ${need} of them the event day is`} verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
 }
 const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
 const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }

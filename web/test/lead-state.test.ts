@@ -164,24 +164,29 @@ const PROD = [
   { id: '0a0f7e407af475a437920526', company: 'Ogletree Deakins', event_date: '2026-10-26', date_status: 'unverified', event_date_proof: 'page_bound', day_verified: true, review_reason: null, confidence: 60, window_held: false, currentness_held: true, gate_held: false, fit: 5, intent: 0, human_confirmed_at: null, timing_reason: null, signal_kind: null },
 ].map(r => lead({ ...r, signal: 'Moved to a larger office', evidence_excerpt: `${r.company} moved to a larger Chicago office`, source_url: 'https://news.example/move' } as never))
 
-test('#1176 reader 2: a lead whose event day is PROVEN and that only the timing gate holds is never "no usable event date" (the real Zayed Law and Ogletree Deakins rows)', async () => {
+test('#1176 reader 2: a lead whose event day is PROVEN and that only the timing gate holds is never "no usable event date" - it is a review item, since confirming its source makes it draftable (the real Zayed Law and Ogletree Deakins rows)', async () => {
   const { CAUSE_TEXT, researchHint } = await import('../lib/lead-state.ts')
+  const { reviewAction } = await import('../lib/scan/review-action.ts')
   for (const l of PROD) {
-    assert.deepEqual(heldState(l), { state: 'research', cause: 'need' }, l.company)
-    assert.equal(researchCause(l), 'need')
-    assert.equal(CAUSE_TEXT[researchCause(l)], 'event day verified on the cited source, but no current buying need was verified')
-    assert.doesNotMatch(CAUSE_TEXT[researchCause(l)], /no usable event date/)
+    assert.deepEqual(heldState(l), { state: 'review', cause: null }, l.company)
+    assert.equal(researchCause(l), 'need', 'if anything still lists it as research, it never says the date is unusable')
+    assert.equal(reviewAction(l).label, 'I checked the source - use it', 'Home and the Leads card agree: the user can settle it')
   }
-  // Home's journey for that play: still nothing ready (the gate is unchanged), and no sentence says the leads have no verified date
+  assert.equal(CAUSE_TEXT.need, 'event day verified on the cited source; the rest of the lead is not confirmed yet')
+  // Home's journey for that play: nothing ready yet (the gate is unchanged), both leads under "needs your review", none called research or undated
   const j = journey({ profile, jobs: [{ ...job, lead_count: 2 }], leads: PROD, drafts: null })
-  assert.equal(j.stage, 'research_only'); assert.equal(j.split?.opportunities.length, 0)
-  assert.deepEqual(j.split?.research.map(r => r.cause), ['need', 'need'])
-  assert.equal(researchHint(j.split!.research.map(r => r.cause)), "Their event days are verified on the cited source, but no current buying need was verified, so nothing is ready. Each lead's reason is below.")
-  assert.equal(researchHint(['need']), "Its event day is verified on the cited source, but no current buying need was verified, so nothing is ready. Each lead's reason is below.")
-  assert.equal(researchHint(['need', 'undated', 'customer']), "For 1 of them the event day is verified on the cited source, but no current buying need was verified, so nothing is ready. Each lead's reason is below.")
+  assert.equal(j.stage, 'all_held'); assert.equal(j.split?.opportunities.length, 0)
+  assert.equal(j.split?.review.length, 2); assert.equal(j.split?.research.length, 0)
+  assert.doesNotMatch(j.line, /cannot make|undated|no usable/)
+  // what confirming does (review-confirm.ts sets human_confirmed_at; currentnessHeld then releases a machine-verified lead): it becomes an opportunity
+  const confirmed = PROD.map(l => ({ ...l, human_confirmed_at: 1_800_000_000, currentness_held: false }))
+  const after = journey({ profile, jobs: [{ ...job, lead_count: 2 }], leads: confirmed, drafts: null })
+  assert.equal(after.split?.opportunities.length, 2, JSON.stringify(after.split?.held.map(h => h.reason)))
+  // the hint, for a play where proven-day leads are research for some other combination of holds
+  assert.equal(researchHint(['need', 'need']), "Their event days are verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.")
+  assert.equal(researchHint(['need', 'undated', 'customer']), "For 1 of them the event day is verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.")
   assert.equal(researchHint(['undated', 'customer']), 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.', 'unchanged when no day is proven')
-  // "Try a signal with dated sources" is not offered for a lead whose date is fine
-  assert.ok(!widenActions(job.query, null, ['need']).some(a => /dated/i.test(a.label)), JSON.stringify(widenActions(job.query, null, ['need'])))
+  assert.ok(!widenActions(job.query, null, ['need']).some(a => /dated/i.test(a.label)))
 })
 
 test('#1176 reader 2 controls: the timing gate alone never makes a day "verified" - no day, an unproven day, a missing flag, a window hold and a date reason all keep their own cause', () => {
@@ -194,4 +199,6 @@ test('#1176 reader 2 controls: the timing gate alone never makes a day "verified
   assert.equal(researchCause({ ...z, review_reason: 'counterparty_signal' }), 'customer')
   assert.equal(researchCause({ ...z, gate_held: true }), 'unsupported', 'a required check that has not passed is named first')
   assert.equal(researchCause({ ...z, currentness_held: false }), 'unsupported', 'not held by the timing gate: some other cause')
+  // the review filing is only for the plain case: an unproven day, a window hold, a failed required check or a held-by-reason lead stays research
+  for (const [why, row] of [['unproven day', { ...z, day_verified: false }], ['no day', { ...z, event_date: null }], ['window', { ...z, window_held: true }], ['gate', { ...z, gate_held: true }], ['customer', { ...z, review_reason: 'counterparty_signal' }], ['not machine-verified', { ...z, confidence: null }]] as [string, PreviewLead][]) assert.notDeepEqual(heldState(row), { state: 'review', cause: null }, why)
 })
