@@ -176,7 +176,7 @@ test('inventory: each gated module reserves its kind before its request, and daz
 
 test("outsideScanSpend: work started inside a scan but not the scan's spend sees no scan context", async () => {
   const s = scan()
-  const seen = await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => [scanSpendContext()?.jobId, await outsideScanSpend(async () => scanSpendContext()?.jobId ?? null)])
+  const seen = await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, async () => [scanSpendContext()?.jobId, await outsideScanSpend(async () => scanSpendContext()?.jobId ?? null)])
   assert.deepEqual(seen, ['j1', null])
 })
 
@@ -214,7 +214,7 @@ for (const t of TRANSPORTS) {
         seen.push({ url: String(u), reserved: (s.raw.prepare("SELECT count(*) AS n FROM scan_spend_calls WHERE kind = ? AND status = 'reserved'").get(t.kind) as { n: number }).n })
         return t.reply()
       }) as unknown as typeof fetch
-      await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => t.call(f, s.raw))
+      await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => t.call(f, s.raw))
       assert.equal(seen.length, 1, 'one request')
       assert.equal(seen[0].reserved, 1, 'reserved before the request')
       const calls = await scanSpendCalls(s.db, 'j1', A)
@@ -233,7 +233,7 @@ for (const t of TRANSPORTS) {
         : t.call
       let threw: unknown = null
       let out: unknown
-      try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
+      try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
       assert.deepEqual(sent, [], 'no request at the cap')
       if (t.kind === 'render') assert.equal(out, null, 'a refused render renders nothing')
       // TinyFish included: the SCAN'S OWN budget refusal now propagates as SpendRefused (it used to be swallowed into a
@@ -249,7 +249,7 @@ test('pdl: the reservation for the size asked for settles to the profiles return
   const r6 = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6)
   for (const reply of [ok({ data: [{ full_name: 'Pat Lee' }, { full_name: 'Sam Roe' }] }), new Response('{}', { status: 404 }), new Response('{}', { status: 500 }), new Response('not json', { status: 200 }), ok({ data: 'x' })]) {
     const s = scan()
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => pdlPeopleSearch('pdl-test', 'Acme', (async () => reply) as unknown as typeof fetch, 5)).catch(() => null)
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => pdlPeopleSearch('pdl-test', 'Acme', (async () => reply) as unknown as typeof fetch, 5)).catch(() => null)
     by.push(...(await scanSpendCalls(s.db, 'j1', A)).map(c => [r6(c.reserve_usd), c.status, r6(c.actual_usd)]))
   }
   assert.deepEqual(by, [[1.4, 'settled', 0.56], [1.4, 'settled', 0], [1.4, 'reserved', null], [1.4, 'reserved', null], [1.4, 'reserved', null]]) // a 5xx, an unreadable 200 and an answer without a profile list may have been billed: the row stays 'reserved' (#363), it used to be 'kept' (which let a retry re-send)
@@ -272,7 +272,7 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
   ]
   for (const c of cases) for (const [what, reply, want] of outcomes) {
     const s = scan()
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => c.call((async () => reply()) as unknown as typeof fetch)).catch(() => null)
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => c.call((async () => reply()) as unknown as typeof fetch)).catch(() => null)
     const calls = await scanSpendCalls(s.db, 'j1', A)
     // tinyfish builds its own db for the gate; its spend row is on the scan db passed to runWithScanSpend
     assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
@@ -287,7 +287,7 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
     const s = scan()
     resetTinyfishState() // an earlier leg's TinyFish 429 sets TinyFish's own process-wide rate block; each leg starts clear
     const later: Record<string, number> = {}
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, async () => {
       await first.call(firstAnswer as unknown as typeof fetch).catch(() => null)
       // A well-formed answer for every vendor (a bare {} is an unreadable PDL answer: maybe billed, which would itself stop the attempt).
       for (const c of cases) await c.call((async () => { later[c.name] = (later[c.name] ?? 0) + 1; return new Response(JSON.stringify({ organization: null, people: [], data: [], results: [] }), { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
@@ -309,7 +309,7 @@ test('model completions: an unlisted configured model is refused before any requ
   const prev = process.env.DAZL_ANTHROPIC_MODEL
   process.env.DAZL_ANTHROPIC_MODEL = 'claude-unlisted-model'
   try {
-    await assert.rejects(runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
+    await assert.rejects(runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
     assert.deepEqual(sent, [])
     assert.deepEqual((await scanSpendCalls(s.db, 'j1', A)).map(c => [c.status, c.reason]), [['refused', 'model_unpriced']])
     process.env.DAZL_ANTHROPIC_MODEL = 'claude-sonnet-4-5'
