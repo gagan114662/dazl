@@ -44,13 +44,13 @@ export interface TrialState { funded: boolean; reason?: TrialDeny; used: number;
 
 // A trial scan keeps its slot once it could have cost dazl money: a failed scan that reserved any paid step is one of
 // the three, like a cancelled one (provider work may already have run on the operator key). Only a scan that failed
-// before any cost (no spend reserved) gives the slot back (a scan stopped by a spending limit, failed budget_stopped, keeps it: #1172), and so does a scan that STOPPED AFTER AN INTERRUPTION
+// before any cost (no spend reserved) gives the slot back, and so does a scan that STOPPED AFTER AN INTERRUPTION
 // (failed accounting_uncertain) once its run has settled, and so does a free scan that stopped at its spending limit before finding any company (done trial_budget_reached, 0 candidates): the person got nothing (owner decisions 2026-11-11). Admission
 // enforces the same count under its lock (lib/billing/trial-budget.ts releasedBeforeCost, pinned equal by
 // test/trial-interrupted-attempt.test.ts); this one drives the free-scans counter and the first check.
 const TRIAL_USED_SQL = `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
      LEFT JOIN trial_reservations r ON r.job_id = j.id AND r.tenant_id = t.tenant_id AND r.kind = 'scan'
-     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR j.error = 'budget_stopped' OR COALESCE(j.spend_reserved_usd, 0) > 0)
+     WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0)
        AND NOT (j.status = 'failed' AND j.error = 'accounting_uncertain' AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)
        AND NOT (j.status = 'done' AND COALESCE(j.error, '') = 'trial_budget_reached' AND COALESCE(j.candidates, -1) = 0 AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)`
 const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?'
