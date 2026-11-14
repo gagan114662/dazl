@@ -40,7 +40,7 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { companyHostsFromSearch, crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -67,7 +67,7 @@ import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
 import { linkedinSessionTransport, sessionTransportProblem } from '../signals/linkedin-session-transport.ts'
-import { writeAudit } from '../connectors/store.ts'
+import { audit, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -2076,19 +2076,37 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
   // Policy (run-budget.ts SITE_SEARCHES_PER_SCAN): never a free-trial scan (its reserve is planned for the lead and people searches),
   // never a first play, never a run that switched paid steps off. Those scans keep the name-guessed domains.
-  if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || trialCharges.get(job)) return undefined
+  if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || job.funded_by === 'trial' || trialCharges.get(job)) return undefined
   // ... and never a scheduled play run (a watch's or a monitor's): it runs unattended under the caps it was confirmed with
   if (job.watch_id || isMonitorRun(db, job)) return undefined
   let asked = 0, stopped = false
-  return async (company, where) => {
-    if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return []
+  // Every search leaves a row in the connector audit (connector 'sitecrawl', status site_search_<outcome>): the run report shows the
+  // searches that were made and why they stopped (a cap, a rate limit, a rejected key, a spend refusal), never a silent "no results".
+  const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_search_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
+  // one search per company per scan: two leads on the same company share the answer, and the second spends nothing
+  const answers = new Map<string, Promise<string[]>>()
+  return (company, where) => {
+    // a name too short to tell one company's host from another's would spend a search whose every result is refused
+    if (hostNamesFor(company).length === 0) return Promise.resolve([])
+    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const had = answers.get(key)
+    if (had) return had
+    if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return Promise.resolve([])
+    // the scan was cancelled, deleted or taken over by a newer attempt: nothing more is sent for it (as the mailbox check)
+    if (!postFinishAliveStrict(db, job)) { stopped = true; return Promise.resolve([]) }
     asked++
     const query = `${company} ${where[0] ?? ''} official website`.replace(/\s+/g, ' ').trim()
-    try {
-      const r = await tfSearch(db, job.user_id, query, {}, { searches: 0 }, { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(signal ? { signal } : {}) })
-      if (!r.ok) { if (r.reason !== 'unavailable') stopped = true; return [] } // a cap, a rate limit, a rejected key: no further search this scan
-      return companyHostsFromSearch(company, r.hits)
-    } catch { stopped = true; return [] }
+    const answer = (async () => {
+      try {
+        const r = await tfSearch(db, job.user_id, query, {}, { searches: 0 }, { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(signal ? { signal } : {}) })
+        if (!r.ok) { if (r.reason !== 'unavailable') stopped = true; note(company, r.reason, 0); return [] } // a cap, a rate limit, a rejected key: no further search this scan
+        const hosts = companyHostsFromSearch(company, r.hits, 3, where)
+        note(company, 'ok', hosts.length)
+        return hosts
+      } catch (e) { stopped = true; note(company, e instanceof SpendRefused ? 'spend_refused' : 'error', 0); return [] }
+    })()
+    answers.set(key, answer)
+    return answer
   }
 }
 

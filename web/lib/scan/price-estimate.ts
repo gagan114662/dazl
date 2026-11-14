@@ -159,7 +159,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const trialPeoplePrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
     const searches = DEFAULT_TINYFISH.searchesPerScan + (adaptive ? ADAPTIVE_SEARCHES : 0), fetches = DEFAULT_TINYFISH.fetchesPerScan + (adaptive ? ADAPTIVE_FETCHES : 0)
     const extra = adaptive ? `; plus at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages in one more round, only when the first round verifies no lead` : ''
-    // #1036 4b: the company-website searches after the scan (runner.ts siteFinderFor), under the same policy the runner applies
+    // #1036 4b: the company-website searches after the scan (runner.ts siteFinderFor). A MAXIMUM: this branch is never a first play,
+    // and a trial or a run with paid steps off gets none; a scheduled play run and a deployment without TinyFish also make none,
+    // which the estimate cannot see, so there it overstates (never understates).
     const site = i.payer !== 'trial' && b?.paid_fallback !== false && env.SITECRAWL_ENABLED !== '0' ? SITE_SEARCHES_PER_SCAN : 0
     const searchMax = (tfSearch ?? 0) * (searches + site) + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
