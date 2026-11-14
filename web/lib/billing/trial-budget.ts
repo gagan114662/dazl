@@ -187,8 +187,11 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // Only the attempt COUNT: its recorded spend still counts as money (reservationCost), so the $0.30 / $1 / $10 caps are unchanged. A stop that
 // kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
 const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
+// A scan stopped by a spending limit (failed budget_stopped: the account's day / month cap, the per-scan cap) KEEPS its place even with no spend
+// recorded (#1172, owner decision on #1167): such a scan sends nothing, and an account at its cap must not be able to start free scans without limit.
+// Before #1172 its refused calls stayed on spend_reserved_usd, which kept the place by accident.
 export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
-  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
+  && ((r.error !== 'cancelled' && r.error !== 'budget_stopped' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {

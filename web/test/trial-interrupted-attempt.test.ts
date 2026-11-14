@@ -55,6 +55,16 @@ test('(A) ledger: every other ending keeps its place (control: pins the existing
   assert.equal(one({ status: 'queued', error: 'accounting_uncertain' }), 1, 'queued for a retry holds it')
   assert.equal(one({ kind: 'site_read', status: null, error: null }), 0, 'a website read is never an attempt (unchanged)')
 })
+// #1172 (review at b8eef37e, finding 2): a trial scan stopped by a spending limit records no spend now (its refused calls are given back), and
+// must still use the free scan it took: otherwise an account at the account cap could start free scans without limit.
+test('#1172 ledger: a settled trial scan stopped by a spending limit (failed budget_stopped, nothing spent) keeps its place; a failure with nothing spent for another reason still gives it back', () => {
+  const one = (o: Partial<LedgerRow>) => ledger([row(o)], 'T', DAY).attempts
+  assert.equal(one({ error: 'budget_stopped', spend_reserved_usd: 0 }), 1)
+  assert.equal(one({ error: 'budget_stopped', spend_reserved_usd: 0.09 }), 1)
+  assert.equal(ledger([row({ error: 'budget_stopped', spend_reserved_usd: 0 }), row({ error: 'budget_stopped', spend_reserved_usd: 0 }), row({ error: 'budget_stopped', spend_reserved_usd: 0 })], 'T', DAY).attempts, 3, 'three limit stops use all three')
+  assert.equal(one({ error: 'source_error', spend_reserved_usd: 0 }), 0, 'control: a scan that failed before any cost for another reason is still given back (unchanged)')
+})
+// (the first-check / admission agreement for this ending is pinned below, next to every other ending)
 bothEngines('(A) admission: three interrupted scans leave all three free scans; the money caps still bind', async ({ db }) => {
   const u = await mkUser(db, 'a'.repeat(32), 'a@gmail.com')
   for (let i = 0; i < 3; i++) await ended(db, u, { status: 'failed', error: 'accounting_uncertain', spent: 0.03 })
@@ -119,6 +129,7 @@ test('the first check (trial.ts) and admission (ledger) count the same used scan
       ['paid failure', { status: 'failed', error: 'provider_error', spent: 0.03, settle: true }],
       ['cancelled', { status: 'failed', error: 'cancelled', spent: 0, settle: true }],
       ['failed before cost', { status: 'failed', error: 'trial_unavailable', spent: 0, settle: true }],
+      ['stopped by a spending limit, nothing spent (#1172)', { status: 'failed', error: 'budget_stopped', spent: 0, settle: true }],
       ['done', { status: 'done', error: null, spent: 0.05, settle: true }],
     ]
     for (const [name, e] of endings) {
@@ -129,6 +140,10 @@ test('the first check (trial.ts) and admission (ledger) count the same used scan
     const s = await account(); for (let i = 0; i < 3; i++) await trialScan(s, endings[0]![1])
     assert.deepEqual(await both(s), { first: 0, ledger: 0 }, 'three settled interruptions: nothing used, by both counts')
     assert.equal(trialStatus(s.raw, s.u.id, '1.1.1.1').remaining, 3, 'the usage counter shows 3 free scans left')
+    // #1172: three scans stopped by a spending limit with nothing spent use all three free scans, by both counts
+    const l = await account(); for (let i = 0; i < 3; i++) await trialScan(l, { status: 'failed', error: 'budget_stopped', spent: 0, settle: true })
+    assert.deepEqual(await both(l), { first: 3, ledger: 3 }, 'three limit stops: all three free scans used, by both counts')
+    assert.equal(trialStatus(l.raw, l.u.id, '1.1.1.1').remaining, 0)
     const u = await account(); for (let i = 0; i < 3; i++) await trialScan(u, endings[1]![1])
     assert.deepEqual(await both(u), { first: 3, ledger: 3 }, 'unsettled interruptions keep their places until settled')
   })
