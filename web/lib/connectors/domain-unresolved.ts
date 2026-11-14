@@ -9,12 +9,13 @@ const UNRESOLVED_WORDS: Record<string, string> = {
   linked_site_not_confirmed: 'the website linked from the source page could not be confirmed as this company',
   not_confirmed: 'no website found for the company name was confirmed as this company in this place',
   own_site_refused_reading: 'the company\'s own website did not allow automated reading',
-  probe_limit_reached: 'this scan had used its website checks before reaching this company',
+  own_site_needs_javascript: 'the company\'s own website can only be read with JavaScript, which this check does not run',
+  probe_limit_reached: 'this scan checks the websites of its top leads only and did not reach this company',
   time_budget: 'the website check ran out of time before a site could be read',
-  site_not_readable: 'the likely website does not allow automated reading (its robots rules), so it was not read',
-  site_not_read: 'the likely website could not be read',
+  site_not_readable: 'a website that may be the company\'s does not allow automated reading (its robots rules), so it could not be checked',
+  site_not_read: 'a website that may be the company\'s could not be read',
   not_checked: 'the website check does not run for a lead held for this reason',
 }
-export const domainUnresolvedWords = (code: string) => UNRESOLVED_WORDS[code] ?? 'the company website could not be confirmed'
+export const domainUnresolvedWords = (code: string) => (Object.hasOwn(UNRESOLVED_WORDS, code) ? UNRESOLVED_WORDS[code] : 'the company website could not be confirmed')   // own keys only: 'constructor' is unknown, not Object's constructor
 // The words for a stored label (token + code); a label without the token (never written) reads as the general sentence.
 export const domainUnresolvedText = (label: string | null | undefined) => domainUnresolvedWords((label ?? '').startsWith(DOMAIN_UNRESOLVED_TOKEN) ? (label ?? '').slice(DOMAIN_UNRESOLVED_TOKEN.length) : '')

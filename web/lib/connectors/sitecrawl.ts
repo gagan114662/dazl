@@ -5,6 +5,7 @@ import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN } from './domain-unresolved.ts'
@@ -124,6 +125,9 @@ const SOCIAL = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|wiki
 
 const registrable = (host: string) => { const h = host.toLowerCase().replace(/^www\./, ''); return getDomain(h) ?? h }
 const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('')
+// A host that can be a company's website: a DNS name with at least two labels. Never an IP literal (the resolver guard that refuses private
+// addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
+export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) }
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
@@ -142,7 +146,7 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), base) } catch { continue }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') continue
     const host = registrable(u.hostname)
-    if (host === own || SOCIAL.test(host)) continue
+    if (host === own || SOCIAL.test(host) || !siteHostOk(host)) continue   // never an IP literal or a single label: the private-address guard only runs for names
     if (labelMatches(nameLabel(host), want)) push(host, 'evidence_link_domain_label')
     else if (norm(m[2].replace(/<[^>]+>/g, ' ')).includes(want) && want.length >= 5) byText.push(host)
   }
@@ -157,7 +161,8 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
 export function ldJsonBlocks(html: string): string[] {
-  const out: string[] = []; const low = html.length <= 2_000_000 ? html.toLowerCase() : ''
+  // ASCII-only lower-casing: String.toLowerCase can change the LENGTH ("İ"), which would shift every offset used to slice the original
+  const out: string[] = []; const low = html.length <= 2_000_000 ? html.replace(/[A-Z]/g, c => c.toLowerCase()) : ''
   let i = 0
   while (out.length < 20 && (i = low.indexOf('<script', i)) >= 0) {
     const tagEnd = low.indexOf('>', i)
@@ -175,7 +180,7 @@ export function ldJsonBlocks(html: string): string[] {
 }
 // Only a node that IS an organisation (or is given as one: a bare hiringOrganization object) names a company's site. A JobPosting / Article /
 // WebPage node's own url is the posting or the story, not the employer, whatever its title says.
-const ORG_TYPE = /(organization|business|corporation|company|dentist|physician|clinic|restaurant|store|contractor|agency|service|ngo|brand)$/i
+const ORG_TYPE = /(organization|business|corporation|company|dentist|physician|clinic|hospital|pharmacy|restaurant|bakery|cafe|bar|hotel|store|shop|dealer|salon|spa|gym|contractor|plumber|electrician|roofer|locksmith|attorney|notary|agency|service|ngo|brand|school|studio)$/i
 const NOT_ORG_TYPE = /^(jobposting|article|newsarticle|blogposting|webpage|website|event|product|offer|person|breadcrumblist|listitem|imageobject|videoobject|place|postaladdress)$/i
 const NOT_A_COMPANY_TLD = /\.(gov|edu|mil)(\.[a-z]{2})?$|(^|\.)gc\.ca$|(^|\.)gov\.[a-z]{2,3}(\.[a-z]{2})?$/i
 export function jsonLdCompanySites(company: string, html: string, pageHost = ''): string[] {
@@ -196,7 +201,7 @@ export function jsonLdCompanySites(company: string, html: string, pageHost = '')
       if (!name || !(name === want || (name.includes(want) && want.length >= 5))) continue   // the node is this company (or names it in full); a shorter name inside ours ("Canada" for "Canada Goose") is someone else
       for (const u of [rec.url, rec.sameAs].flat().filter((x): x is string => typeof x === 'string')) {
         let host: string; try { const x = new URL(u); if (x.protocol !== 'https:' && x.protocol !== 'http:') continue; host = registrable(x.hostname) } catch { continue }
-        if (!host || host === pageHost || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host) || out.includes(host)) continue
+        if (!host || !siteHostOk(host) || host === pageHost || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host) || out.includes(host)) continue
         out.push(host)
       }
     }
@@ -277,9 +282,9 @@ export function companyHostsFromSearch(company: string, hits: { url: string }[],
 // The scan's geography names a country whose businesses usually live on its own TLD (#1122: Toronto and Vancouver leads were only ever
 // probed at .com / .ai / .io / .co). Only an explicit country or one of its provinces / states / nations counts; nothing is inferred from a city alone.
 const COUNTRY_TLDS: [RegExp, string[]][] = [
-  [/\bcanada\b|\bontario\b(?!,?\s*(ca\b|california))|\bquebec\b|\bbritish columbia\b|\balberta\b|\bmanitoba\b|\bsaskatchewan\b|\bnova scotia\b|\bnew brunswick\b(?!,?\s*(nj\b|new jersey))|\bnewfoundland\b|\bprince edward island\b/i, ['ca']],
+  [/\bcanada\b|\bontario\b(?!,?\s*(ca\b|calif))|\bquebec\b|\bbritish columbia\b|\balberta\b|\bmanitoba\b|\bsaskatchewan\b|\bnova scotia\b|\bnew brunswick\b(?!,?\s*(nj\b|new jersey))|\bnewfoundland\b|\bprince edward island\b/i, ['ca']],
   [/,\s*(ON|BC|AB|QC|MB|SK|NS|NL|PE)\b(?!\.)/, ['ca']],   // "Toronto, ON": the two-letter province after a comma, capitals only (", on" in running text is not a place)
-  [/\bunited kingdom\b|\buk\b|(?<!new )\bengland\b|\bscotland\b|\bwales\b(?!,)|\bnorthern ireland\b|\bgreat britain\b/i, ['co.uk', 'uk']],
+  [/\bunited kingdom\b|\buk\b|(?<!new )\bengland\b|\bscotland\b|(?<!new south )\bwales\b|\bnorthern ireland\b|\bgreat britain\b/i, ['co.uk', 'uk']],
   [/\baustralia\b|\bnew south wales\b|\bnsw\b|\bqueensland\b|\bwestern australia\b|\bsouth australia\b|\btasmania\b/i, ['com.au']],
   [/\bgermany\b|\bdeutschland\b/i, ['de']],
   [/\bindia\b/i, ['in', 'co.in']],
@@ -795,6 +800,17 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
 }
 
 // ---- #1122: why a lead has no company website, and following a guessed domain that only forwards to the real one ----
+// A forwarding target is offered only when its OWN name is the company's: the same test a searched host passes (companyHostsFromSearch: the
+// name, with at most one generic affix or place word), or the company's initials ("qsdc" for "Queen Street Dental Centre", three letters or
+// more). A company-named domain that was sold and now forwards to a chain's portal, a directory or a marketplace ("123dentist.com") fails
+// this, however clearly that portal's homepage lists the company and its city: that page is about the company, not the company's (council).
+export function redirectTargetIsCompanys(target: string, company: string, places: string[] = []): boolean {
+  if (!siteHostOk(target)) return false
+  if (companyHostsFromSearch(company, [{ url: `https://${target}/` }], 1, places).length > 0) return true
+  const initials = company.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').split(/[^A-Za-z0-9]+/).filter(w => w && !/^(the|and|of|inc|llc|ltd|co)$/i.test(w)).map(w => w[0].toLowerCase()).join('')
+  return initials.length >= 3 && nameLabel(target).replace(/[^a-z0-9]/g, '') === initials && !NOT_OWN_SITE.has(initials)
+}
+
 // The named reason beside the lead (one row, replaced on a re-run, removed once a site is confirmed): no domain was kept, and why. Never a
 // contact, never a domain row. A lead that already has a confirmed domain keeps it: one failed re-read is not "no website".
 function recordDomainUnresolved(db: Database.Database, tenantId: string, l: { id: string; source_url: string }, code: string, today: string, now: number): void {
@@ -814,7 +830,7 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
     const resolve = (v: string | null | Promise<string | null>) => { clearTimeout(timer.h); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(host.includes('://') ? host : `https://${host}/`) } catch { return resolve(null) }
-    if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
+    if (u.protocol !== 'https:' || u.username || u.password || hops > 2 || !siteHostOk(u.hostname)) return resolve(null)
     const req = https.request(u, { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': UA, accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } }, res => {
       const status = res.statusCode ?? 0
       res.destroy()
@@ -823,12 +839,14 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
       try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
       if (next.protocol !== 'https:') return resolve(null)
       if (next.hostname.replace(/^www\./, '') === u.hostname.replace(/^www\./, '')) return resolve(rawRedirectTarget(next.toString(), timeoutMs, lookup, signal, hops + 1))   // the same site (www, a path): look once more
-      return resolve(registrable(next.hostname))
+      return resolve(siteHostOk(next.hostname) && !next.username && !next.password ? registrable(next.hostname) : null)   // never an IP literal, a single label or a URL with credentials
     })
     timer.h = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     req.on('timeout', () => req.destroy(new Error('timeout')))
     req.on('error', () => resolve(null))
-    if (signal) { if (signal.aborted) req.destroy(new Error('aborted')); else signal.addEventListener('abort', () => req.destroy(new Error('aborted')), { once: true }) }
+    const onAbort = () => req.destroy(new Error('aborted'))
+    if (signal) { if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true }) }
+    req.on('close', () => signal?.removeEventListener('abort', onAbort))
     req.end()
   })
 }
@@ -899,6 +917,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     }
     // An injected fetch (tests, the crawl4ai backend's callers) never reaches the network for a redirect unless one is injected too.
     const redirectOf = deps.redirectOf ?? (deps.get ? async () => null : (host: string) => rawRedirectTarget(host, TIMEOUT_MS, guardedLookup, deps.signal))
+    const redirectSeen = new Map<string, string | null>()   // host -> where it forwards (or null), for the whole scan
     let probed = 0
     for (const l of leads) {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
@@ -925,7 +944,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (probed >= MAX_PROBES_PER_SCAN) {
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 })
           if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); continue }
-          sites = [...structured]
+          sites = [...structured]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
         } else {
           probed++
           const guesses = probeDomains(l.company, where)   // #1122: the request country's TLD too (a Toronto lead at <name>.ca)
@@ -938,11 +957,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           sites = [...structured, ...found.filter(d => !structured.includes(d)), ...guesses.filter(d => !found.includes(d) && !structured.includes(d))]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
-          if (ownBlocked) unresolved = 'own_site_refused_reading'
-          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? 'own_site_refused_reading' : 'no_site_linked', today, nowSec); continue }
+          const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
+          if (ownBlocked) unresolved = ownCode
+          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); continue }
         }
       }
-      let redirects = 0, robotsStopped = false
+      let redirects = 0, asks = 0, robotsStopped = false, answered = false
+      const followed = new Set<string>()   // hosts that are themselves forwarding targets: never followed further
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
       // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
       const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
@@ -951,20 +972,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
-        // #1122: a name-built domain that only FORWARDS to another site (queenstreetdentalcentre.ca -> qsdc.ca). The crawl's fetch never leaves
-        // a site, so this read as unreachable. The target is tried as one more guess under the SAME checks (its homepage must name the company
-        // and the place must agree); it is never trusted for being the target. At most 2 per lead; never a platform, network or government host.
-        if ((r.reason === 'site_unreachable' || r.reason === 'robots_unreachable') && basisOf.get(cand) === 'name_probe' && redirects < 2 && !deps.signal?.aborted) {
+        // #1122: a name-built or searched domain that only FORWARDS to another site (queenstreetdentalcentre.ca -> qsdc.ca). The crawl's fetch
+        // never leaves a site, so this read as unreachable. The target is tried as one more guess under the SAME checks (its homepage must name
+        // the company and the place must agree), and only when the target's own name is the company's (redirectTargetIsCompanys). Never from a
+        // site the page linked, never from a target (no chains), never the host that refused the lead's page, never one already tried; at most
+        // 3 lookups and 2 follows per lead; a host's answer is remembered for the rest of the scan.
+        if ((r.reason === 'site_unreachable' || r.reason === 'robots_unreachable') && basisOf.get(cand) === 'name_probe' && !followed.has(cand) && redirects < 2 && asks < 3 && !deps.signal?.aborted) {
           let to: string | null = null
-          try { to = await redirectOf(cand) } catch { to = null }
-          if (to && to !== cand && !basisOf.has(to) && notBlockedHost(to) && !SOCIAL.test(to) && !NOT_OWN_SITE.has(nameLabel(to)) && !NOT_A_COMPANY_TLD.test(to)) {
+          if (redirectSeen.has(cand)) to = redirectSeen.get(cand) ?? null
+          else { asks++; try { to = await redirectOf(cand) } catch { to = null } redirectSeen.set(cand, to) }
+          if (to && to !== cand && !basisOf.has(to) && notBlockedHost(to) && !SOCIAL.test(to) && !NOT_OWN_SITE.has(nameLabel(to)) && !NOT_A_COMPANY_TLD.test(to) && redirectTargetIsCompanys(to, l.company, where)) {
             redirects++
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `redirects_to ${to}`.slice(0, 180), results: 0 })
-            basisOf.set(to, 'name_probe'); sites.push(to)
+            basisOf.set(to, 'name_probe'); followed.add(to); sites.push(to)
             r = { found: [], reason: 'name_mismatch', pages: 0 }
             continue
           }
         }
+        if (r.homeText !== undefined) answered = true   // some candidate's homepage was read (and then accepted or refused)
         // a guessed site whose robots rules stop the read: remembered, so the lead's reason says the likely site could not be read
         if (r.reason === 'robots_disallow' && basisOf.get(cand) === 'name_probe') robotsStopped = true   // only a site that ANSWERED with rules forbidding it; an unreachable host is just absent
         if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
@@ -1000,12 +1025,12 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // A deadline that fired during this crawl leaves a partial read: record nothing (no domain, tech, contacts or audit row) rather than a result that looks complete.
       if (deps.signal?.aborted) return
-      if (unread(r)) { recordDomainUnresolved(db, tenantId, l, r.reason === 'time_budget' ? 'time_budget' : robotsStopped && unresolved === 'not_confirmed' ? 'site_not_readable' : unresolved, today, nowSec); continue }
+      if (unread(r)) { recordDomainUnresolved(db, tenantId, l, r.reason === 'time_budget' ? 'time_budget' : robotsStopped && !answered && unresolved === 'not_confirmed' ? 'site_not_readable' : unresolved, today, nowSec); continue }
       // The crawl's own time budget stopping it mid-read is the same class of partial read (#871): the pages actually
       // fetched stay recorded in crawl_pages (facts with their own times), but NO derived domain/tech/contact rows.
       if (r.stoppedBy === 'time') continue
       // The site answered but its robots rules could not be read, or forbid reading it: nothing is read, no domain is kept, and the lead says so (#1122).
-      if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason.startsWith('robots') ? 'site_not_readable' : 'site_not_read', today, nowSec)
+      if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason === 'robots_disallow' ? 'site_not_readable' : 'site_not_read', today, nowSec)   // only rules that FORBID reading are a refusal; rules that could not be fetched are just an unread site
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
@@ -1045,8 +1070,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     if (!deps.leads && !deps.signal?.aborted) {
       try {
         const picked = new Set(leads.map(l => l.id))
-        const rest = db.prepare("SELECT id, source_url FROM leads WHERE scan_job_id = ? AND company <> '' AND company_domain IS NULL AND quarantined_at IS NULL LIMIT 200").all(jobId) as { id: string; source_url: string }[]
-        for (const x of rest) if (!picked.has(x.id) && !db.prepare('SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').get(x.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)) recordDomainUnresolved(db, tenantId, x, 'not_checked', today, Math.floor((deps.now ?? Date.now()) / 1000))
+        const rest = db.prepare("SELECT id, source_url, review_reason, confidence FROM leads WHERE scan_job_id = ? AND company <> '' AND company_domain IS NULL AND quarantined_at IS NULL LIMIT 200").all(jobId) as { id: string; source_url: string; review_reason: string | null; confidence: number | null }[]
+        const eligible = (x: { review_reason: string | null; confidence: number | null }) => (x.review_reason === null && x.confidence !== null) || ['outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript'].includes(x.review_reason ?? '')
+        for (const x of rest) {
+          if (picked.has(x.id) || db.prepare('SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').get(x.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)) continue
+          // a lead the crawl would check but did not reach (it reads the scan's top leads only) is told that, not that it is "held"
+          recordDomainUnresolved(db, tenantId, x, eligible(x) ? 'probe_limit_reached' : 'not_checked', today, Math.floor((deps.now ?? Date.now()) / 1000))
+        }
       } catch { /* a note only (an older leads table without these columns): never fails the crawl */ }
     }
   } catch (e) {

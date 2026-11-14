@@ -120,16 +120,23 @@ test('#1122 the real Queen Street Dental Centre case: queenstreetdentalcentre.ca
 
 test('#1122 a forwarding target is never trusted for being the target: it must name the company and stand in the right place; a platform, network or government target is never read; at most two are followed', async () => {
   const base = { company: 'Queen Street Dental Centre', evidenceUrl: 'https://ca.linkedin.example/jobs/view/1', evidence: plain('Queen Street Dental Centre') }
-  const parked = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'domains-for-sale.example' }, sites: { 'domains-for-sale.example': { '/': html(`<h1>This domain is for sale</h1><p>Toronto, ON</p>${PROSE}`) } } })
+  const parked = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'qsdc.example' }, sites: { 'qsdc.example': { '/': html(`<h1>This domain is for sale</h1><p>Toronto, ON</p>${PROSE}`) } } })
   NOTHING(parked); assert.deepEqual(why(parked), ['not_confirmed'])
-  const elsewhere = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'qsdc-ca.example' }, sites: { 'qsdc-ca.example': { '/': ELSEWHERE_HOME('Queen Street Dental Centre'), '/contact': CONTACT('info@qsdc-ca.example') } } })
-  NOTHING(elsewhere); assert.ok(elsewhere.audit.some(a => a.lookup === 'qsdc-ca.example' && /location mismatch/.test(a.status)), JSON.stringify(elsewhere.audit))
+  // council (blocker): the company-named domain was sold and forwards to a chain's portal that LISTS the company and its Toronto address. The
+  // portal's own name is not the company's, so it is never read, let alone bound (the real queenstreetdentalcentre.com forwards to 123dentist.com)
+  const portal = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': '123dentist.example', 'queenstreetdentalcentre.ca': 'toronto-dental-directory.example' },
+    sites: { '123dentist.example': { '/': html(`<h1>123Dentist</h1><p>Queen Street Dental Centre - 200 Bloor Street West, Toronto, ON M5S 1T8</p><p>Yonge Smiles - Toronto</p>${PROSE}<a href="/contact">Contact</a>`), '/contact': CONTACT('info@123dentist.example') }, 'toronto-dental-directory.example': { '/': TORONTO_HOME('Queen Street Dental Centre') } } })
+  NOTHING(portal); assert.ok(!portal.fetched.some(f => /123dentist|directory/.test(f)), JSON.stringify(portal.fetched)); assert.ok(!portal.audit.some(a => a.status.startsWith('redirects_to')))
+  for (const [t, ok] of [['qsdc.ca', true], ['queenstreetdental.ca', true], ['getqueenstreetdentalcentre.com', true], ['123dentist.com', false], ['qsd.ca', false], ['qsdcdental.ca', false], ['dentalportal.example', false], ['10.0.0.1', false]] as [string, boolean][]) assert.equal(sc.redirectTargetIsCompanys(t, 'Queen Street Dental Centre', ['Toronto, Ontario']), ok, t)
+  const elsewhere = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'qsdc.example' }, sites: { 'qsdc.example': { '/': ELSEWHERE_HOME('Queen Street Dental Centre'), '/contact': CONTACT('info@qsdc.example') } } })
+  NOTHING(elsewhere); assert.ok(elsewhere.audit.some(a => a.lookup === 'qsdc.example' && /location mismatch/.test(a.status)), JSON.stringify(elsewhere.audit))
   for (const target of ['facebook.com', 'linktr.ee', 'ontario.gov.on.ca', 'wixsite.com']) {
     const p = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': target }, sites: { [target]: { '/': TORONTO_HOME('Queen Street Dental Centre') } } })
     NOTHING(p); assert.ok(!p.fetched.some(f => f.startsWith(target)), `${target} is never read as the company's site`)
   }
-  const many = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'a1.example', 'queenstreetdentalcentre.ca': 'a2.example', 'queenstreetdentalcentre.ai': 'a3.example', 'queenstreetdentalcentre.io': 'a4.example' }, sites: {} })
+  const many = await run({ ...base, redirects: { 'queenstreetdentalcentre.com': 'qsdc.example', 'queenstreetdentalcentre.ca': 'qsdc.test', 'queenstreetdentalcentre.ai': 'queenstreetdental.example', 'queenstreetdentalcentre.io': 'queenstreetdental.test', 'qsdc.example': 'queenstreetdentalcentre.example' }, sites: {} })
   assert.equal(many.audit.filter(a => a.status.startsWith('redirects_to ')).length, 2, 'at most two forwarding targets per lead')
+  assert.ok(many.asked.length <= 3, `at most three lookups per lead, asked ${many.asked.length}`); assert.ok(!many.asked.includes('qsdc.example'), 'a forwarding target is never followed further (no chains)')
   // a site linked by the page itself is never chased through a redirect, and without a redirect a dead guess is just dead
   const none = await run({ ...base, sites: {} }); NOTHING(none); assert.deepEqual(why(none), ['not_confirmed'])
 })
@@ -145,7 +152,7 @@ test('#1122 each outcome says what happened, in words that claim no more than th
   NOTHING(linked); assert.deepEqual(linked.searched, [], 'a site the page itself links and that is refused ends it there: no search, no guess overrides the refusal'); assert.deepEqual(why(linked), ['linked_site_not_confirmed'])
   const robots = await run({ ...base, company: 'Blocked Dental', evidence: plain('Blocked Dental'), robots: { 'blockeddental.com': 'User-agent: *\nDisallow: /' }, sites: { 'blockeddental.com': { '/': TORONTO_HOME('Blocked Dental') } } })
   NOTHING(robots); assert.deepEqual(why(robots), ['site_not_readable'])
-  for (const c of ['no_site_linked', 'linked_site_not_confirmed', 'not_confirmed', 'own_site_refused_reading', 'probe_limit_reached', 'time_budget', 'site_not_readable', 'site_not_read', 'not_checked']) {
+  for (const c of ['no_site_linked', 'linked_site_not_confirmed', 'not_confirmed', 'own_site_refused_reading', 'own_site_needs_javascript', 'probe_limit_reached', 'time_budget', 'site_not_readable', 'site_not_read', 'not_checked']) {
     assert.doesNotMatch(domainUnresolvedText(T + c), /[_[\]]|search|listing/, c); assert.notEqual(domainUnresolvedText(T + c), 'the company website could not be confirmed', c)
   }
   assert.equal(domainUnresolvedText(null), 'the company website could not be confirmed'); assert.equal(domainUnresolvedText(`${T}own_site_refused_reading`), 'the company\'s own website did not allow automated reading')
@@ -169,6 +176,8 @@ test('#1122 a lead the crawl never picks (its hold is the event itself, like the
   assert.equal(domainUnresolvedText(r.lead('L2').unresolved[0].label), 'the website check does not run for a lead held for this reason')
   // a re-run writes no second row; a single-lead crawl (the "find contact" button) never labels the scan's other leads
   await r.crawl(); assert.equal(r.lead('L2').unresolved.length, 1)
+  r.db.prepare("UPDATE leads SET quarantined_at = 1 WHERE id = 'L4'").run(); r.db.prepare("DELETE FROM lead_enrichments WHERE lead_id = 'L4'").run(); await r.crawl()
+  assert.deepEqual(why(r.lead('L4')), [], 'a rejected lead gets no row')
   r.db.prepare("DELETE FROM lead_enrichments WHERE kind = 'domain_unresolved'").run()
   await r.crawl({ leads: [{ id: 'L1', company: 'TDot Dental', source_url: BOARD }] })
   assert.deepEqual(why(r.lead('L2')), [], 'a one-lead crawl says nothing about the others')
@@ -198,4 +207,62 @@ test('#1122 a post-processing deadline during the web search keeps nothing: no d
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, signal: ctl.signal, redirectOf: async () => null, findSites: async () => { ctl.abort(); return ['tdot-dental.example'] } })
   assert.equal((db.prepare("SELECT company_domain d FROM leads WHERE id = 'L1'").get() as { d: string | null }).d, null)
   assert.equal((db.prepare('SELECT count(*) n FROM lead_enrichments').get() as { n: number }).n, 0)
+})
+
+test('#1122 council: an IP-literal or single-label host is never a company site - not from structured data, not as a forwarding target, not fetched (the private-address guard only runs for names)', async () => {
+  for (const h of ['10.0.0.5', '192.168.1.1', '127.0.0.1', 'localhost', '::1', '[::1]', '1.2.3', 'x.', 'exa mple.com']) assert.equal(sc.siteHostOk(h), false, h)
+  for (const h of ['acme.ca', 'a.b.co.uk', 'xn--bcher-kva.de']) assert.equal(sc.siteHostOk(h), true, h)
+  assert.deepEqual(sc.jsonLdCompanySites('Acme Dental', ld({ '@type': 'Organization', name: 'Acme Dental', url: 'https://10.0.0.5/', sameAs: ['https://localhost/', 'https://[::1]/'] }), 'x.example'), [])
+  // the crawl's own fetch refuses an IP literal before any socket is opened (a lookup spy would never be called for one anyway)
+  let lookups = 0
+  const spy = ((...a: unknown[]) => { lookups++; (a[a.length - 1] as (e: Error) => void)(new Error('no')) }) as never
+  assert.deepEqual(sc.findCompanySitesWithBasis('Acme Dental', html('<a href="https://10.0.0.5/">Acme Dental</a> <a href="https://localhost/">Acme Dental</a>'), 'https://jobs.example.net/x'), [], 'a link to an IP or a single label is never offered as the company site')
+  assert.equal(await sc.rawRedirectTarget('192.168.1.1', 500, spy), null); assert.equal(await sc.rawRedirectTarget('https://user:pw@acme.example/', 500, spy), null)
+  assert.equal(lookups, 0, 'nothing was resolved or connected')
+  // a name-built guess that forwards to a private address: the target is never tried
+  const r = await run({ company: 'Queen Street Dental Centre', evidenceUrl: 'https://ca.linkedin.example/jobs/view/1', evidence: plain('Queen Street Dental Centre'), redirects: { 'queenstreetdentalcentre.com': '192.168.1.1', 'queenstreetdentalcentre.ca': 'localhost' }, sites: { '192.168.1.1': { '/': TORONTO_HOME('Queen Street Dental Centre') }, localhost: { '/': TORONTO_HOME('Queen Street Dental Centre') } } })
+  NOTHING(r); assert.ok(!r.fetched.some(f => f.startsWith('192.168.') || f.startsWith('localhost')), JSON.stringify(r.fetched)); assert.ok(!r.audit.some(a => a.status.startsWith('redirects_to')))
+})
+
+test('#1122 council: a page with a character whose lower-case form is longer ("İ") before its JSON-LD still yields the site; an unknown or inherited reason code reads as the general sentence; New South Wales is not Wales', () => {
+  const page = `İ${ld({ '@type': 'Organization', name: 'Acme Dental', url: 'https://acmedental.ca' })}`
+  assert.deepEqual(sc.findCompanySitesWithBasis('Acme Dental', page, 'https://jobs.example.net/x'), [{ site: 'acmedental.ca', basis: 'evidence_link_domain_label', structured: true }])
+  for (const c of ['constructor', 'toString', '__proto__', 'nope']) assert.equal(domainUnresolvedText(T + c), 'the company website could not be confirmed', c)
+  assert.deepEqual(sc.countryTlds(['New South Wales']), ['com.au']); assert.deepEqual(sc.countryTlds(['Wales, UK']), ['co.uk', 'uk']); assert.deepEqual(sc.countryTlds(['Ontario, Calif.']), [])
+  for (const t of ['Plumber', 'Hotel', 'Bakery', 'Attorney']) assert.deepEqual(sc.jsonLdCompanySites('Acme Works', ld({ '@type': t, name: 'Acme Works', url: 'https://acmeworks.example/' })), ['acmeworks.example'], t)
+})
+
+test('#1122 council (reasons true in every path): a JavaScript-only own site is not a refusal; a lead beyond the scan\'s checked leads is not "held"; robots rules that could not be fetched are not a refusal', async () => {
+  const js = await run({ company: 'HD Roofing & Repairs', where: ['Austin, Texas'], evidenceUrl: 'https://hdroofingandrepairs.com/careers', evidence: 'never read', reviewReason: 'needs_javascript', findSites: async () => [], sites: {} })
+  assert.deepEqual(why(js), ['own_site_needs_javascript']); assert.deepEqual(js.searched, [])
+  assert.equal(domainUnresolvedText(js.unresolved[0].label), 'the company\'s own website can only be read with JavaScript, which this check does not run')
+  // nine checkable leads: the crawl reads the scan's top eight; the ninth is told that, never that it is held
+  const many = Array.from({ length: 8 }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + i)}` }))
+  const capped = await run({ company: 'Zed Dental Studio', evidenceUrl: BOARD, evidence: plain('x'), sites: {}, more: many })
+  const codes = ['L1', ...many.map(m => m.id)].map(id => why(capped.lead(id))[0])
+  assert.equal(codes.filter(c => c === 'probe_limit_reached').length, 1, JSON.stringify(codes)); assert.ok(!codes.includes('not_checked'))
+  assert.equal(domainUnresolvedText(`${T}probe_limit_reached`), 'this scan checks the websites of its top leads only and did not reach this company')
+  // a linked site whose robots.txt answers 500: not read, and not called a refusal
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run('L1', job, 'Restor Dental', null, 's', BOARD, 'Restor Dental is hiring', 90, 85)
+  const get: Get = async url => { const u = new URL(url); if (u.hostname === 'tempstars.example') return { status: 200, body: html('<a href="https://restordental.example/">Restor Dental</a>'), finalUrl: url }; return u.pathname === '/robots.txt' ? { status: 500, body: '', finalUrl: url } : { status: 200, body: TORONTO_HOME('Restor Dental'), finalUrl: url } }
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async () => null })
+  assert.deepEqual((db.prepare("SELECT label FROM lead_enrichments WHERE kind = 'domain_unresolved'").all() as { label: string }[]).map(x => x.label), [`${T}linked_site_not_confirmed`], 'never "does not allow automated reading"')
+  // a namesake's .com was READ and refused (another place) and the .ai forbids reading: the lead is not told a likely site refused reading
+  const mixed = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: plain('Restor Dental'), robots: { 'restordental.ai': 'User-agent: *\nDisallow: /' }, sites: { 'restordental.com': { '/': ELSEWHERE_HOME('Restor Dental') }, 'restordental.ai': { '/': TORONTO_HOME('Restor Dental') } } })
+  assert.deepEqual(why(mixed), ['not_confirmed'])
+})
+
+test('#1122 council (redirect guards): only a name-built guess is followed; a target that is the lead\'s own blocked host or one already tried is not tried again', async () => {
+  // a site the page itself links that is unreachable: never chased through a redirect
+  const linked = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: html('<a href="https://restor-dental-site.example/">Restor Dental</a>'), redirects: { 'restor-dental-site.example': 'elsewhere.example' }, sites: { 'elsewhere.example': { '/': TORONTO_HOME('Restor Dental') } } })
+  NOTHING(linked); assert.deepEqual(linked.asked, [], 'no redirect is looked up for a linked site'); assert.deepEqual(why(linked), ['linked_site_not_confirmed'])
+  // the guess forwards to the very host that blocked the lead's source page: not fetched by that path either
+  const blocked = await run({ company: 'TDot Dental', evidenceUrl: 'https://blog.tdot-dental.example/post', evidence: 'never read', reviewReason: 'blocked_by_site', redirects: { 'tdotdental.com': 'tdot-dental.example' }, sites: { 'tdot-dental.example': { '/': TORONTO_HOME('TDot Dental') }, 'blog.tdot-dental.example': { '/': TORONTO_HOME('TDot Dental') } } })
+  NOTHING(blocked); assert.ok(!blocked.fetched.some(f => f.includes('tdot-dental.example')), JSON.stringify(blocked.fetched)); assert.ok(blocked.asked.includes('tdotdental.com'), 'the forward was looked up, and its target refused because it is the host that blocked us')
+  // two guesses forwarding to the same target: it is read once
+  const same = await run({ company: 'TDot Dental', evidenceUrl: BOARD, evidence: plain('TDot Dental'), redirects: { 'tdotdental.com': 'tdot-dental.example', 'tdotdental.ca': 'tdot-dental.example' }, sites: { 'tdot-dental.example': { '/': ELSEWHERE_HOME('TDot Dental') } } })
+  NOTHING(same); assert.equal(same.fetched.filter(f => f === 'tdot-dental.example/').length, 1); assert.equal(same.audit.filter(a => a.status === 'redirects_to tdot-dental.example').length, 1)
 })
