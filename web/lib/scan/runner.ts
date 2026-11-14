@@ -2057,17 +2057,22 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 }
 // #1122: the crawl's one web search for a company's own site. undefined = no search for this scan: a free-trial scan (its searches are prepaid
 // before finish; nothing is reserved after it) or no search source configured. Each call re-checks that the scan is still this attempt's.
-export function siteSearchFor(db: Database.Database, job: { id: string; user_id: string; attempts: number; funded_by?: string | null }, o: { fetchImpl?: typeof fetch; signal?: AbortSignal; env?: Record<string, string | undefined> } = {}): ((q: string) => Promise<{ ok: true; urls: string[] } | { ok: false; reason: string }>) | undefined {
+export function siteSearchFor(db: Database.Database, job: { id: string; user_id: string; attempts: number; funded_by?: string | null }, o: { fetchImpl?: typeof fetch; signal?: AbortSignal; env?: Record<string, string | undefined>; search?: typeof tfSearch } = {}): ((q: string) => Promise<{ ok: true; urls: string[] } | { ok: false; reason: string }>) | undefined {
   const env = o.env ?? process.env
   if (job.funded_by === 'trial' || !tinyfishEnabled(env)) return undefined
   const spent = { searches: 0 }
+  // never more than the operator's own per-scan search limit when that is lower
+  const op = Number(env.TINYFISH_SEARCHES_PER_SCAN)
+  const allowance = Number.isFinite(op) && op >= 0 && env.TINYFISH_SEARCHES_PER_SCAN !== undefined && env.TINYFISH_SEARCHES_PER_SCAN !== '' ? Math.min(MAX_SITE_SEARCHES_PER_SCAN, Math.floor(op)) : MAX_SITE_SEARCHES_PER_SCAN
+  let refused = false   // once the scan's own spend limit refuses a search, no further search is attempted (each attempt would still count against the daily allowance)
   return async q => {
-    if (!postFinishAlive(db, job)) return { ok: false, reason: 'scan_not_active' }
+    if (refused) return { ok: false, reason: 'spend_limit' }
+    if (!postFinishAliveStrict(db, job)) return { ok: false, reason: 'scan_not_active' }   // strict: a scan whose state cannot be read spends nothing
     try {
       migrateTinyfish(db)
-      const r = await tfSearch(db, job.user_id, q.slice(0, 300), {}, spent, { env: { ...env, TINYFISH_SEARCHES_PER_SCAN: String(MAX_SITE_SEARCHES_PER_SCAN) }, ...(o.signal ? { signal: o.signal } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) })
+      const r = await (o.search ?? tfSearch)(db, job.user_id, q.slice(0, 300), {}, spent, { env: { ...env, TINYFISH_SEARCHES_PER_SCAN: String(allowance) }, ...(o.signal ? { signal: o.signal } : {}), ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}) })
       return r.ok ? { ok: true, urls: r.hits.map(h => h.url) } : { ok: false, reason: String(r.reason) }
-    } catch (e) { return { ok: false, reason: e instanceof SpendRefused ? 'spend_limit' : 'failed' } }
+    } catch (e) { if (e instanceof SpendRefused) { refused = true; return { ok: false, reason: 'spend_limit' } } return { ok: false, reason: 'failed' } }
   }
 }
 
