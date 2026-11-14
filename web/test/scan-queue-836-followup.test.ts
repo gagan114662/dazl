@@ -70,12 +70,16 @@ test('#836 review 2: a live scan keeps its queue claim past the lease (its row\'
   // LEASE + 60 s later: the live scan made a paid call a minute ago (its row's claim time moved); the dead one did not
   const later = t0 + LEASE + 60
   w.raw.prepare('UPDATE scan_jobs SET claimed_at = ? WHERE id = ?').run(later - 60, live)
-  assert.equal(await renewScanLeases(w.db, w.db, LEASE), 1, 'one lease renewed')
-  assert.equal(w.item(live)!.lease_expires_at, later - 60 + LEASE); assert.ok(w.item(live)!.lease_expires_at! > firstLease)
+  // NO direct call to renewScanLeases: the renewal must come from the kick itself, as a second process's kick would do it
   const token = w.item(live)!.claim_token
-  await kickSharedScanQueue(w.deps(hold, { now: () => later }))
-  assert.deepEqual([w.item(live)!.status, w.item(live)!.claim_token, w.item(live)!.attempts], ['claimed', token, 1], 'the live scan\'s claim is untouched: not reaped, not re-claimed')
+  const second = await w.job(A) // the live scan's tenant has another scan waiting: the per-tenant limit (1) must keep holding
+  const ran: string[] = []
+  await kickSharedScanQueue(w.deps(async j => { ran.push(j.id); return hold() }, { now: () => later }))
+  assert.equal(w.item(live)!.lease_expires_at, later - 60 + LEASE, 'the kick copied the scan row\'s renewed claim time onto its item'); assert.ok(w.item(live)!.lease_expires_at! > firstLease)
+  assert.deepEqual([w.item(live)!.status, w.item(live)!.claim_token, w.item(live)!.attempts], ['claimed', token, 1], 'the live scan\'s claim is untouched: not reaped, not re-claimed, the same token')
   assert.deepEqual(w.scan(live), { status: 'running', attempts: 1, error: null })
+  assert.ok(!ran.includes(second), 'the same tenant\'s second scan is not claimed while the first still runs')
+  assert.equal(w.scan(second).status, 'pending')
   // the dead scan's claim ran out with its lease: reaped back to pending (retry backoff), its scan row re-queued
   assert.deepEqual([w.item(dead)!.status, w.item(dead)!.claim_token, w.item(dead)!.attempts], ['pending', null, 1])
   assert.deepEqual(w.scan(dead), { status: 'pending', attempts: 1, error: null })
