@@ -15,7 +15,7 @@ setRequestLogWriter(l => lines.push(l))
 const req = (path: string, headers: Record<string, string> = {}, method = 'GET') => new NextRequest(`https://dazl.test${path}`, { method, headers })
 
 test('proxy: a fresh request id per request, forwarded to the route and returned; one scrubbed JSON log line', async () => {
-  assert.deepEqual(config.matcher, ['/app/:path*', '/api/:path*'])
+  assert.deepEqual(config.matcher, ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }])
   const res = await proxy(req('/api/leads?email=jane@example.com&t=secret', { 'x-request-id': 'evil-+1 415 555 0134', cookie: 'dazl_session=tok' }))
   const id = res.headers.get('x-request-id')!
   assert.ok(isRequestId(id), id) // never the caller's value
@@ -44,6 +44,21 @@ test('proxy: a fresh request id per request, forwarded to the route and returned
 
   await proxy(req('/api/health/live')); await proxy(req('/api/ready'))
   assert.equal(lines.length, 8) // probes: no log line
+})
+
+// #1088: the app has no server actions, so a Next-Action request is a probe: a plain 400 on any path, before any session lookup
+test('proxy: a request with a Next-Action header gets a plain 400 with a fresh request id and one ordinary log line', async () => {
+  const before = lines.length
+  for (const [method, path] of [['POST', '/'], ['POST', '/sign-in'], ['POST', '/app/leads'], ['POST', '/api/leads'], ['GET', '/pricing']] as const) {
+    const res = await proxy(req(path, { 'next-action': '7f0000000000000000000000000000000000000000', 'x-request-id': 'caller-supplied' }, method))
+    assert.equal(res.status, 400, `${method} ${path}`); assert.equal(res.headers.get('location'), null); assert.equal(res.headers.get('x-middleware-next'), null)
+    assert.ok(isRequestId(res.headers.get('x-request-id'))); assert.equal(res.headers.get('cache-control'), 'no-store'); assert.equal(await res.text(), 'Bad Request\n')
+  }
+  const logged = lines.slice(before).map(l => JSON.parse(l))
+  assert.deepEqual(logged.map(l => [l.type, l.method]), [['request', 'POST'], ['request', 'POST'], ['request', 'POST'], ['request', 'POST'], ['request', 'GET']])
+  for (const l of lines.slice(before)) assert.ok(!l.includes('7f000000') && !l.includes('caller-supplied'), 'the header values are not logged')
+  // the same paths without the header go on as before
+  const ok = await proxy(req('/api/leads', {}, 'POST')); assert.notEqual(ok.status, 400); assert.equal(ok.headers.get('x-middleware-next'), '1')
 })
 
 test('proxy: /app redirects every request without a live session before any page renders; a live session goes through', async () => {
