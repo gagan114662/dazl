@@ -1062,13 +1062,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     const chosen = new Set(urls.map(u => canonicalUrl(u) ?? u)); const textLen = new Map((f.ok ? f.pages : []).map(p => [canonicalUrl(p.url) ?? p.url, p.text.length] as const))
     diag.urls = [...hitByUrl.keys()].map(u => ({ url: u, hit_date: hitByUrl.get(u)?.date ?? null, walled: isLoginWalled(u), selected: chosen.has(canonicalUrl(u) ?? u), tinyfish_text_chars: textLen.get(canonicalUrl(u) ?? u) ?? null, own_fetch: null }))
   }
-  // #381 (yield): a result on a login-walled host (Instagram, Facebook, LinkedIn, Indeed ...) is a snippet the verifier can never read: on the 7 real staging
-  // matrix scans 8 of the 23 candidates came from those hosts and all 8 died (blocked_by_site / quote_unconfirmed), taking extraction picks that readable results
-  // could have had. They are not offered to the extraction step while at least MIN_READABLE_FOR_SKIP readable results remain; fewer than that and they stay (a
-  // walled result is still reviewable, and a thin result list needs every item). The report's results / offered counts show how many were kept back.
-  const readable = hits.filter(h => !isLoginWalled(h.url))
-  const offerHits = readable.length >= MIN_READABLE_FOR_SKIP ? readable : hits
-  const items = toEvidence(offerHits, f.ok ? f.pages : [], fetchRank) // the same ranking decides what survives the extraction cap
+  const items = toEvidence(hits, f.ok ? f.pages : [], fetchRank) // the same ranking decides what survives the extraction cap
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
   const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
@@ -1082,7 +1076,6 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
-export const MIN_READABLE_FOR_SKIP = 8
 // Fetch ranking for a compound request: job-board / careers pages go behind the pages that can carry the event, unless the compiled plan is an OR
 // whose hiring branch a job page can prove on its own (an open role). A completed-hire branch (#876, hire_made) is never proven by a job page.
 export function jobPagesBehindEvents(signals: string[] | null | undefined, query: string | null | undefined, icpJson: string): boolean {

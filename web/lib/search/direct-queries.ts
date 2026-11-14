@@ -151,16 +151,14 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // Does the request (or its profile signals) ask for a hiring signal, after cutting negated / excluded clauses? Independent of places and roles.
 export const hasHiringSignal = (request: string, signals: string[]): boolean => HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))
 // #381 (yield, measured on the 7 real staging matrix scans of 2026-11-13): the job-board query (site:boards.greenhouse.io OR site:job-boards.greenhouse.io ...)
-// took one of the three searches of 5 of the 7 scans (Toronto dental, Austin roofing, Chicago law, Vancouver restaurants, Berlin fintech) and found Greenhouse pages
-// of unrelated software companies; the two pages of it that Austin read with TinyFish produced no candidate. Dental practices, roofers, law firms and restaurants
-// do not post on Greenhouse, Ashby or Lever. Three of the five (Chicago, Vancouver, Berlin) did not even ask for hiring: the model's profile signals contained the
-// word. So the board query needs the request's OWN hiring ask, and is not sent for a local-service category known not to use applicant-tracking boards. An
-// unrecognised category keeps the query (the status quo); only the measured waste is removed.
-const LOCAL_SERVICE = /\b(?:dent(?:al|ist|ists|istry)|orthodont\w*|clinics?|medical practices?|veterinar\w*|chiropract\w*|physio\w*|roof(?:ing|ers?)?|plumb\w*|hvac|electricians?|contractors?|landscap\w*|cleaning|restaurants?|caf[eé]s?|bakery|bakeries|bars?|salons?|barbers?|spas?|gyms?|fitness|yoga|law firms?|attorneys?|lawyers?|legal services|accounting firms?|accountants?|real estate (?:agen\w+|brokerages?)|realtors?|insurance agenc\w+|funeral|daycares?|auto repair|mechanics?|car dealers?|boutiques?|florists?|pharmac\w+|hotels?|hospitality)\b/i
-export const localServiceCategory = (request: string, industries: string[] | undefined): boolean => LOCAL_SERVICE.test(`${request} ${(industries ?? []).join(' ')}`)
-export function boardQueries(request: string, icp: { signals?: string[]; where?: string[]; industries?: string[] }): string[] {
-  if (!hasHiringSignal(request, [])) return []
-  if (localServiceCategory(request, icp.industries)) return []
+// took one of the three searches of 5 of the 7 scans and found Greenhouse pages of unrelated software companies. Three of the five (Chicago law, Vancouver
+// restaurants, Berlin fintech) did not even ask for hiring: the model's profile signals contained the word, and signals added a whole query type the request never
+// asked for. The board query now needs the request's OWN hiring ask (the profile's signals still add matching power to the queries it builds, never a query type).
+// Whether local-service categories (dental, roofing) should skip the board query too is left to a decision: the NYC dental acceptance fixtures pin it today.
+// "opening a second location" is a business opening, not a job opening: the shared hiring words match any "opening" (Vancouver restaurants, a real request).
+const BUSINESS_OPENING = /\bopen(?:ing|s|ed)?\s+(?:a|an|its|our|their|the|new|second|third|another|up)\b/gi
+export function boardQueries(request: string, icp: { signals?: string[]; where?: string[] }): string[] {
+  if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), [])) return []
   return directQueries(request, icp.signals ?? [], icp.where ?? [])
 }
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
