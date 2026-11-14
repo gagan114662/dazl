@@ -12,6 +12,7 @@ import { migrateEmailGuess, verifierFromEnv, verifyCandidates } from '../lib/peo
 import { findWorkEmail, workEmailProviders, workEmailsFor } from '../lib/people/work-email.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
 import { createWorkEmailFixture, WORK_EMAIL_FIXTURE_PEOPLE } from '../lib/scan/work-email-fixture.ts'
+import { port25Blocked, realEnv } from '../lib/people/smtp-verify.ts'
 
 const T = 'smtp-wiring-tenant'
 const SMTP_FAKE = { DAZL_ENV: 'staging', DAZL_STAGING_FAKE_SMTP: '1', EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '10' }
@@ -99,4 +100,31 @@ test('#1036 port 25 shut: Find work email\'s mailbox check reserves nothing and 
   // not this gate), and the lookup row was never marked as being checked.
   assert.equal((db.prepare('SELECT count(*) AS n FROM email_verify_usage').get() as { n: number }).n, 0, 'no email_verify_usage row exists')
   assert.deepEqual(db.prepare('SELECT mailbox_check, mailbox_checked_at, mailbox_verifier FROM work_email_lookups WHERE lead_id = ? AND target LIKE ?').get(f.leadId, 'Valid%'), { mailbox_check: null, mailbox_checked_at: null, mailbox_verifier: null })
+})
+
+// Review of 12192507 #1: the refund in Find work email (checkMailbox), reached through a connect that really fails while the port-25
+// stop is NOT yet open (so the blockedNow gate does not answer first). The REAL verifier ('smtp'), with the production env object's
+// DNS and connect replaced for the duration of the test: no network.
+test('#1036 review 12192507 #1: Find work email - a mailbox check whose connect never happens is refunded and the row is left unchecked, the address still shown', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); const master = randomBytes(32)
+  process.env.OUTREACH_TEST_TENANT_ID = T; setTestAddresses(db, T, [TEST_INBOX]); saveCredential(db, T, 'enrich:pdl', 'staging-fake-pdl-any-string-1036', master)
+  const ON = { SMTP_VERIFY_ENABLED: '1', SMTP_VERIFY_HELO: 'verify.notify.dazl.ai', SMTP_VERIFY_EGRESS_IP: '203.0.113.7', EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '10', DAZL_ENV: 'staging', DAZL_STAGING_FAKE_PDL: '1', DAZL_STAGING_FAKE_ZEROBOUNCE: '1' }
+  const f = createWorkEmailFixture(db, T, { ...ON, DAZL_STAGING_FAKE_SMTP: '1' })   // the fixture insists on the fakes; the lookup below runs WITHOUT the fake SMTP
+  assert.equal(verifierFromEnv(ON, undefined, db)?.name, 'smtp', 'the real verifier checks the mailbox')
+  const saved = { connect: realEnv.connect, resolveMx: realEnv.resolveMx, resolveZen: realEnv.resolveZen }
+  let connects = 0
+  realEnv.resolveZen = async () => 'clean'
+  realEnv.resolveMx = async d => [{ exchange: `mx.${d}`, priority: 10 }]
+  realEnv.connect = async () => { connects++; throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+  try {
+    const p = WORK_EMAIL_FIXTURE_PEOPLE.find(x => x.name === 'Valid Testbuyer')!
+    const r = await findWorkEmail(db, T, f.leadId, `${p.name}|${p.title}`, { master, env: ON, fetchImpl: (async () => { throw new Error('no network') }) as typeof fetch }) as { row: Parameters<typeof workEmailCopy>[0] & { address: string | null; mailbox_check: string | null } }
+    assert.equal(connects, 1, 'the check was attempted (the port-25 stop was not open yet), so this is the refund path, not the gate')
+    assert.equal(port25Blocked(db, Math.floor(Date.now() / 1000)), false)
+    assert.ok(r.row.address, 'the found address is still shown')
+    assert.equal(r.row.mailbox_check ?? null, null)
+    const c = workEmailCopy(r.row); assert.equal(c.checked, false); assert.equal(c.headline, 'Found, not checked')
+    assert.equal((db.prepare('SELECT COALESCE(SUM(n), 0) AS n FROM email_verify_usage').get() as { n: number }).n, 0, 'the monthly allowance was given back')
+    assert.deepEqual(db.prepare('SELECT mailbox_check, mailbox_checked_at, mailbox_verifier FROM work_email_lookups WHERE lead_id = ? AND target LIKE ?').get(f.leadId, 'Valid%'), { mailbox_check: null, mailbox_checked_at: null, mailbox_verifier: null }, 'the row is unchecked again and does not count against the tenant\'s day')
+  } finally { Object.assign(realEnv, saved) }
 })

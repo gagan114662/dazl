@@ -222,6 +222,7 @@ test('#1036 smtp: the real connect path refuses an MX that points at a non-publi
     const v = smtpMailboxVerifier(db, cfgFor(f.port), { ...envFor(), connect: realEnv.connect, resolveMx: async () => [{ exchange: '169.254.169.254', priority: 1 }] })
     const a = await v.verify('x.user@evil.test')
     assert.equal(a.outcome, 'unknown'); assert.match(String(a.detail), /not a public one/)
+    assert.equal(a.noCall, true, 'no request left this server: the caller gives the allowance back (review 12192507)')
     assert.equal(port25Blocked(db, clock), false); assert.equal(backoffUntil(db, '169.254.169.254', clock), clock + 86_400)
   } finally { await f.close() }
 })

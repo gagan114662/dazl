@@ -150,7 +150,8 @@ test('#1036 review 4b3b9025: the evidence read stops at its own budget (never ab
   try { await r.later!() } finally { if (had === undefined) delete process.env.SITECRAWL_EVIDENCE_BUDGET_MS; else process.env.SITECRAWL_EVIDENCE_BUDGET_MS = had }
   // 1000 ms budget, 400 ms pages: a fetch may start at 0, 400 and 800 ms; the 4th (1200 ms) is past the budget. Unbounded = 4 fetches.
   assert.ok(starts.length >= 1 && starts.length <= 3, `${starts.length} evidence fetches under a 1000 ms budget with 400 ms pages (4 is the unbounded read)`)
-  assert.ok(starts.every(s => s - t0 <= 1000), `no fetch started after the budget: ${starts.map(s => s - t0).join(', ')} ms`)
+  // the code measures its budget from its own start, a moment after this test's t0: 50 ms of slack, far below the 400 ms a fourth fetch would need
+  assert.ok(starts.every(s => s - t0 <= 1050), `no fetch started after the budget: ${starts.map(s => s - t0).join(', ')} ms`)
 })
 
 test('#1036 review 4b3b9025: two evidence reads of the same host at the same moment still keep the polite gap between every fetch', async () => {

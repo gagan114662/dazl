@@ -298,7 +298,7 @@ export function smtpMailboxVerifier(db: Database.Database, cfg: SmtpConfig, env:
           try { conn = await env.connect(host, cfg.port, cfg.connectMs, cfg.commandMs) }
           catch (e) {
             // an MX that points at a non-public address is the domain's doing, not a sign that port 25 is shut: a day's backoff, no stats
-            if (e instanceof Error && e.message === 'blocked_address') { noteBackoff(db, host, env.now(), true); return unknown('the mail server address is not a public one') }
+            if (e instanceof Error && e.message === 'blocked_address') { noteBackoff(db, host, env.now(), true); return offline(unknown('the mail server address is not a public one')) } // no request left this server: no charge
             if (signal?.aborted) return offline(unknown('aborted'))
             // No connection was made, so no request left this server: the allowance is given back (noCall). A timeout or no-route
             // counts towards "port 25 looks shut"; the host is backed off either way so its time is not spent again at once.
