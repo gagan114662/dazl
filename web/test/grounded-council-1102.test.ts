@@ -171,3 +171,20 @@ test('council round 3: a page read that finishes after the deadline starts no mo
   await new Promise(res => setTimeout(res, 900))
   assert.equal(prompts, 0); assert.equal(people(db), 0)
 })
+
+test('the company right before the title ("<Company> Managing Partner <Name> said") ties the title to it; another firm, a former role and a move elsewhere are refused', () => {
+  const OWN: ResearchInput = { company: 'Acme Law', domain: 'acmelaw.example', domainConfirmed: false, roles: ['Managing Partner'], where: ['Chicago, Illinois'] }
+  const ownPage = (text: string): Source[] => [{ id: 'S1', kind: 'page', url: 'https://acmelaw.example/news/expansion', title: 'Acme Law expands corporate practice in Chicago', text }]
+  const A = ans('Jane Roe', 'Managing Partner', 'Acme Law Managing Partner Jane Roe')
+  // The real shape (chicago-law, 2026-11-14), with other partners named around it.
+  assert.equal(why(groundPerson(A, ownPage('Sam Lee joins the Corporate Services practice in Chicago from Northgate LLP. "Sam is a great addition," said Acme Law Managing Partner Jane Roe. "Our Chicago office keeps growing."'), OWN)), 'kept:Jane Roe')
+  assert.equal(why(groundPerson(ans('Jane Roe', 'CEO', "Acme Law's CEO Jane Roe"), ownPage("The award went to Acme Law's CEO Jane Roe on Tuesday."), { ...OWN, roles: ['CEO'] })), 'kept:Jane Roe')
+  const bad: [string, string, ReturnType<typeof ans>][] = [
+    ['another firm before the title', '"A great hire," said Northgate Managing Partner Jane Roe. Acme Law declined to comment.', ans('Jane Roe', 'Managing Partner', 'Northgate Managing Partner Jane Roe')],
+    ['a longer-named business', '"A great hire," said Acme Law Group Managing Partner Jane Roe.', ans('Jane Roe', 'Managing Partner', 'Managing Partner Jane Roe')],
+    ['a former role', 'The firm thanked former Acme Law Managing Partner Jane Roe for her service.', A],
+    ['she moved elsewhere in the same clause', 'Acme Law Managing Partner Jane Roe has joined Globex Legal as chair.', A],
+    ['another place in her clause, on a Chicago request', 'Acme Law Managing Partner Jane Roe of London said the team is growing.', A],
+  ]
+  for (const [what, text, a] of bad) assert.ok('refused' in groundPerson(a, ownPage(text), OWN), `${what}: ${why(groundPerson(a, ownPage(text), OWN))}`)
+})

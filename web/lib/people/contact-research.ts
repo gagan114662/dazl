@@ -323,12 +323,17 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
     if (ok) directEnd = c1
     return ok
   })
+  // The company right BEFORE the title-and-name ("Acme Law Managing Partner Jane Roe said", "Acme Law's CEO, Jane Roe"): the same tie from the other
+  // side. Only when the title comes first in the span (company, title, name) and nothing but a possessive or a space stands between.
+  const directBefore = !direct && titles[0][0] < names[0][0] && companySpans(rawAll, input.company).some(([, c1]) => c1 <= at + span[0] && /^(?:['’]s)?\s{1,2}$/.test(rawAll.slice(c1, at + span[0])))
   // ... but the rest of the person's OWN clause (to the next ";" or the sentence end) is still read: "CEO of Acme Dental's London branch", "CEO of Acme,
   // was named CEO of Globex Health", "Managing Partner, Acme Law, London" name another place or organisation for her.
   // (Cut on the masked copy, same length as the raw text: the period of "Inc." / "Corp." right after the name does not end her clause.)
   if (direct && directEnd >= 0) { const cut = masked.slice(directEnd, Math.min(sHi, directEnd + 160)).split(/[;:“”"]|[.!?]\s/)[0].length; const rest = rawAll.slice(directEnd, directEnd + cut); if (foreign(rest)) return { refused: 'title_at_another_organisation' } }   // a quotation that follows is someone speaking, not her clause
   // Otherwise the window rule: nothing else that reads as an organisation near the person (a testimonial card, a case study, a guest's byline).
-  if (!direct && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
+  // (after a company-first tie the rest of her clause is still read, as below)
+  if (directBefore) { const cut = masked.slice(at + span[1], Math.min(sHi, at + span[1] + 160)).split(/[;:“”"]|[.!?]\s/)[0].length; if (foreign(rawAll.slice(at + span[1], at + span[1] + cut))) return { refused: 'title_at_another_organisation' } }
+  if (!direct && !directBefore && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
   // or a separator, never a lower-case business word.
   if (titles[0][0] < names[0][0]) {
@@ -419,7 +424,7 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
     else linkedin_refused = profileLinkRefusal(answer, lsrc, input)
     if (!linkedin_refused) linkedin = url
   }
-  return { person: { name: answer.name, title: answer.title, linkedin, source_url: src.url, quote: answer.quote, place }, linkedin_refused, direct }
+  return { person: { name: answer.name, title: answer.title, linkedin, source_url: src.url, quote: answer.quote, place }, linkedin_refused, direct: direct || directBefore }
 }
 
 // Why a profile result is not kept as this person's LinkedIn URL (null = kept): it must be THEIR profile, state a current position at this company (any
