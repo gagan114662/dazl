@@ -137,7 +137,7 @@ test('#836 a worker restarted (SIGTERM) while a paid request is in flight (its l
     const a = w.start('worker-a', { W_MODE: 'hang' })
     await until(() => w.job(id).status === 'running' && /provider call 1/.test(a.out()), 'worker-a is mid-scan')
     // the paid request in flight, as the spend ledger records it before the provider is called (lib/scan/spend-cap.ts)
-    w.db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('call-1', 't1', ?, 1, 'llm.anthropic', 0.02, 'reserved', ?)").run(id, nowS())
+    w.db.prepare("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES ('call-1', 't1', ?, 1, 'apollo.people', 0.02, 'reserved', ?)").run(id, nowS())
     const b = w.start('worker-b')
     await until(() => /started instance=worker-b/.test(b.out()), 'worker-b up')
     const stoppedAt = Date.now()
