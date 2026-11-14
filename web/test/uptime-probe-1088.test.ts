@@ -36,7 +36,8 @@ const alerts = () => existsSync(alertLog) ? readFileSync(alertLog, 'utf8').trim(
 const run = async (state: string, extra: string[] = [], env: Record<string, string> = {}) => {
   const { spawn } = await import('node:child_process')
   return await new Promise<{ code: number | null; out: string }>(resolve => {
-    const p = spawn(process.execPath, [probe, '--state', state, '--check', `web=${base}/health`, '--check', `sched=${base}/scheduler=scheduler`, '--timeout-ms', '400', ...extra], { env: { PATH: process.env.PATH!, UPTIME_ALERT_CMD: alertCmd, ...env } as unknown as NodeJS.ProcessEnv })
+    // a generous default timeout: a loaded CI box must not look like an outage
+    const p = spawn(process.execPath, [probe, '--state', state, '--check', `web=${base}/health`, '--check', `sched=${base}/scheduler=scheduler`, ...(extra.includes('--timeout-ms') ? [] : ['--timeout-ms', '15000']), ...extra], { env: { PATH: process.env.PATH!, UPTIME_ALERT_CMD: alertCmd, ...env } as unknown as NodeJS.ProcessEnv })
     let out = ''; p.stdout.on('data', d => { out += d }); p.stderr.on('data', d => { out += d }); p.on('close', code => resolve({ code, out }))
   })
 }
@@ -72,7 +73,7 @@ test('a single blip between two good runs never alerts', async () => {
 test('no answer, and a scheduler that is not fresh, are each reported with a reason built by the probe', async () => {
   const st = path.join(T, 'd.json'), before = alerts().length
   mode.health = 'hang'; mode.scheduler = 'stale'
-  await run(st); const r = await run(st); assert.equal(r.code, 1)
+  await run(st, ['--timeout-ms', '400']); const r = await run(st, ['--timeout-ms', '400']); assert.equal(r.code, 1)
   const a = alerts().slice(before); assert.deepEqual(a.map(x => [x.check, x.reason]).sort(), [['sched', 'scheduler state stale'], ['web', 'no answer in 400 ms']])
   mode.health = 'ok'; mode.scheduler = 'fresh'; await run(st)
 })
