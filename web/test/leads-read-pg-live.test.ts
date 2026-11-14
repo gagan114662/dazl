@@ -165,7 +165,7 @@ test('real Postgres reaper: an open (uncommitted) reserve blocks statement 2 and
     const nowS = () => Math.floor(Date.now() / 1000)
     let reserveDone = false; let reserveErr: unknown = null
     let hold: SpendHold | null = null as SpendHold | null
-    const pRes = runWithScanSpend({ db: pool, jobId: 'jE', tenantId: 'u1', attempt: 1, cap: { ok: true, capCad: 100, fxCadPerUsd: 1.4, capUsd: 5 }, clock: nowS }, async () => { hold = await reserveScanSpend('tinyfish.search', () => 0.05) }).then(() => { reserveDone = true }, e => { reserveErr = e })
+    const pRes = runWithScanSpend({ db: pool, jobId: 'jE', tenantId: 'u1', attempt: 1, cap: { ok: true, capCad: 100, fxCadPerUsd: 1.4, capUsd: 5 }, accountLimits: null, clock: nowS }, async () => { hold = await reserveScanSpend('tinyfish.search', () => 0.05) }).then(() => { reserveDone = true }, e => { reserveErr = e })
     // Barriers via pg_locks, exactly like test 4: pg_stat_activity's wait_event_type/query are MASKED for a
     // non-superuser role in this build (an activity-based poll was flaky here and can hang under CI's restricted role);
     // pg_locks is not redacted. Bounded 5s polls from connection C, never fixed sleeps, never from a blocked connection.
@@ -237,7 +237,7 @@ test('real Postgres reserve: claimed_at is written by clock_timestamp AFTER the 
     await c.query('BEGIN')
     await c.query("UPDATE scan_jobs SET claimed_at = claimed_at WHERE id = 'jF'")
     let reserveErr: unknown = null
-    const pRes = runWithScanSpend({ db: pool, jobId: 'jF', tenantId: 'u1', attempt: 1, cap: { ok: true, capCad: 100, fxCadPerUsd: 1.4, capUsd: 5 }, clock: () => Math.floor(Date.now() / 1000) }, () => reserveScanSpend('tinyfish.search', () => 0.05)).catch(e => { reserveErr = e })
+    const pRes = runWithScanSpend({ db: pool, jobId: 'jF', tenantId: 'u1', attempt: 1, cap: { ok: true, capCad: 100, fxCadPerUsd: 1.4, capUsd: 5 }, accountLimits: null, clock: () => Math.floor(Date.now() / 1000) }, () => reserveScanSpend('tinyfish.search', () => 0.05)).catch(e => { reserveErr = e })
     // Barrier: observe the reserve's UPDATE blocked. pg_locks is NOT redacted for a non-superuser
     // role, while pg_stat_activity wait_event_type/query ARE masked for other sessions in this
     // build (an activity-based poll was flaky here); an ungranted lock on scan_jobs or a

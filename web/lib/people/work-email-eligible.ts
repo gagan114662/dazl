@@ -58,7 +58,7 @@ export function linkedinHandle(u: string | null | undefined): string | null {
 }
 
 export function isWorkEmailTarget(p: RankedPerson, icpText: string): boolean {
-  if (p.historical || !p.title || roleContradicted(p.title, icpText)) return false
+  if (p.historical || p.nameOnly || !p.title || roleContradicted(p.title, icpText)) return false // name-only: possibly another business's person, never looked up
   if (!queryName(p.name)) return false
   if (targetKey(p).length > TARGET_KEY_MAX) return false
   return icpText.trim() ? p.tier !== 'none' : DECISION_MAKER.test(p.title)

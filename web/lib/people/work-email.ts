@@ -105,6 +105,35 @@ export function workEmailsFor(db: Database.Database, tenantId: string, leadId: s
   return rows.map(r => shownRow(r, nowS)).map(r => r.status === 'pending' && r.updated_at < nowS - PENDING_STALE_S ? { ...r, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : r)
 }
 
+// #1182: the stored lookups of every lead a Leads page shows, in ONE tenant-scoped read (WHERE tenant_id = ? AND lead_id IN (...), the table's
+// primary key is (tenant_id, lead_id, target)), grouped by lead. Same mapping as workEmailsFor (a stale 'pending' reads 'uncertain'; an
+// address the mailbox check found undeliverable or do-not-mail is never included).
+export function workEmailsForLeads(db: Database.Database, tenantId: string, leadIds: string[], nowS: number = Math.floor(Date.now() / 1000)): Record<string, WorkEmailRow[]> {
+  migrateWorkEmail(db)
+  const out: Record<string, WorkEmailRow[]> = {}
+  const ids = [...new Set(leadIds.filter(id => typeof id === 'string' && /^[a-f0-9]{24}$/.test(id)))]
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200)
+    const rows = db.prepare(`SELECT lead_id, ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (${part.map(() => '?').join(',')}) ORDER BY lead_id, target`).all(tenantId, ...part) as (WorkEmailRow & { lead_id: string })[]
+    for (const { lead_id, ...r } of rows) {
+      const shown = shownRow(r as WorkEmailRow, nowS)
+      const row = shown.status === 'pending' && shown.updated_at < nowS - PENDING_STALE_S ? { ...shown, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : shown
+      ;(out[lead_id] ??= []).push(row)
+    }
+  }
+  return out
+}
+
+// What the Leads page needs for every work-email block on it, read once with the list (#1182): the providers answer (the same for every
+// lead, except the test-only fixture lead, whose answer is adjusted exactly as its own GET does) and the stored lookups by lead.
+export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]> }
+export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
+  const providers = workEmailProviders(db, tenantId, env)
+  const providers_by_lead: Record<string, WorkEmailProviders> = {}
+  for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
+  return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)) }
+}
+
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
 // mailboxCheck (#1036): the free-tier mailbox check can run at all here (flag, key and both caps set), so the UI offers it.
 export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean }
