@@ -64,6 +64,7 @@ const FREE: Record<string, string> = {
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
   'https://r.jina.ai/': 'Jina Reader without a key: free (lib/sources/jina.ts)',
   'https://www.googleapis.com/youtube/v3/search': 'YouTube Data API: quota units, no per-call charge',
+  'https://api.telegram.org/bot<token>/sendMessage': 'operator alert destination when OPS_ALERT_WEBHOOK_URL is a Telegram bot (#1088): free Bot API, not a scan path',
   'https://api.stripe.com/v1/': 'billing, not a scan path',
   'https://api.stripe.com/v1/subscriptions/': 'billing, not a scan path',
   'https://api.hubapi.com/account-info/v3/details': 'CRM push, not a scan path; no per-call charge',
