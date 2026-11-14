@@ -386,6 +386,8 @@ const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contac
 // first (the site's own navigation), then the usual paths. Never a page contactPaths already reads; never a file or a query URL.
 export const EVIDENCE_PAGES = 4
 export const EVIDENCE_BUDGET_MS = 20_000 // the evidence read's own wall-clock budget per site (never above the crawl budget)
+// Env-overridable like the crawl budget (SITECRAWL_EVIDENCE_BUDGET_MS); an invalid or non-positive value is the default, never a disable.
+const evidenceBudgetMs = (): number => { const n = Number(process.env.SITECRAWL_EVIDENCE_BUDGET_MS); return Number.isFinite(n) && n > 0 ? n : EVIDENCE_BUDGET_MS }
 const EVIDENCE_HINT = /(press|news|media|newsroom|careers?|jobs|join-us|privacy|legal|imprint|impressum|datenschutz|blog|authors?|insights|investors?)/i
 export function evidencePaths(homeHtml: string, home: URL): string[] {
   const skip = new Set(contactPaths(homeHtml, home))
@@ -518,7 +520,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       // and a fetch gets only the time that is left. It shares the per-host politeness clock (lastHit) with every other crawl in this
       // process, so two jobs reading the same site still keep the gap between them.
       if (paths.length) later = async () => {
-        const until = Date.now() + Math.min(crawlBudgetBound(budgetMs), EVIDENCE_BUDGET_MS)
+        const until = Date.now() + Math.min(crawlBudgetBound(budgetMs), evidenceBudgetMs())
         const h = new URL(origin).hostname
         for (const p of paths) {
           if (signal?.aborted || Date.now() >= until) return

@@ -130,30 +130,36 @@ test('#1036 review 4b3b9025 (xhawk): ONE shape-only supporter caps the format at
 })
 
 // Review of 4b3b9025 (xhawk): the deferred evidence read has its own wall-clock budget and shares the per-host politeness clock.
-const slowGet = (ms: number, starts: number[]): Get => async (url, o) => {
-  const path = new URL(url).pathname; const p = PAGES[path]
-  if (path !== '/robots.txt' && path !== '/' && path !== '/team' && path !== '/contact' && !['/contact-us', '/about', '/leadership'].includes(path)) {
+// Instant while the main crawl runs; once `slow.on` is set (the evidence read), every page takes `ms` and its start time is recorded.
+const slowGet = (ms: number, starts: number[], slow: { on: boolean }): Get => async (url, o) => {
+  const p = PAGES[new URL(url).pathname]
+  if (slow.on) {
     starts.push(Date.now())
     await new Promise<void>(res => { const t = setTimeout(res, ms); o?.signal?.addEventListener('abort', () => { clearTimeout(t); res() }, { once: true }) })
   }
   return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url }
 }
 test('#1036 review 4b3b9025: the evidence read stops at its own budget (never above the crawl budget): no fetch starts after it', async () => {
-  const starts: number[] = []
-  const r = await crawlSite('harlowreed.com', slowGet(250, starts), 0, 'Harlow Reed', false, undefined, () => {}, undefined, 600)
-  assert.ok(r.later, 'evidence pages were found')
-  const t0 = Date.now(); starts.length = 0
-  await r.later!()
-  assert.ok(Date.now() - t0 < 1200, `the evidence read took ${Date.now() - t0} ms under a 600 ms budget`)
-  assert.ok(starts.length >= 1 && starts.length <= 3, `${starts.length} evidence fetches under a 600 ms budget with 250 ms pages (4 would be the unbounded read)`)
-  assert.ok(starts.every(s => s - t0 < 600), 'no fetch started after the budget')
+  const starts: number[] = []; const slow = { on: false }
+  // the main crawl has all the time it needs (30 s); only the evidence read's own budget is small, so machine load cannot decide the test
+  const r = await crawlSite('harlowreed.com', slowGet(400, starts, slow), 0, 'Harlow Reed', false, undefined, () => {}, undefined, 30_000)
+  assert.ok(r.later, `evidence pages were found (crawl: ${r.reason}, stopped by ${r.stoppedBy ?? 'nothing'})`)
+  slow.on = true
+  const had = process.env.SITECRAWL_EVIDENCE_BUDGET_MS; process.env.SITECRAWL_EVIDENCE_BUDGET_MS = '1000'
+  const t0 = Date.now()
+  try { await r.later!() } finally { if (had === undefined) delete process.env.SITECRAWL_EVIDENCE_BUDGET_MS; else process.env.SITECRAWL_EVIDENCE_BUDGET_MS = had }
+  // 1000 ms budget, 400 ms pages: a fetch may start at 0, 400 and 800 ms; the 4th (1200 ms) is past the budget. Unbounded = 4 fetches.
+  assert.ok(starts.length >= 1 && starts.length <= 3, `${starts.length} evidence fetches under a 1000 ms budget with 400 ms pages (4 is the unbounded read)`)
+  assert.ok(starts.every(s => s - t0 <= 1000), `no fetch started after the budget: ${starts.map(s => s - t0).join(', ')} ms`)
 })
 
 test('#1036 review 4b3b9025: two evidence reads of the same host at the same moment still keep the polite gap between every fetch', async () => {
   const starts: number[] = []; const GAP = 120
-  const a = await crawlSite('harlowreed.com', slowGet(5, starts), GAP, 'Harlow Reed', false, undefined, () => {}, undefined, 20_000)
-  const b = await crawlSite('harlowreed.com', slowGet(5, starts), GAP, 'Harlow Reed', false, undefined, () => {}, undefined, 20_000)
-  starts.length = 0
+  const slow = { on: false }
+  const a = await crawlSite('harlowreed.com', slowGet(5, starts, slow), GAP, 'Harlow Reed', false, undefined, () => {}, undefined, 20_000)
+  const b = await crawlSite('harlowreed.com', slowGet(5, starts, slow), GAP, 'Harlow Reed', false, undefined, () => {}, undefined, 20_000)
+  assert.ok(a.later && b.later, 'both crawls have evidence pages to read')
+  slow.on = true
   await Promise.all([a.later!(), b.later!()])
   const sorted = [...starts].sort((x, y) => x - y)
   assert.ok(sorted.length >= 4, `${sorted.length} evidence fetches in all`)
