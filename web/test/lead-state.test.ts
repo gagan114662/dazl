@@ -28,7 +28,7 @@ test('undated or customer-mention leads are research only, never actionable revi
 })
 
 test('only a hold a source check can settle, outside any time-window hold, is actionable review', () => {
-  const dated = { event_date: '2026-10-01', date_status: 'verified' }
+  const dated = { event_date: '2026-10-01', date_status: 'unverified', day_verified: true }
   for (const r of ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'self_description', 'event_timing_unconfirmed', 'no_event_evidence']) assert.equal(heldState(lead({ ...dated, review_reason: r }))?.state, 'review', r)
   for (const r of ['counterparty_signal', 'job_closed', 'location_mismatch', 'sales_hiring_check_failed', 'something_new']) assert.equal(heldState(lead({ ...dated, review_reason: r }))?.state, 'research', r)
   assert.equal(heldState(lead({ ...dated, review_reason: 'quote_unconfirmed', window_held: true }))?.state, 'research', 'older than the window: research')
@@ -47,7 +47,7 @@ test('NYC and London shaped runs: zero actionable review, a research-only stage,
 })
 
 test('a mixed run keeps review and research separate', () => {
-  const s = previewSplit([lead({ id: 'q', event_date: '2026-10-01', date_status: 'verified', review_reason: 'quote_unconfirmed' }), ...nyc])
+  const s = previewSplit([lead({ id: 'q', event_date: '2026-10-01', date_status: 'unverified', day_verified: true, review_reason: 'quote_unconfirmed' }), ...nyc])
   assert.equal(s.review.length, 1); assert.equal(s.research.length, 2); assert.equal(s.held.length, 3)
   assert.equal(journey({ profile, jobs: [job], leads: [s.review[0]], drafts: null }).stage, 'all_held')
 })
@@ -98,26 +98,33 @@ test('#352 inventory: every reason the Leads view labels is classified exactly o
 })
 
 test('#352 Home and the Leads view agree for every reason, dated or undated, with and without a time-window hold', () => {
-  for (const r of REVIEW_LABEL_KEYS) for (const date of [{ event_date: '2026-10-01', date_status: 'verified' }, { event_date: null, date_status: 'undated' }]) for (const window_held of [false, true]) {
+  for (const r of REVIEW_LABEL_KEYS) for (const date of [{ event_date: '2026-10-01', date_status: 'unverified', day_verified: true }, { event_date: null, date_status: 'undated' }]) for (const window_held of [false, true]) {
     const l = lead({ ...date, review_reason: r, window_held })
     const home = heldState(l)?.state, keep = reviewAction(l, new Date('2026-11-03T12:00:00Z')).label === 'Keep as research'
     assert.equal(home === 'research', keep, `${r} ${date.event_date ?? 'undated'} window_held=${window_held}: home=${home} card=${keep ? 'keep' : 'confirm'}`)
   }
 })
 
+test('#1176 the cause label fails closed on a row with no day_verified flag: a dated row is "undated" until the card\'s proof says the day is proven', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' }
+  assert.equal(researchCause(lead({ ...dated, day_verified: undefined, review_reason: null })), 'undated', 'no flag: never read as proven')
+  assert.equal(researchCause(lead({ ...dated, day_verified: false, review_reason: null })), 'undated')
+  assert.equal(researchCause(lead({ ...dated, day_verified: true, review_reason: null })), 'unsupported', 'a proven day: the cause is something else')
+})
+
 test('#352 the original gap: a visible no_event_evidence lead is actionable review on Home (not "cannot make it ready"); sales_hiring_check_failed is research on both', () => {
-  const ne = lead({ id: 'n', review_reason: 'no_event_evidence', event_date: '2026-10-20', date_status: 'verified' })
+  const ne = lead({ id: 'n', review_reason: 'no_event_evidence', event_date: '2026-10-20', date_status: 'unverified', day_verified: true })
   const j = journey({ profile, jobs: [job], leads: [ne], drafts: null })
   assert.equal(j.stage, 'all_held'); assert.equal(j.split?.review.length, 1); assert.equal(j.split?.research.length, 0); assert.doesNotMatch(j.line, /cannot make/)
   assert.notEqual(reviewAction(ne).label, 'Keep as research')
-  const gate = lead({ id: 'g', review_reason: 'sales_hiring_check_failed', event_date: '2026-10-20', date_status: 'verified' })
+  const gate = lead({ id: 'g', review_reason: 'sales_hiring_check_failed', event_date: '2026-10-20', date_status: 'unverified', day_verified: true })
   assert.equal(heldState(gate)?.state, 'research'); assert.equal(reviewAction(gate).label, 'Keep as research'); assert.match(reviewAction(gate).hint, /sales-hiring check could not run/)
   assert.equal(journey({ profile, jobs: [job], leads: [gate], drafts: null }).stage, 'research_only')
 })
 
 test('#352 malformed reasons fail closed to research on Home and never crash either surface', () => {
   for (const r of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', '', ' quote_unconfirmed', 'QUOTE_UNCONFIRMED', 'x'.repeat(100_000), '\u0000', '\ud800bad']) {
-    const l = lead({ review_reason: r, event_date: '2026-10-01', date_status: 'verified' })
+    const l = lead({ review_reason: r, event_date: '2026-10-01', date_status: 'unverified', day_verified: true })
     const h = heldState(l)
     if (r === '') { assert.equal(h, null, 'an empty reason is no review reason: the lead is not held by it'); continue }
     assert.equal(h?.state, 'research', JSON.stringify(r.slice(0, 20)))
@@ -126,7 +133,7 @@ test('#352 malformed reasons fail closed to research on Home and never crash eit
     assert.equal(typeof reviewAction(l).label, 'string')
   }
   for (const bad of [null, undefined, 42, {}, [], true] as unknown[]) {
-    const l = lead({ review_reason: bad as string, event_date: '2026-10-01', date_status: 'verified' })
+    const l = lead({ review_reason: bad as string, event_date: '2026-10-01', date_status: 'unverified', day_verified: true })
     assert.doesNotThrow(() => heldState(l)); assert.doesNotThrow(() => reviewAction(l))
     assert.notEqual(heldState(l)?.state, 'review', String(bad))
   }

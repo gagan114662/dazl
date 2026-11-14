@@ -28,6 +28,12 @@ export async function seedStaging(raw: Database.Database, password: string, now 
   const existing = raw.prepare('SELECT id FROM users WHERE email = ?').get(DEMO_EMAIL) as { id: string } | undefined
   if (existing) {
     raw.prepare('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ?').run(now, existing.id)
+    // A demo database seeded before #1176 holds its leads as the retired date_status 'verified' with no proof, which no reader counts any more:
+    // give the demo tenant's OWN seeded rows the proof column the fresh seed writes. Idempotent (the filter no longer matches after one pass);
+    // never a non-demo row (the seed's own dedup_key prefix, this tenant's own scans).
+    raw.prepare(`UPDATE leads SET date_status = 'unverified', event_date_proof = 'page_bound'
+      WHERE dedup_key LIKE 'staging-demo:%' AND date_status = 'verified' AND event_date_proof IS NULL AND event_date IS NOT NULL
+        AND scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id = ?)`).run(existing.id)
     return { created: false, tenant: existing.id }
   }
 
@@ -64,6 +70,9 @@ export async function seedStaging(raw: Database.Database, password: string, now 
     const job = await createQueryJob(db, id, { query: s.query, icp: JSON.stringify(icp) }, at)
     await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?", [at, job])
     await finishJob(db, { id: job, attempts: 1 }, { status: 'done', error: null, leads: s.leads, candidates: s.leads.length + 3, dropped: { off_profile: 3 }, now: at + 300 })
+    // A proven event day is the PROOF column (the scanner has not written date_status 'verified' since 2026-10-23, #1176): the demo leads' days are
+    // synthetic page-tied dates, so Home and the Leads page read them as the card does.
+    raw.prepare("UPDATE leads SET date_status = 'unverified', event_date_proof = 'page_bound' WHERE scan_job_id = ? AND event_date IS NOT NULL").run(job)
   }
   // stub Gmail (staging only): connected, sends nothing
   startOAuth(raw, id, { env: { PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL, DAZL_ENV: 'staging' } as never })
