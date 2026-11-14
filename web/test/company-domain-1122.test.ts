@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { crawlJob, countryTlds, jsonLdCompanySites, probeDomains, searchCandidateSites, siteSearchQuery, type Get } from '../lib/connectors/sitecrawl.ts'
+import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
+import * as sc from '../lib/connectors/sitecrawl.ts'   // helpers by namespace: on main they do not exist, and each test then fails on its own behaviour, not at import
 
 // #1122: a lead found on a third-party page (job board, news site, social page) got no company website, so no person or email could be
 // found for it. Shapes from the real local matrix scans of 2026-11-14 (toronto-dental): evidence on tempstars.com / movojobs.ca / facebook.com,
@@ -59,15 +60,15 @@ test('#1122 a job board page that names the company site only in its JobPosting 
 test('#1122 structured data: only a node NAMED as this company counts; the board\'s own organisation, a network profile and the page\'s own host never do', () => {
   const page = boardPage([{ '@type': 'Organization', name: 'TempStars', url: 'https://tempstars-corporate.example/' },
     { '@type': 'JobPosting', hiringOrganization: { name: 'Restor Dental Inc.', url: 'https://tempstars.example/employers/restor', sameAs: ['https://www.facebook.com/restordental', 'https://restordental.example/'] } }])
-  assert.deepEqual(jsonLdCompanySites('Restor Dental', page, 'tempstars.example'), ['restordental.example'])
-  assert.deepEqual(jsonLdCompanySites('Restor Dental', boardPage({ name: 'Another Clinic', url: 'https://another.example/' })), [])
-  assert.deepEqual(jsonLdCompanySites('Restor Dental', '<script type="application/ld+json">{not json</script>'), [], 'unreadable structured data is ignored')
+  assert.deepEqual(sc.jsonLdCompanySites('Restor Dental', page, 'tempstars.example'), ['restordental.example'])
+  assert.deepEqual(sc.jsonLdCompanySites('Restor Dental', boardPage({ name: 'Another Clinic', url: 'https://another.example/' })), [])
+  assert.deepEqual(sc.jsonLdCompanySites('Restor Dental', '<script type="application/ld+json">{not json</script>'), [], 'unreadable structured data is ignored')
 })
 
 test('#1122 a Canadian request probes the .ca site built from the name: confirmed by name AND place, recorded as a guess', async () => {
-  assert.deepEqual(countryTlds(['Toronto, Ontario']), ['ca']); assert.deepEqual(countryTlds(['Austin, Texas']), []); assert.deepEqual(countryTlds(['Victoria']), [], 'a bare city never picks a country')
-  assert.deepEqual(probeDomains('Restor Dental', ['Toronto, Ontario']).slice(0, 2), ['restordental.com', 'restordental.ca'])
-  assert.deepEqual(probeDomains('Restor Dental'), ['restordental.com', 'restordental.ai', 'restordental.io', 'restordental.co'], 'no geography: the probes are the ones main already made')
+  assert.deepEqual(sc.countryTlds(['Toronto, Ontario']), ['ca']); assert.deepEqual(sc.countryTlds(['Austin, Texas']), []); assert.deepEqual(sc.countryTlds(['Victoria']), [], 'a bare city never picks a country')
+  assert.deepEqual(sc.probeDomains('Restor Dental', ['Toronto, Ontario']).slice(0, 2), ['restordental.com', 'restordental.ca'])
+  assert.deepEqual(sc.probeDomains('Restor Dental'), ['restordental.com', 'restordental.ai', 'restordental.io', 'restordental.co'], 'no geography: the probes are the ones main already made')
   const r = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: html('<p>Restor Dental is hiring in Toronto.</p>'), sites: { 'restordental.ca': { '/': TORONTO_HOME('Restor Dental'), '/contact': CONTACT('info@restordental.ca') } } })
   assert.equal(r.domain, 'restordental.ca')
   assert.deepEqual(r.basis, ['restordental.ca|name_probe'])
@@ -83,9 +84,9 @@ test('#1122 a company whose site cannot be built from its name: ONE web search, 
   assert.deepEqual(r.emails, ['info@torontosmilecentre.example'])
   assert.deepEqual(r.unresolved, [])
   assert.ok(!r.fetched.some(f => /facebook|yelp|ratemds|indeed/.test(f)), 'a network or listing host is never fetched as the company site')
-  assert.deepEqual(searchCandidateSites('TDot Dental', urls, 'tempstars.example'), ['torontosmilecentre.example'])
-  assert.deepEqual(searchCandidateSites('TDot Dental', ['https://other.example/', 'https://tdotdental.example/x', 'https://health.gov/x', 'https://uni.edu/x', 'ftp://x.example/', 'not a url']), ['tdotdental.example', 'other.example'], 'a host named like the company comes first; government, school and non-web addresses never')
-  assert.equal(siteSearchQuery('A "B" Co', []), '"A  B  Co" official website')
+  assert.deepEqual(sc.searchCandidateSites('TDot Dental', urls, 'tempstars.example'), ['torontosmilecentre.example'])
+  assert.deepEqual(sc.searchCandidateSites('TDot Dental', ['https://other.example/', 'https://tdotdental.example/x', 'https://health.gov/x', 'https://uni.edu/x', 'ftp://x.example/', 'not a url']), ['tdotdental.example', 'other.example'], 'a host named like the company comes first; government, school and non-web addresses never')
+  assert.equal(sc.siteSearchQuery('A "B" Co', []), '"A  B  Co" official website')
 })
 
 test('#1122 a searched site that names the company but stands in ANOTHER place is refused: no domain, no contact, and the lead says why', async () => {
