@@ -65,7 +65,9 @@ export function first5Of(input: { status: string; leads: First5Lead[]; progress:
   if (verified > 0) return { ...base, state: 'partial', finding_more: false, reason: null, can_continue: true, next: wider, message: `${verified} of ${FIRST5_TARGET} verified from the free sources. You can search wider for more.` }
   // Finished with nothing verified: say WHICH of the distinct reasons it was (a failed source, rejected candidates, or a clean zero), never a bare empty state.
   // A free-sources-only run stops (budget_stopped) when its sources gave nothing; if a source FAILED that is the reason to show, not the stop.
-  if (outcome.kind === 'stopped' && failed_sources.length > 0) return { ...base, state: 'stopped_empty', finding_more: false, reason: 'failed', can_continue: true, next: wider, message: `Failed - ${failed_sources.join(', ')} had an error. You can search wider.` }
+  // ...unless the outcome already accounts for the failed source (#1157: the search allowance stopped the main search, or the other
+  // source searched clean and found nothing): then the outcome's own words are shown, with the failed source named in them.
+  if (outcome.kind === 'stopped' && failed_sources.length > 0 && !outcome.accounts_for_failed_source) return { ...base, state: 'stopped_empty', finding_more: false, reason: 'failed', can_continue: true, next: wider, message: `Failed - ${failed_sources.join(', ')} had an error. You can search wider.` }
   const reason = REASON[outcome.kind] ?? 'unrecorded'
   return { ...base, state: 'stopped_empty', finding_more: false, reason, can_continue: true, next: wider, message: `${outcome.label}${outcome.detail ? `: ${outcome.detail}` : ''}. You can search wider.` }
 }

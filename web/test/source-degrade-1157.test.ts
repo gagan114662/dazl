@@ -7,6 +7,7 @@ import { fallbackStopCode, refusalCode } from '../lib/scan/runner.ts'
 import { SourceRunLedger } from '../lib/scan/source-runs.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
+import { first5Of } from '../lib/scan/first5.ts'
 
 const at = (news: string | null, tf: string | null) => { const l = new SourceRunLedger(); if (news) l.record('search:news', news); if (tf) l.record('search:tinyfish', tf); return l }
 const code = (news: string | null, tf: string | null) => fallbackStopCode(at(news, tf))
@@ -41,7 +42,7 @@ test('what the person reads: the allowance stop names the failed source beside i
   const failed = { status: 'failed', candidates: 0, verified: 0, needs_review: 0, failed_sources: ['News articles'] }
   const allowance = scanOutcome({ ...failed, error: 'search_allowance_reached' } as never)
   assert.equal(allowance.kind, 'stopped'); assert.equal(allowance.label, 'Stopped - the web search allowance for today was used up')
-  assert.match(allowance.detail ?? '', /Also, News articles had an error, so it gave nothing either\.$/)
+  assert.match(allowance.detail ?? '', /Also, News articles had an error and gave nothing either\.$/)
   const degraded = scanOutcome({ ...failed, error: 'no_discovery' } as never)
   assert.equal(degraded.kind, 'stopped'); assert.equal(degraded.label, 'Nothing found - News articles could not be searched')
   assert.match(degraded.detail ?? '', /skipped source may have had results/)
@@ -51,4 +52,18 @@ test('what the person reads: the allowance stop names the failed source beside i
   assert.ok(!/Also,/.test(plain.detail ?? ''))
   // a real source failure with nothing clean still says Failed and names the source
   assert.equal(scanOutcome({ ...failed, error: 'source_error' } as never).label, 'Failed - News articles had an error')
+})
+
+test('a first play shows the same words: the allowance stop is not replaced by "Failed - search:news had an error"', () => {
+  const progress = [{ source: 'search:news', state: 'done', status: 'failed', note: 'network', candidates: 0, accepted: 0, review: 0, rejected: 0 }, { source: 'search:tinyfish', state: 'done', status: 'skipped', note: null, candidates: 0, accepted: 0, review: 0, rejected: 0 }]
+  const rec = { status: 'failed', candidates: 0, verified: 0, needs_review: 0, failed_sources: ['search:news (network)'] }
+  const view = (error: string) => first5Of({ status: 'failed', leads: [], progress: progress as never, outcome: scanOutcome({ ...rec, error } as never) })
+  const allowance = view('search_allowance_reached')
+  assert.match(allowance.message, /^Stopped - the web search allowance for today was used up: /); assert.match(allowance.message, /Also, search:news \(network\) had an error and gave nothing either\./)
+  assert.ok(!/^Failed/.test(allowance.message)); assert.notEqual(allowance.reason, 'failed'); assert.deepEqual(allowance.failed_sources, ['search:news'])
+  const degraded = view('no_discovery')
+  assert.match(degraded.message, /^Nothing found - search:news \(network\) could not be searched: /); assert.notEqual(degraded.reason, 'failed')
+  // the shortcut still applies where it was meant: a stop that does not account for the failed source
+  const held = view('unbounded_fallback_hold')
+  assert.equal(held.message, 'Failed - search:news had an error. You can search wider.'); assert.equal(held.reason, 'failed')
 })

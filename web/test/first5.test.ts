@@ -62,9 +62,13 @@ test('THE FAST PATH: a first5 job uses the free news source, makes NO TinyFish s
 test('CONTROL: the same job WITHOUT first5 still searches TinyFish first', async () => {
   const r = await runFixture(fx({ runBudget: undefined })); assert.ok(r.calls.searches.length >= 1)
 })
-test('every news request fails -> stopped_empty, reason failed, search:news named, can continue: a distinct failure, not an empty screen', async () => {
+// #1157: one failed source does not fail the run when the other searched clean. Here every news request fails and the web search
+// ran and found nothing: the run stopped with nothing found, and the message names the source that could not be searched.
+test('every news request fails while the web search finds nothing -> stopped_empty, search:news named as not searched, can continue: not a failure, not a bare empty screen', async () => {
   const { v } = await view(fx({ extraction: [], deps: { newsHttp: async () => ({ status: 503, body: '' }) } }))
-  assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'failed', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news']); assert.match(v.message, /search:news/)
+  assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'stopped', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news'])
+  assert.match(v.message, /^Nothing found - search:news could not be searched: /); assert.match(v.message, /the skipped source may have had results/)
+  assert.deepEqual(v.sources.map(s => [s.source, s.status]), [['search:news', 'failed'], ['search:tinyfish', 'empty']], 'the source rows still say which one failed')
 })
 test('a candidate the verifier rejects (quote not on the page) -> stopped_empty with reason rejected + counts, not a failure and not a zero', async () => {
   const { v } = await view(fx({ own: { [NEWS]: { title: 'x', text: `On ${daysAgo(12)}, An unrelated article. ${'Filler text. '.repeat(40)}` } } }))
