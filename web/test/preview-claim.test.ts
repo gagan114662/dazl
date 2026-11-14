@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAuth } from '../lib/auth-db.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migratePreviewClaim, issuePreviewClaim, verifyClaimToken, readPublicClaim, claimPreview, readClaimedPreview } from '../lib/scan/preview-claim.ts'
 
 // Synthetic runs, companies and people only.
@@ -14,7 +15,7 @@ const OFFER = { text: 'Appointment reminders for physiotherapy clinics', sourceU
 
 function setup() {
   const h = new Database(':memory:')
-  migrateAuth(h); migrateScan(h); migratePreviewClaim(h)
+  migrateAuth(h); migrateScan(h); migrateConnectors(h); migratePreviewClaim(h)   // lead_enrichments: the preview reads the required-check marker
   const db = sqliteDb(h)
   const jobId = createJob(h, 'seller1', { business_name: 'Seller Co', industry: 'x', location: 'y' })
   const day = new Date(NOW - 10 * 86400_000).toISOString().slice(0, 10)
@@ -23,8 +24,8 @@ function setup() {
   return { h, db, jobId, day }
 }
 const lead = (h: Database.Database, jobId: string, id: string, day: string) => h.prepare(
-  'INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, confidence, score, event_date, date_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  .run(id, jobId, 'Northside Physio', 'Opened a second clinic', 'https://news.test/a1', 'We opened our second clinic this month.', 80, 70, day, 'verified')
+  'INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, confidence, score, event_date, date_status, event_date_proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+  .run(id, jobId, 'Northside Physio', 'Opened a second clinic', 'https://news.test/a1', 'We opened our second clinic this month.', 80, 70, day, 'unverified', 'page_bound')
 const finish = (h: Database.Database, jobId: string) => h.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(NOW, jobId)
 const user = (h: Database.Database, id: string, email: string, verified: boolean) =>
   h.prepare('INSERT INTO users (id, email, name, business_name, password_hash, salt, created_at, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')

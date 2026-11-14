@@ -29,7 +29,7 @@ async function play(db: Db, tenant: string, at: number, o: { status?: string; ve
   await db.run(`INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location, query, csv_domain, created_at, finished_at, verified)
     VALUES (?, ?, 'running', 'Biz', ?, ?, 'saas founders hiring', ?, ?, ?, ?)`,
   [id, tenant, marker, o.test ? 'test only' : 'Toronto', o.csv ? 'csv.example.test' : null, at, o.status === 'failed' ? null : at + 600, o.verified ?? 0])
-  for (let i = 0; i < (o.usable ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date) VALUES (?, ?, 'Synthetic Co', 'raised a seed round', 'https://news.example.test/a', 'verified', '2026-05-20')", [`${id}-u${i}`, id])
+  for (let i = 0; i < (o.usable ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date, event_date_proof) VALUES (?, ?, 'Synthetic Co', 'raised a seed round', 'https://news.example.test/a', 'unverified', '2026-05-20', 'page_bound')", [`${id}-u${i}`, id])
   // held leads: in review, or with no verified date, never make a run usable
   for (let i = 0; i < (o.held ?? 0); i++) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, review_reason) VALUES (?, ?, 'Synthetic Co', 'maybe hiring', 'https://news.example.test/b', 'unverified', 'identity')", [`${id}-h${i}`, id])
   // leads are only ever added to a running job (a store trigger); the run then ends as recorded
@@ -391,4 +391,31 @@ test('GET /api/growth/funnel: owners of the configured growth workspace only', (
     '--loader', './test/helpers/tenant-route-loader.mjs', '--test', './test/helpers/growth-funnel-route-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /GROWTH ROUTE ok/)
+})
+
+// #1176 (council review): what a run's `usable` count must NOT include, each on the rule the lead card uses (eventDayVerified) and the gate marker.
+// One account whose only leads are all of those kinds stays "zero_result"; one account with a single proven, gate-clean, past-dated lead is "activated".
+bothEngines('#1176 usable leads: a retired verified status without proof, a posting day on a non-hiring trigger, a future day and a failed required check do not activate an account', async ({ db }) => {
+  await user(db, G, 'founder@growth.dazl-fixture.co', T0 - 100 * DAY)
+  await member(db, G, G, 'owner')
+  for (const [t, email] of [['NEG', 'neg@usable.dazl-fixture.co'], ['POS', 'pos@usable.dazl-fixture.co'], ['POS2', 'pos2@usable.dazl-fixture.co']]) { await user(db, t, email, T0); await member(db, t, t, 'owner') }
+  const run = (tenant: string, at: number) => play(db, tenant, at, { status: 'running', verified: 1 })   // leads are added while it runs, then it finishes
+  const add = (id: string, n: string, o: { status: string; proof: string | null; signal: string; date: string }) => db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, date_status, event_date, event_date_proof) VALUES (?, ?, 'Synthetic Co', ?, 'https://news.example.test/' || ?, ?, ?, ?)", [`${id}-${n}`, id, o.signal, n, o.status, o.date, o.proof])
+  const neg = await run('NEG', T0 + DAY)
+  await add(neg, 'retired', { status: 'verified', proof: null, signal: 'opened a second office', date: '2026-05-20' })           // before 2026-10-23: no proof
+  await add(neg, 'boardfunding', { status: 'unverified', proof: 'ats_structured', signal: 'raised a seed round', date: '2026-05-20' }) // a posting day does not date a funding round
+  await add(neg, 'future', { status: 'unverified', proof: 'page_bound', signal: 'opened a second office', date: '2999-01-01' })
+  await add(neg, 'gatefailed', { status: 'unverified', proof: 'page_bound', signal: 'opened a second office', date: '2026-05-20' })
+  await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('g1', ?, 'NEG', 'scan:gate', 'gate_failed', 'sales_hiring_check_failed', 'https://invalid.example/', '2026-11-13', 1)", [`${neg}-gatefailed`])
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [neg])
+  const pos = await run('POS', T0 + DAY)
+  await add(pos, 'good', { status: 'unverified', proof: 'page_bound', signal: 'opened a second office', date: '2026-05-20' })
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [pos])
+  const pos2 = await run('POS2', T0 + DAY)
+  await add(pos2, 'good2', { status: 'unverified', proof: 'ats_structured', signal: 'hiring a sales manager', date: '2026-05-20' })
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [pos2])
+  const t = (await funnelReport(db, G, { now: NOW, env: ENV })).cohorts[0]
+  // Asymmetric on purpose: two proven accounts and one that is not. On main (reading the retired status) the roles swap, 1 activated and 2 zero_result,
+  // so a totals check that passed with the roles swapped cannot pass there.
+  assert.deepEqual(t.setup, { abandoned_setup: 0, runs_failed: 0, zero_result: 1, activated: 2 })
 })

@@ -66,6 +66,18 @@ test('the staging seed: refuses outside staging; creates the demo account once; 
     assert.equal((await seedStaging(db, 'long-enough-password')).created, false)
     assert.notEqual(confirmed(), null, 'a re-run confirms an older demo account')
     assert.deepEqual(counts(), { u: 1, j: 2, l: 5, g: 1 }, 'idempotent')
+    // #1176: a database seeded the OLD way (retired 'verified', no proof) gets the proof written on a re-run, for the demo rows only, once
+    const proofs = () => db.prepare('SELECT date_status AS s, event_date_proof AS p, count(*) AS n FROM leads GROUP BY 1, 2 ORDER BY 1, 2').all()
+    assert.deepEqual(proofs(), [{ s: 'unverified', p: 'page_bound', n: 5 }], 'a fresh seed proves the demo days')
+    db.prepare("UPDATE leads SET date_status = 'verified', event_date_proof = NULL").run()   // the old seed's rows
+    db.prepare("UPDATE leads SET dedup_key = 'real:co' WHERE id = (SELECT id FROM leads ORDER BY id LIMIT 1)").run()   // one row that is NOT a demo row
+    await seedStaging(db, 'long-enough-password')
+    assert.deepEqual(db.prepare("SELECT date_status AS s, event_date_proof AS p, count(*) AS n FROM leads WHERE dedup_key LIKE 'staging-demo:%' GROUP BY 1, 2").all(), [{ s: 'unverified', p: 'page_bound', n: 4 }], 'the four demo rows now carry the proof')
+    assert.deepEqual(db.prepare("SELECT date_status AS s, event_date_proof AS p FROM leads WHERE dedup_key = 'real:co'").get(), { s: 'verified', p: null }, 'a non-demo row is never touched')
+    const snap = JSON.stringify(db.prepare('SELECT id, date_status, event_date_proof FROM leads ORDER BY id').all())
+    await seedStaging(db, 'long-enough-password')
+    assert.equal(JSON.stringify(db.prepare('SELECT id, date_status, event_date_proof FROM leads ORDER BY id').all()), snap, 'a second re-run changes nothing')
+    assert.deepEqual(counts(), { u: 1, j: 2, l: 5, g: 1 })
     const u = db.prepare('SELECT email, buyer_profile FROM users').get() as { email: string; buyer_profile: string }
     assert.equal(u.email, DEMO_EMAIL)
     assert.ok(JSON.parse(u.buyer_profile).summary)

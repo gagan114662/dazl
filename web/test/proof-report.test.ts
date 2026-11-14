@@ -19,7 +19,7 @@ async function run(db: Db, tenant: string, o: { leads?: number; spend?: unknown;
   await db.run("UPDATE scan_jobs SET status = 'running', seller = ? WHERE id = ?", [o.seller === undefined ? `${OFFER.text} - ${OFFER.sourceUrl}` : o.seller, id])
   if (o.spend !== undefined) await db.run('UPDATE scan_jobs SET spend_reserved_usd = ? WHERE id = ?', [o.spend as number, id])
   for (let i = 0; i < (o.leads ?? 1); i++)
-    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, event_date, date_status, confidence, score) VALUES (?, ?, ?, 'Opened a second clinic', ?, 'We opened our second clinic this month.', ?, 'verified', 80, 70)",
+    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, event_date, date_status, event_date_proof, confidence, score) VALUES (?, ?, ?, 'Opened a second clinic', ?, 'We opened our second clinic this month.', ?, 'unverified', 'page_bound', 80, 70)",
       [`${id}-l${i}`, id, `${tenant} clinic ${i}`, `https://news.test/${id}/${i}`, day(10)])
   await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [NOW, id])
   return id
@@ -163,7 +163,7 @@ test('the homepage\u2019s illustrative examples can never become proof evidence'
   let n = 0
   const leads: ProofLeadRow[] = EXAMPLES.scenarios.flatMap(s => s.leads.map(l => ({
     id: `ex${++n}`, company: l.company, signal: l.why, source_url: l.url ?? `https://${l.source}/story`, evidence_excerpt: l.quote,
-    event_date: day(5), date_status: 'verified', review_reason: null, quarantined_at: null, evidence_purged_at: null, confidence: 90, score: 90,
+    event_date: day(5), date_status: 'unverified', event_date_proof: 'page_bound', review_reason: null, quarantined_at: null, evidence_purged_at: null, confidence: 90, score: 90,
   })))
   assert.ok(leads.length > 0)
   for (const s of EXAMPLES.scenarios) {
