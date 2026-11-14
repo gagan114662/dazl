@@ -5,11 +5,12 @@
 // whose pages the first round could not read (login or block) are excluded rather than asked for again.
 import { sanitizeQueries, withGeography, namesPlace, QUERY_CAP } from '../search/tinyfish.ts'
 
-export interface RetryAttempt { index: number; verified: number; queries: string[]; hitsUniqueUrls: number | null; dropReasons: Record<string, number>; review: { reason: string; url: string }[] }
+export interface RetryAttempt { index: number; verified: number; queries: string[]; hitsUniqueUrls: number | null; dropReasons: Record<string, number>; review: { reason: string; url: string; company?: string }[] }
 export interface RetryPlan { retry: boolean; why: string; queries: string[]; excludeHosts: string[]; conflicts: string[] } // conflicts: hosts the user asked for that round one could not read; never excluded, left for the owner
 
 export const MAX_VERIFIED_FOR_RETRY = 5 // retry only while fewer than this many leads are verified; needs_review does not count
 export const MAX_RETRY_QUERIES = 3
+export const MAX_COMPANY_RETRIES = 2
 const BLOCKED = new Set(['blocked_by_site', 'login_required'])
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 // A signal counts as already asked when most of its content words appear in the first round's queries (phrase variants are not new).
@@ -26,7 +27,12 @@ export function planRetry(query: string, icp: { signals: string[]; where: string
   if (a.verified >= MAX_VERIFIED_FOR_RETRY) return no('enough_verified')
   const usedWords = new Set(a.queries.flatMap(q => words(q)).map(stem))
   const fresh = icp.signals.map(s => s.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()).filter(s => s.length >= 8 && !alreadyAsked(s, usedWords))
-  if (fresh.length === 0) return no('no_new_signal')
+  // #685 (yield): a company whose only source could not be read or confirmed (blocked_by_site, login_required, quote_unconfirmed: 11 of 18 candidates of the
+  // 2026-11-13 staging matrix died this way) gets ONE search for another source of the same company, with the unreadable host excluded. At most MAX_COMPANY_RETRIES
+  // of the round's MAX_RETRY_QUERIES; the page it finds goes through the same extraction and the same verifier as any other.
+  const heldCompanies = [...new Map(a.review.filter(r => (BLOCKED.has(r.reason) || r.reason === 'quote_unconfirmed') && typeof r.company === 'string' && r.company.trim().length >= 3)
+    .map(r => [norm(r.company!), r] as const)).values()].slice(0, MAX_COMPANY_RETRIES)
+  if (fresh.length === 0 && heldCompanies.length === 0) return no('no_new_signal')
   const blocked = [...new Set(a.review.filter(r => BLOCKED.has(r.reason)).flatMap(r => { try { const u = new URL(r.url); return u.protocol === 'https:' || u.protocol === 'http:' ? [hostKey(u.hostname)] : [] } catch { return [] } }))]
   const req = query.toLowerCase()
   const userNamed = (h: string) => new RegExp(`(?<![a-z0-9.-])(?:[a-z0-9-]+\\.)*${h.replace(/\./g, '\\.')}(?![a-z0-9-])`).test(req)
@@ -39,6 +45,14 @@ export function planRetry(query: string, icp: { signals: string[]; where: string
   const places = [...new Set(icp.where.map(w => w.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
   const finalize = (q: string) => { const out = withGeography(sanitizeQueries([q], query, now), icp.where)[0]; return out.length <= QUERY_CAP && places.every(pl => namesPlace(out, pl)) ? out : null }
   const queries: string[] = []
+  for (const r of heldCompanies) {
+    const name = r.company!.replace(/[\u0000-\u001f"]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
+    let host = ''; try { host = hostKey(new URL(r.url).hostname) } catch { /* no host to exclude */ }
+    const placed = finalize(`"${name}" news announcement`)   // the place is added first; the exclusion goes after it, when it still fits the cap
+    if (placed === null) continue
+    const cur = host && !userNamed(host) && `${placed} -site:${host}`.length <= QUERY_CAP ? `${placed} -site:${host}` : placed
+    if (!prior.has(norm(cur))) queries.push(cur)
+  }
   for (const sig of fresh) {
     if (queries.length >= MAX_RETRY_QUERIES) break
     let cur = finalize(sig); if (cur === null) continue

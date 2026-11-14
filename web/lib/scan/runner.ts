@@ -26,7 +26,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { boardQueries, hasHiringSignal } from '../search/direct-queries.ts'
+import { boardQueries, eventQueries, hasHiringSignal, hiringQueryForNonHiringRequest } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
@@ -39,7 +39,7 @@ import { reconcileRunReport, type CandidateAudit, type UrlRecord } from './run-r
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
-import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { canonicalUrl, withExclusions, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
@@ -1028,7 +1028,16 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     const modelQueries = Math.min(6, Math.max(caps ? 1 : 2, budgetN - direct.length - tech.length)) // the rest of the search budget after the reserved direct and technology queries
     const plan = queryPlan(await ask(queryPrompt(job.query!, icp, modelQueries), 300).catch(e => { if (e instanceof SpendAccountingFailed || (e instanceof ProviderError && e.kind === 'auth')) throw e; return '' }), job.query!, modelQueries)
     if (diag) diag.info.query_source = plan.source
-    q = withGeography([...direct, ...tech, ...sanitizeQueries(plan.queries, job.query!)], icp.where).slice(0, budgetN)
+    // #381 (yield): a model query about hiring is dropped when the request never asked for hiring; the request's own event queries fill whatever slots the
+    // model's queries leave (its cap of 6, a short or unusable reply); every open query excludes the hosts that can never be read.
+    const sanitized = sanitizeQueries(plan.queries, job.query!)
+    const modelQs = sanitized.filter(x => !hiringQueryForNonHiringRequest(x, job.query!, icp.language))
+    const seenQ = new Set(modelQs.map(x => x.toLowerCase()))
+    // how many: one for each model query dropped, plus the slots the model was never asked to fill (its cap of 6). A model that answers with fewer queries than it
+    // was asked for is not topped up: the search count, and so the cost where searches are priced, stays what the plan asked for.
+    const room = (sanitized.length - modelQs.length) + Math.max(0, budgetN - direct.length - tech.length - modelQueries)
+    const filler = eventQueries(job.query!).filter(x => !seenQ.has(x.toLowerCase())).slice(0, room)
+    q = withExclusions(withGeography([...direct, ...tech, ...modelQs, ...filler], icp.where).slice(0, budgetN), job.query!)
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
@@ -1038,7 +1047,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // An adaptive round reads only pages round one never saw: a page already read cannot change the result, and is not paid for twice.
   if (round) { const seen = new Set([...round.skipUrls].map(u => canonicalUrl(u) ?? u)); for (let i = hits.length - 1; i >= 0; i--) if (seen.has(canonicalUrl(hits[i].url) ?? hits[i].url)) hits.splice(i, 1) }
   // Free news search beside TinyFish (lib/search/news.ts): the same queries minus site: restrictions, the ICP's market.
-  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.filter(x => !/site:/i.test(x)), icp.language)).hits) if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
+  if (newsHttp && hits.length > 0) { const seen = new Set(hits.map(h => h.url)); for (const h of (await newsSearch(newsHttp, q.map(x => x.replace(/\s+-site:\S+/gi, '')).filter(x => !/site:/i.test(x)), icp.language)).hits)   /* the news search has no site operators: exclusions are removed, a site: TARGET query is not sent */ if (!seen.has(h.url)) { seen.add(h.url); hits.push(h); diag?.newsUrls?.push(h.url) } }
   if (hits.length === 0) {
     // Every search answered and none returned a result: the evidence really is 0. If any search failed it stays unknown (null).
     if (diag && summarizeTrace(diag.trace).hits_complete === true) Object.assign(diag.info, { evidence_items: 0, evidence_with_page_text: 0, evidence_snippet_only: 0 })
@@ -1053,7 +1062,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   // #380 / #204 Test B: under an OR plan ("seed funding OR are hiring sales") a job page can prove a branch on its own, so it is not ranked behind the event pages.
   // #876: not when the OR's hiring branch is a COMPLETED hire ("made their first sales hire"): a job page is an open vacancy, which never proves it.
   const eventBeyondHiring = jobPagesBehindEvents(icp.signals, job.query, JSON.stringify(icp))
-  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring)
+  const fetchRank = fetchRankFor(hitByUrl, icp.window_days ?? 365, eventBeyondHiring, undefined, hasHiringSignal(job.query!, icp.signals))
   const urls = pickFetchUrls(hits.map(h => h.url), round ? Math.min(ADAPTIVE_FETCHES, tfLimits().fetchesPerScan) : caps ? Math.min(caps.fetches, tfLimits().fetchesPerScan) : tfLimits().fetchesPerScan, fetchRank) // exact duplicates removed, breadth first by host, nothing excluded
   const f = await tfFetchMany(db, job.user_id, urls, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) })
   if (diag?.tfTextUrls && f.ok) diag.tfTextUrls.push(...f.pages.map(p => p.url)) // verify_provenance: pages TinyFish had text for
@@ -1086,14 +1095,33 @@ export function jobPagesBehindEvents(signals: string[] | null | undefined, query
 }
 // Which result URLs get the scarce fetch slots, as a rank (lower first): dated inside the window, then undated, then dated outside it (can never pass), login-walled last; for a compound request
 // (an event beyond hiring) the job-board / careers pages sit behind the pages that can carry the event. Among equal ranks the caller keeps search order, breadth first by host: there is NO relevance signal.
-export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, windowDays: number, eventBeyondHiring: boolean, now = new Date()): (u: string) => number {
+// #381 (yield): search results almost never carry a date (0 dated results in 6 of the 7 real staging matrix scans), so the window class above cannot tell a page
+// that reports an event from an evergreen one, and the scarce page reads went to home pages and directories (toronto.ca, illinois.gov, shopify.com, a clinic's home
+// page) while the law firms' own /news/ pages were left as snippets. Within a window class: a page that looks like an event report (a news / press / blog path, a
+// date in the path, an event word in its address or title, or a job posting) comes first; a home page or an about / services / locations page comes last; the
+// rest stay between. Only the ORDER changes; nothing is excluded.
+const EVENT_PATH = /\/(?:news|newsroom|press|press-releases?|media|media-center|blog|articles?|stories|announcements?|insights|updates)(?:\/|$)|\/(?:19|20)\d\d\/\d\d?(?:\/|$)|(?:19|20)\d\d-\d\d-\d\d/i
+const EVENT_WORDS = /\b(?:opens?|opening|opened|announce[sd]?|announcing|expands?|expanded|expansion|launch(?:es|ed)?|raises?|raised|funding|acquires?|acquired|joins?|appoints?|welcomes?|new[- ](?:office|location|store|clinic|plant|branch))\b/i
+const EVERGREEN_PATH = /^\/(?:(?:about|about-us|services?|locations?|contact|contact-us|team|our-team|careers?|home|pricing|products?|index(?:\.\w+)?)\/?)?$/i
+// hiringAsked: a job posting reports the event only when the request asks for hiring; for any other request it is the least useful readable page (the real
+// Chicago list, a request about new offices, held three unrelated Greenhouse postings).
+export function pageKindRank(url: string, title = '', hiringAsked = true): number {
+  let u: URL
+  try { u = new URL(url) } catch { return 0.3 }
+  if (isJobPage(url)) return hiringAsked ? 0 : 0.6
+  if (EVENT_PATH.test(u.pathname) || EVENT_WORDS.test(`${u.pathname.replace(/[-_/]+/g, ' ')} ${title}`)) return 0
+  if (EVERGREEN_PATH.test(u.pathname)) return 0.6
+  return 0.3
+}
+export function fetchRankFor(hitByUrl: Map<string, { date: string | null; title?: string }>, windowDays: number, eventBeyondHiring: boolean, now = new Date(), hiringAsked = true): (u: string) => number {
   return (u: string): number => {
     if (isLoginWalled(u)) return 8
     const st = windowStatus(hitByUrl.get(u)?.date ?? null, windowDays, now)
     const cls = st === 'inside' ? 0 : st === 'undated' ? 1 : 2
+    const kind = pageKindRank(u, hitByUrl.get(u)?.title, hiringAsked)
     // Compound request: non-job inside / undated, then job-page inside / undated, then outside-window pages (which can never pass the window gate).
-    if (eventBeyondHiring && isJobPage(u)) return cls === 2 ? 5 : 2 + cls
-    return cls === 2 ? 4 : cls
+    if (eventBeyondHiring && isJobPage(u)) return (cls === 2 ? 5 : 2 + cls) + kind
+    return (cls === 2 ? 4 : cls) + kind
   }
 }
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
@@ -1724,7 +1752,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let recurring = !!job.watch_id
       if (!recurring) recurring = isMonitorRun(db, job)
       const left = jobDeadlines.get(job)
-      const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url })) }, deps.now ?? new Date())
+      const plan = planRetry(job.query, icpForSources, { index: 0, verified: 0, queries: summarizeTrace(diag.trace).queries, hitsUniqueUrls: null, dropReasons: outcome.dropped, review: outcome.review.map(r => ({ reason: r.review_reason, url: r.source_url, company: r.company })) }, deps.now ?? new Date())
       if (recurring) stop('skipped:recurring_run')
       else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
       else if (budgetRefused) stop('budget_stopped')

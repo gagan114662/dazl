@@ -53,7 +53,7 @@ const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => x.r
 
 test('NYC planner: the exact request yields role queries for the real role, no instruction fragments, and the 90-day window', async () => {
   const x = await runFixture({ ...nyc, extraction: [cOpen, cJob] })
-  const direct = x.calls.searches.filter(q => /site:/.test(q))
+  const direct = x.calls.searches.filter(q => /(?:^|[\s(])site:/.test(q))   // a site: TARGET (the board queries); -site: exclusions on open queries are not targets (#381)
   assert.ok(direct.length >= 1 && direct.every(q => /"front desk receptionist"/.test(q)), direct.join('\n'))
   for (const q of x.calls.searches) assert.doesNotMatch(q, /dated source evidence|practice manager contact|"location"|\bexclude\b/i, `instruction fragment in query: ${q}`)
   assert.ok(x.calls.afters.length > 0 && x.calls.afters.every(a => a === daysAgo(90)), `every search is limited to the 90-day cutoff: ${x.calls.afters}`)

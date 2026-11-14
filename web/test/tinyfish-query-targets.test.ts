@@ -88,7 +88,7 @@ test('issued TinyFish queries of an Ohio scan carry no login-walled site: target
     const { r, searched } = await run(OBSERVED)
     assert.equal(r, 'done')
     assert.equal(searched.length, 2 + OBSERVED.length, '2 direct ATS queries + every observed model query (default cap is 8)')
-    for (const q of searched) { assert.doesNotMatch(q, /site:(?:[\w-]+\.)*(linkedin|indeed|glassdoor)\.com/i, q); assert.doesNotMatch(q, /\b2024\b/, q); assert.match(q, /ohio/i, q) }
+    for (const q of searched) { assert.doesNotMatch(q, /(?<!-)site:(?:[\w-]+\.)*(linkedin|indeed|glassdoor)\.com/i, q)   /* a -site: exclusion is not a target (#381) */; assert.doesNotMatch(q, /\b2024\b/, q); assert.match(q, /ohio/i, q) }
   } finally { delete process.env.TINYFISH_API_KEY }
 })
 

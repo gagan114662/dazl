@@ -164,6 +164,27 @@ export function boardQueries(request: string, icp: { signals?: string[]; where?:
   if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), english ? [] : icp.signals ?? [])) return []
   return directQueries(request, icp.signals ?? [], icp.where ?? [])
 }
+// #381 (yield): queries built from the REQUEST's own event words. On the real staging matrix the model's queries drifted to the profile's signals ("fintech Berlin
+// hiring CTO Head of Product engineer jobs" for a request about funding rounds), and with a larger budget the model's cap of 6 left search slots unused. One query
+// per event the request names ("<who and where> <event> announcement"), aimed at dated pages (announcements, news, press). They fill the slots the model's queries
+// leave; they never replace a model query that follows the request.
+const WINDOW = /\s*(?:in|within|over|during)\s+the\s+(?:last|past)\s+\d+\s+(?:days?|weeks?|months?|years?)\.?/gi
+export function eventQueries(request: string): string[] {
+  // only the request's FIRST sentence (what to find), without its opening verb: later sentences are instructions ("Exclude chains. Provide dated evidence and a
+  // contact"), which must never become search words
+  const first = request.split(/(?<=[.;!?])\s+|\n+/)[0] ?? ''
+  const text = first.replace(WINDOW, ' ').replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[.;!?]+$/, '').replace(/^(?:please\s+)?(?:find|show me|get me|give me|list|i need|we need|looking for)\s+/i, '')
+  const m = /^(.{6,120}?)\s+(?:that|which|who)\s+(?:are\s+|is\s+|have\s+|has\s+|had\s+)?(.{4,200})$/i.exec(text)
+  if (!m) return []
+  const head = m[1].trim()
+  const events = m[2].split(/\s+or\s+(?:are\s+|is\s+|have\s+|has\s+)?/i).map(e => e.trim().replace(/^(?:are|is|have|has|had)\s+/i, '')).filter(e => e.length >= 4).slice(0, 3)
+  const out: string[] = []
+  for (const kind of ['announcement', 'news', 'press release']) for (const e of events) { const q = `${head} ${e} ${kind}`; if (q.length <= 200) out.push(q) }
+  return out
+}
+// A model query about hiring when the request never asked for it (the profile's signals leaked into the query): the same rule as boardQueries, per query.
+export const hiringQueryForNonHiringRequest = (query: string, request: string, language?: string): boolean =>
+  (!language || language === 'en') && !hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), []) && /\b(?:hiring|hire[sd]?|jobs?|careers?|recruit\w*|vacanc\w+|job\s+(?:posting|opening)s?)\b/i.test(query)
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
   if (!hasHiringSignal(request, signals)) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)

@@ -400,6 +400,22 @@ const WALLED = ['linkedin.com', 'indeed.com', 'glassdoor.com', 'facebook.com', '
 // and neither was recognised. A label match, not a substring: "wallindeed.com" is not Indeed.
 const WALLED_NAMES = /(?:^|\.)(?:linkedin|indeed|glassdoor|facebook|instagram|nextdoor|jobleads|tiktok|twitter|pinterest|threads)\.(?:[a-z]{2,}|(?:co|com|org|net)\.[a-z]{2})$|(?:^|\.)x\.com$/
 export const isLoginWalled = (url: string): boolean => { try { const h = new URL(url).hostname.toLowerCase(); return WALLED.some(w => h === w || h.endsWith('.' + w)) || WALLED_NAMES.test(h) } catch { return false } }
+// #381 (yield): results on hosts the verifier cannot read are wasted result slots: 39 of the 178 real results of the 2026-11-13 staging matrix (22%, 10 of 21 in
+// Toronto) were on them. A live probe (2026-11-14, ~/work/verify/yield/exclusion-probe-20261114.txt): "Vancouver restaurant opening second location British
+// Columbia" returned 6 of 10 results on Instagram / Facebook; the same query with -site: exclusions returned none, and local news pages instead (dailyhive, bcbusiness,
+// scoutmagazine). So every open query (one without a site: target of its own) excludes the hosts that fill result lists and can never be read. A host the USER's
+// request names is never excluded, and an exclusion that does not fit the search cap is left out (the query itself is never cut).
+export const EXCLUDED_AT_SEARCH = ['facebook.com', 'instagram.com', 'linkedin.com', 'youtube.com', 'tiktok.com']
+export function withExclusions(queries: string[], request: string): string[] {
+  const req = request.toLowerCase()
+  const hosts = EXCLUDED_AT_SEARCH.filter(h => !req.includes(h.split('.')[0]))
+  return queries.map(q => {
+    if (/(?:^|[\s(])site:/i.test(q)) return q   // a query with its own site: target (job boards) is already bound to a host
+    let out = q
+    for (const h of hosts) { if (new RegExp(`-site:${h.replace('.', '\\.')}`, 'i').test(out)) continue; const next = `${out} -site:${h}`; if (next.length <= QUERY_CAP) out = next }
+    return out
+  })
+}
 export function sanitizeQueries(queries: string[], request: string, now: Date = new Date()): string[] {
   const req = request.toLowerCase()
   const windowStartYear = new Date(now.getTime() - 365 * 86400_000).getUTCFullYear()
