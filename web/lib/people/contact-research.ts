@@ -304,7 +304,14 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   // "... is the Chief Revenue Officer at Acme, the leading AI Sales Platform": when THIS company follows the title directly ("at", "of", "@", a comma),
   // the title is tied to it by the sentence itself ("Speakers: Jane Roe, Chief Revenue Officer, Acme; ...", "said Jane Roe, CEO and co-founder of Acme"):
   // other capitalised words around it are the rest of the page, not another employer of hers.
-  const direct = companySpans(rawAll, input.company).some(([c0]) => c0 >= at + span[1] && c0 - (at + span[1]) <= 12 && /^[\s,·]*(?:(?:at|of|@|for|with)\s+)?(?:the\s+)?$/i.test(rawAll.slice(at + span[1], c0)))   // never "|" or a dash: in a result title those lead to the SITE's name
+  // The title may run on in title words before the company ("CEO" quoted from "CEO and co-founder of Acme"). Never "|" or a dash: in a result title those lead to the SITE's name.
+  const direct = companySpans(rawAll, input.company).some(([c0]) => {
+    const gap = rawAll.slice(at + span[1], c0)
+    if (c0 < at + span[1] || gap.length > 40) return false
+    const words = gap.split(/[\s,·]+/).filter(Boolean)
+    while (words.length && (/^(?:and|&)$/i.test(words[0]) || TITLE_OK.test(words[0]))) words.shift()
+    return /^(?:(?:at|of|@|for|with)\s+)?(?:the)?$/i.test(words.join(' ')) && !/[.;!?|(]|\s[-–—]\s/.test(gap)
+  })
   // Otherwise the window rule: nothing else that reads as an organisation near the person (a testimonial card, a case study, a guest's byline).
   if (!direct && (foreign(left) || foreign(right))) return { refused: 'title_at_another_organisation', nearby: true }   // nearby: by the window rule, not by words that give her another employer
   // The title comes first ("bakery owner Mark Stone", "the local bakery's owner, Mark Stone"): the word just before it must be a title / filler / connector word
@@ -419,7 +426,7 @@ function groundProfile(answer: Answer, src: Source, input: ResearchInput): { per
 
 // The quote may appear more than once in a source (a headline that repeats the name and title, then a sentence that says whose owner she is): EVERY
 // occurrence is judged, and any refusal wins.
-export function groundPerson(answer0: Answer, sources0: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | { refused: string } {
+export function groundPerson(answer0: Answer, sources0: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null; direct?: boolean } | { refused: string; nearby?: true } {
   // Markdown marks are not words (plain): the same cleaning on what was shown and on what the model quoted.
   const sources = sources0.map(x => x.kind === 'search' ? { ...x, title: plain(x.title), text: plain(x.text) } : x)
   const answer = { ...answer0, quote: plain(answer0.quote) }
@@ -452,28 +459,31 @@ export function groundPerson(answer0: Answer, sources0: Source[], input: Researc
       }
     }
   }
-  return { person: first.person, linkedin_refused: first.linkedin_refused }
+  return { person: first.person, linkedin_refused: first.linkedin_refused, ...(first.direct ? { direct: true } : {}) }   // direct: the cited words tie the title to this company
 }
 
 // The model picks ONE source, and it often picks a profile or a news site when the company's own website names the same person (measured
 // 2026-11-14: 4 of 4). Off the company's site a source must name the confirmed website to count, so that pick is refused though the person is
 // right. Second look, in code: the SAME name and title, next to each other, in a source on the company's own confirmed site, judged by
 // exactly the same rules (groundPerson). Only after a refusal that says the cited SOURCE is not tied to the company (it does not name the website,
-// the place or the company); never after one that says something about the person (a past role, another organisation, a title that is not theirs).
+// the place or the company) or that other names stand near the person in the cited words (`nearby`: "Founded by Jane Roe (CEO) and Sam Lee (CTO)"
+// when the same page also says "Jane Roe, CEO and co-founder of Acme"); never after one that gives the person a past role or another employer.
 export const OWN_SITE_RETRY: readonly string[] = ['company_unconfirmed', 'place_unconfirmed', 'source_does_not_name_company']
-export function groundOnOwnSite(answer: Answer, sources: Source[], input: ResearchInput): { person: ResearchPerson; linkedin_refused: string | null } | null {
+export function groundOnOwnSite(answer: Answer, sources: Source[], input: ResearchInput, o: { directOnly?: boolean } = {}): { person: ResearchPerson; linkedin_refused: string | null } | null {
   const domain = (input.domain ?? '').toLowerCase().replace(/^www\./, '')
   if (!domain || !NAME.test(answer.name)) return null
   for (const src of sources) {
     const h = hostOf(src.url)
-    if (src.id === answer.source || !(h === domain || h.endsWith(`.${domain}`))) continue
+    if (!(h === domain || h.endsWith(`.${domain}`))) continue
     const raw = tidy(src.kind === 'search' ? `${plain(src.title)}. ${plain(src.text)}` : `${src.title}. ${src.text}`), hay = norm(raw)
     if (raw.length !== hay.length) continue
     for (const n of spans(hay, answer.name).slice(0, 10)) for (const t of spans(hay, answer.title).slice(0, 10)) {
       const between = n[1] <= t[0] ? hay.slice(n[1], t[0]) : t[1] <= n[0] ? hay.slice(t[1], n[0]) : null
       if (between === null || between.length > 24 || !JOINER.test(between)) continue
       const g = groundPerson({ ...answer, source: src.id, quote: raw.slice(Math.min(n[0], t[0]), Math.max(n[1], t[1])), linkedin_source: null }, sources, input)
-      if (!('refused' in g)) return g
+      // After a `nearby` refusal only a sentence that itself ties the title to this company counts (directOnly): a clean-looking line elsewhere is not enough
+      // to set aside the other names next to the person.
+      if (!('refused' in g) && (!o.directOnly || g.direct)) return { person: g.person, linkedin_refused: g.linkedin_refused }
     }
   }
   return null
@@ -520,7 +530,7 @@ export async function researchContact(input: ResearchInput, deps: ResearchDeps):
   if (answer === 'unreadable') return base('model_failed', det.stop === 'max_tokens' ? 'answer_cut_off' : 'answer_unreadable', { queries, sources: listed })
   if (answer === null) return base('none', 'model_found_nobody', { queries, sources: listed })
   let g = groundPerson(answer, sources, input)
-  if ('refused' in g && OWN_SITE_RETRY.includes(g.refused)) g = groundOnOwnSite(answer, sources, input) ?? g
+  if ('refused' in g && (OWN_SITE_RETRY.includes(g.refused) || g.nearby)) g = groundOnOwnSite(answer, sources, input, { directOnly: !!g.nearby }) ?? g
   if ('refused' in g) return base('not_grounded', g.refused, { queries, sources: listed })
   return { status: 'found', person: g.person, refused: null, linkedin_refused: g.linkedin_refused, queries, sources: listed, usage }
 }

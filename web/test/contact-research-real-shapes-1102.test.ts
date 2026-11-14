@@ -94,3 +94,19 @@ test('#1102 the model cited another site, the company\'s own site names the same
   assert.equal(groundOnOwnSite(a, [offsite, ownsite], { ...IN, domain: null }), null)
   assert.equal(groundOnOwnSite(a, [offsite, { ...ownsite, url: 'https://pagewake.example.evil.test/x' }], IN), null)
 })
+
+test('#1102 the model quoted the founders line of the company\'s own page; the same page ties the title to the company in another sentence: kept from that sentence', async () => {
+  const { groundOnOwnSite } = await import('../lib/people/contact-research.ts')
+  const page: Source = { id: 'S1', kind: 'page', url: 'https://www.pagewake.example/stories/raise', title: 'Pagewake raises $18M', text: '"The physical world is in its biggest cycle in history, driven by AI demand," said Dana Okoye, CEO and co-founder of Pagewake. "The companies that build the best tools will win." Founded by Dana Okoye (CEO) and Odran Dunne (CTO), Pagewake launched in July 2025 and is backed by Northgate Capital.' }
+  const a = { name: 'Dana Okoye', title: 'CEO', source: 'S1', quote: 'Founded by Dana Okoye (CEO) and Odran Dunne (CTO)', linkedin_source: null }
+  const first = groundPerson(a, [page], IN)
+  assert.ok('refused' in first && first.refused === 'title_at_another_organisation' && first.nearby === true, JSON.stringify(first))
+  const g = groundOnOwnSite(a, [page], IN, { directOnly: true })
+  assert.equal(g?.person.quote, 'Dana Okoye, CEO'); assert.equal(g?.person.source_url, page.url)
+  // A guest's byline on the company's own page gives her ANOTHER employer: refused, and no second look can keep her.
+  const guest: Source = { ...page, text: 'Guest post by Dana Okoye, CEO of Northgate Capital. Pagewake thanks Dana Okoye, CEO, Northgate Capital, for her time.' }
+  const refused = groundPerson({ ...a, quote: 'Dana Okoye, CEO of Northgate Capital' }, [guest], IN)
+  assert.ok('refused' in refused && refused.refused === 'title_at_another_organisation', JSON.stringify(refused))
+  assert.equal(groundOnOwnSite({ ...a, quote: 'Dana Okoye, CEO of Northgate Capital' }, [guest], IN, { directOnly: true }), null, 'no sentence ties her title to THIS company')
+  assert.equal(groundOnOwnSite({ ...a, quote: 'Dana Okoye, CEO of Northgate Capital' }, [guest], IN), null, 'and no line passes by itself either')
+})
