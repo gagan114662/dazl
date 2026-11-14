@@ -137,6 +137,10 @@ export function guessFor(db: Database.Database, tenantId: string, leadId: string
   // a person who now has a confirmed address of their own has the published tier: a stale guess is not shown beside it
   if (confirmedAddressesAt(db, tenantId, domainOf(r.address)).some(c => c.name.first === want.first && c.name.last === want.last)) return null
   if (r.verification === 'undeliverable' || r.verification === 'refused') return null
+  // a one-name guess (the crawl writes those too) names nobody in particular; never shown
+  if (r.format === 'first' || r.format === 'last') return null
+  // the same address already answered by a lookup as refused / undeliverable: it is not shown as a guess either
+  try { if (db.prepare("SELECT 1 FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND lower(address) = ? AND mailbox_check IN ('refused','undeliverable') LIMIT 1").get(tenantId, leadId, r.address.toLowerCase())) return null } catch (e) { if (!noTable(e)) throw e }
   const label = candidateLabel(r)
   const verified = label === 'guessed, verified'
   const domain = domainOf(r.address)

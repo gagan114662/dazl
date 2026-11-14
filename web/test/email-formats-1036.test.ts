@@ -216,3 +216,24 @@ test("#1036 review fixes: a one-name format builds no guess; a stored guess disa
   assert.equal(learnedFormat(c.db, 'A', SITE), null)
   assert.equal((await findWorkEmail(c.db, 'A', c.lead, DANA, { env: ON, now: NOW })).guess, undefined)
 })
+
+test("#1036 review fixes 2: a crawl-written one-name guess and a guess a lookup flagged do-not-mail are never shown; the month figure is this workspace's own; only a missing table reads as zero; cap 0 and Off read honestly", async () => {
+  const s = seed(); twoConfirmed(s.db)
+  const ins = (person: string, address: string, format: string) => s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('A', ?, ?, ?, ?, ?, 'guessed', 'low')").run(s.lead, person, address, format, BASIS)
+  ins('Owen Park, Owner', `owen@${SITE}`, 'first')
+  assert.equal(guessFor(s.db, 'A', s.lead, 'Owen Park', ON), null, 'one-name guesses written by the crawl are not shown either')
+  ins('Dana Lee, Practice Manager', `dana.lee@${SITE}`, 'first.last')
+  assert.equal(guessFor(s.db, 'A', s.lead, 'Dana Lee', ON)?.address, `dana.lee@${SITE}`)
+  s.db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, checked_at, mailbox_check, updated_at) VALUES ('A', ?, 'Dana Lee|Practice Manager', 'verified', 'apollo', ?, ?, 'refused', ?)").run(s.lead, `dana.lee@${SITE}`, NOW, NOW)
+  assert.equal(guessFor(s.db, 'A', s.lead, 'Dana Lee', ON), null, 'the same address flagged do-not-mail is not shown as a guess')
+  // the month figure: this workspace only
+  const t = seed(); const u = (env: Record<string, string>, tenant = 'A') => mailboxCheckUsage(sqliteDb(t.db), tenant, env, NOW)
+  const fake = { EMAIL_GUESS_ENABLED: '1', DAZL_ENV: 'staging', DAZL_STAGING_FAKE_ZEROBOUNCE: '1', EMAIL_VERIFY_DAILY_CAP: '5', EMAIL_VERIFY_MONTHLY_CAP: '50' }
+  assert.equal(Object.hasOwn((await u(fake)).month, 'remaining'), false, "no figure that carries another workspace's use")
+  assert.match((await u({ ...fake, EMAIL_VERIFY_DAILY_CAP: '0' })).note, /daily limit is 0/)
+  // a missing column is an error, not "0 used"
+  const broken = new Database(':memory:'); broken.exec('CREATE TABLE email_candidates (tenant_id TEXT)'); broken.exec('CREATE TABLE work_email_lookups (tenant_id TEXT)')
+  await assert.rejects(() => mailboxCheckUsage(sqliteDb(broken), 'A', fake, NOW))
+  const panel = readFileSync(new URL('../app/app/settings/enrichment-panel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /no checks allowed \(daily limit 0\)/); assert.match(panel, /state !== 'off' && <p data-testid="mailbox-checks-numbers"/)
+})
