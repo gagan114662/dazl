@@ -23,7 +23,7 @@
 //     Adding those guards is part of each wiring PR, not this slice.
 //   - Leases: a claimed item expires after leaseSeconds and becomes
 //     claimable again (reapExpired), mirroring reapStaleJobs in store.ts
-//     (STALE_RUNNING_S = 20 min default).
+//     (STALE_RUNNING_S, about 3 min by default: one paid call plus a margin).
 //   - Attempts: each claim increments attempts; after maxAttempts the item
 //     fails permanently (MAX_ATTEMPTS = 3 in store.ts).
 //   - Idempotent enqueue: an optional dedupeKey makes re-enqueue of the same
@@ -104,7 +104,7 @@ export interface ClaimOptions {
   perTenantInFlight?: number
   // Global concurrency cap. The scan runner maps SCAN_MAX_CONCURRENT (3) here.
   maxInFlight?: number
-  // Lease length in seconds; scan semantics map STALE_RUNNING_S (1200) here.
+  // Lease length in seconds; scan semantics map STALE_RUNNING_S (about 195 s by default) here.
   leaseSeconds?: number
   // Restrict claiming to these tenant ids (tenant-scoped rollout). Items for
   // other tenants stay queued but are never claimed - including ids removed
@@ -170,5 +170,5 @@ export interface QueueAdapter {
   depth(opts?: { tenantId?: string; kind?: string; status?: WorkStatus }): number
 }
 
-export const DEFAULT_LEASE_S = 20 * 60 // == STALE_RUNNING_S in web/lib/scan/store.ts
+export const DEFAULT_LEASE_S = 20 * 60 // the generic queue default for items claimed with no lease of their own. Scans do NOT use it: they pass STALE_RUNNING_S (web/lib/scan/store.ts, about 195 s since #1157)
 export const DEFAULT_MAX_ATTEMPTS = 3 // == MAX_ATTEMPTS in web/lib/scan/store.ts

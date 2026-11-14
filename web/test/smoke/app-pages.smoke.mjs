@@ -36,6 +36,15 @@ try {
     for (const e of errs) { console.log(`     ${e}`); failures.push(`${route}: ${e}`) }
     await page.close()
   }
+  // #1088: this app has no server actions, so a Next-Action request is a probe: a plain 400 from proxy.ts on any path (Next would
+  // otherwise answer 404/409 and print a "Failed to find Server Action" stack trace per request), and the page itself still loads.
+  for (const p of ['/', '/sign-in', '/app/leads', '/api/health']) {
+    const r = await fetch(`${base}${p}`, { method: 'POST', headers: { 'next-action': '7f0000000000000000000000000000000000000000', 'content-type': 'text/plain;charset=UTF-8' }, body: '[]', redirect: 'manual' })
+    const ok = r.status === 400 && (await r.text()) === 'Bad Request\n'
+    console.log(`${ok ? 'ok  ' : 'FAIL'} POST ${p} with Next-Action -> ${r.status}`)
+    if (!ok) failures.push(`POST ${p} with Next-Action: HTTP ${r.status}, expected the proxy's 400`)
+  }
+  { const r = await fetch(`${base}/sign-in`, { redirect: 'manual' }); if (r.status !== 200) failures.push(`GET /sign-in after the probes: HTTP ${r.status}`) }
 } finally {
   await browser?.close()
   srv.stop()
