@@ -710,6 +710,10 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
   const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
   const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
   if (failed(news) || failed(tf)) return 'source_error'
+  // The TinyFish search was refused by the platform's own daily allowance (this account's per-day units, or its share of the platform's)
+  // before any request: nothing was searched because the allowance was used up, not because the sources could not conclude. Its own
+  // stop, so the run says the allowance is the reason and that trying again after the UTC day turns over (or with another setting) can search.
+  if (tf === 'skipped_cap') return 'search_allowance_reached'
   // #1037 item 1: a first play where no lead source could run at all (news switched off / not run, TinyFish not run or refused
   // before any request): nothing was searched, so this is not a held fallback. Its own code, so the run says so. Scoped to first
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
@@ -795,7 +799,7 @@ Only include an item if the quote names that company. Skip anything older than 1
 // TinyFish pass for a CSV company job: three fixed queries (no LLM planning call), then
 // the tenant's own model turns the collected pages into candidates. All searches and
 // fetches count against the same per-scan and per-tenant TinyFish caps as a manual scan.
-async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean }): Promise<LeadDraft[] | null> {
+async function tinyfishCompany(db: Database.Database, job: Job, domain: string, provider: Provider, key: string, fetchImpl?: typeof fetch, flags?: { attempted: boolean; failed: boolean; capped?: boolean }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   const spent = { searches: 0, fetches: 0 }
@@ -808,6 +812,7 @@ async function tinyfishCompany(db: Database.Database, job: Job, domain: string, 
   const hits: import('../search/tinyfish.ts').SearchHit[] = []
   for (const { q, date } of queries) {
     const r = await tfSearch(db, job.user_id, q, date ? { afterDate: after } : {}, spent, { ...(fetchImpl ? { fetchImpl } : {}), charge: trialCharges.get(job) })
+    if (flags && !r.ok && r.reason === 'cap') flags.capped = true   // refused by the daily allowance before any send: its own state (skipped_cap), not a hold
     if (flags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { flags.attempted = true; if (!r.ok) flags.failed = true }
     if (!r.ok) {
       // A sent request that may have been billed or was rejected ENDS the attempt's paid work: never send the fetch
@@ -846,21 +851,21 @@ async function runCompanyJob(db: Database.Database, job: Job, provider: Provider
     const complete = provider.complete
     let leads: LeadDraft[] | null = null
     if (complete && tinyfishEnabled()) {
-      const tfFlagsC = { attempted: false, failed: false }
+      const tfFlagsC = { attempted: false, failed: false, capped: false }
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         leads = await tinyfishCompany(db, job, domain, provider, key, deps.fetchImpl, tfFlagsC)
         // Same provenance as the query path: sent-and-failed is 'error' (partial results with a failed search are still an
         // error, never 'ok'); attempted-empty 'unavailable' (a clean zero); never-sent 'skipped_hold'.
-        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        ledger.record('search:tinyfish', leads === null ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? 'unavailable' : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : tfFlagsC.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
         // SpendRefused = the spend hold refused a call: skipped only when nothing was sent before it; a hold-stopped partial
         // reads 'unavailable' (neither skipped nor a vendor error). Anything else = a paid request ran and failed (error).
-        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : 'skipped_hold') : 'error')
+        ledger.record('search:tinyfish', e instanceof SpendRefused ? (tfFlagsC.failed ? 'error' : tfFlagsC.attempted ? partialHold(e) : tfFlagsC.capped ? 'skipped_cap' : 'skipped_hold') : 'error')
         // A refused paid call STOPS the run (the query path's #594 contract): never fall through to the paid research
         // fallback - after the first refusal there is no later reserve at all, refused or not. The terminal error names
         // the truth: a maybe-billed call is accounting_uncertain, a documented rejection is its own status, else the
@@ -1339,7 +1344,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // #1037 item 1: the capped first-play fallback whose every search answered with zero hits searched clean and found nothing
         // ('empty'). Hits that could not be read or extracted stay 'unavailable' (never concluded).
         const zeroHits = (): boolean => { const t = summarizeTrace(diag.trace); return t.hits_complete === true && t.hits_raw === 0 }
-        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : 'skipped_hold') : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
+        // Nothing was sent. A refusal by the daily allowance ('cap': this account's units for the UTC day, or its fair share of the platform's)
+        // is 'skipped_cap' - the allowance is the cause. Anything else (the scan's own budget, a breaker) stays 'skipped_hold'.
+        const refusedBeforeSend = (): string => { const na = summarizeTrace(diag.trace).searches_not_attempted; return (na.cap || na.capacity) && !na.spend_refused ? 'skipped_cap' : 'skipped_hold' }
+        ledger.record('search:tinyfish', leads === null ? (diag.tfFlags.failed ? 'error' : diag.tfFlags.attempted ? (caps && zeroHits() ? 'empty' : 'unavailable') : refusedBeforeSend()) : diag.tfFlags.failed ? 'error' : leads.length ? 'ok' : 'empty')
         if (leads) ledger.candidates('search:tinyfish', leads)
         // Leads whose page GDELT surfaced carry the GDELT attribution (its terms require citation and a link).
         if (leads && diag.newsUrls.length) ledger.candidates(NEWS_SOURCE, leads.filter(l => diag.newsUrls.includes(l.source_url)))
