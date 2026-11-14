@@ -145,7 +145,8 @@ test('#846 #847 runner: a scan of an account with no operator entry reserves eve
 test('#846 runner: past the deployment day cap the first model request is never sent; the scan stops budget_stopped with owner_pool_limit recorded', async () => {
   const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, true)
   assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
-  assert.deepEqual(x.calls.filter(c => c.status === 'refused').map(c => [c.kind, c.reason]).slice(0, 1), [['llm.anthropic', 'owner_pool_limit']])
+  // the model call is refused first; the later steps of the attempt are refused too (#1167), in the same second, and the ledger orders by (created_at, id)
+  assert.deepEqual(x.calls.filter(c => c.status === 'refused' && c.kind.startsWith('llm.')).map(c => [c.kind, c.reason]).slice(0, 1), [['llm.anthropic', 'owner_pool_limit']])
   assert.equal(x.row.error, 'budget_stopped')
   assert.deepEqual(await poolRows(x.db, 'A'), [], 'a refused reservation writes nothing')
 })
