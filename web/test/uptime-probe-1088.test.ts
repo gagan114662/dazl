@@ -95,6 +95,16 @@ test('no destination: the outage is still counted and printed, and the alert is 
   mode.health = 'ok'
 })
 
+test('an outage whose DOWN alert never got through is still reported when the check comes back', async () => {
+  const st = path.join(T, 'h.json'), before = alerts().length
+  mode.health = '500'
+  await run(st, [], { UPTIME_ALERT_CMD: failCmd }); await run(st, [], { UPTIME_ALERT_CMD: failCmd })
+  mode.health = 'ok'
+  const r = await run(st); assert.equal(r.code, 0, r.out)
+  const a = alerts().slice(before); assert.equal(a.length, 1); assert.deepEqual([a[0].state, a[0].down_alert_delivered], ['recovered', false]); assert.match(a[0].text, /was DOWN .*HTTP 500.* back UP.*could not be delivered/)
+  await run(st); assert.equal(alerts().length, before + 1, 'once')
+})
+
 test('a state file that cannot be written is exit 3, said in words', async () => {
   const blocker = path.join(T, 'not-a-dir'); writeFileSync(blocker, '')
   const r = await run(path.join(blocker, 'state.json')); assert.equal(r.code, 3, r.out); assert.match(r.out, /cannot write the state file/)

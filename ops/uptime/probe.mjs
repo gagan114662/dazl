@@ -103,7 +103,16 @@ for (const { c, reason } of results) {
       const ok = await send({ ...base, level: 'info', state: 'recovered', down_since: s.since ? iso(s.since) : null }, `dazl ${c.name} is back UP (${c.url})${mins ? ` after about ${mins} min` : ''}.`)
       // a recovery notice that could not be sent is retried next run: the check stays "down" in the state until it is delivered
       next[c.name] = ok ? { fails: 0, down: false, since: null, alerted_at: null, reason: null } : s
-    } else next[c.name] = { fails: 0, down: false, since: null, alerted_at: null, reason: null }
+    } else {
+      // it was failing long enough to be an outage but the DOWN alert never got through: the outage must not vanish
+      if (s.fails >= failAfter) {
+        const mins = s.since ? Math.max(1, Math.round((now - s.since) / 60_000)) : null
+        const ok = await send({ ...base, level: 'info', state: 'recovered', down_since: s.since ? iso(s.since) : null, down_alert_delivered: false },
+          `dazl ${c.name} was DOWN${mins ? ` for about ${mins} min` : ''} (${s.reason ?? 'no answer'}) and is back UP (${c.url}). The DOWN alert could not be delivered at the time.`)
+        if (!ok) console.error(`uptime-probe: ${c.name} was down for ${s.fails} checks and recovered; neither alert could be delivered`)
+      }
+      next[c.name] = { fails: 0, down: false, since: null, alerted_at: null, reason: null }
+    }
     lines.push({ check: c.name, up: true })
     continue
   }

@@ -18,7 +18,7 @@ The bot token is a secret: it goes into the env files below (mode 600), never in
 
 Where to set it (Hermes; the app picks it up at the next deploy, the timers at their next run):
 - the app: `OPS_ALERT_WEBHOOK_URL=...` in the run env (`/home/ubuntu/dazl-pr16-run.env`), then deploy;
-- the backup check: `/etc/dazl-backup/env` (`ops/backup/install-prod.sh --alert-url ...`);
+- the backup check: the line `OPS_ALERT_WEBHOOK_URL=...` in `/etc/dazl-backup/env`;
 - the scheduler check: its unit's env file (`ops/scheduler/`);
 - the uptime probe: `~/.config/dazl-uptime/env` on the probe machine.
 
