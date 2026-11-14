@@ -4,7 +4,7 @@
 import type Database from 'better-sqlite3'
 import { createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob, type RunDeps } from '../lib/scan/runner.ts'
-import { measureCase, verdict, type CaseResult, type MatrixCase, type MatrixThresholds } from './matrix-score.mts'
+import { measureCase, verdict, funnelOf, type CaseResult, type MatrixCase, type MatrixThresholds } from './matrix-score.mts'
 
 // A scan that did not finish cleanly is INCOMPLETE and never passes, whatever it had found by then.
 const INCOMPLETE = new Set(['budget_stopped', 'scan_timeout', 'key_rejected', 'key_unreadable', 'no_api_key', 'accounting_uncertain', 'not_claimed'])
@@ -49,5 +49,5 @@ export async function runCase(db: Database.Database, c: MatrixCase, o: { tenant:
   const v = verdict(m, o.thresholds)
   // done and failed are the only finished states: pending/running (a retry that never came, a stopped run) are INCOMPLETE too
   const incomplete = crashed || (error !== null && INCOMPLETE.has(error)) || (j.status !== 'done' && j.status !== 'failed')
-  return { id: c.id, label: c.label, status: incomplete ? 'INCOMPLETE' : j.status, error, ...m, seconds: Math.round((Date.now() - t0) / 1000), usd, pass: v.pass && !incomplete && j.status === 'done', why: v.why }
+  return { id: c.id, label: c.label, status: incomplete ? 'INCOMPLETE' : j.status, error, ...m, seconds: Math.round((Date.now() - t0) / 1000), usd, pass: v.pass && !incomplete && j.status === 'done', why: v.why, funnel: funnelOf(db, id) }
 }

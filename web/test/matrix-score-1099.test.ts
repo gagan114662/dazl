@@ -10,7 +10,7 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { measureCase, verdict, matrixTable, DEFINITIONS, type CaseResult, type MatrixCase, type MatrixThresholds } from '../scripts/matrix-score.mts'
+import { measureCase, verdict, matrixTable, funnelOf, DEFINITIONS, type CaseResult, type MatrixCase, type MatrixThresholds } from '../scripts/matrix-score.mts'
 import { runCase, spentUsd, sellerLineFor } from '../scripts/matrix-run.mts'
 import { parseEnvFile } from '../scripts/matrix-env.mts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -183,4 +183,24 @@ test('the table prints its definitions, and the script refuses a bad cap or time
   assert.match(run('--timeout', '0').stderr, /--timeout must be a number/)
   assert.match(run('--cap', '-1').stderr, /per-case cap must be a number above 0/)
   assert.match(run('--cap', 'abc').stderr, /per-case cap must be a number above 0/)
+})
+
+test('funnelOf: where the candidates went, read from the scan\'s run report; no report is null, never a zero', () => {
+  const { db } = seed()
+  assert.equal(funnelOf(db, 'j1'), null, 'no report recorded')
+  const report = { v: 1, queries: ['q1', 'q2', 'q3'], query_source: 'model', search: { attempted: 3, ok: 2, hits_raw: 20, hits_unique_urls: 14, hits_complete: true },
+    urls: [{ url: 'https://a.example', selected: true, walled: false }, { url: 'https://b.example', selected: true, walled: true }, { url: 'https://c.example', selected: false, walled: false }],
+    evidence: { items: 5, with_page_text: 2, snippet_only: 3 }, extracted_candidates: 6, stop: null,
+    candidates: [{ company: 'Smile Dental', url: 'https://a.example', outcome: 'review', reason: 'quote_unconfirmed' }],
+    funnel: { candidates: 6, verified: 0, needs_review: 3, dropped: 3, review_reasons: { quote_unconfirmed: 3 }, drop_reasons: { blocked_by_site: 2, not_found: 1 }, verifier_drop_counts: { blocked: 2 } } }
+  db.prepare('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, ?, ?)').run('j1', 1, JSON.stringify(report))
+  const f = funnelOf(db, 'j1')!
+  assert.deepEqual({ q: f.queries, s: f.searches_ok, u: f.hits_unique_urls, sel: f.selected, w: f.walled, ev: f.evidence_items, txt: f.with_page_text, x: f.extracted, v: f.verified, r: f.needs_review, d: f.dropped },
+    { q: 3, s: '2/3', u: 14, sel: 2, w: 1, ev: 5, txt: 2, x: 6, v: 0, r: 3, d: 3 })
+  assert.deepEqual(f.drop_reasons, { blocked_by_site: 2, not_found: 1 }); assert.equal(f.candidates[0].reason, 'quote_unconfirmed')
+  const row: CaseResult = { id: 'toronto-dental', label: 'x', status: 'done', error: null, seconds: 60, usd: 0.03, pass: false, why: ['0 ready, needs >=10'], candidates: 6, leads: 3, ready: 0, named_pct: 0, email_pct: 0, dated_pct: 0, match_pct: 100, held: {}, funnel: f }
+  const t = matrixTable([row, { ...row, id: 'x2', funnel: null }], T, { commit: 'x', date: 'y' })
+  assert.match(t, /toronto-dental: 3 queries \(model\); search ok 2\/3, 14 unique urls, 2 selected, 1 walled; evidence 5 \(2 with page text\); extracted 6 -> verified 0, review 3, dropped 3/)
+  assert.match(t, /review: quote_unconfirmed 3 \| drops: blocked_by_site 2, not_found 1 \| verifier: blocked 2/)
+  assert.match(t, /x2: run report not recorded/)
 })

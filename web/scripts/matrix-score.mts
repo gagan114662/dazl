@@ -16,7 +16,36 @@ export interface CaseMetrics {
   candidates: number; leads: number; ready: number; named_pct: number; email_pct: number; dated_pct: number; match_pct: number
   held: Record<string, number>   // why the leads that are not ready are not: the product's own hold words, with counts
 }
-export interface CaseResult extends CaseMetrics { id: string; label: string; status: string; error: string | null; seconds: number; usd: number | null; pass: boolean; why: string[] }
+// Where the scan's candidates went, read from the run report the scan wrote with the job (lib/scan/run-report.ts): queries sent,
+// search hits, URLs selected and walled, evidence with page text, extracted candidates and each one's fate with its reason.
+// null = the report was not recorded for this job (never a fabricated zero).
+export interface Funnel {
+  queries: number | null; query_source: string | null; searches_ok: string | null; hits_unique_urls: number | null; urls: number | null; selected: number | null; walled: number | null
+  evidence_items: number | null; with_page_text: number | null; extracted: number | null; verified: number | null; needs_review: number | null; dropped: number | null
+  review_reasons: Record<string, number>; drop_reasons: Record<string, number>; verifier_drops: Record<string, number>; stop: string | null
+  candidates: { company: string; url: string; outcome: string; reason: string | null }[]
+}
+export interface CaseResult extends CaseMetrics { funnel?: Funnel | null; id: string; label: string; status: string; error: string | null; seconds: number; usd: number | null; pass: boolean; why: string[] }
+
+export function funnelOf(db: Database.Database, jobId: string): Funnel | null {
+  let row: { report: string } | undefined
+  try { row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ? ORDER BY attempt DESC LIMIT 1').get(jobId) as { report: string } | undefined } catch { return null }
+  if (!row) return null
+  let r: Record<string, any>
+  try { r = JSON.parse(row.report) } catch { return null }
+  const n = (v: unknown) => (typeof v === 'number' ? v : null)
+  const urls = Array.isArray(r.urls) ? r.urls : []
+  const f = r.funnel ?? {}
+  return {
+    queries: Array.isArray(r.queries) ? r.queries.length : null, query_source: r.query_source ?? null,
+    searches_ok: r.search && n(r.search.attempted) !== null ? `${r.search.ok ?? '?'}/${r.search.attempted}` : null, hits_unique_urls: n(r.search?.hits_unique_urls),
+    urls: urls.length || null, selected: urls.length ? urls.filter((u: any) => u.selected).length : null, walled: urls.length ? urls.filter((u: any) => u.walled).length : null,
+    evidence_items: n(r.evidence?.items), with_page_text: n(r.evidence?.with_page_text),
+    extracted: n(r.extracted_candidates), verified: n(f.verified), needs_review: n(f.needs_review), dropped: n(f.dropped),
+    review_reasons: f.review_reasons ?? {}, drop_reasons: f.drop_reasons ?? {}, verifier_drops: f.verifier_drop_counts ?? {}, stop: r.stop?.code ?? null,
+    candidates: (Array.isArray(r.candidates) ? r.candidates : []).slice(0, 40).map((c: any) => ({ company: String(c.company ?? ''), url: String(c.url ?? ''), outcome: String(c.outcome ?? ''), reason: c.reason ?? null })),
+  }
+}
 
 const pct = (n: number, d: number) => (d === 0 ? 0 : Math.round((n / d) * 100))
 
@@ -83,5 +112,11 @@ export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { com
   const w = cols.map((c, i) => Math.max(c.length, ...body.map(b => b[i].length)))
   const line = (cells: string[]) => cells.map((c, i) => c.padEnd(w[i])).join('  ')
   const held = rows.filter(r => !r.pass).map(r => `  ${r.id}: ${r.error ? `${r.error}; ` : ''}${r.why.join('; ')}${Object.keys(r.held).length ? ` | held: ${Object.entries(r.held).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}` : ''}`)
-  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held, '', 'definitions:', ...DEFINITIONS.map(d => `  ${d}`)].join('\n')
+  const kv = (o: Record<string, number>) => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'
+  const funnel = rows.filter(r => r.funnel !== undefined).map(r => {
+    const f = r.funnel
+    if (!f) return `  ${r.id}: run report not recorded`
+    return `  ${r.id}: ${f.queries ?? '?'} queries (${f.query_source ?? '?'}); search ok ${f.searches_ok ?? '?'}, ${f.hits_unique_urls ?? '?'} unique urls, ${f.selected ?? '?'} selected, ${f.walled ?? '?'} walled; evidence ${f.evidence_items ?? '?'} (${f.with_page_text ?? '?'} with page text); extracted ${f.extracted ?? '?'} -> verified ${f.verified ?? '?'}, review ${f.needs_review ?? '?'}, dropped ${f.dropped ?? '?'}${f.stop ? `; stop ${f.stop}` : ''}\n      review: ${kv(f.review_reasons)} | drops: ${kv(f.drop_reasons)} | verifier: ${kv(f.verifier_drops)}`
+  })
+  return [head, line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '', ...held, ...(funnel.length ? ['', 'funnel (where the candidates went, from each scan\'s run report):', ...funnel] : []), '', 'definitions:', ...DEFINITIONS.map(d => `  ${d}`)].join('\n')
 }
