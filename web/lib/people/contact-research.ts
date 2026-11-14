@@ -186,26 +186,41 @@ export function groundPerson(answer: { name: string; title: string; source: stri
   if (rawAll.length !== hay.length) return { refused: 'source_text_unstable' }   // lower-casing changed the length: the offsets cannot be trusted
   const tail = rawAll.slice(at + span[1], at + span[1] + 120)
   if (/^['’]s\b/.test(tail)) return { refused: 'possessive_title' }
-  // Another organisation named next to the person, by ANY wording: after the title ("Owner of X", "Owner, X", "Owner - X", "(Owner, X)", "CEO | X")
-  // or, when the title comes first, right before it ("X owner Mark Stone"). Only THIS company (or its short form) may stand there.
-  const ORG = String.raw`((?:the\s+)?\p{Lu}[\p{L}&'’-]*(?:\s+(?:&\s+)?\p{Lu}[\p{L}&'’-]*){0,3})`
+  // Another organisation next to the person, by ANY wording, on every source (the company's own site included: testimonials, case studies).
+  // POSITIVE rule, not a list of wordings: in the sentence around the name-and-title (45 characters before and after, never across a sentence end)
+  // every capitalised or numbered run must be this company (or its short form / legal suffix), a requested place, or an ordinary title / filler word;
+  // and an "of / at / for / with / from" phrase after the title must lead to this company ("owner of a local bakery" does not).
   const SUFFIX_OK = /^(?:inc|incorporated|ltd|limited|llc|llp|corp|corporation|co|company|gmbh|plc|pty|dds|dmd|md|mba|cpa|phd|esq)\.?$/i
+  const FILLER = /^(?:ceo|cto|cfo|coo|cmo|founder|co-?founder|cofounder|owner|co-?owner|president|principal|managing|director|partner|chief|executive|officer|dentist|doctor|dr|mr|ms|mrs|the|our|meet|welcome|hello|hi|about|contact|team|staff|reviews?|testimonials?|thanks|thank|today|visit|see|your|patients?|clinic|practice|we|i|best|great|linkedin|former|formerly|previous|current|new|late|says|said|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i
+  const whereWords = new Set((input.where ?? []).flatMap(w => String(w).toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter(w => w.length >= 3))
   const thisCompany = (org: string): boolean => {
     const ow = org.replace(/^the\s+/i, '').split(/\s+/).map(w => companyKey(w)).filter(Boolean), cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
     if (ow.length === 0) return true
     const prefix = (a: string[], b2: string[]) => a.length <= b2.length && a.every((w, i) => w === b2[i])
     if (prefix(ow, cw)) return true                                             // the company or a whole-word start of it ("Brightloop" for "Brightloop Dental Group")
-    return prefix(cw, ow) && ow.slice(cw.length).every(w => SUFFIX_OK.test(w))  // the company plus a legal suffix only ("Stonebridge Capital" is not "Stone")
+    return prefix(cw, ow) && ow.slice(cw.length).every(w => SUFFIX_OK.test(w) || whereWords.has(w))   // the company plus a legal suffix / a requested place only
   }
-  const afterOrg = new RegExp(`^(?:[\\s,]*(?:of|at|@|for|with)\\s+|\\s*[,\\-–—|(]\\s*)${ORG}`, 'u').exec(tail)?.[1]
-  if (afterOrg && !thisCompany(afterOrg) && !(afterOrg.split(/\s+/).length === 1 && SUFFIX_OK.test(afterOrg))) return { refused: 'title_at_another_organisation' }
-  if (titles0 < names0) { // the title comes first: "Stone Bakery owner Mark Stone"
-    const head = rawAll.slice(Math.max(0, at + span[0] - 60), at + span[0])
-    const lastWord = /([\p{L}][\p{L}'’-]*)\s+$/u.exec(head)?.[1] ?? ''
-    const SKIP = /^(?:Former|Formerly|Previous|Current|New|Late|Our|The|Meet|Welcome|Dr|Mr|Ms|Mrs|And|With|By|Says|Said|Thanks|Thank)$/
-    const beforeOrg = SKIP.test(lastWord) ? undefined : new RegExp(`${ORG}\\s+$`, 'u').exec(head)?.[1]
-    if (beforeOrg && !thisCompany(beforeOrg)) return { refused: 'title_at_another_organisation' }
+  const foreignRun = (segment: string): string | null => {
+    for (const m of segment.matchAll(/[\p{Lu}\p{N}][\p{L}\p{N}&'’-]*(?:\s+(?:&\s+)?[\p{Lu}\p{N}][\p{L}\p{N}&'’-]*){0,3}/gu)) {
+      if (/^[\d\s\-–]+$/.test(m[0])) continue   // a year or a year range is not an organisation
+      const words = m[0].split(/\s+/)
+      while (words.length && (FILLER.test(words[0]) || SUFFIX_OK.test(words[0]))) words.shift()
+      while (words.length && (FILLER.test(words[words.length - 1]) || SUFFIX_OK.test(words[words.length - 1]))) words.pop()
+      if (words.length === 0) continue
+      const run = words.join(' ')
+      if (thisCompany(run) || words.every(w => whereWords.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')))) continue
+      return run
+    }
+    return null
   }
+  const sentenceStart = (() => { const cut = rawAll.slice(0, at + span[0]); const i = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? ')); return i < 0 ? 0 : i + 2 })()
+  const before = rawAll.slice(Math.max(sentenceStart, at + span[0] - 45), at + span[0])
+  const afterAll = tail.split(/[.!?]\s/)[0]
+  // 45 characters, never ending inside a word (a cut-off "Que" or "201" would read as a name or a number).
+  const after = afterAll.length > 45 ? afterAll.slice(0, 45).replace(/[\p{L}\p{N}&'’-]*$/u, '') : afterAll
+  if (foreignRun(before) || foreignRun(after)) return { refused: 'title_at_another_organisation' }
+  const phrase = /^[\s,]*(?:of|at|@|from|for|with|and\s+[\p{L}\s]{1,30}?\s+(?:of|at))\s+(?:the\s+)?(.{1,60})/iu.exec(afterAll)?.[1]
+  if (phrase) { const cw = companyKey(input.company).split(/[^\p{L}\p{N}]+/u).filter(Boolean); const pw = companyKey(phrase).split(/[^\p{L}\p{N}]+/u).filter(Boolean); if (!(pw.length > 0 && cw.length > 0 && pw[0] === cw[0])) return { refused: 'title_at_another_organisation' } }
   const rest = tail.split(/[.!?]\s/)[0]
   if (PAST_AFTER.test(rest)) return { refused: 'past_role' }
   // "Jane Roe, Owner. She retired in 2019.": a pronoun in the next sentence that says she / he left.
