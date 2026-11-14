@@ -12,7 +12,7 @@ const ROLE_SUFFIX = new Set(['specialist', 'partner', 'partners', 'counsel', 'as
 const ROLE_WORDS = new Set([...ROLE_SUFFIX, 'senior', 'junior', 'managing', 'chief', 'head', 'vice', 'general', 'executive', 'regional', 'global', 'lead', 'project', 'docket', 'international', 'intellectual', 'property', 'immigration', 'corporate', 'commercial', 'real', 'estate', 'tax', 'employment', 'labor', 'environmental', 'bankruptcy', 'patent', 'trademark', 'trial', 'appellate', 'estate', 'planning', 'family', 'criminal', 'civil', 'health', 'healthcare', 'insurance', 'energy', 'technology', 'client', 'business', 'development', 'human', 'resources', 'information', 'security', 'privacy', 'data', 'sales', 'customer', 'success', 'support', 'product', 'financial', 'public', 'relations', 'media', 'communications', 'of', 'and', 'the', 'in', 'for', 'to', 'at'])
 export function looksLikeJobTitle(name: string | null | undefined): boolean {
   if (typeof name !== 'string') return false
-  const words = name.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/[^a-z']+/).filter(Boolean)
+  const words = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z']+/).filter(Boolean)
   if (words.length === 0) return false
   if (words.every(w => ROLE_WORDS.has(w))) return true
   return ROLE_SUFFIX.has(words[words.length - 1])

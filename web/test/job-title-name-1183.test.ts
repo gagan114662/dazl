@@ -57,3 +57,10 @@ test('#1183 the server refuses the click on a stored title row before any provid
   const r = await findWorkEmail(db, 'A', id, 'Litigation Specialist|Managing Partner', { master, now: 1_794_000_000, fetchImpl: (async (u: RequestInfo | URL) => { calls.push(String(u)); throw new Error('no provider call expected') }) as typeof fetch })
   assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [])
 })
+
+test('#1183 the module is plain ASCII (a raw combining-mark range in a regex was mis-decoded by the rendered-check bundler and broke the Leads page in the browser) and accents do not matter', async () => {
+  const { readFileSync } = await import('node:fs')
+  assert.ok(!/[^\x00-\x7f]/.test(readFileSync(new URL('../lib/people/job-title-name.ts', import.meta.url), 'utf8')), 'non-ASCII character in job-title-name.ts')
+  assert.equal(looksLikeJobTitle('José García'), false)
+  assert.equal(looksLikeJobTitle('Sénior Mánager'), true)
+})
