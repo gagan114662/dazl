@@ -148,7 +148,7 @@ try {
     await page.evaluate(() => localStorage.setItem('leads-table-sort', 'fit'))
     // pages, cards link
     await page.getByTestId('sort-fit').click(); await page.waitForURL(/sort=fit/)
-    await page.getByTestId('next-page').click(); await page.waitForURL(/page=2/); await page.getByTestId('lead-row').first().waitFor()
+    await page.getByTestId('next-page').click(); await page.waitForURL(/page=2/); await page.waitForFunction(() => document.querySelectorAll('[data-testid=lead-row]').length === 10, null, { timeout: 20000 })   // the old page's rows must be gone
     assert.equal(await page.getByTestId('lead-row').count(), 10, 'page 2 lists the other 10')
     assert.equal(await page.getByTestId('to-cards').getAttribute('href'), '/app/leads?latest=1', 'the cards stay one click away')
     assert.equal(errs.length, 0, `no page errors: ${errs.join('; ')}`)
