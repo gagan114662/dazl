@@ -239,10 +239,23 @@ test('#879 radio / firmware / embedded postings are not the sales role a request
     }
   }
   // the sales title still proves it, and so do the sales titles that name what they sell to or work beside
-  for (const t of ['Sales Development Representative', 'Senior SDR', 'SDR - Outbound', 'Sales Engineer / SDR', 'SDR, Inbound Sales']) {
+  for (const t of ['Sales Development Representative', 'Senior SDR', 'SDR - Outbound', 'SDR, Inbound Sales', 'Enterprise SDR', 'Mid-Market SDR', 'EMEA SDR', 'Inside SDR', 'SDR Team Lead']) {
     assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'pass', t)
   }
-  // a trade word nobody listed does not slip through: the rule is an allowlist (sales signal, or the acronym alone before the first separator)
+  // a bare title with filler words after the acronym keeps the letters as written (the #878 fixtures once used "SDR a"; a real posting is "SDR - <team>")
+  assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR a')]).truth, 'unknown')
+  assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR - a')]).truth, 'pass')
+  // radio / firmware titles behind a separator are still radio / firmware (council on 7b604843)
+  for (const t of ['SDR - Firmware Engineer', 'SDR - Software Engineer', 'SDR - RF Engineer', 'Pipeline Integrity Engineer, SDR']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  }
+  // a sales word beside a trade word is not the sales role either (council on 7b604843)
+  for (const t of ['Sales Engineer, SDR Firmware', 'SDR Account Systems Engineer', 'Revenue Operations SDR Tooling Developer', 'Sales Engineer / SDR']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+    assert.ok(matchedHiringRole(t, requestedHiringRoles('hiring an SDR')), `${t}: an abbreviating request still matches it, as on main`)
+  }
+  for (const t of ['Commercial BDR', 'BDR Enterprise']) assert.equal(prove('Software companies hiring BDRs in the last 30 days', l, [row(t)]).truth, 'pass', t)
+  // a trade word nobody listed does not slip through when there is no positive signal (a sales word, or the acronym alone before the first separator)
   for (const t of ['SDR Photonics Lead', 'SDR Kernel Contributor', 'Compositor, SDR', 'SDR Antenna Technician', 'SDR Validation Analyst']) {
     assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
   }
