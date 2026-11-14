@@ -48,7 +48,7 @@ test('places come from the scan geography and the evidence; nothing fixed', () =
 test('#197: a same-name business in another state is NOT bound; no domain, no phones, no people', async () => {
   const r = await run({ 'smileavenuedental.com': { '/': CA_HOME, '/team': CA_TEAM, '/contact': CA_CONTACT } }, ['New York City'])
   assert.equal(r.domain, null)
-  assert.deepEqual(r.enr, [{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:name_guess_not_confirmed' }], '#1122: nothing is kept but the named reason')
+  assert.deepEqual(r.enr, [{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:not_confirmed' }], '#1122: nothing is kept but the named reason')
   assert.ok(r.audit.some(a => a.lookup === 'smileavenuedental.com' && /^contact rejected: location mismatch/.test(a.status)), JSON.stringify(r.audit))
 })
 
@@ -62,6 +62,6 @@ test('when the guessed domain IS the lead (homepage names its place) it binds, a
 
 test('no known place at all (no ICP geography, evidence names none): a guessed domain is refused as geo_unknown', async () => {
   const r = await run({ 'smileavenuedental.com': { '/': CA_HOME, '/contact': CA_CONTACT } }, [], { signal: 'Opened a new practice', excerpt: 'Smile Avenue Dental has opened a new practice offering treatments', article: html('<p>Smile Avenue Dental has opened a new practice offering treatments.</p>') })
-  assert.equal(r.domain, null); assert.deepEqual(r.enr, [{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:name_guess_not_confirmed' }])
+  assert.equal(r.domain, null); assert.deepEqual(r.enr, [{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:not_confirmed' }])
   assert.ok(r.audit.some(a => a.lookup === 'smileavenuedental.com' && /^contact rejected: no location to confirm/.test(a.status)), JSON.stringify(r.audit))
 })
