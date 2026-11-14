@@ -9,6 +9,7 @@ import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { collectShopifyStores, countriesIn, mentionsShopify, storeLead, storeListQueries } from '../sources/shopify.ts'
+import { KEEP_MODEL_CALLS_JOB_SQL, SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
@@ -41,7 +42,7 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { crawlJob, defaultGet, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -68,7 +69,7 @@ import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
 import { linkedinSessionTransport, sessionTransportProblem } from '../signals/linkedin-session-transport.ts'
-import { writeAudit } from '../connectors/store.ts'
+import { audit, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -82,7 +83,7 @@ import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, pe
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
-import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, adaptiveDiscoveryOn } from './run-budget.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, SITE_SEARCHES_PER_SCAN, adaptiveDiscoveryOn } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -580,7 +581,7 @@ class ScanStopped extends Error { constructor() { super('scan_stopped') } }
 // Optional whole-scan budget: an ADMISSION guard, not a wall-clock maximum. It is checked only in assertOwned,
 // i.e. before a NEW phase starts, after the previous await has already returned. It cannot end an awaited call: a
 // provider/fetch call that never settles is bounded only by its own transport abort (SCAN_LLM_TIMEOUT_MS 150 s,
-// page 10 s, TinyFish 20 s, collectors 25 s) and, past that, by the 20 min lease reaper. OFF unless
+// page 10 s, TinyFish 20 s, collectors 25 s) and, past that, by the stale-scan lease reaper (about 3 min by default, lib/scan/store.ts). OFF unless
 // SCAN_JOB_BUDGET_MS is set, so default behavior (retries, quota, UI) is unchanged. Discovery scans only: CSV
 // company jobs are not cancellable and never get a deadline. A scan past it fails once as 'scan_timeout' (a
 // retry would repeat the same provider spend). Candidates are in memory until finish(): nothing partial is saved.
@@ -593,8 +594,13 @@ export function scanJobBudgetMs(env: Record<string, string | undefined> = proces
   if (!Number.isFinite(n) || n <= 0) { console.error('SCAN_JOB_BUDGET_MS invalid (need finite positive ms) - budget off'); return null }
   return n
 }
-function assertOwned(db: Database.Database, job: Job): void {
-  if (!db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)) throw new ScanStopped()
+// #1157: the ownership check also RENEWS the claim. The stale-scan window (lib/scan/store.ts, about 3 min) was renewed only by paid
+// reserves and settles; a live attempt doing unpaid work (plain page reads, parsing, store writes) for longer than the window
+// would have been reaped and run again while still running. Every phase boundary now renews it, under the same fence (this
+// attempt, still running), so a live scan keeps its claim and one whose process is gone, or that is stuck inside one await,
+// stops renewing and is reaped.
+export function assertOwned(db: Database.Database, job: Job): void {
+  if (db.prepare("UPDATE scan_jobs SET claimed_at = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(Math.floor(Date.now() / 1000), job.id, job.attempts).changes !== 1) throw new ScanStopped()
   const d = jobDeadlines.get(job)
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
@@ -2092,6 +2098,49 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // work (outreach sends, e.g. Gmail per the runJob audit) and has no cancel
 // protocol, so it is awaited to completion - the slot is held through it,
 // never freed beneath it.
+// #1036 4b: the company's own website from a web search, for leads whose evidence page links none (an Instagram post, a LinkedIn job,
+// a jobleads listing, a news article). One TinyFish search per such lead, at most SITE_SEARCHES_PER_SCAN per scan, each under the
+// tenant / global / per-minute caps tfSearch enforces, the scan's own spend budget. Only hosts that can
+// be the company's own (sitecrawl.ts companyHostsFromSearch) are returned; crawlJob still runs the homepage name check and the place
+// check on each before anything is recorded. undefined when TinyFish is off: the crawl then guesses domains from the name as before.
+// A search the scan's budget refuses ends the searching for this scan (nothing was sent); it never ends the crawl.
+export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+  // Policy (run-budget.ts SITE_SEARCHES_PER_SCAN): never a free-trial scan (its reserve is planned for the lead and people searches),
+  // never a first play, never a run that switched paid steps off. Those scans keep the name-guessed domains.
+  if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || job.funded_by === 'trial' || trialCharges.get(job)) return undefined
+  // ... and never a scheduled play run (a watch's or a monitor's): it runs unattended under the caps it was confirmed with
+  if (job.watch_id || isMonitorRun(db, job)) return undefined
+  let asked = 0, stopped = false
+  // Every search leaves a row in the connector audit (connector 'sitecrawl', status site_search_<outcome>): the run report shows the
+  // searches that were made and why they stopped (a cap, a rate limit, a rejected key, a spend refusal), never a silent "no results".
+  const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_search_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
+  // one search per company per scan: two leads on the same company share the answer, and the second spends nothing
+  const answers = new Map<string, Promise<string[]>>()
+  return (company, where) => {
+    // a name too short to tell one company's host from another's would spend a search whose every result is refused
+    if (hostNamesFor(company).length === 0) return Promise.resolve([])
+    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const had = answers.get(key)
+    if (had) return had
+    if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return Promise.resolve([])
+    // the scan was cancelled, deleted or taken over by a newer attempt: nothing more is sent for it (as the mailbox check)
+    if (!postFinishAliveStrict(db, job)) { stopped = true; return Promise.resolve([]) }
+    asked++
+    const query = `${company} ${where[0] ?? ''} official website`.replace(/\s+/g, ' ').trim()
+    const answer = (async () => {
+      try {
+        const r = await tfSearch(db, job.user_id, query, {}, { searches: 0 }, { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), ...(signal ? { signal } : {}) })
+        if (!r.ok) { if (r.reason !== 'unavailable') stopped = true; note(company, r.reason, 0); return [] } // a cap, a rate limit, a rejected key: no further search this scan
+        const hosts = companyHostsFromSearch(company, r.hits, 3, where)
+        note(company, 'ok', hosts.length)
+        return hosts
+      } catch (e) { stopped = true; note(company, e instanceof SpendRefused ? 'spend_refused' : 'error', 0); return [] }
+    })()
+    answers.set(key, answer)
+    return answer
+  }
+}
+
 export async function runPostFinishBounded(db: Database.Database, job: Job, deps: RunDeps, trace: EnrichmentTrace = new EnrichmentTrace()): Promise<void> {
   const postCtrl = new AbortController()
   const postTimer = setTimeout(() => postCtrl.abort(), postFinishBudgetMs())
@@ -2099,7 +2148,9 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // Contact-page crawl enriches verified leads with role emails (robots.txt hard rule). Never affects the scan result.
     if (!sitecrawlEnabled()) { trace.note('crawl', 'skipped', 'SITECRAWL_ENABLED=0'); trace.note('tech', 'skipped', 'SITECRAWL_ENABLED=0: no crawl, so the technology branch did not run') }
     else {
-      await crawlJob(db, job.user_id, job.id, deps.crawlGet ? { get: deps.crawlGet, signal: postCtrl.signal } : { signal: postCtrl.signal }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
+      const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }
@@ -2136,7 +2187,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
 // In-process scheduler (one Node process). The concurrency budget is shared
 // with the queue bridge via run-slots.ts - see that file for why.
 
-// Graceful-shutdown handoff. A restart used to leave a running scan 'running' until the 20 min stale lease
+// Graceful-shutdown handoff. A restart used to leave a running scan 'running' until the stale lease (then 20 min)
 // expired, with no progress and nothing visible to the user. This process records the attempts it is
 // executing; on SIGTERM it returns exactly those rows to 'pending' (same attempts counter, so MAX_ATTEMPTS
 // still bounds retries) and the next process claims them at once. Ownership is unchanged: the UPDATE is
@@ -2179,6 +2230,11 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
     try {
       n += db.transaction((): number => {
         const now = Math.floor(Date.now() / 1000)
+        // #1157 (lib/scan/free-orphans.ts): this attempt's free (US$0) call is settled at $0, and the MODEL call this process is abandoning
+        // right now is recorded 'kept' (charged at its reserved worst case), so the scan goes back to pending and runs again on the next
+        // process instead of ending accounting_uncertain with everything it found lost (the staging scan #1157 was filed for).
+        db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
+        db.prepare(KEEP_MODEL_CALLS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
         const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
