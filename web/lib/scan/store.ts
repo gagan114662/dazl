@@ -340,7 +340,7 @@ export function countActiveJobs(db: Database.Database, userId: string): number {
 const HELD_MARK = "EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
 export const HELD_REASON = 'sales_hiring_check_failed'
 const withHeld = (sql: string, plain: string, overlaid: string) => ({ held: sql.replace(plain, overlaid), plain: sql })
-const HELD_REVIEW = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN '${HELD_REASON}' ELSE l.review_reason END AS review_reason`
+export const HELD_REVIEW = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN '${HELD_REASON}' ELSE l.review_reason END AS review_reason`
 const HELD_CONF = `CASE WHEN l.review_reason IS NULL AND ${HELD_MARK} THEN NULL ELSE l.confidence END AS confidence`
 function allWithHeldFallback(db: Database.Database, sql: { held: string; plain: string }, params: unknown[]) {
   try { return db.prepare(sql.held).all(...params) } catch (e) { if (!/no such table/i.test(e instanceof Error ? e.message : '')) throw e; return db.prepare(sql.plain).all(...params) }

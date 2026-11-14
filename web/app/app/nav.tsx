@@ -15,7 +15,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
     // #1043: what dazl knows about your business (profile, Memory, Competitors), editable, with plays built from it
     { href: '/app/business', label: 'Your business', icon: 'spark', match: p => p.startsWith('/app/business') },
     { href: '/app/plays', label: 'Plays', icon: 'plays', match: p => p.startsWith('/app/plays') },
-    { href: '/app/leads?latest=1', label: 'Leads', icon: 'leads', match: p => p === '/app/leads' },
+    { href: '/app/leads/table', label: 'Leads', icon: 'leads', match: p => p === '/app/leads' || p.startsWith('/app/leads/table') },
   ] },
   { title: 'Engage', items: [
     { href: '/app/outcomes', label: 'Outcomes', icon: 'check', match: p => p.startsWith('/app/outcomes') },
