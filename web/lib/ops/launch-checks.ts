@@ -1,11 +1,9 @@
-// #1089: two things a deployment needs before strangers can use it, reported by readiness (/api/ready) instead of
-// discovered by a customer:
-//  - mail: the confirmation and reset links must be able to LEAVE the host. "The settings are present" is not that: prod
-//    had both settings and nothing arrived, because the configured SMTP could not send out (port 25 is closed on this
-//    class of host). So this check needs the settings, a port that is not 25, and a recent successful session with the
-//    configured server: a real connect, and a login when the URL carries credentials (a server that rejects the login
-//    fails; a URL with no credentials is only a connect). It proves the server is reachable and accepts us, not that a
-//    message is delivered.
+// #1089: two things a deployment needs before strangers can use it, stated by readiness (/api/ready):
+//  - mail: the confirmation and reset links must be able to leave the host. Having the two settings is not enough to know
+//    that, so this check also needs a port that is not 25 (commonly closed for outbound mail on cloud hosts) and a recent
+//    successful session with the configured server: a real connect, and a login when the URL carries credentials (a server
+//    that rejects the login fails; a URL with no credentials is only a connect). It shows the server is reachable and
+//    accepts us, not that a message is delivered.
 //  - deletion: self-serve account deletion writes a tombstone to a ledger file outside the database
 //    (lib/tenant/ledger.ts); without DAZL_TOMBSTONE_LEDGER the delete route refuses every request.
 // Check names, a reason code and the port only: never the SMTP host, user or secret, and no path.

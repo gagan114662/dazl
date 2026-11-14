@@ -5,6 +5,13 @@ import net from 'node:net'
 import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import Database from 'better-sqlite3'
+import { sqliteDb } from '../lib/db/client.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { loadMigrations } from '../lib/db/migrate-pg.ts'
+import { readiness, resetLaunchReport } from '../lib/ops/health.ts'
+import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
+import type { MailCheck, DeletionCheck } from '../lib/ops/launch-checks.ts'
 import { mailSettings, mailCheck, mailCheckSettled, deletionCheck, launchRequired, resetMailCheck, smtpVerify, MAIL_VERIFY_TTL_S, MAIL_VERIFY_FAIL_TTL_S } from '../lib/ops/launch-checks.ts'
 
 const FROM = { SYSTEM_MAIL_FROM: 'dazl <leads@notify.example.test>' }
@@ -87,8 +94,14 @@ test('smtpVerify on real sockets: an SMTP server passes (a URL with no credentia
   const settled = async (url: string, timeoutMs: number) => { resetMailCheck(); const env = { ...FROM, SYSTEM_MAIL_SMTP_URL: url }; mailCheck(env, { verify: smtpVerify, timeoutMs }); await mailCheckSettled(); return mailCheck(env, { verify: smtpVerify, timeoutMs }) }
   try {
     assert.deepEqual(await settled(`smtp://127.0.0.1:${good}`, 3000), { ok: true, port: good, verified_s_ago: 0 }, 'no credentials in the URL: the connect alone passes (stated, not hidden)')
+    // the verifier's own timeouts reach nodemailer: the client gives up on the silent server and CLOSES its socket within about
+    // the timeout (nodemailer's defaults would hold it for 30 s to 10 minutes, one more abandoned session every retry)
+    const t0 = Date.now()
     const q = await settled(`smtp://127.0.0.1:${quiet}`, 600)
     assert.equal(q.ok, false); assert.match((q as { reason: string }).reason, /verify_(timeout|failed)/)
+    assert.equal(held.length, 1, 'one session reached the silent server')
+    const closedAfter = await new Promise<number>(resolve => { const sock = held[0]; if (sock.destroyed || sock.readableEnded) return resolve(Date.now() - t0); const done = () => resolve(Date.now() - t0); sock.once('close', done); sock.once('end', done); setTimeout(() => resolve(-1), 5000) })
+    assert.ok(closedAfter >= 0 && closedAfter < 3000, `the client closed its session ${closedAfter} ms after it started (timeout 600 ms); -1 = still open after 5 s`)
     assert.equal((await settled('smtp://127.0.0.1:1', 1500)).ok, false, 'nothing listens on port 1')
   } finally { for (const h of [...held, ...open]) h.destroy(); smtp.close(); silent.close() }
 })
@@ -107,4 +120,35 @@ test('deletion check: the ledger must be named and writable; staging is not held
     if (process.getuid?.() !== 0) assert.deepEqual(deletionCheck({ DAZL_TOMBSTONE_LEDGER: wo }), { ok: false, reason: 'not_writable' }, 'the delete route reads the ledger too')
     assert.equal(launchRequired({}), false); assert.equal(launchRequired({ DAZL_READY_REQUIRES_LAUNCH: '1' }), true); assert.equal(launchRequired({ DAZL_READY_REQUIRES_LAUNCH: 'true' }), false)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// Review of #1222, finding 2: what readiness REPORTS (lib/ops/health.ts reportLaunchChecks), through the real readiness().
+test('launch reporting: a healthy start raises nothing; a settled failure raises one record, once; a recovery and a new failure raise one more', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const got: ErrorRecord[] = []; const restore = setErrorSinks([r => got.push(r)])
+  let mail: MailCheck = { ok: false, reason: 'verify_pending', port: 465 }, deletion: DeletionCheck = { ok: true }
+  const probe = () => readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => deletion })
+  const launch = () => got.filter(r => r.where === 'readiness:launch').map(r => r.error.message)
+  try {
+    resetLaunchReport()
+    // a healthy start: the first probe is pending (the check never waits), the second is ok
+    assert.deepEqual((await probe()).launch, { ok: false, required: false }); mail = { ok: true, port: 465, verified_s_ago: 0 }
+    assert.deepEqual((await probe()).launch, { ok: true, required: false })
+    assert.deepEqual(launch(), [], 'pending is not a failure: a healthy start raises no alert')
+    // the relay starts failing: one record however many probes see it
+    mail = { ok: false, reason: 'verify_failed', port: 465 }
+    for (let i = 0; i < 5; i++) await probe()
+    assert.deepEqual(launch(), ['not ready for customers: mail:verify_failed'])
+    // a pending answer while it is being re-verified changes nothing
+    mail = { ok: false, reason: 'verify_pending', port: 465 }; await probe()
+    mail = { ok: false, reason: 'verify_failed', port: 465 }; await probe()
+    assert.equal(launch().length, 1, 'still the same failure: not reported again')
+    // recovered, then failing again: one more
+    mail = { ok: true, port: 465, verified_s_ago: 0 }; await probe()
+    mail = { ok: false, reason: 'verify_timeout', port: 465 }; await probe(); await probe()
+    assert.deepEqual(launch(), ['not ready for customers: mail:verify_failed', 'not ready for customers: mail:verify_timeout'])
+    // the ledger goes missing while mail is fine: one record
+    mail = { ok: true, port: 465, verified_s_ago: 0 }; await probe(); deletion = { ok: false, reason: 'not_configured' }; await probe(); await probe()
+    assert.equal(launch().length, 3); assert.equal(launch()[2], 'not ready for customers: deletion:not_configured')
+  } finally { restore(); resetLaunchReport() }
 })

@@ -171,10 +171,13 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   }
 }
 
-// One error record when the mail or deletion state changes (not on every probe), like the env check.
+// One error record when the mail or deletion state changes to a SETTLED failure (not on every probe), like the env check.
+// verify_pending is not a failure: the mail check never waits, so the first probe after every start reads pending, and a
+// healthy deployment must not raise an alert each time it starts. Pending leaves the last reported state as it was.
 let lastLaunch = ''
 export const resetLaunchReport = () => { lastLaunch = '' }
 function reportLaunchChecks(mail: { ok: boolean; reason?: string }, deletion: { ok: boolean; reason?: string }): void {
+  if (!mail.ok && mail.reason === 'verify_pending') return
   const key = [mail.ok ? '' : `mail:${mail.reason}`, deletion.ok ? '' : `deletion:${deletion.reason}`].filter(Boolean).join(',')
   if (key && key !== lastLaunch) captureError(new Error(`not ready for customers: ${key}`), { source: 'health', where: 'readiness:launch' })
   lastLaunch = key
