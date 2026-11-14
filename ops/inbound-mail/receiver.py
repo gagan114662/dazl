@@ -44,6 +44,8 @@ REJECT_REASON_CHARS = 300
 POLITE_REJECT = ('This address only accepts replies to emails sent through dazl. Please reply to the original email, '
                  'or write to the business directly.')
 LOOP_HEADER = 'X-Dazl-Inbound-Forwarded'
+EXCERPT_PARSE_BYTES = 128 * 1024
+SMTP_LINE_LIMIT = 256 * 1024
 DEFAULT_CONFIG = '/etc/dazl-inbound-mail/config.json'
 
 DEFAULTS = {
@@ -59,6 +61,7 @@ DEFAULTS = {
     'reply_from_mode': 'rewrite',
     'spool_dir': '/var/spool/dazl-inbound',
     'spool_days': 30,
+    'spool_max_mb': 1024,
     'tls_cert': '/etc/dazl-inbound-mail/tls/fullchain.pem',
     'tls_key': '/etc/dazl-inbound-mail/tls/privkey.pem',
     'rate': {'connections_per_minute': 30, 'messages_per_minute': 20, 'max_concurrent_per_ip': 5, 'max_concurrent': 40},
@@ -101,7 +104,7 @@ def mailbox(addr):
 
 def inbound_key(mail_from, rcpt, data):
     """One delivery = envelope from + envelope to + the raw bytes: the Worker's inboundKey, the app's idempotency key."""
-    return hashlib.sha256(f'{mail_from.lower()}\n{rcpt.lower()}\n'.encode() + data).hexdigest()
+    return hashlib.sha256(f'{mail_from.lower()}\n{rcpt.lower()}\n'.encode('utf-8', 'surrogateescape') + data).hexdigest()
 
 
 def log(event, **fields):
@@ -193,8 +196,9 @@ def header_value(data, name):
 
 
 def text_excerpt(data, limit=20000):
+    """The readable text of a message, from a bounded prefix: a message built to be slow to parse costs little."""
     try:
-        msg = email.message_from_bytes(data, policy=email.policy.default)
+        msg = email.message_from_bytes(data[:EXCERPT_PARSE_BYTES], policy=email.policy.default)
         part = msg.get_body(preferencelist=('plain', 'html'))
         return (part.get_content() if part else '')[:limit]
     except Exception:
@@ -211,7 +215,7 @@ def wrap_forward(data, mail_from, rcpt, dest, system_from, peer, note=''):
     m['To'] = dest
     if sender and not re.search(r'[\r\n]', sender):
         m['Reply-To'] = sender
-    m['Subject'] = smtp_text('Fwd: ' + subject, 240)
+    m['Subject'] = re.sub(r'[\x00-\x1f\x7f]+', ' ', 'Fwd: ' + subject).strip()[:240]  # EmailMessage encodes non-ASCII
     m['Date'] = email.utils.formatdate(localtime=False)
     m['Message-ID'] = email.utils.make_msgid(domain=mailbox(system_from).rsplit('@', 1)[-1] or 'localhost')
     m[LOOP_HEADER] = '1'
@@ -228,11 +232,16 @@ def wrap_forward(data, mail_from, rcpt, dest, system_from, peer, note=''):
     return m.as_bytes(policy=email.policy.SMTP)
 
 
+def crlf(raw):
+    """Every line ending as CRLF (SMTP requires it; smtplib does not fix bytes)."""
+    return re.sub(rb'\r\n|\r|\n', b'\r\n', raw)
+
+
 def rewrite_reply_from(raw, system_from, reply_from):
     """The app's reply with its From moved onto our verified sending domain (the relay refuses a From on dazl.ai) and
-    the mailbox the customer wrote to kept as Reply-To. Only the header block changes; the body bytes stay as they are."""
-    head, rest = _header_block(raw)
-    eol = b'\r\n' if b'\r\n' in head else b'\n'
+    the mailbox the customer wrote to kept as Reply-To. Only the header block changes (and line endings become CRLF)."""
+    head, rest = _header_block(crlf(raw))
+    eol = b'\r\n'
     out, skipping, has_reply_to = [], False, False
     for line in head.split(eol):
         if line[:1] in (b' ', b'\t'):
@@ -336,6 +345,10 @@ class Receiver:
     def spool_put(self, key, mail_from, rcpt, data, reason, route):
         try:
             self.spool.mkdir(parents=True, exist_ok=True, mode=0o700)
+            used = sum(p.stat().st_size for p in self.spool.iterdir() if p.is_file())
+            if used + len(data) > self.cfg['spool_max_mb'] * 1024 * 1024:  # a flood must not fill the box's disk
+                log('spool_full', key=key, used_mb=used // (1024 * 1024))
+                return False
             for name, content in ((f'{key}.eml', data), (f'{key}.json', json.dumps(
                     {'from': mail_from, 'to': rcpt, 'reason': reason, 'route': route, 'at': int(self.now())}).encode())):
                 tmp = self.spool / f'.{name}.tmp'
@@ -349,6 +362,20 @@ class Receiver:
         except OSError as e:
             log('spool_failed', key=key, error=type(e).__name__)
             return False
+
+    def spool_mark_handed(self, key):
+        """Note on a spooled mail that the human fallback already has it (a replay then never sends it again)."""
+        meta = self.spool / f'{key}.json'
+        try:
+            data = json.loads(meta.read_text())
+            data['handed'] = 'fallback'
+            tmp = self.spool / f'.{key}.json.tmp'
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as f:
+                json.dump(data, f)
+            os.replace(tmp, meta)
+        except (OSError, ValueError):
+            pass
 
     def spool_clean(self):
         cutoff, removed = self.now() - self.cfg['spool_days'] * 86400, 0
@@ -368,10 +395,10 @@ class Receiver:
     # ---- the app
 
     async def post_backend(self, mail_from, rcpt, data):
-        """('ok', action) or (reason, extra) with reason http | bad_response | timeout | network. One retry after a
+        """('ok', action) or (reason, extra) with reason http | bad_response | timeout | network | no_key. One retry after a
         network error or a 5xx; never after a timeout (the app may still be working on that mail) or a 4xx."""
         if not self.key:
-            return 'network', {'error': 'INBOUND_BACKEND_KEY is not set'}
+            return 'no_key', {}  # not configured to talk to the app: handled like a 4xx (the human fallback)
         body = json.dumps({'from': mail_from, 'to': rcpt, 'raw': base64.b64encode(data).decode()}).encode()
         headers = {'content-type': 'application/json', 'x-dazl-key': self.key, 'x-dazl-forwarded': '1'}
         last = ('network', {})
@@ -401,19 +428,23 @@ class Receiver:
     # ---- outbound
 
     async def forward(self, data, mail_from, rcpt, dest, peer, note=''):
-        wrapped = wrap_forward(data, mail_from, rcpt, dest, self.system_from, peer, note)
-        await asyncio.to_thread(self.send, mailbox(self.system_from), dest, wrapped)
+        def work():  # parsing and sending both off the event loop: one slow message must not stall the others
+            self.send(mailbox(self.system_from), dest, wrap_forward(data, mail_from, rcpt, dest, self.system_from, peer, note))
+        await asyncio.to_thread(work)
 
     async def to_fallback(self, data, mail_from, rcpt, peer, key, why, otherwise):
-        """Hand the mail to the human fallback; `otherwise` is the SMTP reply when there is none."""
-        if not (self.fallback and self.outbound_ready()):
+        """Hand the mail to the human fallback; `otherwise` is the SMTP reply when no fallback is configured."""
+        if not self.fallback:
             return otherwise
         try:
+            if not self.outbound_ready():
+                raise RuntimeError('outbound relay is not configured')
             await self.forward(data, mail_from, rcpt, self.fallback, peer, f'Why you are getting this: {why}.')
         except Exception as e:
             self.spool_put(key, mail_from, rcpt, data, 'fallback_send_failed', 'backend')
             log('forward_failed', to=rcpt, key=key, error=type(e).__name__)
             return '451 4.3.0 Temporary failure, please retry'
+        self.spool_mark_handed(key)
         log('forwarded', to=rcpt, dest='fallback', key=key, why=why)
         return '250 2.0.0 Accepted'
 
@@ -421,8 +452,9 @@ class Receiver:
 
     async def deliver(self, peer, mail_from, rcpt, data):
         """Handle one message for one recipient; returns the SMTP reply to DATA."""
-        key = inbound_key(mail_from, rcpt, data)
+        key = 'unkeyed-%d' % time.monotonic_ns()
         try:
+            key = inbound_key(mail_from, rcpt, data)
             async with self.gate:
                 return await self._deliver(peer, mail_from, rcpt, data, key)
         except Exception as e:  # a bug must never bounce or lose mail
@@ -460,7 +492,7 @@ class Receiver:
             # The app's outcome is unknown or it could not be reached: keep the raw mail for replay, never reject.
             spooled = self.spool_put(key, mail_from, rcpt, data, result, 'backend')
             log('backend_failed', to=rcpt, key=key, reason=result, spooled=spooled, **detail)
-            if result in ('http', 'bad_response') and int(detail.get('status', 0)) < 500:
+            if result in ('http', 'bad_response', 'no_key') and int(detail.get('status', 0)) < 500:
                 # The app answered, and the same answer would come back on a retry (a 4xx, or not our contract): a
                 # human gets the mail, as the Worker did. With no fallback the sender keeps it (451).
                 return await self.to_fallback(data, mail_from, rcpt, peer, key, f'the app did not take it ({result})',
@@ -491,13 +523,14 @@ class Receiver:
         problem = ('reply_from' if mailbox(act['from']) != mailbox(rcpt) or re.search(r'[\r\n]', act['from']) else
                    'reply_to' if to not in senders or re.search(r'[\r\n,;]', act['to']) else
                    'own_inbox' if to in never else
+                   'bad_raw' if not re.search(r'\r?\n\r?\n', act['raw']) else
                    'local_link' if LOCAL_LINK.search(act['raw']) else
                    'no_outbound' if not self.outbound_ready() else None)
         if problem:
             log('backend_refused', to=rcpt, key=key, reason='bad_reply', problem=problem)
             return await self.to_fallback(data, mail_from, rcpt, peer, key, f'the app\'s reply was not sent ({problem})',
                                           '250 2.0.0 Accepted')
-        raw = act['raw'].encode('utf-8', 'surrogateescape')
+        raw = crlf(act['raw'].encode('utf-8', 'replace'))
         try:
             if self.cfg['reply_from_mode'] == 'rewrite':
                 await asyncio.to_thread(self.send, mailbox(self.system_from), to,
@@ -505,47 +538,72 @@ class Receiver:
             else:
                 await asyncio.to_thread(self.send, mailbox(act['from']), to, raw)
             log('replied', to=rcpt, key=key)
-        except Exception as e:  # the app has the conversation; the mail itself was handled
+        except Exception as e:  # the app has the conversation; a human gets the mail so the customer is not left unanswered
             log('reply_failed', to=rcpt, key=key, error=type(e).__name__)
+            return await self.to_fallback(data, mail_from, rcpt, peer, key, 'the app\'s reply could not be sent',
+                                          '250 2.0.0 Accepted')
         return '250 2.0.0 Accepted'
 
     # ---- replay (after an outage)
 
     async def replay(self, limit=50):
-        """Re-deliver spooled mail. For app mail the app's stored answer comes back (it is idempotent) and the action
-        itself is not performed: the incoming SMTP session is gone and the sender's server retried after its 451."""
-        replayed = failed = 0
-        metas = sorted(self.spool.glob('*.json')) if self.spool.is_dir() else []
-        for meta_path in metas[:limit]:
-            eml = meta_path.with_suffix('.eml')
+        """Re-deliver spooled mail, oldest first. App mail is posted again: the app is idempotent, so mail it already
+        handled gets its stored answer. The SMTP session is gone, so a reject cannot be performed; when the app answers
+        forward or reply and no human has had the mail yet, it goes to the fallback, so nothing ends up unread. A mail
+        leaves the spool only after that worked."""
+        replayed = failed = down = 0
+        more = False
+        metas = sorted(self.spool.glob('*.json'), key=lambda p: p.stat().st_mtime) if self.spool.is_dir() else []
+        for meta_path in metas:
+            if replayed >= limit or down >= 3:  # 3 in a row unreachable: the app is still down, stop here
+                more = True
+                break
+            eml, key = meta_path.with_suffix('.eml'), meta_path.stem
             try:
                 meta, data = json.loads(meta_path.read_text()), eml.read_bytes()
             except (OSError, ValueError):
+                meta, data = None, b''
+            mail_from, rcpt = (meta.get('from'), meta.get('to')) if isinstance(meta, dict) else (None, None)
+            route = self.route_for(rcpt) if isinstance(mail_from, str) and isinstance(rcpt, str) else None
+            if route is None or route['action'] == 'reject':
+                failed += 1
+                log('replay_skipped', key=key, reason='unreadable or no longer routed')
                 continue
-            key = meta_path.stem
-            if meta.get('route') == 'forward':
-                route = self.route_for(meta['to']) or {}
-                dest = self.forward_dest(route)
-                try:
+            ok, extra = False, {}
+            try:
+                if route['action'] == 'forward':
+                    dest = self.forward_dest(route)
                     if not (dest and self.outbound_ready()):
                         raise RuntimeError('no forward destination')
-                    await self.forward(data, meta['from'], meta['to'], dest, 'replay')
+                    await self.forward(data, mail_from, rcpt, dest, 'replay')
                     ok, extra = True, {'action': 'forward'}
-                except Exception as e:
-                    ok, extra = False, {'error': type(e).__name__}
-            else:
-                result, detail = await self.post_backend(meta['from'], meta['to'], data)
-                ok = result == 'ok'
-                extra = {'action': detail['action'], **({'reply_not_sent': True} if detail['action'] == 'reply' else {})} \
-                    if ok else {'reason': result, **detail}
+                else:
+                    result, detail = await self.post_backend(mail_from, rcpt, data)
+                    if result != 'ok':
+                        down = down + 1 if result in ('network', 'timeout') else 0
+                        extra = {'reason': result, **detail}
+                    else:
+                        down, extra = 0, {'action': detail['action']}
+                        if detail['action'] in ('forward', 'reply') and meta.get('handed') != 'fallback' and self.fallback:
+                            why = 'the app wanted it forwarded' if detail['action'] == 'forward' else \
+                                'the app answered it, but that reply could not be sent after the outage'
+                            if not self.outbound_ready():
+                                raise RuntimeError('outbound relay is not configured')
+                            await self.forward(data, mail_from, rcpt, self.fallback, 'replay', f'Why you are getting this: {why}.')
+                            extra['handed'] = 'fallback'
+                        if detail['action'] in ('reject', 'reply'):
+                            extra['not_performed'] = True
+                        ok = True
+            except Exception as e:
+                extra = {**extra, 'error': type(e).__name__}
             if ok:
                 eml.unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
                 replayed += 1
             else:
                 failed += 1
-            log('replayed' if ok else 'replay_failed', to=meta.get('to'), key=key, **extra)
-        return {'replayed': replayed, 'failed': failed, 'more': len(metas) > limit}
+            log('replayed' if ok else 'replay_failed', to=rcpt, key=key, **extra)
+        return {'replayed': replayed, 'failed': failed, 'more': more}
 
 
 # ---------------------------------------------------------------- SMTP
@@ -595,7 +653,13 @@ def smtp_factory(receiver, tls=None):
                                           envelope.original_content or b'')
 
     class LimitedSMTP(SMTP):
+        # Real mail has lines far over RFC 5321's 1000 bytes; aiosmtpd's default would bounce them with a 500.
+        line_length_limit = SMTP_LINE_LIMIT
+
         def connection_made(self, transport):
+            if getattr(self, '_dazl_counted', False):
+                # aiosmtpd calls this a second time after a STARTTLS handshake: same connection, already counted.
+                return super().connection_made(transport)
             peer = transport.get_extra_info('peername') or ('?',)
             self._dazl_ip, self._dazl_counted = peer[0], False
             if not receiver.limiter.allow('conn', peer[0]) or not receiver.limiter.open(peer[0]):

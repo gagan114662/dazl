@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install (or update) the dazl inbound mail receiver on the box. Run as root from a copy of ops/inbound-mail:
 #   sudo bash install.sh [--mail-env-from /etc/dazl-staging/env]
+# Copy it to a directory only you can write (mktemp -d), not a fixed /tmp path: this script runs as root.
 # It installs files, the service user and the units, and stops there: it never starts the receiver, never touches DNS,
 # the security group, Caddy or the app. The receiver stays off until the switch file exists (README.md, "Switch").
 # Nothing is built here: the receiver is one Python file and its one dependency is Ubuntu's python3-aiosmtpd package.
@@ -16,8 +17,9 @@ while [ $# -gt 0 ]; do
 done
 [ "$(id -u)" = 0 ] || { echo "install: run as root" >&2; exit 2; }
 
-python3 -c 'import aiosmtpd' 2>/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-aiosmtpd
-python3 -c 'import aiosmtpd'
+# /usr/bin/python3 is the interpreter the unit runs
+/usr/bin/python3 -c 'import aiosmtpd' 2>/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-aiosmtpd
+/usr/bin/python3 -c 'import aiosmtpd'
 
 id dazl-mail >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin dazl-mail
 install -d -m 0755 -o root -g root /opt/dazl-inbound-mail /etc/dazl-inbound-mail
@@ -50,7 +52,7 @@ systemctl daemon-reload
 systemctl enable dazl-inbound-mail.service dazl-inbound-mail-cert.timer >/dev/null 2>&1
 systemctl start dazl-inbound-mail-cert.timer
 
-DAZL_INBOUND_CONFIG=/etc/dazl-inbound-mail/config.json python3 /opt/dazl-inbound-mail/receiver.py check-config >/dev/null
+DAZL_INBOUND_CONFIG=/etc/dazl-inbound-mail/config.json /usr/bin/python3 /opt/dazl-inbound-mail/receiver.py check-config >/dev/null
 if [ -e /etc/dazl-inbound-mail/enabled ]; then
   echo "install: files updated; the switch is ON. Restart to pick them up: systemctl restart dazl-inbound-mail"
 else

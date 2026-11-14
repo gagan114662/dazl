@@ -7,6 +7,7 @@ package the box runs); they are skipped where it is missing, and CI installs it.
 import asyncio
 import base64
 import email
+import email.header
 import email.policy
 import http.server
 import json
@@ -127,8 +128,9 @@ class Base(unittest.IsolatedAsyncioTestCase):
 
     def receiver(self, env=None, timeout=5.0, **over):
         def send(env_from, rcpt, data):
-            if self.send_error:
-                raise self.send_error
+            err = self.send_error(rcpt) if callable(self.send_error) else self.send_error
+            if err:
+                raise err
             self.sent.append({'env_from': env_from, 'rcpt': rcpt, 'data': data})
         base_env = {'INBOUND_BACKEND_KEY': KEY, 'SYSTEM_MAIL_SMTP_URL': 'smtps://u:p@relay.invalid:465', 'SYSTEM_MAIL_FROM': SYSTEM_FROM}
         base_env.update(env or {})
@@ -243,11 +245,63 @@ class BackendContract(Base):
         await self.deliver(r)
         self.assertEqual([m['rcpt'] for m in self.sent], [FALLBACK])
 
-    async def test_a_failed_reply_send_still_accepts_the_mail(self):
+    async def test_a_reply_that_cannot_be_sent_goes_to_a_human_not_into_the_void(self):
+        reply = {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: reply@dazl.ai\r\n\r\nhi'}
         r = self.receiver()
-        self.send_error = smtplib.SMTPServerDisconnected('relay down')
-        self.backend.answers = [(200, {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: reply@dazl.ai\r\n\r\nhi'})]
+        self.send_error = lambda rcpt: smtplib.SMTPRecipientsRefused({rcpt: (550, b'no')}) if rcpt != FALLBACK else None
+        self.backend.answers = [(200, reply)]
         self.assertTrue((await self.deliver(r)).startswith('250'))
+        self.assertEqual([m['rcpt'] for m in self.sent], [FALLBACK])
+        self.assertIn(b'reply could not be sent', self.sent[0]['data'])
+        # the relay is down for everyone: the sender keeps the mail (451) and it is spooled; never a silent 250
+        self.sent.clear()
+        self.send_error = smtplib.SMTPServerDisconnected('relay down')
+        self.backend.answers = [(200, reply)]
+        self.assertTrue((await self.deliver(r)).startswith('451 '))
+        self.assertEqual(len(self.spooled()), 2)
+
+    async def test_reply_line_endings_and_a_second_from_cannot_slip_through(self):
+        r = self.receiver()
+        raw = 'Subject: a\r\nX-One: 1\nFrom: Evil <ceo@dazl.ai>\nFrom: reply@dazl.ai\n\nbody line\n'  # mixed endings, two From
+        self.backend.answers = [(200, {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': raw})]
+        await self.deliver(r)
+        (m,) = self.sent
+        self.assertNotRegex(m['data'], rb'(?<!\r)\n')  # every line ends CRLF
+        self.assertNotIn(b'ceo@dazl.ai', m['data'])
+        self.assertEqual(m['data'].lower().count(b'\r\nfrom:') + m['data'].lower().startswith(b'from:'), 1)
+        self.assertTrue(m['data'].endswith(b'\r\n\r\nbody line\r\n'))
+        # a raw with no header/body separator, or with a lone surrogate, is never sent as it is
+        self.sent.clear()
+        self.backend.answers = [(200, {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: reply@dazl.ai'})]
+        self.assertTrue((await self.deliver(r)).startswith('250'))
+        self.assertEqual([m['rcpt'] for m in self.sent], [FALLBACK])
+        self.sent.clear()
+        self.backend.answers = [(200, {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: reply@dazl.ai\r\n\r\nhi \ud83d'})]
+        self.assertTrue((await self.deliver(r)).startswith('250'))
+        self.assertEqual([m['rcpt'] for m in self.sent], ['dana.whitfield@prospect.example'])
+        self.assertEqual(self.spooled(), [])
+
+    async def test_a_forward_keeps_a_non_ascii_subject(self):
+        r = self.receiver()
+        data = REAL_REPLY.replace(b'Subject: Re: Saw you are hiring two account executives', b'Subject: ' + email.header.Header('\u041f\u0440\u0438\u0432\u0435\u0442 \u2014 caf\xe9', 'utf-8').encode().encode())
+        await self.deliver(r, data=data, rcpt='hello@dazl.ai')
+        msg = email.message_from_bytes(self.sent[0]['data'], policy=email.policy.default)
+        self.assertEqual(msg['Subject'], 'Fwd: \u041f\u0440\u0438\u0432\u0435\u0442 \u2014 caf\xe9')
+
+    async def test_the_forward_text_is_built_from_a_bounded_prefix(self):
+        # a message with tens of thousands of MIME parts took 15 s+ to parse: only a prefix is ever parsed
+        seen = []
+        real = R.email.message_from_bytes
+
+        def spy(data, *a, **k):
+            seen.append(len(data))
+            return real(data, *a, **k)
+        R.email.message_from_bytes = spy
+        self.addCleanup(setattr, R.email, 'message_from_bytes', real)
+        big = b'Subject: parts\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n' + b'--b\r\n\r\nx\r\n' * 90000 + b'--b--\r\n'
+        out = R.wrap_forward(big, 'a@b.example', 'hello@dazl.ai', FALLBACK, SYSTEM_FROM, '203.0.113.9')
+        self.assertLessEqual(max(seen), R.EXCERPT_PARSE_BYTES)
+        self.assertGreater(len(out), len(big))  # the whole original is still attached
 
 
 class BackendDown(Base):
@@ -323,11 +377,45 @@ class BackendDown(Base):
             self.assertTrue((await self.deliver(r)).startswith('451 '), answer)
         self.assertEqual(len(self.spooled()), 2)
 
-    async def test_no_key_never_calls_the_app(self):
+    async def test_no_key_never_calls_the_app_and_the_mail_goes_to_the_fallback(self):
+        # today's state on the box: the app has no route and there is no key. Mail must reach a human, not sit on 451.
         r = self.receiver(env={'INBOUND_BACKEND_KEY': ''})
-        self.assertTrue((await self.deliver(r)).startswith('451 '))
+        self.assertTrue((await self.deliver(r)).startswith('250'))
         self.assertEqual(self.backend.requests, [])
+        self.assertEqual([m['rcpt'] for m in self.sent], [FALLBACK])
         self.assertEqual(len(self.spooled()), 2)
+        r = self.receiver(env={'INBOUND_BACKEND_KEY': ''}, fallback_forward='')
+        self.assertTrue((await self.deliver(r)).startswith('451 '))  # nobody to hand it to: the sender keeps it
+        self.assertEqual(self.backend.requests, [])
+
+    async def test_a_missing_relay_is_a_451_never_a_bounce(self):
+        r = self.receiver(env={'SYSTEM_MAIL_SMTP_URL': ''})
+        for answer in ({'action': 'forward', 'to': FALLBACK}, {'action': 'forward', 'to': 'attacker@evil.example'},
+                       {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: x\r\n\r\nhi'}):
+            self.backend.answers = [(200, answer)]
+            self.assertTrue((await self.deliver(r)).startswith('451 '), answer)
+        self.assertEqual(len(self.spooled()), 2)
+        self.assertEqual(self.sent, [])
+
+    async def test_eight_bit_addresses_do_not_escape_as_a_500(self):
+        r = self.receiver()
+        reply = await self.deliver(r, mail_from='jos\udce9@b.example')
+        self.assertTrue(reply.startswith('250'), reply)
+        self.backend.close()
+        reply = await self.deliver(r, mail_from='jos\udce9@b.example')
+        self.assertTrue(reply.startswith('451 '), reply)
+        self.assertEqual(len(self.spooled()), 2)
+
+    async def test_over_10_mb_is_552_even_if_it_reaches_delivery(self):
+        r = self.receiver()
+        self.assertTrue((await self.deliver(r, data=b'x' * (R.MAX_BYTES + 1))).startswith('552 '))
+        self.assertEqual(self.backend.requests, [])
+
+    async def test_the_spool_has_a_size_cap(self):
+        r = self.receiver(spool_max_mb=0)
+        self.backend.close()
+        self.assertTrue((await self.deliver(r)).startswith('451 '))  # still a temporary failure: the sender holds the mail
+        self.assertEqual(self.spooled(), [])
 
     async def test_a_failed_fallback_send_is_451_and_spooled(self):
         r = self.receiver()
@@ -357,11 +445,58 @@ class BackendDown(Base):
         self.backend.answers = [(503, b''), (503, b'')]
         self.assertEqual(await r.replay(), {'replayed': 0, 'failed': 1, 'more': False})
         self.assertEqual(len(self.spooled()), 2)
-        self.backend.answers = [(200, {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'x'})]
+        self.backend.answers = [(200, {'action': 'accept'})]
         self.assertEqual(await r.replay(), {'replayed': 1, 'failed': 0, 'more': False})
         self.assertEqual(self.spooled(), [])
-        self.assertEqual(self.sent, [])  # a replay records the mail in the app; it does not perform the action
+        self.assertEqual(self.sent, [])
         self.assertEqual(base64.b64decode(json.loads(self.backend.requests[-1]['body'])['raw']), REAL_REPLY)
+
+    async def test_replay_never_drops_mail_no_human_has_seen(self):
+        r = self.receiver()
+        for answer in ({'action': 'forward', 'to': FALLBACK},
+                       {'action': 'reply', 'from': 'reply@dazl.ai', 'to': 'dana.whitfield@prospect.example', 'raw': 'From: x\r\n\r\nhi'}):
+            self.sent.clear()
+            self.backend.answers = [(503, b''), (503, b'')]
+            await self.deliver(r)  # 451: spooled, nobody has it
+            # the relay is down during the replay: the mail must stay in the spool
+            self.send_error = OSError('relay down')
+            self.backend.answers = [(200, answer)]
+            self.assertEqual(await r.replay(), {'replayed': 0, 'failed': 1, 'more': False})
+            self.assertEqual(len(self.spooled()), 2)
+            self.send_error = None
+            self.backend.answers = [(200, answer)]
+            self.assertEqual(await r.replay(), {'replayed': 1, 'failed': 0, 'more': False})
+            self.assertEqual([m['rcpt'] for m in self.sent], [FALLBACK])  # a human gets it; the customer is not mailed late
+            self.assertEqual(self.spooled(), [])
+
+    async def test_replay_does_not_mail_the_fallback_twice(self):
+        r = self.receiver()
+        self.backend.answers = [(404, REAL_404_BODY)]
+        await self.deliver(r)  # today's path: spooled AND already handed to the fallback
+        self.assertEqual(len(self.sent), 1)
+        self.backend.answers = [(200, {'action': 'forward', 'to': FALLBACK})]
+        self.assertEqual(await r.replay(), {'replayed': 1, 'failed': 0, 'more': False})
+        self.assertEqual(len(self.sent), 1)
+
+    async def test_replay_survives_bad_spool_files_and_stops_while_the_app_is_down(self):
+        r = self.receiver()
+        d = self.tmp / 'spool'
+        d.mkdir()
+        (d / 'broken.json').write_text('{}')
+        (d / 'broken.eml').write_bytes(b'x')
+        (d / 'garbage.json').write_text('not json')
+        for i in range(5):
+            r.spool_put(f'k{i}', 'a@b.example', 'reply@dazl.ai', b'Subject: %d\r\n\r\nx' % i, 'network', 'unknown')
+            t = time.time() - 1000 + i
+            os.utime(d / f'k{i}.json', (t, t))
+        self.backend.answers = [(200, {'action': 'accept'})] * 2
+        self.assertEqual(await r.replay(limit=2), {'replayed': 2, 'failed': 0, 'more': True})  # oldest first, limit on successes
+        self.assertEqual(len(self.backend.requests), 2)
+        self.backend.close()
+        out = await r.replay()
+        self.assertEqual((out['replayed'], out['more']), (0, True))  # three unreachable in a row: stop, do not hammer
+        self.assertEqual(len(list(d.glob('k*.json'))), 3)
+        self.assertTrue((d / 'broken.eml').exists())  # an unreadable entry is left for a human, never deleted
 
     async def test_spool_cleanup_removes_only_files_older_than_30_days(self):
         r = self.receiver()
@@ -564,6 +699,17 @@ class OverSmtp(Base):
             return offered, s.sendmail('dana.whitfield@prospect.example', ['reply@dazl.ai'], REAL_REPLY)
         self.assertEqual(await self.smtp(session), (True, {}))
         self.assertEqual(len(self.backend.requests), 1)
+        # aiosmtpd calls connection_made again after the handshake: a TLS session must not leak a connection slot
+        for _ in range(7):  # more than max_concurrent_per_ip
+            self.assertEqual(await self.smtp(session), (True, {}))
+        await asyncio.sleep(0.2)
+        self.assertEqual(sum(self.r.limiter.live.values()), 0)
+
+    async def test_long_lines_are_accepted(self):
+        await self.start()
+        data = b'Subject: long line\r\n\r\n' + b'y' * 5000 + b'\r\n'
+        self.assertEqual(await self.smtp(lambda s: s.sendmail('a@b.example', ['reply@dazl.ai'], data)), {})
+        self.assertEqual(base64.b64decode(json.loads(self.backend.requests[0]['body'])['raw']), data)
 
 
 class Packaging(unittest.TestCase):
@@ -578,6 +724,7 @@ class Packaging(unittest.TestCase):
     def test_the_installer_never_starts_the_receiver_or_flips_the_switch(self):
         code = '\n'.join(l for l in (HERE / 'install.sh').read_text().splitlines() if not l.lstrip().startswith(('#', 'echo')))
         self.assertNotRegex(code, r'systemctl (re)?start dazl-inbound-mail(\.service)?(\s|$)')
+        self.assertNotIn('--now', code)
         self.assertNotRegex(code, r'(touch|>)\s*/etc/dazl-inbound-mail/enabled')
         self.assertNotRegex(code, r'\b(npm|pip3?|next build)\b')  # NEVER-AGAIN 1: nothing builds on the box
 
@@ -595,12 +742,20 @@ class Packaging(unittest.TestCase):
                 self.backend.answers = [(200, {'action': 'accept'}), (404, REAL_404_BODY), (503, b''), (503, b'')]
                 for _ in range(3):
                     await self.deliver(r)
+                self.send_error = OSError('smtps://u:p@relay.invalid:465 refused')  # failures are logged by type only
+                self.backend.answers = [(404, REAL_404_BODY), (200, {'action': 'reply', 'from': 'reply@dazl.ai',
+                                        'to': 'dana.whitfield@prospect.example', 'raw': 'From: x\r\n\r\nhi'})]
+                for rcpt in ('reply@dazl.ai', 'reply@dazl.ai', 'hello@dazl.ai'):
+                    await self.deliver(r, rcpt=rcpt)
+                await r.replay()
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             result = T().run()
         self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
         out = buf.getvalue()
         self.assertIn('"event": "accepted"', out)
+        self.assertIn('"event": "forward_failed"', out)
+        self.assertIn('"event": "reply_failed"', out)
         self.assertNotIn(KEY, out)
         self.assertNotIn('take me off your list', out)
         self.assertNotIn('u:p@relay', out)

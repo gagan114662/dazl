@@ -30,6 +30,16 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+RemoveIPC=true
+UMask=0077
+TasksMax=64
 ReadWritePaths=/var/spool/dazl-inbound
 # The box has 1.8 GB for prod + staging: this service must never be what runs it out of memory.
 MemoryHigh=128M

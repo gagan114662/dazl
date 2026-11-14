@@ -21,6 +21,7 @@
   "reply_from_mode": "rewrite",
   "spool_dir": "/var/spool/dazl-inbound",
   "spool_days": 30,
+  "spool_max_mb": 1024,
   "tls_cert": "/etc/dazl-inbound-mail/tls/fullchain.pem",
   "tls_key": "/etc/dazl-inbound-mail/tls/privkey.pem",
   "rate": { "connections_per_minute": 30, "messages_per_minute": 20, "max_concurrent_per_ip": 5, "max_concurrent": 40 },

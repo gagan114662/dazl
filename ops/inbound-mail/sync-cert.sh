@@ -9,7 +9,8 @@ CADDY_CERTS=${CADDY_CERTS:-/var/lib/caddy/.local/share/caddy/certificates}
 DEST=${MAIL_TLS_DEST:-/etc/dazl-inbound-mail/tls}
 GROUP=${MAIL_GROUP:-dazl-mail}
 
-crt=$(find "$CADDY_CERTS" -type f -name "$HOST.crt" -path "*/$HOST/*" 2>/dev/null | head -n 1 || true)
+# newest first: Caddy keeps one directory per issuer, and an old issuer's directory can hold a stale certificate
+crt=$(find "$CADDY_CERTS" -type f -name "$HOST.crt" -path "*/$HOST/*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2- || true)
 key=${crt%.crt}.key
 if [ -z "$crt" ] || [ ! -s "$key" ]; then
   echo "sync-cert: no Caddy certificate for $HOST yet; receiver stays without STARTTLS"

@@ -38,18 +38,24 @@ sha256(envelope from + envelope to + raw), so a sender's retry gets the stored a
 | `{"action":"accept"}` | `250` | |
 | `{"action":"reject","reason"}` | `550` + the reason (control characters removed, 300 characters) | |
 | `{"action":"forward","to"}` | `250` | the mail goes to `fallback_forward`, and only there: any other address the app names is refused (the fallback gets the mail; with no fallback, a polite `550`) |
-| `{"action":"reply","from","to","raw"}` | `250` | the reply is sent to the sender after the checks the Worker made: `from` is the mailbox written to, `to` is the sender, one recipient, never our own inboxes, no localhost link. A reply that fails a check is not sent; the fallback gets the mail |
+| `{"action":"reply","from","to","raw"}` | `250` | the reply is sent to the sender after the checks the Worker made: `from` is the mailbox written to, `to` is the sender, one recipient, never our own inboxes, no localhost link. A reply that fails a check, or that the relay refuses, is not lost: the fallback gets the mail |
 | down, 5xx (after the retry) or timeout | `451` | the raw mail is spooled; the sender's server retries |
-| a 4xx or an answer outside the contract | `250` when the fallback took it, else `451` | spooled; the fallback gets the mail, because a retry would get the same answer |
+| a 4xx, an answer outside the contract, or no `INBOUND_BACKEND_KEY` | `250` when the fallback took it, else `451` | spooled; the fallback gets the mail, because a retry would get the same answer |
 
-Spool: `/var/spool/dazl-inbound/<key>.eml` + `<key>.json` (from, to, reason, time), owner-only, removed after 30 days.
+A temporary condition on our side (the relay down or not configured, a full spool, a bug) is always a `451`, never a bounce.
+
+Spool: `/var/spool/dazl-inbound/<key>.eml` + `<key>.json` (from, to, reason, time, whether the fallback already has
+it), owner-only, removed after 30 days, capped at `spool_max_mb` (1 GB; when full, mail still gets its `451` but is not
+kept).
 After an outage, replay the spool (through systemd, so the secrets stay in the env file):
 
     sudo systemd-run --wait --pipe -p User=dazl-mail -p EnvironmentFile=/etc/dazl-inbound-mail/env \
       -p Environment=DAZL_INBOUND_CONFIG=/etc/dazl-inbound-mail/config.json /usr/bin/python3 /opt/dazl-inbound-mail/receiver.py replay
 
-A replay records the mail in the app and clears the spool; it does not perform the app's action (the SMTP session is
-gone, and the sender's server already retried after its `451`).
+A replay posts each spooled mail to the app again, oldest first (the app is idempotent). The SMTP session is gone, so
+a reject cannot be performed and a reply is not sent late; when the app answers forward or reply and no human has had
+the mail yet, it goes to the fallback. A mail leaves the spool only after that worked. Three unreachable answers in a
+row stop the run (the app is still down).
 
 ### Outbound mail
 
@@ -77,12 +83,16 @@ has a certificate for `mail.dazl.ai` once DNS points there and the Caddyfile has
   it is spooled and handed to `fallback_forward` (with no fallback: `451`). `INBOUND_BACKEND_KEY` is the key that route
   will check; it is empty until then, and an empty key means the app is never called.
 - `fallback_forward` and the other Cloudflare routing rules are placeholders in `config.example.json`.
+- **No SPF / DKIM / DMARC check on incoming mail.** The receiver does not verify the sender, and the contract has no
+  field to pass a result to the app. A `reply` action is sent to the envelope sender or the From header, so a forged
+  sender could make the app answer a third party (one reply per forged mail, rate-limited per IP). Add an SPF check
+  before the app starts answering strangers by mail.
 - DNS, the security group and the Caddyfile are not touched by anything in this directory.
 
 ## Install (switch off)
 
-    scp ops/inbound-mail/* aws-dazl:/tmp/dazl-inbound-mail-src/
-    ssh aws-dazl sudo bash /tmp/dazl-inbound-mail-src/install.sh --mail-env-from /etc/dazl-staging/env
+    D=$(ssh aws-dazl mktemp -d) && scp ops/inbound-mail/* aws-dazl:$D/
+    ssh aws-dazl sudo bash $D/install.sh --mail-env-from /etc/dazl-staging/env
 
 It adds the `python3-aiosmtpd` package, the `dazl-mail` user, `/opt/dazl-inbound-mail`, `/etc/dazl-inbound-mail`
 (`config.json`, and `env`: root-only, with the two mail settings copied without printing them), the spool directory and
@@ -110,8 +120,8 @@ dazl-inbound-mail` (one JSON line per event; never a key or a mail body).
 
 ## Memory
 
-Measured on the box (Python 3.12, 2026-11-14): 26 MB idle; 88 MB peak while handling a 9.9 MB message, settling at
-63 MB. The unit caps it at `MemoryMax=192M` (several 10 MB messages at once can hit the cap: the service restarts and
+Measured on the box (Python 3.12, 2026-11-14, run by hand, not under the unit): 26 MB idle; 88 MB peak while handling
+a 9.9 MB message, settling at 63 MB. Each open connection can buffer up to 10 MB before delivery starts. The unit caps it at `MemoryMax=192M` (several 10 MB messages at once can hit the cap: the service restarts and
 the senders retry; the app and the rest of the box are not affected).
 
 ## Tests
