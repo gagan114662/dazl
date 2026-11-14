@@ -11,7 +11,7 @@ import { readPlan, readScanQuota } from './plans.ts'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { lockScanAdmission } from './play-funding.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
-import type { Fence } from './watch.ts'
+import { migrateWatch, type Fence } from './watch.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
 import { jobWindowDays } from './scan/window.ts'
 import { DEFAULT_EVENT_WINDOW_DAYS, foldRunEvents, migrateMonitorEvents, missedRuns, type AlertPolicy, type RunLead } from './monitor-events.ts'
@@ -61,6 +61,7 @@ export function migrateMonitors(db: Database.Database): void {
   // how many scheduled runs this (late) run stands in for: missed-run recovery is reported, never replayed as extra scans
   if (!has(db.prepare('PRAGMA table_info(monitor_runs)').all(), 'missed_runs')) db.exec('ALTER TABLE monitor_runs ADD COLUMN missed_runs INTEGER NOT NULL DEFAULT 0')
   migrateMonitorEvents(db)
+  migrateWatch(db)   // #883: the once-per-account backfill of the alert record also reads the plays' mailed runs
 }
 
 // The play's own window ("in the past 30 days") else the default: events older than it are old news, never alerted.
@@ -174,7 +175,7 @@ export async function collectMonitorResults(db: Db, o: { fence?: Fence; now?: nu
            CASE WHEN EXISTS (SELECT 1 FROM lead_enrichments a WHERE a.lead_id = l.id AND a.tenant_id = ? AND a.connector = 'scan:actionable' AND a.kind = 'actionability' AND a.value LIKE 'Actionable:%') THEN 1 ELSE 0 END AS reachable
          FROM leads l WHERE l.scan_job_id = ? ORDER BY l.score DESC, l.id`, [r.user_id, r.job_id]))
         .map(l => ({ ...l, confidence: l.confidence == null ? null : Number(l.confidence), quarantined_at: l.quarantined_at == null ? null : Number(l.quarantined_at), held: Number(l.held) === 1, reachable: Number(l.reachable) === 1 }))
-      const { alerts } = yield* foldRunEvents(t, { userId: r.user_id, monitorId: r.monitor_id, runId: r.id, leads, policy: r.alert_policy, windowDays: monitorWindowDays(r), now })
+      const { alerts } = yield* foldRunEvents(t, { userId: r.user_id, monitorId: r.monitor_id, runId: r.id, jobId: r.job_id, leads, policy: r.alert_policy, windowDays: monitorWindowDays(r), now })
       const n = alerts.length
       yield* t.run('UPDATE monitor_runs SET new_count = ? WHERE id = ?', [n, r.id])
       // Monitor jobs reuse the query pipeline; stamp the producing channel now that the run is recorded.

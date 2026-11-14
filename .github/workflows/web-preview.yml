@@ -192,6 +192,14 @@ jobs:
           mkdir -p preview/run-button-fit
           SHOTS=preview/run-button-fit node test/ui/run-button-fit-917.ui.mjs | tee /tmp/rbf.out
           ! grep -q '^NOT RUN' /tmp/rbf.out
+      # #1043: "Your business" on the real build (sections, site links, empty sections, edit keeps research, plays prefill
+      # Leads without starting a scan; 1280 and 390 px). pipefail: a failure or a silent NOT RUN fails the job.
+      - name: Your business page (#1043)
+        run: |
+          set -o pipefail
+          mkdir -p preview/business
+          SHOTS=preview/business node test/ui/business-1043.ui.mjs | tee /tmp/biz.out
+          ! grep -q '^NOT RUN' /tmp/biz.out
       # #1040: Home's "Last 30 days" tiles, latest lists and by-signal table on the real build (1280 and 390 px), the new
       # workspace's zero state and the failed-read state. pipefail: a failure or a silent NOT RUN fails the job.
       - name: Home last-30-days results (#1040)
