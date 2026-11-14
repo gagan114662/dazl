@@ -8,7 +8,7 @@
 import { heldReason, type PreviewLead } from './journey.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
-export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported'
+export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need'
 
 // A person's check of the source can turn these into a usable lead (#352: Home, the Leads view and the draft gate agree):
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
@@ -48,7 +48,11 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   if (Object.hasOwn(CAUSE, r)) return CAUSE[r]   // own keys only: a reason like 'constructor' is unknown, not Object's constructor
   if (l.gate_held) return CAUSE.sales_hiring_check_failed   // #1062: a required check that has not passed, whatever reviewable reason the row carries
   if (l.window_held) return 'older'
-  if (l.currentness_held || !date || l.day_verified !== true) return 'undated'   // #1176: the card's proof (day_verified), not the retired date_status 'verified'
+  if (!date || l.day_verified !== true) return 'undated'   // #1176: the card's proof (day_verified), not the retired date_status 'verified'; no flag fails closed
+  // #1176 reader 2 (prod 2121e61c: "Zayed Law: no usable event date." beside a card that says "verified on the cited source"): the day IS proven.
+  // What still holds the lead is the timing gate (currentnessHeld: no complete machine proof of a current need, no confirmation by the user), which
+  // the Leads page words as "the event day is verified against the cited source, but no current buying need was verified". Same fact, same words.
+  if (l.currentness_held) return 'need'
   return 'unsupported'
 }
 
@@ -79,6 +83,15 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
 export const CAUSE_TEXT: Record<ResearchCause, string> = {
   undated: 'no usable event date', older: 'event older than your time window', customer: "only another company's page names it, as their customer",
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
+  need: 'event day verified on the cited source, but no current buying need was verified',
+}
+// Home's one-line reason under "Nothing ready - the leads found are research only". It used to say for every such play that none has
+// verified, dated evidence - false when a lead's day IS verified and only the buying need is not (#1176 reader 2).
+export function researchHint(causes: ResearchCause[]): string {
+  const need = causes.filter(c => c === 'need').length
+  if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
+  const who = need === causes.length ? (need === 1 ? 'Its event day is' : `Their event days are`) : `For ${need} of them the event day is`
+  return `${who} verified on the cited source, but no current buying need was verified, so nothing is ready. Each lead's reason is below.`
 }
 const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
 const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }

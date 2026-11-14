@@ -8,7 +8,7 @@ import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, skipNoticeLine, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
 import { leadCardSummary } from '@/lib/scan/lead-card'
-import { CAUSE_TEXT, recoveryNote } from '@/lib/lead-state'
+import { CAUSE_TEXT, recoveryNote, researchHint } from '@/lib/lead-state'
 import { Avatar, Pill, Stepper } from './ui/bits'
 import { Icon } from './ui/icons'
 import InfoTip from './ui/info-tip'
@@ -175,7 +175,7 @@ export default function Journey() {
         </ul>
         : (j.stage === 'zero' || j.stage === 'all_held' || j.stage === 'research_only') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
           <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : j.stage === 'research_only' ? 'Nothing ready - the leads found are research only' : 'No leads ready from this play yet'}</p>
-          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.' : 'Try a wider version of it:'}</p>
+          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? researchHint(j.split?.research.map(r => r.cause) ?? []) : 'Try a wider version of it:'}</p>
           {j.stage === 'research_only' && j.split && <>
             {/* Why each lead is research, and what dazl's automatic recovery already tried for it (the scan's own record); nothing here is a task for the user. */}
             <ul className="mt-3 mx-auto max-w-xl text-left text-sm space-y-2" data-testid="research-tried">
@@ -190,7 +190,7 @@ export default function Journey() {
         </div>}
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           {j.split && j.split.review.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.review.length} need{j.split.review.length === 1 ? 's' : ''} your review<InfoTip>Leads where checking the source yourself can settle it. They are never counted as opportunities.</InfoTip></Link>}
-          {researchN > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-research">{researchN} research only<InfoTip>No verified, dated event, outside your time window, or someone else's customer. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.</InfoTip></Link>}
+          {researchN > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-research">{researchN} research only<InfoTip>No verified, dated event, no current buying need verified, outside your time window, or someone else's customer. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.</InfoTip></Link>}
           {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} leads</Link>}
           <Link className="btn-ghost btn-sm" href={`/app/outcomes?job_id=${j.play.id}`} data-testid="journey-campaign"><Icon name="check" className="w-3.5 h-3.5" />Drafts and outcomes</Link>
           {drafts && drafts.approved > 0 && <span className="text-xs text-[var(--ink-2)]" data-testid="journey-approved">{drafts.approved} approved, not sent yet</span>}
