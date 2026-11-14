@@ -42,7 +42,8 @@ const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|althoug
 const GATE_EVENTS = new Set(['open', 'launch', 'expand'])
 const EVENT_NOT = /\b(?:not|no|never|didn'?t|doesn'?t|hasn'?t|haven'?t|wasn'?t|won'?t|without|failed\s+to|lost|losing|den(?:y|ies|ied)|reject\w*|revok\w+|withdr\w+|cancel\w*|denied|plans?\s+to|planning|intends?|aims?\s+to|hopes?\s+to|seeks?\s+to|seeking|bid(?:s|ding)?\s+for|in\s+talks|will|would|could|may|might|if|unless|once|pending|expected|reportedly|rumou?r\w*|allegedly)\b/i
 function eventShown(event: string | undefined, object: string | undefined, quote: string, company: string): boolean {
-  return clauses(quote).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
+  const text = quote.replace(/\b(Inc|Ltd|Corp|Co|P\.C|L\.L\.P|L\.L\.C)\.(?=\s+[a-z])/g, '$1')   // "Acme, Inc. is growing ...": the suffix's period does not end the sentence
+  return clauses(text).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !EVENT_NOT.test(k) && !subjectIsOther(k.slice(0, i), company) })
 }
 // An expansion a press release words without the verb "expand" (#878, real releases): THIS company, as the sentence's own subject, grows / bolsters /
 // strengthens / builds out / broadens / deepens / adds to ITS OWN practice, group, team, presence, footprint, bench, capability, office or operations
@@ -57,13 +58,14 @@ const GROWN_UNIT = String.raw`(?:practices?|groups?|teams?|presence|footprint|be
 const UNIT_FILLER = String.raw`(?:(?!(?:and|or|of|for|clients?|customers?|partners?|rivals?|competitors?)\b)(?:${GROWN_UNIT}['’]s|[\w&.-]+)\s+){0,6}?`
 const GROW_VERB = String.raw`(?:(?:is|are|has\s+been|have\s+been)\s+(?:continuing\s+to\s+grow|growing|bolstering|strengthening|building\s+out|broadening|deepening|adding\s+to)|(?:continues|has\s+continued|continued)\s+to\s+(?:grow|bolster|strengthen|build\s+out|broaden|deepen|add\s+to)|(?:has|have)\s+(?:grown|bolstered|strengthened|built\s+out|broadened|deepened|added\s+to)|(?:grew|grows|bolster(?:s|ed)|strengthen(?:s|ed)|builds\s+out|built\s+out|broaden(?:s|ed)|deepen(?:s|ed)|add(?:s|ed)\s+to))`
 const SUFFIX_OPT = String.raw`(?:,?\s+(?:LLP|LLC|PLLC|P\.?C\.?|Inc\.?|Ltd\.?))?`
-const SHRINK = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing)|from\s+\d+\s+to\s+\d+)\b/i
+const SHRINK = /\b(?:cut(?:s|ting)?|shr[aiu]nk\w*|reduc\w+|laid\s+off|lay(?:s|ing)?\s+off|layoffs?|downsiz\w+|clos(?:ed|es|ing)|from\s+\d+\s+to\s+\d+|depart\w*|exit\w*|left|leav(?:es|ing)|retire\w*|resign\w*|loss\s+of|(?:in|since|back\s+in|until)\s+(?:19|20)\d\d|\d+\s+years?\s+ago|decades?\s+ago|said|says|according\s+to|claims?|claimed)\b/i   // a cut, a past period (the lead's day is not that growth's day) or hearsay
 function growthShown(quote: string, company: string): boolean {
-  const co = company.trim(); if (co.length < 2) return false
+  const co = company.trim(); if (co.length < 3) return false
   const name = `${reEsc(co).replace(/\s+/g, String.raw`\s+`)}${SUFFIX_OPT}`
   const own = new RegExp(String.raw`^(?:today,?\s+)?${name}\s+(?:(?:also|further|today|again|significantly)\s+)?${GROW_VERB}\s+its\s+${UNIT_FILLER}${GROWN_UNIT}\b(?!\s+(?:page|pages|site|bios?|website|section)\b)`, 'i')
-  const joined = new RegExp(String.raw`^${name}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+[^,;]{2,80}?\s+(?:has|have)\s+joined\s+(?:the\s+(?:firm|company)|${name})\b[^,;]{0,60}?\bits\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}\b`, 'i')
-  return clauses(quote).some(k => !EVENT_NOT.test(k) && !SHRINK.test(k) && (own.test(k) || joined.test(k)))
+  const joined = new RegExp(String.raw`^${name}\s+(?:is\s+(?:pleased|proud|delighted|excited)\s+to\s+announce|announced|announces|has\s+announced|today\s+announced)\s+that\s+[^,;]{2,80}?\s+(?:has|have)\s+joined\s+(?:the\s+(?:firm|company)|${name})\s+(?:as|in|to)\s+(?:(?![A-Z][\w&.-]*\s+(?:LLP|LLC|Inc|Ltd)\b)[^,;]){0,60}?\bits\s+(?:growing|expanding)\s+${UNIT_FILLER}${GROWN_UNIT}\b`, 'i')
+  const text = quote.replace(/\b(Inc|Ltd|Corp|Co|P\.C|L\.L\.P|L\.L\.C)\.(?=\s+[a-z])/g, '$1')   // "Acme, Inc. is growing ...": the suffix's period does not end the sentence
+  return clauses(text).some(k => !EVENT_NOT.test(k) && !SHRINK.test(k) && (own.test(k) || joined.test(k)))
 }
 // The clock a condition's own evidence date is checked on, counted back from now. A condition relative to another one's event (#878) is
 // also checked on that gap (conditionProof); counted from now it keeps its own window, narrowed by a stated "in the last N days".

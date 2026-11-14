@@ -56,12 +56,14 @@ test('not this company, planned, denied, conditional or not growth: unknown', ()
     "Armstrong Teasdale is growing its client's team.", 'Armstrong Teasdale helps clients grow their practice.', 'Armstrong Teasdale adds to its team page a new bio.',
     'Armstrong Teasdale lawyer said Beta LLP grew its team.', 'Beta LLP, Armstrong Teasdale counsel, grew its team.',
     'John Smith has joined Beta LLP, rival of Armstrong Teasdale, in its growing practice group.', 'John has joined Beta LLP from Armstrong Teasdale in its growing practice group.',
+    'Armstrong Teasdale grew its team in 1998.', 'Armstrong Teasdale has grown its Chicago team since 2010.', 'Armstrong Teasdale announced that John has joined the company Acme in its growing practice.',
+    'Armstrong Teasdale grew its team with the departure of partner Smith.', 'Armstrong Teasdale grew its team, a rival said.',
     'Armstrong Teasdale, a firm that grew its presence in 1998, announced a new CEO.', 'Armstrong Teasdale grew its team from 10 to 5.', 'Armstrong Teasdale cut its team by 20 percent while growing its other practice.',
   ]) assert.equal(truth('Armstrong Teasdale', q), 'unknown', q)
 })
 
 test('plain completed forms by the company itself pass', () => {
-  for (const q of ['Armstrong Teasdale has grown its Chicago litigation team.', 'Armstrong Teasdale LLP bolstered its Insurance Recovery practice with three partners.', 'Armstrong Teasdale continues to build out its Chicago office.'])
+  for (const q of ['Armstrong Teasdale has grown its Chicago litigation team.', 'Armstrong Teasdale LLP bolstered its Insurance Recovery practice with three partners.', 'Armstrong Teasdale continues to build out its Chicago office.', 'Armstrong Teasdale, Inc. is growing its Chicago team.'])
     assert.equal(truth('Armstrong Teasdale', q), 'pass', q)
 })
 
