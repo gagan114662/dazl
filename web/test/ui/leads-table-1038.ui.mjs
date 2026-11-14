@@ -41,7 +41,7 @@ for (let i = 0; i < 300 && srv.exitCode === null; i++) { try { await fetch(base 
 const lead = i => ({ id: `lead${String(i).padStart(3, '0')}`, job_id: 'a'.repeat(24), company: `Company ${i}`, company_domain: null, person: i % 3 ? `Person ${i}` : null, email: i % 2 ? `p${i}@example.com` : null,
   signal: `Company ${i} opened a new location in Ohio`, quote: `We just opened our new office ${i}`, source_url: `https://news.example.com/story-${i}`,
   event_date: `2026-10-${String(1 + (i % 28)).padStart(2, '0')}`, found_at: 1790000000 + i, fit: 1 + ((i * 7) % 3) + 0, review_reason: null, why: `fit reason ${i}`, state: 'review' })
-const ALL = Array.from({ length: 60 }, (_, i) => lead(i + 1)).map(r => ({ ...r, fit: [2, 3, 2, 3, 3][r.company.length % 5] }))
+const ALL = Array.from({ length: 60 }, (_, i) => lead(i + 1)).map(r => ({ ...r, fit: [2, 5, 3, 4, 5][r.company.length % 5] }))
 const sorted = s => [...ALL].sort((a, b) => s === 'date' ? b.event_date.localeCompare(a.event_date) || a.id.localeCompare(b.id) : (b.fit - a.fit) || a.id.localeCompare(b.id))
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
 const out = []
@@ -88,9 +88,9 @@ try {
     const dateFirst = await page.getByTestId('lead-row').first().innerText()
     await page.reload({ waitUntil: 'networkidle' }); await page.getByTestId('lead-row').first().waitFor()
     assert.equal(await page.getByTestId('lead-row').first().innerText(), dateFirst, 'the date order survives a reload')
-    await page.getByTestId('sort-fit').click(); await page.waitForURL(/sort=fit/); await page.waitForFunction(() => document.querySelector('[data-testid=row-fit]')?.getAttribute('data-fit') === '3')
-    f = await fits(); assert.equal(f[0], 3); await page.reload({ waitUntil: 'networkidle' }); await page.getByTestId('lead-row').first().waitFor()
-    assert.equal((await fits())[0], 3, 'the fit order survives a reload')
+    await page.getByTestId('sort-fit').click(); await page.waitForURL(/sort=fit/); await page.waitForFunction(() => document.querySelector('[data-testid=row-fit]')?.getAttribute('data-fit') === '5')
+    f = await fits(); assert.equal(f[0], 5); await page.reload({ waitUntil: 'networkidle' }); await page.getByTestId('lead-row').first().waitFor()
+    assert.equal((await fits())[0], 5, 'the fit order survives a reload')
     // 2. the side panel
     const firstCompany = (await page.getByTestId('lead-row').nth(0).locator('td').nth(1).innerText()).trim()
     const secondCompany = (await page.getByTestId('lead-row').nth(1).locator('td').nth(1).innerText()).trim()

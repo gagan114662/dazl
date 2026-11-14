@@ -9,7 +9,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import type { TablePage, TableRow, TableSort } from '@/lib/leads/table'
 
 const STATE: Record<TableRow['state'], string> = { review: 'To review', drafted: 'Approved (draft)', rejected: 'Rejected' }
-const flames = (fit: number | null) => (fit == null ? 'not scored' : fit >= 3 ? '3 of 3' : fit === 2 ? '2 of 3' : '1 of 3')
+const flames = (fit: number | null) => (fit == null ? 'not scored' : `fit ${fit}/5`)   // the cards' own scale
 const day = (d: string | null) => (d ? d.slice(0, 10) : 'no date')
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
 
