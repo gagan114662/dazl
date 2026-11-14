@@ -1,3 +1,4 @@
+import { US_CITY_RANKS } from './us-city-ranks.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
@@ -11,7 +12,7 @@ import { postingDay } from './ats-posting.ts'
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
 // Dates: Greenhouse `first_published`, Ashby `publishedAt` and Lever `createdAt` only. `updated_at` is never used as the posting date.
 // Only the documented API hosts (Greenhouse, Ashby, Lever, plus the Hacker News Algolia host for discovery) are ever requested, and only for board tokens that pass a strict pattern.
-const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
+export const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
@@ -118,6 +119,33 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
   const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
   const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
   return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l)) }
+}
+// #1095 (live staging check of the merged #1155, 2026-11-13): a brand-new trial account's dazl-inferred profile stores its place WITHOUT a state
+// (job 64a0f578: where ["Austin"], country "US"), and placeIn("in Austin") names no place, so the board source never ran for exactly the
+// first-session customer. A profile place that is a bare US city name resolves to the MOST POPULOUS US place of that name (US Census Vintage 2022
+// estimates, lib/sources/us-city-ranks.ts) when it is at least 3 times the next one: Austin is Austin, TX (974,447 against 26,208 in MN), while
+// Springfield (MO 170,067 / MA 154,064 / IL 113,273) is ambiguous and names no place. Only for a profile that says it is US (country).
+let CITY_RANKS: Map<string, { city: string; abbr: string; pop: number }[]> | null = null
+const rankKey = (s: string) => s.toLowerCase().replace(/\./g, '').replace(/\bsaint\b/g, 'st').replace(/\s+/g, ' ').trim()
+export function bareUsCity(name: string): { city: string; abbr: string } | null {
+  const raw = name.trim()
+  if (!/^[A-Z][\p{L}.'-]*(?:\s+[A-Z][\p{L}.'-]*){0,3}$/u.test(raw)) return null   // one place name, not a phrase or a list
+  if (!CITY_RANKS) {
+    CITY_RANKS = new Map()
+    for (const row of US_CITY_RANKS) { const [city, abbr, pop] = row.split('|'); const k = rankKey(city); const l = CITY_RANKS.get(k) ?? []; l.push({ city, abbr, pop: Number(pop) }); CITY_RANKS.set(k, l) }
+    for (const l of CITY_RANKS.values()) l.sort((a, b) => b.pop - a.pop)
+  }
+  const l = CITY_RANKS.get(rankKey(raw)); if (!l?.length) return null
+  if (l[1] && l[0].pop < 3 * l[1].pop) return null
+  return { city: l[0].city, abbr: l[0].abbr }
+}
+// The place text a profile's `where` entry names for the board source, or null: what placeIn reads from "in <entry>", else (a US profile only)
+// a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
+export function profilePlaceText(where: string, country?: string | null): string | null {
+  const direct = placeIn(`in ${where}`); if (direct) return direct.name
+  if (!/^(?:us|usa|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
+  const b = bareUsCity(where); if (!b) return null
+  return placeIn(`in ${b.city}, ${b.abbr}`)?.name ?? null
 }
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
