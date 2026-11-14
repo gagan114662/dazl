@@ -67,7 +67,7 @@
    "duration_ms": 40,
    "input": {
     "method": "GET",
-    "url": "https://api.search.tinyfish.ai/?query=toronto%20marketing%20agency%20new%20office%20Toronto%2C%20Canada",
+    "url": "https://api.search.tinyfish.ai/?query=toronto%20marketing%20agency%20new%20office%20Toronto%2C%20Canada%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
     "body": null
    },
    "output": {
@@ -76,8 +76,42 @@
    }
   },
   {
-   "id": "s2",
+   "id": "s1x0",
    "seq": 2,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 50,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=marketing%20agencies%20in%20Toronto%2C%20Canada%20opened%20a%20new%20office%20announcement%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\": []}"
+   }
+  },
+  {
+   "id": "s1x1",
+   "seq": 3,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 50,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=marketing%20agencies%20in%20Toronto%2C%20Canada%20opened%20a%20new%20office%20news%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\": []}"
+   }
+  },
+  {
+   "id": "s2",
+   "seq": 4,
    "kind": "http",
    "name": "tinyfish.fetch",
    "start_ms": 100,
@@ -94,7 +128,7 @@
   },
   {
    "id": "s3",
-   "seq": 3,
+   "seq": 5,
    "kind": "model",
    "name": "anthropic.completeDetailed",
    "start_ms": 150,
@@ -116,7 +150,7 @@
   },
   {
    "id": "s4",
-   "seq": 4,
+   "seq": 6,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 200,
@@ -132,7 +166,7 @@
   },
   {
    "id": "s5",
-   "seq": 5,
+   "seq": 7,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 250,
@@ -149,7 +183,7 @@
   },
   {
    "id": "s6",
-   "seq": 6,
+   "seq": 8,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 300,

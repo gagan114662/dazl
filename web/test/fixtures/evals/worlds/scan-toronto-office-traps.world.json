@@ -8,7 +8,7 @@
  "from_trace": "synthetic-scan-toronto-office-traps",
  "search": {
   "by_query": {
-   "toronto marketing agency new office Toronto, Canada": [
+   "toronto marketing agency new office Toronto, Canada -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": [
     {
      "url": "https://news.example/toronto/maple-leaf-office",
      "title": "Maple Leaf Marketing opens second office",
@@ -27,7 +27,9 @@
      "snippet": "On 2026-10-12, Lakeshore Creative, a Toronto marketing agency, opened a new office in Liberty Village, Toronto, ON this month and is hiring des",
      "date": "2026-10-12"
     }
-   ]
+   ],
+   "marketing agencies in Toronto, Canada opened a new office announcement -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": [],
+   "marketing agencies in Toronto, Canada opened a new office news -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": []
   }
  },
  "tinyfish_pages": {

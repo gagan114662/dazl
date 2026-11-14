@@ -8,7 +8,7 @@
  "from_trace": "synthetic-scan-london-seed-traps",
  "search": {
   "by_query": {
-   "london saas seed London, UK": [
+   "london saas seed London, UK -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": [
     {
      "url": "https://news.example/london/querix-seed",
      "title": "Querix raises seed round",
@@ -43,7 +43,9 @@
      "title": "Orbit Labs to announce seed",
      "snippet": "Orbit Labs, a London B2B SaaS startup, will announce its seed round at a launch event on 2026-11-15. Orbit Labs builds scheduling tools for "
     }
-   ]
+   ],
+   "London UK B2B SaaS startups announced seed funding London, UK -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": [],
+   "London UK B2B SaaS startups announced seed funding news London, UK -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com": []
   }
  },
  "tinyfish_pages": {
