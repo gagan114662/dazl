@@ -32,7 +32,8 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { guessFromLearnedFormat, type GuessView } from './email-formats.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -152,9 +153,12 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
   return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
 }
 
+// guess (#1036): with EMAIL_GUESS_ENABLED, when nothing was found for this person ('not_found', or no key to look further), an address
+// built from the tenant's learned format at this company's domain, labelled guessed, unverified/verified (lib/people/email-formats.ts).
+// Never a lookup row, never copyable unless a mailbox check said valid, never a draft recipient.
 export type FindWorkEmailResult =
-  | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
-  | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
+  | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string; guess?: GuessView | null }
+  | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean; guess?: GuessView | null }
 
 interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
 
@@ -211,9 +215,25 @@ const failText = (e: unknown, P: string) => {
   return name === 'AbortError' || name === 'TimeoutError' ? `${P} timed out (may have used a credit)` : `${P} answer could not be read (may have used a credit)`
 }
 
-export async function findWorkEmail(
+type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
+// What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
+interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
+  const derived: Derived = {}
+  const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
+  // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
+  // US only (docs/DECISIONS.md 2026-10-26): a play that names another country gets published addresses only, so no guess either. The paid
+  // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
+  if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
+  let guess: GuessView | null = null
+  try { guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), deps.env ?? process.env) }
+  catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+  return guess ? { ...r, guess } : r
+}
+
+async function lookupWorkEmail(
   db: Database.Database, tenantId: string, leadId: string, target: unknown,
-  deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {},
+  deps: FindDeps, derived: Derived,
 ): Promise<FindWorkEmailResult> {
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
@@ -238,9 +258,12 @@ export async function findWorkEmail(
   try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
   const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
   const icpText = strs(icp.who).join('; ')
+  derived.foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].some(c => c !== 'US')
   const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   const want: WantPerson = { ...queryName(person.name)!, title: person.title, linkedin: person.linkedin }
+  derived.person = { name: person.name, title: person.title }; derived.site = site.site
+  derived.others = workEmailTargets(rows, icpText, now * 1000, site).map(p => splitName(p.name))
 
   const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
   const prior = read()
