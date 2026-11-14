@@ -87,7 +87,7 @@ Request: ${JSON.stringify(query)}
 Ideal customer profile: ${JSON.stringify(flatProfile(icp))}
 Items (index, source, url, title, text, date): ${JSON.stringify(items.map((e, i) => ({ i, source: e.source, url: e.url, title: e.title, text: e.quote, date: e.date })))}
 
-Pick only items that show a company or person matching the profile with a recent buying signal. Use only these items. Do not invent anything.${halves ? halvesBlock(halves) : ''}
+Go through EVERY item, one by one. Return a lead for each item that names a specific company (or person) matching the profile and shows the requested signal; an item that names several matching companies gives one lead per company. Do not stop after the strongest few: completeness matters as much as precision. Skip items that name no specific company, items about a vendor's own product, and generic directory or salary pages. Use only these items. Do not invent anything.${halves ? halvesBlock(halves) : ''}
 Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": ONE passage of 20-300 characters copied character-for-character from that item's text (no paraphrase, no "..." inside, no fixing typos) that names the company and shows the signal, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
 One item can name several companies (a list or a round-up): return each matching company separately, each with its own passage. Return [] if nothing fits.`
 }

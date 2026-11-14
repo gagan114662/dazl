@@ -82,7 +82,7 @@ import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, pe
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
 import { EnrichmentTrace, noteFromAudit, noteTech, auditSummary, mergeIntoRunReport, notePaidEnrichment } from './enrichment-trace.ts'
 import { recordActionability, type NeedGate } from './actionable.ts'
-import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, SITE_SEARCHES_PER_SCAN, adaptiveDiscoveryOn } from './run-budget.ts'
+import { ADAPTIVE_SEARCHES, ADAPTIVE_FETCHES, SITE_SEARCHES_PER_SCAN, adaptiveDiscoveryOn, evidenceCap, extractionMaxTokens } from './run-budget.ts'
 import { planRetry } from './retry-plan.ts'
 import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from './need-evidence.ts'
@@ -1066,10 +1066,10 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
     const chosen = new Set(urls.map(u => canonicalUrl(u) ?? u)); const textLen = new Map((f.ok ? f.pages : []).map(p => [canonicalUrl(p.url) ?? p.url, p.text.length] as const))
     diag.urls = [...hitByUrl.keys()].map(u => ({ url: u, hit_date: hitByUrl.get(u)?.date ?? null, walled: isLoginWalled(u), selected: chosen.has(canonicalUrl(u) ?? u), tinyfish_text_chars: textLen.get(canonicalUrl(u) ?? u) ?? null, own_fetch: null }))
   }
-  const items = toEvidence(hits, f.ok ? f.pages : [], fetchRank) // the same ranking decides what survives the extraction cap
+  const items = toEvidence(hits, f.ok ? f.pages : [], fetchRank, evidenceCap(tfLimits().fetchesPerScan)) // the same ranking decides what survives the extraction cap, which grows with the pages the scan may read
   if (diag) Object.assign(diag.info, evidenceSplit(items, f.ok ? f.pages : []))
   if (items.length === 0) return null
-  const text = await ask(buildSourcePrompt(job.query!, icp, items), 3000)
+  const text = await ask(buildSourcePrompt(job.query!, icp, items), extractionMaxTokens(items.length))
   const parsed = parseLeads(text, items.map(i => i.url)) ?? null
   if (diag) diag.info.extracted_candidates = parsed ? parsed.length : null // null = the model reply was unusable, not zero
   if (diag) diag.info.extraction = extractionNote({ results: new Set(hits.map(h => h.url)).size, requested: urls.length, fetchedPages: f.ok ? f.pages : [], fetchError: !f.ok, items, parsed })

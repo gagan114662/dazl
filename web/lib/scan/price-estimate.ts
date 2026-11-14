@@ -8,7 +8,7 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } from './run-budget.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN, evidenceCap, extractionMaxTokens, EVIDENCE_CAP_MIN } from './run-budget.ts'
 import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
@@ -126,7 +126,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   for (const c of CALLS) {
     const off = (c.optional === 'judge' && b?.judge === false) || (c.optional === 'hiring' && !i.hiringRequest)
     const calls = off ? { min: 0, max: 0 } : c.id === 'extraction' && adaptive ? { min: c.calls.min, max: c.calls.max + 1 } : c.calls
-    const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
+    // #1099: past 30 evidence items the extraction call's reply budget is 6000 tokens, not 3000 (lib/scan/run-budget.ts
+    // extractionMaxTokens), so its worst-case output is priced at that here too
+    const outMax = c.id === 'extraction' && evidenceCap(DEFAULT_TINYFISH.fetchesPerScan) > EVIDENCE_CAP_MIN ? Math.max(c.outK.max, extractionMaxTokens(EVIDENCE_CAP_MIN + 1) / 1000) : c.outK.max
+    const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, outMax)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
