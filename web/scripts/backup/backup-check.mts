@@ -46,6 +46,7 @@
 //     failed or older than --key-drill-max-age-s (default 92 days).
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
+import { alertDestinationProblem, alertRequest } from '../../lib/ops/alert-destination.ts'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs'
@@ -339,9 +340,12 @@ const send = async (b: object): Promise<boolean> => {
     if (result.error || result.status !== 0) { console.error('backup-check: alert command failed'); return false }
     return true
   }
-  if (!hook?.startsWith('https://')) { console.error('backup-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
+  const bb = b as { host?: string; problems?: string[] }
+  const text = [`dazl backup problem${bb.host ? ` on ${bb.host}` : ''}:`, ...(bb.problems ?? []).map(x => `- ${x}`)].join('\n')
+  const req = alertRequest(hook, b as Record<string, unknown>, text)
+  if (!req) { console.error(`backup-check: no alert destination (${alertDestinationProblem(hook)}); problems are in the journal only`); return false }
   try {
-    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), redirect: 'error', signal: AbortSignal.timeout(10_000) })
+    const r = await fetch(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, redirect: 'error', signal: AbortSignal.timeout(10_000) })
     if (!r.ok) { console.error(`backup-check: alert webhook HTTP ${r.status}`); return false }
     return true
   } catch (e) { console.error(`backup-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }
