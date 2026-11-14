@@ -2,7 +2,8 @@ import { isGtmRole } from '../signals/ats-gtm.ts'
 // Requested POSTING titles, never the buyer personas in ICP.who. Deliberately bounded synonyms:
 // sales ops <-> sales operations, revops <-> revenue operations, admin <-> administrator, SDR / BDR / AE <-> the full title.
 // CRM administrator is NOT business systems administrator, Salesforce developer or AE.
-// #879. Nothing main matched is lost: a title that carries the term as the request wrote it still matches. Added, on both sides:
+// #879. What main matched still matches (a title that carries the term as the request wrote it), except the exceptions named at titleForms
+// (a title that spells out Software Defined Radio / After Effects, and a trailing ", <two letters>" place code). Added, on both sides:
 // "sales rep(s)" reads as sales representative, and "VP of Sales" / "VP, Sales" / "Vice President, Sales" as one title. Added for the
 // sales titles requests and boards abbreviate (production's own play asks for "their first SDR"; boards post "Sales Development
 // Representative"): a REQUEST's SDR(s) / BDR(s) / AE(s) also read as the full title, and a posting TITLE's SDR / BDR too when the
@@ -28,8 +29,10 @@ const normal = (s: string): string => squeeze(expandSdrBdr(base(s)).replace(/\ba
 // main matched for a request for an AE, no longer does).
 const OTHER_MEANING = /\bsoftware[ -]+defined[ -]+radio\b|\bafter[ -]+effects\b/
 const TRADE = /\b(?:engineer|engineering|developer|firmware|software|hardware|systems|radio|rf|dsp|fpga|embedded|designer|compositor|encryption|technician|architect|programmer|scientist|devops|data)\b/
-const SALES_SIGNAL = /\b(?:sales|account|accounts|business development|revenue|growth|outbound|inbound|pipeline|gtm)\b/
-const MODIFIER = new Set(['senior', 'sr', 'junior', 'jr', 'lead', 'founding', 'principal', 'staff', 'associate', 'manager', 'head', 'i', 'ii', 'iii', 'iv', 'remote', 'enterprise', 'commercial', 'smb', 'mid', 'market', 'midmarket', 'inside', 'technical', 'emea', 'apac', 'amer', 'americas', 'na', 'latam', 'uk', 'us', 'global', 'team', 'regional', 'named', 'strategic', 'corporate', 'field'])
+// words that mean sales and little else: not account / revenue / growth / pipeline, which are trade vocabulary too ("Pipeline Inspector SDR", "SDR Revenue Accountant")
+const SALES_SIGNAL = /\b(?:sales|business development|outbound|inbound|gtm)\b/
+const MODIFIER = new Set(['senior', 'sr', 'junior', 'jr', 'lead', 'founding', 'principal', 'staff', 'associate', 'manager', 'head', 'i', 'ii', 'iii', 'iv', 'remote', 'enterprise', 'commercial', 'smb', 'mid', 'market', 'midmarket', 'inside', 'technical', 'emea', 'apac', 'amer', 'americas', 'na', 'latam', 'uk', 'us', 'global', 'team', 'regional', 'named', 'strategic', 'corporate', 'field',
+  'entry', 'level', 'graduate', 'part', 'time', 'temporary', 'contractor', 'apprentice', 'trainee', 'intern', 'saas', 'fintech', 'b2b', 'b2c', 'ai', 'channel', 'partner', 'territory', 'of', 'healthcare', 'cybersecurity'])   // places beyond these ("SDR France") are not listed: those titles match an abbreviating request only
 const PLACE_CODE = /,\s*[a-z]{2}\s*$/i
 const acronymOnlyHead = (b: string): boolean => {
   const words = squeeze(b.split(/\s+[-\u2013\u2014]\s+|[,(]/)[0]).split(' ').filter(w => w && !MODIFIER.has(w))

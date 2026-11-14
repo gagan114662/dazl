@@ -245,6 +245,13 @@ test('#879 radio / firmware / embedded postings are not the sales role a request
   // a bare title with filler words after the acronym keeps the letters as written (the #878 fixtures once used "SDR a"; a real posting is "SDR - <team>")
   assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR a')]).truth, 'unknown')
   assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row('SDR - a')]).truth, 'pass')
+  // a bare trade-vocabulary word (pipeline, account, revenue, growth) is not a sales signal (council on 48708c67)
+  for (const t of ['SDR Pipeline Integrity Lead', 'Pipeline Inspector SDR', 'SDR Revenue Accountant', 'Account Payable SDR', 'SDR Account Security Lead', 'BDR Growth Marketing Manager']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
+  }
+  for (const t of ['Entry Level SDR', 'Graduate SDR', 'SaaS SDR', 'Fintech SDR', 'Channel SDR', 'Territory SDR', 'Head of SDR']) {
+    assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'pass', t)
+  }
   // radio / firmware titles behind a separator are still radio / firmware (council on 7b604843)
   for (const t of ['SDR - Firmware Engineer', 'SDR - Software Engineer', 'SDR - RF Engineer', 'Pipeline Integrity Engineer, SDR']) {
     assert.equal(prove('Software companies hiring SDRs in the last 30 days', l, [row(t)]).truth, 'unknown', t)
