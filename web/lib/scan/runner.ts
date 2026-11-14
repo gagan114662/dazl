@@ -76,6 +76,9 @@ import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-
 import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import { searchableCompanyCount } from '../people/searchable-holds.ts'
+import { findGroundedPeople, newGroundedStats } from '../people/grounded-people.ts'
+import { anthropicWithModel } from '../llm/provider.ts'
+import { CONTACT_RESEARCH_MODEL } from '../people/contact-research.ts'
 import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
 // #1037: share of a trial scan's reserve the first-play people search never spends into (left for the buyer-fit checks after it).
 export const FIRST_PLAY_TRIAL_KEEP = 0.25
@@ -1928,6 +1931,18 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const status = peopleTraceStatus(n, stopped.why)
       trace.note('people_search', status, peopleTraceMessage(n, stopped.why, stats), detail)
     } catch (e) { trace.note('people_search', 'failed', e instanceof Error ? e.message : 'error') }
+    // #1102 grounded named-person step: for the leads that still name nobody, one lookup each (search + at most one page read + one Haiku
+    // call, every field checked in code against a source that was shown). Anthropic key only; kill switch GROUNDED_PEOPLE_ENABLED=0; never throws.
+    if (process.env.GROUNDED_PEOPLE_ENABLED === '0') trace.note('grounded_people', 'skipped', 'GROUNDED_PEOPLE_ENABLED=0')
+    else if (!peopleSearchEnabled()) trace.note('grounded_people', 'skipped', 'TinyFish search is not configured: no lookup can run')
+    else if (vendor !== 'anthropic') trace.note('grounded_people', 'skipped', 'the grounded lookup runs on an Anthropic key and this scan uses another vendor')
+    else if (trial) trace.note('grounded_people', 'skipped', 'free-trial scans keep their reserve for the checks after the scan')
+    else try {
+      const gstats = newGroundedStats(); const gstop: { why: string | null } = { why: null }
+      migrateTinyfish(db)
+      const n = await findGroundedPeople(db, job.user_id, job.id, { provider: anthropicWithModel(CONTACT_RESEARCH_MODEL), apiKey: key, fetchImpl: deps.fetchImpl, stats: gstats, onStop: why => { gstop.why ??= why }, alive: () => postFinishAlive(db, job) })
+      trace.note('grounded_people', gstop.why === 'error' ? 'failed' : n > 0 ? 'ok' : 'attempted_no_result', n > 0 ? null : `no lookup kept a person (${gstats.looked_up} looked up)`, { people_stored: n, eligible: gstats.eligible, looked_up: gstats.looked_up, found: gstats.found, none: gstats.none, ...Object.fromEntries(Object.entries(gstats.refused).map(([k, v]) => [`refused_${k}`, v])), ...Object.fromEntries(Object.entries(gstats.failed).map(([k, v]) => [`failed_${k}`, v])), ...(gstop.why ? { stopped: gstop.why } : {}) })
+    } catch (e) { trace.note('grounded_people', 'failed', e instanceof Error ? e.message : 'error') }
     // #385: a person the tenant rejected is not re-added by the crawl or the people search.
     try { const rj = await fb.rejections(); if (rj) { const n = await stripRejectedPeople(sqliteDb(db), job.user_id, job.id, rj); if (n > 0) trace.note('rejected_people', 'ok', `${n} rejected person / contact row(s) removed`) } } catch (e) { console.error('rejected-people strip failed', e instanceof Error ? e.message : 'error') }
     // Contacts refused for disagreeing with the lead (wrong place / wrong domain) leave nothing reachable: regrade the lead from the evidence actually kept.

@@ -26,7 +26,7 @@ const ROOT = join(import.meta.dirname, '..')
 // Entry points outside a scan: must call the owner guard on the provider they call.
 const OWNER_ENTRY = [
   'lib/outreach/draft-llm.ts', 'lib/outreach/sequences.ts', 'lib/replies/threads.ts',
-  'lib/seo/brief.ts', 'lib/seo/newsjack.ts', 'lib/scan/icp-from-site.ts',
+  'lib/seo/brief.ts', 'lib/seo/newsjack.ts', 'lib/scan/icp-from-site.ts', 'lib/people/contact-research.ts',
 ]
 // Called only with a provider its one caller already guarded: [module, its exported function, that caller, the guarded call].
 const GUARDED_BY_CALLER: [string, string, string, RegExp][] = [

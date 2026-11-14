@@ -118,7 +118,7 @@ export interface ContactEnrichment {
 }
 
 // Where a listed person came from, in words (leads page and CSV export). Unknown connectors show their id.
-export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'signals:sec-form-d': 'an SEC Form D filing (as of the filing date, not verified as current)', 'enrich:apollo': 'Apollo (provider search result, not verified as current)', 'enrich:pdl': 'People Data Labs (provider search result, not verified as current)' }
+export const PEOPLE_SOURCE: Record<string, string> = { sitecrawl: 'the company website (listed with this title)', 'search:people': 'a public LinkedIn search result (not verified as current)', 'adv:linkedin': 'LinkedIn, through your session', 'signals:sec-form-d': 'an SEC Form D filing (as of the filing date, not verified as current)', 'enrich:apollo': 'Apollo (provider search result, not verified as current)', 'enrich:pdl': 'People Data Labs (provider search result, not verified as current)', 'research:person': 'a public page or search result that names them with this title (not verified as current)' }
 
 // Where a listed person came from, for one ranked contact: a crawled person whose page is not established as the
 // company's own website (currency reason set) is NOT "the company website" (#781).

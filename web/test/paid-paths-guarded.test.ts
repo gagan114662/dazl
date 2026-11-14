@@ -13,7 +13,7 @@ const PAID_CALL = /\.(?:complete|completeDetailed)!?\(|\.research\(/
 // Modules that call the provider through ownerGuarded (they must name it).
 const OWNER_GUARDED = [
   'lib/outreach/draft-llm.ts', 'lib/outreach/sequences.ts', 'lib/replies/threads.ts', 'lib/scan/icp-from-site.ts',
-  'lib/seo/brief.ts', 'lib/seo/newsjack.ts',
+  'lib/seo/brief.ts', 'lib/seo/newsjack.ts', 'lib/people/contact-research.ts',
 ]
 // Modules that make the call on a provider they are handed, and who hands it to them guarded.
 const HANDED_A_GUARDED_PROVIDER: Record<string, string> = {
