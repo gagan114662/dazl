@@ -37,7 +37,11 @@ import { tableExists } from './send-budget.ts'
 export const ONBOARDING_POLICY_VERSION = '2026-11-02'
 
 export function migrateOnboardingPolicy(db: Database.Database): void {
-  db.exec(`
+  // One write transaction (#836): this replaces a trigger (DROP, then CREATE) and runs in every process that opens the
+  // store. Outside a transaction two processes starting together interleave the two and the second CREATE fails
+  // "trigger ... already exists". IMMEDIATE takes the write lock first; inside a caller's transaction it is a savepoint.
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS onboarding_policies (
       tenant_id      TEXT PRIMARY KEY,
       policy_version TEXT NOT NULL,
@@ -70,6 +74,7 @@ export function migrateOnboardingPolicy(db: Database.Database): void {
       WHEN NOT EXISTS (SELECT 1 FROM onboarding_audit_purge_gate)
       BEGIN SELECT RAISE(ABORT, 'onboarding audit is append-only'); END;
   `)
+  }).immediate()
 }
 
 const norm = (email: string): string => email.trim().toLowerCase().slice(0, 200)

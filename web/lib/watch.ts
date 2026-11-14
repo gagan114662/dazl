@@ -3,11 +3,12 @@
 // - every run counts against the monthly scan quota
 // - never trial-funded: a watch with no user key pauses, it never touches the operator key
 // - max 3 active watches per user
-// - "new" = the lead's company domain (or normalized name) was not seen by this watch before
+// - "new" = the lead's company domain (or normalized name) was not seen by this watch before, and (#883) no other
+//   play of the tenant has already alerted that company (lib/play-alerts.ts)
 // - results surface in-app only
 // On the Db layer (SQLite or Postgres), except markWatchLeads: the scan runner still calls it on the raw handle.
 import type Database from 'better-sqlite3'
-import type { Db, Tx, TxBody } from './db/client.ts'
+import { sqliteDb, type Db, type Tx, type TxBody } from './db/client.ts'
 import { randomBytes } from 'node:crypto'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { readHasKey } from './llm/key-store.ts'
@@ -16,6 +17,8 @@ import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
+import { alertKeysOf, migrateMonitorEvents } from './monitor-events.ts'
+import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, seedPlayAlertsStep, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
 import { cappedRunBudget, DAY_S, PLAY_SKIPPED, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
@@ -41,6 +44,8 @@ export function migrateWatch(db: Database.Database): void {
     first_seen_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
     PRIMARY KEY (watch_id, seen_key)
   )`)
+  migratePlayAlerts(db)
+  migrateMonitorEvents(db)   // #883: the once-per-account backfill of the alert record also reads the monitors' alerts
 }
 
 export interface Watch { run_budget?: string | null; id: string; user_id: string; query: string; icp: string; active: number; next_run_at: number; last_run_at: number | null; paused_reason: string | null; created_at: number }
@@ -122,21 +127,31 @@ export function seenKey(company: string, domain: string | null): string {
 // After a watch run finishes: flag leads this watch has never surfaced, and remember them. Sync on the raw handle (the
 // runner today); writeWatchLeads is the same on the Db layer, in one transaction. A lead is new when its key was not
 // seen before this run, so two leads of one company in one run are both new, in either version.
+// #883: a company another run of the tenant has already alerted (play_alerts: another play's run, or an earlier run of
+// this play under another spelling) is not new either. This is only the early read; the claim itself is
+// claimWatchAlertsStep, in the transaction that sends the run's mail.
 const WATCH_LEADS_SQL = 'SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?'
 const WATCH_SEEN_SQL = 'SELECT seen_key FROM watch_seen WHERE watch_id = ?'
+const WATCH_TENANT_SQL = 'SELECT user_id FROM watches WHERE id = ?'
 const MARK_NEW_SQL = 'UPDATE leads SET watch_new = 1 WHERE id = ?'
 // only the primary key can conflict here (the watch id is the caller's, from a live watch), as with INSERT OR IGNORE
 const REMEMBER_SQL = 'INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING'
 type WatchLead = { id: string; company: string; company_domain: string | null }
-const freshLeads = (leads: WatchLead[], seen: Set<string>) => leads.map(l => ({ id: l.id, key: seenKey(l.company, l.company_domain) })).map(x => ({ ...x, fresh: !!x.key && !seen.has(x.key) }))
+const freshLeads = (leads: WatchLead[], seen: Set<string>) => leads.map(l => ({ id: l.id, key: seenKey(l.company, l.company_domain), keys: alertKeysOf(l) })).map(x => ({ ...x, fresh: !!x.key && !seen.has(x.key) }))
 export function markWatchLeads(db: Database.Database, watchId: string, jobId: string): number {
   const leads = db.prepare(WATCH_LEADS_SQL).all(jobId) as WatchLead[]
   const seen = new Set((db.prepare(WATCH_SEEN_SQL).all(watchId) as { seen_key: string }[]).map(r => r.seen_key))
+  const tenant = (db.prepare(WATCH_TENANT_SQL).get(watchId) as { user_id: string } | undefined)?.user_id
+  // #883: what main mailed before the alert record existed is read in first, once per account (lib/play-alerts.ts). The SQLite
+  // transaction runs to its end inside this call (lib/db/client.ts); a failure leaves the record unseeded for the next pass.
+  if (tenant) void sqliteDb(db).tx(t => seedPlayAlertsStep(t, tenant, alertKeysOf)).catch(e => captureError(e, { source: 'worker', where: 'watch:seed-play-alerts', tenantId: tenant })) // seeded by the next pass (the mail pass seeds before it claims)
   let fresh = 0
   const mark = db.prepare(MARK_NEW_SQL)
   const remember = db.prepare(REMEMBER_SQL)
+  const row = db.prepare(ALERT_ROW_SQL)
+  const held = (t: string, k: ReturnType<typeof alertKeysOf>) => holderOf(k, k.domainKey ? row.get(t, k.domainKey) as PlayAlert | undefined : null, k.nameKey ? row.get(t, k.nameKey) as PlayAlert | undefined : null, jobId)
   for (const l of freshLeads(leads, seen)) {
-    if (l.fresh) { mark.run(l.id); fresh++ }
+    if (l.fresh && !(tenant && heldElsewhere(held(tenant, l.keys), jobId))) { mark.run(l.id); fresh++ }
     remember.run(watchId, l.key)
   }
   return fresh
@@ -146,15 +161,52 @@ export function markWatchLeads(db: Database.Database, watchId: string, jobId: st
 export function* watchLeadsStep(t: Tx, watchId: string, jobId: string): TxBody<number> {
   const leads = yield* t.all<WatchLead>(WATCH_LEADS_SQL, [jobId])
   const seen = new Set((yield* t.all<{ seen_key: string }>(WATCH_SEEN_SQL, [watchId])).map(r => r.seen_key))
+  const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
+  if (tenant) { yield* lockAlertsStep(t, tenant); yield* seedPlayAlertsStep(t, tenant, alertKeysOf) }
   let fresh = 0
   for (const l of freshLeads(leads, seen)) {
-    if (l.fresh) { yield* t.run(MARK_NEW_SQL, [l.id]); fresh++ }
+    if (l.fresh && !(tenant && heldElsewhere(yield* alertHolderStep(t, tenant, l.keys, jobId), jobId))) { yield* t.run(MARK_NEW_SQL, [l.id]); fresh++ }
     yield* t.run(REMEMBER_SQL, [watchId, l.key])
   }
   return fresh
 }
 export function writeWatchLeads(db: Db, watchId: string, jobId: string): Promise<number> {
   return db.tx(t => watchLeadsStep(t, watchId, jobId))
+}
+
+// #883: the claim, made in the transaction that sends the run's mail (lib/play-mail.ts) and nowhere else for a run
+// that mails, so a company is held exactly when its mail goes out; the first play's repeat makes it once for that
+// play's own results (lib/play-repeat.ts). Each lead this run marked new and the Leads list shows (VISIBLE_LEAD) claims
+// its company in the tenant's alert record (lib/play-alerts.ts); a lead whose company another run already holds stops
+// being new (watch_new = 0), so the mail and the Plays page's "N new", which both read watch_new, leave it out. A
+// hidden (low-fit or quarantined) lead claims nothing: another play that finds the company as a real lead may still
+// alert it. A shown lead that is not new claims nothing either, but what it adds to a company already held (its
+// website, another spelling) is recorded under the holder, so the next play to find it under that website recognises it.
+// Idempotent: a second pass over the same run keeps what the run holds and clears nothing more. Returns the number of
+// leads that stay new. The watch is read through its tenant, under the tenant's claim lock, so a job of another tenant
+// or of a play deleted meanwhile claims nothing.
+const SHOWN_SQL = `SELECT l.id, l.company, l.company_domain, l.event_date, l.signal_kind, l.watch_new FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+  WHERE l.scan_job_id = ? AND j.watch_id = ? AND j.user_id = ? AND ${VISIBLE_LEAD} ORDER BY l.score DESC, l.id`
+const CLEAR_NEW_SQL = 'UPDATE leads SET watch_new = 0 WHERE id = ?'
+type AlertLead = WatchLead & { event_date: string | null; signal_kind: string | null; watch_new: number }
+export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now: number): TxBody<number> {
+  const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
+  if (!tenant) return 0 // the play was deleted: nothing of it is mailed or listed any more
+  yield* lockAlertsStep(t, tenant)
+  if (!(yield* t.get('SELECT 1 AS x FROM watches WHERE id = ? AND user_id = ?', [watchId, tenant]))) return 0 // deleted while this waited
+  yield* seedPlayAlertsStep(t, tenant, alertKeysOf) // what main mailed before this record existed, once per account
+  let kept = 0
+  for (const l of yield* t.all<AlertLead>(SHOWN_SQL, [jobId, watchId, tenant])) {
+    const keys = alertKeysOf(l)
+    if (Number(l.watch_new) !== 1) { yield* learnAlertKeysStep(t, tenant, keys, jobId, now); continue }
+    const held = yield* claimAlertStep(t, { tenantId: tenant, keys, playKind: 'watch', playId: watchId, jobId, eventDate: l.event_date ?? null, signalKind: l.signal_kind ?? null, now })
+    if (heldElsewhere(held, jobId)) yield* t.run(CLEAR_NEW_SQL, [l.id])
+    else kept++
+  }
+  return kept
+}
+export function claimWatchAlerts(db: Db, watchId: string, jobId: string, now = nowS()): Promise<number> {
+  return db.tx(t => claimWatchAlertsStep(t, watchId, jobId, now))
 }
 
 // A step a scheduled run takes first in each of its transactions (the tick's lease fence, lib/shared/lease.ts), so a

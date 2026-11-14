@@ -114,6 +114,7 @@ test('REAL SIGTERM -> process.exit: the exit hook requeues only this process\'s 
   assert.deepEqual(row('own-job'), { status: 'pending', attempts: 1, claimed_at: null })
   assert.equal(row('other-job').status, 'running', 'untracked row (another process) untouched')
   assert.equal(row('reclaimed-job').status, 'running', 'row re-claimed at a higher attempt untouched')
-  assert.equal(row('maxed-job').status, 'running', 'attempt at MAX_ATTEMPTS left to the lease reaper (no free extra retry)')
+  // #836 (decision 2026-11-13): no free extra retry, and no 20-minute wait either: its last attempt ends now, as the reaper would end it
+  assert.deepEqual(db.prepare('SELECT status, error, attempts FROM scan_jobs WHERE id = ?').get('maxed-job'), { status: 'failed', error: 'timeout', attempts: 3 })
   db.close()
 })
