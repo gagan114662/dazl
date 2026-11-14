@@ -66,10 +66,17 @@ export function migrateTenantLifecycle(db: Database.Database): void {
   `)
   // the recreation guard on every tenant-scoped table that exists now (this runs after every other migration)
   const hasOrganizations = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizations'").get()
-  for (const g of guardTriggers(scopeOfSqlite(db).filter(s => !UNGUARDED.has(s.table)))) {
-    if (g.table === 'organizations' && !hasOrganizations) continue
-    db.exec(g.sql)
-  }
+  // One write transaction (#836): each guard is a DROP followed by a CREATE, and this runs in every process that opens
+  // the store (the app on its first scan read, the scan worker at start). Outside a transaction two processes starting
+  // together interleave them (both drop, both create) and the second CREATE fails "trigger ... already exists", which
+  // took the starting process down. IMMEDIATE takes the write lock first, so the second process waits for the first's
+  // commit and then replaces the triggers whole. Inside a caller's transaction this is a savepoint of it.
+  db.transaction(() => {
+    for (const g of guardTriggers(scopeOfSqlite(db).filter(s => !UNGUARDED.has(s.table)))) {
+      if (g.table === 'organizations' && !hasOrganizations) continue
+      db.exec(g.sql)
+    }
+  }).immediate()
 }
 
 // The guard triggers for a set of guarded tables, plus the tenant's own identity rows (users, organizations) and the
