@@ -6,10 +6,10 @@ import assert from 'node:assert/strict'
 import { newsSearch, resetNewsQueue } from '../lib/search/news.ts'
 
 let n = 0
-const OK = (_url: string) => JSON.stringify({ articles: [{ url: `https://news.example/story-${++n}`, title: 'Acme opens office', seendate: '20261110T000000Z' }] })   // a different story per answer
+const OK = () => JSON.stringify({ articles: [{ url: `https://news.example/story-${++n}`, title: 'Acme opens office', seendate: '20261110T000000Z' }] })   // a different story per answer
 const script = (answers: ({ status: number; body: string } | null)[]) => {
   const calls: string[] = []
-  const http = async (url: string) => { calls.push(url); const a = answers.shift(); return a === undefined ? { status: 200, body: OK(url) } : a }
+  const http = async (url: string) => { calls.push(url); const a = answers.shift(); return a === undefined ? { status: 200, body: OK() } : a }
   return { http, calls }
 }
 const run = async (answers: ({ status: number; body: string } | null)[], queries = ['a', 'b', 'c']) => {
@@ -40,7 +40,7 @@ test('the retry fails too: the remaining queries are not sent, the failure is co
 
 test('only one retry per scan: a second outage later ends the stage at once, keeping the hits already found', async () => {
   // a: ok; b: 429 -> its retry ok; c: no answer -> the retry is spent -> the stage gives up
-  const { r, calls } = await run([{ status: 200, body: OK('a') }, { status: 429, body: '' }, { status: 200, body: OK('b') }, null])
+  const { r, calls } = await run([{ status: 200, body: OK() }, { status: 429, body: '' }, { status: 200, body: OK() }, null])
   assert.equal(calls.length, 4)
   assert.deepEqual([r.query_classes.ok, r.failed, r.failure_classes.network, r.retried, r.gave_up, r.hits.length], [2, 1, 1, 1, true, 2])
 })

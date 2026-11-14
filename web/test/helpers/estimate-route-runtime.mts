@@ -15,6 +15,7 @@ import { migrateModelUsage, writeModelCalls } from '../../lib/scan/model-usage.t
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
 import { periodOf } from '../../lib/llm/spend-pool.ts'
 import { claimKeyedJob } from '../../lib/scan/runner.ts'
+import { migrateTinyfish } from '../../lib/search/tinyfish.ts'
 
 // Real POST /api/scan/estimate and POST /api/scan handlers, in-memory db, network fenced, runner never started.
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
@@ -43,7 +44,7 @@ test('estimate: a menu of providers with unit prices and a projected range; it q
 
 // #1157: the web search allowance left today is on the estimate, shown before confirm; low under 25 units. Display only: the ack does not change.
 test('estimate: carries the web search allowance left today, low under 25, without changing the ack', async () => {
-  const db = setup(); as(db)
+  const db = setup(); migrateTinyfish(db); as(db)
   const saved = { k: process.env.TINYFISH_API_KEY, d: process.env.TINYFISH_TENANT_DAILY }
   process.env.TINYFISH_API_KEY = 'tf-fixture'; process.env.TINYFISH_TENANT_DAILY = '200'
   try {
