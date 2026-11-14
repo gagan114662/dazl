@@ -197,8 +197,8 @@ test('install -> hourly job -> check -> restore from the off-host copy, with the
   const other = path.join(T, 'other.txt'); spawnSync('age-keygen', ['-o', other]); chmodSync(other, 0o600)
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', other, '--out', path.join(T, 'r3')]); assert.equal(r.code, 1); assert.match(r.out, /could not decrypt/)
   // a tampered ciphertext is refused before decryption
-  const ct = path.join(offhost, readdirSync(offhost).filter(f => /^dazl-backup-.*\.db\.age$/.test(f)).sort().pop()!);   // the newest: the one a restore takes
-  const bytes = readFileSync(ct); bytes[bytes.length - 5] ^= 0xff; writeFileSync(ct, bytes)
+  // every copy at the destination (two backups in one second sort by a random suffix, so "the last name" is not always the newest)
+  for (const f of readdirSync(offhost).filter(f => /^dazl-backup-.*\.db\.age$/.test(f))) { const ct = path.join(offhost, f), bytes = readFileSync(ct); bytes[bytes.length - 5] ^= 0xff; writeFileSync(ct, bytes) }
   r = run(path.join(ops, 'restore-offhost.sh'), ['--offhost', offhost, '--identity', id, '--out', path.join(T, 'r4')]); assert.equal(r.code, 1); assert.match(r.out, /does not match its manifest sha256/)
   // a copy that decrypts to something else than the manifest says: failed, and NO plaintext is left behind
   const lie = JSON.parse(readFileSync(path.join(remote, `${good}.json`), 'utf8')); writeFileSync(path.join(remote, `${good}.json`), JSON.stringify({ ...lie, source_sha256: '0'.repeat(64) }))
