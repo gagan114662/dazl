@@ -77,3 +77,28 @@ test('#1038 table: state - rejected, drafted (an outreach draft exists), to revi
   assert.equal(by.rej.state, 'rejected'); assert.equal(by.dr.state, 'drafted')
   assert.equal(by.dr.person, 'Dana Lee'); assert.equal(by.rev.person, null)
 })
+
+test('#1038 table: a lead the cards put under Needs your review is its own state, with the held-gate overlay and a date flag', () => {
+  const { db, job, lead, done } = seed()
+  job(J1, 'A')
+  lead('ok', J1, { fit: 3, date: '2026-10-01' }); lead('rr', J1, { fit: 3 }); lead('gate', J1, { fit: 3 })
+  db.prepare("UPDATE leads SET review_reason = 'quote_unconfirmed' WHERE id = 'rr'").run()
+  db.prepare("UPDATE leads SET event_date_proof = 'page_bound' WHERE id = 'ok'").run()
+  done(J1)
+  db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('e1', 'gate', 'A', 'scan:gate', 'gate_failed', 'x', 'https://press.example/g', '2026-11-01', ?)").run(NOW)
+  const by = Object.fromEntries(leadsTable(db, 'A').rows.map(r => [r.id, r]))
+  assert.equal(by.ok.state, 'review'); assert.equal(by.rr.state, 'needs_review'); assert.equal(by.rr.review_reason, 'quote_unconfirmed')
+  assert.equal(by.gate.state, 'needs_review', 'a gate-held lead whose review write never landed is still shown held')
+  assert.equal(by.gate.review_reason, 'sales_hiring_check_failed')
+  assert.equal(by.rr.day_verified, false, 'no date proof: not confirmed'); assert.equal(by.ok.day_verified, true, 'a page-bound dated event is confirmed')
+})
+
+test('#1038 table: only a missing table is read as "no drafts"; any other read error fails the read (never an all-to-review table)', () => {
+  const { db, job, lead, done } = seed()
+  job(J1, 'A'); lead('x', J1, { fit: 3 }); done(J1)
+  db.exec('DROP TABLE outreach_messages')
+  assert.equal(leadsTable(db, 'A').rows[0].state, 'review', 'no outreach table: no drafts yet')
+  const real = db.prepare.bind(db)
+  ;(db as unknown as { prepare: (s: string) => unknown }).prepare = (sql: string) => { if (sql.includes('LIMIT')) throw new Error('database is locked'); return real(sql) }
+  assert.throws(() => leadsTable(db, 'A'), /database is locked/)
+})

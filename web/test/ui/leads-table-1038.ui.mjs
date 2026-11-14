@@ -40,7 +40,7 @@ for (let i = 0; i < 300 && srv.exitCode === null; i++) { try { await fetch(base 
 
 const lead = i => ({ id: `lead${String(i).padStart(3, '0')}`, job_id: 'a'.repeat(24), company: `Company ${i}`, company_domain: null, person: i % 3 ? `Person ${i}` : null, email: i % 2 ? `p${i}@example.com` : null,
   signal: `Company ${i} opened a new location in Ohio`, quote: `We just opened our new office ${i}`, source_url: `https://news.example.com/story-${i}`,
-  event_date: `2026-10-${String(1 + (i % 28)).padStart(2, '0')}`, found_at: 1790000000 + i, fit: 1 + ((i * 7) % 3) + 0, review_reason: null, why: `fit reason ${i}`, state: 'review' })
+  event_date: `2026-10-${String(1 + (i % 28)).padStart(2, '0')}`, found_at: 1790000000 + i, fit: 1 + ((i * 7) % 3) + 0, review_reason: i === 8 ? 'quote_unconfirmed' : null, why: `fit reason ${i}`, day_verified: i % 2 === 0, state: i === 8 ? 'needs_review' : 'review' })
 const ALL = Array.from({ length: 60 }, (_, i) => lead(i + 1)).map(r => ({ ...r, fit: [2, 5, 3, 4, 5][r.company.length % 5] }))
 const sorted = s => [...ALL].sort((a, b) => s === 'date' ? b.event_date.localeCompare(a.event_date) || a.id.localeCompare(b.id) : (b.fit - a.fit) || a.id.localeCompare(b.id))
 const b = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {})
@@ -49,7 +49,7 @@ try {
   for (const [width, height] of [[1440, 900], [390, 844]]) {
     const ctx = await b.newContext({ viewport: { width, height } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-    const writes = []; let failRead = false
+    const writes = [], tableReqs = []; let failRead = false
     await ctx.route('**/*', async route => {
       const req = route.request(); const u = new URL(req.url()); const p = u.pathname; const m = req.method()
       if (u.origin !== base) return route.abort()
@@ -57,6 +57,7 @@ try {
       const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
       if (m !== 'GET') writes.push({ m, p, body: req.postDataJSON?.() ?? null })
       if (p === '/api/leads/table') {
+        tableReqs.push(u.search)
         if (failRead) return json({ error: 'x' }, 503)
         const s = u.searchParams.get('sort') === 'date' ? 'date' : 'fit', pg = Math.max(1, Number(u.searchParams.get('page')) || 1), rows = sorted(s)
         return json({ rows: rows.slice((pg - 1) * 50, pg * 50), total: rows.length, page: pg, pages: Math.ceil(rows.length / 50), sort: s })
@@ -125,7 +126,28 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-testid=picked-count]').textContent.startsWith('0'))
     assert.equal(writes.slice(b2).filter(w => /\/quarantine$/.test(w.p)).length, 2, 'reject quarantines each selected row')
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `bulk-${tag}.png`) })
+    // a lead that needs your review is not approved from the table: no request, and its row says why
+    const b3 = writes.length
+    await page.locator('input[aria-label="Select Company 8"]').check(); await page.getByTestId('bulk-approve').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=picked-count]').textContent.startsWith('0'))
+    assert.equal(writes.slice(b3).filter(w => w.p === '/api/outreach').length, 0, 'a needs-review row sends no approve request')
+    assert.match(await stateOf('lead008'), /^Skipped: needs your review first/)
+    // the panel flags a date that is not confirmed; a page change closes the panel
+    await page.locator('tr[data-testid=lead-row]').filter({ has: page.locator('input[aria-label="Select Company 1"]') }).locator('td').nth(3).click()
+    assert.match(await page.getByTestId('lead-panel').innerText(), /event date 2026-10-02 \(not confirmed\)/, 'an unconfirmed date says so')
+    if (width < 1000) await page.keyboard.press('Escape')   // at phone width the panel covers the page, so it is closed to reach the pager
+    await page.getByTestId('next-page').click(); await page.waitForURL(/page=2/); await page.getByTestId('lead-row').first().waitFor()
+    assert.equal(await page.getByTestId('lead-panel').count(), 0, 'changing page closes the panel')
+    await page.getByTestId('prev-page').click(); await page.waitForURL(url => !/page=2/.test(url.search))
+    // the remembered sort applies when the address carries none, without first fetching the other order
+    await page.evaluate(() => localStorage.setItem('leads-table-sort', 'date'))
+    tableReqs.length = 0
+    await page.goto(`${base}/app/leads/table`, { waitUntil: 'networkidle' }); await page.getByTestId('lead-row').first().waitFor()
+    await page.waitForURL(/sort=date/)
+    assert.deepEqual(tableReqs.filter(r => /sort=fit/.test(r)), [], 'the remembered date sort never fetches the fit order first')
+    await page.evaluate(() => localStorage.setItem('leads-table-sort', 'fit'))
     // pages, cards link
+    await page.getByTestId('sort-fit').click(); await page.waitForURL(/sort=fit/)
     await page.getByTestId('next-page').click(); await page.waitForURL(/page=2/); await page.getByTestId('lead-row').first().waitFor()
     assert.equal(await page.getByTestId('lead-row').count(), 10, 'page 2 lists the other 10')
     assert.equal(await page.getByTestId('to-cards').getAttribute('href'), '/app/leads?latest=1', 'the cards stay one click away')
