@@ -1,5 +1,33 @@
 {
  "contract": "dazl.judge-validation-runs/2",
  "note": "The one approved real-model judge validation run (#396). --execute refuses unless this list holds exactly one unexpired, unconsumed claim that matches the run (run id, approval, machine fingerprint, model, cap, FX, fee, state dir, code sha256). Add the claim the plan-only CLI prints by a reviewed PR before the run; after the run, add its artifact_sha256 and ended_at to that claim by a reviewed PR (consumed: every later run refuses).",
- "claims": []
+ "claims": [
+  {
+   "run_id": "jv-396-20261113",
+   "approval": "owner approval: Gagan, WhatsApp messages 2026-11-03 19:52 and 19:53 ET: ONE paid judge-validation run, hard CAD 5 total",
+   "machine_fingerprint": "c47e12eefff9cc06540aee767185845087a56318dc86fbe65e90608167659fc4",
+   "model": "claude-sonnet-4-5",
+   "cap_usd": 3,
+   "fx": {
+    "cad_per_usd": 1.4257,
+    "date": "2026-11-13",
+    "source": "https://www.bankofcanada.ca/valet/observations/FXUSDCAD/json?recent=3"
+   },
+   "fee": {
+    "rate": 0.155,
+    "basis": "ASSUMED upper bound, not verified: 13% HST + 2.5% card FX fee"
+   },
+   "state_dir": "/home/ubuntu/.dazl/judge-validation",
+   "code_sha256": {
+    "lib/evals/judge.ts": "fb36af42d7d2393fffdb266d1ef20606c4202f33c608d12506b70db5111e4561",
+    "lib/evals/judge-validation-run.ts": "2a96cae06cd09118d6c19d5bdd5b30dc48f2d1825c0e4d3399e0fd54ad1d341a",
+    "lib/scan/runner.ts": "326398c5c2c1479cb1d5c4c318037eb8e7a35c2ce3015b0744d3b3897baabdff",
+    "lib/llm/spend-guard.ts": "0667d78f7604a37037ffbdf7b6b0564f0abef15887137736d9e302a466510f49",
+    "scripts/judge-validation-run.mts": "4b9514751bd6ea8c96ff75dae461ec05ea57726e9d5ebd2045e75836cc206a87",
+    "test/fixtures/evals/judges/corpus.synthetic.json": "099046bf063f39608174b38c8defdfb11bb583eac5581db63c004615e5db178f"
+   },
+   "created_at": "2026-11-13T21:29:36.888Z",
+   "expires_at": "2026-11-20T21:29:36.888Z"
+  }
+ ]
 }

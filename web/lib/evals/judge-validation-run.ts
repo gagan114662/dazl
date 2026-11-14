@@ -5,7 +5,7 @@
 // What makes the run safe to approve in money and honest in what it reports:
 //  - Inputs are explicit, never defaulted: run id, model, USD cap, a dated FX rate and the fee/tax rate. The cap's CAD
 //    equivalent (cap x FX x (1 + fee)) must fit the owner's approval (APPROVED_CAD). The key comes from the environment only
-//    (KEY_ENV), lives in the transport's closure, and is redacted from every line this module writes.
+//    (KEY_ENV; on staging also STAGING_KEY_ENV, see readKeyFromEnv), lives in the transport's closure, and is redacted from every line this module writes.
 //  - The plan is fixed before any request: every call the run will make (both judges x both splits x every item x
 //    FIXED.repeats, plus one reversed-source call for multi-source items), each priced at its real prompt's UTF-8 bytes
 //    (+ INPUT_MARGIN_TOKENS) and its explicit max_tokens. A cap below that worst case refuses the run up front.
@@ -39,7 +39,7 @@
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import {
@@ -89,6 +89,15 @@ export const RUN_RECORD_CONTRACT = 'dazl.judge-validation-runs/2'
 export const CLAIM_MAX_DAYS = 7
 export const MACHINE_FINGERPRINT_PREFIX = 'dazl.judge-validation/machine/1:'
 export const hostClaimPath = (): string => join(homedir(), '.dazl', 'judge-validation.host-claim')
+// Where the run's local state (the run marker, the ledger, the redacted result) lives: under the running user's own home,
+// never a system directory, so no root is needed. The command line takes it from STATE_DIR_ENV, else this default, unless
+// --state-dir names one. The committed claim binds the exact path, so a different user or directory is refused until a
+// reviewed claim names it. `env` is passed in: this library reads no environment variable itself.
+export const STATE_DIR_ENV = 'DAZL_JUDGE_VALIDATION_STATE_DIR'
+export const defaultStateDir = (env: Record<string, string | undefined>, home: string = homedir()): string => {
+  const set = env[STATE_DIR_ENV]
+  return typeof set === 'string' && set.trim() ? set.trim() : join(home, '.dazl', 'judge-validation')
+}
 
 const sha = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex')
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -221,12 +230,24 @@ export function anthropicTransport(key: string, fetchImpl: typeof fetch = fetch)
 }
 
 // The key: from the environment only, removed from it once read. Never from argv (visible in `ps`) or a file.
-export function readKeyFromEnv(env: Record<string, string | undefined>): { key: string } | { problem: string } {
-  const k = env[KEY_ENV]
+// The key's name. KEY_ENV everywhere; on staging only (DAZL_ENV=staging) and only when KEY_ENV is unset, the key the
+// staging box already holds for its own model calls (STAGING_KEY_ENV), because that is where the one approved run is
+// made (#784). Two fixed names, never a flag or an input: nothing at run time can point the run at another variable.
+// Both names are removed from the environment once read; the caller gets the name it came from, never to be printed
+// with the value.
+export const STAGING_KEY_ENV = 'DAZL_TRIAL_ANTHROPIC_KEY'
+export function readKeyFromEnv(env: Record<string, string | undefined>): { key: string; name: string } | { problem: string } {
+  const staging = env.DAZL_ENV === 'staging'
+  // KEY_ENV present at all (even empty) is the operator's choice of name: an empty value is refused below, never a
+  // silent switch to the staging key.
+  const name = Object.hasOwn(env, KEY_ENV) && env[KEY_ENV] !== undefined ? KEY_ENV : staging ? STAGING_KEY_ENV : KEY_ENV
+  const k = env[name]
   delete env[KEY_ENV]
-  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set: the key is read from the environment only` }
-  if (k.length < 20 || /\s/.test(k)) return { problem: `${KEY_ENV} does not look like an API key (too short or contains whitespace)` }
-  return { key: k }
+  if (staging) delete env[STAGING_KEY_ENV]
+  if (k === '' && name === KEY_ENV) return { problem: `${KEY_ENV} is set but empty${staging ? ` (${STAGING_KEY_ENV} is not used while that name is present: unset it to use the staging key)` : ''}` }
+  if (typeof k !== 'string' || !k) return { problem: `${KEY_ENV} is not set${name === STAGING_KEY_ENV ? ` (and ${STAGING_KEY_ENV}, read on staging, is not set either)` : ''}: the key is read from the environment only` }
+  if (k.length < 20 || /\s/.test(k)) return { problem: `${name} does not look like an API key (too short or contains whitespace)` }
+  return { key: k, name }
 }
 
 // Persisted, append-only accounting. write() must be durable when it returns, and throws when it is not.
@@ -557,6 +578,9 @@ export interface RunDeps {
   // Code-level only (tests): the CLI never sets these, so no flag, env var or file can move the run-once records or
   // change the machine fingerprint and code hashes the claim is checked against.
   hostClaim?: string; runRecord?: string; machineFingerprint?: () => string
+  // The NAME of the environment variable the key was read from (readKeyFromEnv), for the artifact: which key paid.
+  // Never the value. Anything but the two fixed names is recorded as null.
+  keyEnv?: string
 }
 export interface PhaseResult { fingerprint: string; report: CalibrationReport | null; note: string | null }
 export interface Artifact {
@@ -566,7 +590,7 @@ export interface Artifact {
   model: { requested: string; served: string[] }
   cap: { usd: number; micro: number; fx_cad_per_usd: number; fx_date: string; fee_rate: number; cad_equivalent: number; approved_cad: number
     fx: { source: 'Bank of Canada'; cad_per_usd: number; date: string; url: string }; fee: { rate: number; basis: string } }
-  run_guard: { state_dir: string; host_claim: string; committed_record: string; claim_sha256: string; machine_fingerprint: string; max_refusals: number }
+  run_guard: { state_dir: string; host_claim: string; committed_record: string; claim_sha256: string; machine_fingerprint: string; max_refusals: number; key_env: string | null }
   plan: { calls: number; worst_case_usd: number; by_phase: Record<string, number> }
   fixed_before_run: { thresholds: typeof FIXED.thresholds; thresholds_sha256: string; repeats: number; reverse_sources: boolean; max_output_tokens: Record<JudgeId, number>; request_timeout_ms: number; max_retries: number; input_margin_tokens: number; temperature: string }
   corpus: { id: string; origin: string; hash: string; items: number; calibration: number; holdout: number }
@@ -614,7 +638,12 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
   const claim_sha256 = sha(JSON.stringify(record.claims[0]))
   const hostClaim = deps.hostClaim ?? hostClaimPath()
   let prior: RunMarker[]
-  try { mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }); prior = priorRuns(i.stateDir) } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
+  try {
+    mkdirSync(runsDir(i.stateDir), { recursive: true, mode: 0o700 }) // mkdir -p, private
+    // the run's records are private to the running user: a group- or world-accessible directory is refused, not tolerated
+    for (const d of [i.stateDir, runsDir(i.stateDir)]) if ((statSync(d).mode & 0o077) !== 0) return { status: 'refused', problems: [`state directory ${d.slice(0, 200)} is not private (mode ${(statSync(d).mode & 0o777).toString(8)}): chmod 700 it, then run again; nothing was sent`] }
+    prior = priorRuns(i.stateDir)
+  } catch (e) { return { status: 'refused', problems: [`state directory unusable: ${describe(e)}`] } }
   if (prior.length) return { status: 'refused', problems: [`an earlier validation run exists in the state directory (${prior.map(r => `${String(r.run_id).slice(0, 64)}:${String(r.status).slice(0, 16)}`).join(', ')}): ${NO_RERUN}`] }
   // Any other leftover (an approval claim with no run file, a ledger, a result) also refuses: the directory must be fresh.
   let leftovers: string[]
@@ -686,7 +715,7 @@ export async function runValidation(inputs: unknown, deps: RunDeps): Promise<Run
       usd: i.capUsd, micro: capMicro, fx_cad_per_usd: i.fxCadPerUsd, fx_date: i.fxDate, fee_rate: i.feeRate, cad_equivalent: Number(capCad(i).toFixed(6)), approved_cad: APPROVED_CAD,
       fx: { source: 'Bank of Canada', cad_per_usd: i.fxCadPerUsd, date: i.fxDate, url: i.fxSource }, fee: { rate: i.feeRate, basis: i.feeBasis },
     },
-    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, claim_sha256, machine_fingerprint: fingerprint, max_refusals: MAX_REFUSALS },
+    run_guard: { state_dir: i.stateDir, host_claim: hostClaim, committed_record: RUN_RECORD_FILE, claim_sha256, machine_fingerprint: fingerprint, max_refusals: MAX_REFUSALS, key_env: deps.keyEnv === KEY_ENV || deps.keyEnv === STAGING_KEY_ENV ? deps.keyEnv : null },
     plan: { calls: plan.calls.length, worst_case_usd: usd(plan.worst_case_micro), by_phase: plan.by_phase },
     fixed_before_run: { thresholds: FIXED.thresholds, thresholds_sha256, repeats: FIXED.repeats, reverse_sources: FIXED.reverseSources, max_output_tokens: { ...MAX_OUTPUT_TOKENS }, request_timeout_ms: deps.timeoutMs ?? REQUEST_TIMEOUT_MS, max_retries: MAX_RETRIES, input_margin_tokens: INPUT_MARGIN_TOKENS, temperature: 'provider default (not sent)' },
     corpus: { id: deps.corpus.id, origin: deps.corpus.origin, hash: corpusHash(deps.corpus), items: deps.corpus.items.length, calibration: deps.corpus.items.filter(x => x.split === 'calibration').length, holdout: deps.corpus.items.filter(x => x.split === 'holdout').length },

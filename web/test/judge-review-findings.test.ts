@@ -21,7 +21,11 @@ const claimText = (c: JudgeTruth['claim']) => (judgeModule as unknown as { claim
 const DIR = new URL('./fixtures/evals/judges/', import.meta.url)
 const WEB = fileURLToPath(new URL('..', import.meta.url))
 const CORPUS = JSON.parse(readFileSync(new URL('corpus.synthetic.json', DIR), 'utf8')) as JudgeCorpus
-const LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+const COMMITTED_LOCK = JSON.parse(readFileSync(new URL('judges.lock.json', DIR), 'utf8')) as JudgeLock
+// The lock as it stood before the one real-model calibration was imported (#784): no calibration entries. The tests below are
+// about the gate's mechanics, so they must not depend on what that one run found; the committed lock and verdict log are checked
+// by the state-aware CI-gate test (test/judge-release-gate.test.ts) and by test/judge-validation-import.test.ts.
+const LOCK: JudgeLock = { ...COMMITTED_LOCK, judges: [] }
 const V1: JudgeSpec = { id: 'claim_support', version: 1, model: 'sim-model-a', prompt_version: 1 }
 const V2: JudgeSpec = { ...V1, model: 'sim-model-b' }
 const AT = '2026-11-10T00:00:00Z', SRC = 'test: simulated real-model calibration'
@@ -174,8 +178,11 @@ test('finding 8: the CLI/CI gate loads the stored-verdict log and checks drift; 
     const cal = await calibrate(claimSupportJudge(CORPUS, STUB_MODELS.truthful(), CLAIM_SUPPORT_SPEC), CORPUS)
     const lockFile = join(d, 'lock.json'), logFile = join(d, 'verdicts.jsonl')
     writeFileSync(lockFile, JSON.stringify({ ...LOCK, judges: [lockEntry(cal, AT, SRC)] }))
-    // the committed lock and log (the CI path): releasable, nothing calibrated yet
-    const base = cli('--gate')
+    // the lock as it stood before the real-model calibration was imported, and no log (the CI path then): releasable, nothing calibrated
+    // (the committed state is checked by test/judge-release-gate.test.ts and test/judge-validation-import.test.ts)
+    const baseLockFile = join(d, 'base-lock.json')
+    writeFileSync(baseLockFile, JSON.stringify(LOCK))
+    const base = cli('--gate', '--lock', baseLockFile, '--verdict-log', join(d, 'absent.jsonl'))
     assert.equal(base.status, 0, base.stdout.slice(-600))
     // a real calibration and no stored verdicts: drift cannot be checked, so release is blocked
     const none = cli('--gate', '--lock', lockFile, '--verdict-log', join(d, 'absent.jsonl'))

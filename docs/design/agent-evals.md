@@ -352,7 +352,43 @@ a lead it calls `contradicts`. It has no send or tool authority.
   at run time; only `claude-sonnet-4-5` is priced), USD cap, the dated Bank of Canada USD/CAD rate with its
   bankofcanada.ca source URL, and the billing account's fee/tax rate with its stated basis. All of these are recorded in
   the artifact. The cap's CAD equivalent must fit the owner's approval: Gagan's WhatsApp messages of 2026-11-03 (19:52
-  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY` only.
+  and 19:53 ET), ONE run, hard CAD 5 total. The key is read from `DAZL_JUDGE_VALIDATION_ANTHROPIC_KEY`; on staging only
+  (`DAZL_ENV=staging`) and only when that name is unset, from `DAZL_TRIAL_ANTHROPIC_KEY`, the key the staging box
+  already holds (#784). No other name is read, and the name used (never the value) is printed.
+  - The claim for the approved run (`jv-396-20261113`, the staging box) is committed. It binds the sha256 of six files,
+    one of them `lib/scan/runner.ts`: any merge that changes one of them before the run makes `--execute` refuse, and
+    plan-only says which file. Re-print the claim then.
+  - After the run, `scripts/judge-validation-import.mts --artifact <result.json> --expect-sha256 <sha the run printed>
+    --write` (no key, no network; `lib/evals/judge-validation-import.ts`) turns the run's redacted artifact into what
+    the gate and the reports read: the claim's consumption, `test/fixtures/evals/judges/verdicts.jsonl` (every answer,
+    both judges, both splits; the log is append-only, so the run's records are added to the existing ones and nothing is removed) and one calibration entry per judge in `judges.lock.json`.
+    - Only the claimed run's artifact is accepted: run id, approval, model, machine, corpus, code hashes and the claim's
+      own sha256 must match, and the file's sha256 must be the one the run printed on the box (`--expect-sha256`,
+      required until the claim is consumed; after that the recorded `artifact_sha256` is the check).
+    - A report's summary is not taken at its word. When the claim is consumed (the first import), each report is
+      re-scored from the answers it recorded, attempt by attempt, through the same `calibrate()` with the runner's
+      fixed repeats, reversal, thresholds and budget, against the importing checkout's code, and must come out
+      identical. A report edited to `ok`, or answers edited without their rates, is refused. The recorded answers
+      themselves are bound only by the printed sha256. The re-score is repeated on every later import, CI's included,
+      for as long as the scoring code (`lib/evals/judge.ts`, `lib/evals/judge-validation-run.ts`, `lib/scan/runner.ts`)
+      hashes as the artifact recorded, so while that code is unchanged a claim consumed by hand around a forged report
+      fails CI. Once that code has changed, the recorded `artifact_sha256` alone binds the bytes and the re-score is
+      skipped, so a later change to the scoring code cannot turn the paid result into an error. The residual of that
+      choice: one PR that both edits the scoring code and replaces the committed artifact and its recorded sha256 is
+      not re-scored by CI, so any PR touching the artifact or the claim's record needs a reviewer. A scoring file that
+      cannot be read is refused, never treated as changed.
+    - What one run can and cannot show for #785: one approved run is one stored run per judge, so drift between runs of the same judge version cannot be shown by it (`--report` says so: a version with one run cannot show drift under its own fingerprint). The per-version and per-condition rates and the critical-false-positive gate are what it delivers; drift needs later runs, appended to the same log.
+    - A failed or stopped run imports no verdict and no entry (the lock's entries are cleared); it only consumes the
+      claim. The artifact must name which of the two key variables paid (`run_guard.key_env`).
+    - The lock's calibration entries are exactly the run's (nothing else is carried over). The files are written to
+      temporaries first and renamed after, the claim's record last; a rename cut short is finished by running the same
+      command again. Once the run's artifact is committed, `test/judge-validation-import.test.ts` re-derives the log
+      and the entries from it on every CI run; until then that test only checks that there is no log, no entry and no
+      consumed claim.
+    - Limits: the printed sha256 is what ties the file to the paid run, so the reviewer of the import PR checks it
+      against the run's console output on the box. And an entry counts only for its exact fingerprint: the scan's
+      verification judge is registered on the tenant's own provider, so its calibration on `claude-sonnet-4-5` is
+      recorded and reported but does not make the registered scan judge count.
   - Before each request, the worst case is reserved and persisted.
   - There are no retries. Any timeout, unknown bill, invalid response, model mismatch or failed accounting stops the run
     as failed.
@@ -367,7 +403,13 @@ a lead it calls `contradicts`. It has no send or tool authority.
       `created_at` and `expires_at` (at most 7 days apart). The runner recomputes every field and refuses, with nothing
       claimed or sent, when there is no claim, more than one entry, any mismatch, any extra or missing key, an expired
       claim, or a consumed one. A stale or wrong checkout, another machine, other inputs or changed code cannot run.
-    - The state dir is stable: it is named in the reviewed claim (absolute, no default). Any other dir is refused.
+    - The state dir is stable: it is named in the reviewed claim, and any other dir is refused. It lives under the running
+      user's own home, never a system directory: `--state-dir`, else the environment variable
+      `DAZL_JUDGE_VALIDATION_STATE_DIR`, else `<home>/.dazl/judge-validation` (the committed claim names
+      `/home/ubuntu/.dazl/judge-validation`, the app user's home on the box). `--execute` creates it with `mkdir -p`, mode
+      0700, and refuses a directory that is group- or world-accessible; plan-only creates nothing. No root, no `/etc`, no
+      `sudo`. Run as another user, or with the variable set to another path, the claim does not match and `--execute`
+      refuses until a reviewed claim names that path (plan-only prints it).
     - Then, before the first request, the run is consumed locally with exclusive creates: the approval claim in the
       state dir, then a host claim outside it (`~/.dazl/judge-validation.host-claim`), then the run marker and ledger.
       Any leftover refuses. A run that crashes keeps them, so a rerun refuses on that machine (same or new HOME, since the
