@@ -1,0 +1,1373 @@
+{
+ "_note": "REAL, verbatim from the staging database (read-only ops door), the 8-market matrix scans of 2026-11-13 (account staging-demo, deployed 7f4c9069): the request and profile of each job, the queries round one actually sent (scan_source_stats.queries), every search-result URL with its fetch selection (scan_run_report.urls) and every candidate with its fate. Search snippets are not stored and are NOT in this file.",
+ "jobs": [
+  {
+   "job": "4f6581f2",
+   "query": "Dental clinics in Toronto, Ontario that opened a new location or are hiring front-desk staff in the last 90 days",
+   "icp": {
+    "summary": "Dental clinics in Toronto, Ontario that have opened a new location or are hiring front-desk staff in the last 90 days.",
+    "who": [
+     "Dental clinic owner",
+     "Dental practice manager",
+     "Dentist",
+     "Dental office administrator",
+     "Dental practice owner",
+     "Clinic director"
+    ],
+    "industries": [
+     "Dental clinics",
+     "Dental practices",
+     "Dentistry",
+     "Oral health care"
+    ],
+    "sizes": [],
+    "where": [
+     "Toronto, Ontario"
+    ],
+    "signals": [
+     "Opened new location in last 90 days",
+     "Hiring front-desk staff in last 90 days",
+     "New dental office opening",
+     "Dental receptionist job posting in last 90 days",
+     "Dental office expansion in last 90 days",
+     "Front office hiring in last 90 days"
+    ],
+    "exclude": [],
+    "country": "CA",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (\"dental clinics\" OR \"front desk\") Toronto, Ontario",
+    "dental clinic new location opened Toronto Ontario Toronto, Ontario",
+    "dental receptionist front desk hiring Toronto dentist office Toronto, Ontario"
+   ],
+   "urls": [
+    {
+     "url": "https://job-boards.greenhouse.io/clutch/jobs/6255161004",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.toronto.ca/community-people/health-wellness-care/health-programs-advice/dental-and-oral-health-services/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/TDOTDENTAL/posts/-big-news-tdot-dental-is-growing-were-excited-to-announce-that-our-second-downto/1694427759191247/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://smilecitydental.ca/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/p/De2f-9eu7u6/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://rhdentalcentre.com/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://parkdentalcentres.com/dentist-for-universite-ontario-francais-students/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://emeraldforestdental.ca/areas/toronto/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://maitlanddentist.ca/walk-in-dental-clinic-toronto/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/reel/DeudQ5OpWFJ/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://dentix24.com/en/locations/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/groups/29594754444/posts/10165080894109445/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.jobbank.gc.ca/marketreport/jobs/24390/22437%3Bjsessionid=237CD9A95DF088F494603229A3FE9E7F.jobsearch77?source=6",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://ca.linkedin.com/jobs/view/dental-receptionist-queen-street-dental-at-123dentist-4487372096?position=7&pageNum=0&refId=Aa13uDS4CtwZLUMFrMt9qA%3D%3D&trackingId=SGnGtJ%2F%2FBJppRXO5%2FRLv%2FQ%3D%3D",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.facebook.com/i.m.elsharkawy/posts/thanks-to-the-trust-of-our-beloved-patientsa-trust-we-truly-valuewere-growing-an/29564883969767591/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://ca.indeed.com/q-dental-assistant-part-time-saturdays-only-l-toronto,-on-jobs.html",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.tempstars.com/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.oralhealthgroup.com/features/when-one-person-leaves-does-your-front-office-stop/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/reel/De4w0PXxvKB/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.glassdoor.ca/Job/whitchurch-stouffville-dental-receptionist-jobs-SRCH_IL.0,22_IC4036159_KO23,42.htm",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.jobleads.com/ca/job/portuguese-speaking-dental-front-desk-full-time--toronto--e016d375eea08717fc5cffc8b4d283c00",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "TDot Dental",
+     "url": "https://www.instagram.com/p/De2f-9eu7u6/",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Orthodontics on Yonge",
+     "url": "https://www.instagram.com/reel/DeudQ5OpWFJ/",
+     "fate": "review:blocked_by_site"
+    },
+    {
+     "company": "Queen Street Dental Centre",
+     "url": "https://ca.linkedin.com/jobs/view/dental-receptionist-queen-street-dental-at-123dentist-4487372096?position=7&pageNum=0&refId=Aa13uDS4CtwZLUMFrMt9qA%3D%3D&trackingId=SGnGtJ%2F%2FBJppRXO5%2FRLv%2FQ%3D%3D",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "Altima College West",
+     "url": "https://www.jobleads.com/ca/job/portuguese-speaking-dental-front-desk-full-time--toronto--e016d375eea08717fc5cffc8b4d283c00",
+     "fate": "review:blocked_by_site"
+    }
+   ]
+  },
+  {
+   "job": "83d04f23",
+   "query": "Roofing companies in Austin, Texas that are hiring estimators or project managers in the last 90 days",
+   "icp": {
+    "summary": "Roofing companies in Austin, Texas that have posted jobs for estimators or project managers in the last 90 days.",
+    "who": [
+     "Owner",
+     "CEO",
+     "General Manager",
+     "Operations Manager",
+     "HR Manager",
+     "Hiring Manager"
+    ],
+    "industries": [
+     "Roofing",
+     "Roofing Contractors",
+     "Construction",
+     "Residential Roofing",
+     "Commercial Roofing",
+     "Building Contractors"
+    ],
+    "sizes": [],
+    "where": [
+     "Austin, Texas"
+    ],
+    "signals": [
+     "Hiring estimators in last 90 days",
+     "Hiring project managers in last 90 days",
+     "Posted estimator job listings",
+     "Posted project manager job listings",
+     "Expansion of project team",
+     "Growth in workforce",
+     "Recruiting construction roles",
+     "Active job postings"
+    ],
+    "exclude": [],
+    "country": "US",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (\"roofing\" OR \"estimators\" OR \"project managers\") Austin, Texas",
+    "roofing estimator Austin Texas job opening careers Austin, Texas",
+    "roofing project manager Austin Texas hiring now apply Austin, Texas"
+   ],
+   "urls": [
+    {
+     "url": "https://job-boards.greenhouse.io/iconcareers/jobs/6233559004",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/alphafmcroles/jobs/8776732002",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/lathampool/jobs/4503123009",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.linkedin.com/jobs/view/senior-commercial-roofing-estimator-at-d-7-roofing-4471969325",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.indeed.com/career/construction-estimator/salaries/Austin--TX",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://texasprofessionalroofing.com/careers/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://tarrytownroofing.com/jobs/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.jobleads.com/us/job/commercial-roofing-estimator-growth-impact-in-austin--austin--e0819ff6bdcb7d65f9c273ea1882dea35",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.monster.com/job-openings/chief-electrical-estimator-100-remote-for-texas-austin-tx--a068945c-9c6e-4b47-b86d-a58408a30774",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://ramtechroofing.com/careers/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://cazvid.com/en/job/estimator-project-manager-c5114642",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://migratemate.co/visa-sponsorship-jobs-in/texas/commercial-estimator",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://app.sublynk.com/jobs/in/tx/austin",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/rogersobrien/posts/project-managers-across-texas-lets-build-something-that-matters-here-at-homero-i/1690493826415988/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.linkedin.com/jobs/view/roofing-sales-manager-austin-central-texas-at-defend-roofing-4475119671",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://roofroyale.com/careers",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/p/DeMvWjblzJD/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.tiello.com/job/texas-operations-manager-commercial-masonry-construction-",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://unionroofers.com/jobs/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://altituderoofs.com/services/multifamily-roofing-austin-tx/",
+     "selected": true,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "The Guild Roofing & Gutters",
+     "url": "https://www.jobleads.com/us/job/commercial-roofing-estimator-growth-impact-in-austin--austin--e0819ff6bdcb7d65f9c273ea1882dea35",
+     "fate": "review:blocked_by_site"
+    },
+    {
+     "company": "d-7 Roofing",
+     "url": "https://www.linkedin.com/jobs/view/senior-commercial-roofing-estimator-at-d-7-roofing-4471969325",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Roof Royale",
+     "url": "https://roofroyale.com/careers",
+     "fate": "review:outside_window_undated"
+    }
+   ]
+  },
+  {
+   "job": "6cb4b14f",
+   "query": "Ecommerce brands in the United Kingdom running on Shopify that launched a new product in the last 90 days",
+   "icp": {
+    "summary": "Ecommerce brands in the United Kingdom running on Shopify that launched a new product in the last 90 days",
+    "who": [
+     "Ecommerce Manager",
+     "Brand Manager",
+     "Marketing Director",
+     "Product Manager",
+     "Founder",
+     "Head of Ecommerce"
+    ],
+    "industries": [
+     "Ecommerce",
+     "Retail",
+     "Consumer Goods",
+     "Fashion & Apparel",
+     "Beauty & Cosmetics",
+     "Food & Beverage"
+    ],
+    "sizes": [],
+    "where": [
+     "United Kingdom"
+    ],
+    "signals": [
+     "Launched new product in last 90 days",
+     "Uses Shopify platform",
+     "New product announcement",
+     "Product launch campaign",
+     "Expanding product catalog",
+     "Increased marketing activity",
+     "Social media product launch posts",
+     "Press release about new product"
+    ],
+    "exclude": [
+     "Non-Shopify platforms",
+     "Brands outside UK",
+     "No recent product launches",
+     "Marketplaces only",
+     "B2B-only companies",
+     "Inactive stores"
+    ],
+    "country": "GB",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(\"built on Shopify\" OR \"powered by Shopify\") United Kingdom",
+    "UK Shopify brand launches new product press release United Kingdom",
+    "Ecommerce Manager job Shopify United Kingdom new product range"
+   ],
+   "urls": [
+    {
+     "url": "https://www.shopify.com/uk/enterprise/blog/b2b-ecommerce-website-examples",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.huptechweb.com/blogs/top-shopify-stores-uk",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.shopify.com/ae/partners/directory/partner/torpedojuice",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.shopify.com/careers/sales-manager-retail_5ee5ea46-4897-45b9-9da1-e5a3f1b171fd",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://hookandeyeuk.com/en-us?srsltid=AYCX9vLdnmDp3N4pngieSr254diw6d9JoCnXS9Va-77YVss8IQN1ivpj",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.montbell.co.uk/policies/privacy-policy",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://apps.apple.com/cl/app/shop-track-pay-discover/id1223471316?l=en-GB",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.cartinsight.io/list-of-shopify-plus-stores/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://spire-corp.com/policies/privacy-policy?srsltid=AYCX9vKpxyBPWmxEKt6nbs-0_8RTRteWQwJR4VMxOtU5cWrzITjBpqug",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://uk.linkedin.com/jobs/view/sales-manager-retail-united-kingdom-ireland-at-shopify-4488369463",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://domaineworldwide.com/uk/insights/technology/shopify-fall-editions-26-our-ctos-take/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.shopify.com/il/blog/product-launch",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/groups/484712495042167/posts/3450726625107391/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://superco.io/en-us/blogs/news-insights/shopify-editions-fall-2026?srsltid=AYCX9vL5JK7QNp4uNuOPg9QseF-54YCcYfe0D2r-Meuxn-4qa91CXdUm",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.rexcode.co.uk/blog/shopify-markets-international-selling-uk",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.yotpo.com/blog/shopify-marketing-strategy/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.shopify.com/blog/ecommerce-brands",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.cloudtechnologiesltd.com/shopify-development-uk",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://sponasales.com/blog/list-of-shopify-stores",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/groups/enablersbysaqibazhar/posts/4657062844620533/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.shopify.com/blog/what-is-ecommerce",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.remotejobs.com/jobs/e-commerce-manager-ftc-9aa6c321",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://uk.indeed.com/q-ecommerce-remote-l-kingston-upon-thames-jobs.html",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.facebook.com/japanhouseldn/posts/we-are-looking-for-an-e-commerce-manager-to-join-us-at-japan-house-londonthis-fi/1602047545295316/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.shopify.com/enterprise/blog/ecommerce-digital-marketing-strategy",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.intelligentpeople.co.uk/jobs/discipline/ecommerce-trading/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://uk.linkedin.com/jobs/view/e-commerce-operations-executive-shopify-at-jac-recruitment-4438094590",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://storejobs.dev/shopify-jobs",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://dynamitejobs.com/category/remote-e-commerce-jobs",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": []
+  },
+  {
+   "job": "2b93af16",
+   "query": "Marketing agencies in Sydney, Australia posting about outbound, cold email or lead generation in the last 90 days",
+   "icp": {
+    "summary": "Marketing agencies in Sydney, Australia that have posted about outbound, cold email or lead generation in the last 90 days",
+    "who": [
+     "Marketing Agency Owner",
+     "Marketing Agency Director",
+     "Growth Marketing Agency Leader",
+     "Lead Generation Agency Head",
+     "Outbound Marketing Agency Principal",
+     "Digital Marketing Agency Founder"
+    ],
+    "industries": [
+     "Marketing Agencies",
+     "Digital Marketing Services",
+     "Lead Generation Services",
+     "Marketing Consulting",
+     "B2B Marketing Agencies",
+     "Demand Generation Agencies"
+    ],
+    "sizes": [],
+    "where": [
+     "Sydney, Australia"
+    ],
+    "signals": [
+     "Posted about outbound in last 90 days",
+     "Posted about cold email in last 90 days",
+     "Posted about lead generation in last 90 days",
+     "Published content on outbound strategy",
+     "Shared cold email insights",
+     "Discussed lead generation tactics",
+     "Engaging with outbound marketing topics",
+     "Creating content about email outreach"
+    ],
+    "exclude": [],
+    "country": "AU",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "marketing agency Sydney cold email outbound blog post Sydney, Australia",
+    "lead generation agency Sydney Australia guide tactics strategy Sydney, Australia",
+    "digital marketing agency Sydney outbound email case study Sydney, Australia"
+   ],
+   "urls": [
+    {
+     "url": "https://www.nousucollective.com/blog/top-cold-calling-agencies-sydney-b2b",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.salescaptain.io/outbound-agencies/best-outbound-marketing-agencies-in-sydney",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://sydneydigitalmarketing.com.au/services/email-marketing-agency/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.salesforge.ai/blog/outbound-sales-agencies-australia",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://soupagency.com.au/blog/top-email-marketing-agencies-australia/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://mindmethods.com.au/digital-marketing-agency-sydney/email-marketing-edm-agency",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://neuronconsulting.com.au/blog",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.emailsoftwareinsights.com/blog/email-marketing-agencies-australia/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://digitalnomadshq.com.au/digital-marketing-sydney/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.apparate.com.au/blog/cold-email-best-practices",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.callboxinc.com.au/lead-generation/sydney-lead-generation-strategies/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.leadagency.com.au/b2b-marketing-sydney/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://agencies.semrush.com/list/lead-generation/sydney/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://genixdigital.com/blog/10-lead-generation-strategies-that-work-for-sydney-businesses/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://revenuebase.ai/companies/lead-generation-strategy-companies/australia/sydney",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.salesforge.ai/blog/best-lead-generation-agencies-in-australia",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://strategicpath.com.au/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://forrestcontact.com.au/portfolio-page/lead-generation-company-sydney-what-to-look-for-in-a-provider/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://clutch.co/au/call-centers/lead-generation/sydney",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.marketingeye.com.au/marketing-blog/top-lead-generation-company-in-sydney-and-it-s-not-marketing-eye.html",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.23digital.com.au/email-marketing-agency/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://tussledigital.com/services/content-marketing",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://zavyans.com/locations/sydney/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://aiims.group/seo-agency-sydney/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://uprisedigital.com.au/professional-services/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.brafton.com.au/services/full-service-email-marketing/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://garnercollective.com.au/guides/b2b-marketing/best-b2b-lead-generation-agencies-australia/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://moworks.com.au/industries/b2b-enterprise",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://impressive.com.au/performance-creative/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.nousucollective.com/blog/best-sales-outsourcing-companies-australia-2026",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "Nousu Collective",
+     "url": "https://www.nousucollective.com/blog/top-cold-calling-agencies-sydney-b2b",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Sales Captain",
+     "url": "https://www.salescaptain.io/outbound-agencies/best-outbound-marketing-agencies-in-sydney",
+     "fate": "dropped:entity_mismatch"
+    },
+    {
+     "company": "Apparate",
+     "url": "https://www.apparate.com.au/blog/cold-email-best-practices",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Neuron Consulting",
+     "url": "https://neuronconsulting.com.au/blog",
+     "fate": "dropped:excerpt_not_on_page"
+    },
+    {
+     "company": "Nousu Collective",
+     "url": "https://www.nousucollective.com/blog/australian-cold-calling-statistics-2026",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "Q Agency",
+     "url": "https://www.qagency.com.au/email-marketing/",
+     "fate": "review:quote_unconfirmed"
+    }
+   ]
+  },
+  {
+   "job": "8fe43313",
+   "query": "Law firms in Chicago, Illinois that opened a new office or expanded a practice group in the last 90 days",
+   "icp": {
+    "summary": "Law firms in Chicago, Illinois that have opened a new office or expanded a practice group in the last 90 days.",
+    "who": [
+     "Managing Partner",
+     "Executive Director",
+     "Chief Operating Officer",
+     "Practice Group Leader",
+     "Office Managing Partner",
+     "Firm Administrator"
+    ],
+    "industries": [
+     "Law Firms",
+     "Legal Services"
+    ],
+    "sizes": [],
+    "where": [
+     "Chicago, Illinois"
+    ],
+    "signals": [
+     "Opened new office in last 90 days",
+     "Expanded practice group in last 90 days",
+     "New office announcement",
+     "Practice group expansion announcement",
+     "Hiring lawyers for new practice area",
+     "Press release about office opening",
+     "Press release about practice group expansion",
+     "New office location listed on website"
+    ],
+    "exclude": [],
+    "country": "US",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) \"law firms\" Chicago, Illinois",
+    "Chicago law firm opens new office press release Chicago, Illinois",
+    "Chicago law firm expands practice group announcement managing partner Chicago, Illinois"
+   ],
+   "urls": [
+    {
+     "url": "https://job-boards.greenhouse.io/thebrattlegroup/jobs/4745875005",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/secretariatadvisorsllc/jobs/4462761009",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/secretariatadvisorsllc/jobs/4436479009",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/charlesriverassociates/jobs/8120300",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.illinoisattorneygeneral.gov/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.illinois.gov/news/press-release.33119.html",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.milbank.com/en/news/milbank-to-open-chicago-office-adds-leading-energy-partner-nadav-klugman.html",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.aclu-il.org/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.reedsmith.com/locations/chicago/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.nelsonmullins.com/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.polsinelli.com/office-locations/chicago",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://lawlibguides.luc.edu/career_success/small_and_solo_firms",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/CliffordLawOffices/posts/clifford-law-offices-has-been-recognized-in-the-2027-chambers-usa-spotlight-guid/1754157552780055/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.hklaw.com/en/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.armstrongteasdale.com/news/armstrong-teasdale-expands-corporate-practice-in-chicago-with-partner-tracy-jacobson-and-counsel-jason-faust/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.law.uchicago.edu/news/deneese-walia-levin-03-joins-c-street-advisory-group-managing-director-law-firm-optimization",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/theamericanlawyerALM/posts/the-arrivals-in-chicago-come-several-months-after-the-firm-added-product-liabili/1569384495233151/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.mcguirewoods.com/news/press-releases/2026/9/mcguirewoods-bolsters-insurance-recovery-practice-with-chicago-partner-andrew-barrios/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.nortonrosefulbright.com/en-us/news/d46a4986/norton-rose-fulbright-boosts-consumer-markets-capabilities-with-chicago-litigation-and-trial-partner",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.beneschlaw.com/news/michael-chu-joins-beneschs-intellectual-property-practice-group-from-mcdermott-will-schulte-strengthening-patent-litigation-bench/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://dicellolevitt.com/dicello-levitt-named-a-2026-law360-illinois-regional-powerhouse/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/p/Dd4lFIlnecz/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://phillipslytle.com/news-events/phillips-lytle-expands-into-the-southeast-with-addition-of-taberpatrick-opens-hilton-head-office/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://ogletree.com/media-center/press-releases/2026-10-26/ogletree-deakins-expands-chicago-office-with-three-attorneys-including-shareholder-christina-wernick/",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "Milbank LLP",
+     "url": "https://www.milbank.com/en/news/milbank-to-open-chicago-office-adds-leading-energy-partner-nadav-klugman.html",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Armstrong Teasdale",
+     "url": "https://www.armstrongteasdale.com/news/armstrong-teasdale-expands-corporate-practice-in-chicago-with-partner-tracy-jacobson-and-counsel-jason-faust/",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "McGuireWoods",
+     "url": "https://www.mcguirewoods.com/news/press-releases/2026/9/mcguirewoods-bolsters-insurance-recovery-practice-with-chicago-partner-andrew-barrios/",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "Benesch",
+     "url": "https://www.beneschlaw.com/news/michael-chu-joins-beneschs-intellectual-property-practice-group-from-mcdermott-will-schulte-strengthening-patent-litigation-bench/",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "Ogletree Deakins",
+     "url": "https://ogletree.com/media-center/press-releases/2026-10-26/ogletree-deakins-expands-chicago-office-with-three-attorneys-including-shareholder-christina-wernick/",
+     "fate": "dropped:excerpt_not_on_page"
+    }
+   ]
+  },
+  {
+   "job": "30a627d0",
+   "query": "Restaurants in Vancouver, British Columbia that are opening a second location in the last 90 days",
+   "icp": {
+    "summary": "Restaurants in Vancouver, British Columbia that are opening a second location in the last 90 days.",
+    "who": [
+     "Restaurant Owner",
+     "Restaurant General Manager",
+     "Multi-Unit Restaurant Operator",
+     "Restaurant Operations Director",
+     "Restaurant Founder",
+     "Hospitality Group Executive"
+    ],
+    "industries": [
+     "Restaurants",
+     "Food Service",
+     "Hospitality"
+    ],
+    "sizes": [],
+    "where": [
+     "Vancouver, British Columbia"
+    ],
+    "signals": [
+     "Opening second location",
+     "New location announced",
+     "Business permit filed for new location",
+     "Lease signed for additional location",
+     "Job postings for new location",
+     "Multi-unit expansion",
+     "New location hiring",
+     "Construction or renovation permit for restaurant"
+    ],
+    "exclude": [
+     "First location only",
+     "Single location restaurants",
+     "Locations opened more than 90 days ago",
+     "Closing locations",
+     "Franchisees",
+     "Locations outside Vancouver"
+    ],
+    "country": "CA",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) (\"restaurants\" OR \"second location\") Vancouver, British Columbia",
+    "Vancouver restaurant opening second location hiring manager Vancouver, British Columbia",
+    "Vancouver restaurant announces new location expansion British Columbia Vancouver, British Columbia"
+   ],
+   "urls": [
+    {
+     "url": "https://job-boards.greenhouse.io/toast/jobs/8191657",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/toast/jobs/8259238",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/doordashcanada/jobs/8267406",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/toast/jobs/8244028",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/groups/742490499968795/posts/2065336824350816/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.facebook.com/EmpireProvisions/videos/we-are-hiring-we-are-looking-for-an-experienced-cook-to-join-us-for-our-busy-chr/1663039801947569/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.instagram.com/reel/DfXvHV5AuRd/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.facebook.com/BaanLaoSteveston/videos/baan-lao-fine-thai-cuisine-is-growing-and-looking-for-a-sous-chef-server-sommeli/1638497847811026/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://employmenthero.com/en-ca/jobs/position/careerbeacon-demo-restaurant-manager-10-southeast-marine-drive-kbrpr/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/p/DdKe4OQhW6T/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://michelinmedia.com/pages/blog/detail/article/c/a1489/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://careers.compass-usa.com/jobs",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.86network.com/jobs/vancouver/bc/folietta/restaurant-manager-8kmgzw",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.blueshock.ca/vacancy/regional-manager-vancouver-1061552",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://happybellyfg.com/happy-belly-food-groups-heal-wellness-qsr-announces-the-grand-opening-of-their-first-location-on-vancouver-island-british-columbia/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/dishedvancouver/videos/1678051353714753/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.facebook.com/amini.construction/videos/coming-soon-to-kitsilanovancouver-foodies-get-readysomething-very-special-is-on-/1349265291611038/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://news.gov.bc.ca/releases/2026JEG0063-001042",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.instagram.com/p/Ddy_nWbmzNW/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://dailyhive.com/vancouver/park-place-office-tower-vancouver-lobby-renovation-new-restaurant",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/dishedvancouver/videos/pick-6-with-pizza-coming-soon-owner-keith-allison-%EF%B8%8F-the-lido-stem-japanese-eater/2600513410423574/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://finance.yahoo.com/small-business/articles/rosies-burgers-opens-location-20-100000960.html",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.georgiamain.com/media/FSM_HastingsSunrise-PressRelease_FINAL.pdf",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.canada.ca/en/pacific-economic-development.html",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "Bento Cafe",
+     "url": "https://www.instagram.com/p/Ddy_nWbmzNW/",
+     "fate": "review:quote_unconfirmed"
+    }
+   ]
+  },
+  {
+   "job": "3ec8daf4",
+   "query": "Fintech startups in Berlin, Germany that raised a funding round in the last 90 days",
+   "icp": {
+    "summary": "Decision-makers at fintech startups in Berlin, Germany that have raised funding in the last 90 days.",
+    "who": [
+     "CEO",
+     "Founder",
+     "Chief Technology Officer",
+     "Head of Product",
+     "Chief Financial Officer",
+     "VP of Operations"
+    ],
+    "industries": [
+     "Fintech",
+     "Financial Services",
+     "Payment Processing",
+     "Digital Banking",
+     "Blockchain & Cryptocurrency",
+     "InsurTech"
+    ],
+    "sizes": [
+     "1-10 employees",
+     "11-50 employees",
+     "51-200 employees"
+    ],
+    "where": [
+     "Berlin, Germany"
+    ],
+    "signals": [
+     "Raised funding round in last 90 days",
+     "Recent funding announcement",
+     "Team expansion hiring",
+     "New job postings",
+     "Office expansion",
+     "Product launch",
+     "New partnership announcements",
+     "Executive hires"
+    ],
+    "exclude": [
+     "Non-fintech companies",
+     "Companies outside Berlin",
+     "Companies that haven't raised funding recently",
+     "Established enterprises",
+     "Consulting firms",
+     "Agencies"
+    ],
+    "country": "DE",
+    "language": "en",
+    "window_days": 90
+   },
+   "queries": [
+    "(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) \"fintech startups\" Berlin, Germany",
+    "fintech startup Berlin raised funding million seed Series announcement Berlin, Germany",
+    "fintech Berlin hiring CTO Head of Product engineer jobs Berlin, Germany"
+   ],
+   "urls": [
+    {
+     "url": "https://boards.greenhouse.io/seranking/jobs/5405622008",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://boards.greenhouse.io/jfrog/jobs/8045681",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/coupang/jobs/7936538",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://boards.greenhouse.io/ithaka/jobs/4749554005",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/airbnb/jobs/8259526?gh_src=remote-work.app",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/fanduel/jobs/8177066",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/ithaka/jobs/4744665005",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/fanduel/jobs/7847466",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/nix/jobs/4996298101",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://job-boards.greenhouse.io/fanduel/jobs/8142299",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/thepacknews/posts/b2b-news-novus-germany-has-closed-a-funding-round-in-the-double-digit-million-do/1759715416155124/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.instagram.com/p/Dfj0doWjO1u/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://finovate.com/finovate-global-germany-spend-management-embedded-finance-and-instant-payments/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.linkedin.com/posts/seb-johnson_breaking-integral-the-berlin-based-ai-startup-activity-7505883310993170432-1hoe",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://invest-in.berlin/n/berlin-agetech-startup-amara-raises-eur37m/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.hurun.net/en-US/Info/Detail?num=DSEU8PDDVMWB",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://www.sesamers.com/funding/limetax-raises-36m-german-tax-firms/",
+     "selected": true,
+     "walled": false
+    },
+    {
+     "url": "https://tracxn.com/d/companies/banxware/__nxXBAEJ2TOoYCbndTIXxKIKfavW0hvRQ1eLdjzzf6KY",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://ffnews.com/news/integral-raises-18m-series-a-led-by-mosaic-ventures-and-reid-hoffman-to-build-th-ad67e8b5",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.antonioblago.com/blog/startups-in-germany-2026",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.globalfintechtalent.com/fintech-recruitment-germany",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.linkedin.com/posts/alfiethomson_munich-berlin-germanstartups-activity-7513242643506716672-7VZE",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://www.efinancialcareers.com/jobs-Germany-Berlin-Product_Engineer_all_genders.id24936417",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://startup.jobs/technical-cofounder-cto-ai-ml-preseed-startup-foundersfactory-com-10656302",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.jobsinforex.com/jobs/?filter-location=Germany",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://relocateme.substack.com/p/weekly-hand-curated-tech-jobs-with-f77",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.cloudflare.com/careers/jobs/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.facebook.com/groups/1661159534124018/posts/4533650413541568/",
+     "selected": false,
+     "walled": true
+    },
+    {
+     "url": "https://careers.remitly.com/",
+     "selected": false,
+     "walled": false
+    },
+    {
+     "url": "https://www.remotesource.com/jobs/mOcfUcjnSkhn6Ksbl8kJT-senior-talent-acquisition-manager-tech-fmd-at-cosuno",
+     "selected": false,
+     "walled": false
+    }
+   ],
+   "candidates": [
+    {
+     "company": "Moss",
+     "url": "https://finovate.com/finovate-global-germany-spend-management-embedded-finance-and-instant-payments/",
+     "fate": "review:outside_window_undated"
+    },
+    {
+     "company": "Limetax",
+     "url": "https://www.sesamers.com/funding/limetax-raises-36m-german-tax-firms/",
+     "fate": "review:quote_unconfirmed"
+    },
+    {
+     "company": "Integral",
+     "url": "https://ffnews.com/news/integral-raises-18m-series-a-led-by-mosaic-ventures-and-reid-hoffman-to-build-th-ad67e8b5",
+     "fate": "dropped:duplicate"
+    },
+    {
+     "company": "Integral",
+     "url": "https://www.linkedin.com/posts/seb-johnson_breaking-integral-the-berlin-based-ai-startup-activity-7505883310993170432-1hoe",
+     "fate": "review:outside_window_undated"
+    }
+   ]
+  }
+ ]
+}

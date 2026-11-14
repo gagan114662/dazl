@@ -127,7 +127,7 @@ export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSe
       row('search_query_writing', llm('One model call')),
       row('extraction', llm('One model call per attempt')),
       row('scoring', llm('Grades the verified leads')),
-      row('grounding', { status: 'refused', note: 'Only runs after fallback research, which every run refuses' }),
+      row('grounding', llm('Re-quotes candidates that came from a search snippet from their real pages, one call (#381)')),
       row('buyer_fit', llm('Checks hiring leads against the company home page')),
       row('judge', b?.judge === false ? { status: 'off', note: 'judge=false' } : llm('Verification judge')),
       row('fallback_research', { status: 'refused', note: 'Web-search research is never run: its search-result tokens are bounded by nothing dazl sends, so no run - capped or not - spends on it. When search finds nothing the run ends as budget_stopped' }),

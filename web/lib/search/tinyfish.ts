@@ -396,7 +396,10 @@ const WALLED = ['linkedin.com', 'indeed.com', 'glassdoor.com', 'facebook.com', '
 // the only candidate was a Facebook group post, "blocked_by_site", undated). Used to put them LAST when the fetch budget
 // and the evidence list are filled, never to drop them (a walled result stays reviewable; it just does not crowd out
 // pages that can be read).
-export const isLoginWalled = (url: string): boolean => { try { const h = new URL(url).hostname.toLowerCase(); return WALLED.some(w => h === w || h.endsWith('.' + w)) } catch { return false } }
+// #381: by host NAME, in any country domain: the real Toronto scan had glassdoor.ca and jobleads.com (a job aggregator whose pages blocked the verifier) in its results
+// and neither was recognised. A label match, not a substring: "wallindeed.com" is not Indeed.
+const WALLED_NAMES = /(?:^|\.)(?:linkedin|indeed|glassdoor|facebook|instagram|nextdoor|jobleads|tiktok|twitter|pinterest|threads)\.(?:[a-z]{2,}|(?:co|com|org|net)\.[a-z]{2})$|(?:^|\.)x\.com$/
+export const isLoginWalled = (url: string): boolean => { try { const h = new URL(url).hostname.toLowerCase(); return WALLED.some(w => h === w || h.endsWith('.' + w)) || WALLED_NAMES.test(h) } catch { return false } }
 export function sanitizeQueries(queries: string[], request: string, now: Date = new Date()): string[] {
   const req = request.toLowerCase()
   const windowStartYear = new Date(now.getTime() - 365 * 86400_000).getUTCFullYear()

@@ -98,6 +98,8 @@ const CALLS: { id: string; label: string; calls: Range; inK: Range; outK: Range;
   { id: 'extraction', label: 'Candidate extraction', calls: { min: 1, max: 3 }, inK: { min: 8, max: 30 }, outK: { min: 1.5, max: 4 } },
   { id: 'scoring', label: 'Fit grading', calls: { min: 1, max: 1 }, inK: { min: 4, max: 12 }, outK: { min: 1, max: 3 } },
   { id: 'buyer_fit', label: 'Hiring check on company pages', calls: { min: 0, max: 1 }, inK: { min: 2, max: 6 }, outK: { min: 0.5, max: 1 }, optional: 'hiring' },
+  // #381: the grounding pass re-quotes snippet candidates from their real pages: up to 8 pages of 3,000 characters in, a JSON array out (lib/scan/runner.ts groundLeads)
+  { id: 'grounding', label: 'Quote check on the pages found', calls: { min: 0, max: 1 }, inK: { min: 2, max: 8 }, outK: { min: 0.3, max: 2 } },
   { id: 'judge', label: 'Verification judge', calls: { min: 0, max: 1 }, inK: { min: 4, max: 10 }, outK: { min: 0.5, max: 1.5 }, optional: 'judge' },
 ]
 const money = (n: number) => `$${n < 0.01 && n > 0 ? n.toFixed(4) : n.toFixed(2)}`

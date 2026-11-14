@@ -26,7 +26,7 @@ import type { AdvPlatform } from '../advanced/config.ts'
 import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
-import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
+import { boardQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
@@ -294,7 +294,9 @@ export async function groundLeads(provider: Provider, apiKey: string, query: str
     const text = await provider.complete(apiKey, groundPrompt(query, pages), fetchImpl, 4000)
     const parsed = parseLeads(text, pages.map(p => p.url))
     return parsed && parsed.length > 0 ? parsed : null
-  } catch {
+  } catch (e) {
+    // a paid call whose cost was not recorded, or a stop, ends the scan: never swallowed as "nothing grounded" (#381)
+    if (e instanceof SpendAccountingFailed || e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
     return null
   }
 }
@@ -1018,7 +1020,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   else {
     // The query plan is sized to the searches this run may really send: the capped first-play fallback plans only its own cap.
     const budgetN = caps ? Math.min(caps.searches, tfLimits().searchesPerScan) : tfLimits().searchesPerScan
-    const direct = directQueries(job.query!, icp.signals, icp.where).slice(0, Math.floor(budgetN / 2))
+    const direct = boardQueries(job.query!, icp).slice(0, Math.floor(budgetN / 2))
     // #389: an explicit technology filter ("Shopify stores", "migrated from WordPress to Webflow") gets at most 2 announcement-style queries so
     // discovery reaches companies beyond the already-found set. They take model-query slots inside the same per-scan search budget (never extra
     // searches); every result is still verified, crawled and checked against its own homepage before the filter can pass.
@@ -1074,6 +1076,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
 // are labels, not quotable text, so the article pages are fetched with the verifier's own cached fetcher and the model
 // quotes from that page text: the verifier then checks the same text it was quoted from.
 export const NEWS_PAGES = 8
+export const GROUND_ROOM_USD = 0.08   // the grounding call's worst case (8 pages x 3,000 characters in, 4,000 tokens out) with margin
 // Fetch ranking for a compound request: job-board / careers pages go behind the pages that can carry the event, unless the compiled plan is an OR
 // whose hiring branch a job page can prove on its own (an open role). A completed-hire branch (#876, hire_made) is never proven by a job page.
 export function jobPagesBehindEvents(signals: string[] | null | undefined, query: string | null | undefined, icpJson: string): boolean {
@@ -1646,6 +1649,29 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // Nothing to verify at all: fail honestly. Failed scans do not count toward the monthly quota,
     // so the user gets the slot back instead of a silent empty result.
     if (leads.length === 0 && walledLeads.length === 0 && selfDescribedLeads.length === 0) { finish(db, job, 'failed', 'no_candidates', null, 0, ledger); return 'failed' }
+    // #381 (yield): a candidate the extraction step built from a search SNIPPET carries a quote that is often not on the real page (the snippet is a rewritten
+    // excerpt): on the 7 real staging matrix scans 10 of 23 candidates were quote_unconfirmed / excerpt_not_on_page, 7 of them on readable pages. The grounding pass
+    // (groundLeads, built for exactly this) reads those pages (the verifier's cached fetch: each page is fetched once) and rewrites each quote verbatim from the page
+    // text; it ran only for the retired model-search path, never for TinyFish candidates. One extra model call per scan, capped by the same spend guard. A candidate
+    // the model could not ground stays exactly as it was: held for review, never lost, never promoted without the verifier.
+    if (complete && deps.ground !== false) {
+      const textUrls = new Set(diag.tfTextUrls.map(u => canonicalUrl(u) ?? u))
+      const snippetOnly = leads.filter(l => { const k = canonicalUrl(l.source_url) ?? l.source_url; return diag.hitUrls.some(h => (canonicalUrl(h) ?? h) === k) && !textUrls.has(k) && !isLoginWalled(l.source_url) })
+      // The pass must not take the room a trial or a budgeted run needs for its scoring, judge and people search (the guard flips to refused on any refused call, which
+      // holds the leads): it runs only when every dollar guard of this run has room for its worst case (GROUND_ROOM_USD); a pool guard counts the account, not the run.
+      const room = Math.min(Infinity, ...spendGuards.filter((g): g is SpendGuard => !(g instanceof PooledGuard)).map(g => g.limitUsd - g.reservedUsd))
+      if (snippetOnly.length > 0 && room >= GROUND_ROOM_USD) {
+        assertOwned(db, job)
+        const g = await groundLeads(providers_[vendor], key, job.query ?? `${job.business_name} ${job.industry} ${job.location}`, snippetOnly, fetchP, deps.fetchImpl)
+        if (g?.length) {
+          // a grounded lead replaces ITS original (same page, same company); every other candidate of that page stays as it was
+          const keyOf = (l: LeadDraft) => `${canonicalUrl(l.source_url) ?? l.source_url}|${companyKey(l.company)}`
+          const done = new Set(g.map(keyOf))
+          leads.splice(0, leads.length, ...g, ...leads.filter(l => !done.has(keyOf(l))))
+          partial.candidates = leads
+        }
+      }
+    }
     const judge = deps.judge === undefined ? makeJudge(providers_[vendor], key, deps.fetchImpl) : deps.judge ?? undefined
     assertOwned(db, job)
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []

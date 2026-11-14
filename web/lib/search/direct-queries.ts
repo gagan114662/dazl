@@ -150,6 +150,20 @@ export function rolePhrases(request: string, signals: string[], where: string[])
 // one direct query per place before a second host for any place (Instinct review of #215).
 // Does the request (or its profile signals) ask for a hiring signal, after cutting negated / excluded clauses? Independent of places and roles.
 export const hasHiringSignal = (request: string, signals: string[]): boolean => HIRING.test(stripNegatedHiring(`${request} ${signals.map(stripNegatedHiring).join(' ')}`))
+// #381 (yield, measured on the 7 real staging matrix scans of 2026-11-13): the job-board query (site:boards.greenhouse.io OR site:job-boards.greenhouse.io ...)
+// took one of the three searches of 5 of the 7 scans and found Greenhouse pages of unrelated software companies. Three of the five (Chicago law, Vancouver
+// restaurants, Berlin fintech) did not even ask for hiring: the model's profile signals contained the word, and signals added a whole query type the request never
+// asked for. The board query now needs the request's OWN hiring ask (the profile's signals still add matching power to the queries it builds, never a query type).
+// Whether local-service categories (dental, roofing) should skip the board query too is left to a decision: the NYC dental acceptance fixtures pin it today.
+// "opening a second location" is a business opening, not a job opening: the shared hiring words match any "opening" (Vancouver restaurants, a real request).
+const BUSINESS_OPENING = /\bopen(?:ing|s|ed)?\s+(?:a|an|its|our|their|the|new|second|third|another|up)\b/gi
+// The hiring words this module knows are mostly English: a request in another language (the profile's `language` is not 'en') can express hiring in words it does not
+// recognise, so there the profile's signals keep deciding, as before. (The job-board SOURCE, runner.ts hiringRequest, makes its own decision and still reads the signals.)
+export function boardQueries(request: string, icp: { signals?: string[]; where?: string[]; language?: string }): string[] {
+  const english = !icp.language || icp.language === 'en'
+  if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), english ? [] : icp.signals ?? [])) return []
+  return directQueries(request, icp.signals ?? [], icp.where ?? [])
+}
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
   if (!hasHiringSignal(request, signals)) return []
   const places = [...new Set(where.map(w => w.replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim()).filter(w => w.length >= 2 && w.length <= 60))].slice(0, 3)
