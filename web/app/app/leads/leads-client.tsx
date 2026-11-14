@@ -33,7 +33,7 @@ import EvidenceRecheck from './evidence-recheck'
 import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
-import WorkEmail from './work-email'
+import WorkEmail, { type WorkEmailInitial } from './work-email'
 import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
 import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
@@ -338,6 +338,9 @@ export default function LeadsClient() {
   }, [csvActive, csvBatch?.batch_id])
 
   const [hiddenCount, setHiddenCount] = useState(0)
+  // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
+  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']> } | null>(null)
+  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [] } : undefined
   const [siteUrl, setSiteUrl] = useState('')
   const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
@@ -574,7 +577,7 @@ export default function LeadsClient() {
   const loadLeads = async () => {
     if (!jobId) return
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
-    if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0) }
+    if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null) }
   }
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
@@ -1249,7 +1252,7 @@ export default function LeadsClient() {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
                     if (!siteSettled(site)) return null
                     const who = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
-                    return <WorkEmail leadId={l.id} targets={workEmailTargets(l.enrichments, who, Date.now(), site).map(p => ({ key: targetKey(p), name: p.name, title: p.title }))} />
+                    return <WorkEmail leadId={l.id} initial={workEmailInitial(l.id)} targets={workEmailTargets(l.enrichments, who, Date.now(), site).map(p => ({ key: targetKey(p), name: p.name, title: p.title }))} />
                   })()}
                 </div>
               )
@@ -1388,7 +1391,7 @@ export default function LeadsClient() {
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />
                 {/* #1036: the buyer's work email does not wait for the review (lib/people/work-email-review-lane.ts): same targets, same lookup. */}
-                {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} targets={t} lazy /></div> : null })()}
+                {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} initial={workEmailInitial(l.id)} targets={t} lazy /></div> : null })()}
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
                   <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
