@@ -79,7 +79,7 @@ export function profileHit(h: SearchHit, company: string): { name: string; title
 
 import { SEARCHABLE_HOLDS } from './searchable-holds.ts'
 export { SEARCHABLE_HOLDS, peopleSearchable } from './searchable-holds.ts'
-const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE_HOLDS.map(r => `'${r}'`).join(',')}))`
+export const SEARCHABLE_SQL = `(review_reason IS NULL OR review_reason IN (${SEARCHABLE_HOLDS.map(r => `'${r}'`).join(',')}))`
 
 // What one pass did, for the run report (#1037): a pass that searched nothing must never read as "searched, found nobody".
 //   eligible        leads the pass could search (ready first, then held ones); held = how many of those are held for review
@@ -116,7 +116,7 @@ type Lead = { id: string; company: string; review_reason: string | null; company
 // plus 1 s, by which the real transport has given up; a fetch stub that ignores its abort signal is abandoned after it).
 export interface PeopleOpts { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; deadlineMs?: number; drainMs?: number; aliveEveryMs?: number; maxCompanies?: number; skipNamed?: boolean; charge?: (kind: 'search' | 'fetch', units: number) => Promise<void>; canSearch?: () => boolean; alive?: () => boolean; onStop?: (why: string) => void; stats?: PeopleStats }
 // A lead graded out (fit 0-1) is hidden from the list (store.ts countHiddenLeads): no search is spent on it, on any scan.
-const NOT_GRADED_OUT = 'AND (fit IS NULL OR fit > 1)'
+export const NOT_GRADED_OUT = 'AND (fit IS NULL OR fit > 1)'
 // The first play's own lead list (lib/scan/first5.ts first5LeadSql) also leaves out a lead held by a failed required gate.
 const NOT_GATE_HELD = "AND NOT EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = leads.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed')"
 // The people step's trace status: a stop the pass did not choose (an error, a lost job, or the search provider refusing it:
@@ -161,7 +161,7 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
 }
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
 // search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
-const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact') ORDER BY insert_seq LIMIT 500"
+export const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact') ORDER BY insert_seq LIMIT 500"
 // Runs after a scan finishes. Never throws; returns how many people were stored (also when it stopped on an error).
 export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: PeopleOpts = {}): Promise<number> {
   let stored = 0
