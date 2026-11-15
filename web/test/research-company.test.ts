@@ -3,8 +3,8 @@
 // page shapes taken from real pages the prototype read (names replaced).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cfEmails, companySearch, findSite, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../../lib/research/company.ts'
-import type { ResearchCase, ResearchEvent, ResearchPlan } from '../../lib/research/types.ts'
+import { cfEmails, companySearch, findSite, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../lib/research/company.ts'
+import type { ResearchCase, ResearchEvent, ResearchPlan } from '../lib/research/types.ts'
 
 const C: ResearchCase = { tenant: 'T', jobId: 'J', query: 'Roofing companies in Austin hiring estimators', offer: 'estimating software', where: 'Austin, Texas', category: 'roofing contractors', windowDays: 90, today: '2026-11-15' }
 const PLAN: ResearchPlan = { persona: 'p', decisionMakerTitles: ['Owner', 'President', 'Operations Manager'], triggers: [], askingQueries: [], source: 'fallback' }
@@ -150,7 +150,7 @@ test('companySearch waits out A\'s per-minute "rate" answers and retries; any ot
 })
 
 test('#1122 replay findings: a weak category hit, a place word in the name and a site whose homepage does not name the company are not this business', async () => {
-  const { homeNamesCompany } = await import('../../lib/research/company.ts')
+  const { homeNamesCompany } = await import('../lib/research/company.ts')
   // makeitfable.com (an accessibility research firm) for the Vancouver restaurant Fable: "menu" and "barrier" are not two restaurant words
   assert.equal(siteMatchesCase(VAN, 'makeitfable.com', ['Fable | Accessibility research in Canada. Skip to menu. Remove every barrier.']).category, false)
   assert.equal(siteMatchesCase(VAN, 'fablekitchen.ca', ['Our chef and our menu']).category, true)
