@@ -43,6 +43,12 @@ export function parseGdelt(body: string, max = 15): SearchHit[] { return parseGd
 // limited too), and widen the shared spacing so later scans do not keep the provider throttling this server.
 export const isGdeltLimit = (body: string): boolean => /^\s*please limit requests/i.test(body)
 const LIMITED_GAP_MS = 60_000
+// #1157 (prod 2026-11-14: GDELT answered 429 or not at all, and the news stage failed 3 of 3): a request that was throttled
+// (HTTP 429 / 503) or got no answer is retried ONCE after RETRY_BACKOFF_MS. If the retry fails too, the provider is down or
+// throttling this server: the remaining queries are not sent (each would wait for the same failure), the stage ends with
+// what it has, and the run goes on with its other sources. Bounded: at most one extra request and one backoff per scan.
+const RETRY_BACKOFF_MS = 8_000
+const RETRYABLE = (r: { status: number } | null): boolean => r === null || r.status === 429 || r.status === 503
 let learnedGapMs = 0
 export function parseGdeltStrict(body: string, max = 15): SearchHit[] | null {
   const d = parseGdeltDetail(body, max)
@@ -92,8 +98,8 @@ function queued<T>(f: () => Promise<T>, gapMs: number, sleep: (ms: number) => Pr
 export interface NewsFailureClasses { network: number; http: number; empty_body: number; parse: number }
 // Every attempted query is exactly one of these: ok (usable hits), empty (a valid answer with nothing in it - a real zero), limited, failed.
 export interface NewsQueryClasses { ok: number; empty: number; limited: number; failed: number }
-export interface NewsSearchResult { hits: SearchHit[]; attempted: number; failed: number; limited: number; malformed: number; failure_classes: NewsFailureClasses; http_statuses: Record<string, number>; query_classes: NewsQueryClasses }   // limited: provider said over-rate (stopped early); never an outage   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
-export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<NewsSearchResult> {
+export interface NewsSearchResult { retried?: number; gave_up?: boolean; hits: SearchHit[]; attempted: number; failed: number; limited: number; malformed: number; failure_classes: NewsFailureClasses; http_statuses: Record<string, number>; query_classes: NewsQueryClasses }   // limited: provider said over-rate (stopped early); never an outage   // malformed: invalid entries inside otherwise-valid answers (valid ones are kept; the result is partial)
+export async function newsSearch(http: SafeGet, queries: string[], language?: string, opts: { gapMs?: number; sleep?: (ms: number) => Promise<void>; retryBackoffMs?: number } = {}): Promise<NewsSearchResult> {
   const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)))
   const lang = gdeltLang(language)
   const hits: SearchHit[] = []
@@ -102,11 +108,19 @@ export async function newsSearch(http: SafeGet, queries: string[], language?: st
   const failure_classes: NewsFailureClasses = { network: 0, http: 0, empty_body: 0, parse: 0 }
   const http_statuses: Record<string, number> = {}
   const query_classes: NewsQueryClasses = { ok: 0, empty: 0, limited: 0, failed: 0 }
+  let retried = 0, gave_up = false
+  const get = (q: string) => queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
   for (const q of queries.slice(0, NEWS_PER_SCAN)) {
     attempted++
-    const r = await queued(() => http(newsUrl(q, lang), { accept: 'application/json' }).catch(() => null), opts.gapMs ?? GAP_MS, sleep)
-    if (!r) { failed++; failure_classes.network++; query_classes.failed++; continue }   // the request never got an answer: timeout/DNS/reset - a network failure, not an empty search
-    if (r.status !== 200) { failed++; failure_classes.http++; http_statuses[String(r.status)] = (http_statuses[String(r.status)] ?? 0) + 1; query_classes.failed++; continue }
+    let r = await get(q)
+    if (RETRYABLE(r) && retried === 0) {   // one retry per scan, after a backoff
+      retried++
+      await sleep(opts.retryBackoffMs ?? RETRY_BACKOFF_MS)
+      r = await get(q)
+      if (RETRYABLE(r)) gave_up = true
+    } else if (RETRYABLE(r)) gave_up = true   // the retry is spent: a second outage means the provider is down for this scan
+    if (!r) { failed++; failure_classes.network++; query_classes.failed++; if (gave_up) break; continue }   // the request never got an answer: timeout/DNS/reset - a network failure, not an empty search
+    if (r.status !== 200) { failed++; failure_classes.http++; http_statuses[String(r.status)] = (http_statuses[String(r.status)] ?? 0) + 1; query_classes.failed++; if (gave_up) break; continue }
     if (!r.body) { failed++; failure_classes.empty_body++; query_classes.failed++; continue }   // 200 with nothing in it: an empty body is a failed answer, not a zero-result search
     if (isGdeltLimit(r.body)) { limited++; learnedGapMs = LIMITED_GAP_MS; query_classes.limited++; break }
     const parsed = parseGdeltDetail(r.body)
@@ -117,5 +131,5 @@ export async function newsSearch(http: SafeGet, queries: string[], language?: st
     else if (parsed.malformed > 0) { failed++; failure_classes.parse++; query_classes.failed++ }   // an answer whose entries were all unusable is a parse failure, not a clean zero
     else query_classes.empty++   // a valid answer with nothing in it: the only real zero-result search
   }
-  return { hits, attempted, failed, limited, malformed, failure_classes, http_statuses, query_classes }
+  return { hits, attempted, failed, limited, malformed, failure_classes, http_statuses, query_classes, retried, gave_up }
 }
