@@ -156,7 +156,10 @@ The other fact is checked separately, from other sources: do not guess it and do
 test('fetch rank: an open-role OR ranks a job page with the event pages; AND and a completed-hire OR (#876) keep job pages behind them', () => {
   const by = new Map([[HIRECO, { date: daysAgo(9) }], [FUNDCO, { date: daysAgo(12) }]])
   const and = fetchRankFor(by, 90, true), flat = fetchRankFor(by, 90, false)
-  assert.equal(and(HIRECO), 2); assert.equal(and(FUNDCO), 0); assert.equal(flat(HIRECO), 0); assert.equal(flat(FUNDCO), 0)
+  // #381: the whole number is the window / job-page class this test is about; the fraction is the page-kind tie-break inside it (an event-looking page first)
+  const cls = (n: number) => Math.floor(n)
+  assert.equal(cls(and(HIRECO)), 2); assert.equal(cls(and(FUNDCO)), 0); assert.equal(cls(flat(HIRECO)), 0); assert.equal(cls(flat(FUNDCO)), 0)
+  assert.ok(and(FUNDCO) < and(HIRECO), 'under AND the event page is still fetched before the job page')
   assert.equal(jobPagesBehindEvents(ICP_B.signals, OR_B, icpB), true, 'Test B: a job page cannot prove a completed hire')
   assert.equal(jobPagesBehindEvents(ICP_B.signals, AND_B, icpB), true)
   assert.equal(jobPagesBehindEvents(['raised seed funding in the last 90 days', 'hiring sales staff'], 'London B2B SaaS startups that raised seed funding or are hiring sales staff in the last 90 days', icpB), false, 'open-role OR')

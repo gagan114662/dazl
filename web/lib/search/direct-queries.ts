@@ -159,10 +159,51 @@ export const hasHiringSignal = (request: string, signals: string[]): boolean => 
 const BUSINESS_OPENING = /\bopen(?:ing|s|ed)?\s+(?:a|an|its|our|their|the|new|second|third|another|up)\b/gi
 // The hiring words this module knows are mostly English: a request in another language (the profile's `language` is not 'en') can express hiring in words it does not
 // recognise, so there the profile's signals keep deciding, as before. (The job-board SOURCE, runner.ts hiringRequest, makes its own decision and still reads the signals.)
-export function boardQueries(request: string, icp: { signals?: string[]; where?: string[]; language?: string }): string[] {
+export function requestAsksHiring(request: string, icp: { signals?: string[]; language?: string }): boolean {
   const english = !icp.language || icp.language === 'en'
-  if (!hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), english ? [] : icp.signals ?? [])) return []
+  return hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), english ? [] : icp.signals ?? [])
+}
+export function boardQueries(request: string, icp: { signals?: string[]; where?: string[]; language?: string }): string[] {
+  if (!requestAsksHiring(request, icp)) return []
   return directQueries(request, icp.signals ?? [], icp.where ?? [])
+}
+// #381 (yield): queries built from the REQUEST's own event words. On the real staging matrix the model's queries drifted to the profile's signals ("fintech Berlin
+// hiring CTO Head of Product engineer jobs" for a request about funding rounds), and with a larger budget the model's cap of 6 left search slots unused. One query
+// per event the request names ("<who and where> <event> announcement"), aimed at dated pages (announcements, news, press). They fill the slots the model's queries
+// leave; they never replace a model query that follows the request.
+const HAPPENED = /\b(?:open(?:s|ed|ing)?|launch\w*|rais\w+|announc\w+|expand\w*|expansion|hir(?:e[ds]?|ing)|post(?:ed|ing)|acquir\w+|merg\w+|mov(?:ed|ing)|relocat\w+|appoint\w+|join(?:ed|ing)|add(?:ed|ing)|start(?:ed|ing)|switch\w*|migrat\w+|replatform\w*|rebrand\w*|redesign\w*|won|win(?:s|ning)?|clos(?:ed|ing)|receiv\w+|secur\w+|sign(?:ed|ing)|grow(?:n|ing)?|grew)\b/i
+const WINDOW = /\s*(?:in|within|over|during)\s+the\s+(?:last|past)\s+\d+\s+(?:days?|weeks?|months?|years?)\.?/gi
+// `asked`: the queries the scan already has. An event they already cover goes last, so a free slot goes to an event nobody asked about yet (a real Chicago scan sent
+// three queries about "opened a new office" and none about "expanded a practice group", the request's second event).
+const contentWords = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(w => w.length > 2 && !['the', 'and', 'new', 'for', 'that', 'are', 'its'].includes(w)).map(w => w.replace(/(?:ing|ed|es|s)$/, ''))
+export function eventQueries(request: string, asked: string[] = []): string[] {
+  // only the request's FIRST sentence (what to find), without its opening verb: later sentences are instructions ("Exclude chains. Provide dated evidence and a
+  // contact"), which must never become search words
+  const first = request.split(/(?<=[.;!?])\s+|\n+/)[0] ?? ''
+  const text = first.replace(WINDOW, ' ').replace(/[\u0000-\u001f"()]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[.;!?]+$/, '').replace(/^(?:please\s+)?(?:find|show me|get me|give me|list|i need|we need|looking for)\s+/i, '')
+  const m = /^(.{6,120}?)\s+(?:that|which|who)\s+(?:are\s+|is\s+|have\s+|has\s+|had\s+)?(.{4,200})$/i.exec(text)
+  if (!m) return []
+  const head = m[1].trim()
+  // (review) only a clause that names something that HAPPENED becomes a query: a state ("use Shopify", "have vegan menus") has no announcement to find, and a
+  // negation ("not hiring") would search for the very thing the request excludes
+  const events = m[2].split(/\s+or\s+(?:are\s+|is\s+|have\s+|has\s+)?/i).map(e => e.trim().replace(/^(?:are|is|have|has|had)\s+/i, ''))
+    .filter(e => e.length >= 4 && HAPPENED.test(e) && !/^(?:not|no|never|without|don'?t|doesn'?t|didn'?t|haven'?t|hasn'?t)\b/i.test(e)).slice(0, 3)
+  const askedWords = new Set(asked.flatMap(contentWords))
+  const covered = (e: string) => { const w = contentWords(e); return w.length > 0 && w.filter(x => askedWords.has(x)).length / w.length >= 0.6 }
+  events.sort((a, b) => Number(covered(a)) - Number(covered(b)))   // stable: the request's own order inside each group
+  const out: string[] = []
+  for (const kind of ['announcement', 'news', 'press release']) for (const e of events) {
+    if (kind === 'announcement' && /\bannounc/i.test(e)) { out.push(`${head} ${e}`); continue }   // "announced a new CEO announcement" says it twice
+    const q = `${head} ${e} ${kind}`; if (q.length <= 200) out.push(q)
+  }
+  return out
+}
+// A model query about hiring when the request never asked for it (the profile's signals leaked into the query): the same rule as boardQueries, per query.
+// (review) A hiring word that is part of the request's own words ("Career coaching firms", "recruiting agencies") is the category, not a leaked hiring ask.
+export const hiringQueryForNonHiringRequest = (query: string, request: string, language?: string): boolean => {
+  if ((language && language !== 'en') || hasHiringSignal(request.replace(BUSINESS_OPENING, ' '), [])) return false
+  const req = request.toLowerCase()
+  return (query.match(/\b(?:hiring|hire[sd]?|jobs?|careers?|recruit\w*|vacanc\w+)\b/gi) ?? []).some(w => !new RegExp(`\\b${w.toLowerCase()}`).test(req))
 }
 export function directQueries(request: string, signals: string[], where: string[]): string[] {
   if (!hasHiringSignal(request, signals)) return []

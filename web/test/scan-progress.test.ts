@@ -187,14 +187,15 @@ test('runJob: hold-stopped AFTER partial work reads partial_hold - not skipped, 
   assert.equal(partialNote('partial_hold:accounting_uncertain'), 'stopped after a request may have been billed without a settled cost; partial results kept')
   assert.equal(partialNote('partial_hold:provider_rejected'), 'stopped after the provider rejected a request; partial results kept')
   assert.equal(partialNote('partial_hold'), 'stopped by the spend guard after partial results')
-  assert.equal(e.r.report!.search.attempted, 1, 'the search that ran (the query-plan call was itself refused, so one fallback query) is retained in the run report')
+  // the query-plan call was itself refused, so one fallback query; since #381 the request's own event queries also fill the 2 search slots the model is never asked for
+  assert.equal(e.r.report!.search.attempted, 3, 'the searches that ran are retained in the run report')
   assert.equal(e.r.report!.search.hits_unique_urls, 1, 'the partial hit is not lost')
   // Persisted rows for the hold-stopped path too.
   const jobId2 = String((e.job as { id: string }).id)
   const repRow2 = e.r.db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(jobId2) as { report: string } | undefined
   assert.ok(repRow2, 'the scan_run_report row is persisted for the hold-stopped partial run')
   const repJson2 = JSON.parse(repRow2!.report) as { search: { attempted: number; hits_unique_urls: number } }
-  assert.equal(repJson2.search.attempted, 1, 'persisted report: the search that ran is recorded')
+  assert.equal(repJson2.search.attempted, 3, 'persisted report: the searches that ran are recorded')
   assert.equal(repJson2.search.hits_unique_urls, 1, 'persisted report: the partial hit is not lost')
   const statsRow2 = e.r.db.prepare("SELECT searches_attempted FROM scan_source_stats WHERE job_id = ? AND collector = 'search:tinyfish'").get(jobId2) as { searches_attempted: number } | undefined
   assert.ok(statsRow2, 'the scan_source_stats row is persisted for the hold-stopped partial run')
@@ -237,7 +238,7 @@ test('runJob: CAUSAL - after the first search reserve is refused (query path), Z
   // CONTROL: the same fixture without the budget runs the plan, both searches, the fetch - the assertions are not vacuous.
   // CONTROL: the same fixture without the budget runs the plan, both searches, the fetch - the assertions are not vacuous.
   const c = await ending(base(fixture))
-  assert.equal(c.r.calls.searches.length, 2, 'control: both searches run without the budget')
+  assert.equal(c.r.calls.searches.length, 4, 'control: both model searches and the 2 request-built event searches (#381) run without the budget')
   assert.ok(c.r.calls.tfFetchBatches.length >= 1, 'control: the fetch stage runs without the budget')
   assert.ok(c.r.calls.prompts.length >= 1, 'control: the plan prompt runs without the budget')
 })
@@ -257,7 +258,8 @@ test('runJob: CAUSAL - after a fetch reserve is refused (a search already settle
   } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD; delete process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD }
   // The search that settled before the refusal reached the vendor; the refused fetch never did, and the run HALTED:
   // nothing after the refusal (no fetch, no extraction, no further paid stage) ran.
-  assert.equal(e.r.calls.searches.length, 1, `only the pre-refusal search reached the vendor: ${JSON.stringify(e.r.calls.searches)}`)
+  // the hit is on search 1; searches 2 and 3 are the request's own event queries (#381), all priced below the budget and all before the fetch
+  assert.equal(e.r.calls.searches.length, 3, `only the pre-refusal searches reached the vendor: ${JSON.stringify(e.r.calls.searches)}`)
   assert.equal(e.r.calls.tfFetchBatches.length, 0, `the refused fetch never reached the vendor: ${JSON.stringify(e.r.calls.tfFetchBatches)}`)
   assert.equal(e.r.extractionPrompt, '', 'the extraction stage after the refusal never ran')
   assert.equal(e.job.status, 'failed', JSON.stringify([e.job, e.outcome]))
@@ -265,12 +267,12 @@ test('runJob: CAUSAL - after a fetch reserve is refused (a search already settle
   // The refusal POINT on the ledger: the settled search row precedes the refused fetch row, and NOTHING was reserved
   // after the refusal (no extraction reserve): the halt is ledger-visible, not counter-visible.
   const led2 = spendRows(e.r.db)
-  assert.equal(led2.length, 2, `the settled search, the refused fetch, and NOTHING after it (the run halted): ${JSON.stringify(led2)}`)
-  assert.deepEqual(led2[0], { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null }, 'the pre-refusal search settled')
-  assert.deepEqual(led2[1], { kind: 'tinyfish.fetch', attempt: 1, status: 'refused', reason: 'over_cap' }, 'the fetch reserve is the refusal point (the unpriced stub model leaves no llm rows on this path)')
+  assert.equal(led2.length, 4, `the settled searches, the refused fetch, and NOTHING after it (the run halted): ${JSON.stringify(led2)}`)
+  for (const r of led2.slice(0, 3)) assert.deepEqual(r, { kind: 'tinyfish.search', attempt: 1, status: 'settled', reason: null }, 'the pre-refusal searches settled')
+  assert.deepEqual(led2[3], { kind: 'tinyfish.fetch', attempt: 1, status: 'refused', reason: 'over_cap' }, 'the fetch reserve is the refusal point (the unpriced stub model leaves no llm rows on this path)')
   // CONTROL: the same fixture without the budget runs both searches and fetches both hits.
   const c = await ending(base(fixture))
-  assert.equal(c.r.calls.searches.length, 2, 'control: both searches run without the budget')
+  assert.equal(c.r.calls.searches.length, 4, 'control: both model searches and the 2 request-built event searches (#381) run without the budget')
   assert.equal(c.r.calls.tfFetchBatches.length, 1, 'control: both hits are fetched (one batch) without the budget')
 })
 

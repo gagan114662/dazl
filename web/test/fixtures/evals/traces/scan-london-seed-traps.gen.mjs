@@ -26,10 +26,14 @@ const cands = [
 ]
 let seq = 0, t = 0
 const span = (kind, name, input, output) => { const s = { id: `s${seq}`, seq: seq++, kind, name, start_ms: t, duration_ms: 40, input, output }; t += 50; return s }
+const EXCLUDED = ' -site:facebook.com -site:instagram.com -site:linkedin.com -site:youtube.com -site:tiktok.com'
 const tfSearch = (q) => `https://api.search.tinyfish.ai/?query=${encodeURIComponent(q)}`
 const spans = [
   span('model', 'anthropic.completeDetailed', { stage: 'search_queries', method: 'completeDetailed', prompt: 'Write up to 6 web search queries that would find companies or people matching this request (SYNTHETIC trace: prompt abbreviated)', max_tokens: 300 }, { text: JSON.stringify(['london saas seed']), model: 'stub-model-served', usage: { input_tokens: 400, output_tokens: 20 } }),
-  span('http', 'tinyfish.search', { method: 'GET', url: tfSearch('london saas seed London, UK'), body: null }, { status: 200, body: JSON.stringify({ results: hits }) }),
+  // #381: every open query excludes the hosts that can never be read, and the request's own event queries fill the search slots the model's single query leaves
+  span('http', 'tinyfish.search', { method: 'GET', url: tfSearch('london saas seed London, UK' + EXCLUDED), body: null }, { status: 200, body: JSON.stringify({ results: hits }) }),
+  span('http', 'tinyfish.search', { method: 'GET', url: tfSearch('London UK B2B SaaS startups announced seed funding London, UK' + EXCLUDED), body: null }, { status: 200, body: JSON.stringify({ results: [] }) }),
+  span('http', 'tinyfish.search', { method: 'GET', url: tfSearch('London UK B2B SaaS startups announced seed funding news London, UK' + EXCLUDED), body: null }, { status: 200, body: JSON.stringify({ results: [] }) }),
   span('http', 'tinyfish.fetch', { method: 'POST', url: 'https://api.fetch.tinyfish.ai', body: JSON.stringify({ urls: Object.values(P).map(p => p.url), format: 'markdown' }) }, { status: 200, body: JSON.stringify({ results: Object.values(P).map(p => ({ url: p.url, title: p.title, text: p.text })) }) }),
   span('model', 'anthropic.completeDetailed', { stage: 'extraction', method: 'completeDetailed', prompt: 'You turn pre-collected public items into sales leads. (SYNTHETIC trace: prompt abbreviated)', max_tokens: 4000 }, { text: JSON.stringify(cands), model: 'stub-model-served', usage: { input_tokens: 1000, output_tokens: 100 } }),
   ...Object.values(P).map(p => span('page', 'verifier.fetch', { url: p.url }, { text: p.text, title: p.title, retrievedAt: Math.floor(Date.parse(AS_OF) / 1000) })),

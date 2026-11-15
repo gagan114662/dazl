@@ -67,7 +67,7 @@
    "duration_ms": 40,
    "input": {
     "method": "GET",
-    "url": "https://api.search.tinyfish.ai/?query=london%20saas%20seed%20London%2C%20UK",
+    "url": "https://api.search.tinyfish.ai/?query=london%20saas%20seed%20London%2C%20UK%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
     "body": null
    },
    "output": {
@@ -76,8 +76,42 @@
    }
   },
   {
-   "id": "s2",
+   "id": "s1x0",
    "seq": 2,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 50,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=London%20UK%20B2B%20SaaS%20startups%20announced%20seed%20funding%20London%2C%20UK%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\": []}"
+   }
+  },
+  {
+   "id": "s1x1",
+   "seq": 3,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 50,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=London%20UK%20B2B%20SaaS%20startups%20announced%20seed%20funding%20news%20London%2C%20UK%20-site%3Afacebook.com%20-site%3Ainstagram.com%20-site%3Alinkedin.com%20-site%3Ayoutube.com%20-site%3Atiktok.com",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\": []}"
+   }
+  },
+  {
+   "id": "s2",
+   "seq": 4,
    "kind": "http",
    "name": "tinyfish.fetch",
    "start_ms": 100,
@@ -94,7 +128,7 @@
   },
   {
    "id": "s3",
-   "seq": 3,
+   "seq": 5,
    "kind": "model",
    "name": "anthropic.completeDetailed",
    "start_ms": 150,
@@ -116,7 +150,7 @@
   },
   {
    "id": "s4",
-   "seq": 4,
+   "seq": 6,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 200,
@@ -132,7 +166,7 @@
   },
   {
    "id": "s5",
-   "seq": 5,
+   "seq": 7,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 250,
@@ -148,7 +182,7 @@
   },
   {
    "id": "s6",
-   "seq": 6,
+   "seq": 8,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 300,
@@ -164,7 +198,7 @@
   },
   {
    "id": "s7",
-   "seq": 7,
+   "seq": 9,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 350,
@@ -180,7 +214,7 @@
   },
   {
    "id": "s8",
-   "seq": 8,
+   "seq": 10,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 400,
@@ -196,7 +230,7 @@
   },
   {
    "id": "s9",
-   "seq": 9,
+   "seq": 11,
    "kind": "page",
    "name": "verifier.fetch",
    "start_ms": 450,
