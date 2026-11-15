@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { gmailIsStubbed } from '../staging.ts'
+import { stagingFakeReplies, stagingFakeGmail } from './staging-fake-replies.ts'
 import { auditAt } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
@@ -364,11 +365,15 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   // before anything read is stored or granted from (#928). A revoked consent, replaced connection or unreadable check ends the sync.
   const LOST = Symbol('read_authority_lost') // a sentinel, not an error type: it never leaves this function
   const authority = () => { if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) throw LOST }
-  const f = d.fetchImpl ?? fetch
+  let f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
   if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' }
-  if (gmailIsStubbed((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
+  const syncEnv = (d.env ?? process.env) as Record<string, string | undefined>
+  if (gmailIsStubbed(syncEnv)) {
+    if (!stagingFakeReplies(syncEnv)) return out // stubbed Gmail: no mailbox to read
+    f = stagingFakeGmail(db, tenantId) // TEST-ONLY staging reply source (#413 live check): the real sync reads synthetic threads
+  }
   const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
   const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
