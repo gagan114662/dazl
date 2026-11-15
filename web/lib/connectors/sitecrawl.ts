@@ -77,6 +77,9 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       res.on('error', () => resolve(null))
       res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder the decoder's 'end' settles it
     })
+    // The error listener goes on FIRST: a caller whose signal is already aborted destroys the request below, and an 'error' with no
+    // listener yet is an uncaught exception that takes the whole scan process down (seen in a matrix run, #1102).
+    req.on('error', () => resolve(null))
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
     // event is observed Node behavior, not a documented guarantee - a silent
@@ -88,7 +91,6 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
     // with no uncancelled request still in flight behind it.
     if (signal?.aborted) { resolve(null); req.destroy(new Error('aborted')); return }
     signal?.addEventListener('abort', () => req.destroy(new Error('aborted')), { once: true })
-    req.on('error', () => resolve(null))
     req.end()
   })
 }

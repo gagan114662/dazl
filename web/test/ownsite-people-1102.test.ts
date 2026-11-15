@@ -108,3 +108,16 @@ test('office links: only this site, only the requested city under a locations / 
   const cp = contactPaths('<a href="/blog/about-our-stats">x</a><a href="/about-us">y</a><a href="/en-us/our-people">z</a>', base)
   assert.equal(cp.includes('/blog/about-our-stats'), false); assert.ok(cp.includes('/about-us') && cp.includes('/en-us/our-people'), cp.join(' '))
 })
+
+test('a request whose caller is already aborted settles to null and never throws an uncaught error', async () => {
+  const s = await serve((_p, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE) })
+  try {
+    const ac = new AbortController(); ac.abort()
+    let uncaught: unknown = null
+    const onUncaught = (e: unknown) => { uncaught = e }
+    process.on('uncaughtException', onUncaught)
+    try { assert.equal(await rawGet(`https://127.0.0.1:${s.port}/`, 0, 3000, loopbackLookup as never, ac.signal), null); await new Promise(r => setTimeout(r, 200)) }
+    finally { process.off('uncaughtException', onUncaught) }
+    assert.equal(uncaught, null)
+  } finally { await s.close() }
+})
