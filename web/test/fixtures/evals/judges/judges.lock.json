@@ -11,8 +11,8 @@
  "registered": [
   {
    "id": "scan_verification_judge",
-   "fingerprint": "77f64d5c231da0b06735c863c1df2f5aa213c6383123146715e0dcef6e5328c1",
-   "note": "lib/scan/runner.ts judgePrompt + parseJudgement as of #396, as the scan runs it (model: the tenant's own provider). The release gate (test/judge-release-gate.test.ts) runs the stub harness on this exact fingerprint on every CI run. Never calibrated against a real model (that needs a paid run, the owner's call), so judgeGate reports it unusable and its verdicts cannot count. The scan does not consult the gate yet."
+   "fingerprint": "1c2d66fae0ce2e7fef68eea7d338efacfb6eba22e8ff5344eb30a3975275b530",
+   "note": "lib/scan/runner.ts judgePrompt + parseJudgement as of #381 (prompt_version 2: 'contradicts' defined as a stated conflict, an omitted date changes nothing, a different date is unclear; stub harness re-run, ok), as the scan runs it (model: the tenant's own provider). The release gate (test/judge-release-gate.test.ts) runs the stub harness on this exact fingerprint on every CI run. Never calibrated against a real model (that needs a paid run, the owner's call), so judgeGate reports it unusable and its verdicts cannot count. The scan does not consult the gate yet."
   },
   {
    "id": "claim_support",
