@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
-import { ProviderError, providers, type Provider } from '../llm/provider.ts'
+import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
+import { runResearchScan } from '../research/scan-job.ts'
+import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
@@ -32,7 +34,7 @@ import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
-import { eventDateBound } from './event-date-binding.ts'
+import { eventDateBound, dayStatedForEvent } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -212,6 +214,10 @@ export function scoringSellerContext(db: Database.Database, userId: string, jobI
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
+// #381: measured on real sydney-agencies / bangalore-manufacturing scans (14 Nov), the judge answered "contradicts" for passages whose headline
+// states the claim (Krones' Rs 315 crore plant near Bengaluru; Bayer's MoU for a facility near Bengaluru) and for a passage that merely does
+// not mention the claim's month or neighbourhood. "contradicts" drops the lead outright, so it is now defined: a stated conflict only. A detail
+// the passage omits is never a contradiction; a passage that gives a DIFFERENT date for the event is "unclear", never "supports".
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
   return `You check one claim against a passage copied from a web page.
@@ -222,7 +228,11 @@ Passage:
 <<<
 ${safe}
 >>>
-Does the passage support the claim, contradict it, or say nothing clear about it? Reply with exactly one word: supports, contradicts, or unclear.`
+Does the passage support the claim, contradict it, or say nothing clear about it? A date, month or time in the claim that the passage does not mention changes nothing: judge the event itself (dates are checked separately). If the passage gives a DIFFERENT date for the event, answer unclear.
+- supports: the passage states the claim's event for this company.
+- contradicts: ONLY when the passage states something that cannot be true together with the claim: a different company did it, the event did not happen or was cancelled or denied, or the passage gives a different place, amount or kind of event. A detail the passage simply does not mention is never a contradiction.
+- unclear: the passage does not state the event.
+Reply with exactly one word: supports, contradicts, or unclear.`
 }
 
 export function parseJudgement(text: string): Judgement {
@@ -389,6 +399,14 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
         else c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
       }
+    }
+    // #878: no bound day yet (none claimed, or the claimed one is not this event's), but the quote itself states one that the same rule ties to this
+    // company and event on this page: that day is the event's. A claimed day the date rules reject (stale, future) is still on c0, so it keeps its hold
+    // and is never replaced; a hiring candidate is dated by the job board's own day only (above), never by a day in its text. The window and date rules
+    // below judge the day like any other.
+    if (page && !isFail(page) && !c0.event_date && !hiringCand) {
+      const q = dayStatedForEvent(page.text, cIn.excerpt, cIn.company)
+      if (q) c0 = { ...c0, event_date: q.day, event_date_proof: 'page_bound', event_date_proof_note: `the day the quote states (${q.why})${cIn.event_date ? `; the claimed ${cIn.event_date} is not this event's day` : ''}`.slice(0, 200) }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
@@ -712,26 +730,33 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   }).immediate()
 }
 
-// The four honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. A source that
-// FAILED (source_error) is never a budget stop, and raising the budget would not have searched further. Sources that ran
+// The honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. Sources that ran
 // clean and found nothing (no_discovery) searched everything the run was allowed to use. Sources that could not conclude
 // (unbounded_fallback_hold) stop the run rather than start the unpriceable web-search research call.
+// #1157 (prod, austin-roofing 2026-11-14: TinyFish refused by the day's allowance, then the news API unreachable, shown as
+// "Failed - search:news had an error"): ONE source failing never decides the stop on its own.
+//  - The web search refused by the daily allowance is named first: it is the main source, it never ran, and it is what the
+//    person can act on (wait for the day to turn over). A news failure beside it is still in the report and on the source row.
+//  - A failed source beside one that ran CLEAN and found nothing is a concluded search with one source missing (no_discovery;
+//    the outcome names the source that could not be searched): the run degrades, it does not fail.
+//  - source_error is left for the case it describes: a source failed and NO source ran clean. Never a budget stop.
 export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): string {
   const failed = (s: string | null) => !!s && /^(?:error|limited)/.test(s)
   const clean = (s: string | null) => !!s && /^(?:empty|no_candidates|ok)/.test(s)
   const news = ledger.statusOf('search:news'), tf = ledger.statusOf('search:tinyfish')
-  if (failed(news) || failed(tf)) return 'source_error'
   // The TinyFish search was refused by the platform's own daily allowance (this account's per-day units, or its share of the platform's)
   // before any request: nothing was searched because the allowance was used up, not because the sources could not conclude. Its own
   // stop, so the run says the allowance is the reason and that trying again after the UTC day turns over (or with another setting) can search.
   if (tf === 'skipped_cap') return 'search_allowance_reached'
+  if ((failed(news) && !clean(tf)) || (failed(tf) && !clean(news))) return 'source_error'
   // #1037 item 1: a first play where no lead source could run at all (news switched off / not run, TinyFish not run or refused
   // before any request): nothing was searched, so this is not a held fallback. Its own code, so the run says so. Scoped to first
   // plays (the reported jobs); an ordinary scan keeps its existing classification.
   const notRun = (x: string | null) => !x || /^skipped/.test(x)
   if (first5 && notRun(news) && notRun(tf)) return 'no_lead_source'
   // A news stage that recorded skipped_* never ran: it neither concluded nor blocks TinyFish's clean result from concluding.
-  if (clean(news) || (notRun(news) && clean(tf))) return 'no_discovery'
+  // ...and a news stage that FAILED does not either (#1157): TinyFish searched and found nothing, with news missing.
+  if (clean(news) || ((notRun(news) || failed(news)) && clean(tf))) return 'no_discovery'
   return 'unbounded_fallback_hold'
 }
 
@@ -1102,7 +1127,7 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, win
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export interface NewsNote { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number; classes?: NewsFailureClasses; http_statuses?: Record<string, number>; query_classes?: NewsQueryClasses }
+export interface NewsNote { retried?: number; gave_up?: boolean; searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number; classes?: NewsFailureClasses; http_statuses?: Record<string, number>; query_classes?: NewsQueryClasses }
 // A full outage names its failure class when the requests recorded one (network/http/empty_body/parse, 'mixed' for more
 // than one): a persisted News ERROR must distinguish an outage from a timeout, an HTTP refusal and a parse failure.
 const newsErrorName = (note: NewsNote): string => {
@@ -1133,7 +1158,7 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited; note.classes = found.failure_classes; note.http_statuses = found.http_statuses; note.query_classes = found.query_classes }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited; note.classes = found.failure_classes; note.http_statuses = found.http_statuses; note.query_classes = found.query_classes; note.retried = found.retried ?? 0; note.gave_up = found.gave_up === true }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -1350,6 +1375,45 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       icpForSources = icp
       prompt = buildIcpPrompt(job.query, icp)
     }
+    // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
+    // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
+    // this job's own spend guards, meter and accounting flags; its searches through the queued research search inside this scan's caps.
+    if (icpForSources && vendor === 'anthropic' && researchEngineOn()) {
+      const modelFor = (m: string): Provider => {
+        const p = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(m), c => ledger.model(c))
+        return spendLimit === null ? flagAccounting(db, job, p, vendor) : flagAccounting(db, job, guardProvider(p, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      }
+      const deadline = jobDeadlines.get(job)
+      const r = await runResearchScan({ db, job, icp: icpForSources, key, model: modelFor, isRefusal: e => e instanceof SpendRefused, checkpoint: () => assertOwned(db, job), ...(deadline ? { deadline } : {}),
+        tf: { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), charge: trialCharges.get(job) } })
+      if (r) {
+        const leads = r.leads as unknown as VerifiedLead[], review = r.review as unknown as ReviewLead[]
+        // the funnel's drops ('held' leads are kept in review, not dropped)
+        const dropped = Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).filter(([k]) => k !== 'held').map(([k, n]) => [`research_${s.stage}_${k}`, n])))
+        const refusal = r.run.refusal
+        // A refusal is read exactly as the old engine reads it: the trial's budget holds every lead in review (finishTrialBudget); only a NUMERIC
+        // budget is a budget stop that keeps what was verified; any other refusal (count_failed, model_unpriced, ...) fails the run, since no
+        // budget can fix it.
+        if (refusal instanceof SpendRefused) {
+          if (trialGuard && (refusal.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, { candidates: null, outcome: { leads, review, dropped } }, ledger)
+          if (refusalCode(refusal, ledger) !== 'budget_stopped') throw refusal
+        }
+        const owned = finish(db, job, 'done', refusal ? 'budget_stopped' : null, { leads, review, dropped }, r.candidates, ledger)
+        // D's proof rows and G's people: a failure there is reported, never turns a finished scan into a retry
+        if (owned) { try { await r.afterSave?.(db, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:after-save', tenantId: job.user_id, ref: job.id }) } }
+        // The old engine's post-finish steps that apply to research leads as they are (#1267 review blocker 3). The rest are not run for a research
+        // scan, by design, and named in the PR: buyer-fit scoring, the sales-hiring gate, the #377 timing-proof record and completeLeads (D's research
+        // proof is the ready rule instead), the old people pass (G's company research names the person), enrichment and autopilot (a new engine
+        // never sends on its own).
+        if (owned) {
+          if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+          try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
+          try { enforceContactSource(db, job.user_id, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:contact-source', tenantId: job.user_id, ref: job.id }) }
+        }
+        if (trialGuard?.refused) holdTrialBudget(db, job)
+        return 'done'
+      }
+    }
     const complete = providers_[vendor].complete
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
     // pages. If TinyFish is off, capped, failing or finds nothing, fall back to the provider's built-in web search.
@@ -1446,7 +1510,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // refusal, accounting failure, auth error or stop): per-class failure counts, the non-200 statuses seen and the
         // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays
         // distinguishable, and a refusal after a searched query never erases the query's recorded truth.
-        ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
+        ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) }, ...(note.retried ? { retried: note.retried, gave_up: note.gave_up === true } : {}) } })
       }
       if (leads && leads.length === 0) leads = null
     }
@@ -1668,7 +1732,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
     // One automatic recovery pass before anything is marked held: a verified lead with no date (when the request has a window) first gets the date the page itself declares (structured data), then the
     // same company's dated coverage elsewhere; a held lead whose page is unreadable or lacks the quote gets the same search. Every replacement goes through the SAME verifier and window gate.
-    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ } }
+    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only */ } }
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
@@ -1831,13 +1895,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
     if (icpForSources?.window_days) {
       // Finish undated candidates first (bounded): an event date the source page itself declares as structured data. The window gate below judges it like any other date.
-      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
       const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
       outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
     } else if (icpForSources) {
       // No date window: an undated lead is still kept, so give it the date its own page declares as structured data (same rules; nothing is held or dropped by it).
-      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ }
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only */ }
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw

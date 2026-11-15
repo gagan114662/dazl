@@ -31,6 +31,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SELF=$HERE/$(basename "${BASH_SOURCE[0]}")
 PULL=$HERE/pull-release.sh
 RUNNER=$HERE/run-release.sh
+PAGES=$HERE/check-pages.py   # #1116: can a stranger use /sign-up (the page, its form, every bundle it names)
+HYD=$HERE/check-hydration.mjs   # #1116: did React attach to the sign-up / sign-in forms (a real headless browser, as the app user)
 CADDY=${PROD_CADDYFILE:-/etc/caddy/Caddyfile}
 CADDY_SITE=${PROD_CADDY_SITE:-dazl.ai, www.dazl.ai}          # the site block whose reverse_proxy port is switched
 CADDY_RELOAD=${PROD_CADDY_RELOAD:-systemctl reload caddy}
@@ -59,6 +61,20 @@ log() { echo "$(date -Is) $*"; }
 die() { log "FAIL: $*"; exit 1; }
 as_user() { local u=$1; shift; if [ "$(id -un)" = "$u" ]; then "$@"; else sudo -u "$u" -- "$@"; fi; }
 as_app() { as_user "$APP_USER" "$@"; }
+# #1116: the headless-browser hydration check (check-hydration.mjs), as the app user (its ~/.cache/ms-playwright has the browser). Fatal by
+# default; PROD_HYDRATION_CHECK=warn only logs a failure. Its proof-only HYDRATION_CHECK_BLOCK is never passed on.
+[[ ${PROD_HYDRATION_CHECK:-fatal} =~ ^(fatal|warn)$ ]] || { echo "PROD_HYDRATION_CHECK must be fatal or warn" >&2; exit 1; }
+# Bounded twice (the script's own 90 s watchdog, then timeout 120 s), never handed the deploy lock (fd 8). $2 = tries (the public check after the
+# switch tries twice, 5 s apart, before the rollback: a cold first load must not roll back a good release).
+hydration_check() {
+  local t tries=${2:-1}
+  for t in $(seq 1 "$tries"); do
+    as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK HYDRATION_CHECK_DEADLINE_S=90 node "$HYD" "$1" 8>&- && return 0
+    [ "$t" -lt "$tries" ] && { log "hydration check try $t on $1 failed; trying again"; sleep 5; }
+  done
+  [ "${PROD_HYDRATION_CHECK:-fatal}" = warn ] && { log "WARNING: the hydration check failed on $1 (PROD_HYDRATION_CHECK=warn: not fatal)"; return 0; }
+  return 1
+}
 [[ ${PROD_HEALTH_MAX_TIME:-10} =~ ^[1-9][0-9]?$ ]] || { echo "PROD_HEALTH_MAX_TIME must be 1-99 seconds" >&2; exit 1; }
 # prints "<commit> <instance>" (empty fields when there is no answer). Every read is bounded.
 health() { { curl -s --connect-timeout 5 --max-time "${PROD_HEALTH_MAX_TIME:-10}" "$1/api/health" 2>/dev/null || true; } | python3 -c 'import sys,json
@@ -92,7 +108,7 @@ trusted_path() {
     dir=$(dirname -- "$dir")
   done
 }
-for f in "$SELF" "$PULL" "$RUNNER"; do
+for f in "$SELF" "$PULL" "$RUNNER" "$PAGES" "$HYD"; do
   trusted_path "$f" || die "$f is not root-owned / root-writable only; nothing done"
 done
 
@@ -182,16 +198,19 @@ set_boot() {  # $1 = port that should start at boot (only when this is the real 
   fi
   systemctl disable --quiet "dazl-prod@$o.service" 2>/dev/null || true
 }
-# public smoke: every path 200, health commit = $1, and (if given) instance = $2. Retries for ~20 s.
+# public smoke: every path 200, health commit = $1, and (if given) instance = $2; with $3 = pages, also the sign-up pages check (#1116), which is
+# run on the NEW release only: a rollback target may predate it (no form action before #1218), and a rollback must never be refused for that.
+# Retries for ~20 s.
 public_smoke() {
-  local want=$1 inst=${2:-} t c i code pth ok
+  local want=$1 inst=${2:-} pages=${3:-} t c i code pth ok
   for t in $(seq 1 10); do
     ok=1
     read -r c i < <(health "$PUBLIC_URL")
     [ "$c" = "$want" ] || ok=0
     [ -z "$inst" ] || [ "$i" = "$inst" ] || ok=0
     for pth in $SMOKE_PATHS; do code=$(http_code "$PUBLIC_URL$pth"); [ "$code" = 200 ] || { ok=0; log "smoke try $t: $PUBLIC_URL$pth -> $code"; }; done
-    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200"; return 0; fi
+    [ $ok = 1 ] && [ "$pages" = pages ] && { python3 -I "$PAGES" "$PUBLIC_URL" || { ok=0; log "smoke try $t: the sign-up pages check failed"; }; }
+    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200${pages:+; sign-up pages ok}"; return 0; fi
     log "smoke try $t: health commit=${c} instance=${i} (want $want${inst:+ / $inst})"; sleep 2
   done
   return 1
@@ -308,6 +327,18 @@ for line in open(sys.argv[1]):
 PY
 )
 [ "$(readlink -f -- "${envdb:-/nonexistent}")" = "$(readlink -f -- "$DB")" ] || die "the release's DB_PATH (${envdb:-unset}) is not $DB; nothing done"
+# #1089: without both mail settings nobody receives dazl's own mail: password reset and email verification answer 503, sign-up
+# skips the email confirmation, and email-change and play-run mails stay in system_mail_outbox on this host (lib/system-mail.ts).
+# A release env that lost them is refused here, before anything is deployed (the pre-deploy backup above is already taken).
+python3 - "$OPS/prod.env.next" <<'PY' || die "the release env has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty): its verification, reset and play emails would never leave this host; add them to $RUN_ENV; nothing deployed (backup $BK)"
+import shlex, sys
+got = {}
+for line in open(sys.argv[1]):
+    k, _, v = line.rstrip('\n').partition('=')
+    if k in ('SYSTEM_MAIL_SMTP_URL', 'SYSTEM_MAIL_FROM'):
+        got[k] = (shlex.split(v) or [''])[0].strip()   # a blank value is no setting
+sys.exit(0 if got.get('SYSTEM_MAIL_SMTP_URL') and got.get('SYSTEM_MAIL_FROM') else 1)
+PY
 
 # --- 2+3. prebuilt artifact: fetch (verify size/sha256/.build-commit), checkout, extract. Never npm ci / next build.
 live_lock=
@@ -373,7 +404,9 @@ for pth in $SMOKE_PATHS; do
   code=$(http_code "http://127.0.0.1:$NEW$pth")
   [ "$code" = 200 ] || { stop_port "$NEW" "failed local smoke" || true; die "local smoke $pth on :$NEW -> $code; NOT switching (dazl.ai still on :$LIVE)"; }
 done
-log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS]"
+python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the sign-up pages check" || true; die "the sign-up pages check failed on :$NEW; NOT switching (dazl.ai still on :$LIVE)"; }
+hydration_check "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the hydration check" || true; die "the hydration check failed on :$NEW (the sign-up / sign-in form did not hydrate); NOT switching (dazl.ai still on :$LIVE)"; }
+log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS] + sign-up pages + hydration"
 
 # --- 8+9. switch, public smoke, stability window; auto-rollback on any failure
 fail_back() {
@@ -389,7 +422,8 @@ fail_back() {
 switch_caddy "$NEW" || { stop_port "$NEW" "caddy switch failed" || true; die "caddy switch failed; dazl.ai still on :$LIVE"; }
 TSW=$(date +%s)
 log "8/10 switched Caddy to :$NEW"
-public_smoke "$SHA" "$NEW_INST" || fail_back "public smoke failed"
+public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed"
+hydration_check "$PUBLIC_URL" 2 || fail_back "the hydration check failed on $PUBLIC_URL (the sign-up / sign-in form did not hydrate)"
 NR0=$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")
 # stability window: checked every second, so a crash of the new release switches back within ~1-2 s, not at the end
 for _ in $(seq 1 "$STABLE_S"); do
@@ -398,7 +432,7 @@ for _ in $(seq 1 "$STABLE_S"); do
   [ "$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")" = "$NR0" ] || fail_back "dazl-prod@$NEW restarted during the stability window"
   [ "$(systemctl show -p MainPID --value "dazl-prod@$NEW.service")" = "$MAINPID" ] || fail_back "dazl-prod@$NEW changed MainPID (its process died)"
 done
-public_smoke "$SHA" "$NEW_INST" || fail_back "public smoke failed after the ${STABLE_S}s stability window"
+public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed after the ${STABLE_S}s stability window"
 log "9/10 public smoke + ${STABLE_S}s stability ok"
 
 # --- 10. record, boot enablement, prune (the old release keeps running for an instant rollback)

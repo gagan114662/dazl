@@ -3,17 +3,34 @@
 // The empty-list line. A finished scan can have zero visible leads while lower-fit
 // leads sit behind the "show lower-fit leads" toggle - say that instead of claiming
 // the scan found nothing.
-export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null): string | null {
+// repeatCount (#1238): ready leads that are collapsed behind "Show ... leads seen in your earlier scans". They passed verification, so
+// "No leads passed verification" would contradict the scan's own "N source-checked" count on the same screen.
+export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0): string | null {
   if (visibleCount > 0) return null
   if (status === 'pending') return 'This scan is queued and has not started yet. Leads appear here after it runs.'
   if (status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
   if (status === 'loading') return 'Loading this scan...'
   if (status === 'failed') return 'This scan ended without leads. See the message above.'
   if (status !== 'done') return 'No leads yet. Run a scan.'
+  if (repeatCount > 0) return `${repeatCount} lead${repeatCount === 1 ? '' : 's'} passed verification but ${repeatCount === 1 ? 'was' : 'were'} also found in your earlier scans - open "Show ${repeatCount} lead${repeatCount === 1 ? '' : 's'} seen in your earlier scans" below.`
   if (hiddenCount > 0) return `The scan found nothing above your fit bar - ${hiddenCount} lower-fit lead${hiddenCount === 1 ? ' is' : 's are'} hidden below.`
   // An all-review scan shows its cards below - 'no leads' would contradict them.
   if ((needsReviewCount ?? 0) > 0) return `No leads passed verification. ${needsReviewCount} need${needsReviewCount === 1 ? 's' : ''} your review below.`
   return 'The scan finished with no leads.'
+}
+
+// The ready list (#1238). Leads already shown in an earlier scan (seen_before) are tucked behind a toggle so a re-run surfaces what is NEW -
+// but only when something new remains. When EVERY ready lead is a repeat, collapsing them all left the page with 0 cards while /api/leads
+// and the counts above said "2 source-checked" (prod, chicago-law, 14 Nov). Then the repeats are shown, each still marked as seen before.
+interface ReadyRow { review_reason?: string | null; seen_before?: number | boolean | null }
+export function readyRepeats(leads: ReadyRow[]): { ready: number; repeats: number; collapsible: boolean } {
+  const ready = leads.filter(l => !l.review_reason)
+  const repeats = ready.filter(l => !!l.seen_before).length
+  return { ready: ready.length, repeats, collapsible: repeats > 0 && repeats < ready.length }
+}
+export function visibleReadyLeads<T extends ReadyRow>(leads: T[], showSeen: boolean): T[] {
+  const { collapsible } = readyRepeats(leads)
+  return leads.filter(l => !l.review_reason && (showSeen || !collapsible || !l.seen_before))
 }
 
 // A lead with fit 0 is not a prospect (ICP mismatch). Showing its raw signal score
