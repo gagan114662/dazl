@@ -105,6 +105,6 @@ test("a licence's day is Vancouver's day, not UTC's: an evening licence is not d
 
 test('one malformed issue timestamp is that row skipped, never the whole licence source', () => {
   const bad = { ...FX.window[0], licencenumber: '26-999998', issueddate: '2026-09-28T25:00:00Z', house: '9999' }
-  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [...FX.window, bad], FX.prior, FX.same, FX.since)
-  assert.equal(s.length, licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since).length)
+  const withBad = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [...FX.window, bad], FX.prior, FX.same, FX.since)
+  assert.deepEqual(withBad, licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since), 'the same records, word for word: the bad row is neither a candidate nor a counted location')
 })
