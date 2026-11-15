@@ -41,7 +41,7 @@ export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; quer
 // `wait` is injected so tests do not sleep. A 'rate' answer (TinyFish's per-minute limit, enforced before anything is sent, so it costs nothing)
 // is retried after a pause for up to a minute and a half per query (measured 15 Nov: 8 tries x 2.5 s with 6 workers lost 12 of 46 queries per case,
 // three whole triggers); any other failure skips that query.
-export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
+export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; jitter?: () => number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
   const t0 = Date.now()
   const qs = huntQueries(plan), after = afterDate(c)
   const wait = o.wait ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
@@ -58,7 +58,7 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
       for (let attempt = 0; attempt <= (o.rateRetries ?? 18); attempt++) {
         r = await search(qs[i].query, after)
         if (r.ok || r.reason !== 'rate') break
-        await wait(o.waitMs ?? 5000)
+        await wait(Math.round((o.waitMs ?? 5000) * (1 + (o.jitter ?? Math.random)())))   // back off with jitter: scans sharing the key do not retry in step
       }
       if (!r) continue
       if (r.ok) { results.push({ i, hits: r.hits }); continue }

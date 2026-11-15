@@ -178,3 +178,17 @@ test('a spend refusal from the search or the model is never swallowed: it stops 
   const r = await researchCompany(C, PLAN, ev(), { ...base.d, isRefusal, complete: async () => { throw new Error('network') } })
   assert.equal(r.person, null)
 })
+
+test('goal-driven scan: the company stage can be called again and again; the same company in the same place is researched once per scan', async () => {
+  const { memoCompanyResearch } = await import('../lib/research/company.ts')
+  let calls = 0
+  let fail = true
+  const memo = memoCompanyResearch(async (_c, _p, e) => { calls++; if (e.company === 'Flaky Co' && fail) { fail = false; throw new Error('network') } return { site: null, sources: [], person: null, location: null, whatTheyDo: e.company, emails: [] } })
+  const a = await memo(C, PLAN, ev({ company: 'Tarrytown Roofing LLC' }))
+  const b = await memo(C, PLAN, ev({ company: 'Tarrytown Roofing', sourceUrl: 'https://other.example/x' }))   // another loop, another source
+  assert.equal(calls, 1); assert.equal(b, a); assert.deepEqual([memo.size, memo.hits], [1, 1])
+  await memo({ ...C, where: 'Dallas, Texas' }, PLAN, ev({ company: 'Tarrytown Roofing' }))
+  assert.equal(calls, 2, 'another place is another company')
+  await assert.rejects(memo(C, PLAN, ev({ company: 'Flaky Co' })))
+  assert.equal((await memo(C, PLAN, ev({ company: 'Flaky Co' }))).whatTheyDo, 'Flaky Co', 'a failed research is tried again')
+})

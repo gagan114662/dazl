@@ -310,3 +310,21 @@ export function companySearch(search: SearchFn, after: string, o: { retries?: nu
     return []
   }
 }
+
+// GOAL-DRIVEN SCAN (MISSION v2, Hermes 05:40): the orchestrator (A's run.ts) calls the company stage again on every loop, and the same company
+// often comes back from another trigger or source. One memo per scan: the same company (by its distinctive name words) in the same place is
+// researched once and its result reused, so a later loop spends no search, fetch or model call on it. A failed research (an exception, a
+// spend refusal) is not kept, so it is tried again. `size` is how many companies were researched; `hits` how many calls were answered from it.
+export function memoCompanyResearch(research: (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent) => Promise<CompanyResearch>) {
+  const done = new Map<string, Promise<CompanyResearch>>()
+  let hits = 0
+  const keyOf = (c: ResearchCase, ev: ResearchEvent) => `${nameTokens(ev.company).join(' ')}|${norm(c.where)}`
+  const fn = async (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent): Promise<CompanyResearch> => {
+    const k = keyOf(c, ev), had = done.get(k)
+    if (had) { hits++; return had }
+    const p = research(c, plan, ev)
+    done.set(k, p)
+    try { return await p } catch (e) { done.delete(k); throw e }
+  }
+  return Object.defineProperties(fn, { size: { get: () => done.size }, hits: { get: () => hits } }) as typeof fn & { readonly size: number; readonly hits: number }
+}

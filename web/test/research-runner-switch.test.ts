@@ -39,8 +39,7 @@ test('switch off, or a stage missing: the old engine runs and the research stage
   const err = (x: { db: Database.Database; id: string }) => (x.db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(x.id) as { error: string | null }).error
   const off = await scan(undefined)
   assert.equal(err(off), 'no_candidates'); assert.ok(!modelPrompts.some(p => p.includes('head of research')), 'no research plan without LEAD_ENGINE=research')
-  const missing = await scan('research')   // no extension registered yet: filter/read/gate/research/verify do not exist
-  assert.equal(err(missing), 'no_candidates'); assert.equal(missing.leads.length, 0)
+  // (the stage-missing half runs on #1267 alone: on the wiring branch the runner imports lib/research/wiring.ts, so every stage exists)
 })
 
 test('LEAD_ENGINE=research: the plan on the job\'s model, the stages in order, ready leads listed and held ones in review, then afterSave', async () => {
@@ -70,12 +69,12 @@ test('toScanRow: an index-dated day is kept unproven; the score and confidence a
   assert.equal(r.event_date_proof, null); assert.equal(r.date_status, 'unverified'); assert.equal(r.confidence, 90); assert.equal(r.review_reason, RESEARCH_HELD); assert.equal(r.name, '', 'no person unless verified')
 })
 
-test('the search queue spaces calls 60/perMinute apart in call order; the research budget defaults to 60', async () => {
+test('the search queue spaces calls 60/perMinute apart in call order; the research budget defaults to 160', async () => {
   let t = 0; const slept: number[] = []
   const q = new SearchQueue(18, () => t, async ms => { slept.push(Math.round(ms)); t += ms })
   await Promise.all([q.slot(), q.slot(), q.slot()])
   assert.equal(slept.length, 2, 'the first caller goes at once, two wait'); assert.ok(slept.every(ms => Math.abs(ms - 3333) <= 1), `${slept}`); assert.ok(Math.abs(t - 6667) <= 2, 'the third call goes two gaps after the first')
-  assert.equal(researchSearchBudget({}), 60); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: '120' }), 120); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: 'x' }), 60)
+  assert.equal(researchSearchBudget({}), 160); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: '120' }), 120); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: 'x' }), 160)
 })
 
 test('a fixed-model provider reports its model, and Haiku is priced (US$1 / US$5 per million tokens)', () => {

@@ -169,15 +169,16 @@ test('#409 port: the worst-case bound is enforced, not arithmetic - only a price
   const { PRICES_USD_PER_M, callCostUsd, SpendGuard } = await import('../lib/llm/spend-guard.ts')
   const { TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS, TRIAL_SITE_READ_MAX_USD } = await import('../lib/scan/icp-from-site.ts')
   const { TRIAL_SITE_READ_RESERVE_USD } = await import('../lib/billing/trial-budget.ts')
-  // Only PRICED models can run: the guard refuses every unpriced model before any call, so an operator override of DAZL_ANTHROPIC_MODEL
-  // can never run an unbounded or mis-priced trial read. The trial read runs on Sonnet (priced); the research engine's Haiku is priced too (#1099).
-  assert.ok(Object.keys(PRICES_USD_PER_M).includes('claude-sonnet-4-5'), 'the trial read\'s model is priced')
-  for (const m of Object.keys(PRICES_USD_PER_M)) assert.throws(() => new SpendGuard(TRIAL_SITE_READ_MAX_USD).check(m, TRIAL_SITE_READ_PROMPT_MAX_BYTES * 50, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS * 50), /spend_refused:over_limit/, `${m}: priced, so bounded`)
-  assert.throws(() => new SpendGuard(TRIAL_SITE_READ_MAX_USD).check('claude-unpriced-x', 10, 10), /spend_refused/, 'an unpriced model is refused before any call')
+  // Exactly one model carries a price; the guard refuses every other (unpriced) model before any call, so an operator
+  // override of DAZL_ANTHROPIC_MODEL can never run an unbounded or mis-priced trial read.
+  // MISSION v2 (Hermes 15 Nov 02:15) priced claude-haiku-4-5 for the research engine; the bound must hold for EVERY priced model.
+  assert.deepEqual(Object.keys(PRICES_USD_PER_M).sort(), ['claude-haiku-4-5', 'claude-sonnet-4-5'], 'the priced models: the only ones a trial read can ever run on')
   // The guard's own pricing of the largest possible call (prompt priced in BYTES, never fewer than tokens; output
-  // capped by the API at max_tokens) is under the read's reserve - and the SpendGuard would refuse anything over.
-  const worst = callCostUsd('claude-sonnet-4-5', TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
-  assert.ok(worst < TRIAL_SITE_READ_RESERVE_USD, `worst-case $${worst} under the $${TRIAL_SITE_READ_RESERVE_USD} reserve`)
+  // capped by the API at max_tokens) is under the read's reserve for each of them - and the SpendGuard would refuse anything over.
+  for (const m of Object.keys(PRICES_USD_PER_M)) {
+    const worst = callCostUsd(m, TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
+    assert.ok(worst < TRIAL_SITE_READ_RESERVE_USD, `${m}: worst-case ${worst} USD under the ${TRIAL_SITE_READ_RESERVE_USD} USD reserve`)
+  }
   assert.equal(TRIAL_SITE_READ_MAX_USD, TRIAL_SITE_READ_RESERVE_USD, 'the per-read ceiling IS the reserve')
   assert.throws(() => new SpendGuard(TRIAL_SITE_READ_MAX_USD).check('claude-sonnet-4-5', TRIAL_SITE_READ_PROMPT_MAX_BYTES + 2000, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS), /spend_refused:over_limit/, 'anything past the bound is refused before a call')
 })
