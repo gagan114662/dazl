@@ -191,7 +191,10 @@ test('boundary: only the email finder module reads or writes the candidate table
   }
   walk('lib'); walk('app')
   // #1036: the lead-deletion paths (and the staging real-company check's cleanup) also DELETE these rows with their leads (delete-only; they never read or write a candidate).
-  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-pattern.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
+  // #1036: the finder's own two modules beside email-pattern.ts: email-formats.ts (learns a tenant's address format from its confirmed
+  // addresses and builds the one labelled guess) and verify-usage.ts (counts the mailbox checks the caps count). Neither is a contact
+  // consumer: nothing under lib/outreach or app/ reads the table (legal-policy.test.ts), and a guess is never a draft recipient.
+  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-formats.ts', 'lib/people/email-pattern.ts', 'lib/people/verify-usage.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
   for (const f of ['lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts']) for (const m of readFileSync(join(root, f), 'utf8').matchAll(/[^\n]*(?:email_candidates|email_patterns)[^\n]*/g)) assert.match(m[0], /DELETE FROM|'email_candidates', 'email_patterns'|no such table|\/\//, `${f}: delete-only: ${m[0].trim()}`)
 })
 

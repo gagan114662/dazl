@@ -66,6 +66,7 @@ import { compileTargeting, planView } from '@/lib/scan/targeting'
 // A preset is also a structured reason (#385, lib/scan/feedback.ts): later runs do not bring that account, person or
 // event back, and Undo resets it. Free text alone only quarantines: nothing is learned from it. Wrong person needs a
 // person on the lead, wrong timing a dated event, so they are offered only then.
+const NO_GUESSES: unknown[] = [] // a stable empty list: the work-email panel resyncs its guesses when this identity changes
 const REJECT_PRESETS: { label: string; code: string; needs?: 'person' | 'date' }[] = [
   { label: 'Wrong industry', code: 'wrong_industry' }, { label: 'Wrong location', code: 'wrong_location' },
   { label: 'Wrong person', code: 'wrong_person', needs: 'person' }, { label: 'Wrong timing', code: 'wrong_timing', needs: 'date' },
@@ -352,8 +353,8 @@ export default function LeadsClient() {
 
   const [hiddenCount, setHiddenCount] = useState(0)
   // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
-  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']> } | null>(null)
-  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [] } : undefined
+  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown> } | null>(null)
+  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [], guesses: workEmailPage.guesses?.[leadId] ?? NO_GUESSES } : undefined
   const [siteUrl, setSiteUrl] = useState('')
   const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
