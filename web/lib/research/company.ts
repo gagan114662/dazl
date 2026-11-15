@@ -313,11 +313,11 @@ Rules: never invent a name; the quote must be copied character for character fro
   let person: Person | null = null
   const askModel = async (extra = '') => parseJson(await deps.complete(promptFor() + extra, 900).catch(soft(null)))
   // a. the pages already opened, when the company's own site is among them
-  if (siteHost && sources.length) { j = await askModel() ?? {}; person = acceptPerson(j, sources, 'research') }
+  if (siteHost && sources.length) { j = await askModel() ?? {}; person = acceptPerson(j, sources, 'research', !!seed) }
   // b. the trigger article's own senior person (its quote checked on that article)
   if (!person) {
     const cand = ev.people.find(x => x.name && x.quote && SENIOR.test(`${x.title ?? ''} ${x.quote}`))
-    if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article')
+    if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article', !!seed)
   }
   // c. the searches, only for a company whose own pages and trigger article name nobody
   if (!person) {
@@ -339,10 +339,10 @@ Rules: never invent a name; the quote must be copied character for character fro
       else add(u, sn.slice(0, SNIPPET_TEXT), 'snippet')
     }
     // a new call only when the searches added a source, or when no call has been made yet
-    if (sources.length && (added > 0 || !(siteHost && sources.length))) { const jj = await askModel() ?? {}; j = { ...j, ...jj }; person = acceptPerson(jj, sources, 'research') }
+    if (sources.length && (added > 0 || !(siteHost && sources.length))) { const jj = await askModel() ?? {}; j = { ...j, ...jj }; person = acceptPerson(jj, sources, 'research', !!seed) }
     if (!person && sources.length) {
       const j2 = await askModel(`\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`)
-      const p2 = j2 ? acceptPerson(j2, sources, 'second look') : null
+      const p2 = j2 ? acceptPerson(j2, sources, 'second look', !!seed) : null
       if (p2) { person = p2; j = { ...j, ...j2 } }
     }
   }
@@ -356,23 +356,39 @@ Rules: never invent a name; the quote must be copied character for character fro
 // A registry lead (a city permit) names a contractor of record: that name is a SEED to search for, never a decision-maker by itself. A permit
 // "Applicant" / "System Administrator" is whoever filed the paper; only a page that states a real role at this company makes a person.
 const ROLE_ONLY_RX = /^(?:contractor of record(?: on the .{1,40} permit)?|applicant|system administrator|administrator|agent|contact|registered agent)$/i
+// A seed is a person's name: cut at a company suffix, refuse a company or a place ("the city of Austin", "Lone Star Roofing") and one-word names.
+const COMPANY_SUFFIX = /^(?:llc|inc|corp|corporation|co|company|ltd|lp|llp|pllc|construction|roofing|services|group)$/i
+function seedName(raw: string, company: string): string | null {
+  const toks: string[] = []
+  for (const w of raw.trim().replace(/[.\s]+$/, '').split(/\s+/)) { if (COMPANY_SUFFIX.test(w.replace(/\.$/, ''))) break; toks.push(w) }
+  if (toks.length < 2 || /^(?:the|city|county|town|state|n\/a)$/i.test(toks[0])) return null
+  const name = toks.join(' ').replace(/[.\s]+$/, '')
+  const ct = nameTokens(company)
+  if (norm(name).split(' ').filter(w => ct.includes(w)).length >= 2) return null   // that is the company's own name
+  return name
+}
 export function registrySeed(ev: ResearchEvent, pageTexts: string[] = []): string | null {
   const texts = [ev.quote, ev.whyNow, ev.whatHappened, ...ev.people.flatMap(p => [p.quote, p.name]), ...pageTexts.map(t => t.slice(0, 20_000))]
   for (const t of texts) {
-    const m = /contractor of record:?\s+([\p{L}][\p{L}.'’-]*(?:\s+[\p{L}][\p{L}.'’-]*){1,3})/iu.exec(t ?? '')
-    if (m) return m[1].trim().replace(/[.\s]+$/, '')
+    const m = /[Cc]ontractor of record:?\s+(\p{Lu}[\p{L}.'’-]*(?:\s+\p{Lu}[\p{L}.'’-]*){1,2})/u.exec(t ?? '')   // capitalised words only: "Rudy Alvarez issued 3 permits" stops at "issued"
+    const nm = m ? seedName(m[1], ev.company) : null
+    if (nm) return nm
   }
   const p = ev.people.find(x => x.name && /contractor of record/i.test(`${x.title ?? ''} ${x.quote}`))
-  if (p) return p.name
+  if (p && seedName(p.name, ev.company)) return seedName(p.name, ev.company)
   for (const t of pageTexts) {   // the open-data record as JSON: the model may have left the contractor out of ev.people
     const j = /"contractor_full_name"\s*:\s*"([\p{L}][\p{L}.' -]{3,60})"/iu.exec(t.slice(0, 200_000))
-    if (j && /\s/.test(j[1].trim())) return j[1].trim()
+    const nm = j ? seedName(j[1], ev.company) : null
+    if (nm) return nm
   }
   return null
 }
 
 // The model's person, kept only when its quote is literally in the source it cites and names the person: never trusted to have copied it.
-function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Person['from']): Person | null {
+// A filing label is not a role. Titles that are only a filing role; and, for a registry lead, a quote that is the permit's own line.
+const FILING_TITLE = /\b(?:contractor of record|applicant|permit ?holder|system administrator|registered agent|licen[cs]ee)\b|^(?:licensed |general )?contractor\W*$|^(?:administrator|agent|contact)\W*$/i
+const FILING_QUOTE = /contractor of record|\bapplicant\b|permit ?holder|\"contractor_full_name\"/i
+function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Person['from'], registry = false): Person | null {
   const dm = j.decision_maker && typeof j.decision_maker === 'object' ? j.decision_maker as Record<string, unknown> : null
   const name = str(dm?.name), quote = str(dm?.quote)
   if (!dm || !name || !quote || /^null$/i.test(name)) return null
@@ -383,7 +399,9 @@ function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Perso
   const profile = str(j.profile_url)
   const profileUrl = profile && /^https?:\/\//i.test(profile) && sources.some(s => s.url === profile || s.text.includes(profile)) ? profile : null
   const title = str(dm.title)
-  if (title && ROLE_ONLY_RX.test(title.trim())) return null   // a filing role is not a decision-maker's title
+  if (title && (ROLE_ONLY_RX.test(title.trim()) || FILING_TITLE.test(title.trim()))) return null   // a filing role is not a decision-maker's title
+  // a registry lead: the quote must state a real role in its own words (not the permit's "contractor of record" line)
+  if (registry && (FILING_QUOTE.test(quote) || !SENIOR.test(`${title ?? ''} ${quote}`))) return null
   return { name, title, sourceId: src.id, quote, profileUrl, from }
 }
 

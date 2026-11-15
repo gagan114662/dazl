@@ -261,7 +261,7 @@ test('registry seed (Hermes 09:00): the contractor of record is searched for by 
   const good = deps({ search, answers: [null, JSON.stringify({ decision_maker: { name: 'Rudy Alvarez', title: 'Owner', source_id: 'S1', quote: press }, profile_url: null, location: null, what_they_do: 'roofing' })] })
   const r = await researchCompany(C, PLAN, REG, good.d)
   assert.equal(r.person?.name, 'Rudy Alvarez'); assert.equal(r.person?.title, 'Owner')
-  assert.ok(good.asked[0]?.includes('"Rudy Alvarez" "Lone Star Roofing LLC"') || good.asked.some(q => q.includes('"Rudy Alvarez"')), 'the seed name is searched')
+  assert.ok(good.asked.filter(q => !q.includes('official website'))[0]?.includes('"Rudy Alvarez" "Lone Star Roofing LLC"'), 'the seed name is the first person search')
   assert.ok(good.prompts.every(p => p.includes('contractor of record: that is a lead to check')), 'the model is told the permit role is not a title')
   // a model that takes the filing role as the title is refused
   const bad = deps({ search, answers: [null, JSON.stringify({ decision_maker: { name: 'Rudy Alvarez', title: 'Contractor of record on the Austin permit', source_id: 'S1', quote: press }, profile_url: null, location: null, what_they_do: null }), null] })
@@ -275,4 +275,20 @@ test('registry seed: read from the event page text when the model left the contr
   assert.equal(registrySeed(bare, ['{"contractor_company_name":"Lone Star Roofing LLC","contractor_full_name":"RUDY ALVAREZ","permit_number":"2026-1"}']), 'RUDY ALVAREZ')
   assert.equal(registrySeed(bare, ['work: re-roof; at 1 Main St; contractor of record: Rudy Alvarez.']), 'Rudy Alvarez')
   assert.equal(registrySeed(bare, ['{"contractor_full_name":"N/A"}']), null)
+})
+
+test('registry seed (review): the permit\'s own line never makes a person, a clean seed name, a filing title in any wording', async () => {
+  assert.equal(registrySeed(ev({ people: [], quote: 'Contractor of record: Rudy Alvarez issued 3 permits' })), 'Rudy Alvarez')
+  assert.equal(registrySeed(ev({ people: [], quote: 'contractor of record: the city of Austin' })), null)
+  assert.equal(registrySeed(ev({ company: 'Lone Star Roofing LLC', people: [], quote: 'Contractor of record: Lone Star Roofing LLC' })), null)
+  assert.equal(registrySeed(ev({ company: 'Acme Co', people: [], quote: 'Contractor of record Rudy Alvarez Roofing LLC' })), 'Rudy Alvarez', 'the colon is optional; the company suffix is cut')
+  assert.equal(registrySeed(ev({ company: 'Acme Co', people: [], quote: 'Contractor of record: Rudy Alvarez Roofing LLC' })), 'Rudy Alvarez')
+  const REG = ev({ company: 'Lone Star Roofing LLC', sourceUrl: 'https://data.austintexas.gov/resource/x.json?permit_number=1', quote: 'Contractor of record: Rudy Alvarez.', people: [] })
+  const permit = 'work: re-roof of a house at 1 Main St in Austin, Texas, issued this month; Contractor of record: Rudy Alvarez. Permit page for the roofing job.'
+  PAGES['https://data.austintexas.gov/resource/x.json?permit_number=1'] = `<html><body><p>${permit}</p><p>${'Lone Star Roofing records. '.repeat(20)}</p></body></html>`
+  for (const title of ['Owner', null, 'Permit holder', 'Contractor of record for Lone Star', 'Applicant (roofing)']) {
+    const t = deps({ answers: [null, JSON.stringify({ decision_maker: { name: 'Rudy Alvarez', title, source_id: 'S1', quote: 'Contractor of record: Rudy Alvarez. Permit page for the roofing job.' }, profile_url: null, location: null, what_they_do: null }), null] })
+    assert.equal((await researchCompany(C, PLAN, REG, t.d)).person, null, `${title}: the permit's own line states no role at the company`)
+  }
+  delete PAGES['https://data.austintexas.gov/resource/x.json?permit_number=1']
 })
