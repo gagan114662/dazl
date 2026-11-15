@@ -31,7 +31,11 @@ export function asksForPost(request: string | null | undefined): boolean {
   const sentence = firstSentence(request), m = POSTING_ASK.exec(sentence)
   if (!m) return false
   const before = sentence.slice(0, m.index), after = sentence.slice(m.index + m[0].length)
-  return !NEGATED.test(before) && !OTHER_EVENT.test(before) && !ANOTHER_CLAUSE.test(after)
+  // after the phrase comes the post's topic ("about outbound, cold email or lead generation"): an event word there is fine on its own, but a second event joined
+  // by "or" / "and" ("posting about outbound or opened a new office", "... and hiring SDRs") is another trigger the post's day must not date
+  const joinedEvent = new RegExp(`(?:,\\s*|\\s)(?:or|and)\\s+(?:\\w+\\s+){0,2}?${OTHER_EVENT.source.replace(/^\\b/, '')}`, 'i')
+  const rest = request.slice(sentence.length)   // a later sentence that adds an event ("They must also have opened an office.")
+  return !NEGATED.test(before) && !OTHER_EVENT.test(before) && !ANOTHER_CLAUSE.test(after) && !joinedEvent.test(after) && !OTHER_EVENT.test(rest)
 }
 
 const SLD = new Set(['co', 'com', 'net', 'org', 'ac', 'gov', 'edu', 'ltd', 'plc', 'id', 'asn'])

@@ -124,11 +124,17 @@ test('#878 (review) the post must be the request\'s only event, asked for and no
     'Agencies in Sydney posting about outbound or that opened a new office in the last 90 days',       // another event after it
     'Marketing agencies in Sydney that are not posting about outbound in the last 90 days',
     'SaaS companies hiring SDRs in the last 30 days, excluding companies posting about AI',
+    // (second review) a second event joined AFTER the phrase, or in a later sentence
+    'Agencies in Sydney posting about outbound or opened a new office in the last 90 days',
+    'Agencies in Sydney posting about cold email, or hiring SDRs, in the last 90 days',
+    'Agencies in Sydney posting about outbound and hiring SDRs in the last 90 days',
+    'Agencies in Sydney posting about outbound in the last 90 days. They must also have opened an office.',
   ]) assert.equal(ownPostDate(ACME({ request })).date, null, request)
   const melbourne = 'Back in March 2023 we opened our Melbourne office, and it has grown to twelve people since then.'
   assert.match(ownPostDate(ACME({ excerpt: melbourne })).why, /quote dates its own event/)
   for (const q of ['We opened in 2024 and have run cold email for every client since day one.', 'Last month our team booked forty meetings for a single client with cold email.', 'In Q3 our outbound programme for clients booked 140 meetings across Sydney.']) assert.equal(ownPostDate(ACME({ excerpt: q })).date, null, q)
   assert.equal(asksForPost('Agencies in the U.S. posting about cold email in the last 90 days'), true, 'an abbreviation does not end the sentence')
+  for (const r of ['Agencies posting about hiring and onboarding SDRs', 'Founders blogging about fundraising and growth', 'Agencies posting about outbound, excluding those that raised funding']) assert.equal(asksForPost(r), true, `the post's topic is not a second event: ${r}`)
 })
 test('#878 (review) a slug is not a post: service, careers and landing pages need an article node or a blog / news address', () => {
   for (const url of ['https://acmegrowth.com.au/services/cold-email-outreach', 'https://acmegrowth.com.au/careers/senior-sales-development-rep', 'https://acmegrowth.com.au/contact-us-today']) assert.match(ownPostDate(ACME({ url })).why, /not a single article/, url)
