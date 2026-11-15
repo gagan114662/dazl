@@ -96,7 +96,6 @@ test('runJob: ZERO-MATCH — the search returned nothing and no source failed', 
 
 // A maybe-billed (5xx / timeout) TinyFish call keeps the fail-closed rule ONLY when the call is priced: a free ($0) failed call is one failed page
 // (#848, owner-approved 2026-11-11; tinyfish-free-failure.test.ts). These tests pin the priced path, so they set a TinyFish price like the cap tests below.
-// Likewise a 429: on a free call it is a wait the scan survives (Hermes 15 Nov 03:35); the 429 tests below pin the priced call's rejection rule.
 function ptest(name: string, fn: () => Promise<void>) {
   test(name, async () => {
     process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = '0.001'; process.env.DAZL_SCAN_PRICE_TINYFISH_FETCH_USD = '0.001'
@@ -354,7 +353,7 @@ test('runJob: CAUSAL - company path: a documented 403 rejection ends provider_re
   assert.equal(companyRow(e)?.status, 'error')
 })
 
-ptest('runJob: CAUSAL - company path: a documented 429 rejection ends provider_rate_limited, NO later paid reserve', async () => {
+test('runJob: CAUSAL - company path: a documented 429 rejection ends provider_rate_limited, NO later paid reserve', async () => {
   const e = await companyFailure({ searchStatus: 429 })
   assert.equal(e.r.calls.searches.length, 1, 'the rate-limited request WAS sent')
   assert.equal(e.r.calls.prompts.length, 0, 'no model request after the rejection')
@@ -384,7 +383,7 @@ ptest('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 5
   assert.equal((e.r.db.prepare('SELECT attempts FROM scan_jobs').get() as { attempts: number }).attempts, 1, 'the terminal attempt never re-attempts')
 })
 
-ptest('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 429 (documented rejection): provider_rate_limited, NO later paid send', async () => {
+test('runJob: CAUSAL - company path: searches clean, the FETCH batch answered 429 (documented rejection): provider_rate_limited, NO later paid send', async () => {
   const e = await companyFailure({ hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], fetchStatus: 429 })
   assert.equal(e.r.calls.searches.length, 3, 'the three fixed searches ran clean')
   assert.equal(e.r.calls.tfFetchBatches.length, 1, 'the fetch batch WAS sent (a rejection is an answer, not a refusal)')
@@ -432,7 +431,7 @@ test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 403 (documen
   assert.equal(companyRow(e)?.status, 'error')
 })
 
-ptest('runJob: CAUSAL - company path: query 1 hits, query 2 answered 429: NO fetch send, provider_rate_limited', async () => {
+test('runJob: CAUSAL - company path: query 1 hits, query 2 answered 429: NO fetch send, provider_rate_limited', async () => {
   const e = await companyFailure({ hitsFor: (n) => n === 0 ? [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }] : [], searchStatusFor: (n) => n === 1 ? 429 : undefined })
   assert.equal(e.r.calls.searches.length, 2, 'query 1 ran clean, the query-2 request WAS sent')
   assert.equal(e.r.calls.tfFetchBatches.length, 0, 'the fetch batch was never SENT after the rejection')
