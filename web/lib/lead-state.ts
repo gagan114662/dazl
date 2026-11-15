@@ -92,6 +92,17 @@ export function researchHint(causes: ResearchCause[]): string {
   if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
   return `${need === causes.length ? (need === 1 ? 'Its event day is' : 'Their event days are') : `For ${need} of them the event day is`} verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
 }
+// Home's "N research only" chip explains the WHOLE group in its InfoTip. It used to give one fixed list of reasons ("No verified, dated event, outside your
+// time window, or someone else's customer") for every lead in it - false for a lead whose day IS verified and that only the timing gate holds (#1176, the
+// prod live check of 66449147: Zayed Law and Ogletree Deakins under that sentence). It now names the causes the group really has, in the per-lead lines' own words.
+const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported']
+export function researchTip(causes: ResearchCause[]): string {
+  const n = new Map<ResearchCause, number>()
+  for (const c of causes) n.set(c, (n.get(c) ?? 0) + 1)
+  const parts = CAUSE_ORDER.filter(c => n.has(c)).sort((a, b) => n.get(b)! - n.get(a)! || CAUSE_ORDER.indexOf(a) - CAUSE_ORDER.indexOf(b))
+    .map(c => { const t = CAUSE_TEXT[c]; return `${n.get(c)}: ${t.charAt(0).toUpperCase()}${t.slice(1)}.` })
+  return `${parts.length ? `${parts.join(' ')} ` : ''}Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.`
+}
 const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
 const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }
 export interface RecoveryNote { ran: boolean; text: string }
