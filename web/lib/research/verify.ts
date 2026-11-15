@@ -115,16 +115,15 @@ export async function verifyLead(ev: EventToVerify, page: OpenedPage, person: Pe
   const now = opts.now ?? Date.now()
   // a spend refusal (SpendRefused from lib/llm/spend-guard.ts, thrown or as the cause) is the run's budget, not this lead's verdict; any other
   // failure is a check that could not run. Both fail closed. NB: 'budget' is reported only when the run's Decide lets the refusal through.
-  let budget = false
-  const ask = (state: Record<string, unknown>, q: Parameters<Decide>[1]) => decide(state, q).catch((e: unknown) => {
-    if (e instanceof SpendRefused || (e as { cause?: unknown } | null)?.cause instanceof SpendRefused) budget = true
-    return null
-  })
+  const refused = (e: unknown) => { for (let x = e, i = 0; x && i < 5; x = (x as { cause?: unknown }).cause, i++) if (x instanceof SpendRefused) return true; return false }
+  const budget = { claim: false, role: false }   // per question: the label names the check that did not run
+  const ask = (which: 'claim' | 'role', state: Record<string, unknown>, q: Parameters<Decide>[1]) =>
+    Promise.resolve().then(() => decide(state, q)).catch((e: unknown) => { if (refused(e)) budget[which] = true; return null })
   const literal = quoteOnPage(ev.quote, page.text)
   const passage = literal ? passageAround(ev.quote, page.text) : ''
   let support: number | null = null
   if (literal) {
-    const a = await ask({ page_excerpt: passage.slice(0, 6000), page_url: page.url }, { claim: { type: 'noul', instructions: `Does the excerpt support this fact: ${ev.company} ${ev.whatHappened || ev.whyNow}` } })
+    const a = await ask('claim', { page_excerpt: passage.slice(0, 6000), page_url: page.url }, { claim: { type: 'noul', instructions: `Does the excerpt support this fact: ${ev.company} ${ev.whatHappened || ev.whyNow}` } })
     support = typeof a?.claim === 'number' ? a.claim : null
   }
   const eventOk = literal && support !== null && support >= SUPPORT_MIN
@@ -137,20 +136,19 @@ export async function verifyLead(ev: EventToVerify, page: OpenedPage, person: Pe
     const around = passageAround(person.quote, person.sourceText, 300)
     p.literal = !!surname && quoteOnPage(person.quote, person.sourceText) && flat(`${around} ${person.quote}`).split(' ').includes(surname)
     if (p.literal) {
-      const a = await ask({ excerpt: around.slice(0, 6000), source_url: person.sourceUrl }, { role: { type: 'noul', instructions: `Does the excerpt show that ${person.name} works at ${ev.company} as ${person.title ?? 'a senior person'} or in another senior, decision-making role there?` } })
+      const a = await ask('role', { excerpt: around.slice(0, 6000), source_url: person.sourceUrl }, { role: { type: 'noul', instructions: `Does the excerpt show that ${person.name} works at ${ev.company} as ${person.title ?? 'a senior person'} or in another senior, decision-making role there?` } })
       p.support = typeof a?.role === 'number' ? a.role : null
       p.ok = p.support !== null && p.support >= SUPPORT_MIN
     }
   }
-  const unrun = budget ? ['the spend limit stopped the second check', 'budget'] as const : ['the second check could not run', 'check_failed'] as const
+  const unrun = (b: boolean) => b ? ['the spend limit stopped the second check', 'budget'] as const : ['the second check could not run', 'check_failed'] as const
   const [why, code]: readonly [string | null, VerdictCode] = !literal ? ['the quote is not on the cited page', 'quote_not_on_page']
-    : !eventOk ? (support === null ? unrun : ['the cited passage does not support the event', 'event_unsupported'])
+    : !eventOk ? (support === null ? unrun(budget.claim) : ['the cited passage does not support the event', 'event_unsupported'])
     : !dateOnPage ? ['the event day is not stated on the cited page', 'no_day_on_page']
     : !dayIn ? ['the event day is outside the time window', 'out_of_window']
     : !person ? ['no named person', 'no_person']
     : !p.literal ? ['the person is not named on their cited page', 'person_not_on_page']
-    : !p.ok ? (p.support === null ? unrun : ['the cited page does not show the person in a senior role there', 'person_unsupported'])
+    : !p.ok ? (p.support === null ? unrun(budget.role) : ['the cited page does not show the person in a senior role there', 'person_unsupported'])
     : [null, 'ready']
   return { event: { literal, support, ok: eventOk, passage }, day: { date: dateOnPage ? ev.eventDate : null, onPage: dateOnPage, inWindow: dayIn }, person: p, ready: why === null, why, code }
 }
-

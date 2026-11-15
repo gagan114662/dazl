@@ -202,6 +202,14 @@ test('goal loop (run.ts calls verify many times per run): a stable code per verd
   assert.equal(wrapped.code, 'budget')
   const roleCapped = await verify(r, {}, async (_s, q) => { if ('claim' in q) return { claim: 0.9 }; throw new SpendRefused('owner_pool_limit') })
   assert.deepEqual([roleCapped.ready, roleCapped.code], [false, 'budget'])
+  const roleWrapped = await verify(r, {}, async (_s, q) => { if ('claim' in q) return { claim: 0.9 }; throw new Error('a', { cause: new Error('b', { cause: new SpendRefused('owner_pool_limit') }) }) })
+  assert.equal(roleWrapped.code, 'budget', 'a refusal two causes deep, on the role question')
+  // the label is the failed check's own: the claim failed for another reason, the role was refused -> check_failed (claim comes first)
+  const mixed = await verify(r, {}, async (_s, q) => { if ('claim' in q) throw new Error('provider down'); throw new SpendRefused('owner_pool_limit') })
+  assert.equal(mixed.code, 'check_failed')
+  // a Decide that throws synchronously still gives a verdict (fail closed), never a rejection
+  const syncThrow = await verify(r, {}, (() => { throw new SpendRefused('owner_pool_limit') }) as unknown as Decide)
+  assert.equal(syncThrow.code, 'budget')
   // memoDecide: the same lead verified again in a later round costs nothing
   calls = 0
   const memo = memoDecide(counting(recorded(r)))
