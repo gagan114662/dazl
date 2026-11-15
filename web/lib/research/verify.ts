@@ -11,6 +11,7 @@
 // The second model is injected (`decide`): the free Decider on OpenRouter when reachable, a Claude model that did not write the claim
 // otherwise (part C owns that client). Nothing here calls a network.
 import { norm } from '../scan/evidence.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 
 export type Decide = (state: Record<string, unknown>, questions: Record<string, { type: 'noul'; instructions: string }>) => Promise<{ [k: string]: number | null | undefined } | null>
 export const WINDOW_DAYS = 90
@@ -85,39 +86,66 @@ export interface Verdict {
   person: { name: string | null; title: string | null; literal: boolean; support: number | null; ok: boolean; sourceUrl: string | null }
   ready: boolean
   why: string | null       // the first thing that is not proven, in words; null when ready
+  code: VerdictCode        // the same, as a stable code the goal loop (run.ts) tallies per trigger / source to steer the next round
+}
+// 'budget': a spend limit refused the second check (lib/scan/spend-cap.ts SpendRefused): the run is out of money, NOT a dead end for this
+// lead's trigger or source. 'check_failed': the second check could not run for another reason (a provider error, an unreadable answer).
+export type VerdictCode = 'ready' | 'quote_not_on_page' | 'event_unsupported' | 'no_day_on_page' | 'out_of_window' | 'no_person' | 'person_not_on_page' | 'person_unsupported' | 'check_failed' | 'budget'
+
+// A run asks the second model the same question more than once when the goal loop comes back to an event (another round, another
+// sub-hunt). memoDecide wraps one run's Decide so an identical question is paid once; a failed or refused answer is not remembered.
+export function memoDecide(decide: Decide): Decide {
+  const seen = new Map<string, Promise<{ [k: string]: number | null | undefined } | null>>()
+  return (state, questions) => {
+    const k = JSON.stringify([state, questions])
+    const hit = seen.get(k)
+    if (hit) return hit
+    const p = decide(state, questions)
+    seen.set(k, p)
+    p.then(a => { if (a === null) seen.delete(k) }, () => seen.delete(k))
+    return p
+  }
 }
 
+// The free checks run first (the quote and the day on the page, the window, the person named on their page); the second model is asked only
+// when every free check passed, so a lead that cannot be ready never costs a model call (the goal loop calls this many times per run).
 export async function verifyLead(ev: EventToVerify, page: OpenedPage, person: PersonToVerify | null, decide: Decide, opts: { now?: number; windowDays?: number } = {}): Promise<Verdict> {
   const now = opts.now ?? Date.now()
   const literal = quoteOnPage(ev.quote, page.text)
   const passage = literal ? passageAround(ev.quote, page.text) : ''
-  let support: number | null = null
-  if (literal) {
-    const a = await decide({ page_excerpt: passage.slice(0, 6000), page_url: page.url }, { claim: { type: 'noul', instructions: `Does the excerpt support this fact: ${ev.company} ${ev.whatHappened || ev.whyNow}` } }).catch(() => null)
-    support = typeof a?.claim === 'number' ? a.claim : null
-  }
-  const eventOk = literal && support !== null && support >= SUPPORT_MIN
   const dateSource = `${page.text}\n${(page.metaDates ?? []).join('\n')}`   // the page's own declared dates count as the page (the reader was shown them)
   const dateOnPage = !!(ev.eventDate && ev.dateQuote && quoteOnPage(ev.dateQuote, dateSource, 1) && dateQuoteNames(ev.eventDate, ev.dateQuote, page.readAt))
   const dayIn = dateOnPage && inWindow(ev.eventDate, now, opts.windowDays)
   const p = { name: person?.name ?? null, title: person?.title ?? null, literal: false, support: null as number | null, ok: false, sourceUrl: person?.sourceUrl ?? null }
+  let around = ''
   if (person) {
     const surname = flat(person.name).split(' ').filter(w => w.length >= 2).pop() ?? ''
-    const around = passageAround(person.quote, person.sourceText, 300)
+    around = passageAround(person.quote, person.sourceText, 300)
     p.literal = !!surname && quoteOnPage(person.quote, person.sourceText) && flat(`${around} ${person.quote}`).split(' ').includes(surname)
-    if (p.literal) {
-      const a = await decide({ excerpt: around.slice(0, 6000), source_url: person.sourceUrl }, { role: { type: 'noul', instructions: `Does the excerpt show that ${person.name} works at ${ev.company} as ${person.title ?? 'a senior person'} or in another senior, decision-making role there?` } }).catch(() => null)
-      p.support = typeof a?.role === 'number' ? a.role : null
-      p.ok = p.support !== null && p.support >= SUPPORT_MIN
-    }
   }
-  const why = !literal ? 'the quote is not on the cited page'
-    : !eventOk ? (support === null ? 'the second check could not run' : 'the cited passage does not support the event')
-    : !dateOnPage ? 'the event day is not stated on the cited page'
-    : !dayIn ? 'the event day is outside the time window'
-    : !person ? 'no named person'
-    : !p.literal ? 'the person is not named on their cited page'
-    : !p.ok ? (p.support === null ? 'the second check could not run' : 'the cited page does not show the person in a senior role there')
-    : null
-  return { event: { literal, support, ok: eventOk, passage }, day: { date: dateOnPage ? ev.eventDate : null, onPage: dateOnPage, inWindow: dayIn }, person: p, ready: why === null, why }
+  // a spend refusal is the run's budget, not this lead's verdict; any other failure is a check that could not run (fail closed either way)
+  let budget = false
+  const ask = (state: Record<string, unknown>, q: Parameters<Decide>[1]) => decide(state, q).catch((e: unknown) => { if (e instanceof SpendRefused) budget = true; return null })
+  const free = literal && dayIn && !!person && p.literal
+  let support: number | null = null
+  if (free) {
+    const a = await ask({ page_excerpt: passage.slice(0, 6000), page_url: page.url }, { claim: { type: 'noul', instructions: `Does the excerpt support this fact: ${ev.company} ${ev.whatHappened || ev.whyNow}` } })
+    support = typeof a?.claim === 'number' ? a.claim : null
+  }
+  const eventOk = literal && support !== null && support >= SUPPORT_MIN
+  if (free && eventOk) {
+    const a = await ask({ excerpt: around.slice(0, 6000), source_url: person!.sourceUrl }, { role: { type: 'noul', instructions: `Does the excerpt show that ${person!.name} works at ${ev.company} as ${person!.title ?? 'a senior person'} or in another senior, decision-making role there?` } })
+    p.support = typeof a?.role === 'number' ? a.role : null
+    p.ok = p.support !== null && p.support >= SUPPORT_MIN
+  }
+  const unrun = budget ? ['the spend limit stopped the second check', 'budget'] as const : ['the second check could not run', 'check_failed'] as const
+  const [why, code]: readonly [string | null, VerdictCode] = !literal ? ['the quote is not on the cited page', 'quote_not_on_page']
+    : !dateOnPage ? ['the event day is not stated on the cited page', 'no_day_on_page']
+    : !dayIn ? ['the event day is outside the time window', 'out_of_window']
+    : !person ? ['no named person', 'no_person']
+    : !p.literal ? ['the person is not named on their cited page', 'person_not_on_page']
+    : !eventOk ? (support === null ? unrun : ['the cited passage does not support the event', 'event_unsupported'])
+    : !p.ok ? (p.support === null ? unrun : ['the cited page does not show the person in a senior role there', 'person_unsupported'])
+    : [null, 'ready']
+  return { event: { literal, support, ok: eventOk, passage }, day: { date: dateOnPage ? ev.eventDate : null, onPage: dateOnPage, inWindow: dayIn }, person: p, ready: why === null, why, code }
 }
