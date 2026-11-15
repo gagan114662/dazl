@@ -5,6 +5,7 @@ import { normalizeDomain } from './audit.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
+import { captureError } from '../ops/errors.ts'
 
 // Weekly indexing checks: does a search engine list the tenant's domain for their keywords?
 // For each saved keyword we run one TinyFish search "site:<domain> <keyword>" and record whether
@@ -169,6 +170,8 @@ async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?:
     if ((refused as SpendRefused).reason === OWNER_POOL_LIMIT_REASON) return 'spend_cap'
     throw refused
   }
+  // a fault after some keywords were checked: their (paid) results are kept below, and the fault is still reported
+  if (refused && (refused as SpendRefused).reason !== OWNER_POOL_LIMIT_REASON) captureError(refused, { source: 'worker', where: 'seo:index-checks', tenantId })
   if (out.length > 0) {
     const stamp = deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`
     // #904 fence: the results and the next run commit only if the saved domain is still the one searched. A domain

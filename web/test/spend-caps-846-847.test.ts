@@ -273,6 +273,22 @@ bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron o
     assert.equal(Number(runsC?.n), 0)
     const cfgC = await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [C])
     assert.ok(Number(cfgC?.next_run_at) >= now + 3500, 'a fault backs off an hour too, not every tick')
+    // a fault on the SECOND keyword (the store goes away after the first search): the first result is kept, the unsent slot
+    // goes back, and the fault is reported (captureError), never swallowed as a short batch
+    const { setErrorSinks } = await import('../lib/ops/errors.ts')
+    const D = 'd'.repeat(32)
+    await saveDomain(db, D, 'acme.com'); await addKeyword(db, D, 'crm'); await addKeyword(db, D, 'sales tool')
+    const seen: string[] = []
+    const restore = setErrorSinks([r => { seen.push(`${r.where}:${r.error.message}`) }])
+    let first = true
+    const g = (async (u: RequestInfo | URL) => { if (first) { first = false; await db.run('ALTER TABLE tenant_spend_pools RENAME TO tenant_spend_pools_gone') } return f(u) }) as typeof fetch
+    try {
+      const outD = await runIndexChecks(db, D, { env, fetchImpl: g })
+      assert.ok(Array.isArray(outD) && outD.length === 1, JSON.stringify(outD))
+    } finally { await db.run('ALTER TABLE tenant_spend_pools_gone RENAME TO tenant_spend_pools'); restore() }
+    assert.ok(seen.some(x => x.startsWith('seo:index-checks:') && x.includes('reservation_not_saved')), JSON.stringify(seen))
+    const runsD = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [D])
+    assert.equal(Number(runsD?.n), 1, 'the sent search counts; the refused one is given back')
   })
 })
 
