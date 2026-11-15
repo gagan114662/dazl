@@ -8,7 +8,6 @@
 //   - local part contains "fake-syncerror"  -> Gmail answers 500 for that thread (a partial sync: freshness unknown)
 //   - anything else                         -> no reply in the thread
 // The bounded delivery-notice search returns nothing. Any other Gmail call (e.g. a send) throws: nothing here can send.
-import type Database from 'better-sqlite3'
 import { isStaging, gmailIsStubbed, type Env } from '../staging.ts'
 
 export const stagingFakeReplies = (env: Env = process.env): boolean =>
@@ -18,7 +17,12 @@ export const FAKE_OPTOUT_TEXT = 'Please unsubscribe me.'
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
 const local = (email: string) => (email.split('@')[0] ?? '').toLowerCase()
 
-export function stagingFakeGmail(db: Database.Database, tenantId: string): typeof fetch {
+// The caller (replies.ts syncReplies) supplies the lookups on its own store, so this file never touches the database.
+export interface FakeReplyLookup {
+  threadOf: (gmailId: string) => { thread_id: string | null } | undefined // undefined: no such sent message
+  sentTo: (threadOrGmailId: string) => { to_email: string; sent_at: number | null } | undefined
+}
+export function stagingFakeGmail(look: FakeReplyLookup): typeof fetch {
   return (async (input: RequestInfo | URL) => {
     const u = String(input instanceof Request ? input.url : input)
     if (!u.startsWith('https://gmail.googleapis.com/gmail/v1/users/me/')) throw new Error('staging_fake_replies: unexpected request')
@@ -26,13 +30,13 @@ export function stagingFakeGmail(db: Database.Database, tenantId: string): typeo
     if (path.startsWith('messages?q=')) return json({ messages: [] })
     const minimal = path.match(/^messages\/([^?/]+)\?format=minimal$/)
     if (minimal) {
-      const row = db.prepare('SELECT thread_id FROM outreach_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, decodeURIComponent(minimal[1])) as { thread_id: string | null } | undefined
-      return row ? json({ id: minimal[1], threadId: row.thread_id ?? minimal[1] }) : json({ error: 'not_found' }, 404)
+      const t = look.threadOf(decodeURIComponent(minimal[1]))
+      return t ? json({ id: minimal[1], threadId: t.thread_id ?? minimal[1] }) : json({ error: 'not_found' }, 404)
     }
     const thread = path.match(/^threads\/([^?/]+)\?format=full$/)
     if (!thread) throw new Error('staging_fake_replies: unexpected Gmail call')
     const id = decodeURIComponent(thread[1])
-    const row = db.prepare("SELECT to_email, sent_at FROM outreach_messages WHERE tenant_id = ? AND (thread_id = ? OR gmail_id = ?) AND status = 'sent' ORDER BY sent_at DESC LIMIT 1").get(tenantId, id, id) as { to_email: string; sent_at: number | null } | undefined
+    const row = look.sentTo(id)
     if (!row) return json({ error: 'not_found' }, 404)
     const who = local(row.to_email)
     if (who.includes('fake-syncerror')) return json({ error: 'backend' }, 500)

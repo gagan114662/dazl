@@ -372,7 +372,10 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   const syncEnv = (d.env ?? process.env) as Record<string, string | undefined>
   if (gmailIsStubbed(syncEnv)) {
     if (!stagingFakeReplies(syncEnv)) return out // stubbed Gmail: no mailbox to read
-    f = stagingFakeGmail(db, tenantId) // TEST-ONLY staging reply source (#413 live check): the real sync reads synthetic threads
+    f = stagingFakeGmail({ // TEST-ONLY staging reply source (#413 live check): the real sync reads synthetic threads
+      threadOf: (gid) => db.prepare('SELECT thread_id FROM outreach_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, gid) as { thread_id: string | null } | undefined,
+      sentTo: (id) => db.prepare("SELECT to_email, sent_at FROM outreach_messages WHERE tenant_id = ? AND (thread_id = ? OR gmail_id = ?) AND status = 'sent' ORDER BY sent_at DESC LIMIT 1").get(tenantId, id, id) as { to_email: string; sent_at: number | null } | undefined,
+    })
   }
   const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
