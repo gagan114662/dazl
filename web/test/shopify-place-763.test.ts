@@ -88,3 +88,13 @@ test('#763 verifier: the stated place belongs to its own candidate only (keyed b
   assert.deepEqual(fate(await run(plain, ['London'], [`${URL_}/`, UK])), PASSED, 'a key that is not the canonical URL never matches: no stated place, judged as before')
   assert.deepEqual(fate(await run(plain, ['London'], [URL_, UK])), MISMATCH)
 })
+
+// Review of 29c151f3: a page that itself confirms the requested place is final, like a page-only mismatch. A registered office elsewhere (meta.json)
+// must not reject a store whose own page says it has a London showroom.
+test('#763 verifier: a page that itself agrees with the request is not overruled by a stated place elsewhere', async () => {
+  const london = 'We are based in London, our London showroom is on Oxford Street.'
+  assert.deepEqual(fate(await run(london, ['London'])), PASSED, 'alone it passes')
+  assert.deepEqual(fate(await run(london, ['London'], [URL_, UK])), PASSED, 'a Barnsley registered office does not reject a page that confirms London')
+  // the unconfirmed-page tightening is unchanged
+  assert.deepEqual(fate(await run('Free returns within 30 days.', ['London'], [URL_, UK])), MISMATCH)
+})
