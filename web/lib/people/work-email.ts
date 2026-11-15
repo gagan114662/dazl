@@ -30,7 +30,9 @@ import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
-import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
 import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
@@ -41,6 +43,7 @@ import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
 // DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
@@ -219,7 +222,11 @@ const failText = (e: unknown, P: string) => {
 type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 // What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
 interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
+  return runWithTenantSpend(db, tenantId, () => findWorkEmailCounted(db, tenantId, leadId, target, deps))
+}
+async function findWorkEmailCounted(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
   const derived: Derived = {}
   const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
   // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
@@ -345,7 +352,16 @@ async function lookupWorkEmail(
           await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
           v = judgeMatch('pdl', r.match, want, site.site, icpText)
         }
-      } catch (e) { notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
+      } catch (e) {
+        // #1167: the account's day / month spend cap refused the lookup BEFORE it was sent: the credit goes back, and the
+        // next provider would be refused by the same cap
+        if (e instanceof SpendRefused) {
+          await refundCredits(db, hold).catch((x) => console.error('[work-email] credit refund not saved (reservation kept):', x instanceof Error ? x.message.slice(0, 120) : 'error'))
+          const cap = e.reason === OWNER_POOL_LIMIT_REASON
+          notes.push(cap ? 'account spend limit reached: nothing was sent' : `spend check refused the lookup (${e.reason}): nothing was sent`); incomplete = true; log(cap ? 'spend_cap' : `spend_refused:${e.reason}`); break
+        }
+        notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue // charge unknown: the reservation stays
+      }
       answered = true
       seen.add(v.kind); notes.push(v.note); log(v.kind, v.kind === 'verified' || v.kind === 'unverified' ? 1 : 0)
       if (v.kind === 'verified' || v.kind === 'unverified') { best = { ...v, provider: prov }; break } // a kept address: no further spend

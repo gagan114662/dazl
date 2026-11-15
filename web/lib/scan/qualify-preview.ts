@@ -8,6 +8,7 @@ import { packRequest, type RequestPacking } from './qualification-packing.ts'
 import { effectiveOffer } from './play-offer-text.ts'
 import { readPlayOffer } from './play-offer.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
+import { runWithTenantSpend } from './spend-cap.ts'
 
 export type PageFetcher = (url: string) => Promise<Page | FetchFail>
 export interface PreviewPage { url: string; role: 'posting' | 'company_home'; status: 'fetched' | 'failed'; chars: number; fail?: string; used: boolean; not_used_reason?: string }
@@ -19,7 +20,11 @@ export interface QualifyPreview {
 }
 export type QualifyPreviewFull = QualifyPreview & { input: QualifyInput | null }
 
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function qualifyPreview(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
+  return runWithTenantSpend(db, userId, () => qualifyPreviewCounted(db, userId, leadId, sellerText, fetchPage, vendor, model))
+}
+async function qualifyPreviewCounted(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
   const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.signal, l.source_url, l.company_domain, j.icp, j.query, j.offer, j.seller
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, userId) as
     { id: string; scan_job_id: string; company: string; signal: string; source_url: string; company_domain: string | null; icp: string | null; query: string | null; offer: string | null; seller: string | null } | undefined
