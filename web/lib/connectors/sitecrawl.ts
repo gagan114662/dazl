@@ -155,7 +155,9 @@ const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\
 const SOCIAL = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|wikipedia|google|bing|apple|medium|github|crunchbase|pitchbook|glassdoor|indeed|bloomberg|reuters|techcrunch|forbes|yelp|tripadvisor|eventbrite|wa|t|bit|goo|lnkd)\.[a-z.]+$/i
 
 const registrable = (host: string) => { const h = host.toLowerCase().replace(/^www\./, ''); return getDomain(h) ?? h }
-const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('')
+// The company-name part of a host, letters and digits only, like norm() on the company: "d-7roofing.com" is "d7roofing", the same as the company
+// "D-7 Roofing" (#1036: a hyphenated own domain, cited as the lead's own page, never matched its company, so its published contacts were never read).
+const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('').replace(/[^a-z0-9]/g, '')
 // A host that can be a company's website: a DNS name with at least two labels. Never an IP literal (the resolver guard that refuses private
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
 export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) }
@@ -370,6 +372,20 @@ function jsonLdEmails(html: string): string[] {
 
 // Common obfuscations: "info [at] company.com", "sales(at)company dot com". Deobfuscated
 // candidates go through the same role + same-site filter as everything else.
+// #1036: Cloudflare's email protection prints no address at all: the page carries data-cfemail="<hex>" (or a link to
+// /cdn-cgi/l/email-protection#<hex>) and a script decodes it in the browser. The first byte is the key; every next byte XOR the key is one
+// character. Decoded here so a small business behind Cloudflare is not read as publishing no contact. Bounded: 40 per page, 254 chars each.
+export function cfEmails(body: string): string[] {
+  const out: string[] = []
+  for (const m of body.matchAll(/(?:data-cfemail=["']|\/cdn-cgi\/l\/email-protection#)([0-9a-f]{6,510})/gi)) {
+    if (out.length >= 40) break
+    const h = m[1]; if (h.length % 2) continue
+    const key = parseInt(h.slice(0, 2), 16); let s = ''
+    for (let i = 2; i < h.length; i += 2) s += String.fromCharCode(parseInt(h.slice(i, i + 2), 16) ^ key)
+    if (/^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,251}\.[a-z]{2,24}$/i.test(s)) out.push(s)
+  }
+  return out
+}
 function deobfuscatedEmails(body: string): string[] {
   const out: string[] = []
   const re = /\b([a-z0-9][a-z0-9._%+-]{0,63})\s*(?:\[at\]|\(at\)|\sat\s)\s*([a-z0-9][a-z0-9.-]{0,251})(?:\.|\s*(?:\[dot\]|\(dot\)|\sdot\s)\s*)([a-z]{2,24})(?![a-z]|\.[a-z])/gi
@@ -383,7 +399,7 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
   const add = (f: Found) => { if (!out.has(f.kind + f.value)) out.set(f.kind + f.value, f) }
   // Crawlee's parser finds mailto: links and addresses in visible text; JSON-LD and
   // deobfuscation cover the two forms it misses. The filters below decide what is kept.
-  const emails: string[] = [...social.parseHandlesFromHtml(body).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body)]
+  const emails: string[] = [...social.parseHandlesFromHtml(body).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body), ...cfEmails(body)]
   for (const e of emails) {
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(e.trim().toLowerCase()); if (!m) continue
     if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/[._-]/g, '')) ) continue
