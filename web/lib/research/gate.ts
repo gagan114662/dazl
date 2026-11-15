@@ -3,7 +3,7 @@
 // gate"): one model call for the whole list; each company is answered yes / no / unknown, and only "no" drops it. "unknown" (the text does not say where it is)
 // is kept: the verify stage checks place and category again, on the company's own pages. A company with an office or branch in the area counts as in it.
 // If the call fails or its reply cannot be read, nothing is dropped (the gate only saves money; it never decides a lead).
-import { parseJsonObject } from './decider.ts'
+import { parseJsonObject } from './llm-json.ts'
 import type { ResearchCase, ResearchEvent } from './types.ts'
 
 export type GateEvent = Pick<ResearchEvent, 'company' | 'quote' | 'sourceUrl'> & { locationQuote?: string | null }
