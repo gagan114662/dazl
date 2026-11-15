@@ -83,3 +83,9 @@ export async function saveResearchContacts(db: Database.Database, jobId: string,
   }
   return out
 }
+
+// The research scan's after-save step (registered by default in scan-job.ts, so it runs whichever stages are wired): never fails the scan.
+export async function researchContactsAfterSave(db: Database.Database, jobId: string, run: { leads: VerifiedLead[] }): Promise<void> {
+  try { console.error(`[research] contacts for job ${jobId}: ${JSON.stringify(await saveResearchContacts(db, jobId, run.leads))}`) }
+  catch (e) { console.error(`[research] contacts for job ${jobId} failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`) }
+}

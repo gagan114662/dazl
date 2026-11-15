@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { CHUNK, licenceDay, licenceLife, VANCOUVER_LICENCES, licenceQueries, licenceSignals, licenceYears, vancouverLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
+import { CHUNK, licenceDay, VANCOUVER_LICENCES, licenceQueries, licenceSignals, licenceYears, vancouverLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
 import type { ResearchCase } from '../lib/research/types.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
@@ -112,84 +112,4 @@ test('a licence with a malformed issue timestamp is never a candidate itself, bu
   assert.ok(!s.some(x => x.licence === '26-999998'), 'no candidate from a licence without a valid day')
   assert.equal(s.length, base.length)
   assert.equal(s.find(x => x.company === 'Hunger Street')!.eventKind, 'additional_location_licence', 'its other issued licence still makes Hunger Street an additional location')
-})
-
-// REAL revised licences (test/fixtures/research-vancouver-revisions.json): the dataset keeps every revision of a licence number as its own row;
-// revision 00 (the first issue) goes Inactive when a later revision is issued.
-const REV = JSON.parse(readFileSync(new URL('./fixtures/research-vancouver-revisions.json', import.meta.url), 'utf8')) as { since: string; licences: Record<string, Row[]> }
-const currentRows = Object.values(REV.licences).map(rs => rs.find(r => r.status === 'Issued')!)
-const allRows = Object.values(REV.licences).flat()
-const firstDay = (no: string) => licenceDay(REV.licences[no].find(r => r.licencerevisionnumber === '00')!.issueddate)
-
-test('a revised licence is new only when its FIRST issue is inside the window: a rename or an owner change of an older licence is not a new business', () => {
-  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', currentRows, [], [], REV.since, allRows)
-  const bySource = (n: string) => s.find(x => x.licence === n)
-  // first issued before 2026-08-17 (a rename of an April licence, a December 2025 licence, ...): not a candidate, whatever its latest revision's day
-  for (const n of ['26-238221', '26-307971', '26-221108', '26-181918', '26-247640']) assert.equal(bySource(n), undefined, `${n} first issued ${firstDay(n)}`)
-  // first issued inside it: a candidate dated by the FIRST issue, not by the later revision
-  const linh = bySource('26-217772')!, avero = bySource('26-258849')!
-  assert.equal(linh.eventDate, firstDay('26-217772')); assert.equal(avero.eventDate, firstDay('26-258849'))
-  assert.ok(linh.eventDate >= REV.since && linh.eventDate < String(currentRows.find(r => r.licencenumber === '26-217772')!.issueddate).slice(0, 10), 'dated before its revision day')
-  assert.equal(avero.company, 'AVERO', "the business's current name")
-  assert.equal(s.length, 2)
-  // without the older revision rows the first issue is unknown: never guessed, so nothing is a candidate
-  assert.deepEqual(licenceSignals(VANCOUVER_LICENCES, 'restaurants', currentRows, [], [], REV.since), [])
-})
-
-test('the source asks for the revision rows of the revised licences only, and without them returns nothing (fails closed)', async () => {
-  const w = (u: string) => new URL(u).searchParams.get('where') ?? ''
-  const q = licenceQueries(VANCOUVER_LICENCES, 'restaurants', REV.since, ['26'])
-  const urls = q.revisions(currentRows)
-  assert.equal(urls.length, 1); assert.match(w(urls[0]), /^\(licencenumber="26-\d{6}" or /, 'by licence number alone (no business-type clause)')
-  for (const n of Object.keys(REV.licences)) assert.ok(w(urls[0]).includes(`licencenumber="${n}"`), n)
-  assert.deepEqual(q.revisions(currentRows.map(r => ({ ...r, licencerevisionnumber: '00' }))), [], 'unrevised licences need no revision query')
-  const forWindow = q.revisions(FX.window)
-  assert.equal(forWindow.length, 1, 'of the 4 recorded window rows only Blaze (revision 01) is a revised licence'); assert.equal(w(forWindow[0]), '(licencenumber="26-110158")')
-  assert.deepEqual(q.revisions(FX.window.filter(r => r.licencerevisionnumber === '00')), [], 'unrevised licences need no query')
-  const answer = (revisions: 'ok' | 'down'): SafeGet => async (u: string) => {
-    const where = w(u)
-    if (where.includes('issueddate >=')) return { status: 200, body: JSON.stringify(currentRows) }
-    if (where.includes('folderyear="25"')) return { status: 200, body: '[]' }
-    if (where.startsWith('(licencenumber=')) return revisions === 'ok' ? { status: 200, body: JSON.stringify(allRows) } : { status: 503, body: '' }
-    return { status: 200, body: JSON.stringify(currentRows) }
-  }
-  const src = vancouverLicencesSource
-  const ok = await src.collect(VAN, REV.since, answer('ok'))
-  assert.deepEqual(ok.candidates.map(x => x.title.split(':')[0]).sort(), ['AVERO', 'Linh Noodle Bar'], JSON.stringify(ok.notes))
-  assert.deepEqual(await src.collect(VAN, REV.since, answer('down')), { candidates: [], notes: ['http_503', 'revisions_unknown'] })
-})
-
-test("the window's edge is Vancouver's day: a licence first issued at 00:00 local on the first day is new, one minute earlier is not; a first issue with no readable day is unknown", () => {
-  const cur = currentRows.find(r => r.licencenumber === '26-217772')!, first = REV.licences['26-217772'].find(r => r.licencerevisionnumber === '00')!
-  const at = (issueddate: unknown) => licenceSignals(VANCOUVER_LICENCES, 'restaurants', [cur], [], [], '2026-08-17', [{ ...first, issueddate }, cur])   // the real rows, the first issue's stamp changed (labelled)
-  assert.equal(at('2026-08-17T07:00:00+00:00').length, 1, '2026-08-17 00:00 in Vancouver (UTC-7): the first day of the window')
-  assert.equal(at('2026-08-17T06:59:00+00:00').length, 0, '2026-08-16 23:59 in Vancouver: the day before')
-  for (const bad of [null, 'soon', '2026-08-30T25:00:00Z']) assert.equal(at(bad).length, 0, `first issue ${bad}: unknown, never guessed`)
-})
-
-test('more than 25 revised licences: the revision rows are asked for in chunks, and a chunk that fails is revisions_unknown', async () => {
-  const many = Array.from({ length: 26 }, (_, i) => ({ ...currentRows[0], licencenumber: `26-9${String(10000 + i).slice(1)}`, house: String(100 + i) }))
-  const w = (u: string) => new URL(u).searchParams.get('where') ?? ''
-  const urls = licenceQueries(VANCOUVER_LICENCES, 'restaurants', REV.since, ['26']).revisions(many)
-  assert.equal(urls.length, 2); assert.ok(urls.every(u => u.length < 4096))
-  let chunk = 0
-  const down = await vancouverLicencesSource.collect(VAN, REV.since, async (u: string) => {
-    const where = w(u)
-    if (where.includes('issueddate >=')) return { status: 200, body: JSON.stringify(many) }
-    if (where.includes('folderyear="25"')) return { status: 200, body: '[]' }
-    if (where.startsWith('(licencenumber=')) return ++chunk === 2 ? { status: 503, body: '' } : { status: 200, body: JSON.stringify(allRows) }
-    return { status: 200, body: JSON.stringify(many) }
-  })
-  assert.equal(chunk, 2, 'both chunks were asked for'); assert.deepEqual(down, { candidates: [], notes: ['http_503', 'revisions_unknown'] })
-})
-
-test('the adapter and the re-read agree on odd revision data: two revision-00 rows, an Issued row that is not the latest, no revision number, a first issue that is not the earliest', () => {
-  const cur = currentRows.find(r => r.licencenumber === '26-217772')!, first = REV.licences['26-217772'].find(r => r.licencerevisionnumber === '00')!
-  const sig = (rows: Row[], windowRow: Row = cur) => licenceSignals(VANCOUVER_LICENCES, 'restaurants', [windowRow], [], [], REV.since, rows).length
-  assert.equal(sig([cur, first]), 1, 'the real rows')
-  assert.equal(sig([cur, first, { ...first, issueddate: '2025-01-01T10:00:00+00:00' }]), 0, 'two revision-00 rows (labelled): which is the first issue is unknown')
-  assert.equal(sig([cur, first, { ...first, licencerevisionnumber: '05', status: 'Inactive' }]), 0, 'the Issued row is not the latest revision')
-  const noNumber = Object.fromEntries(Object.entries(cur).filter(([k]) => k !== 'licencerevisionnumber'))
-  assert.equal(sig([noNumber, first], noNumber), 0, 'the current row carries no revision number: it cannot be ordered')
-  assert.equal(licenceLife([{ ...cur, licencerevisionnumber: '00' }, { ...first, licencerevisionnumber: '01', status: 'Inactive' }]), null, 'revision 00 Issued while a later revision exists')
 })

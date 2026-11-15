@@ -11,8 +11,6 @@ import { austinPermitsSource } from './socrata-permits.ts'
 import { vancouverLicencesSource } from './opendatasoft-licences.ts'
 import { secFormD } from './sec-form-d.ts'
 export type { RegistrySource } from './registry.ts'
-export { recheckRegistryRecord, type RegistryRecheck } from './recheck.ts'
-export { registryRecordRef, registryRecordFacts, type RegistryRecordFacts } from './record-page.ts'
 
 export const REGISTRY_SOURCES: RegistrySource[] = [austinPermitsSource, vancouverLicencesSource, secFormD]
 

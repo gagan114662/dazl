@@ -44,7 +44,8 @@ test('switch off, or a stage missing: the old engine runs and the research stage
   const err = (x: { db: Database.Database; id: string }) => (x.db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(x.id) as { error: string | null }).error
   const off = await scan(undefined)
   assert.equal(err(off), 'no_candidates'); assert.ok(!modelPrompts.some(p => p.includes('head of research')), 'no research plan without LEAD_ENGINE=research')
-  // (the stage-missing half runs on #1267 alone: on the wiring branch the runner imports lib/research/wiring.ts, so every stage exists)
+  const missing = await scan('research')   // no extension registered yet: filter/read/gate/research/verify do not exist
+  assert.equal(err(missing), 'no_candidates'); assert.equal(missing.leads.length, 0)
 })
 
 test('LEAD_ENGINE=research: the plan on the job\'s model, the stages in order, ready leads listed and held ones in review, then afterSave', async () => {

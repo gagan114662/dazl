@@ -36,6 +36,8 @@ export const DEGRADED: Record<string, Degraded> = {
   'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   workers: 'closed', // runtime worker runs (app/api/workers): shared host capacity, so no runs while limits cannot be counted
+  // Connect LinkedIn (#1037): pairing codes, the extension's calls (per IP and per workspace) and the account check
+  'adv-pair': 'closed', 'adv-me': 'closed', 'ext-li': 'closed', 'ext-li-ip': 'closed',
   checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   'play-run-now': 'closed', // #1042 Find leads now: queues a real scan on the account's key and monthly scans
   // low risk: the app's own data, or must keep working

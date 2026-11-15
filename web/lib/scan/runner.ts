@@ -6,7 +6,6 @@ import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { runResearchScan } from '../research/scan-job.ts'
-import '../research/wiring.ts'   // the research engine's C/D/G stages (MISSION v2), registered on import
 import { researchEngineOn } from '../research/engine.ts'
 import { paidVendorOn, paidVendorOffNote, usableVendor } from '../paid-vendors.ts'
 import type { Vendor } from '../llm/vendors.ts'
