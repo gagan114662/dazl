@@ -202,3 +202,35 @@ test('#1176 reader 2 controls: the timing gate alone never makes a day "verified
   assert.equal(researchCause({ ...z, gate_held: true }), 'unsupported', 'a required check that has not passed is named first')
   assert.equal(researchCause({ ...z, currentness_held: false }), 'unsupported', 'not held by the timing gate: some other cause')
 })
+
+// #1176, the live check on prod 66449147 (issue comment 6888738347): Home's "4 research only" chip InfoTip said "No verified, dated event, outside your time
+// window, or someone else's customer." over the play whose research leads are these four REAL rows (play b10654425e8246c915e355b9, read from prod):
+// Zayed Law and Ogletree Deakins have a proven day (event_date_proof page_bound, day_verified true, window_held false) and only the timing gate holds them;
+// Norton Rose Fulbright (quote_unconfirmed) and Armstrong Teasdale (outside_window_undated) have no day and are held by the window. The tip must say what the
+// per-lead lines below it say.
+const PLAY_ROWS = [
+  ...PROD,
+  lead({ id: '64d0b23c0000000000000000', company: 'Norton Rose Fulbright', event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, review_reason: 'quote_unconfirmed', confidence: null, window_held: true, currentness_held: true, gate_held: false, fit: null } as never),
+  lead({ id: '010db7ff0000000000000000', company: 'Armstrong Teasdale', event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, review_reason: 'outside_window_undated', confidence: null, window_held: true, currentness_held: true, gate_held: false, fit: null } as never),
+]
+test('#1176 the "research only" chip InfoTip names the causes the group really has (the real prod play: 2 proven days held by the timing gate, 2 undated)', async () => {
+  const { researchTip } = await import('../lib/lead-state.ts')
+  const j = journey({ profile, jobs: [{ ...job, lead_count: 4 }], leads: PLAY_ROWS, drafts: null })
+  assert.equal(j.stage, 'research_only'); assert.equal(j.split?.research.length, 4, 'the chip reads "4 research only", as on prod')
+  const tip = researchTip(j.split!.research.map(r => r.cause))
+  assert.equal(tip, '2: Event day verified on the cited source; the rest of the lead is not confirmed yet. 2: No usable event date. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.')
+  assert.doesNotMatch(tip, /No verified, dated event|outside your time window|someone else's customer/, 'none of the old fixed reasons is true for the two proven-day leads')
+  // the chip and the per-lead lines read the same causes (app/app/journey.tsx uses researchTip over j.split.research, the lines use CAUSE_TEXT per lead)
+  const src = readFileSync(new URL('../app/app/journey.tsx', import.meta.url), 'utf8')
+  assert.match(src, /data-testid="journey-research">\{researchN\} research only<InfoTip>\{researchTip\(j\.split\?\.research\.map\(r => r\.cause\) \?\? \[\]\)\}<\/InfoTip>/)
+  assert.doesNotMatch(src, /No verified, dated event, outside your time window/, 'the fixed sentence is gone from Home')
+})
+test('#1176 researchTip controls: each cause in the per-lead words, counted, most common first; a play of only undated or customer leads still says so', async () => {
+  const { researchTip } = await import('../lib/lead-state.ts')
+  const tail = ' Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.'
+  assert.equal(researchTip(['undated', 'customer', 'undated']), `2: No usable event date. 1: Only another company's page names it, as their customer.${tail}`)
+  assert.equal(researchTip(['older']), `1: Event older than your time window.${tail}`)
+  assert.equal(researchTip(['need']), `1: Event day verified on the cited source; the rest of the lead is not confirmed yet.${tail}`)
+  assert.equal(researchTip(['place', 'closed', 'unsupported']), `1: Evidence names a different place. 1: The opening is closed. 1: Evidence not verified.${tail}`)
+  assert.equal(researchTip([]), tail.trim())
+})
