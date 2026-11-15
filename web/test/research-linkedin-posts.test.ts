@@ -231,6 +231,9 @@ test('review round 4 (opus + haiku): one lookup per (handle, name); credentials,
   // the same name twice costs one lookup; a resolved handle is not looked up again
   const twice = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), "Dana Okoye's Post"), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 5 })
   assert.equal(twice.searches.sent, 3, 'two post queries + one lookup')
+  // and when the lookup finds nothing, the same name is still not looked up a second time
+  const miss = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), "Dana Okoye's Post"), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(miss.searches.sent, 3, 'two post queries + one lookup, even when nothing was found')
   const u = liPost('dana-okoye', '2026-10-01')
   assert.equal(authorOf({ url: u, title: 'Dana Okoye, CPA on LinkedIn: hi' })?.name, 'Dana Okoye')
   assert.equal(authorOf({ url: u, title: 'Dana Okoye (She/Her) on LinkedIn: hi' })?.name, 'Dana Okoye')
