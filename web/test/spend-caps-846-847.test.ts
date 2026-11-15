@@ -10,7 +10,7 @@ import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import {
   accountLimits, OWNER_DAY_CEILING_USD, OWNER_DAY_DEFAULT_USD, OWNER_MONTH_CEILING_USD, OWNER_MONTH_DEFAULT_USD, ownerLimits, poolRows, windowCap,
 } from '../lib/llm/spend-pool.ts'
-import { reserveScanSpend, runWithAccountSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
+import { reserveScanSpend, runWithAccountSpend, runWithTenantSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
@@ -89,12 +89,17 @@ bothEngines('#846 inside a scan: a model call of an account without an entry res
   assert.deepEqual((await scanSpendCalls(db, 'j1', A)).map(c => `${c.status}:${c.reason}`).sort(), ['refused:owner_pool_limit', 'settled:null'])
   // #1167: the account limit refused a step of this attempt, so the attempt sends nothing more, not a render either.
   await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('render', () => 0.45)), refusedWith('owner_pool_limit'))
-  // A new attempt of the same scan, the windows under their caps: a step that is not a model call is held by the scan cap only.
-  await runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 0.45))
-  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.1, 0.1, 1], ['m:2026-11', 0.1, 0.1, 1]])
+  // A new attempt of the same scan, the windows under their caps: a priced step that is not a model call is counted on the windows too (#1167)...
+  const r = await runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 0.3))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.1, 2], ['m:2026-11', 0.4, 0.1, 2]])
+  // ...settles with its vendor cost like a model call, and one that would pass the day cap is refused
+  // (reported_usd stays the model calls' vendor-reported cost: a non-model step settles reserved_usd only)
+  await r!.settle(0.3)
+  await assert.rejects(runWithScanSpend({ ...ctx }, () => reserveScanSpend('tinyfish.search', () => 0.2)), refusedWith('owner_pool_limit'))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.1, 2], ['m:2026-11', 0.4, 0.1, 2]], 'the refused search moved nothing')
   // The scan's own cap refusing releases the windows it would have taken, in the same transaction.
   await assert.rejects(runWithScanSpend({ ...ctx, accountLimits: { day: 50, month: 100 } }, () => reserveScanSpend('llm.anthropic', () => 3.3)), refusedWith('over_cap'))
-  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.1, 0.1, 1], ['m:2026-11', 0.1, 0.1, 1]], 'released')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.1, 2], ['m:2026-11', 0.4, 0.1, 2]], 'released')
   // Tenant scope: B's windows are its own.
   await job(db, 'j2', B)
   await runWithScanSpend(scanCtx(db, 'j2', B, { accountLimits: { day: 0.5, month: 100 } }), () => reserveScanSpend('llm.openai', () => 0.45))
@@ -127,6 +132,184 @@ bothEngines('#847 outside a scan: the month cap refuses across days while each d
   // An operator-named account (limits null: its PooledGuard reserved): the transport adds nothing.
   assert.equal(await runWithAccountSpend({ db, tenantId: B, limits: null }, () => reserveScanSpend('llm.anthropic', () => 0.5)), null)
   assert.deepEqual(await rows(db, B), [])
+})
+
+bothEngines('#1167 outside a scan, in an account context: every priced step counts on the day / month windows, a free one moves nothing, and an account at its cap sends nothing (free steps too)', async ({ db }) => {
+  const acct = <T>(fn: () => Promise<T>) => runWithAccountSpend({ db, tenantId: A, limits: { day: 0.5, month: 10 }, clock: () => T0 }, fn)
+  const r = await acct(() => reserveScanSpend('render', () => 0.2))
+  await r!.settle(0.2)
+  await acct(() => reserveScanSpend('tinyfish.search', () => 0.1))
+  await acct(() => reserveScanSpend('apollo.people', () => 0.1))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0, 3], ['m:2026-11', 0.4, 0, 3]], 'reported_usd is model calls only')
+  assert.equal(await acct(() => reserveScanSpend('tinyfish.fetch', () => 0)), null, 'a free step: no hold')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0, 3], ['m:2026-11', 0.4, 0, 3]], 'the free step moved nothing')
+  await assert.rejects(acct(() => reserveScanSpend('pdl.people', () => 0.2)), refusedWith('owner_pool_limit'))
+  await acct(() => reserveScanSpend('llm.anthropic', () => 0.1)) // exactly to the cap
+  await assert.rejects(acct(() => reserveScanSpend('tinyfish.search', () => 0)), refusedWith('owner_pool_limit'), 'at the cap a free step is refused too')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.5, 0, 4], ['m:2026-11', 0.5, 0, 4]])
+  // Outside both a scan and an account, a non-model step is not on any account (TinyFish's own tenant / global counts bound it).
+  assert.equal(await reserveScanSpend('render', () => 0.5), null)
+})
+
+bothEngines('#1167 an operator-named account (limits null: its PooledGuard counts its models): its other priced steps count on its own entry, in a scan and outside one', async ({ db }) => {
+  const prevD = process.env.DAZL_RUN_MAX_USD_USERS, prevM = process.env.DAZL_OWNER_MONTH_MAX_USD_USERS
+  process.env.DAZL_RUN_MAX_USD_USERS = `${B}:0.5`; process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = `${B}:20`
+  try {
+    // a model call is the PooledGuard's: the transport adds nothing
+    assert.equal(await runWithAccountSpend({ db, tenantId: B, limits: null, clock: () => T0 }, () => reserveScanSpend('llm.anthropic', () => 0.3)), null)
+    assert.deepEqual(await rows(db, B), [])
+    await runWithAccountSpend({ db, tenantId: B, limits: null, clock: () => T0 }, () => reserveScanSpend('render', () => 0.3))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]])
+    await job(db, 'jn', B)
+    const ctx = scanCtx(db, 'jn', B, { accountLimits: null })
+    await runWithScanSpend(ctx, () => reserveScanSpend('llm.openai', () => 0.4))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'the model call is not counted twice')
+    await runWithScanSpend(ctx, () => reserveScanSpend('tinyfish.fetch', () => 0.1))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.4, 0, 2], ['m:2026-11', 0.4, 0, 2]])
+    await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('apollo.org', () => 0.2)), refusedWith('owner_pool_limit'))
+  } finally {
+    if (prevD === undefined) delete process.env.DAZL_RUN_MAX_USD_USERS; else process.env.DAZL_RUN_MAX_USD_USERS = prevD
+    if (prevM === undefined) delete process.env.DAZL_OWNER_MONTH_MAX_USD_USERS; else process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = prevM
+  }
+})
+
+const withEnv = async (vars: Record<string, string>, fn: () => Promise<void>) => {
+  const prev = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+  Object.assign(process.env, vars)
+  try { await fn() } finally { for (const [k, v] of Object.entries(prev)) if (v === undefined) delete process.env[k]; else process.env[k] = v }
+}
+
+bothEngines('#1167 council: a non-model hold settles like a model one (lower actual -> windows drop; kept / uncertain -> the worst case stays), a scan-cap refusal gives its windows back, and a named account whose entry no longer resolves is counted on the defaults', async ({ db }) => {
+  await withEnv({ DAZL_RUN_MAX_USD_USERS: `${B}:5`, DAZL_OWNER_MONTH_MAX_USD_USERS: `${B}:20` }, async () => {
+    await job(db, 'jn', B)
+    const named = scanCtx(db, 'jn', B, { accountLimits: null })
+    const pdl = await runWithScanSpend(named, () => reserveScanSpend('pdl.people', () => 1.4))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 1.4, 0, 1], ['m:2026-11', 1.4, 0, 1]])
+    await pdl!.settle(0.56)
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.56, 0, 1], ['m:2026-11', 0.56, 0, 1]], 'the named account\'s own windows settle to the actual (reported_usd: models only)')
+    const r = await runWithScanSpend(named, () => reserveScanSpend('render', () => 0.2))
+    r!.uncertain()
+    await r!.settle(0.01)
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.76, 0, 2], ['m:2026-11', 0.76, 0, 2]], 'an uncertain hold keeps its worst case')
+  })
+  await job(db, 'j1', A)
+  const ctx = scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 10 } })
+  const kept = await runWithScanSpend(ctx, () => reserveScanSpend('render', () => 0.3))
+  await kept!.settle(null)
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'no reported cost: the worst case stays')
+  // the scan's own cap (CAD 5) refuses a priced render: the windows it took in that transaction are given back
+  await assert.rejects(runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 3.3)), refusedWith('over_cap'))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'released')
+  // fail closed: accountLimits null but the account has no operator entry (any more): its non-model steps count on the defaults
+  const C = 'c'.repeat(32)
+  await job(db, 'jc', C)
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    await runWithScanSpend(scanCtx(db, 'jc', C, { accountLimits: null }), () => reserveScanSpend('tinyfish.fetch', () => 0.4))
+    assert.deepEqual(await rows(db, C), [['d:2026-11-13', 0.4, 0, 1], ['m:2026-11', 0.4, 0, 1]])
+    await assert.rejects(runWithScanSpend(scanCtx(db, 'jc', C, { accountLimits: null }), () => reserveScanSpend('render', () => 0.2)), refusedWith('owner_pool_limit'))
+  })
+})
+
+bothEngines('#1167 runWithTenantSpend (the tenant paths outside the runner): priced steps count on the account windows, a model call is still refused no_spend_context, and inside a scan it changes nothing', async ({ db }) => {
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    const h = await runWithTenantSpend(db, A, () => reserveScanSpend('render', () => 0.3))
+    assert.ok(h)
+    assert.equal((await rows(db, A)).length, 2)
+    assert.equal((await rows(db, A))[0][1], 0.3)
+    await assert.rejects(runWithTenantSpend(db, A, () => reserveScanSpend('apollo.org', () => 0.3)), refusedWith('owner_pool_limit'))
+    await assert.rejects(runWithTenantSpend(db, A, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('no_spend_context'))
+    // an operator-named account: its priced steps count on its own entry (here a 2.0 day), not the default
+    await withEnv({ DAZL_RUN_MAX_USD_USERS: `${B}:2` }, async () => {
+      await runWithTenantSpend(db, B, () => reserveScanSpend('render', () => 1.5))
+      assert.equal((await rows(db, B))[0][1], 1.5)
+    })
+    // inside a scan the scan's own context decides: its accountLimits (here a larger day) apply, not the tenant default
+    await job(db, 'j1', A)
+    await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 10 } }), () => runWithTenantSpend(db, A, () => reserveScanSpend('render', () => 0.3)))
+    // another tenant's work inside A's scan is counted on its own windows, never on A's scan
+    const before = (await scanSpendRow(db, 'j1', A))!.spend_cap_reserved_usd
+    await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 10 } }), () => runWithTenantSpend(db, 'c'.repeat(32), () => reserveScanSpend('render', () => 0.2)))
+    assert.equal((await scanSpendRow(db, 'j1', A))!.spend_cap_reserved_usd, before)
+    assert.equal((await rows(db, 'c'.repeat(32)))[0][1], 0.2)
+  })
+})
+
+bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron or route): its priced TinyFish searches count on the account windows; an account at its cap sends none', async ({ db }) => {
+  const { saveDomain, addKeyword, runIndexChecks } = await import('../lib/seo/indexing.ts')
+  const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  const { reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  await resetTinyfishState(db)
+  let sent = 0
+  const f = (async () => { sent++; return new Response(JSON.stringify({ results: [{ url: 'https://acme.com/', title: 't', snippet: 'a long enough snippet for the test', date: '2027-01-01' }] }), { status: 200 }) }) as unknown as typeof fetch
+  const env = { TINYFISH_API_KEY: 'tf-key', DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01' }
+  await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    for (const t of [A, B]) { await saveDomain(db, t, 'acme.com'); await addKeyword(db, t, 'crm'); await addKeyword(db, t, 'sales tool') }
+    const out = await runIndexChecks(db, A, { env, fetchImpl: f })
+    assert.equal(Array.isArray(out) && out.length, 2)
+    assert.equal(sent, 2)
+    const a = await rows(db, A)
+    assert.equal(a.length, 2); assert.ok(Math.abs((a[0][1] as number) - 0.02) < 1e-9 && a[0][3] === 2, JSON.stringify(a))
+    // B is at its day cap: the check sends nothing
+    const now = Math.floor(Date.now() / 1000)
+    await db.tx(function* (t) { assert.equal(yield* reservePoolWindows(t, B, accountLimits(B), 0.5, now), true) })
+    // a manual run refused days before the weekly run is due keeps that schedule (never pulled forward); then the due run back-offs
+    await db.run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ?', [now + 5 * 86400, B])
+    assert.equal(await runIndexChecks(db, B, { env, fetchImpl: f }), 'spend_cap')
+    assert.equal(Number((await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [B]))?.next_run_at), now + 5 * 86400)
+    await db.run('UPDATE seo_index_configs SET next_run_at = NULL WHERE tenant_id = ?', [B])
+    const outB = await runIndexChecks(db, B, { env, fetchImpl: f })
+    assert.equal(sent, 2, 'no search sent for an account at its cap')
+    assert.equal(outB, 'spend_cap')
+    const runs = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [B])
+    assert.equal(Number(runs?.n), 0, "this week's searches are given back: nothing was sent")
+    const cfg = await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [B])
+    assert.ok(Number(cfg?.next_run_at) >= now + 3500, 'retried in an hour, not on every tick')
+    // a spend refusal that is NOT the account cap (a malformed price) is a fault: it throws, is never 'spend_cap', and gives the slot back
+    const C = 'c'.repeat(32)
+    await saveDomain(db, C, 'acme.com'); await addKeyword(db, C, 'crm')
+    await assert.rejects(runIndexChecks(db, C, { env: { ...env, DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: 'abc' }, fetchImpl: f }), refusedWith('price_invalid'))
+    assert.equal(sent, 2)
+    const runsC = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [C])
+    assert.equal(Number(runsC?.n), 0)
+    const cfgC = await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [C])
+    assert.ok(Number(cfgC?.next_run_at) >= now + 3500, 'a fault backs off an hour too, not every tick')
+    // a fault on the SECOND keyword (the store goes away after the first search): the first result is kept, the unsent slot
+    // goes back, and the fault is reported (captureError), never swallowed as a short batch
+    const { setErrorSinks } = await import('../lib/ops/errors.ts')
+    const D = 'd'.repeat(32)
+    await saveDomain(db, D, 'acme.com'); await addKeyword(db, D, 'crm'); await addKeyword(db, D, 'sales tool')
+    const seen: string[] = []
+    const restore = setErrorSinks([r => { seen.push(`${r.where}:${r.error.message}`) }])
+    let first = true
+    const g = (async (u: RequestInfo | URL) => { if (first) { first = false; await db.run('ALTER TABLE tenant_spend_pools RENAME TO tenant_spend_pools_gone') } return f(u) }) as typeof fetch
+    try {
+      const outD = await runIndexChecks(db, D, { env, fetchImpl: g })
+      assert.ok(Array.isArray(outD) && outD.length === 1, JSON.stringify(outD))
+    } finally { await db.run('ALTER TABLE tenant_spend_pools_gone RENAME TO tenant_spend_pools'); restore() }
+    assert.ok(seen.some(x => x.startsWith('seo:index-checks:') && x.includes('reservation_not_saved')), JSON.stringify(seen))
+    const runsD = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [D])
+    assert.equal(Number(runsD?.n), 1, 'the sent search counts; the refused one is given back')
+  })
+})
+
+bothEngines('#1167 the work-email PDL person match reserves one profile before it is sent: a match counts it, an unbilled 404 gives it back, at the cap nothing is sent', async ({ db }) => {
+  const { pdlPersonEnrich } = await import('../lib/enrich/pdl.ts')
+  let sent = 0
+  const answer = (status: number) => (async () => { sent++; return new Response(JSON.stringify(status === 200 ? { status: 200, data: { full_name: 'Ada Lovelace', work_email: 'ada@acme.com' } } : { status }), { status }) }) as unknown as typeof fetch
+  const q = { first: 'Ada', last: 'Lovelace', domain: 'acme.com' }
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.6' }, async () => {
+    const hit = await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} }))
+    assert.equal(hit.match?.email, 'ada@acme.com')
+    const day = async () => (await rows(db, A))[0]
+    assert.equal((await day())[1], 0.28); assert.equal((await day())[2], 0, 'reported_usd: models only')
+    const miss = await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(404), { env: {} }))
+    assert.equal(miss.billed, false)
+    assert.equal((await day())[1], 0.28, 'the 404 gave its reservation back')
+    await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} }))
+    assert.equal(sent, 3)
+    await assert.rejects(runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} })), refusedWith('owner_pool_limit'))
+    assert.equal(sent, 3, 'refused before it was sent')
+  })
 })
 
 bothEngines('#846 a store that does not answer refuses the call (reservation_not_saved), on the account path too', async ({ db }) => {
@@ -242,14 +425,14 @@ bothEngines('#1154 XHawk: an account-path settle that fails twice is captured an
 
 // #1167 item 2: accountLimits is required on a scan context. A context opened without it (a cast, a JS caller, a future helper that
 // forgets the field) used to run its model calls under the per-scan cap only, with no error. Now every model call in it is refused.
-bothEngines('#1167 a scan context opened WITHOUT accountLimits refuses a model call (account_limits_missing); a non-model call is unaffected; null (the PooledGuard path) still reserves on the scan cap only', async ({ db }) => {
+bothEngines('#1167 a scan context opened WITHOUT accountLimits spends NOTHING (model, search, fetch, render, enrichment: account_limits_missing); null (the PooledGuard path) still lets a model call through the scan cap only', async ({ db }) => {
   await job(db, 'j1', A)
   const bare = { db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), clock: () => T0 } as unknown as ScanSpendCtx
-  await assert.rejects(runWithScanSpend(bare, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('account_limits_missing'))
-  const render = await runWithScanSpend(bare, () => reserveScanSpend('render', () => 0.01))
-  assert.ok(render, 'a non-model kind never reached the account windows, so it is not refused for them')
+  for (const k of ['llm.anthropic', 'llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'render', 'apollo.people', 'pdl.people'] as const)
+    await assert.rejects(runWithScanSpend(bare, () => reserveScanSpend(k, () => 0.01)), refusedWith('account_limits_missing'), k)
+  assert.equal((await scanSpendRow(db, 'j1', A))!.spend_cap_reserved_usd, 0, 'nothing reserved')
   const pooled = await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: null }), () => reserveScanSpend('llm.anthropic', () => 0.01))
-  assert.ok(pooled); assert.deepEqual(await rows(db, A), [], 'null: the runner\'s PooledGuard counts the account, the transport writes no window')
+  assert.ok(pooled); assert.deepEqual(await rows(db, A), [], 'null: the runner\'s PooledGuard counts the account\'s models, the transport writes no window')
 })
 
 // #1167 (owner decision): an account at its day or month cap sends nothing. A paid step that is not itself counted on the windows
