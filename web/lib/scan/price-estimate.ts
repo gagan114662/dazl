@@ -45,6 +45,9 @@ export interface RunEstimate {
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
   trial_allowance?: { left_usd: number; total_usd: number } | null
+  // #1157: this account's web search allowance left today (lib/search/tinyfish.ts tenantAllowanceLeft). Display only, like
+  // trial_allowance: not part of `ack`, never a block (the run's own gate refuses at the cap); `low` shows a warning before confirm.
+  search_allowance?: { left: number; daily: number; low: boolean } | null
 }
 export interface EstimateInput {
   budget: RunBudget | null
@@ -344,3 +347,8 @@ export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): 
   if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
   return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
 }
+
+// #1157: shown BEFORE confirm when this account has little web search left today, so a run the allowance would stop is not started blind
+export const searchAllowanceLine = (a: { left: number; daily: number }) => a.left === 0
+  ? `Your web search allowance for today is used up (${a.daily} a day). This run would search only the free news source and is likely to find nothing. It resets at 00:00 UTC.`
+  : `Only ${a.left} of your ${a.daily} web searches and page reads are left today, about one run. This run may stop early when they run out; the allowance resets at 00:00 UTC.`
