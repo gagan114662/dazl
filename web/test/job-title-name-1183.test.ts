@@ -83,3 +83,14 @@ test('#1183 an UNMARKED list of titles (no filter class) stores nobody; a real p
   const real = extractPeople(page('<div class="person"><h3>Jane Doe</h3><p>Managing Partner</p></div>' + li(['Managing Member', 'Managing Partner'])), URL_, ROLES)
   assert.deepEqual(real.map(p => p.value), ['Jane Doe, Managing Partner'])
 })
+
+test('#1183 an UNMARKED list in another language ("Diretor Comercial" beside the buyer role "Gerente de Vendas") stores nobody; real people on the same page stay', () => {
+  const li = (ts: string[]) => `<ul>${ts.map(t => `<li>${t}</li>`).join('')}</ul>`
+  const page = (body: string) => `<html><body>${PROSE}${body}</body></html>`
+  const roles = 'Managing Partner; Gerente de Vendas'
+  assert.deepEqual(extractPeople(page(li(['Managing Member', 'Managing Partner', 'Diretor Comercial', 'Gerente de Vendas'])), URL_, roles), [])
+  // known limit: a bare two-line list with nothing before it is structurally a name + title pair and is not caught
+  // a team page: every title follows an accepted name, so the second and third people are kept
+  const team = '<div><h3>Jane Doe</h3><p>Managing Partner</p><h3>John Smith</h3><p>Managing Partner</p><h3>Ana Costa</h3><p>Gerente de Vendas</p></div>'
+  assert.deepEqual(extractPeople(page(team), URL_, roles).map(p => p.value).sort(), ['Ana Costa, Gerente de Vendas', 'Jane Doe, Managing Partner', 'John Smith, Managing Partner'])
+})

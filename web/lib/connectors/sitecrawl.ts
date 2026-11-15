@@ -2,6 +2,7 @@ import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
 import zlib from 'node:zlib'
+import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -14,7 +15,7 @@ import { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN } from './domain-unreso
 export { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN, domainUnresolvedWords } from './domain-unresolved.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { personalAddresses, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -76,6 +77,24 @@ const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+// 'deflate' is zlib-wrapped by the spec, but some servers send raw deflate under that name (review): the first two bytes tell them apart (a zlib header is a
+// multiple of 31 with method 8). Decided on the first chunk; either way the same limits and handlers apply.
+function inflateEitherWay(): Transform {
+  let inner: zlib.Inflate | zlib.InflateRaw | null = null
+  const t: Transform = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      if (!inner) {
+        const wrapped = chunk.length >= 2 && (chunk[0] & 0x0f) === 8 && ((chunk[0] << 8) | chunk[1]) % 31 === 0
+        inner = wrapped ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH })
+        inner.on('data', (d: Buffer) => t.push(d)); inner.on('error', (e: Error) => t.destroy(e))
+      }
+      inner.write(chunk, () => cb())
+    },
+    flush(cb) { if (!inner) return cb(); inner.once('end', () => cb()); inner.end() },
+    destroy(err, cb) { inner?.destroy(); cb(err) },
+  })
+  return t
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -95,36 +114,21 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
-      // Some servers send a compressed body although the request asks for 'identity' (seen on law-firm sites, #1102: ogletree.com,
-      // honigman.com). Unread, the page looked like binary noise, the homepage never "named the company" and the whole site was skipped
-      // as name_mismatch. The body is decoded here; MAX_BYTES caps the DECODED bytes, so a small compressed body cannot expand without
-      // limit (a decompression bomb). An encoding this reader does not know reads as an empty page, never as noise.
-      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
-      const decoder = enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : null
-      // An encoding this reader does not know ("utf-8", "none" from misconfigured servers, or zstd): the bytes are read, and are the page only
-      // when they read as HTML; otherwise an empty page, never noise.
-      const unknownEnc = !!enc && enc !== 'identity' && !decoder
-      // A body LABELLED compressed but sent plain (some servers): if decoding fails before anything was decoded and the raw bytes do not
-      // start like a compressed stream, the raw bytes are the page.
-      const raw: Buffer[] = []; let rawN = 0
-      if (decoder) res.on('data', (c: Buffer) => { if (rawN <= TEXT_BYTES) { raw.push(c); rawN += c.length } })
-      const body = decoder ? res.pipe(decoder) : res
-      // MAX_BYTES caps the stored (decoded) body; up to TEXT_BYTES of decoded bytes feed its visible text (#1122). A bomb stops there.
-      const done = () => { const all = Buffer.concat(chunks); if (unknownEnc && !/^\s*</.test(all.subarray(0, 64).toString('utf8'))) return { status, body: '', finalUrl: u.toString() }; const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
+      const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
       readSoFar = () => (n >= MAX_BYTES ? done() : null)
-      body.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); decoder?.destroy(); resolve(done()) } else chunks.push(c) })
-      body.on('end', () => resolve(done()))
-      body.on('error', () => {
-        if (n > 0) { res.destroy(); return resolve(done()) }   // a late error (trailing bytes after the stream): what was decoded is the page
-        const b = Buffer.concat(raw)
-        if (!(b.length > 0 && b[0] !== 0x1f && /^\s*</.test(b.subarray(0, 64).toString('utf8')))) { res.destroy(); return resolve(null) }   // a corrupt compressed body is no page; stop reading it
-        // labelled compressed, sent plain: the raw bytes are the page, under the same caps as any body
-        const plain = () => { const all = Buffer.concat(raw); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
-        if (res.readableEnded || res.complete || rawN > TEXT_BYTES) { res.destroy(); return resolve(plain()) }
-        res.on('data', () => { if (rawN > TEXT_BYTES) { res.destroy(); resolve(plain()) } }); res.on('end', () => resolve(plain())); res.on('close', () => resolve(plain())); res.resume()
-      })
-      res.on('error', () => resolve(null))
-      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder the decoder's 'end' settles it
+      // Some servers compress the body even though this request asks for 'identity' (prod mxprod5: ogletree.com answers gzip). Read raw, those bytes reached the
+      // company-name check as binary, the company's own site was refused (name_mismatch) and a lead with a proven day was held at no_domain. The body is decoded
+      // here, and the same limits count DECODED bytes, so a small compressed body cannot expand past them. An unknown encoding is not read.
+      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
+      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? inflateEitherWay() : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
+      if (decoder === undefined) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      const src: Readable = decoder ? res.pipe(decoder) : res
+      const stop = () => { res.destroy(); decoder?.destroy() }
+      src.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { stop(); resolve(done()) } else chunks.push(c) })
+      src.on('end', () => resolve(done()))
+      src.on('error', () => { const kept = chunks.length ? done() : null; stop(); resolve(kept) })   // a truncated compressed tail keeps what was decoded; the socket is closed (review)
+      res.on('error', () => { stop(); resolve(null) })
+      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder, its own end/error settles
     })
     // The error listener goes on FIRST: a caller whose signal is already aborted destroys the request below, and an 'error' with no
     // listener yet is an uncaught exception that takes the whole scan process down (seen in a matrix run, #1102).
@@ -186,7 +190,7 @@ const registrable = (host: string) => { const h = host.toLowerCase().replace(/^w
 const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('')
 // A host that can be a company's website: a DNS name with at least two labels. Never an IP literal (the resolver guard that refuses private
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
-export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) }
+export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) && !/(^|\.)0x[0-9a-f]*(\.|$)/i.test(h) && !h.split('.').every(p => /^(0x[0-9a-f]+|0[0-7]*|\d+)$/i.test(p)) }   // also no hex / octal / numeric label forms of an address, whatever the caller normalised
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
@@ -215,7 +219,9 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // refusal never stops the name guesses or the web search (crawlJob).
   const anchors = out.length
   for (const h of jsonLdCompanySites(company, evidenceHtml, own)) push(h, labelMatches(nameLabel(h), want) ? 'evidence_link_domain_label' : 'evidence_link_text')
-  return out.slice(0, 2).map((o, i) => (i >= anchors ? { ...o, structured: true } : o))
+  // main's cap of 2 applies to the page's own links; a structured-data site keeps its own slot after them (review of #1219: with 2 anchored
+  // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
+  return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
 }
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
@@ -587,31 +593,39 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   for (const r of (buyerRoles ?? '').split(';')) addWords(r)
   for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
   const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
-  const add = (name: string, title: string, viaJson = false) => {
+  const add = (name: string, title: string, viaJson = false): boolean => {
     name = name.replace(/\s+/g, ' ').trim(); title = ownCompanyTail(title.replace(/\s+/g, ' ').trim())
-    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
+    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return false // an explicit past end date or a past-tense title: not current staff
     // A hyphenated word whose second part is lowercase ("Australia-wide", "Award-winning") is a phrase, never a name ("Jean-Paul" is).
-    if (/\b[A-Za-z]+-[a-z]/.test(name)) return
-    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return // #1183: "Litigation Specialist" is a title, not a person
+    if (/\b[A-Za-z]+-[a-z]/.test(name)) return false
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
-      if (!peoplePage(path)) return
-      if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
-      if (linkText.has(name.toLowerCase()) && !ownBioLink(name)) return
+      if (!peoplePage(path)) return false
+      if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
+      if (linkText.has(name.toLowerCase()) && !ownBioLink(name)) return false
       // A title that is itself a link label is a menu or service link, not a title ("Serving Australia-wide" over the menu link "Digital
       // Marketing Consultant Melbourne", #1102 run G on sagarsethi.com.au).
-      if (linkText.has(title.toLowerCase())) return
-      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
+      if (linkText.has(title.toLowerCase())) return false
+      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return false
     }
     if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
+    return true
   }
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
+  const isTitleLine = (l: string) => l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))
+  const paired: boolean[] = [] // paired[j]: line j was accepted as the title of the person on line j-1
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i])) add(lines[i], lines[i + 1])
+    // #1183 (multilingual): "Diretor Comercial" beside a buyer role "Gerente de Vendas" shares no word with any collected title, so the check above
+    // cannot see it. Structure does: a title line that no accepted person precedes is an orphan, and a "name" straight after an orphan title is the next
+    // item of a title list, not a person (on a real team page every title follows an accepted name). Fail closed: if the person before was dropped for
+    // another reason, the next one is dropped too (recall cost, never a fabricated person).
+    const afterOrphan = i >= 1 && isTitleLine(lines[i - 1]) && !paired[i - 1] && !inFormer[i - 1]
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i]) && !afterOrphan && add(lines[i], lines[i + 1])) paired[i + 1] = true
   }
   // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
   return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
@@ -1039,7 +1053,7 @@ export function redirectTargetIsCompanys(target: string, company: string, places
 // contact, never a domain row. A lead that already has a confirmed domain keeps it: one failed re-read is not "no website".
 function recordDomainUnresolved(db: Database.Database, tenantId: string, l: { id: string; source_url: string }, code: string, today: string, now: number): void {
   try {
-    if ((db.prepare('SELECT company_domain FROM leads WHERE id = ?').get(l.id) as { company_domain: string | null } | undefined)?.company_domain) return
+    if ((db.prepare('SELECT l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(l.id, tenantId) as { company_domain: string | null } | undefined)?.company_domain) return
     db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)
     addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: DOMAIN_UNRESOLVED_KIND, value: 'No company website confirmed', label: `${DOMAIN_UNRESOLVED_TOKEN}${code}`.slice(0, 200), confidence: null, source_url: /^https?:\/\//.test(l.source_url) ? l.source_url.slice(0, 500) : 'https://invalid.example/', source_date: today, retrieved_at: now })
   } catch { /* the reason is a note beside the lead; never fails the crawl */ }
@@ -1289,6 +1303,22 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
+      }
+      // #1036: a buyer the crawl named on this site whose OWN personal address the site prints (the published tier recordEmailGuesses
+      // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
+      // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
+      // lead's confirmed site only; the label names the person and says where it was printed.
+      if (r.reason === 'ok' || r.reason === 'none_published') {
+        const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
+        for (const f of r.found) {
+          if (f.kind !== 'person') continue
+          const pub = publishedCandidateFor(db, tenantId, l.id, f.value.split(',')[0] ?? '')
+          if (!pub || !sameSite(pub.address.split('@')[1] ?? '', site) || have.has(pub.address.toLowerCase())) continue
+          have.add(pub.address.toLowerCase())
+          const excerpt = `${f.value}: their own address, printed on the company website`
+          const label = `${contextLabel({ excerpt, source_url: pub.url })}${guessed ? '; site found by name search and location match, not linked from the source' : ''}`
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: pub.address.toLowerCase().slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: pub.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++
+        }
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
     }

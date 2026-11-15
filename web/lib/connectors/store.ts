@@ -108,9 +108,10 @@ export async function writeCredential(db: Db, tenantId: string, connector: strin
 
 // Safe for the browser: never includes the credential or ciphertext. By connector, the order SQLite's primary-key
 // index gave; Postgres has no implicit order. The secret-less 'enrich:fallback' opt-in flag row is not a connector
-// and never surfaces here (connectors list, scan estimate vendors); nor does the 'first_party' signal config (#390, lib/signals/first-party.ts).
+// and never surfaces here (connectors list, scan estimate vendors); nor does the 'first_party' signal config (#390, lib/signals/first-party.ts),
+// nor the Connect LinkedIn pairing code and device token (lib/advanced/linkedin-connect.ts).
 export async function connectorStatus(db: Db, tenantId: string) {
-  return (await db.all<{ connector: string; last4: string; enabled: number }>("SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector != 'enrich:fallback' AND connector != 'first_party' ORDER BY connector", [tenantId]))
+  return (await db.all<{ connector: string; last4: string; enabled: number }>("SELECT connector, last4, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector != 'enrich:fallback' AND connector != 'first_party' AND connector != 'adv:linkedin:pair' AND connector != 'adv:linkedin:device' ORDER BY connector", [tenantId]))
     .map(r => ({ connector: r.connector, last4: r.last4, enabled: Number(r.enabled) === 1 }))
 }
 
