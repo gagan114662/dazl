@@ -3,6 +3,7 @@ import { lookup as dnsLookup } from 'node:dns'
 import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
+import { registryRecordRef, renderRegistryRecord } from '../research/sources/record-page.ts'
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
 import { withAtsReadSlot } from './ats-read-slots.ts' // #1127: at most ATS_RECORD_CONCURRENCY board record reads at a time per scan
 
@@ -79,8 +80,9 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
           res.resume()
           return resolve({ status, location: String(res.headers.location ?? ''), type, body: '' })
         }
-        // The only non-HTML documents a page read accepts: the Norway register's own API record for an entity (#763) and a
-        // public ATS board's API record for a posting (#533), each rendered below. No other JSON is read.
+        // The only non-HTML documents a page read accepts: the Norway register's own API record for an entity (#763), a
+        // public ATS board's API record for a posting (#533), and a city open-data record E's sources cite (an Austin permit, a Vancouver
+        // business licence: lib/research/sources/record-page.ts), each rendered below. No other JSON is read.
         const registryRecord = jsonRecordUrl(url.toString()) && /^application\/json\b/i.test(type)
         if (!registryRecord && !/^text\/(html|plain)|application\/xhtml/i.test(type)) {
           res.destroy()
@@ -152,7 +154,7 @@ function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
 }
 export const resetBoardMemo = () => boardMemo.clear()
 
-const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || isAtsRecordUrl(u)
+const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || !!registryRecordRef(u) || isAtsRecordUrl(u)
 
 const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
 // exported (#767): the careers adapter quotes Greenhouse content from exactly this rendering, so its quote is on the verifier's page
@@ -293,10 +295,20 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         if (!rec) return { fail: 'error' }
         const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
         return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
+      } else if (registryRecordRef(rawUrl) && !/^application\/json\b/i.test(r.type)) {
+        // a city record URL that answers HTML (an error page, a portal shell) is a failed read, never a page of that record
+        return { fail: 'error' }
       } else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
         const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
-        try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
+        if (!ref) {
+          // a city open-data record: the URL asked for must name the same record as the URL answered (no borrowed record, no borrowed day)
+          const asked = registryRecordRef(rawUrl), got = registryRecordRef(url.toString())
+          let page: ReturnType<typeof renderRegistryRecord> = null
+          if (asked && got && asked.kind === got.kind && asked.id === got.id) try { page = renderRegistryRecord(JSON.parse(html), got) } catch { page = null }
+          return page ? { text: page.text, title: page.title, retrievedAt: Math.floor(Date.now() / 1000), published: page.published, structured: [] } : { fail: 'error' }
+        }
+        try { rec = renderBrregRecord(JSON.parse(html), ref.id) } catch { rec = null }
         return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
       } else {
         const t = htmlToText(html)
@@ -305,6 +317,8 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       }
       // a board API that refused the record is a refusal: never sent to the rendering service
       if (posting) return { fail: thin ?? 'error' }
+      // nor is a city open-data record (a 401/403/429 from the portal): the record is read only as the record, never through the paid renderer
+      if (registryRecordRef(rawUrl) || registryRecordRef(url.toString())) return { fail: thin ?? 'error' }
       // blocked or JavaScript-only: try the rendering service if one is configured
       const rendered = await render(url.toString())
       if (rendered) {

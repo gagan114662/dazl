@@ -11,7 +11,7 @@
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 INSTALLED=${1:-/usr/local/lib/dazl-prod}
-FILES=(deploy-prod.sh pull-release.sh run-release.sh check-pages.py)
+FILES=(deploy-prod.sh pull-release.sh run-release.sh check-pages.py check-hydration.mjs)
 [ $# -le 1 ] || { echo "usage: check-installed.sh [installed-dir]" >&2; exit 2; }
 [ -d "$INSTALLED" ] || { echo "check-installed: $INSTALLED is not a directory" >&2; exit 1; }
 bad=0
