@@ -13,11 +13,14 @@ export type ProviderFailureStatus = (typeof PROVIDER_FAILURE_STATUSES)[number]
 // lookup (SPEND_REFUSAL_PREFIX + reason, written by lib/enrich/index.ts).
 export const ENRICH_SKIP_STATUSES = ['budget_exhausted', 'circuit_open', 'key_rejected', 'spend_refused', 'uncertain', 'fallback_off', 'credit_cap', 'credit_unsaved'] as const
 export const SPEND_REFUSAL_PREFIX = 'spend refused: '
+// #1037: the contact pass found no Apollo or People Data Labs key for the workspace, so it made no lookup. Recorded once per scan on the
+// shared 'enrich' connector (lib/enrich/index.ts). Not a failure: nothing was tried.
+export const NO_KEY_STATUS = 'no_key' as const
 export type EnrichSkipStatus = (typeof ENRICH_SKIP_STATUSES)[number]
 
 export interface ProviderIssue {
   connector: string
-  status: ProviderFailureStatus | EnrichSkipStatus
+  status: ProviderFailureStatus | EnrichSkipStatus | typeof NO_KEY_STATUS
   lookups_affected: number
   latest_at: number
   // credit_cap only, read from the credit pool when the issue is listed: which window, credits used against the limit.
@@ -40,6 +43,7 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'key_rejected': return `${who} was skipped for the remaining leads in this scan after the saved key was rejected.`
     case 'spend_refused': return `${who}: the remaining lookups in this scan were not sent: ${spendRefusalText(issue.refusal)} The refused lookups were not charged; lookups made before the refusal keep their own charges.`
     case 'uncertain': return `${who}: an earlier lookup for a lead in this scan may have been billed but its result was not recorded, so it is held and was not repeated.`
+    case 'no_key': return 'No contacts were looked up in this scan: no Apollo or People Data Labs key is saved for this workspace, so the paid contact step did not run. Named contacts come only from free sources (the company\'s own website). Add a key in Settings > Enrichment.'
     case 'fallback_off': return `People Data Labs was not tried for leads Apollo could not enrich: a key is saved, but the Apollo-to-PDL fallback is off (Settings > Enrichment).`
     case 'credit_cap': {
       const c = issue.credit

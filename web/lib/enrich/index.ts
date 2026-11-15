@@ -19,7 +19,7 @@ import { contactAgreement, organizationContradicts, recordContactRejection } fro
 import { roleContradicted } from '../people/rank.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
-import { SPEND_REFUSAL_PREFIX } from '../scan/provider-issue-text.ts'
+import { NO_KEY_STATUS, SPEND_REFUSAL_PREFIX } from '../scan/provider-issue-text.ts'
 import { norm } from '../scan/evidence.ts'
 import { selectOffer, rebindOfferId } from '../scan/offer-identity.ts'
 
@@ -159,7 +159,12 @@ export async function enrichLeadContacts(
   let fallbackOff = false
   try {
     if (keys.apollo && !enrichFallbackEnabled(db, tenantId)) { fallbackOff = !!keys.pdl; keys.pdl = null }
-    if (!keys.apollo && !keys.pdl) return summary
+    if (!keys.apollo && !keys.pdl) {
+      // #1037: no key is not silent. One row per scan, so the scan view says why nothing was looked up (provider-issues.ts) and the
+      // enrichment trace can tell "no key" from "no eligible lead" or a failed pass (enrichment-trace.ts reads NO_KEY_STATUS apart).
+      if (leads.length > 0) audit(db, { tenantId, connector: 'enrich', jobId, lookup: 'contact pass', status: NO_KEY_STATUS, results: 0 })
+      return summary
+    }
     where = scanWhere(db, jobId) // an agreement basis: unreadable = the pass refuses rather than agrees on a guess
   } catch (e) { return setupFailed(e) }
   const now = Math.floor(Date.now() / 1000)
