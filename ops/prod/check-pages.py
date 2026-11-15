@@ -12,12 +12,14 @@ usage: check-pages.py <base-url>   (exit 0 = ok; 1 = a check failed, the reason 
 """
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 TIMEOUT = 10
 MAX_ASSETS = 80
+DEADLINE_S = 60   # the whole check, so a hanging asset server cannot hold a deploy for 80 x 10 s
 PAGES = ('/sign-up', '/sign-in')
 FORM_ACTION = re.compile(r'<form\b[^>]*\baction="/api/auth/signup"', re.I)
 ASSET = re.compile(r'''(?:src|href)=["'](/_next/static/[^"'?#]+\.(?:js|css))(?:\?[^"'#]*)?["']''', re.I)
@@ -45,6 +47,7 @@ def get(url):
 def check(base):
     base = base.rstrip('/')
     problems, assets = [], []
+    t0 = time.monotonic()
     for path in PAGES:
         code, body = get(base + path)
         if code != 200:
@@ -58,7 +61,9 @@ def check(base):
     if not problems and not assets:
         problems.append('the pages reference no /_next/static scripts or styles')
     for a in assets[:MAX_ASSETS]:
-        code, body = get(base + urllib.parse.quote(a))
+        if time.monotonic() - t0 > DEADLINE_S:
+            problems.append(f'the check ran over {DEADLINE_S} s'); break
+        code, body = get(base + urllib.parse.quote(a, safe='/%'))   # a reference already percent-encoded (a [id] route) is not encoded twice
         if code != 200:
             problems.append(f'{a} answered {code or body}')
     return problems, len(assets)

@@ -55,6 +55,12 @@ class CheckPages(unittest.TestCase):
         code, out = self.run_on(p)
         self.assertEqual(code, 1, out); self.assertIn('/_next/static/chunks/main-abc.js answered 404', out)
 
+    def test_an_already_encoded_asset_path_is_not_encoded_twice(self):
+        p = healthy(); p['/sign-in'] = (200, SIGNIN.replace('/_next/static/chunks/signin-1.js', '/_next/static/chunks/app/%5Bid%5D/page.js'))
+        p['/_next/static/chunks/app/%5Bid%5D/page.js'] = (200, 'x')
+        code, out = self.run_on(p)
+        self.assertEqual(code, 0, out)
+
     def test_a_missing_stylesheet_fails(self):
         p = healthy(); p['/_next/static/css/app.css'] = (500, '')
         code, out = self.run_on(p)

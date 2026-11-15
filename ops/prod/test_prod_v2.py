@@ -30,8 +30,8 @@ from test_prod_prebuilt import STUBS as V1_STUBS  # noqa: E402  (curl, git and s
 PINNED = {
     # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
     # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
-    'deploy-prod.sh': '65278fdc2c0c723df1cabf2bed79a22d05366822036879b26c8d1786e2cf1477',
-    'check-pages.py': 'fc8fd65e9bda2136f4b71a00eeba3bdbab290a1429ae601c52055be5da34acd3',
+    'deploy-prod.sh': '5d78463fc770a1b4297cd8cb5ea4bf5af470603a85235964dcff655652921ba1',
+    'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
 }
@@ -61,11 +61,18 @@ class RepoCopiesAreTheBoxCopies(unittest.TestCase):
         # on the spare port refuses to switch, and the public smoke (whose failure triggers the auto-rollback) fails, when check-pages.py fails.
         src = (HERE / 'deploy-prod.sh').read_text()
         local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
-        self.assertIn('python3 "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
-        self.assertIn('NOT switching', local[local.index('python3 "$PAGES"'):])
+        self.assertIn('python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
+        self.assertIn('NOT switching', local[local.index('python3 -I "$PAGES"'):])
         public = src[src.index('public_smoke() {'):src.index('[ ! -L "$OPS" ]')]
-        self.assertIn('python3 "$PAGES" "$PUBLIC_URL" || { ok=0;', public)
+        self.assertIn('[ $ok = 1 ] && [ "$pages" = pages ] && { python3 -I "$PAGES" "$PUBLIC_URL" || { ok=0;', public)
         self.assertIn('PAGES=$HERE/check-pages.py', src)
+        # the NEW release's two public smokes ask for it ...
+        self.assertEqual(src.count('public_smoke "$SHA" "$NEW_INST" pages || fail_back'), 2)
+        # ... and no rollback does: a rollback target may predate #1218 (no form action), and an emergency rollback must never be refused for that
+        for line in [l for l in src.splitlines() if 'public_smoke "' in l]:
+            if 'PREV_SHA' in line or 'OLD_SHA' in line:
+                self.assertNotIn(' pages', line, line)
+        self.assertEqual(len([l for l in src.splitlines() if 'public_smoke "' in l and ('PREV_SHA' in l or 'OLD_SHA' in l)]), 2, 'the manual and the automatic rollback')
 
     def test_no_script_builds_or_installs_anything(self):
         bad = []
