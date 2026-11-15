@@ -142,3 +142,31 @@ export async function fetchPosts(query: string, session: string): Promise<Worker
   const q = query.trim(); if (!q) throw new FetchFailure('schema_error')
   return parseLinkedinPosts(await sessionGet(postsUrl(q), session, 'https://www.linkedin.com/search/results/all/'))
 }
+
+// Connect LinkedIn (#1037, F-go step 2): ONE cheap read that proves the saved session works and names the account it belongs to,
+// so Settings can say "Connected as <name>". GET /voyager/api/me; nothing else is read. The answer carries the signed-in member's
+// mini profile, normalized (included[]) or plain (miniProfile).
+export const ME_URL = 'https://www.linkedin.com/voyager/api/me'
+export function parseMe(raw: unknown): { name: string; public_id: string | null } {
+  const clean = (v: unknown) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim() : '')
+  const fromProfile = (p: unknown) => {
+    if (!p || typeof p !== 'object') return null
+    const o = p as Record<string, unknown>
+    const name = `${clean(o.firstName)} ${clean(o.lastName)}`.trim().slice(0, 120)
+    return name ? { name, public_id: clean(o.publicIdentifier).slice(0, 100) || null } : null
+  }
+  const o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  if (!o) throw new FetchFailure('schema_error')
+  const inner = Number(o.status)
+  if (Object.hasOwn(o, 'status') && Number.isInteger(inner) && (inner < 200 || inner > 299)) throw new FetchFailure(classifyAnswer(inner, null, '') ?? 'upstream_error')
+  const direct = fromProfile(o.miniProfile) ?? fromProfile((o.data as Record<string, unknown> | undefined)?.miniProfile)
+  if (direct) return direct
+  if (Array.isArray(o.included)) for (const e of o.included) {
+    const t = e && typeof e === 'object' ? String((e as Record<string, unknown>).$type ?? '') : ''
+    if (/MiniProfile$/.test(t)) { const r = fromProfile(e); if (r) return r }
+  }
+  throw new FetchFailure('schema_error')
+}
+export async function fetchMe(session: string): Promise<{ name: string; public_id: string | null }> {
+  return parseMe(await sessionGet(ME_URL, session, 'https://www.linkedin.com/feed/'))
+}
