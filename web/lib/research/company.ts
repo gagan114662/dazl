@@ -34,9 +34,9 @@ const BLOCKED = ['linkedin.com', 'indeed.com', 'glassdoor.', 'ziprecruiter.com',
 const DIRECTORY = ['facebook.com', 'instagram.com', 'yellowpages', 'bbb.org', 'mapquest', 'tripadvisor', 'zoominfo', 'crunchbase', 'bloomberg.com', 'dnb.com', 'wikipedia.org', 'opencorporates', 'manta.com', 'chamberofcommerce', 'yelp.', 'angi.com', 'houzz.com', 'thumbtack', 'nextdoor', 'google.com', 'apple.com', 'bing.com', 'superpages', 'justia.com', 'avvo.com', 'martindale', 'lawyers.com', 'findlaw', 'healthgrades', 'zocdoc', 'ratemds', 'opentable', 'ubereats', 'doordash', 'theorg.com', 'rocketreach', 'apollo.io', 'signalhire', 'clutch.co', 'g2.com']
 const LINK_RX = /about|team|people|staff|leadership|founder|our-story|story|contact|impressum|imprint|attorney|lawyer|professional|doctor|dentist|meet|management|ber-uns|kontakt|who-we-are|partners/i
 const FIRST_RX = /team|people|leadership|about|attorney|impressum|doctor|founder/i
-const EMAIL_RX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const EMAIL_RX = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g
 const NOT_EMAIL = /\.(png|jpe?g|gif|webp|svg)$|sentry|wixpress|example\.|@2x/i
-const SENIOR = /founder|ceo|owner|partner|president|chief|director|managing|gesch.ftsf.hr|principal|head|chair|gr.nder|inhaber|dentist|dr\.?\b|chef|proprietor|vorstand/i
+const SENIOR = /\b(?:founder|ceo|owner|partner|president|chief|director|managing|gesch.ftsf.hr|principal|head|chair|gr.nder|inhaber|dentist|dr\.?\b|chef|proprietor|vorstand)\b/i
 const STOP_TOKENS = new Set(['the', 'and', 'inc', 'llc', 'llp', 'ltd', 'gmbh', 'group', 'company', 'pvt', 'limited', 'law', 'dental', 'roofing'])
 export const PAGE_TEXT = 3500, TEAM_TEXT = 5000, RESULT_TEXT = 3000, SNIPPET_TEXT = 500, PROMPT_SOURCES = 22000, MAX_OWN_PAGES = 4, MAX_RESULT_PAGES = 2
 
@@ -78,17 +78,59 @@ export function cfEmails(html: string): string[] {
 // and its mailto addresses. Pure.
 export interface ReadPage { url: string; finalUrl: string; text: string; links: { url: string; text: string }[]; mailtos: string[] }
 const decode = (s: string) => s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|&#8217;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d{1,6});/g, (_m, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
+const MAX_HTML = 400_000
+// scripts, styles, svg, templates and comments removed by index scans (linear), never a lazy pattern over the whole page
+function stripBlocks(html: string): string {
+  let out = '', i = 0
+  const low = html.toLowerCase()
+  while (i < html.length) {
+    const lt = low.indexOf('<', i)
+    if (lt < 0) { out += html.slice(i); break }
+    out += html.slice(i, lt)
+    if (low.startsWith('<!--', lt)) { const e = low.indexOf('-->', lt + 4); i = e < 0 ? html.length : e + 3; out += ' '; continue }
+    const m = /^<(script|style|noscript|svg|template)\b/.exec(low.slice(lt, lt + 12))
+    if (m) { const e = low.indexOf(`</${m[1]}`, lt + 1); const end = e < 0 ? -1 : low.indexOf('>', e); i = end < 0 ? html.length : end + 1; out += ' '; continue }
+    out += '<'; i = lt + 1
+  }
+  return out
+}
+// Linear anchor scan (a regex over hostile HTML backtracks badly): each '<a' is looked at within bounded windows, so cost stays O(n).
+function anchors(body: string): [string, string, string][] {
+  const out: [string, string, string][] = []
+  const low = body.toLowerCase()
+  let i = 0
+  while (out.length < 2000) {
+    i = low.indexOf('<a', i)
+    if (i < 0) break
+    const next = low.charCodeAt(i + 2)
+    const start = i
+    i += 2
+    if (!(next === 32 || next === 9 || next === 10 || next === 13 || next === 47)) continue
+    const gt = low.slice(start, start + 1400).indexOf('>') + start
+    if (gt < start) continue
+    const tag = body.slice(start, gt)
+    const hm = /\bhref\s*=\s*(?:"([^"]{1,2000})"|'([^']{1,2000})')/i.exec(tag)
+    if (!hm) continue
+    const cl = low.slice(gt, gt + 405).indexOf('</a>')
+    const end = cl < 0 ? gt + 1 + 400 : gt + cl
+    out.push(['', hm[1] ?? hm[2], body.slice(gt + 1, Math.min(end, body.length))])
+    i = gt + 1
+  }
+  return out
+}
+
 export function readHtml(html: string, url: string, finalUrl = url): ReadPage {
-  const body = html.slice(0, 1_500_000).replace(/<(script|style|noscript|svg|template)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+  // bounded input and bounded patterns: a hostile page (20,000 unclosed "<script ") must not cost seconds of synchronous CPU
+  const body = stripBlocks(html.slice(0, MAX_HTML))
   const links: { url: string; text: string }[] = [], mailtos: string[] = [...cfEmails(body)]
-  for (const m of body.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,400}?)<\/a>/gi)) {
+  for (const m of anchors(body)) {
     const href = decode(m[1].trim())
     if (/^mailto:/i.test(href)) { mailtos.push(href.slice(7).split('?')[0]); continue }
     let u: string; try { u = new URL(href, finalUrl).toString() } catch { continue }
     if (!/^https?:/i.test(u)) continue
-    links.push({ url: u, text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 80) })
+    links.push({ url: u, text: decode(m[2].replace(/<[^>]{1,400}>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 80) })
   }
-  const text = decode(body.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|header|footer|nav|figure|figcaption|address|blockquote|dd|dt|table)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' '))
+  const text = decode(body.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|header|footer|nav|figure|figcaption|address|blockquote|dd|dt|table)\b[^>]{0,400}>/gi, '\n').replace(/<[^>]{1,400}>/g, ' '))
     .split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n')
   return { url, finalUrl, text, links: links.slice(0, 600), mailtos: mailtos.slice(0, 60) }
 }
@@ -183,7 +225,10 @@ export function homeNamesCompany(company: string, homeText: string, c: ResearchC
   const toks = nameTokens(company).filter(w => !place.has(w))
   if (!toks.length) return false
   const hit = toks.filter(w => t.includes(` ${w} `)).length
-  return hit >= Math.min(2, toks.length)
+  if (hit < Math.min(2, toks.length)) return false
+  // one distinctive word is thin evidence ("Apex" is in every other Austin roofer's text): it must open the page (title / first heading)
+  if (toks.length === 1) return ` ${norm(homeText.slice(0, 300))} `.includes(` ${toks[0]} `)
+  return true
 }
 
 const parseJson = (s: string | null): Record<string, unknown> | null => {
@@ -225,7 +270,7 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
     const m = siteMatchesCase(c, sh, pages.map(p => p.text))
     // a GUESSED host that is some other business is not evidence that the company's site was mis-identified: only a site the event or a search
     // pointed at, and that fails, stops the person hunt (#1122)
-    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { if (!speculative) wrongSite = true; else rejectedGuess.add(host(cand)); return false }
+    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { if (!speculative) wrongSite = true; else { rejectedGuess.add(host(cand)); rejectedGuess.add(host(home.finalUrl)) } return false }
     site = `https://${sh}`
     add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
     for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
@@ -323,10 +368,12 @@ function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Perso
 
 // The addresses printed on the company's own pages: its domain (or a subdomain), never a recruiting or no-reply inbox; the named person's own
 // address first (its local part carries their first or last name), then the company's inboxes, in page order. At most 5.
+// a bare public suffix is not a company's domain: an address @co.uk must never ride on the site acme.co.uk
+const PUBLIC_SUFFIX = /^(?:co|com|org|net|gov|edu|ac|ltd|plc)\.[a-z]{2}$|^[a-z]{2,3}$/i
 const NOT_A_CONTACT = /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|webmaster|careers?|jobs?|recruit\w*|talent|hr|hiring|applications?|resumes?|privacy|gdpr|dpo|abuse|unsubscribe|wordpress)$/i
 export function ownEmails(found: Map<string, string>, siteHost: string, person: Person | null): { email: string; url: string }[] {
   if (!siteHost) return []
-  const own = [...found].filter(([e]) => { const [local, d = ''] = e.split('@'); return (d === siteHost || d.endsWith(`.${siteHost}`) || siteHost.endsWith(`.${d}`)) && !NOT_A_CONTACT.test(local.replace(/[._-]/g, '')) })
+  const own = [...found].filter(([e]) => { const [local, d = ''] = e.split('@'); return (d === siteHost || d.endsWith(`.${siteHost}`) || (siteHost.endsWith(`.${d}`) && !PUBLIC_SUFFIX.test(d))) && !NOT_A_CONTACT.test(local.replace(/[._-]/g, '')) })
   const parts = person ? norm(person.name).split(' ').filter(w => w.length >= 3 && !/^(?:dr|mr|mrs|ms)$/.test(w)) : []
   const mine = (e: string) => parts.some(p => e.split('@')[0].replace(/[^a-z]/g, '').includes(p))
   return [...own.filter(([e]) => mine(e)), ...own.filter(([e]) => !mine(e))].slice(0, 5).map(([email, url]) => ({ email, url }))
@@ -354,13 +401,18 @@ export function companySearch(search: SearchFn, after: string, o: { retries?: nu
 export function memoCompanyResearch(research: (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent) => Promise<CompanyResearch>) {
   const done = new Map<string, Promise<CompanyResearch>>()
   let hits = 0
-  const keyOf = (c: ResearchCase, ev: ResearchEvent) => `${nameTokens(ev.company).join(' ')}|${norm(c.where)}`
+  const keyOf = (c: ResearchCase, ev: ResearchEvent) => `${norm(ev.company).replace(/\b(?:inc|llc|llp|ltd|gmbh|pvt|limited|the)\b/g, ' ').replace(/\s+/g, ' ').trim()}|${norm(c.where)}`
   const fn = async (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent): Promise<CompanyResearch> => {
     const k = keyOf(c, ev), had = done.get(k)
     if (had) { hits++; return had }
     const p = research(c, plan, ev)
     done.set(k, p)
-    try { return await p } catch (e) { done.delete(k); throw e }
+    try {
+      const r = await p
+      // nothing opened and nothing decided (a network blip, a blocked page): not a final answer, so a later loop tries again
+      if (!r.site && !r.person && r.sources.length === 0) done.delete(k)
+      return r
+    } catch (e) { done.delete(k); throw e }
   }
   return Object.defineProperties(fn, { size: { get: () => done.size }, hits: { get: () => hits } }) as typeof fn & { readonly size: number; readonly hits: number }
 }

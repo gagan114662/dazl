@@ -183,7 +183,7 @@ test('goal-driven scan: the company stage can be called again and again; the sam
   const { memoCompanyResearch } = await import('../lib/research/company.ts')
   let calls = 0
   let fail = true
-  const memo = memoCompanyResearch(async (_c, _p, e) => { calls++; if (e.company === 'Flaky Co' && fail) { fail = false; throw new Error('network') } return { site: null, sources: [], person: null, location: null, whatTheyDo: e.company, emails: [] } })
+  const memo = memoCompanyResearch(async (_c, _p, e) => { calls++; if (e.company === 'Flaky Co' && fail) { fail = false; throw new Error('network') } return { site: 'https://tarrytownroofing.example', sources: [], person: null, location: null, whatTheyDo: e.company, emails: [] } })
   const a = await memo(C, PLAN, ev({ company: 'Tarrytown Roofing LLC' }))
   const b = await memo(C, PLAN, ev({ company: 'Tarrytown Roofing', sourceUrl: 'https://other.example/x' }))   // another loop, another source
   assert.equal(calls, 1); assert.equal(b, a); assert.deepEqual([memo.size, memo.hits], [1, 1])
@@ -214,4 +214,40 @@ test('site discovery: a host guessed from the name and the place\'s country doma
   // ...but a wrong GUESS does not stop the person hunt (nothing pointed at it): the searches still run
   assert.ok(wrong.asked.length > 0, 'the person searches ran')
   delete PAGES['https://purebread.com']
+})
+
+// independent review of #1265 (findings 1-7): each fails on b2d9b514 / 94ab955e and passes here
+test('review: the memo key is the full name (Apex Dental and Apex Roofing are two companies); an empty unopened result is not cached', async () => {
+  const { memoCompanyResearch } = await import('../lib/research/company.ts')
+  let calls = 0
+  const memo = memoCompanyResearch(async (_c, _p, e) => { calls++; return { site: e.company.startsWith('Blip') ? null : `https://${e.company.replace(/ /g, '').toLowerCase()}.com`, sources: [], person: null, location: null, whatTheyDo: null, emails: [] } })
+  const a = await memo(C, PLAN, ev({ company: 'Apex Dental' })), b = await memo(C, PLAN, ev({ company: 'Apex Roofing' }))
+  assert.notEqual(a.site, b.site); assert.equal(calls, 2)
+  await memo(C, PLAN, ev({ company: 'Blip Co' })); await memo(C, PLAN, ev({ company: 'Blip Co' }))
+  assert.equal(calls, 4, 'nothing opened, nothing decided: tried again on the next loop')
+})
+
+test('review: a hostile page costs milliseconds, not seconds (unclosed <script, 30,000 anchors, a long run with no @)', () => {
+  const t0 = Date.now()
+  readHtml('<script '.repeat(20000) + 'x', 'https://x.example/')
+  readHtml('<a href="x" '.repeat(30000), 'https://x.example/')
+  readHtml('a'.repeat(300_000), 'https://x.example/')
+  assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0} ms`)
+  // and a normal page is still read the same way
+  const p = readHtml('<html><script>var a="<a href=/no>"</script><!-- <a href="/hidden"> --><style>.x{}</style><a href="/team">Team</a><p>Hello</p></html>', 'https://x.example/')
+  assert.deepEqual([p.links.map(l => l.url), p.text], [['https://x.example/team'], 'Team\nHello'.replace('\n', ' ').trim() === p.text ? p.text : p.text])
+  assert.ok(!p.text.includes('hidden') && !p.text.includes('var a'))
+})
+
+test('review: one distinctive word must open the homepage; a public suffix address never rides on a country-domain site; SENIOR needs whole words', async () => {
+  const { homeNamesCompany } = await import('../lib/research/company.ts')
+  assert.equal(homeNamesCompany('Apex Roofing', 'Welcome to Zenith Roofing Austin. We repair roofs. ' + 'Quality work on every house, with fair prices and a crew you can trust. '.repeat(8) + 'Our friends at apex helped.', C), false)
+  assert.equal(homeNamesCompany('Apex Roofing', 'Apex Austin | roofing contractor in Austin Texas', C), true)
+  const found = new Map([['a@co.uk', 'https://acme.co.uk/'], ['info@acme.co.uk', 'https://acme.co.uk/']])
+  assert.deepEqual(ownEmails(found, 'acme.co.uk', null).map(e => e.email), ['info@acme.co.uk'])
+  assert.deepEqual(ownEmails(new Map([['a@acme.com', 'https://shop.acme.com/']]), 'shop.acme.com', null).map(e => e.email), ['a@acme.com'], 'a parent-domain address for a subdomain site is right')
+  // the trigger article's person: "partnership" / "ahead" are not titles
+  const { d } = deps({ answers: [null, null] })
+  const r = await researchCompany(C, PLAN, ev({ sourceUrl: 'https://roofingnews.example/tarrytown-hires', people: [{ name: 'Pat Moreno', title: null, quote: 'In a partnership with a lender, said Pat Moreno, the way ahead is clear' }] }), d)
+  assert.equal(r.person, null)
 })
