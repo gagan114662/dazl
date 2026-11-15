@@ -38,7 +38,7 @@ test('runResearch: stages in order, only trigger-verified leads returned, the co
     filter: async (_c: unknown, _p: unknown, all: Candidate[]) => { order.push('filter'); return { all: all.map((x, i) => i === 2 ? { ...x, dropped: 'filter' } : x), keep: all.slice(0, 2) } },
     read: async (_c: unknown, _p: unknown, x: Candidate) => { order.push('read'); const e = [ev(`Acme${x.title}`), ev(`Beta${x.title}`)]; return { events: e, pageText: e.map(page).join(' ') } },
     gate: async (_c: unknown, es: ResearchEvent[]) => { order.push('gate'); return es.filter(e => e.company !== 'Betab') },
-    research: async (_c: unknown, _p: unknown, e: ResearchEvent) => research(e.company !== 'Betaa'),
+    company: async (_c: unknown, _p: unknown, e: ResearchEvent) => research(e.company !== 'Betaa'),
     verify: async (_c: unknown, e: ResearchEvent) => v(e.company !== 'Acmeb', e.company === 'Acmea'),
   }
   assert.ok(researchReady(s)); assert.equal(researchReady({ plan: s.plan, hunt: s.hunt }), false)
@@ -49,4 +49,26 @@ test('runResearch: stages in order, only trigger-verified leads returned, the co
   assert.deepEqual(st, { understand: [1, 1], hunt: [1, 3], filter: [3, 2], read: [2, 4], gate: [4, 3], research: [3, 2], verify: [3, 1] })
   assert.deepEqual(r.funnel.stages.find(x => x.stage === 'filter')!.dropped, { filter: 1 })
   assert.equal(researchEngineOn({ LEAD_ENGINE: 'research' }), true); assert.equal(researchEngineOn({}), false)
+})
+
+test('a spend refusal mid-stage stops new work and keeps what was already paid for (budget-stopped, not lost)', async () => {
+  class Refused extends Error {}
+  const cands: Candidate[] = ['a', 'b', 'c', 'd'].map(x => ({ url: `https://n.test/${x}`, title: x, snippet: '', date: null, triggerId: 't1', query: 'q', via: 'tinyfish' }))
+  let companyCalls = 0
+  const v: Verification = { triggerLiteral: true, triggerP: 1, triggerOk: true, date: '2026-10-02', dateTier: 'page', dateInWindow: true, personOk: true, personP: 1, personTier: 'page', personUrl: null, placeP: 1, categoryP: 1, placeCategoryOk: true, ready: true, why: [] }
+  const s = {
+    plan: async () => ({ persona: '', decisionMakerTitles: [], triggers: [], askingQueries: [], source: 'model' as const }),
+    hunt: async () => ({ candidates: cands, queries: 1, failed: {}, stopped: null, funnel: { stage: 'hunt' as const, in: 1, out: 4, dropped: {} } }),
+    filter: async (_c: unknown, _p: unknown, all: Candidate[]) => ({ all, keep: all }),
+    read: async (_c: unknown, _p: unknown, x: Candidate) => { const e = ev(`Firm${x.title}`); return { events: [e], pageText: page(e) } },
+    gate: async (_c: unknown, es: ResearchEvent[]) => es,
+    company: async () => { if (++companyCalls > 2) throw new Refused('over_limit'); return { site: null, sources: [], person: null, location: null, whatTheyDo: null, emails: [] } },
+    verify: async () => v,
+  }
+  const r = await runResearch(C, s, { concurrency: 1, isRefusal: e => e instanceof Refused })
+  assert.equal(r.budgetStopped, true)
+  assert.equal(companyCalls, 3, 'no company research starts after the refusal')
+  assert.equal(r.leads.length, 2, 'the two companies researched before the refusal are verified and kept')
+  assert.equal(r.funnel.stages.find(x => x.stage === 'research')!.dropped.budget_stopped, 2)
+  await assert.rejects(runResearch(C, { ...s, company: async () => { throw new Error('bug') } }, { isRefusal: e => e instanceof Refused }), /bug/, 'any other error still fails the scan')
 })
