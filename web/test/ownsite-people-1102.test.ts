@@ -121,3 +121,11 @@ test('a request whose caller is already aborted settles to null and never throws
     assert.equal(uncaught, null)
   } finally { await s.close() }
 })
+
+test('a person on a blog post is not the company\'s person, even when "/contact" redirected there or the URL contains a people word', () => {
+  const page = `<html><body>${prose('A post about rules.')}<div>Dana Okoye</div><div>Partner</div></body></html>`
+  for (const url of ['https://acme-law.example/insights/blog-posts/contact-tracing-in-the-uk/', 'https://acme-law.example/blog/about-our-team-of-partners', 'https://acme-law.example/news/2026/10/meet-our-new-partner', 'https://acme-law.example/steam-cleaning-tips/', 'https://acme-law.example/our-meetup-recap'])
+    assert.deepEqual(extractPeople(page, url, 'Partner').map(f => f.value), [], url)
+  for (const url of ['https://acme-law.example/about-us/', 'https://acme-law.example/en-us/our-team', 'https://acme-law.example/locations/chicago', 'https://acme-law.example/people/'])
+    assert.deepEqual(extractPeople(page, url, 'Partner').map(f => f.value), ['Dana Okoye, Partner'], url)
+})

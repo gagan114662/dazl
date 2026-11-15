@@ -323,6 +323,11 @@ export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|(?:office )?managing (?:partner|shareholder|principal)|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist|locations?|offices?)/i
+// A people page by its FIRST path segment (after a locale such as "en-us"), at most four segments deep: "/about-us", "/our-team",
+// "/locations/chicago". Matching the word anywhere took a blog post ("/insights/blog-posts/contact-tracing-in-the-uk", reached when
+// "/contact" redirected there) for a contact page and kept its author as the company's person (#1102 measurement).
+const peoplePage = (pathname: string) => { const seg = pathname.toLowerCase().split('/').filter(Boolean); const at = /^[a-z]{2}(?:-[a-z]{2})?$/.test(seg[0] ?? '') ? 1 : 0; return seg.length > at && seg.length <= at + 4 && PEOPLE_PAGE_START.test(seg[at]) }
+const PEOPLE_PAGE_START = new RegExp(`^(?:our-|meet-(?:the-|our-)?)?(?:${PEOPLE_PAGE.source})(?:$|[-.])`, 'i')   // "our-team", "meet-the-team" too
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -453,7 +458,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
     if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
-      if (!PEOPLE_PAGE.test(path)) return
+      if (!peoplePage(path)) return
       if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
       if (linkText.has(name.toLowerCase()) && !ownBioLink(name)) return
       if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
