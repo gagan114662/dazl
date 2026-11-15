@@ -21,7 +21,7 @@ function ask(msg: unknown, timeoutMs = 30_000): Promise<Record<string, unknown> 
   })
 }
 
-export default function LinkedinConnect({ state, onChange, pasteForm }: { state: ConnectState | null; onChange: () => void; pasteForm: React.ReactNode }) {
+export default function LinkedinConnect({ state, enabled, onToggle, onChange, pasteForm }: { state: ConnectState | null; enabled: boolean; onToggle: () => void; onChange: () => void; pasteForm: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [missing, setMissing] = useState(false)
@@ -57,9 +57,10 @@ export default function LinkedinConnect({ state, onChange, pasteForm }: { state:
   return (
     <div className="flex flex-col gap-2" data-testid="linkedin-connect">
       {state?.connected ? (
-        <div className="flex items-center justify-between gap-3">
-          <span>Connected as <strong>{state.name ?? 'your LinkedIn account'}</strong>{state.synced_at ? `, synced ${new Date(state.synced_at * 1000).toLocaleString()}` : ''}</span>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+          <span>Connected as <strong>{state.name ?? 'your LinkedIn account'}</strong>{state.synced_at ? `, synced ${new Date(state.synced_at * 1000).toLocaleString()}` : ''}, <span data-testid="linkedin-enabled">{enabled ? 'on' : 'off'}</span>{!enabled ? ' (switched off: dazl reads nothing until you turn it on)' : ''}</span>
           <span className="flex gap-4">
+            <button disabled={busy} className="underline underline-offset-2" onClick={onToggle}>{enabled ? 'Turn off' : 'Turn on'}</button>
             <button disabled={busy} className="underline underline-offset-2" onClick={test}>Test connection</button>
             <button disabled={busy} className="underline underline-offset-2" onClick={disconnect}>Disconnect</button>
           </span>

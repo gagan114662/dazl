@@ -13,6 +13,8 @@ import { sqliteDb } from '../../lib/db/client.ts'
 import { CONSENT_VERSION } from '../../lib/advanced/config.ts'
 import { readEnabledCredential, connectorStatus } from '../../lib/connectors/store.ts'
 import { createPairing, PAIR_TTL_S, redeemPairing } from '../../lib/advanced/linkedin-connect.ts'
+import { setEnabled } from '../../lib/connectors/store.ts'
+import { reserveRequest } from '../../lib/advanced/request-budget.ts'
 import * as settings from '../../app/api/settings/advanced/route.ts'
 import * as ext from '../../app/api/extension/linkedin/route.ts'
 
@@ -24,10 +26,12 @@ for (const [t, m, role] of [['A', 'A', 'owner'], ['B', 'B', 'owner']]) db.prepar
 
 // The worker's /linkedin/me, stubbed: a fixed invented member; every other outbound call fails the test.
 const workerCalls: { url: string; body: string }[] = []
+let duringWorkerCall: (() => Promise<void>) | null = null   // runs INSIDE the worker call: a race window
 globalThis.fetch = (async (u: string, init?: RequestInit) => {
   const url = String(u)
   if (url !== 'https://worker.invalid/linkedin/me') throw new Error(`unexpected outbound call ${url}`)
   workerCalls.push({ url, body: String(init?.body) })
+  if (duringWorkerCall) { const f = duringWorkerCall; duringWorkerCall = null; await f() }
   return new Response(JSON.stringify({ name: 'Dana Okoye', public_id: 'dana-okoye-test', upstream_requests: 1 }), { status: 200 })
 }) as typeof fetch
 
@@ -136,4 +140,48 @@ test('Connect LinkedIn: an expired code is spent and refused; a viewer cannot as
   const keep = process.env.ADVANCED_LINKEDIN
   process.env.ADVANCED_LINKEDIN = '0'
   try { assert.equal((await extPost('A.whatever', { action: 'pair' })).status, 404) } finally { process.env.ADVANCED_LINKEDIN = keep }
+})
+
+test('Connect LinkedIn review fixes: a Disconnect during a sync is not undone; a switched-off connector stays off; the account check obeys the cooldown and the shared budget', async () => {
+  const pairNew = async (id: string) => { await consent(id); asUser(id); const c = (await (await settingsPost({ action: 'pair', platform: 'linkedin' })).json() as { code: string }).code; return (await (await extPost(c, { action: 'pair' })).json() as { device_token: string }).device_token }
+  db.prepare('DELETE FROM rate_limits').run()   // the per-IP limit counts every earlier test's calls from the one fixture address
+  for (const [t] of [['C'], ['D'], ['E']]) db.prepare('INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, ?, 0)').run(t, t, 'owner')
+
+  // (a) Disconnect lands while the save's account check is in flight: the device and the session stay gone, the token is dead.
+  const tok = await pairNew('C')
+  duringWorkerCall = async () => { asUser('C'); assert.equal((await settings.DELETE(new NextRequest('http://localhost/api/settings/advanced?platform=linkedin', { method: 'DELETE' }))).status, 200) }
+  const raced = await extPost(tok, { action: 'session', li_at: LI_AT, jsessionid: JSID })
+  assert.equal(raced.status, 401, 'the account write after a Disconnect is refused')
+  assert.equal((await extPost(tok, { action: 'status' })).status, 401)
+  assert.equal(await readEnabledCredential(adb, 'C', 'adv:linkedin'), null, 'the session is not brought back')
+  assert.equal((await extPost(tok, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 401)
+  // ... and a Disconnect between the device check and the session write: nothing is written
+  const tok2 = await pairNew('C')
+  duringWorkerCall = null
+  assert.equal((await extPost(tok2, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 200)
+  asUser('C'); await settings.DELETE(new NextRequest('http://localhost/api/settings/advanced?platform=linkedin', { method: 'DELETE' }))
+  assert.equal((await extPost(tok2, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 401)
+  assert.equal(await readEnabledCredential(adb, 'C', 'adv:linkedin'), null)
+
+  // (b) The reader (or the user) switched the connector off: a cookie rotation saves the new session but leaves it OFF, and makes no account read.
+  const tokD = await pairNew('D')
+  assert.equal((await extPost(tokD, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 200)
+  await setEnabled(adb, 'D', 'adv:linkedin', false)
+  const before = workerCalls.length
+  assert.equal((await extPost(tokD, { action: 'session', li_at: `${LI_AT}9`, jsessionid: JSID, check: true })).status, 200)
+  assert.equal(await readEnabledCredential(adb, 'D', 'adv:linkedin'), null, 'still off: a rotation never switches it back on')
+  assert.equal((db.prepare("SELECT enabled FROM tenant_connectors WHERE tenant_id = 'D' AND connector = 'adv:linkedin'").get() as { enabled: number }).enabled, 0)
+  assert.equal(workerCalls.length, before, 'no LinkedIn read through a switched-off connector')
+  asUser('D'); assert.deepEqual(await (await settingsPost({ action: 'test', platform: 'linkedin' })).json(), { ok: false, outcome: 'connector_off' })
+
+  // (c) A cooldown after a challenge, and an exhausted shared hourly budget: no account read.
+  const tokE = await pairNew('E')
+  db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, scan_job_id, lookup, status, results, created_at) VALUES ('cool-e', 'E', 'adv:linkedin', NULL, 'people', 'stopped_challenge', 0, ?)").run(Math.floor(Date.now() / 1000))
+  const b2 = workerCalls.length
+  const r = await (await extPost(tokE, { action: 'session', li_at: LI_AT, jsessionid: JSID, check: true })).json() as { ok: boolean; check: string | null }
+  assert.equal(r.ok, true); assert.equal(r.check, 'cooldown'); assert.equal(workerCalls.length, b2)
+  db.prepare("DELETE FROM connector_audit WHERE id = 'cool-e'").run()
+  for (let i = 0; i < 3; i++) await reserveRequest(adb, 'E', 'adv:linkedin', 3, 'people')
+  const r2 = await (await extPost(tokE, { action: 'session', li_at: LI_AT, jsessionid: JSID, check: true })).json() as { check: string | null }
+  assert.equal(r2.check, 'budget'); assert.equal(workerCalls.length, b2)
 })

@@ -41,7 +41,7 @@ export default function AdvancedPanel() {
             <button disabled={!ack[p.platform]} onClick={() => post({ action: 'consent', platform: p.platform, accept: true, version: st!.version })} className="btn-primary w-fit disabled:opacity-40">Accept and continue</button>
           </div>
         ) : p.platform === 'linkedin' && (p.connected ? !!st!.linkedin_connect?.connected : true) ? (
-          <LinkedinConnect state={st!.linkedin_connect ?? null} onChange={() => void load()} pasteForm={PasteForm(c, p)} />
+          <LinkedinConnect state={st!.linkedin_connect ?? null} enabled={p.enabled} onToggle={() => post({ action: 'toggle', platform: p.platform, enabled: !p.enabled })} onChange={() => void load()} pasteForm={PasteForm(c, p)} />
         ) : p.connected ? (
           <div className="flex items-center justify-between gap-3">
             <span>Session ending in {p.last4}, {p.enabled ? 'on' : 'off'}</span>

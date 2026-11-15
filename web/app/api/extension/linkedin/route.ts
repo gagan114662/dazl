@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { advFlags, platformAllowed } from '@/lib/advanced/config'
 import { readConsent } from '@/lib/advanced'
-import { authDevice, checkAccount, recordAccount, redeemPairing, saveSessionFromDevice, sessionFromCookies } from '@/lib/advanced/linkedin-connect'
+import { authDevice, guardedAccountCheck, recordAccount, redeemPairing, saveSessionFromDevice, sessionFromCookies } from '@/lib/advanced/linkedin-connect'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
 
@@ -45,13 +45,20 @@ export async function POST(req: NextRequest) {
   if (!process.env.DAZL_MASTER_KEY) return no(503, 'Key storage is not available right now')
   const session = sessionFromCookies(body.li_at, body.jsessionid)
   if (!session) return no(400, 'That does not look like a signed-in LinkedIn session')
-  await saveSessionFromDevice(db, dev.tenantId, dev.device, session)
+  const now = Math.floor(Date.now() / 1000)
+  // In one transaction with the device check: a Disconnect (or a newer pairing) since the check means nothing is written (401).
+  const saved = await saveSessionFromDevice(db, dev.tenantId, dev.device, dev.ciphertext, session, now)
+  if (!saved) return no(401, 'unauthorized')
   await audit({ tenantId: dev.tenantId, actorId: dev.device.u }, req, { action: 'credential.saved', resource: 'social', id: 'linkedin', summary: { platform: 'linkedin', via: 'extension' } })
-  // Name the account once (and when the user asks): ONE read of the session's own profile, at most 6 per workspace per hour.
+  // Name the account once (and when the user asks): ONE read of the session's own profile, behind every LinkedIn guard (connector on, no
+  // cooldown, the shared hourly budget) and at most 6 per workspace per hour.
   let name = dev.device.name, outcome: string | null = null
   if (name === null || body.check === true) {
-    const me = (await rateLimit(`adv-me:${dev.tenantId}`, 6, 60 * 60 * 1000)).ok ? await checkAccount(session) : { ok: false as const, outcome: 'rate_limited' }
-    if (me.ok) { name = me.name; await recordAccount(db, dev.tenantId, { ...dev.device, synced_at: Math.floor(Date.now() / 1000) }, me) } else outcome = me.outcome
+    const me = (await rateLimit(`adv-me:${dev.tenantId}`, 6, 60 * 60 * 1000)).ok ? await guardedAccountCheck(db, dev.tenantId) : { ok: false as const, outcome: 'rate_limited' }
+    if (me.ok) {
+      if (!(await recordAccount(db, dev.tenantId, { ...dev.device, synced_at: now }, saved, me))) return no(401, 'unauthorized')
+      name = me.name
+    } else outcome = me.outcome
   }
   return NextResponse.json({ ok: true, name, check: outcome })
 }

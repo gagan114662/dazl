@@ -54,7 +54,9 @@ async function sync(check) {
   const r = await call(s.origin, s.token, { action: 'session', ...session, check: !!check })
   if (r.status === 401) { await forget(); return { ok: false, error: 'This browser is no longer connected to dazl. Click Connect LinkedIn in dazl Settings.' } }
   if (r.status !== 200) return { ok: false, error: (r.json && r.json.error) || `dazl answered ${r.status}` }
-  await chrome.storage.local.set({ [STORE_KEY]: { ...s, name: r.json?.name ?? s.name ?? null, synced_at: Date.now() } })
+  // Only when this browser is still paired with the same token: a Disconnect / forget (or a new pairing) while this request was in flight wins.
+  const now = await stored()
+  if (now && now.token === s.token) await chrome.storage.local.set({ [STORE_KEY]: { ...now, name: r.json?.name ?? now.name ?? null, synced_at: Date.now() } })
   return { ok: true, name: r.json?.name ?? null }
 }
 

@@ -16,8 +16,9 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Db } from '../db/client.ts'
 import { encryptSecret, decryptSecret } from '../secrets.ts'
-import { writeCredential, removeCredential } from '../connectors/store.ts'
-import { connectorId } from './config.ts'
+import type { Tx, TxBody } from '../db/client.ts'
+import { connectorId, maxCallsPerHour } from './config.ts'
+import { coolingDown, reserveRequest } from './request-budget.ts'
 import { can } from '../workspaces.ts'
 
 export const PAIR_CONNECTOR = 'adv:linkedin:pair'
@@ -66,7 +67,8 @@ export async function redeemPairing(db: Db, code: unknown, now = Math.floor(Date
 }
 
 // A device token -> its tenant and device record, or null.
-export async function authDevice(db: Db, token: unknown, master?: Buffer): Promise<{ tenantId: string; device: DeviceRow } | null> {
+// `ciphertext` is the device row as it was read: every later write for this device is conditional on it (see saveSessionFromDevice).
+export async function authDevice(db: Db, token: unknown, master?: Buffer): Promise<{ tenantId: string; device: DeviceRow; ciphertext: string } | null> {
   const m = typeof token === 'string' ? TOKEN.exec(token.trim()) : null
   if (!m) return null
   const got = await read<DeviceRow>(db, m[1], DEVICE_CONNECTOR, master)
@@ -74,7 +76,7 @@ export async function authDevice(db: Db, token: unknown, master?: Buffer): Promi
   // The member who paired the device must still belong to the workspace and still be allowed to configure it: a removed member's
   // browser, or one whose role was lowered, stops syncing at once.
   const r = await db.get<{ role: string }>('SELECT role FROM memberships WHERE tenant_id = ? AND member_id = ?', [m[1], got.row.u])
-  return r && can(r.role as Parameters<typeof can>[0], 'configure') ? { tenantId: m[1], device: got.row } : null
+  return r && can(r.role as Parameters<typeof can>[0], 'configure') ? { tenantId: m[1], device: got.row, ciphertext: got.ciphertext } : null
 }
 
 // The two cookies, as the browser holds them. li_at is a long opaque token; JSESSIONID is "ajax:<digits>" (sent quoted by LinkedIn).
@@ -86,23 +88,55 @@ export function sessionFromCookies(liAt: unknown, jsessionid: unknown): string |
   return LI_AT.test(a) && j ? `li_at=${a}; JSESSIONID="${j}"` : null
 }
 
-// Saves the session for the device's tenant (the same encrypted `adv:linkedin` credential a pasted session is), and records when.
-export async function saveSessionFromDevice(db: Db, tenantId: string, device: DeviceRow, session: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<void> {
-  await writeCredential(db, tenantId, connectorId('linkedin'), session, master)
-  await write(db, tenantId, DEVICE_CONNECTOR, { ...device, synced_at: now } satisfies DeviceRow, master)
+// Writes for a device are CONDITIONAL on the device row the request authenticated with: a Disconnect (or a newer pairing) between the check
+// and the write wins, the write changes nothing and the caller answers 401. Never an upsert: an in-flight request must not bring a revoked
+// device, or the session it carried, back.
+function* updateDevice(t: Tx, tenantId: string, readCiphertext: string, next: DeviceRow, master?: Buffer): TxBody<string | null> {
+  const ct = encryptSecret(JSON.stringify(next), ctx(tenantId, DEVICE_CONNECTOR), master)
+  const r = yield* t.run('UPDATE tenant_connectors SET ciphertext = ? WHERE tenant_id = ? AND connector = ? AND ciphertext = ?', [ct, tenantId, DEVICE_CONNECTOR, readCiphertext])
+  return r.changes === 1 ? ct : null
 }
 
-// The account name the session belongs to (from the worker's /linkedin/me), kept for "Connected as <name>".
-export async function recordAccount(db: Db, tenantId: string, device: DeviceRow, account: { name: string; public_id: string | null }, master?: Buffer): Promise<void> {
-  await write(db, tenantId, DEVICE_CONNECTOR, { ...device, name: account.name.slice(0, 120), public_id: account.public_id?.slice(0, 100) ?? null } satisfies DeviceRow, master)
+// Saves the session for the device's tenant, in ONE transaction with the device check: the same encrypted `adv:linkedin` credential a pasted
+// session is, EXCEPT that its on/off switch is kept as it is. A connector that was switched off (by the user, or by the reader after a
+// challenge or a sign-out: lib/signals/linkedin-people.ts) stays off; a cookie rotation never switches it back on. A first save creates it on.
+// Returns the device row's new ciphertext, or null when the device is gone (the caller answers 401).
+export async function saveSessionFromDevice(db: Db, tenantId: string, device: DeviceRow, readCiphertext: string, session: string, now = Math.floor(Date.now() / 1000), master?: Buffer): Promise<string | null> {
+  const id = connectorId('linkedin')
+  const cred = encryptSecret(session, ctx(tenantId, id), master)
+  return db.tx(function* (t: Tx): TxBody<string | null> {
+    const ct = yield* updateDevice(t, tenantId, readCiphertext, { ...device, synced_at: now }, master)
+    if (!ct) return null
+    yield* t.run(`INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled) VALUES (?, ?, ?, ?, 1)
+       ON CONFLICT(tenant_id, connector) DO UPDATE SET ciphertext = excluded.ciphertext, last4 = excluded.last4`, [tenantId, id, cred, session.slice(-4)])
+    return ct
+  })
+}
+
+// The account name the session belongs to (from the worker's /linkedin/me), kept for "Connected as <name>"; conditional like every device write.
+export async function recordAccount(db: Db, tenantId: string, device: DeviceRow, readCiphertext: string, account: { name: string; public_id: string | null }, master?: Buffer): Promise<string | null> {
+  return db.tx(t => updateDevice(t, tenantId, readCiphertext, { ...device, name: account.name.slice(0, 120), public_id: account.public_id?.slice(0, 100) ?? null }, master))
 }
 
 // "Test connection" from Settings: the account name goes on the tenant's device record, when there is one.
 export async function recordAccountForTenant(db: Db, tenantId: string, account: { name: string; public_id: string | null }, master?: Buffer): Promise<boolean> {
   const d = await read<DeviceRow>(db, tenantId, DEVICE_CONNECTOR, master)
-  if (!d) return false
-  await recordAccount(db, tenantId, d.row, account, master)
-  return true
+  return !!d && !!(await recordAccount(db, tenantId, d.row, d.ciphertext, account, master))
+}
+
+// The account check, behind every guard any LinkedIn consumer passes before a request (lib/advanced/request-budget.ts): the connector must be
+// on, the workspace must not be in a cooldown after a throttle / challenge / sign-out, and the request takes one slot of the SHARED hourly
+// budget (reserved before the call, never refunded). Then ONE read of the session's own profile.
+export async function guardedAccountCheck(db: Db, tenantId: string, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch, master?: Buffer): Promise<{ ok: true; name: string; public_id: string | null } | { ok: false; outcome: string }> {
+  const id = connectorId('linkedin')
+  const row = await db.get<{ ciphertext: string; enabled: number }>('SELECT ciphertext, enabled FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, id])
+  if (!row?.ciphertext) return { ok: false, outcome: 'not_connected' }
+  if (Number(row.enabled) !== 1) return { ok: false, outcome: 'connector_off' }
+  if (await coolingDown(db, tenantId, id)) return { ok: false, outcome: 'cooldown' }
+  if (!(await reserveRequest(db, tenantId, id, maxCallsPerHour('linkedin', env), 'account_check'))) return { ok: false, outcome: 'budget' }
+  let session: string
+  try { session = decryptSecret(row.ciphertext, ctx(tenantId, id), master) } catch { return { ok: false, outcome: 'unreadable' } }
+  return checkAccount(session, env, fetchImpl)
 }
 
 // For Settings: never a secret.
@@ -114,12 +148,13 @@ export async function connectionStatus(db: Db, tenantId: string, master?: Buffer
 
 // Disconnect: the device, any pending code and the stored session go. true when anything was removed.
 export async function disconnect(db: Db, tenantId: string): Promise<boolean> {
-  const a = (await db.run('DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector IN (?, ?)', [tenantId, DEVICE_CONNECTOR, PAIR_CONNECTOR])).changes
-  const b = await removeCredential(db, tenantId, connectorId('linkedin'))
-  return a > 0 || b
+  return db.tx(function* (t: Tx): TxBody<boolean> {
+    const r = yield* t.run('DELETE FROM tenant_connectors WHERE tenant_id = ? AND connector IN (?, ?, ?)', [tenantId, DEVICE_CONNECTOR, PAIR_CONNECTOR, connectorId('linkedin')])
+    return r.changes > 0
+  })
 }
 
-// The worker's account check: ONE GET of the session's own profile. { name } or the typed outcome.
+// The worker's account check itself: ONE GET of the session's own profile. { name } or the typed outcome. Callers go through guardedAccountCheck.
 export async function checkAccount(session: string, env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): Promise<{ ok: true; name: string; public_id: string | null } | { ok: false; outcome: string }> {
   if (!env.ADVANCED_WORKER_URL || !env.ADVANCED_WORKER_TOKEN) return { ok: false, outcome: 'no_worker' }
   try {

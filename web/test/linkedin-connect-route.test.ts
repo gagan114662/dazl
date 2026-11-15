@@ -13,5 +13,5 @@ test('Connect LinkedIn routes (#1037): pairing, single use, isolation, revocatio
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 2/)
+  assert.match(result.stdout, /# pass 3/)
 })
