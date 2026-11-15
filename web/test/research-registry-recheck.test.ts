@@ -70,7 +70,7 @@ test('whatever cannot be read says why, and nothing is proved: not a record URL 
   const rows = REC.austin as Record<string, unknown>[]
   assert.equal(await why(serve(rows.map(r => ({ ...r, permit_number: '2026-999999 BP' })))), 'record_unreadable', 'another permit answered')
   assert.equal(await why(serve(rows.map(r => ({ ...r, contractor_trade: 'Electrical Contractor' })))), 'record_unreadable', 'no general contractor: no business is named')
-  assert.equal(await why(serve({ results: [{ ...REC.vancouver.results[0], status: 'Pending' }] }), REC.vancouver_url), 'record_unreadable', 'not an issued licence')
+  assert.equal(await why(serve({ total_count: 1, results: [{ ...REC.vancouver.results[0], status: 'Pending' }] }), REC.vancouver_url), 'record_unreadable', 'not an issued licence')
   assert.equal(registryRecordFacts(REC.austin, registryRecordRef(REC.vancouver_url)!), null, 'a record of one kind is not read as the other')
 })
 
@@ -83,11 +83,35 @@ test("a revised licence re-reads as the business's CURRENT name with its FIRST i
   assert.ok(r.ok); if (!r.ok) return
   assert.equal(r.company, 'Jansang'); assert.equal(r.date, '2026-04-21'); assert.deepEqual(r.revision, { number: '02', date: '2026-10-29' })
   assert.equal(r.citation, "the city's open-data record, licence 26-221108, issued 2026-04-21")
-  const page = (await import('../lib/research/sources/record-page.ts')).renderRegistryRecord({ results: rows }, registryRecordRef(url('26-221108'))!)!
+  const page = (await import('../lib/research/sources/record-page.ts')).renderRegistryRecord({ total_count: rows.length, results: rows }, registryRecordRef(url('26-221108'))!)!
   assert.match(page.text, /^City of Vancouver business licence 26-221108 was first issued on 2026-04-21 to Jansang \(revision 02 issued 2026-10-29; /); assert.equal(page.published, '2026-04-21')
+  const mixed = await recheckRegistryRecord(url('26-221108'), serve({ total_count: rows.length + REV.licences['26-217772'].length, results: [...rows, ...REV.licences['26-217772']] }))
+  assert.ok(mixed.ok && mixed.company === 'Jansang' && mixed.date === '2026-04-21', 'rows of another licence number in the answer are not this licence')
   const why = async (rs: Record<string, unknown>[]) => { const x = await recheckRegistryRecord(url('26-221108'), serve({ total_count: rs.length, results: rs })); return x.ok ? 'ok' : x.why }
   assert.equal(await why(rows.filter(x => x.licencerevisionnumber !== '00')), 'record_unreadable', 'no revision 00 row: the first issue is unknown')
   assert.equal(await why(rows.map(x => ({ ...x, status: 'Issued' }))), 'record_unreadable', 'several Issued rows: ambiguous')
   assert.equal(await why(rows.map(x => ({ ...x, status: 'Inactive' }))), 'record_unreadable', 'no Issued row')
   assert.equal(await why([...rows, { ...rows[0] }]), 'record_unreadable', 'one revision twice')
+  const cut = await recheckRegistryRecord(url('26-221108'), serve({ total_count: 9, results: rows }))
+  assert.deepEqual(cut, { ok: false, why: 'record_unreadable' }, 'a page cut by the limit: 9 rows exist, 3 came back')
+  assert.equal(await why(rows.map(x => ({ ...x, licencerevisionnumber: x.licencerevisionnumber === '02' ? '00' : x.licencerevisionnumber }))), 'record_unreadable', 'two revision-00 rows: ambiguous')
+  assert.equal(await why(rows.map(x => (x.licencerevisionnumber === '01' ? { ...x, status: 'Issued' } : x.status === 'Issued' ? { ...x, status: 'Inactive' } : x))), 'record_unreadable', 'revision 01 is Issued while revision 02 exists: the Issued row is not the latest')
+  assert.equal(await why(rows.map(x => Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'licencerevisionnumber')))), 'record_unreadable', 'no revision numbers: nothing can be ordered')
+})
+
+test("the source's candidates for REAL revised licences survive the round trip: collect, then re-read each from its own rows (same business, same first-issue day)", async () => {
+  const REV = rd('research-vancouver-revisions.json') as { since: string; licences: Record<string, Record<string, unknown>[]> }
+  const current = Object.values(REV.licences).map(rs => rs.find(r => r.status === 'Issued')!), all = Object.values(REV.licences).flat()
+  const c: ResearchCase = { tenant: 't', jobId: 'j', query: 'restaurants in Vancouver', offer: 'x', where: 'Vancouver, British Columbia', category: 'restaurants', windowDays: 90, today: '2026-11-15' }
+  const v = await vancouverLicencesSource.collect(c, REV.since, async u => {
+    const w = new URL(u).searchParams.get('where') ?? ''
+    return { status: 200, body: JSON.stringify(w.includes('issueddate >=') ? current : w.includes('folderyear="25"') ? [] : w.startsWith('(licencenumber=') ? all : current) }
+  })
+  assert.deepEqual(v.candidates.map(x => x.title.split(':')[0]).sort(), ['AVERO', 'Linh Noodle Bar'])
+  for (const cand of v.candidates) {
+    const id = registryRecordRef(cand.url)!.id
+    const r = await recheckRegistryRecord(cand, serve({ total_count: REV.licences[id].length, results: REV.licences[id] }))
+    assert.ok(r.ok, `${cand.title}: ${JSON.stringify(r)}`); if (!r.ok) continue
+    assert.equal(r.date, cand.date, 'the candidate is dated by the first issue, and so is its record'); assert.ok(cand.title.startsWith(r.company))
+  }
 })

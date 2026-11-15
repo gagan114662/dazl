@@ -1,5 +1,5 @@
 {
- "_note": "Real rows of the City of Vancouver business-licences dataset (opendata.vancouver.ca), restaurants, fetched 2026-11-15: window = 2026 licences issued since 2026-08-17; prior = the 2025 licence of the renewal; same = 2026 licences under the same trade names.",
+ "_note": "Real rows of the City of Vancouver business-licences dataset (opendata.vancouver.ca), restaurants, fetched 2026-11-15: window = 2026 licences issued since 2026-08-17; prior = the 2025 licence of the renewal; same = 2026 licences under the same trade names. licencerevisionnumber added to every row from the live dataset (the adapter now selects it).",
  "since": "2026-08-17",
  "window": [
   {
@@ -13,7 +13,8 @@
    "house": "1851",
    "street": "COMMERCIAL DRIVE",
    "localarea": "Grandview-Woodland",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -26,7 +27,8 @@
    "house": "212",
    "street": "CARRALL ST",
    "localarea": "Downtown",
-   "businesssubtype": "Class 1 no liquor service"
+   "businesssubtype": "Class 1 no liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -39,7 +41,8 @@
    "house": "1284",
    "street": "KINGSWAY",
    "localarea": "Kensington-Cedar Cottage",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -52,7 +55,8 @@
    "house": "43",
    "street": "E 5TH AV",
    "localarea": "Mount Pleasant",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "01"
   }
  ],
  "prior": [
@@ -67,7 +71,8 @@
    "house": "43",
    "street": "E 5TH AV",
    "localarea": "Mount Pleasant",
-   "businesssubtype": "Class 1 no liquor service"
+   "businesssubtype": "Class 1 no liquor service",
+   "licencerevisionnumber": "00"
   }
  ],
  "same": [
@@ -82,7 +87,8 @@
    "house": "1082",
    "street": "GRANVILLE ST",
    "localarea": "Downtown",
-   "businesssubtype": "Class 1 no liquor service"
+   "businesssubtype": "Class 1 no liquor service",
+   "licencerevisionnumber": "01"
   },
   {
    "folderyear": "26",
@@ -95,7 +101,8 @@
    "house": "26",
    "street": "POWELL ST",
    "localarea": "Downtown",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -108,7 +115,8 @@
    "house": "1851",
    "street": "COMMERCIAL DRIVE",
    "localarea": "Grandview-Woodland",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -121,7 +129,8 @@
    "house": "212",
    "street": "CARRALL ST",
    "localarea": "Downtown",
-   "businesssubtype": "Class 1 no liquor service"
+   "businesssubtype": "Class 1 no liquor service",
+   "licencerevisionnumber": "00"
   },
   {
    "folderyear": "26",
@@ -134,7 +143,8 @@
    "house": "1284",
    "street": "KINGSWAY",
    "localarea": "Kensington-Cedar Cottage",
-   "businesssubtype": "Class 1 with liquor service"
+   "businesssubtype": "Class 1 with liquor service",
+   "licencerevisionnumber": "00"
   }
  ],
  "renewal_name": "Blaze Gourmet Burgers Ltd"

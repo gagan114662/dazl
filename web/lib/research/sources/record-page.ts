@@ -19,7 +19,9 @@ export function registryRecordRef(raw: string): RegistryRecordRef | null {
     const id = u.searchParams.get('permit_number') ?? ''
     return /^\d{4}-\d{6} [A-Z]{2}$/.test(id) ? { kind: 'austin-permit', id } : null
   }
-  if (base === VANCOUVER && keys.every(k => k === 'where' || k === 'limit') && keys.includes('where')) {
+  // exactly one where, at most one numeric limit: a repeated parameter would let the server read another query than the one checked here
+  const lim = u.searchParams.getAll('limit')
+  if (base === VANCOUVER && keys.every(k => k === 'where' || k === 'limit') && u.searchParams.getAll('where').length === 1 && lim.length <= 1 && lim.every(l => /^\d{1,3}$/.test(l))) {
     const m = /^licencenumber="(\d{2}-\d{6})"$/.exec(u.searchParams.get('where') ?? '')
     return m ? { kind: 'vancouver-licence', id: m[1] } : null
   }
@@ -57,7 +59,10 @@ export function registryRecordFacts(body: unknown, ref: RegistryRecordRef): Regi
     if (!Array.isArray(body) || !body.length || !body.every(r => isObj(r) && str(r.permit_number) === ref.id)) return null
     const rows = body as Record<string, unknown>[]
     // the permit's general contractor of record is the business the record is about; a permit with none names no business (never a sub's)
-    const gc = rows.find(r => str(r.contractor_trade) === 'General Contractor' && str(r.contractor_company_name))
+    const gcRows = rows.filter(r => str(r.contractor_trade) === 'General Contractor' && str(r.contractor_company_name))
+    const gc = gcRows[0]
+    // two general contractors naming different companies: the record does not say which business it is about
+    if (new Set(gcRows.map(r => str(r.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim().toLowerCase())).size > 1) return null
     // every row of one permit states the same issue day, or the record is not one dated fact
     const days = new Set(rows.map(r => day(r.issue_date)))
     const date = gc ? day(gc.issue_date) : null
@@ -70,6 +75,8 @@ export function registryRecordFacts(body: unknown, ref: RegistryRecordRef): Regi
   }
   // Vancouver: {total_count, results: [...]}: every revision of this licence is a row; its current state is the single Issued row and its date is the FIRST issue
   const results = isObj(body) && Array.isArray(body.results) ? body.results.filter(isObj) : null
+  // the answer must be the licence's WHOLE history: a count that differs from the rows (a page cut by the limit) leaves the rules below judging part of it
+  if (!results || !isObj(body) || body.total_count !== results.length || results.length !== (body.results as unknown[]).length) return null
   const life = licenceLife(results?.filter(x => str(x.licencenumber) === ref.id) ?? [])
   if (!life) return null
   const r = life.current, date = life.first, legal = cap(str(r.businessname)), trade = cap(str(r.businesstradename)), company = trade || legal

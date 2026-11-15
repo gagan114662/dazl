@@ -33,6 +33,10 @@ test('only the records E cites are records: the exact dataset, one record named,
   for (const u of ['https://data.austintexas.gov/resource/3syk-w9eu.json', 'https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-121002+BP&$limit=5000',
     'https://data.austintexas.gov/resource/other-id.json?permit_number=2026-121002+BP', 'http://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-121002+BP',
     'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences/records?where=businesstype%3D%22Restaurant%22',
+    // a repeated parameter: the server could read another query than the one checked
+    'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences/records?where=licencenumber%3D%2226-210140%22&where=status%3D%22x%22',
+    'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences/records?where=licencenumber%3D%2226-210140%22&limit=1&limit=100',
+    'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences/records?where=licencenumber%3D%2226-210140%22&limit=abc',
     'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/other/records?where=licencenumber%3D%2226-210140%22']) assert.equal(registryRecordRef(u), null, u)
 })
 
@@ -43,9 +47,9 @@ test('a permit and a licence render as one dated sentence naming the business; a
   assert.ok(a.text.length <= 300)
   const v = renderRegistryRecord(FX.vancouver, registryRecordRef(FX.vancouver_url)!)!
   assert.equal(v.published, '2026-09-28')
-  const evening = renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], issueddate: '2026-09-29T01:30:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!)!
+  const evening = renderRegistryRecord({ total_count: 1, results: [{ ...FX.vancouver.results[0], issueddate: '2026-09-29T01:30:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!)!
   assert.equal(evening.published, '2026-09-28', "an evening licence is dated on Vancouver's day"); assert.match(evening.text, /was issued on 2026-09-28/)
-  assert.equal(renderRegistryRecord({ results: [FX.vancouver.results[0], { ...FX.vancouver.results[0], status: 'Gone Out of Business', issueddate: '2026-01-05T10:00:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!), null, 'two rows of one licence: no single day and status')
+  assert.equal(renderRegistryRecord({ total_count: 2, results: [FX.vancouver.results[0], { ...FX.vancouver.results[0], status: 'Gone Out of Business', issueddate: '2026-01-05T10:00:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!), null, 'two rows of one licence: no single day and status')
   assert.match(v.text, /^City of Vancouver business licence 26-210140 was issued on 2026-09-28 to Skewers Souvlaki Pita Bar \(licensee: Andre Skewers Souvlaki Pita Bar Ltd; type: Restaurant.*at 1851 COMMERCIAL DRIVE, Grandview-Woodland, Vancouver, BC\)\.$/)
   assert.equal(renderRegistryRecord([], { kind: 'austin-permit', id: '2026-121002 BP' }), null, 'no rows')
   // a permit's rows: one per contractor (derived from the real row, labelled)
@@ -57,10 +61,15 @@ test('a permit and a licence render as one dated sentence naming the business; a
   assert.doesNotMatch(renderRegistryRecord([{ ...gc, contractor_full_name: 'N/A' }], ref)!.text, /contractor of record/, "'N/A' is not a person")
   const long = renderRegistryRecord([{ ...gc, contractor_company_name: 'X'.repeat(400) }], ref)!
   assert.ok(long.text.length <= 300, `quote limit: ${long.text.length}`)
+  assert.equal(renderRegistryRecord({ total_count: 3, results: FX.vancouver.results }, registryRecordRef(FX.vancouver_url)!), null, 'a page cut by the limit (3 rows exist, 1 came back) is not the whole history')
+  assert.equal(renderRegistryRecord({ results: FX.vancouver.results }, registryRecordRef(FX.vancouver_url)!), null, 'no count: the answer cannot be shown to be whole')
   assert.equal(renderRegistryRecord(FX.austin, { kind: 'austin-permit', id: '2026-999999 BP' }), null, 'another permit')
+  const gcRow = FX.austin[0] as Record<string, unknown>
+  assert.equal(renderRegistryRecord([gcRow, { ...gcRow, contractor_company_name: 'Other Roofing Co' }], registryRecordRef(FX.austin_url)!), null, 'two general contractors naming different companies')
+  assert.ok(renderRegistryRecord([gcRow, { ...gcRow, contractor_full_name: 'Someone Else' }], registryRecordRef(FX.austin_url)!), 'the same company on two rows is one business')
   assert.equal(renderRegistryRecord(FX.vancouver, { kind: 'vancouver-licence', id: '26-000000' }), null, 'another licence')
-  assert.equal(renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], status: 'Pending' }] }, registryRecordRef(FX.vancouver_url)!), null, 'not an issued licence')
-  for (const issueddate of [null, '2026-09-28T25:00:00Z', '2026-09-28T01:00:60Z', '2026-02-30T05:00:00+00:00']) assert.equal(renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], issueddate }] }, registryRecordRef(FX.vancouver_url)!), null, `no valid day (${issueddate}): no page`)
+  assert.equal(renderRegistryRecord({ total_count: 1, results: [{ ...FX.vancouver.results[0], status: 'Pending' }] }, registryRecordRef(FX.vancouver_url)!), null, 'not an issued licence')
+  for (const issueddate of [null, '2026-09-28T25:00:00Z', '2026-09-28T01:00:60Z', '2026-02-30T05:00:00+00:00']) assert.equal(renderRegistryRecord({ total_count: 1, results: [{ ...FX.vancouver.results[0], issueddate }] }, registryRecordRef(FX.vancouver_url)!), null, `no valid day (${issueddate}): no page`)
 })
 
 test('through the real page fetcher: the cited record is a readable page with its own day; other JSON and a redirect to another record are not', async () => {
