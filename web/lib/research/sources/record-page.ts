@@ -27,6 +27,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const str = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : typeof v === 'number' ? String(v) : '')
 const day = (v: unknown): string | null => { const d = str(v).slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) === d ? d : null }
 // the sentence within the evidence quote limit: optional facts drop first, never the name, the number or the day
+const cap = (s: string) => s.slice(0, 100)   // a name never pushes the sentence past the quote limit
 const fit = (make: (facts: string[]) => string, facts: string[]) => {
   for (let n = facts.length; n >= 0; n--) { const t = make(facts.slice(0, n)); if (t.length <= 300) return t }
   return make([])
@@ -37,13 +38,17 @@ export function renderRegistryRecord(body: unknown, ref: RegistryRecordRef): Rec
   if (ref.kind === 'austin-permit') {
     // one row per contractor on the permit; every row must be this permit, and the general contractor's row names the company
     if (!Array.isArray(body) || !body.length || !body.every(r => isObj(r) && str(r.permit_number) === ref.id)) return null
-    const rows = body as Record<string, unknown>[], first = rows[0]
-    const issued = day(first.issue_date), at = str(first.permit_location), what = str(first.description).slice(0, 140)
-    const gc = rows.find(r => str(r.contractor_trade) === 'General Contractor') ?? rows.find(r => str(r.contractor_company_name))
-    const company = gc ? str(gc.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim() : ''
-    if (!issued || !company) return null
-    const person = gc ? str(gc.contractor_full_name) : ''
-    const text = fit(f => `City of Austin permit ${ref.id} was issued on ${issued} to ${company}${f.length ? ` (${f.join('; ')})` : ''}.`,
+    const rows = body as Record<string, unknown>[]
+    // the permit's general contractor of record is the business the record is about; a permit with none names no business (never a sub's)
+    const gc = rows.find(r => str(r.contractor_trade) === 'General Contractor' && str(r.contractor_company_name))
+    // every row of one permit states the same issue day, or the record is not one dated fact
+    const days = new Set(rows.map(r => day(r.issue_date)))
+    const issued = gc ? day(gc.issue_date) : null
+    if (!gc || !issued || days.size !== 1) return null
+    const company = cap(str(gc.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim()), at = str(gc.permit_location), what = str(gc.description).slice(0, 140)
+    if (!company) return null
+    const person = cap(str(gc.contractor_full_name))
+    const text = fit(f => `City of Austin permit ${ref.id} was issued on ${issued} with ${company} as general contractor${f.length ? ` (${f.join('; ')})` : ''}.`,
       [what ? `work: ${what}` : '', at ? `at ${at}, Austin, Texas` : '', person ? `contractor of record: ${person}` : ''].filter(Boolean))
     return { text, title: `City of Austin permit ${ref.id}: ${company}`, published: issued }
   }
@@ -51,7 +56,7 @@ export function renderRegistryRecord(body: unknown, ref: RegistryRecordRef): Rec
   const results = isObj(body) && Array.isArray(body.results) ? body.results.filter(isObj) : null
   const r = results?.find(x => str(x.licencenumber) === ref.id)
   if (!r) return null
-  const issued = day(r.issueddate), legal = str(r.businessname), trade = str(r.businesstradename), name = trade || legal
+  const issued = day(r.issueddate), legal = cap(str(r.businessname)), trade = cap(str(r.businesstradename)), name = trade || legal
   if (!issued || !name || str(r.status) !== 'Issued') return null
   const address = [str(r.unit) && `${str(r.unit)}-`, str(r.house), str(r.street)].filter(Boolean).join(' ').replace('- ', '-')
   const kind = [str(r.businesstype), str(r.businesssubtype)].filter(Boolean).join(', ')
