@@ -207,3 +207,15 @@ test('review (opus round 2): one failing follow-up search is sent once per call 
   for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { sources: [linkedinPostsSource({ maxPostQueries: 2 })], sourceState: st2, wait: async () => {}, concurrency: 1 })
   for (const n of ['one', 'two', 'three', 'four']) assert.ok(sent.filter(q => q === `site:x.com q ${n} sydney`).length <= 2, `the failing ${n} x.com query is tried at most twice`)
 })
+
+test('review (opus follow-up): a quota (402) answer may have been billed, so it counts as a try; a cap does not', async () => {
+  const post = hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')
+  for (const [reason, sentPerCall] of [['quota', [1, 1, 0]], ['cap', [1, 1, 1]]] as const) {
+    const log: string[] = []
+    const search: SearchFn = async q => { log.push(q); return q.startsWith('site:linkedin.com/posts') ? { ok: true, hits: [post] } : q.startsWith('site:') ? { ok: true, hits: [] } : /^Uplift/.test(q) ? { ok: false, reason } : { ok: true, hits: [] } }
+    const state = new Map<string, unknown>()
+    const per: number[] = []
+    for (let i = 0; i < 3; i++) { const n = log.length; await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], sourceState: state, wait: async () => {}, concurrency: 1 }); per.push(log.slice(n).filter(q => /^Uplift/.test(q)).length) }
+    assert.deepEqual(per, sentPerCall as unknown as number[], reason)
+  }
+})

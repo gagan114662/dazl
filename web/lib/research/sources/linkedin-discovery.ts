@@ -72,7 +72,8 @@ export const MAX_TRIES = 2
 export interface DiscoveryState extends PostsState { derived: Set<string>; pending: Candidate[]; retryQueries: Map<string, number>; derivedFails: Map<string, number> }
 export const newDiscoveryState = (): DiscoveryState => ({ ...newPostsState(), derived: new Set(), pending: [], retryQueries: new Map(), derivedFails: new Map() })
 // Never sent: a stop, a refusal, the deadline, or a rate answer that cost nothing. Such a query is simply unsent.
-const neverSent = (reason: string) => ['refused', 'deadline', 'rate', 'cap', 'auth', 'quota', 'disabled'].includes(reason)
+// ('quota', TinyFish's 402, may have been billed, so it counts as a try.)
+const neverSent = (reason: string) => ['refused', 'deadline', 'rate', 'cap', 'auth', 'disabled'].includes(reason)
 
 export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?: number } = {}): HuntSource => ({
   id: 'linkedin-posts',
