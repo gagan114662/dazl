@@ -10,7 +10,7 @@ import { rankLeads } from '@/lib/events/prioritize'
 import { getDb } from '@/lib/db/client'
 import { learnedPreference, listFeedback, sourceYield, type Learned, type SourceYield } from '@/lib/scan/feedback'
 import { gdeltAttribution } from '@/lib/search/news-attribution'
-import { savedGradeWhy } from '@/lib/scan/leads-view'
+import { readyRepeats, savedGradeWhy } from '@/lib/scan/leads-view'
 import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
   const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
   const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
-  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  return NextResponse.json({ job_id: job.id, status: job.status, hidden_count: includeHidden ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

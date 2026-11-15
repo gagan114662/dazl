@@ -27,7 +27,7 @@ export interface ReportParts {
   observed?: { search: boolean; extraction: boolean; verification: boolean }
   // The free news search's request truth (lib/search/news.ts): per-class failure counts, the non-200 statuses seen and the
   // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
-  news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number> } | null
+  news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number>; retried?: number; gave_up?: boolean } | null   // #1157: one retry after a backoff; gave_up = the retry failed too, so the remaining queries were not sent
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
   // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
   // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
