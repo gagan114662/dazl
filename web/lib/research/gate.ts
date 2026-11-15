@@ -4,8 +4,9 @@
 // is kept: the verify stage checks place and category again, on the company's own pages. A company with an office or branch in the area counts as in it.
 // If the call fails or its reply cannot be read, nothing is dropped (the gate only saves money; it never decides a lead).
 import { parseJsonObject } from './decider.ts'
+import type { ResearchCase, ResearchEvent } from './types.ts'
 
-export interface GateEvent { company: string; locationQuote?: string | null; quote: string; sourceUrl: string }
+export type GateEvent = Pick<ResearchEvent, 'company' | 'quote' | 'sourceUrl'> & { locationQuote?: string | null }
 export interface GateTarget { location: string; category: string }
 export type GateVerdict = 'yes' | 'no' | 'unknown'
 export interface Gated<T extends GateEvent> { event: T; verdict: GateVerdict | null; kept: boolean }
@@ -30,4 +31,13 @@ export async function gateEvents<T extends GateEvent>(events: T[], target: GateT
   const all = events.map((event, i) => { const verdict = verdicts?.[i] ?? null; return { event, verdict, kept: verdict !== 'no' } })
   const kept = all.filter(g => g.kept).map(g => g.event)
   return { all, kept, counts: { in: events.length, out: kept.length, dropped: all.filter(g => !g.kept).map(g => g.event.company) }, ran: verdicts !== null }
+}
+
+// The engine's stage (engine.ts ResearchStages.gate): every event gets its verdict in `gate` (null when the call failed: kept, unknown); the "no"s are dropped.
+export function gateStage(complete: Complete): (c: ResearchCase, events: ResearchEvent[]) => Promise<ResearchEvent[]> {
+  return async (c, events) => {
+    const r = await gateEvents(events, { location: c.where, category: c.category }, complete)
+    for (const g of r.all) if (g.verdict) g.event.gate = g.verdict
+    return r.kept
+  }
 }

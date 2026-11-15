@@ -11,7 +11,7 @@ import { gateEvents, parseGate } from '../lib/research/gate.ts'
 
 const FX = JSON.parse(readFileSync(new URL('./fixtures/research-filter-austin-20261114.json', import.meta.url), 'utf8'))
 const TARGET = { triggers: FX.triggers.map((t: { name: string }) => t.name), location: FX.case.location, category: FX.case.category }
-const RESULTS: (FilterCandidate & { decider: Record<string, unknown> | null; proto_keep: boolean; proto_score: number })[] = FX.results
+const RESULTS: (FilterCandidate & { trigger: string; decider: Record<string, unknown> | null; proto_keep: boolean; proto_score: number })[] = FX.results.map((r: { trigger: string }) => ({ ...r, triggerId: r.trigger }))
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 // A decider whose HTTP answers are the recorded ones for each result (keyed by the state's url): the real decisions, served through the real client.
 const recordedDecider = () => new Decider({ apiKey: 'k', sleep: async () => {}, fetchImpl: (async (_u: string, init: RequestInit) => {
@@ -72,8 +72,8 @@ test('filter selection on the real results: at most 2 pages per host, no syndica
   assert.equal(new Set(keys).size, keys.length, 'no two pages share a title head')
   // round-robin: no trigger gets a second page while another trigger with kept pages has none
   const kept = r.all.filter(f => f.kept || f.reason === 'page_budget')
-  const triggersWithKept = new Set(kept.map(f => f.candidate.trigger)), byTrigger = new Map<string, number>()
-  for (const p of r.pages) byTrigger.set(p.trigger, (byTrigger.get(p.trigger) ?? 0) + 1)
+  const triggersWithKept = new Set(kept.map(f => f.candidate.triggerId)), byTrigger = new Map<string, number>()
+  for (const p of r.pages) byTrigger.set(p.triggerId, (byTrigger.get(p.triggerId) ?? 0) + 1)
   if ([...byTrigger.values()].some(n => n > 1)) assert.deepEqual([...triggersWithKept].filter(t => !byTrigger.has(t)), [], 'every trigger with a kept page got one before any got two')
   for (const f of r.all) if (!f.kept) assert.notEqual(f.reason, 'kept')
 })
@@ -116,4 +116,31 @@ test('gate: one call; only "no" drops; "unknown" and a failed or unreadable call
   assert.deepEqual((await gateEvents([], { location: 'a', category: 'b' }, async () => { throw new Error('never called') })).counts, { in: 0, out: 0, dropped: [] })
   assert.deepEqual(parseGate('{"0":"maybe"}', 1), [null])
   assert.equal(parseJsonObject('[1,2]'), null)
+})
+
+// The engine's stage functions (engine.ts ResearchStages.filter / .gate), on the contract's own types (types.ts, part A).
+import { filterStage } from '../lib/research/filter.ts'
+import { gateStage } from '../lib/research/gate.ts'
+import type { Candidate, ResearchCase, ResearchEvent, ResearchPlan } from '../lib/research/types.ts'
+const CASE: ResearchCase = { tenant: 't', jobId: 'j', query: 'Roofing companies in Austin, Texas that are hiring estimators', offer: 'estimating software', where: FX.case.location, category: FX.case.category, windowDays: 90, today: '2026-11-14' }
+const PLAN: ResearchPlan = { persona: 'owner', decisionMakerTitles: ['Owner'], triggers: FX.triggers.map((t: { id: string; name: string }) => ({ id: t.id, name: t.name, why: '', footprint: '', queries: [] })), askingQueries: [], source: 'model' }
+test('filterStage: every contract Candidate gets filter / score / keep / dropped; keep is the page list; a switched-off trigger is not asked about', async () => {
+  const cands: Candidate[] = RESULTS.slice(0, 60).map(r => ({ url: r.url, title: r.title, snippet: r.snippet, date: r.date, triggerId: r.triggerId, query: 'q', via: 'tinyfish' }))
+  let asked = ''
+  const dec = recordedDecider(); const orig = dec.decide.bind(dec)
+  dec.decide = async (st, q) => { asked = (q.trigger as { instructions: string }).instructions; return orig(st, q) }
+  const plan = { ...PLAN, triggers: PLAN.triggers.map((t, i) => i === 0 ? { ...t, enabled: false } : t) }
+  const r = await filterStage({ decider: dec })(CASE, plan, cands)
+  assert.equal(r.all.length, 60); assert.ok(r.keep.length > 0)
+  for (const c of r.all) { assert.ok(typeof c.keep === 'boolean'); assert.ok(c.keep ? c.dropped === null : typeof c.dropped === 'string', JSON.stringify(c)) }
+  for (const c of r.keep) assert.equal(c.keep, true)
+  assert.ok(r.all.some(c => c.filter?.model === 'pplx-decider-v1.3:free'))
+  assert.doesNotMatch(asked, new RegExp(PLAN.triggers[0].name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the switched-off trigger is not in the question')
+})
+test('gateStage: the verdict lands on each ResearchEvent; only "no" is dropped', async () => {
+  const ev = (company: string): ResearchEvent => ({ company, website: null, pageIsCompanySite: false, triggerId: 't1', whatHappened: 'x', whyNow: 'x', quote: `${company} is hiring`, eventDate: null, dateQuote: null, locationQuote: null, people: [], sourceUrl: 'https://example.test/a', indexDate: null, foundBy: 'q' })
+  const evs = [ev('Roof Royale'), ev('Landmark Roofing'), ev('Tarrytown Roofing')]
+  const kept = await gateStage(async () => '{"0":"yes","1":"no","2":"unknown"}')(CASE, evs)
+  assert.deepEqual(kept.map(e => e.company), ['Roof Royale', 'Tarrytown Roofing'])
+  assert.deepEqual(evs.map(e => e.gate), ['yes', 'no', 'unknown'])
 })

@@ -7,8 +7,9 @@
 // first 7 title words) is dropped; and pages are taken round-robin across triggers so one trigger cannot fill the page budget.
 // Every candidate keeps its decision and the reason it was kept or dropped (the per-stage funnel).
 import { Decider, parseJsonObject, pmap, type Answers, type Question } from './decider.ts'
+import type { Candidate, ResearchCase, ResearchPlan } from './types.ts'
 
-export interface FilterCandidate { url: string; title: string; snippet: string; date: string | null; trigger: string; query?: string }
+export type FilterCandidate = Pick<Candidate, 'url' | 'title' | 'snippet' | 'date' | 'triggerId'>
 export interface FilterTarget { triggers: string[]; location: string; category: string }
 export type PageKind = 'company' | 'news' | 'list' | 'other'
 export interface FilterDecision { trigger: number; loc: number; cat: number; kind: PageKind | null }
@@ -68,10 +69,24 @@ export function parseFallback(text: string, n: number): (FilterDecision | null)[
   })
 }
 
+// The engine's stage (engine.ts ResearchStages.filter): the contract's Candidate rows come back with filter / score / keep / dropped set, in the order given.
+const DROPPED: Record<DropReason, string> = { unopenable_host: 'unopenable host', no_decision: 'no decision', not_a_trigger: 'filter: not a trigger', wrong_place: 'filter: wrong place', wrong_category: 'filter: wrong category', not_a_business_page: 'filter: not a business page', host_cap: 'host cap', syndicated_copy: 'syndicated copy', page_budget: 'page budget' }
+export function filterStage(deps: FilterDeps): (c: ResearchCase, plan: ResearchPlan, cands: Candidate[]) => Promise<{ all: Candidate[]; keep: Candidate[] }> {
+  return async (c, plan, cands) => {
+    const live = plan.triggers.filter(t => t.enabled !== false)
+    const r = await filterResults(cands, { triggers: live.map(t => t.name), location: c.where, category: c.category }, deps)
+    r.all.forEach((f, i) => {
+      const x = cands[i]
+      x.filter = f.decision ? { trigger: f.decision.trigger, place: f.decision.loc, category: f.decision.cat, kind: f.decision.kind, model: f.model === 'decider' ? 'pplx-decider-v1.3:free' : 'fallback' } : null
+      x.score = f.score; x.keep = f.kept; x.dropped = f.kept ? null : DROPPED[f.reason as DropReason]
+    })
+    return { all: cands, keep: r.pages as Candidate[] }
+  }
+}
 export interface FilterDeps { decider: Decider; fallback?: Complete; concurrency?: number; maxPages?: number }
 export interface FilterResult { all: Filtered[]; pages: FilterCandidate[]; counts: { results: number; decider: number; fallback: number; kept: number; pages: number } }
 
-export async function filterResults(cands: FilterCandidate[], target: FilterTarget, deps: FilterDeps): Promise<FilterResult> {
+export async function filterResults<T extends FilterCandidate>(cands: T[], target: FilterTarget, deps: FilterDeps): Promise<FilterResult & { pages: T[] }> {
   const Q = filterQuestions(target)
   const all: Filtered[] = cands.map(c => ({ candidate: c, decision: null, model: null, score: 0, kept: false, reason: unopenable(c.url) ? 'unopenable_host' : 'no_decision' }))
   const open = all.filter(f => f.reason !== 'unopenable_host')
@@ -103,9 +118,9 @@ export async function filterResults(cands: FilterCandidate[], target: FilterTarg
     pool.push(f)
   }
   const groups = new Map<string, Filtered[]>()
-  for (const f of pool) { const g = groups.get(f.candidate.trigger) ?? []; g.push(f); groups.set(f.candidate.trigger, g) }
+  for (const f of pool) { const g = groups.get(f.candidate.triggerId) ?? []; g.push(f); groups.set(f.candidate.triggerId, g) }
   const max = deps.maxPages ?? MAX_PAGES, pages: Filtered[] = []
   while (pages.length < max && [...groups.values()].some(g => g.length)) for (const g of groups.values()) { const f = g.shift(); if (f && pages.length < max) pages.push(f) }
   for (const f of pool) if (!pages.includes(f)) { f.kept = false; f.reason = 'page_budget' }
-  return { all, pages: pages.map(f => f.candidate), counts: { results: cands.length, decider: all.filter(f => f.model === 'decider').length, fallback: all.filter(f => f.model === 'fallback').length, kept: pool.length, pages: pages.length } }
+  return { all, pages: pages.map(f => f.candidate as T), counts: { results: cands.length, decider: all.filter(f => f.model === 'decider').length, fallback: all.filter(f => f.model === 'fallback').length, kept: pool.length, pages: pages.length } }
 }
