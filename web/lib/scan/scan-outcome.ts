@@ -79,6 +79,15 @@ function trialStopped(j: ScanRecord, open: string): ScanOutcome {
 }
 
 const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']
+// #1157 (review at 7723d55f): the words the current-job view (app/app/leads/leads-client.tsx) shows for a failed job whose outcome
+// already accounts for a failed source, instead of its fixed per-error copy, which would say "searched and found nothing" without
+// naming the source that never ran. null for every other outcome: that view keeps its own copy. Reads the status payload's `outcome`.
+export function outcomeOwnCopy(o: unknown): string | null {
+  const x = o && typeof o === 'object' ? o as Partial<ScanOutcome> : null
+  if (!x || x.accounts_for_failed_source !== true || typeof x.label !== 'string' || !x.label) return null
+  return typeof x.detail === 'string' && x.detail ? `${x.label}. ${x.detail}` : x.label
+}
+
 export function scanOutcome(j: ScanRecord): ScanOutcome {
   const o = baseOutcome(j), partial = j.partial_sources ?? []
   if (partial.length === 0 || !PARTIAL_KINDS.includes(o.kind)) return o
