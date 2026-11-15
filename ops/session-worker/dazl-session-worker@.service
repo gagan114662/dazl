@@ -1,7 +1,7 @@
 # dazl session worker (session-worker/, #1037): the companion that reads LinkedIn (and the other advanced connectors) through a
 # tenant's own saved session for the app. One instance per environment: dazl-session-worker@staging, dazl-session-worker@prod.
 # Installed and (re)started by ops/session-worker/install.sh, which also writes the instance's env file. It carries tenants'
-# session cookies in each request and stores nothing, so it runs as its own unprivileged user, on 127.0.0.1 only (HOST in the env
+# session cookies in each request and stores nothing, so it runs as its own unprivileged user, on 127.0.0.1 only (WORKER_HOST in the env
 # file), with a read-only view of the system and no home.
 # Memory: measured on Node 22 with this ExecStart, 92 MB resident idle and 106 MB peak after 40 platform requests (2026-11-14,
 # ~/work/verify/session-worker). The box has 1.8 GB for production's two releases, staging and its scan worker, so the cap is

@@ -118,7 +118,7 @@ class InstallTest(unittest.TestCase):
         self.assertEqual((rel / 'src' / 'server.ts').read_bytes(), subprocess.check_output(['git', '-C', str(REPO), 'show', f'{self.sha}:session-worker/src/server.ts']))
         # readable by the worker's own user when root installs it: directories 0755, files 0644 (mktemp makes 0700)
         tree = self.root / 'releases' / self.sha
-        for d in [tree, *[x for x in tree.rglob('*') if x.is_dir()]]:
+        for d in [self.root, self.root / 'releases', tree, *[x for x in tree.rglob('*') if x.is_dir()]]:
             self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o755, d)
         for f in [x for x in tree.rglob('*') if x.is_file()]:
             self.assertEqual(stat.S_IMODE(f.stat().st_mode) & 0o777, 0o644, f)
@@ -177,6 +177,8 @@ class InstallTest(unittest.TestCase):
         # ... and the same token in another spelling (export, double quotes, trailing spaces) is the same token
         other.write_text('export ADVANCED_WORKER_TOKEN="Abc123_existing-app-token"   \n')
         self.assertEqual(self.install('staging', str(REPO), self.sha, '--token-from', str(other)).returncode, 0)
+        # the refused run left the instance on the code it had (the symlink is switched only after every check)
+        self.assertEqual((self.root / 'staging').resolve(), (self.root / 'releases' / self.sha / 'session-worker').resolve())
         # a missing file or a symlink is refused with a message
         for src in [self.tmp / 'missing.env', self.tmp / 'link.env']:
             if src.name == 'link.env':
@@ -213,11 +215,17 @@ class InstallTest(unittest.TestCase):
                      f'PORT={self.port}\nWORKER_HOST=127.0.0.1\nADVANCED_WORKER_TOKEN={tok}\nWORKER_HOST=0.0.0.0\n',
                      f'PORT={self.port}\nWORKER_HOST=127.0.0.1\nADVANCED_WORKER_TOKEN={tok}\nexport WORKER_HOST=0.0.0.0\n',
                      f'PORT={self.port}\nWORKER_HOST=127.0.0.1\nHOST=0.0.0.0\nADVANCED_WORKER_TOKEN={tok}\n',
-                     f'PORT={self.port}\nADVANCED_WORKER_TOKEN={tok}\n']:
+                     f'PORT={self.port}\nADVANCED_WORKER_TOKEN={tok}\n',
+                     # systemd ignores `export` lines: the earlier line stays in force
+                     f'PORT={self.port}\nWORKER_HOST=0.0.0.0\nADVANCED_WORKER_TOKEN={tok}\nexport WORKER_HOST=127.0.0.1\n',
+                     # systemd trims the space before `=`: this IS an address line
+                     f'PORT={self.port}\nWORKER_HOST=127.0.0.1\nADVANCED_WORKER_TOKEN={tok}\nWORKER_HOST =0.0.0.0\n',
+                     f'PORT={self.port}\nWORKER_HOST=127.0.0.1 \nADVANCED_WORKER_TOKEN={tok}\n']:
             (self.etc / 'staging.env').write_text(body)
             r = self.install('staging', str(REPO), self.sha)
             self.assertNotEqual(r.returncode, 0, body)
             self.assertIn('WORKER_HOST=127.0.0.1', r.stderr, body)
+            self.assertFalse((self.root / 'staging').exists(), 'a refused run never points the instance at the new code')
         self.assertNotIn('restart', (self.tmp / 'systemctl.log').read_text() if (self.tmp / 'systemctl.log').exists() else '')
 
     def test_an_answer_from_another_process_on_the_port_is_not_this_unit(self):

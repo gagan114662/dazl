@@ -50,14 +50,12 @@ fi
 # 2. the code, at exactly that commit
 REL=$ROOT/releases/$SHA
 if [ ! -f "$REL/session-worker/src/server.ts" ]; then
-  mkdir -p "$ROOT/releases"
+  mkdir -p "$ROOT/releases"; chmod 0755 "$ROOT" "$ROOT/releases"   # the worker's own user must be able to reach its tree
   tmp=$(mktemp -d "$ROOT/releases/.tmp.XXXXXX")
   git -C "$REPO" archive "$SHA" session-worker | tar -x -C "$tmp"
   chmod -R a+rX,go-w "$tmp"
   mv -T "$tmp" "$REL"
 fi
-ln -sfn "$REL/session-worker" "$ROOT/$ENV_NAME.next" && mv -T "$ROOT/$ENV_NAME.next" "$ROOT/$ENV_NAME"
-
 # 3. the instance's env file (kept when it exists: the app holds the same token)
 mkdir -p "$ETC"; chmod 0755 "$ETC"
 ENVF=$ETC/$ENV_NAME.env
@@ -81,9 +79,13 @@ fi
 ${SW_CHOWN:-chown} "root:$USER_NAME" "$ENVF"; chmod 0640 "$ENVF"
 PORT_NOW=$(sed -n 's/^PORT=//p' "$ENVF" | tail -1)
 [[ $PORT_NOW =~ ^[0-9]+$ ]] || fail "$ENVF has no PORT"
-# systemd keeps the LAST assignment of a key, so the last WORKER_HOST line decides; a HOST line is refused outright (an older file's spelling).
-[ "$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?WORKER_HOST=//p' "$ENVF" | tail -1)" = 127.0.0.1 ] && ! grep -qE '^[[:space:]]*(export[[:space:]]+)?HOST=' "$ENVF" \
-  || fail "$ENVF must keep WORKER_HOST=127.0.0.1 as its only address line (the worker carries session cookies)"
+# Exactly ONE line mentions an address, and it is exactly `WORKER_HOST=127.0.0.1`. systemd's own parsing differs from a shell's (it ignores
+# `export` lines, trims spaces around `=`, keeps the last assignment), so any other spelling could leave another value in force. No HOST line.
+[ "$(grep -c 'HOST' "$ENVF")" = 1 ] && grep -qx 'WORKER_HOST=127.0.0.1' "$ENVF" \
+  || fail "$ENVF must have exactly one address line, WORKER_HOST=127.0.0.1 (the worker carries session cookies)"
+
+# Every check passed: only now is the instance pointed at the new code (a refused run leaves the running instance's code as it was).
+ln -sfn "$REL/session-worker" "$ROOT/$ENV_NAME.next" && mv -T "$ROOT/$ENV_NAME.next" "$ROOT/$ENV_NAME"
 
 # 4. the unit, then the service
 install -m 0644 "$HERE/dazl-session-worker@.service" "$UNIT_DIR/dazl-session-worker@.service"
