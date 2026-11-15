@@ -3,7 +3,7 @@
 // stages open it through the shared page fetcher (lib/scan/fetch-page.ts), which reads no JSON but the records it knows. This module tells the
 // fetcher which URLs are such records and renders exactly that record as one sentence: the business, the record's number, what it is and the
 // day the record states, side by side, so a quote cut from it carries its own date. A body that is not the record the URL names renders null.
-import { looksLikePerson } from './socrata-permits.ts'
+import { cleanCompany, looksLikePerson } from './socrata-permits.ts'
 import { licenceDay, licenceLife } from './opendatasoft-licences.ts'
 
 export type RegistryRecordRef = { kind: 'austin-permit'; id: string } | { kind: 'vancouver-licence'; id: string }
@@ -62,12 +62,12 @@ export function registryRecordFacts(body: unknown, ref: RegistryRecordRef): Regi
     const gcRows = rows.filter(r => str(r.contractor_trade) === 'General Contractor' && str(r.contractor_company_name))
     const gc = gcRows[0]
     // two general contractors naming different companies: the record does not say which business it is about
-    if (new Set(gcRows.map(r => str(r.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim().toLowerCase())).size > 1) return null
+    if (new Set(gcRows.map(r => cleanCompany(str(r.contractor_company_name)).toLowerCase())).size > 1) return null
     // every row of one permit states the same issue day, or the record is not one dated fact
     const days = new Set(rows.map(r => day(r.issue_date)))
     const date = gc ? day(gc.issue_date) : null
     if (!gc || !date || days.size !== 1) return null
-    const company = cap(str(gc.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim())
+    const company = cap(cleanCompany(str(gc.contractor_company_name)))
     if (!company) return null
     const at = str(gc.permit_location), person = looksLikePerson(str(gc.contractor_full_name)) ? cap(str(gc.contractor_full_name)) : ''   // never 'N/A' or a company as a person
     return { kind: ref.kind, id: ref.id, company, date, description: str(gc.description).slice(0, 300), place: at ? `${at}, Austin, Texas` : null, person: person || null, licensee: null, revision: null,

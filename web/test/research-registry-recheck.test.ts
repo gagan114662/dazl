@@ -40,15 +40,16 @@ test("a source's own candidate survives its re-read: the same business, the same
     assert.ok(r.ok, `${cand.title}: ${JSON.stringify(r)}`); if (!r.ok) continue
     assert.equal(r.date, cand.date); assert.ok(cand.title.startsWith(r.company), `${cand.title} / ${r.company}`)
   }
-  const lic = rd('research-vancouver-licences.json') as { since: string; window: Record<string, unknown>[]; prior: Record<string, unknown>[]; same: Record<string, unknown>[] }
+  const lic = rd('research-vancouver-licences.json') as { since: string; window: Record<string, unknown>[]; prior: Record<string, unknown>[]; same: Record<string, unknown>[]; revisions: Record<string, unknown>[] }
   const v = await vancouverLicencesSource.collect(c('Vancouver, British Columbia', 'restaurants'), lic.since, async u => {
     const w = new URL(u).searchParams.get('where') ?? ''
-    return { status: 200, body: JSON.stringify(w.includes('issueddate >=') ? lic.window : w.includes('folderyear="25"') ? lic.prior : lic.same) }
+    return { status: 200, body: JSON.stringify(w.includes('issueddate >=') ? lic.window : w.includes('folderyear="25"') ? lic.prior : w.startsWith('(licencenumber=') ? lic.revisions : lic.same) }
   })
   assert.ok(v.candidates.length >= 3)
   for (const cand of v.candidates) {
     const id = registryRecordRef(cand.url)!.id
-    const r = await recheckRegistryRecord(cand, serve({ total_count: 1, results: lic.window.filter(x => x.licencenumber === id) }))
+    const hist = lic.revisions.filter(x => x.licencenumber === id)
+    const r = await recheckRegistryRecord(cand, serve({ total_count: hist.length, results: hist }))
     assert.ok(r.ok, `${cand.title}: ${JSON.stringify(r)}`); if (!r.ok) continue
     assert.equal(r.date, cand.date); assert.ok(cand.title.startsWith(r.company), `${cand.title} / ${r.company}`)
   }

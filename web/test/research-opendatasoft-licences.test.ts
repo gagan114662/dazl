@@ -8,11 +8,11 @@ import type { ResearchCase } from '../lib/research/types.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
 type Row = Record<string, unknown>
-const FX = JSON.parse(readFileSync(new URL('./fixtures/research-vancouver-licences.json', import.meta.url), 'utf8')) as { since: string; window: Row[]; prior: Row[]; same: Row[]; renewal_name: string }
+const FX = JSON.parse(readFileSync(new URL('./fixtures/research-vancouver-licences.json', import.meta.url), 'utf8')) as { since: string; window: Row[]; prior: Row[]; same: Row[]; revisions: Row[]; renewal_name: string }
 const VAN: ResearchCase = { tenant: 't', jobId: 'j', query: 'restaurants in Vancouver opening a second location', offer: 'x', where: 'Vancouver, British Columbia', category: 'restaurants', windowDays: 90, today: '2026-11-15' }
 
 test('a renewal (same business, same address, last year) is never called new; a new business at an address is "newly licensed"; a business with another licensed location is an additional location', () => {
-  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since)
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since, FX.revisions)
   const names = s.map(x => x.company)
   assert.ok(!names.includes(FX.renewal_name), `the renewal is not a new location: ${JSON.stringify(names)}`)
   const hunger = s.find(x => x.company === 'Hunger Street')!
@@ -57,6 +57,7 @@ test('the source: narrow chunked queries over every licence year the window touc
     const where = w(u)
     if (where.includes('issueddate >=')) return { status: 200, body: JSON.stringify(FX.window) }
     if (where.includes('folderyear="25"')) return renewals === 'ok' ? { status: 200, body: JSON.stringify(FX.prior) } : { status: 503, body: '' }
+    if (where.startsWith('(licencenumber=')) return { status: 200, body: JSON.stringify(FX.revisions) }
     return locations === 'ok' ? { status: 200, body: JSON.stringify(FX.same) } : { status: 503, body: '' }
   }
   const ok = await src.collect(VAN, FX.since, answer('ok'))
@@ -136,16 +137,14 @@ test('a revised licence is new only when its FIRST issue is inside the window: a
   assert.deepEqual(licenceSignals(VANCOUVER_LICENCES, 'restaurants', currentRows, [], [], REV.since), [])
 })
 
-test('the source asks for the revision rows of the revised licences only, and without them returns nothing (fails closed)', async () => {
+test('the source asks for the revision rows of EVERY licence in the window (so it reads each licence as its re-read does), and without them returns nothing (fails closed)', async () => {
   const w = (u: string) => new URL(u).searchParams.get('where') ?? ''
   const q = licenceQueries(VANCOUVER_LICENCES, 'restaurants', REV.since, ['26'])
   const urls = q.revisions(currentRows)
   assert.equal(urls.length, 1); assert.match(w(urls[0]), /^\(licencenumber="26-\d{6}" or /, 'by licence number alone (no business-type clause)')
   for (const n of Object.keys(REV.licences)) assert.ok(w(urls[0]).includes(`licencenumber="${n}"`), n)
-  assert.deepEqual(q.revisions(currentRows.map(r => ({ ...r, licencerevisionnumber: '00' }))), [], 'unrevised licences need no revision query')
   const forWindow = q.revisions(FX.window)
-  assert.equal(forWindow.length, 1, 'of the 4 recorded window rows only Blaze (revision 01) is a revised licence'); assert.equal(w(forWindow[0]), '(licencenumber="26-110158")')
-  assert.deepEqual(q.revisions(FX.window.filter(r => r.licencerevisionnumber === '00')), [], 'unrevised licences need no query')
+  assert.equal(forWindow.length, 1); assert.equal(w(forWindow[0]), FX.window.map(r => `licencenumber="${r.licencenumber}"`).join(' or ').replace(/^/, '(').replace(/$/, ')'), 'unrevised licences too: a later revision must be seen')
   const answer = (revisions: 'ok' | 'down'): SafeGet => async (u: string) => {
     const where = w(u)
     if (where.includes('issueddate >=')) return { status: 200, body: JSON.stringify(currentRows) }
@@ -192,4 +191,7 @@ test('the adapter and the re-read agree on odd revision data: two revision-00 ro
   const noNumber = Object.fromEntries(Object.entries(cur).filter(([k]) => k !== 'licencerevisionnumber'))
   assert.equal(sig([noNumber, first], noNumber), 0, 'the current row carries no revision number: it cannot be ordered')
   assert.equal(licenceLife([{ ...cur, licencerevisionnumber: '00' }, { ...first, licencerevisionnumber: '01', status: 'Inactive' }]), null, 'revision 00 Issued while a later revision exists')
+  // the cases the adapter used to judge from the window row alone, and the re-read refused
+  assert.equal(sig([{ ...first, status: 'Issued' }, { ...cur, status: 'Pending' }], { ...first, status: 'Issued' }), 0, 'revision 00 Issued while a later revision is Pending: not one current licence')
+  assert.equal(sig([cur, first, { ...first }]), 0, 'an identical row twice: one revision twice, the same refusal as the re-read')
 })
