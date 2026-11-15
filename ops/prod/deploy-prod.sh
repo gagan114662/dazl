@@ -312,6 +312,17 @@ for line in open(sys.argv[1]):
 PY
 )
 [ "$(readlink -f -- "${envdb:-/nonexistent}")" = "$(readlink -f -- "$DB")" ] || die "the release's DB_PATH (${envdb:-unset}) is not $DB; nothing done"
+# #1089: without both mail settings the app keeps every verification, reset and play email in system_mail_outbox on this host
+# (lib/system-mail.ts) and nobody receives them. A release env that lost them is refused here, before anything is deployed.
+python3 - "$OPS/prod.env.next" <<'PY' || die "the release env has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty): its verification, reset and play emails would never leave this host; add them to $RUN_ENV; nothing done"
+import shlex, sys
+got = {}
+for line in open(sys.argv[1]):
+    k, _, v = line.rstrip('\n').partition('=')
+    if k in ('SYSTEM_MAIL_SMTP_URL', 'SYSTEM_MAIL_FROM'):
+        got[k] = (shlex.split(v) or [''])[0]
+sys.exit(0 if got.get('SYSTEM_MAIL_SMTP_URL') and got.get('SYSTEM_MAIL_FROM') else 1)
+PY
 
 # --- 2+3. prebuilt artifact: fetch (verify size/sha256/.build-commit), checkout, extract. Never npm ci / next build.
 live_lock=

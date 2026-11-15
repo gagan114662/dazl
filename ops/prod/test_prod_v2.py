@@ -30,7 +30,8 @@ from test_prod_prebuilt import STUBS as V1_STUBS  # noqa: E402  (curl, git and s
 PINNED = {
     # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
     # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
-    'deploy-prod.sh': '5d78463fc770a1b4297cd8cb5ea4bf5af470603a85235964dcff655652921ba1',
+    # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
+    'deploy-prod.sh': '9931810ae01b1003ba651a823ba9d1bf036aac7e6ad81f17b724c92fa49e8977',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
@@ -265,6 +266,29 @@ class V2Refusals(unittest.TestCase):
         r = self.run_deploy('b' * 40)
         self.assertEqual(r.returncode, 1); self.assertIn('is missing or not a regular file; nothing done', r.stdout + r.stderr)
         self.assert_nothing_changed()
+
+    def _db(self, env_lines):
+        import sqlite3
+        db = self.t / 'data' / 'prod.db'; c = sqlite3.connect(db); c.execute('CREATE TABLE IF NOT EXISTS x (a)'); c.commit(); c.close()
+        (self.t / 'run.env').write_text(f'DB_PATH={db}\n' + ''.join(f'{l}\n' for l in env_lines))
+
+    def test_a_release_env_without_mail_settings_is_refused_before_anything_is_deployed(self):
+        # #1089: without SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM every verification, reset and play email stays in the host's outbox
+        for lines in ([], ['SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'], ['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465'],
+                      ['SYSTEM_MAIL_SMTP_URL=', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"']):
+            self._db(lines)
+            r = self.run_deploy('b' * 40)
+            self.assertEqual(r.returncode, 1, lines)
+            self.assertIn('has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty)', r.stdout + r.stderr, lines)
+            self.assertFalse((self.t / 'dl').exists(), 'nothing was downloaded')
+            self.assertNotRegex(self.log('systemctl.log'), r'\b(start|stop|enable|disable|reload)\b')
+            self.assertIn('reverse_proxy localhost:3104', (self.t / 'Caddyfile').read_text())
+
+    def test_a_release_env_with_both_mail_settings_goes_past_the_mail_check(self):
+        self._db(['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'])
+        r = self.run_deploy('b' * 40)
+        self.assertNotIn('SYSTEM_MAIL', r.stdout + r.stderr)
+        self.assertIn('prebuilt fetch/verify failed', r.stdout + r.stderr, 'it reached the next step (no artifact exists in the sandbox)')
 
     def test_a_database_with_a_second_hard_link_is_refused(self):
         import sqlite3
