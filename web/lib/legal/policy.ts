@@ -99,6 +99,7 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'www.gdeltproject.org': 'citation link GDELT terms require; the API host is api.gdeltproject.org',
   'blog.gdeltproject.org': 'documentation link in a comment',
   'www.sec.gov': 'evidence link to the EDGAR filing page; the search API is efts.sec.gov and filing pages are read through the page reader',
+  'x.com': 'constructed profile links for people whose public posts the search index returned (research engine, person-first source); never requested',
   'www.linkedin.com': 'constructed profile/company links; the optional advanced connector reads LinkedIn through the customer\'s own signed-in session, not this server',
   'www.youtube.com': 'evidence links to videos; data comes from the YouTube Data API (www.googleapis.com)',
   'news.ycombinator.com': 'evidence and directory links; search goes through hn.algolia.com',
