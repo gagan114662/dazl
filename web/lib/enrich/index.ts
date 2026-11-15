@@ -20,7 +20,7 @@ import { roleContradicted } from '../people/rank.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { NO_KEY_STATUS, SPEND_REFUSAL_PREFIX } from '../scan/provider-issue-text.ts'
-import { paidVendorOn, paidVendorOffNote, PAID_VENDOR_OFF } from '../paid-vendors.ts'
+import { paidVendorOn, PAID_VENDOR_OFF } from '../paid-vendors.ts'
 import { norm } from '../scan/evidence.ts'
 import { selectOffer, rebindOfferId } from '../scan/offer-identity.ts'
 
@@ -145,7 +145,7 @@ export async function enrichLeadContacts(
   if (!allowed.apollo && !allowed.pdl) {
     if (leads.length > 0) {
       try {
-        if (!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, 'enrich', PAID_VENDOR_OFF)) audit(db, { tenantId, connector: 'enrich', jobId, lookup: paidVendorOffNote('apollo').slice(0, 200), status: PAID_VENDOR_OFF, results: 0 })
+        if (!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, 'enrich', PAID_VENDOR_OFF)) audit(db, { tenantId, connector: 'enrich', jobId, lookup: 'Apollo and People Data Labs not called: dazl uses no paid third-party service by default (DAZL_PAID_VENDORS)', status: PAID_VENDOR_OFF, results: 0 })
       } catch (e) { console.error('[enrich] paid_vendor_off note not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
     }
     return summary

@@ -1,6 +1,6 @@
 import { looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
-import { htmlToText } from '../scan/fetch-page.ts'
+import { classifyThin, htmlToText } from '../scan/fetch-page.ts'
 
 // Jina Reader (https://r.jina.ai) reads a public page and returns it as markdown. It is a third-party
 // service: the page URL is sent to it. Without a key it rate limits (about 20 requests/minute when this
@@ -53,6 +53,9 @@ export const jinaAdapter: SourceAdapter = {
         if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
         if (!looksLikeHtml(r.body)) { note?.('malformed'); continue }
         const { text, title, published } = htmlToText(r.body)
+        // a bot wall or a JS-only shell is not a reading of the page (the verifier's fetch refuses the same pages)
+        const thin = classifyThin(r.body, text)
+        if (thin) { note?.(thin === 'blocked' ? 'challenge' : 'js_required'); continue }
         const quote = pickQuote(text, keywords)
         if (quote.length < 20) { note?.('no_readable_text'); continue }
         const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]

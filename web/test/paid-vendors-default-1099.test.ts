@@ -8,14 +8,19 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { paidVendorsAllowed, paidVendorOn, usableVendor, PAID_VENDOR_OFF } from '../lib/paid-vendors.ts'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
+import { paidEnrichmentOutcomes } from '../lib/scan/enrichment-trace.ts'
+import { readProviderIssues } from '../lib/scan/provider-issues.ts'
+import { providerIssueText } from '../lib/scan/provider-issue-text.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { enrichCommenters, migrateCommenterImport } from '../lib/scan/commenter-import.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
-import { migrateKeys, saveKey, defaultVendor } from '../lib/llm/key-store.ts'
+import { migrateKeys, saveKey, defaultVendor, hasKey } from '../lib/llm/key-store.ts'
 import { pickVendor } from '../lib/scan/runner.ts'
 import { verifierFromEnv } from '../lib/people/email-pattern.ts'
 import { jinaAdapter, resetJinaState } from '../lib/sources/jina.ts'
 import { fundingRoundFor } from '../lib/signals/funding-round.ts'
+import { estimateRun } from '../lib/scan/price-estimate.ts'
 
 const OFF = { DAZL_PAID_VENDORS: '' }
 const master = randomBytes(32)
@@ -57,6 +62,11 @@ test('scan enrichment: with saved Apollo and PDL keys and no paid vendor named, 
   assert.equal(rows.length, 1, 'one note per scan, not per pass')
   assert.match(rows[0].lookup, /not called: dazl uses no paid third-party service by default/)
   assert.equal((db.prepare("SELECT count(*) AS n FROM connector_audit WHERE scan_job_id = ? AND status = 'no_key'").get(jobId) as { n: number }).n, 0, 'never reported as "no key"')
+  // not a failed pass, and the scan's notices say why (council review)
+  assert.equal(paidEnrichmentOutcomes(db, 'u1', jobId).passFailed, 0)
+  const issues = (await readProviderIssues(sqliteDb(db), 'u1', jobId)) ?? []
+  assert.deepEqual(issues.map(i => i.status), ['paid_vendor_off'])
+  assert.match(providerIssueText(issues[0]), /dazl uses no paid third-party service \(Apollo, People Data Labs\) by default/)
   // control: the operator names Apollo, and the same pass asks Apollo
   const c = enrichSeed()
   await enrichLeadContacts(c.db, 'u1', c.jobId, [c.lead], { fetchImpl, master, env: { DAZL_PAID_VENDORS: 'apollo' } })
@@ -99,7 +109,10 @@ test('model vendor: a saved OpenAI key is not used unless named; the Anthropic k
   assert.equal(defaultVendor(db, 't1', OFF), 'anthropic')
   assert.equal(pickVendor(db, 't1', { DAZL_PAID_VENDORS: 'openai' }), 'openai', 'named: the newest key, as before')
   saveKey(db, 't2', 'openai', 'sk-' + 'c'.repeat(40), master)
-  assert.equal(pickVendor(db, 't2', OFF), null, 'only an OpenAI key: no usable key (the scan fails no_api_key)')
+  assert.equal(pickVendor(db, 't2', OFF), null, 'only an OpenAI key: no usable key')
+  // ...and every intake gate (scan, play, watch, CSV, estimate) sees it as keyless up front, instead of accepting a scan that cannot run
+  assert.equal(hasKey(db, 't2', OFF), false); assert.equal(hasKey(db, 't1', OFF), true)
+  assert.equal(hasKey(db, 't2', { DAZL_PAID_VENDORS: 'openai' }), true)
   assert.equal(usableVendor([{ vendor: 'openai' }, { vendor: 'anthropic' }], OFF)?.vendor, 'anthropic')
 })
 
@@ -119,6 +132,11 @@ test('web pages source: read directly by dazl, never through r.jina.ai, unless J
     const out = await jinaAdapter.collect({ query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http })
     assert.deepEqual(asked, [PAGE], 'the page itself, not r.jina.ai')
     assert.equal(out.length, 1); assert.equal(out[0].url, PAGE); assert.match(out[0].quote, /second dental office in Brooklyn/)
+    // a bot wall is noted, never a quote (council review)
+    resetJinaState(); const notes: string[] = []
+    const wall = '<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing kestreldental.example. This process is automatic. Please enable JavaScript and cookies to continue.</body></html>'
+    const walled = await jinaAdapter.collect({ query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http: async () => ({ status: 200, body: wall }), note: c => notes.push(c) })
+    assert.deepEqual(walled, []); assert.ok(notes.length === 1 && ['challenge', 'js_required'].includes(notes[0]), JSON.stringify(notes))
   })
   await withProcessEnv('jina', async () => {
     resetJinaState(); asked.length = 0
@@ -138,4 +156,10 @@ test('funding round: the article is read by dazl itself, never sent to r.jina.ai
     await withProcessEnv('jina', async () => { await fundingRoundFor('Kestrel Pay', [item as never]) })
     assert.ok(asked.some(u => u.includes('r.jina.ai')), 'control: named, Jina Reader is asked')
   } finally { globalThis.fetch = realFetch }
+})
+
+test('the price estimate lists no Apollo / PDL credits for saved keys the policy keeps off', () => {
+  const ids = (env: Record<string, string>) => estimateRun({ budget: null, payer: 'you', enrichmentVendors: ['apollo', 'pdl'], env }).rows.map(r => r.id)
+  assert.ok(!ids(OFF).some(id => id === 'apollo_credits' || id === 'pdl_credits'), JSON.stringify(ids(OFF)))
+  assert.ok(ids({ DAZL_PAID_VENDORS: 'apollo,pdl' }).includes('apollo_credits'))
 })

@@ -85,7 +85,7 @@ export async function fundingNews(fetchImpl: typeof fetch = fetch, feeds: string
 }
 
 // Latest matching raise for a lead's company. When the feed item lacks the amount or
-// stage, ONE Jina Reader call per item (capped per scan) reads the article page for it.
+// stage, ONE page read per item (capped per scan; dazl's own fetch, Jina Reader only when named: Refs #1099) reads the article page for it.
 // Jina failure or rate limit just means the feed-only fields stand - never a hard error.
 export async function fundingRoundFor(
   company: string,

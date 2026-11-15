@@ -8,7 +8,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { saveCredential, setEnrichFallback, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { setCreditLimit, creditUse } from '../lib/enrich/credit-pool.ts'
-import { findWorkEmail, judgeMatch, workEmailsFor, workEmailProviders, PENDING_STALE_S } from '../lib/people/work-email.ts'
+import { findWorkEmail, judgeMatch, workEmailsFor, workEmailProviders, workEmailPageRead, PENDING_STALE_S } from '../lib/people/work-email.ts'
 import { workEmailTargets, targetKey, workEmailCopy, workEmailCostNote, queryName, siteSettled, sameRole, linkedinHandle, mergeLookups, TARGET_KEY_MAX, PENDING_POLL_MS, PENDING_POLL_MAX, type ShownLookup } from '../lib/people/work-email-eligible.ts'
 import { deleteCommenterBatch, importCommenters, parseImport } from '../lib/scan/commenter-import.ts'
 import { eraseFirstParty, ingest, recordConfig, signBody } from '../lib/signals/first-party.ts'
@@ -508,4 +508,16 @@ test('Refs #1099: with both keys saved and no paid vendor named, Find work email
   const c = seed({ keys: 'both' }); const cc: Calls = { apollo: 0, pdl: 0, urls: [] }
   await run(c, DANA, stub(() => apolloPerson(), never, cc), { env: { DAZL_PAID_VENDORS: 'apollo,pdl' } })
   assert.equal(cc.apollo, 1)
+})
+
+test('Refs #1099 (council review): a PDL-only workspace is told PDL was not called; the leads page offers no lookup the policy keeps off', async () => {
+  const p = seed({ keys: 'pdl' }); const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+  const r = await run(p, DANA, stub(never, never, calls), { env: { DAZL_PAID_VENDORS: '' } })
+  assert.match(String((r as { detail?: string }).detail), /^People Data Labs not called/)
+  assert.deepEqual([calls.apollo, calls.pdl], [0, 0])
+  const b = seed({ keys: 'both' })
+  const off = workEmailPageRead(b.db, 'A', [{ id: b.lead }], { DAZL_PAID_VENDORS: '' }).providers
+  assert.deepEqual([off.apollo, off.pdl], [false, false])
+  const on = workEmailPageRead(b.db, 'A', [{ id: b.lead }], { DAZL_PAID_VENDORS: 'apollo,pdl' }).providers
+  assert.deepEqual([on.apollo, on.pdl], [true, true])
 })

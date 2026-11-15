@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { enrichmentsForLeads } from '../lib/connectors/store.ts'
-import { saveResearchContacts } from '../lib/research/contacts.ts'
+import { saveResearchContacts, isTheirs } from '../lib/research/contacts.ts'
 import type { VerifiedLead } from '../lib/research/types.ts'
 
 const SITE = 'https://kestreldental.example'
@@ -70,4 +70,31 @@ test('a person the verifier did not confirm gets no guess', async () => {
   db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url, country_basis) VALUES ('u1', 'other-lead', 'John Smith', 'john.smith@kestreldental.example', 'first.last', 'published', ?, 'US')").run(`${SITE}/team`)
   const r = await saveResearchContacts(db, jobId, [lead([], false)], { mx: async () => true, env: ON })
   assert.equal(r.guessed, 0); assert.deepEqual(guesses(db), [])
+})
+
+test('an address is the named person\'s only when its local part is one of their name formats as a whole (council review)', () => {
+  for (const [email, person] of [['jane.doe@x.example', 'Jane Doe'], ['jdoe@x.example', 'Jane Doe'], ['j.doe@x.example', 'Jane Doe'], ['janedoe@x.example', 'Jane Doe'], ['doe.jane@x.example', 'Jane Doe']])
+    assert.equal(isTheirs(email, person), true, email)
+  for (const [email, person] of [['hello@x.example', 'Hannah Lo'], ['fleet@x.example', 'Fred Lee'], ['sales@x.example', 'Sara Le'], ['william@x.example', 'Wei Li'], ['marketing@x.example', 'Mia Ma'], ['jane@x.example', 'Jane Doe'], ['doe@x.example', 'Jane Doe'], ['smithson@x.example', 'Sam Smith']])
+    assert.equal(isTheirs(email, person), false, email)
+})
+
+test('guesses off (the default): no DNS lookup and no guess; one MX lookup per domain when on; the parent domain counts as the site\'s', async () => {
+  const learn = (db: Database.Database) => db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url, country_basis) VALUES ('u1', 'other-lead', 'John Smith', 'john.smith@kestreldental.example', 'first.last', 'published', ?, 'US')").run(`${SITE}/team`)
+  const a = seed(); learn(a.db); let asked = 0
+  const ra = await saveResearchContacts(a.db, a.jobId, [lead([])], { mx: async () => { asked++; return true }, env: {} })
+  assert.equal(asked, 0); assert.equal(ra.guessed, 0); assert.deepEqual(guesses(a.db), [])
+  // two leads on the same site: one lookup
+  const b = seed(); learn(b.db)
+  b.db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, fit, intent, action, why) VALUES ('lead2', ?, 'Jane Doe', 'Kestrel Dental', 'kestreldental.example', 'hired', ?, 4, 3, 4, 'x')").run(b.jobId, SRC + '-2')
+  const second = { ...lead([]), event: { ...lead([]).event, sourceUrl: SRC + '-2' } }
+  let n = 0
+  await saveResearchContacts(b.db, b.jobId, [lead([]), second], { mx: async () => { n++; return true }, env: ON })
+  assert.equal(n, 1)
+  // a site on a subdomain keeps the address at its parent domain (the rule company research uses)
+  const c = seed()
+  const sub = { ...lead([{ email: 'info@kestreldental.example', url: `${SITE}/contact` }]) }
+  sub.company = { ...sub.company, site: 'https://book.kestreldental.example' }
+  await saveResearchContacts(c.db, c.jobId, [sub], { mx: async () => true, env: {} })
+  assert.deepEqual(emailRows(c.db).map(r => r[0]), ['info@kestreldental.example'])
 })

@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import type { Vendor } from './vendors.ts'
-import { usableVendor } from '../paid-vendors.ts'
+import { paidVendorOn, usableVendor } from '../paid-vendors.ts'
 
 export function migrateKeys(db: Database.Database): void {
   db.exec(`
@@ -44,12 +44,16 @@ export async function readKeyStatus(db: Db, tenantId: string): Promise<KeyStatus
 }
 
 const HAS_KEY_SQL = 'SELECT 1 AS x FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1'
-export function hasKey(db: Database.Database, tenantId: string): boolean {
-  return db.prepare(HAS_KEY_SQL).get(tenantId) !== undefined
+// Refs #1099: a key dazl may call. An OpenAI key counts only when the operator named 'openai' in DAZL_PAID_VENDORS, so an OpenAI-only
+// workspace is keyless at every gate (scan, play, watch, CSV, estimate) instead of being accepted and then failing no_api_key.
+const HAS_USABLE_KEY_SQL = "SELECT 1 AS x FROM tenant_llm_keys WHERE tenant_id = ? AND vendor <> 'openai' LIMIT 1"
+const hasKeySql = (env: Record<string, string | undefined>) => paidVendorOn('openai', env) ? HAS_KEY_SQL : HAS_USABLE_KEY_SQL
+export function hasKey(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
+  return db.prepare(hasKeySql(env)).get(tenantId) !== undefined
 }
 // hasKey on the Db layer (SQLite or Postgres).
-export async function readHasKey(db: Db, tenantId: string): Promise<boolean> {
-  return (await db.get(HAS_KEY_SQL, [tenantId])) !== undefined
+export async function readHasKey(db: Db, tenantId: string, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+  return (await db.get(hasKeySql(env), [tenantId])) !== undefined
 }
 
 const DELETE_KEY_SQL = 'DELETE FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?'

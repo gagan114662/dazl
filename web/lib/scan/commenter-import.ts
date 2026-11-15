@@ -14,7 +14,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
-import { paidVendorOn, paidVendorOffNote, PAID_VENDOR_OFF } from '../paid-vendors.ts'
+import { paidVendorOn, PAID_VENDOR_OFF } from '../paid-vendors.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { CreditRefused, refundCredits, refusalLookup, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
@@ -220,7 +220,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
   const apolloKey = paidVendorOn('apollo', env) ? getEnabledCredential(db, tenantId, 'enrich:apollo', master) : null
   const pdlKey = apolloKey || !paidVendorOn('pdl', env) ? null : getEnabledCredential(db, tenantId, 'enrich:pdl', master)
   if (!apolloKey && !pdlKey) {
-    if (!paidVendorOn('apollo', env) && !paidVendorOn('pdl', env)) { try { audit(db, { tenantId, connector: 'enrich', jobId: batch.job_id, lookup: paidVendorOffNote('apollo').slice(0, 200), status: PAID_VENDOR_OFF, results: 0 }) } catch { /* a note only */ } }
+    if (!paidVendorOn('apollo', env) && !paidVendorOn('pdl', env)) { try { audit(db, { tenantId, connector: 'enrich', jobId: batch.job_id, lookup: 'Apollo and People Data Labs not called: dazl uses no paid third-party service by default (DAZL_PAID_VENDORS)', status: PAID_VENDOR_OFF, results: 0 }) } catch { /* a note only */ } }
     return
   }
   const now = Math.floor(Date.now() / 1000)

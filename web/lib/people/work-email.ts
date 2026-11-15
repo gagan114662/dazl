@@ -130,7 +130,9 @@ export function workEmailsForLeads(db: Database.Database, tenantId: string, lead
 // guesses (#1036): the shown guessed addresses by lead (flag off or none: {}), so a reload shows a stored guess with no per-lead request.
 export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, GuessView[]> }
 export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
-  const providers = workEmailProviders(db, tenantId, env)
+  // Refs #1099: what the leads page offers is what can run: a saved Apollo / PDL key the paid-vendor policy keeps off is not offered
+  const saved = workEmailProviders(db, tenantId, env)
+  const providers = { ...saved, apollo: saved.apollo && paidVendorOn('apollo', env), pdl: saved.pdl && (paidVendorOn('pdl', env) || workEmailFixtureFakesOn(env)) }
   const providers_by_lead: Record<string, WorkEmailProviders> = {}
   for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
   return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)), guesses: guessesForLeads(db, tenantId, leads.map(l => l.id), env) }
@@ -316,7 +318,7 @@ async function lookupWorkEmail(
   const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture && apolloOn ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed && pdlOn ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
-    if ((allowed.apollo && !fixture && !apolloOn) || (pdlAllowed && !pdlOn)) return { status: 'no_key', detail: `${paidVendorOffNote(!apolloOn ? 'apollo' : 'pdl')}; only an address printed on the company's own website is used` }
+    if ((allowed.apollo && !fixture && !apolloOn) || (pdlAllowed && !pdlOn)) return { status: 'no_key', detail: `${paidVendorOffNote(allowed.apollo && !fixture && !apolloOn ? 'apollo' : 'pdl')}; only an address printed on the company's own website is used` }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
   }
   const foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
