@@ -187,3 +187,23 @@ test('review (haiku): persistently failing posts cannot starve unsearched ones; 
     { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1, deadline: 1000, now: () => (siteCalls >= 1 ? 2000 : 0) })
   assert.equal(dl.stopped, 'deadline'); assert.equal(siteCalls, 1, 'nothing more is sent once the deadline has passed')
 })
+
+test('review (opus round 2): one failing follow-up search is sent once per call and given up after two tries; failing post queries cannot starve the later ones', async () => {
+  // R6: two posts with the same text give the same follow-up search; it always fails
+  const same = (day: string, h: string) => hit(liPost(h, day), `${h}'s Post`, 'Acme opens new robotics factory hiring engineers across the country this season')
+  const log: string[] = []
+  const search: SearchFn = async q => { log.push(q); if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: [same('2026-11-10', 'one'), same('2026-11-09', 'two')] }; if (q.startsWith('site:')) return { ok: true, hits: [] }; return /^Acme/.test(q) ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
+  const state = new Map<string, unknown>()
+  const perCall: number[] = []
+  for (let i = 0; i < 5; i++) { const n = log.length; await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], sourceState: state, wait: async () => {}, concurrency: 1 }); perCall.push(log.slice(n).filter(q => /^Acme/.test(q)).length) }
+  assert.deepEqual(perCall, [1, 1, 0, 0, 0], 'once per call, then given up after the second failed try (a failed search may have been billed)')
+  // R7: 4 post queries x 2 platforms, only 2 per call; every site:x.com query always fails
+  const PLAN4: ResearchPlan = { ...PLAN, triggers: [{ ...PLAN.triggers[0], queries: ['q one sydney', 'q two sydney', 'q three sydney', 'q four sydney'] }] }
+  const sent: string[] = []
+  const flaky: SearchFn = async q => { if (q.startsWith('site:')) sent.push(q); return q.startsWith('site:x.com') ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
+  const st2 = new Map<string, unknown>()
+  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { sources: [{ ...linkedinPostsSource({ maxPostQueries: 2 }) }], sourceState: st2, wait: async () => {}, concurrency: 1 })
+  for (const n of ['one', 'two', 'three', 'four']) assert.ok(sent.includes(`site:linkedin.com/posts q ${n} sydney`), `the ${n} query was reached`)
+  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { sources: [linkedinPostsSource({ maxPostQueries: 2 })], sourceState: st2, wait: async () => {}, concurrency: 1 })
+  for (const n of ['one', 'two', 'three', 'four']) assert.ok(sent.filter(q => q === `site:x.com q ${n} sydney`).length <= 2, `the failing ${n} x.com query is tried at most twice`)
+})

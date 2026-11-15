@@ -12,7 +12,7 @@
 // are counted with the rest. `maxPostQueries` + `maxDerived` bound it (6 + 10 by default). A spend refusal (a throw) is not swallowed: after one,
 // nothing more is sent and the refusal is rethrown to the hunt, which stops the scan as it does for its own queries.
 import type { Candidate, ResearchCase, ResearchPlan } from '../types.ts'
-import { linkedinPostCandidates, newPostsState, type IndexHit, type PostsState } from './linkedin-engagers.ts'
+import { linkedinPostCandidates, newPostsState, postQueries, type IndexHit, type PostsState } from './linkedin-engagers.ts'
 
 // Structurally the hunt's SearchFn (hunt.ts); declared here so this file does not import hunt.ts (which imports this one).
 export type SourceSearch = (query: string, afterDate: string) => Promise<{ ok: true; hits: { url: string; title?: string; snippet?: string; date?: string | null }[] } | { ok: false; reason: string }>
@@ -66,8 +66,13 @@ export function derivedQuery(post: { title: string; snippet: string }, where: st
 }
 
 // `pending`: posts found by an earlier call whose derived search was not made (the per-call cap) or failed: the next call makes them first.
-export interface DiscoveryState extends PostsState { derived: Set<string>; pending: Candidate[] }
-export const newDiscoveryState = (): DiscoveryState => ({ ...newPostsState(), derived: new Set(), pending: [] })
+// A search that was SENT and failed may have been billed, so it is retried at most once more (MAX_TRIES in all), and a failed post query only after
+// the queries not yet sent (`retryQueries`: query -> failed tries). `derivedFails`: the same count per follow-up search.
+export const MAX_TRIES = 2
+export interface DiscoveryState extends PostsState { derived: Set<string>; pending: Candidate[]; retryQueries: Map<string, number>; derivedFails: Map<string, number> }
+export const newDiscoveryState = (): DiscoveryState => ({ ...newPostsState(), derived: new Set(), pending: [], retryQueries: new Map(), derivedFails: new Map() })
+// Never sent: a stop, a refusal, the deadline, or a rate answer that cost nothing. Such a query is simply unsent.
+const neverSent = (reason: string) => ['refused', 'deadline', 'rate', 'cap', 'auth', 'quota', 'disabled'].includes(reason)
 
 export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?: number } = {}): HuntSource => ({
   id: 'linkedin-posts',
@@ -78,24 +83,33 @@ export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?:
     const after = afterOf(c)
     const dropped: Record<string, number> = {}
     const drop = (why: string, n = 1) => { dropped[why] = (dropped[why] ?? 0) + n }
+    // failed post queries are tried again only in the slots the not-yet-sent queries leave (so a persistently failing query cannot starve the rest)
+    const maxPostQueries = cfg.maxPostQueries ?? 6
+    let slots = maxPostQueries - postQueries(plan, ['linkedin', 'x'], Number.MAX_SAFE_INTEGER).filter(x => !state.queries.has(x.q.toLowerCase())).length
+    for (const [lq, tries] of state.retryQueries) { if (slots <= 0) break; if (tries >= MAX_TRIES) continue; state.queries.delete(lq); slots-- }
     // 1. the posts (the index's own date for each is the post ID's); no author lookups: for discovery a company's post is as good as a person's
-    const posts = await linkedinPostCandidates(c, plan, { search: async (q, opts) => { const r = await g.call(q, opts.afterDate ?? after); if (!r.ok) state.queries.delete(q.toLowerCase()); return r.ok ? r.hits.map(h => ({ url: h.url, title: h.title ?? '', snippet: h.snippet ?? '', date: h.date ?? null } as IndexHit)) : null }, maxQueries: cfg.maxPostQueries ?? 6, maxResolve: 0, state })
+    const posts = await linkedinPostCandidates(c, plan, { search: async (q, opts) => { const r = await g.call(q, opts.afterDate ?? after); const lq = q.toLowerCase(); if (r.ok) state.retryQueries.delete(lq); else if (neverSent(r.reason)) state.queries.delete(lq); else state.retryQueries.set(lq, (state.retryQueries.get(lq) ?? 0) + 1); return r.ok ? r.hits.map(h => ({ url: h.url, title: h.title ?? '', snippet: h.snippet ?? '', date: h.date ?? null } as IndexHit)) : null }, maxQueries: maxPostQueries, maxResolve: 0, state })
     // 2. one web search per post for what it says: the openable results are the candidates
     const out = new Map<string, Candidate>()
     const fresh = [...posts.candidates].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
     const ordered = [...state.pending, ...fresh]; state.pending = []
     const retry: Candidate[] = []   // posts whose search failed: they wait AFTER the posts not yet searched, so a persistent failure cannot starve them
     let derivedSent = 0
+    const triedNow = new Set<string>()
     for (let i = 0; i < ordered.length; i++) {
       const p = ordered[i]
       // the cap, or a stop from the provider: this post and the rest wait for the next call (nothing more is sent now)
       if (derivedSent >= (cfg.maxDerived ?? 10) || g.stopReason()) { state.pending.push(...ordered.slice(i)); drop(g.stopReason() ? `stopped: ${g.stopReason()}` : 'deferred: derived search cap', ordered.length - i); break }
       const q = derivedQuery(p, c.where)
       if (!q) { drop('too little text to search'); continue }
-      if (state.derived.has(q.toLowerCase())) { drop('same search'); continue }
+      const lq = q.toLowerCase()
+      if (state.derived.has(lq)) { drop('same search'); continue }
+      if ((state.derivedFails.get(lq) ?? 0) >= MAX_TRIES) { drop('gave up: the search failed twice'); continue }
+      if (triedNow.has(lq)) { drop('same search failed this call'); retry.push(p); continue }   // not sent again in one call
+      triedNow.add(lq)
       const r = await g.call(q, after); derivedSent++
-      if (!r.ok) { drop(`search ${r.reason}`); retry.push(p); continue }   // not remembered as done: the next call retries it, after the unsearched posts
-      state.derived.add(q.toLowerCase())
+      if (!r.ok) { drop(`search ${r.reason}`); if (!neverSent(r.reason)) state.derivedFails.set(lq, (state.derivedFails.get(lq) ?? 0) + 1); retry.push(p); continue }   // not remembered as done: the next call retries it (at most twice in all), after the unsearched posts
+      state.derived.add(lq)
       for (const h of r.hits.slice(0, 10)) {
         if (!openable(h.url)) { drop('unopenable host'); continue }
         if (out.has(h.url)) { drop('same url'); continue }
