@@ -125,7 +125,11 @@ test('review (opus): a company handle that is also a member vanity is the compan
     : q.includes('stripe') ? [{ url: 'https://www.linkedin.com/in/stripe', title: 'John Smith - Founder at Smith Co', snippet: '', date: null }, { url: 'https://www.linkedin.com/company/stripe', title: 'Stripe', snippet: '', date: null }]
     : q.includes('dana-okoye') ? [{ url: 'https://www.linkedin.com/in/dana-okoye', title: 'Dana Okoye - Head of Growth at Okoye', snippet: '', date: null }] : []
   const r = await linkedinPostCandidates(rc, plan(), { search, maxQueries: 2, maxResolve: 5 })
-  assert.ok(!r.candidates.some(c => c.url === post), 'the company\'s post is dropped, not credited to the member with the same vanity')
+  // an unnamed post is not resolved (it can never be a Person): kept as 'unresolved', with no /in/ URL, never credited to the member
+  assert.equal(r.authors[post].kind, 'unresolved'); assert.equal(r.authors[post].profileUrl, null); assert.equal(authorPerson(r.authors[post]), null)
+  // a NAMED author whose handle is also a company page is the company (dropped), even when a member owns the same /in/ vanity
+  const named = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [{ url: post, title: 'Stripe on LinkedIn: new payments API', snippet: 'x', date: null }] : q.includes('stripe') ? [{ url: 'https://www.linkedin.com/in/stripe', title: 'John Smith - Founder at Smith Co', snippet: '', date: null }, { url: 'https://www.linkedin.com/company/stripe', title: 'Stripe', snippet: '', date: null }] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(named.candidates.length, 0); assert.equal(named.funnel.dropped['company page, not a person'], 1)
   const dana = r.authors[liPost('dana-okoye', '2026-10-13')]
   assert.equal(dana.name, 'Dana Okoye'); assert.equal(dana.kind, 'person'); assert.equal(dana.profileUrl, 'https://www.linkedin.com/in/dana-okoye')
   // a post with no name in its title is never a Person, even when an /in/ profile with that handle exists

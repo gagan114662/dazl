@@ -128,7 +128,8 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     let a = byHandle.get(key)
     if (!a) {
       a = { ...p.author, kind: 'unresolved', headline: null }
-      if (p.author.platform === 'linkedin' && resolved < (deps.maxResolve ?? 20)) {
+      // only an author the post title names can become a Person, so the resolve budget goes to those
+      if (p.author.platform === 'linkedin' && p.author.name && resolved < (deps.maxResolve ?? 20)) {
         resolved++
         sent++
         const hits = await safeSearch(deps.search, `${p.author.name ?? ''} linkedin ${p.author.handle}`.trim(), {})
