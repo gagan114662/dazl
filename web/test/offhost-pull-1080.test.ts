@@ -94,8 +94,12 @@ test('#1080 pull: a bad copy and a future-dated copy go to .bad and alert; with 
   if (existsSync(ackLog)) unlinkSync(ackLog)
   const r2 = run(box, here, ['--ack', 'dazl-offhost-ack'])
   assert.equal(r2.json.pulled, 0, r2.out); assert.equal(r2.json.retired, 1); assert.equal(r2.json.acked, true)
-  assert.match(alerts()[0].problems.join('\n'), /2 copy\(ies\) set aside in \.bad\/ earlier/)
+  assert.match(alerts()[0].problems.join('\n'), /2 copy\(ies\) in \.bad\/: inspect/)
   assert.ok(!existsSync(path.join(here, bad)))
+  // after inspection the operator removes them: they stay excluded (never pulled again) and the alert stops
+  for (const f of readdirSync(path.join(here, '.bad'))) if (f !== 'names') unlinkSync(path.join(here, '.bad', f))
+  const r3 = run(box, here)
+  assert.equal(r3.code, 0, r3.out); assert.equal(r3.json.pulled, 0)
 })
 
 test('#1080 pull: a box that writes BACKDATED copies (to push real ones out of retention) is caught: alert, nothing retired', { skip }, () => {
@@ -115,7 +119,7 @@ test('#1080 pull: a box that writes BACKDATED copies (to push real ones out of r
   for (let i = 0; i < 2; i++) {
     const again = run(box, here)
     assert.equal(again.json.pulled, 0, again.out); assert.equal(again.json.retired, 0, again.out)
-    assert.match(alerts()[0].problems.join('\n'), /set aside in \.bad\/ earlier/)
+    assert.match(alerts()[0].problems.join('\n'), /copy\(ies\) in \.bad\/: inspect/)
   }
   for (const f of real) assert.ok(existsSync(path.join(here, f)), `${f} still kept`)
   assert.equal(copies(path.join(here, '.bad')).length, 67)
@@ -206,6 +210,25 @@ test('#1080 pull: stale newest copy, no ledger copy, an unreachable box, nothing
   const old = copy(m.box, now - 3 * HOUR, 3, { noManifest: true })
   assert.equal(run(m.box, m.here).code, 1)
   assert.match(alerts()[0].problems.join('\n'), new RegExp(`without a manifest for over 2 h: ${old.replace(/\./g, '\\.')}`))
+})
+
+test('#1080 pull: a LATE manifest for a copy older than what was held when its ciphertext came is set aside; a corrupt pending record holds retention', { skip }, () => {
+  const { box, here } = dirs()
+  copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
+  assert.equal(run(box, here).code, 0)
+  const x = copy(box, now - 4 * HOUR, 2, { noManifest: true }) // ciphertext only, named older than the copy held
+  assert.equal(run(box, here).code, 1) // older than 2 h without its manifest: alerts, nothing else
+  const body = readFileSync(path.join(box, x), 'utf8')
+  writeFileSync(path.join(box, `${x}.json`), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: x, ciphertext_sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body), copied_at: new Date(now - 4 * HOUR + 30_000).toISOString() }))
+  const r = run(box, here)
+  assert.equal(r.code, 1, r.out); assert.equal(r.json.retired, 0); assert.equal(r.json.backups, 1)
+  assert.ok(existsSync(path.join(here, '.bad', x)))
+  assert.match(alerts()[0].problems.join('\n'), new RegExp(`named older than the newest copy already here.*${x.replace(/\./g, '\\.')}`))
+  // a corrupt pending record: a problem that holds retention (never read as "nothing pending")
+  writeFileSync(path.join(here, '.retired', 'pending.json'), '{"truncat')
+  const c = run(box, here)
+  assert.equal(c.code, 1); assert.equal(c.json.retired, 0)
+  assert.match(alerts()[0].problems.join('\n'), /pending\.json is not valid/)
 })
 
 test('#1080 pull: usage errors exit 2 and touch nothing', () => {

@@ -61,7 +61,10 @@ What protects the copies kept on the operator machine:
   are retired per run (more due is an alert); a new copy named older than the newest one held when it arrived (a box
   never backdates a copy) is set aside in `.bad/` and alerts, so it never counts for retention. So a compromised box
   that writes fake copies cannot quietly push the real ones out.
-- a copy in `.bad/` is never pulled again; every run alerts until someone inspects and removes it.
+- a copy in `.bad/` is never pulled again; every run alerts until someone inspects and removes it (its name stays in
+  `.bad/names`, so it does not come back). A copy set aside as "named older" may be a real one the box wrote late (an
+  `offhost-copy.sh` run by hand on an older backup): compare its manifest's `copied_at` and `source_sha256` with the box's
+  local backups before removing it.
 
 Alerts: the operator machine alerts when a pull fails, a copy is bad, or the newest copy is older than 2 h. When the
 operator machine itself is off it cannot alert, so after each good pull it touches a marker on the box (a second key
