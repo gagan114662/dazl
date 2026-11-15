@@ -2,6 +2,10 @@ import type Database from 'better-sqlite3'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 import { normalizeDomain } from './audit.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
+import { captureError } from '../ops/errors.ts'
 
 // Weekly indexing checks: does a search engine list the tenant's domain for their keywords?
 // For each saved keyword we run one TinyFish search "site:<domain> <keyword>" and record whether
@@ -110,7 +114,11 @@ export type IndexResult = IndexCheck & { domain: string; checked_at: number }
 // Returns null when there is nothing to do (no config/keywords) or the allowance is spent, and 'stale_domain' when the
 // domain was edited while the searches were in flight (results discarded, searches stay spent). [] is reserved for a
 // provider failure so callers can tell an outage from a concurrent edit.
-export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
+export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | 'spend_cap' | null> {
+  return runWithTenantSpend(db, tenantId, () => runIndexChecksCounted(db, tenantId, deps))
+}
+async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | 'spend_cap' | null> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const env = deps.env ?? process.env
   const cfg = await getConfig(db, tenantId)
@@ -136,10 +144,16 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
   const batchEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(WEEKLY_ALLOWANCE) }
   const spent = { searches: 0 } // searches actually sent (tfSearch counts one before each request, failed or not)
   const out: IndexCheck[] = []
+  let refused: SpendRefused | null = null
   try {
     for (const keyword of keywords.slice(0, claimed)) {
-      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now })
-      if (!r.ok) break // cap/rate/auth/quota: stop the batch, keep what we have
+      // #1167: an account at its day or month spend cap is refused before anything is sent (SpendRefused): the batch stops like a cap
+      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now }).catch((e: unknown) => {
+        if (!(e instanceof SpendRefused)) throw e
+        spent.searches-- // counted before the reserve; never sent: the slot goes back (finally)
+        refused = e; return null
+      })
+      if (!r || !r.ok) break // cap/rate/auth/quota/spend cap: stop the batch, keep what we have
       const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
       out.push({ keyword, indexed: !!own, top_url: own?.url ?? null })
     }
@@ -148,6 +162,16 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
     const unsent = claimed - spent.searches
     if (unsent > 0) await asDb(db).run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, -unsent])
   }
+  if (out.length === 0 && refused) {
+    // nothing was sent and this week's searches are given back; the cron retries in an hour, not every tick, and a later
+    // scheduled run is never pulled forward (a manual run refused days before it is due keeps that schedule)
+    await asDb(db).run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ? AND domain = ? AND (next_run_at IS NULL OR next_run_at < ?)', [now + 3600, tenantId, cfg.domain, now + 3600])
+    // the account's cap is an answer ('spend_cap'); any other refusal (a price or store fault) is reported as the fault it is
+    if ((refused as SpendRefused).reason === OWNER_POOL_LIMIT_REASON) return 'spend_cap'
+    throw refused
+  }
+  // a fault after some keywords were checked: their (paid) results are kept below, and the fault is still reported
+  if (refused && (refused as SpendRefused).reason !== OWNER_POOL_LIMIT_REASON) captureError(refused, { source: 'worker', where: 'seo:index-checks', tenantId })
   if (out.length > 0) {
     const stamp = deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`
     // #904 fence: the results and the next run commit only if the saved domain is still the one searched. A domain

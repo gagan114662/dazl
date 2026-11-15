@@ -1,0 +1,9 @@
+[Unit]
+Description=dazl: pull the box's encrypted backup copies, hourly (after the box's hourly backup)
+
+[Timer]
+OnCalendar=*-*-* *:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
