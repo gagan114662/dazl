@@ -32,20 +32,22 @@ const P = 'a'.repeat(24)
 const BUYER = { summary: 'Independent dental practices with 2-10 chairs', who: ['Practice owner'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Ohio'], signals: ['Opened a new location'], exclude: ['Dental schools', 'chains'] }
 const PLAY_ICP = { ...BUYER, window_days: 90 }
 const job = o => ({ id: P, status: 'done', error: null, query: 'Dental practice owners in Ohio - opened a new location', business_name: '', csv_domain: null, created_at: now - 3600, finished_at: now - 3000, candidates: 4, verified: 2, needs_review: 1, dropped: 1, lead_count: 4, test_only: false, funded_by: null, ...o })
-const lead = (id, company, o = {}) => ({ id, name: '', company, contact: `hello@${id[0]}.example`, signal: `${company} opened a second office`, source_url: `https://news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: `${id[0]}.example`, human_confirmed_at: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office.`, signals: null, icp_match: null, enrichments: [], events: [], ...o })
+// The rows GET /api/leads returns: since #1176 a day is verified by its proof (event_date_proof -> day_verified, set by the route), not by the
+// retired date_status 'verified' (no scan writes it); an undated lead below overrides both.
+const lead = (id, company, o = {}) => ({ id, name: '', company, contact: `hello@${id[0]}.example`, signal: `${company} opened a second office`, source_url: `https://news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'unverified', event_date_proof: 'page_bound', day_verified: true, published_at: null, confidence: 90, review_reason: null, company_domain: `${id[0]}.example`, human_confirmed_at: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office.`, signals: null, icp_match: null, enrichments: [], events: [], ...o })
 const GOOD = lead('1'.repeat(24), 'Bright Dental')
 const NO_CONTACT = lead('2'.repeat(24), 'Maple Family Dentistry', { contact: null })
 const WRONG_CO = lead('3'.repeat(24), 'Gramercy Dental Practice', { review_reason: 'identity_mismatch' })
-const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated' })
+const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false })
 const OUT_OF_WINDOW = lead('5'.repeat(24), 'Old Town Dental', { window_held: true })
 // Synthetic shapes of the two reported failures (no real company, run or URL): customer-mention + undated; blocked + undated.
 // The scan's own recovery record (lib/scan/blocked-fallback.ts recordRecovery writes exactly these strings): what the bounded automatic pass already tried (#352).
 const rec = (reason, value) => ({ connector: 'scan:recovery', kind: 'recovery', value, label: `recovery:${reason}`, confidence: null, source_url: 'https://news.example/r', source_date: '2026-10-29' })
 const ran = (reason, what) => [rec(reason, `Recovery pass ran before this was held (${reason}): searched other press for ${what} for the same company; none verified.`)]
-const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('counterparty_signal', 'a source about the company itself') })
-const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('undated', 'a dated source') })
-const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated', enrichments: [rec('counterparty_signal', 'Recovery pass did not run (the run disabled the paid fallback).')] })
-const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('blocked_by_site', 'a readable source') })
+const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('counterparty_signal', 'a source about the company itself') })
+const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('undated', 'a dated source') })
+const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: [rec('counterparty_signal', 'Recovery pass did not run (the run disabled the paid fallback).')] })
+const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('blocked_by_site', 'a readable source') })
 const QUOTE = lead('a'.repeat(24), 'Pine Dental', { review_reason: 'quote_unconfirmed' })
 const PROFILE = { business_name: 'Brightsmile', sells: 'Appointment booking software', website: 'https://brightsmile.example', buyer: BUYER }
 
