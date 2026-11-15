@@ -130,3 +130,103 @@ test('the proof of a READY verdict makes a stored lead Ready by the same rule Ho
   assert.equal(researchProofGap(db, 'A', 'L1', new Date(Date.parse('2027-01-15T12:00:00Z'))), 'out_of_window')
   assert.equal(home().ready, 1)
 })
+
+test('the proof fits the store whatever the person page and name (Lane A: 5 of 9 ready Chicago leads lost it to the 254-character value CHECK); a store refusal returns false and writes nothing', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { writeResearchProof, researchProofGap } = await import('../lib/research/proof.ts')
+  const r = rec('Mouledoux, Bland, Legrand & Brackett')
+  const setup = () => {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    const J = 'r'.repeat(24)
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', 'Law firms in Chicago', 'running', 1, ?)").run(J, Math.floor(NOW / 1000) - 3600)
+    db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, fit, created_at) VALUES ('L1', ?, ?, 'moved', ?, 80, ?, 4, ?)").run(J, r.company, r.source_url, r.trigger_quote, Math.floor(NOW / 1000) - 600)
+    return db
+  }
+  const ev = { company: r.company, whatHappened: r.why_now, whyNow: r.why_now, quote: r.trigger_quote, eventDate: r.event_date, dateQuote: r.date_quote, sourceUrl: r.source_url }
+  const base = { name: r.person!, title: r.title, quote: r.person_quote!, sourceUrl: r.person_url!, sourceText: r.person_text ?? r.source_text }
+  const v = await verifyLead(ev, { url: r.source_url, text: r.source_text, readAt: NOW }, base, recorded(r), { now: NOW })
+  assert.equal(v.ready, true)
+  // a team / bio page URL of 240 characters, and a name of 300 (model output): written, and the proof stands
+  const longUrl = `https://www.mblb.com/our-team/attorneys/managing-members/${'alan-g-brackett-'.repeat(12)}profile`
+  assert.ok(longUrl.length > 200)
+  for (const person of [{ ...base, sourceUrl: longUrl }, { ...base, name: `${r.person!} ${'X'.repeat(300)}`, sourceUrl: longUrl }]) {
+    const db = setup()
+    assert.equal(writeResearchProof(db, 'A', 'L1', v, ev, person, new Date(NOW)), true, `url ${person.sourceUrl.length}, name ${person.name.length}`)
+    assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), null, 'never person_missing for a long name or page')
+    const rows = db.prepare("SELECT kind, length(value) n FROM lead_enrichments WHERE lead_id = 'L1'").all() as { kind: string; n: number }[]
+    for (const row of rows) assert.ok(row.n <= 254, JSON.stringify(row))
+  }
+  // the store refuses (here: a trigger, standing in for any constraint or store fault): false, nothing written, nothing thrown
+  const db = setup()
+  db.exec("CREATE TRIGGER refuse BEFORE INSERT ON lead_enrichments BEGIN SELECT RAISE(ABORT, 'refused by the store'); END")
+  assert.equal(writeResearchProof(db, 'A', 'L1', v, ev, base, new Date(NOW)), false)
+  assert.deepEqual({ ...(db.prepare("SELECT event_date, event_date_proof FROM leads WHERE id = 'L1'").get() as object) }, { event_date: null, event_date_proof: null }, 'rolled back')
+  assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), 'no_record')
+})
+
+test('a lead the research proof never marked costs the gate one read (the old engine path)', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { researchProofGap } = await import('../lib/research/proof.ts')
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('J', 'A', 'x', 'y', 'z', 'running')").run()
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence) VALUES ('L1', 'J', 'Co', 's', 'https://co.example/', 80)").run()
+  const seen: string[] = []
+  const spy = new Proxy(db, { get: (t, k) => k === 'prepare' ? (sql: string) => { seen.push(sql); return t.prepare(sql) } : Reflect.get(t, k) })
+  assert.equal(researchProofGap(spy as typeof db, 'A', 'L1', new Date(NOW)), 'no_record')
+  assert.equal(seen.length, 1, seen.join('\n'))
+})
+
+test('goal loop (run.ts calls verify many times per run): a stable code per verdict; a spend refusal reads "budget", not a dead end; the held lead keeps its event score; memoDecide pays an identical question once and never keeps a failed answer', async () => {
+  const { memoDecide } = await import('../lib/research/verify.ts')
+  const { SpendRefused } = await import('../lib/llm/spend-guard.ts')
+  const r = rec('Mouledoux, Bland, Legrand & Brackett')
+  let calls = 0
+  const counting = (d: Decide): Decide => async (s, q) => { calls++; return d(s, q) }
+  // each outcome has its code
+  assert.equal((await verify(r)).code, 'ready')
+  assert.equal((await verify(r, { trigger_quote: 'a sentence that is nowhere on this page at all' })).code, 'quote_not_on_page')
+  assert.equal((await verify(r, { person: null })).code, 'no_person')
+  assert.equal((await verify(r, {}, async (_s, q) => ('claim' in q ? { claim: 0.1 } : { role: 0.9 }))).code, 'event_unsupported')
+  assert.equal((await verify(r, {}, async (_s, q) => ('claim' in q ? { claim: 0.9 } : { role: 0.1 }))).code, 'person_unsupported')
+  // a held lead (no day on the page) still carries the event score the review lane shows: the checks are asked as before
+  const noDay = await verify(r, { date_quote: 'not a date that is on the page' })
+  assert.deepEqual([noDay.code, noDay.event.ok, typeof noDay.event.support], ['no_day_on_page', true, 'number'])
+  // a provider error vs the spend limit (thrown, or as the cause, on either question): both fail closed, only the latter says "budget"
+  const broken = await verify(r, {}, async () => { throw new Error('provider down') })
+  assert.deepEqual([broken.ready, broken.code], [false, 'check_failed'])
+  const capped = await verify(r, {}, async () => { throw new SpendRefused('owner_pool_limit') })
+  assert.deepEqual([capped.ready, capped.code, capped.why], [false, 'budget', 'the spend limit stopped the second check'])
+  const wrapped = await verify(r, {}, async () => { throw new Error('fallback failed', { cause: new SpendRefused('owner_pool_limit') }) })
+  assert.equal(wrapped.code, 'budget')
+  const roleCapped = await verify(r, {}, async (_s, q) => { if ('claim' in q) return { claim: 0.9 }; throw new SpendRefused('owner_pool_limit') })
+  assert.deepEqual([roleCapped.ready, roleCapped.code], [false, 'budget'])
+  const roleWrapped = await verify(r, {}, async (_s, q) => { if ('claim' in q) return { claim: 0.9 }; throw new Error('a', { cause: new Error('b', { cause: new SpendRefused('owner_pool_limit') }) }) })
+  assert.equal(roleWrapped.code, 'budget', 'a refusal two causes deep, on the role question')
+  // the label is the failed check's own: the claim failed for another reason, the role was refused -> check_failed (claim comes first)
+  const mixed = await verify(r, {}, async (_s, q) => { if ('claim' in q) throw new Error('provider down'); throw new SpendRefused('owner_pool_limit') })
+  assert.equal(mixed.code, 'check_failed')
+  // a Decide that throws synchronously still gives a verdict (fail closed), never a rejection
+  const syncThrow = await verify(r, {}, (() => { throw new SpendRefused('owner_pool_limit') }) as unknown as Decide)
+  assert.equal(syncThrow.code, 'budget')
+  // memoDecide: the same lead verified again in a later round costs nothing
+  calls = 0
+  const memo = memoDecide(counting(recorded(r)))
+  await verify(r, {}, memo); await verify(r, {}, memo)
+  assert.equal(calls, 2, 'claim + role once, not twice')
+  // an unreadable answer ({ claim: null }) or a thrown one is asked again on the next round
+  let first = true
+  const flaky = memoDecide(counting(async (s, q) => { if (first && 'claim' in q) { first = false; return { claim: null } } return recorded(r)(s, q) }))
+  calls = 0
+  assert.equal((await verify(r, {}, flaky)).code, 'check_failed')
+  assert.equal((await verify(r, {}, flaky)).code, 'ready', 'the unreadable answer was not remembered')
+  // two identical questions at once share one call; when it fails, both see the failure and the next round asks again
+  calls = 0
+  let fail = true
+  const shared = memoDecide(counting(async (s, q) => { await new Promise(res => setTimeout(res, 5)); if (fail) throw new SpendRefused('owner_pool_limit'); return recorded(r)(s, q) }))
+  const [a1, a2] = await Promise.all([verify(r, {}, shared), verify(r, {}, shared)])
+  assert.deepEqual([a1.code, a2.code, calls], ['budget', 'budget', 2], 'the claim and the role question, each once for both')
+  fail = false
+  assert.equal((await verify(r, {}, shared)).code, 'ready')
+})

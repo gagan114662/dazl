@@ -10,19 +10,22 @@
 //
 // The signal is what the record proves and nothing more: "N roofing permits issued in <city> since <date>" (active roofing jobs),
 // never "hiring" (SIGNAL_INDEX.md: the UI must describe the signal as it is).
-import type { SafeGet } from '../../sources/types.ts'
 import { isRecord, looksLikeHtml } from '../../sources/types.ts'
-import type { Market, SignalSource, SourceSignal } from './types.ts'
+import type { Candidate } from '../types.ts'
+import type { RegistrySource } from './registry.ts'
+import { caseMentions } from './registry.ts'
 
 export interface PermitDataset {
   id: string                       // adapter id suffix, e.g. 'austin'
   city: string; region: string; country: string
+  where: RegExp                    // the case's whole place, city AND region, anchored (tested on ' austin texas '; a bare ' austin ' is not it)
   url: string                      // the SODA resource, e.g. https://data.austintexas.gov/resource/3syk-w9eu.json
-  fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string; phone: string }
+  fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string }
   generalTrade: string             // the trade value of a general contractor in this dataset
   categories: Record<string, PermitCategory>
 }
 export interface PermitCategory {
+  words: RegExp                    // the case's category / query words that mean this category
   eventKind: string                // 'roofing_permits'
   noun: string                     // 'roofing permit'
   label: string                    // 'Roofing contractors'
@@ -33,12 +36,13 @@ export interface PermitCategory {
 }
 
 export const AUSTIN_PERMITS: PermitDataset = {
-  id: 'austin', city: 'Austin', region: 'TX', country: 'US',
+  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:tx|texas)(?: usa?| united states)? $/,
   url: 'https://data.austintexas.gov/resource/3syk-w9eu.json',
-  fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link', phone: 'contractor_phone' },
+  fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link' },
   generalTrade: 'General Contractor',
   categories: {
     roofing: {
+      words: / roof(?:er|ers|ing)? /,
       eventKind: 'roofing_permits', noun: 'roofing permit', label: 'Roofing contractors', serverLike: 'ROOF',
       primary: /^\W*(?:express\s*[:\-]?\s*)?(?:residential\s+|commercial\s+)?(?:re-?roof|roof(?:ing)?\s+(?:replace|repair|over)|new\s+roof|tear[- ]off)/i,
       companyName: /\broof/i,
@@ -47,7 +51,9 @@ export const AUSTIN_PERMITS: PermitDataset = {
   },
 }
 
-const MAX_ROWS = 2000
+const PAGE_ROWS = 500, MAX_PAGES = 4   // 500 rows a page stays far under the getter's 1 MB cap; at most 2000 rows a market
+// one company's permits, before it becomes a Candidate (internal)
+export interface PermitRecord { company: string; eventSummary: string; eventDate: string; eventCount: number; recordUrl: string; pageUrl: string; personName: string | null; personTitle: string | null; eventKind: string; city: string; category: string }
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '')
 const day = (v: unknown): string | null => { const d = str(v).slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) ? d : null }
 // "Empire Roofing Companies LLC **MAIN**" -> "Empire Roofing Companies LLC"
@@ -57,23 +63,24 @@ const companyKey = (s: string) => cleanCompany(s).toLowerCase().replace(/\b(?:ll
 const looksLikePerson = (s: string) => /^[A-Za-z][A-Za-z'.-]+(?:\s+[A-Za-z][A-Za-z'.-]+){1,3}$/.test(s) && !/\b(?:llc|inc|ltd|roofing|construction|company|n\/?a|none)\b/i.test(s)
 const titleCase = (s: string) => s.toLowerCase().replace(/\b([a-z])/g, m => m.toUpperCase())
 
-export function permitQuery(d: PermitDataset, c: PermitCategory, since: string): string {
+export function permitQuery(d: PermitDataset, c: PermitCategory, since: string, page = 0): string {
   const f = d.fields
-  const select = [f.date, f.company, f.person, f.trade, f.description, f.number, f.location, f.link, f.phone].join(',')
+  const select = [f.date, f.company, f.person, f.trade, f.description, f.number, f.location, f.link].join(',')
   const where = `${f.date} >= '${since}T00:00:00' AND ${f.company} IS NOT NULL AND upper(${f.description}) like '%${c.serverLike}%'`
-  return `${d.url}?${new URLSearchParams({ $select: select, $where: where, $order: `${f.date} DESC`, $limit: String(MAX_ROWS) })}`
+  return `${d.url}?${new URLSearchParams({ $select: select, $where: where, $order: `${f.date} DESC, ${f.number}`, $limit: String(PAGE_ROWS), $offset: String(page * PAGE_ROWS) })}`
 }
 
 // The category rule on one row (pure; the tests run it on recorded real rows).
 export function permitMatches(d: PermitDataset, c: PermitCategory, row: Record<string, unknown>): boolean {
   const desc = str(row[d.fields.description]), company = cleanCompany(str(row[d.fields.company])), trade = str(row[d.fields.trade])
   if (!company || c.exclude.test(desc)) return false
-  if (trade && trade !== d.generalTrade) return false
+  if (trade !== d.generalTrade) return false   // an empty trade is not the general trade (fails closed)
   return c.primary.test(desc) || c.companyName.test(company)
 }
 
 // One record per company: its latest matching permit, how many it holds in the window, and the person the permits name most often.
-export function permitSignals(d: PermitDataset, category: string, rows: Record<string, unknown>[], since: string): SourceSignal[] {
+// partial: the window was cut (row cap or a later page unreadable), so a company's count is a floor ("at least N")
+export function permitSignals(d: PermitDataset, category: string, rows: Record<string, unknown>[], since: string, partial = false): PermitRecord[] {
   const c = d.categories[category]
   if (!c) return []
   const f = d.fields
@@ -85,7 +92,7 @@ export function permitSignals(d: PermitDataset, category: string, rows: Record<s
     if (k.length < 3) continue
     groups.set(k, [...(groups.get(k) ?? []), r])
   }
-  const out: SourceSignal[] = []
+  const out: PermitRecord[] = []
   for (const rs of groups.values()) {
     rs.sort((a, b) => (day(b[f.date])! < day(a[f.date])! ? -1 : 1))
     const latest = rs[0]
@@ -97,35 +104,48 @@ export function permitSignals(d: PermitDataset, category: string, rows: Record<s
     if (!url) continue // no public record to cite: not a source we can show
     const company = cleanCompany(str(latest[f.company]))
     out.push({
-      source: `socrata-permits:${d.id}`, company, eventKind: c.eventKind,
-      eventSummary: `${rs.length} ${c.noun}${rs.length === 1 ? '' : 's'} issued in ${d.city} since ${since}; latest ${str(latest[f.number])} at ${str(latest[f.location])}: ${str(latest[f.description]).slice(0, 140)}`,
-      eventDate: day(latest[f.date])!, eventCount: rs.length, sourceUrl: url,
-      personName: person ? titleCase(person) : null, personTitle: person ? `Contractor of record on the ${d.city} permit` : null, personSourceUrl: person ? url : null,
-      phone: str(latest[f.phone]) || null, city: d.city, region: d.region, country: d.country, category: c.label,
+      company, eventKind: c.eventKind, eventDate: day(latest[f.date])!, eventCount: rs.length, pageUrl: url,
+      // the readable public record: this one permit as JSON on the open-data API (the human page is behind a captcha)
+      recordUrl: `${d.url}?${new URLSearchParams({ [f.number]: str(latest[f.number]) })}`,
+      eventSummary: `${partial ? 'at least ' : ''}${rs.length} ${c.noun}${rs.length === 1 ? '' : 's'} issued in ${d.city} since ${since}; latest ${str(latest[f.number])} at ${str(latest[f.location])}: ${str(latest[f.description]).slice(0, 140)}`,
+      personName: person ? titleCase(person) : null, personTitle: person ? `Contractor of record on the ${d.city} permit` : null, city: d.city, category: c.label,
     })
   }
   return out.sort((a, b) => b.eventCount - a.eventCount || (a.eventDate < b.eventDate ? 1 : -1))
 }
 
-export function socrataPermitsSource(datasets: PermitDataset[] = [AUSTIN_PERMITS]): SignalSource {
-  const find = (m: Market) => datasets.find(d => d.city.toLowerCase() === m.city.toLowerCase() && d.region.toLowerCase() === m.region.toLowerCase() && d.country.toLowerCase() === m.country.toLowerCase() && !!d.categories[m.category])
+// A's Candidate: the record's facts in words (the read stage can build the event from them), dated by the record
+export const permitCandidate = (d: PermitDataset, category: string, r: PermitRecord): Candidate => ({
+  url: r.recordUrl, title: `${r.company}: ${r.eventCount} ${d.categories[category].noun}${r.eventCount === 1 ? '' : 's'} in ${d.city} (city permit record)`,
+  snippet: `${r.company} - ${r.eventSummary}.${r.personName ? ` Contractor of record: ${r.personName}.` : ''} Public permit page: ${r.pageUrl}`.slice(0, 600),
+  date: r.eventDate, triggerId: `registry:${r.eventKind}`, query: `socrata-permits:${d.id} ${category}`, via: 'registry', dated: 'registry',
+})
+
+export const permitsSourceFor = (d: PermitDataset): RegistrySource => {
+  const category = (c: Parameters<RegistrySource['covers']>[0]) => Object.keys(d.categories).find(k => caseMentions(c, 'category', d.categories[k].words)) ?? null
   return {
-    id: 'socrata-permits',
-    label: 'City permits (open data)',
-    covers: m => !!find(m),
-    async collect(m, since, http: SafeGet) {
-      const d = find(m)
-      if (!d) return { signals: [], notes: ['not_covered'] }
-      const res = await http(permitQuery(d, d.categories[m.category], since), { accept: 'application/json' }).catch(() => null)
-      if (!res) return { signals: [], notes: ['unreachable'] }
-      if (res.status !== 200) return { signals: [], notes: [res.status === 429 ? 'throttled' : `http_${res.status}`] }
-      if (res.truncated) return { signals: [], notes: ['oversize'] }
-      if (looksLikeHtml(res.body)) return { signals: [], notes: ['not_json'] }
-      let rows: unknown
-      try { rows = JSON.parse(res.body) } catch { return { signals: [], notes: ['not_json'] } }
-      if (!Array.isArray(rows)) return { signals: [], notes: ['not_json'] }
-      const notes = rows.length >= MAX_ROWS ? ['row_cap_reached'] : []
-      return { signals: permitSignals(d, m.category, rows.filter(isRecord), since), notes }
+    id: `socrata-permits:${d.id}`,
+    covers: c => caseMentions(c, 'where', d.where) && !!category(c),
+    async collect(c, since, http) {
+      const cat = category(c)
+      if (!cat || !caseMentions(c, 'where', d.where)) return { candidates: [], notes: ['not_covered'] }
+      const rows: Record<string, unknown>[] = [], notes: string[] = []
+      for (let p = 0; p < MAX_PAGES; p++) {
+        const res = await http(permitQuery(d, d.categories[cat], since, p), { accept: 'application/json' }).catch(() => null)
+        let page: unknown = null
+        const why = !res ? 'unreachable' : res.status !== 200 ? (res.status === 429 ? 'throttled' : `http_${res.status}`) : res.truncated ? 'oversize' : looksLikeHtml(res.body) ? 'not_json' : null
+        if (!why) try { page = JSON.parse(res!.body) } catch { page = null }
+        if (why || !Array.isArray(page)) {
+          notes.push(why ?? 'not_json')
+          if (!p) return { candidates: [], notes }   // nothing read: no records, the note says why
+          notes.push('partial'); break
+        }
+        rows.push(...page.filter(isRecord))
+        if (page.length < PAGE_ROWS) break
+        if (p === MAX_PAGES - 1) notes.push('row_cap_reached')
+      }
+      return { candidates: permitSignals(d, cat, rows, since, notes.length > 0).map(r => permitCandidate(d, cat, r)), notes }
     },
   }
 }
+export const austinPermitsSource = permitsSourceFor(AUSTIN_PERMITS)

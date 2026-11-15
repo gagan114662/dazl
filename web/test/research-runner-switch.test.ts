@@ -125,3 +125,28 @@ test('the ownership check runs between stages: a job another attempt took over m
     assert.equal(verifyCalls, 0, 'the checkpoint after company research stops the run before verify')
   } finally { onCompany = null }
 })
+
+test('a research scan runs the old engine\'s post-finish steps that apply to it: a company found by an earlier scan is flagged seen before', async () => {
+  const first = await scan('research')
+  const db = first.db
+  // the second scan of the same tenant on the same store: the same companies again
+  const id2 = createQueryJob(db, 'A', { query: 'Law firms in Chicago that opened a new office in the last 90 days', icp: JSON.stringify(ICP), offer: 'Legal intake software' } as never)
+  process.env.LEAD_ENGINE = 'research'
+  try {
+    const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => (p.includes('head of research') ? PLAN : '[]'), configuredModel: () => 'claude-sonnet-4-5' }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
+    await runJob(db, claimKeyedJob(db, id2)!, { providers: prov as never, master, fetchPage: (async () => null) as never, sourceHttp: (async () => null) as never, newsHttp: (async () => null) as never, crawlGet: async () => null, score: false })
+  } finally { delete process.env.LEAD_ENGINE }
+  const seen = db.prepare('SELECT company, seen_before FROM leads WHERE scan_job_id = ?').all(id2) as { company: string; seen_before: number | null }[]
+  // the store's own rule: a company LISTED (not held in review) by an earlier scan of this tenant is flagged
+  assert.equal(seen.find(l => l.company === 'Zayed Law')?.seen_before, 1, `the ready company of the first scan is flagged: ${JSON.stringify(seen)}`)
+})
+
+test('the search queue is fair across tenants: round-robin, so a second tenant never waits behind all of the first tenant\'s hunt', async () => {
+  let t = 0
+  const q = new SearchQueue(18, () => t, async ms => { t += ms })
+  const order: string[] = []
+  const go = (tenant: string, n: number) => q.slot(tenant).then(() => { order.push(`${tenant}${n}`) })
+  await Promise.all([go('A', 1), go('A', 2), go('A', 3), go('A', 4), go('B', 1), go('B', 2)])
+  assert.deepEqual(order, ['A1', 'A2', 'B1', 'A3', 'B2', 'A4'], 'B gets the next free slot after A starts, then they alternate')
+  assert.ok(Math.abs(t - 5 * 3333.33) < 2, `six slots, one gap apart: ${t}`)
+})

@@ -31,7 +31,10 @@ PINNED = {
     # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
     # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
     # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
-    'deploy-prod.sh': '66f5391fb8e87f0147d3109bf96118fbdfdcc243f0b32c186ab9bcae629deb9b',
+    # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
+    # this PR's files; Hermes installs them (check-installed.sh says so until then).
+    'deploy-prod.sh': 'a562aa3ad8613a01227c58927a4ab08fd1cafb37415710938ec0e95ca0a6a467',
+    'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
@@ -54,8 +57,31 @@ class RepoCopiesAreTheBoxCopies(unittest.TestCase):
     def test_the_scripts_are_executable_and_parse(self):
         for name in PINNED:
             self.assertTrue(os.access(HERE / name, os.X_OK), name)
-            parse = [sys.executable, '-m', 'py_compile'] if name.endswith('.py') else ['bash', '-n']   # check-pages.py is Python
+            parse = [sys.executable, '-m', 'py_compile'] if name.endswith('.py') else ['node', '--check'] if name.endswith('.mjs') else ['bash', '-n']   # check-pages.py is Python, check-hydration.mjs JavaScript
             self.assertEqual(subprocess.run([*parse, str(HERE / name)], capture_output=True, text=True).returncode, 0, name)
+
+    def test_the_new_release_is_checked_for_hydration_before_and_after_the_switch(self):
+        # #1116 (headless hydration check): statically, as above. The local smoke stops the spare and refuses to switch, and the public smoke after
+        # the switch rolls back, when check-hydration.mjs fails; it runs as the app user, fatal by default, never with the proof-only block.
+        src = (HERE / 'deploy-prod.sh').read_text()
+        self.assertIn('HYD=$HERE/check-hydration.mjs', src)
+        self.assertIn('for f in "$SELF" "$PULL" "$RUNNER" "$PAGES" "$HYD"; do', src)
+        fn = src[src.index('hydration_check() {'):]
+        fn = fn[:fn.index('\n}\n')]
+        self.assertIn('as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK', fn)
+        self.assertIn('8>&-', fn)
+        self.assertIn('[ "${PROD_HYDRATION_CHECK:-fatal}" = warn ]', fn)
+        local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
+        self.assertIn('hydration_check "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
+        self.assertIn('NOT switching', local[local.index('hydration_check "http://127.0.0.1:$NEW"'):])
+        self.assertIn('hydration_check "$PUBLIC_URL" 2 || fail_back', src)
+        # a rollback is never refused for it
+        for line in [l for l in src.splitlines() if 'hydration_check "' in l]:
+            self.assertNotIn('PREV_SHA', line); self.assertNotIn('OLD_SHA', line)
+
+    def test_a_bad_hydration_setting_is_refused(self):
+        r = subprocess.run(['bash', str(HERE / 'deploy-prod.sh'), 'a' * 40], env={'PATH': os.environ['PATH'], 'PROD_HYDRATION_CHECK': 'off'}, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1); self.assertIn('PROD_HYDRATION_CHECK must be fatal or warn', r.stdout + r.stderr)
 
     def test_both_smoke_steps_run_the_sign_up_pages_check(self):
         # #1116 acceptance 2. The happy path cannot run in this sandbox (see the module docstring), so this pins the wiring statically: the local smoke

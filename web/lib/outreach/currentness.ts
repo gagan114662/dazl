@@ -22,8 +22,12 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  // all still bound to the recorded proof. Model confidence alone never lifts this hold.
  // A research-verified lead (lib/research/proof.ts, MISSION v2): its event proven on the cited page by a literal quote and a second model, its
  // day stated there inside the window, a named person proven on their own page - all still bound to the lead as it is now. Fail closed.
+ let timingStands=false
+ try { timingStands=timingProofGap(db, tenant, lead, now)===null } catch { /* an unreadable proof store holds */ }
+ if (timingStands) return false
+ // read second, and it returns after one read for a lead the research proof never marked: the old engine's leads pay almost nothing
  try { if (researchProofGap(db, tenant, lead, now)===null) return false } catch { /* an unreadable research record never lifts the hold */ }
- try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
+ return true
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.
