@@ -161,3 +161,29 @@ test('review (opus): only http(s) pages are Candidates', async () => {
   const r = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], wait: async () => {} })
   assert.deepEqual(r.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://upliftsales.example/']); assert.equal(r.sources![0].dropped['unopenable host'], 3)
 })
+
+test('review (haiku): persistently failing posts cannot starve unsearched ones; an unanswered post query is retried; a deadline inside the source is `stopped`', async () => {
+  const mk = (url: string, title: string, snippet: string): { url: string; title: string; snippet: string; date: string | null } => ({ url, title, snippet, date: null })
+  // 1. 12 usable posts, derived searches for the 6 newest always fail, cap 6 per call: the other 6 are searched on call 2
+  const words = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliet', 'Kilo', 'Lima']
+  const posts = words.map((w, i) => mk(liPost(`h${i}`, `2026-10-${String(20 - i).padStart(2, '0')}`, `p${i}`), `${w} Agency Launches New Outbound Platform`, `${w} Agency announces a new outbound platform for agencies in Sydney this season`))
+  const searched: string[] = []
+  const search: SearchFn = async q => { if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: posts }; if (q.startsWith('site:')) return { ok: true, hits: [] }; searched.push(q.split(' ')[0]); return /^(Alpha|Bravo|Charlie|Delta|Echo|Foxtrot)/.test(q) ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
+  const sourceState = new Map<string, unknown>()
+  for (let call = 0; call < 3; call++) await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 6 })], sourceState, wait: async () => {}, concurrency: 1 })
+  assert.deepEqual(words.filter(w => !searched.includes(w)), [], 'every post was searched at least once (the 6 that always fail do not starve the 6 behind them)')
+  // 2. a post query that was never answered is sent again on the next call
+  const sent: string[] = []
+  let calls = 0
+  const flaky: SearchFn = async q => { if (q.startsWith('site:')) { sent.push(q); return ++calls === 1 ? { ok: true, hits: [] } : { ok: false, reason: 'error' } } return { ok: true, hits: [] } }
+  const st2 = new Map<string, unknown>()
+  await hunt(CASE, PLAN, flaky, { sources: [linkedinPostsSource()], sourceState: st2, wait: async () => {} })
+  const first = sent.length; calls = -100
+  await hunt(CASE, PLAN, flaky, { sources: [linkedinPostsSource()], sourceState: st2, wait: async () => {} })
+  assert.ok(sent.length - first >= 3, 'the post queries that failed were sent again')
+  // 3. a deadline that passes INSIDE the source (the clock runs out after the first post query is answered) stops the hunt
+  let siteCalls = 0
+  const dl = await hunt(CASE, PLAN, async q => { if (q.startsWith('site:')) siteCalls++; return q.startsWith('site:') ? { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] } : { ok: true, hits: [] } },
+    { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1, deadline: 1000, now: () => (siteCalls >= 1 ? 2000 : 0) })
+  assert.equal(dl.stopped, 'deadline'); assert.equal(siteCalls, 1, 'nothing more is sent once the deadline has passed')
+})

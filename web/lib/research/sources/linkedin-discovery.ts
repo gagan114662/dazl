@@ -33,7 +33,7 @@ export function guardedSearch(search: SourceSearch, o: SourceOpts = {}): { call:
     if (fatal) return { ok: false, reason: 'refused' }
     if (stop) return { ok: false, reason: stop }
     for (let attempt = 0; attempt <= (o.rateRetries ?? 18); attempt++) {
-      if (o.deadline && now() > o.deadline) { failed++; return { ok: false, reason: 'deadline' } }
+      if (o.deadline && now() > o.deadline) { failed++; stop = 'deadline'; return { ok: false, reason: 'deadline' } }
       sent++
       let r: Awaited<ReturnType<SourceSearch>>
       try { r = await search(q, after) } catch (e) { fatal = e; failed++; return { ok: false, reason: 'refused' } }
@@ -79,11 +79,12 @@ export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?:
     const dropped: Record<string, number> = {}
     const drop = (why: string, n = 1) => { dropped[why] = (dropped[why] ?? 0) + n }
     // 1. the posts (the index's own date for each is the post ID's); no author lookups: for discovery a company's post is as good as a person's
-    const posts = await linkedinPostCandidates(c, plan, { search: async (q, opts) => { const r = await g.call(q, opts.afterDate ?? after); return r.ok ? r.hits.map(h => ({ url: h.url, title: h.title ?? '', snippet: h.snippet ?? '', date: h.date ?? null } as IndexHit)) : null }, maxQueries: cfg.maxPostQueries ?? 6, maxResolve: 0, state })
+    const posts = await linkedinPostCandidates(c, plan, { search: async (q, opts) => { const r = await g.call(q, opts.afterDate ?? after); if (!r.ok) state.queries.delete(q.toLowerCase()); return r.ok ? r.hits.map(h => ({ url: h.url, title: h.title ?? '', snippet: h.snippet ?? '', date: h.date ?? null } as IndexHit)) : null }, maxQueries: cfg.maxPostQueries ?? 6, maxResolve: 0, state })
     // 2. one web search per post for what it says: the openable results are the candidates
     const out = new Map<string, Candidate>()
     const fresh = [...posts.candidates].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
     const ordered = [...state.pending, ...fresh]; state.pending = []
+    const retry: Candidate[] = []   // posts whose search failed: they wait AFTER the posts not yet searched, so a persistent failure cannot starve them
     let derivedSent = 0
     for (let i = 0; i < ordered.length; i++) {
       const p = ordered[i]
@@ -93,7 +94,7 @@ export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?:
       if (!q) { drop('too little text to search'); continue }
       if (state.derived.has(q.toLowerCase())) { drop('same search'); continue }
       const r = await g.call(q, after); derivedSent++
-      if (!r.ok) { drop(`search ${r.reason}`); state.pending.push(p); continue }   // not remembered as done: the next call retries it
+      if (!r.ok) { drop(`search ${r.reason}`); retry.push(p); continue }   // not remembered as done: the next call retries it, after the unsearched posts
       state.derived.add(q.toLowerCase())
       for (const h of r.hits.slice(0, 10)) {
         if (!openable(h.url)) { drop('unopenable host'); continue }
@@ -101,6 +102,7 @@ export const linkedinPostsSource = (cfg: { maxPostQueries?: number; maxDerived?:
         out.set(h.url, { url: h.url, title: h.title ?? '', snippet: (h.snippet ?? '').slice(0, 400), date: h.date ? h.date.slice(0, 10) : null, triggerId: p.triggerId, query: q, via: 'engager' })
       }
     }
+    state.pending.push(...retry)
     g.rethrow()   // a spend refusal stops the scan, as for the hunt's own queries
     const candidates = [...out.values()]
     return { candidates, stat: { id: 'linkedin-posts', in: posts.candidates.length, out: candidates.length, searches: g.sent(), failed: g.failed(), dropped }, ...(g.stopReason() ? { stopped: g.stopReason()! } : {}) }
