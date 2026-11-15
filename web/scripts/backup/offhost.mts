@@ -79,3 +79,17 @@ export function nameTime(name: string, prefix = 'dazl-backup-'): number | null {
   if (back.getUTCFullYear() !== +m[1] || back.getUTCMonth() !== +m[2] - 1 || back.getUTCDate() !== +m[3] || back.getUTCHours() !== +m[4] || back.getUTCMinutes() !== +m[5] || back.getUTCSeconds() !== +m[6]) return null
   return t
 }
+
+// The off-host retention policy (prune-backups.mts on the box, pull-offhost.mts on the operator machine): of copies named
+// with their timestamp, the newest `hourly`, plus the newest of each of the last `daily` UTC days and of each of the last
+// `weekly` ISO weeks. `copies` is [name, epoch ms], newest first.
+export function retainedCopies(copies: [string, number][], retain: { hourly: number; daily: number; weekly: number }): Set<string> {
+  const keep = new Set(copies.slice(0, retain.hourly).map(([b]) => b))
+  const day = (t: number) => new Date(t).toISOString().slice(0, 10)
+  const week = (t: number) => { const d = new Date(t); const wd = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - wd); return d.toISOString().slice(0, 10) } // Monday of the ISO week
+  for (const [bucket, n] of [[day, retain.daily], [week, retain.weekly]] as const) {
+    const seen = new Set<string>()
+    for (const [b, t] of copies) { const k = bucket(t); if (seen.has(k)) continue; seen.add(k); if (seen.size > n) break; keep.add(b) }
+  }
+  return keep
+}
