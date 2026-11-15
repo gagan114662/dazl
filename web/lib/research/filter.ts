@@ -90,9 +90,11 @@ export async function filterResults<T extends FilterCandidate>(cands: T[], targe
   const open = all.filter(f => f.reason !== 'unopenable_host')
   const chunks: Filtered[][] = []
   for (let i = 0; i < open.length; i += 20) chunks.push(open.slice(i, i + 20))
+  let stopped = false   // after a spend refusal no further call is made (the other workers would otherwise go on through the remaining chunks)
   await pmap(chunks, deps.concurrency ?? 3, async chunk => {
+    if (stopped) return
     let text = ''
-    try { text = await deps.ask(filterPrompt(target, chunk.map(f => f.candidate)), 900) } catch (e) { if (deps.isRefusal?.(e)) throw e; return }   // a failed call: those results keep no decision
+    try { text = await deps.ask(filterPrompt(target, chunk.map(f => f.candidate)), 900) } catch (e) { if (deps.isRefusal?.(e)) { stopped = true; throw e } return }   // a failed call: those results keep no decision
     parseFilterReply(text, chunk.length).forEach((d, i) => { if (d) { chunk[i].decision = d; chunk[i].model = 'claude' } })
   })
   for (const f of open) Object.assign(f, judge(f.decision))

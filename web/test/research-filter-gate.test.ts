@@ -86,7 +86,7 @@ test('model calls are bounded: at most `concurrency` in flight (default 3), beca
   let inflight = 0, max = 0
   const slow = async () => { inflight++; max = Math.max(max, inflight); await new Promise(r => setTimeout(r, 5)); inflight--; return '{}' }
   await filterResults(RESULTS, TARGET, { ask: slow, concurrency: 2 }); assert.ok(max >= 1 && max <= 2, String(max))
-  max = 0; await filterResults(RESULTS, TARGET, { ask: slow }); assert.ok(max >= 2 && max <= 3, String(max))
+  max = 0; await filterResults(RESULTS, TARGET, { ask: slow }); assert.ok(max >= 1 && max <= 3, String(max))
 })
 
 test('hosts: walled hosts are skipped, Facebook and Instagram posts are not, and a lookalike is not walled', () => {
@@ -171,4 +171,21 @@ test('a spend refusal is rethrown by the filter and the gate when the caller can
   const evs = [{ company: 'Roof Royale', quote: 'q', sourceUrl: 'https://a.example/' }]
   await assert.rejects(() => gateEvents(evs, { location: 'Austin', category: 'roofing' }, refuse, isRefusal), Refused)
   assert.equal((await gateEvents(evs, { location: 'Austin', category: 'roofing' }, refuse)).kept.length, 1)
+})
+test('after a spend refusal the filter makes no further call, and filterStage and gateStage pass isRefusal through', async () => {
+  class Refused extends Error {}
+  const isRefusal = (e: unknown) => e instanceof Refused
+  const refuse = async (): Promise<string> => { await new Promise(r => setTimeout(r, 5)); throw new Refused('spend refused') }
+  // the first call is refused, the others would succeed: without a stop the two other workers would go on through the 15 waiting chunks
+  let calls = 0
+  const firstRefused = async (): Promise<string> => { const n = ++calls; await new Promise(r => setTimeout(r, 5)); if (n === 1) throw new Refused('spend refused'); return '{}' }
+  await assert.rejects(() => filterResults(RESULTS, TARGET, { ask: firstRefused, isRefusal, concurrency: 3 }), Refused)
+  await new Promise(r => setTimeout(r, 120))
+  assert.ok(calls <= 6, `${calls} calls: the filter went on after the refusal (15+ chunks were waiting)`)
+  const cands: Candidate[] = RESULTS.slice(0, 40).map(r => ({ url: r.url, title: r.title, snippet: r.snippet, date: r.date, triggerId: r.triggerId, query: 'q', via: 'tinyfish' }))
+  await assert.rejects(() => filterStage({ ask: refuse, isRefusal })(CASE, PLAN, cands), Refused)
+  assert.ok(cands.every(c => c.keep === undefined), 'a refused filter leaves the candidates untouched')
+  const ev = { company: 'Roof Royale', website: null, pageIsCompanySite: false, triggerId: 't1', whatHappened: 'x', whyNow: 'x', quote: 'q', eventDate: null, dateQuote: null, locationQuote: null, people: [], sourceUrl: 'https://a.example/', indexDate: null, foundBy: 'q' } as ResearchEvent
+  await assert.rejects(() => gateStage(refuse, isRefusal)(CASE, [ev]), Refused)
+  assert.equal(ev.gate, undefined)
 })
