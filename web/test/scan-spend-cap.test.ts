@@ -201,7 +201,7 @@ bothEngines('scan spend cap: the owner retry of a held lookup draws on its own s
   await assert.rejects(runWithJobSpend(db, B, 'j1', () => reserveScanSpend('apollo.org', () => 0.01)), refusedWith('scan_not_found'))
   for (const rb of ['not json', '[]', 'null', '{"max_usd":"5"}']) {
     await job(db, `jr${rb.length}`, A, { status: 'done', runBudget: rb })
-    assert.ok(await runWithJobSpend(db, A, `jr${rb.length}`, () => reserveScanSpend('apollo.org', () => 3)), rb)
+    assert.ok(await runWithJobSpend(db, A, `jr${rb.length}`, () => reserveScanSpend('apollo.org', () => 0.5)), rb)   // above the 0.3 a valid budget would set; small enough for the account's default day cap (#1167 counts it)
   }
   assert.deepEqual((await scanSpendCalls(db, 'j1', A)).map(c => `${c.attempt}:${c.status}`).sort(), ['3:refused', '3:reserved'])
 })

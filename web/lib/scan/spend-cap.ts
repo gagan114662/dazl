@@ -224,6 +224,11 @@ export type UncappedReason = 'offline_eval' | 'test'
 const uncappedStore = new AsyncLocalStorage<UncappedReason>()
 export function runWithoutAccountSpend<T>(reason: UncappedReason, fn: () => Promise<T>): Promise<T> { return uncappedStore.run(reason, fn) }
 const isModel = (kind: string) => kind === 'llm.anthropic' || kind === 'llm.openai'
+// #1167: the account windows a paid step of a scan is counted on. A model call: the scan's accountLimits (null = the runner's own PooledGuard
+// already counts it for an operator-named account, so it is never counted twice). Every OTHER priced step (TinyFish search / fetch past the
+// free allowance, render, the BYOK Apollo / PDL lookups): the same windows, or the named account's own entry when the runner guards its
+// models itself (the PooledGuard counts models only). A free step (US$0) moves no window.
+const windowsFor = (ctx: ScanSpendCtx, kind: string): PoolLimits | null => (isModel(kind) ? ctx.accountLimits : ctx.accountLimits ?? ownerLimits(ctx.tenantId))
 // Runs fn with the scan's spend context: every gated paid call inside it (awaited or not) reserves on this scan.
 export function runWithScanSpend<T>(ctx: ScanSpendCtx, fn: () => Promise<T>): Promise<T> { return store.run(ctx, fn) }
 export function scanSpendContext(): ScanSpendCtx | undefined { return store.getStore() }
@@ -299,12 +304,15 @@ const newId = () => randomBytes(10).toString('hex')
 // recorded as the refusal.
 export async function reserveScanSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
   const ctx = store.getStore()
-  if (!ctx) return isModel(kind) ? reserveAccountSpend(kind, cost) : null
+  // Outside a scan: a model call needs an account context (or the named escape hatch); a non-model step is counted on the account's windows
+  // when it runs inside one (#1167), and is otherwise bounded by its own vendor caps (TinyFish's tenant / global daily caps).
+  if (!ctx) return isModel(kind) ? reserveAccountSpend(kind, cost) : accountStore.getStore() ? reserveAccountSpend(kind, cost) : null
   if (uncertainAttempts.has(ctx)) throw new SpendRefused('accounting_uncertain')
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const vendor = VENDOR_SCOPED_REJECTION[kind]
   if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('vendor_rejected') // its own reason: THIS vendor refused, not the scan's providers
-  if (isModel(kind) && (ctx as { accountLimits?: unknown }).accountLimits === undefined) throw new SpendRefused('account_limits_missing')
+  // #1167: a scan context opened without its account limits (a cast, a JS caller) spends NOTHING, model or not.
+  if ((ctx as { accountLimits?: unknown }).accountLimits === undefined) throw new SpendRefused('account_limits_missing')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -326,10 +334,12 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
       // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
       // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
       if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON
+      // a free step moves no window but is still refused once a window is at its cap (an account at its limit sends nothing)
       const acct = ctx.accountLimits ?? ownerLimits(ctx.tenantId)
-      if (!why && !isModel(kind) && acct && (yield* poolWindowsFull(t, ctx.tenantId, acct, at))) why = OWNER_POOL_LIMIT_REASON
-      // #846/#847: the owner's day/month caps first, in this same transaction; refused there, the scan's cap is untouched.
-      const pool = !why && isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
+      if (!why && usd === 0 && !isModel(kind) && acct && (yield* poolWindowsFull(t, ctx.tenantId, acct, at))) why = OWNER_POOL_LIMIT_REASON
+      // #846/#847 + #1167: the owner's day/month caps first, in this same transaction, for EVERY priced step; refused there, the scan's cap is untouched.
+      const windows = windowsFor(ctx, kind)
+      const pool = !why && windows && (isModel(kind) || usd > 0) ? windows : null
       if (pool && !(yield* reservePoolWindows(t, ctx.tenantId, pool, usd, at))) why = OWNER_POOL_LIMIT_REASON
       if (!why) {
         // claimed_at is refreshed with the reservation FROM THE DATABASE CLOCK inside the statement: a live attempt holding a
@@ -373,7 +383,8 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   }
   if (refused === OWNER_POOL_LIMIT_REASON) accountStopped.add(ctx)
   if (refused) throw new SpendRefused(refused)
-  const pooled = isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
+  const w = windowsFor(ctx, kind)
+  const pooled = w && (isModel(kind) || usd > 0) ? w : null
   let done = false
   return {
     id, kind, usd,
@@ -441,8 +452,9 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
     if (uncappedStore.getStore()) return null
     throw new SpendRefused('no_spend_context')
   }
-  if (!a.limits) return null
-  const limits = a.limits
+  // limits null = an operator-named account whose PooledGuard counts its MODEL calls; its other priced steps are counted on its own entry (#1167)
+  const limits = a.limits ?? (isModel(kind) ? null : ownerLimits(a.tenantId))
+  if (!limits) return null
   if (unsettledAccounts.has(a)) throw new SpendRefused('accounting_unsettled')
   const db = asDb(a.db)
   const now = a.clock ?? (() => Math.floor(Date.now() / 1000))
@@ -451,12 +463,14 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
   try { usd = cost() } catch (e) { throw e instanceof SpendRefused ? e : new SpendRefused('cost_invalid') }
   if (!(typeof usd === 'number' && Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('cost_invalid')
   let ok: boolean
-  try { ok = await db.tx(function* (t: Tx): TxBody<boolean> { return yield* reservePoolWindows(t, a.tenantId, limits, usd, at) }) } catch (e) {
+  // #1167: a free step moves no window, but an account already at its day or month cap sends nothing, free or not
+  try { ok = await db.tx(function* (t: Tx): TxBody<boolean> { return usd === 0 && !isModel(kind) ? !(yield* poolWindowsFull(t, a.tenantId, limits, at)) : yield* reservePoolWindows(t, a.tenantId, limits, usd, at) }) } catch (e) {
     // The store did not answer: no reservation exists, so the call must not happen.
     captureError(e, { source: 'worker', where: 'account-spend-cap:reserve', tenantId: a.tenantId })
     throw new SpendRefused('reservation_not_saved')
   }
   if (!ok) throw new SpendRefused(OWNER_POOL_LIMIT_REASON)
+  if (usd === 0 && !isModel(kind)) return null // free: nothing reserved, nothing to settle
   let done = false
   return {
     id: newId(), kind, usd,

@@ -89,12 +89,16 @@ bothEngines('#846 inside a scan: a model call of an account without an entry res
   assert.deepEqual((await scanSpendCalls(db, 'j1', A)).map(c => `${c.status}:${c.reason}`).sort(), ['refused:owner_pool_limit', 'settled:null'])
   // #1167: the account limit refused a step of this attempt, so the attempt sends nothing more, not a render either.
   await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('render', () => 0.45)), refusedWith('owner_pool_limit'))
-  // A new attempt of the same scan, the windows under their caps: a step that is not a model call is held by the scan cap only.
-  await runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 0.45))
-  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.1, 0.1, 1], ['m:2026-11', 0.1, 0.1, 1]])
+  // A new attempt of the same scan, the windows under their caps: a priced step that is not a model call is counted on the windows too (#1167)...
+  const r = await runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 0.3))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.1, 2], ['m:2026-11', 0.4, 0.1, 2]])
+  // ...settles with its vendor cost like a model call, and one that would pass the day cap is refused
+  await r!.settle(0.3)
+  await assert.rejects(runWithScanSpend({ ...ctx }, () => reserveScanSpend('tinyfish.search', () => 0.2)), refusedWith('owner_pool_limit'))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.4, 2], ['m:2026-11', 0.4, 0.4, 2]], 'the refused search moved nothing')
   // The scan's own cap refusing releases the windows it would have taken, in the same transaction.
   await assert.rejects(runWithScanSpend({ ...ctx, accountLimits: { day: 50, month: 100 } }, () => reserveScanSpend('llm.anthropic', () => 3.3)), refusedWith('over_cap'))
-  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.1, 0.1, 1], ['m:2026-11', 0.1, 0.1, 1]], 'released')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.4, 2], ['m:2026-11', 0.4, 0.4, 2]], 'released')
   // Tenant scope: B's windows are its own.
   await job(db, 'j2', B)
   await runWithScanSpend(scanCtx(db, 'j2', B, { accountLimits: { day: 0.5, month: 100 } }), () => reserveScanSpend('llm.openai', () => 0.45))
@@ -127,6 +131,45 @@ bothEngines('#847 outside a scan: the month cap refuses across days while each d
   // An operator-named account (limits null: its PooledGuard reserved): the transport adds nothing.
   assert.equal(await runWithAccountSpend({ db, tenantId: B, limits: null }, () => reserveScanSpend('llm.anthropic', () => 0.5)), null)
   assert.deepEqual(await rows(db, B), [])
+})
+
+bothEngines('#1167 outside a scan, in an account context: every priced step counts on the day / month windows, a free one moves nothing, and an account at its cap sends nothing (free steps too)', async ({ db }) => {
+  const acct = <T>(fn: () => Promise<T>) => runWithAccountSpend({ db, tenantId: A, limits: { day: 0.5, month: 10 }, clock: () => T0 }, fn)
+  const r = await acct(() => reserveScanSpend('render', () => 0.2))
+  await r!.settle(0.2)
+  await acct(() => reserveScanSpend('tinyfish.search', () => 0.1))
+  await acct(() => reserveScanSpend('apollo.people', () => 0.1))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.2, 3], ['m:2026-11', 0.4, 0.2, 3]])
+  assert.equal(await acct(() => reserveScanSpend('tinyfish.fetch', () => 0)), null, 'a free step: no hold')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.4, 0.2, 3], ['m:2026-11', 0.4, 0.2, 3]], 'the free step moved nothing')
+  await assert.rejects(acct(() => reserveScanSpend('pdl.people', () => 0.2)), refusedWith('owner_pool_limit'))
+  await acct(() => reserveScanSpend('llm.anthropic', () => 0.1)) // exactly to the cap
+  await assert.rejects(acct(() => reserveScanSpend('tinyfish.search', () => 0)), refusedWith('owner_pool_limit'), 'at the cap a free step is refused too')
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.5, 0.2, 4], ['m:2026-11', 0.5, 0.2, 4]])
+  // Outside both a scan and an account, a non-model step is not on any account (TinyFish's own tenant / global counts bound it).
+  assert.equal(await reserveScanSpend('render', () => 0.5), null)
+})
+
+bothEngines('#1167 an operator-named account (limits null: its PooledGuard counts its models): its other priced steps count on its own entry, in a scan and outside one', async ({ db }) => {
+  const prevD = process.env.DAZL_RUN_MAX_USD_USERS, prevM = process.env.DAZL_OWNER_MONTH_MAX_USD_USERS
+  process.env.DAZL_RUN_MAX_USD_USERS = `${B}:0.5`; process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = `${B}:20`
+  try {
+    // a model call is the PooledGuard's: the transport adds nothing
+    assert.equal(await runWithAccountSpend({ db, tenantId: B, limits: null, clock: () => T0 }, () => reserveScanSpend('llm.anthropic', () => 0.3)), null)
+    assert.deepEqual(await rows(db, B), [])
+    await runWithAccountSpend({ db, tenantId: B, limits: null, clock: () => T0 }, () => reserveScanSpend('render', () => 0.3))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]])
+    await job(db, 'jn', B)
+    const ctx = scanCtx(db, 'jn', B, { accountLimits: null })
+    await runWithScanSpend(ctx, () => reserveScanSpend('llm.openai', () => 0.4))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'the model call is not counted twice')
+    await runWithScanSpend(ctx, () => reserveScanSpend('tinyfish.fetch', () => 0.1))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.4, 0, 2], ['m:2026-11', 0.4, 0, 2]])
+    await assert.rejects(runWithScanSpend(ctx, () => reserveScanSpend('apollo.org', () => 0.2)), refusedWith('owner_pool_limit'))
+  } finally {
+    if (prevD === undefined) delete process.env.DAZL_RUN_MAX_USD_USERS; else process.env.DAZL_RUN_MAX_USD_USERS = prevD
+    if (prevM === undefined) delete process.env.DAZL_OWNER_MONTH_MAX_USD_USERS; else process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = prevM
+  }
 })
 
 bothEngines('#846 a store that does not answer refuses the call (reservation_not_saved), on the account path too', async ({ db }) => {
@@ -242,14 +285,14 @@ bothEngines('#1154 XHawk: an account-path settle that fails twice is captured an
 
 // #1167 item 2: accountLimits is required on a scan context. A context opened without it (a cast, a JS caller, a future helper that
 // forgets the field) used to run its model calls under the per-scan cap only, with no error. Now every model call in it is refused.
-bothEngines('#1167 a scan context opened WITHOUT accountLimits refuses a model call (account_limits_missing); a non-model call is unaffected; null (the PooledGuard path) still reserves on the scan cap only', async ({ db }) => {
+bothEngines('#1167 a scan context opened WITHOUT accountLimits spends NOTHING (model, search, fetch, render, enrichment: account_limits_missing); null (the PooledGuard path) still lets a model call through the scan cap only', async ({ db }) => {
   await job(db, 'j1', A)
   const bare = { db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), clock: () => T0 } as unknown as ScanSpendCtx
-  await assert.rejects(runWithScanSpend(bare, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('account_limits_missing'))
-  const render = await runWithScanSpend(bare, () => reserveScanSpend('render', () => 0.01))
-  assert.ok(render, 'a non-model kind never reached the account windows, so it is not refused for them')
+  for (const k of ['llm.anthropic', 'llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'render', 'apollo.people', 'pdl.people'] as const)
+    await assert.rejects(runWithScanSpend(bare, () => reserveScanSpend(k, () => 0.01)), refusedWith('account_limits_missing'), k)
+  assert.equal((await scanSpendRow(db, 'j1', A))!.spend_cap_reserved_usd, 0, 'nothing reserved')
   const pooled = await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: null }), () => reserveScanSpend('llm.anthropic', () => 0.01))
-  assert.ok(pooled); assert.deepEqual(await rows(db, A), [], 'null: the runner\'s PooledGuard counts the account, the transport writes no window')
+  assert.ok(pooled); assert.deepEqual(await rows(db, A), [], 'null: the runner\'s PooledGuard counts the account\'s models, the transport writes no window')
 })
 
 // #1167 (owner decision): an account at its day or month cap sends nothing. A paid step that is not itself counted on the windows
