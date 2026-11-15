@@ -1,0 +1,38 @@
+{
+ "_note": "Real record answers of the two open-data APIs E cites (15 Nov 2026), trimmed to the fields rendered; the Austin permit_location replaced by a synthetic address, phones and applicant fields dropped, nothing else edited.",
+ "austin_url": "https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-121002+BP",
+ "austin": [
+  {
+   "permit_number": "2026-121002 BP",
+   "permit_type_desc": "Building Permit",
+   "issue_date": "2026-09-17T00:00:00.000",
+   "permit_location": "100 EXAMPLE ST",
+   "description": "Re-roof",
+   "contractor_trade": "General Contractor",
+   "contractor_company_name": "Precision Reconstruction Group",
+   "contractor_full_name": "Ryan Curtis"
+  }
+ ],
+ "vancouver_url": "https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences/records?where=licencenumber%3D%2226-210140%22&limit=5",
+ "vancouver": {
+  "total_count": 1,
+  "results": [
+   {
+    "folderyear": "26",
+    "licencenumber": "26-210140",
+    "businessname": "Andre Skewers Souvlaki Pita Bar Ltd",
+    "businesstradename": "Skewers Souvlaki Pita Bar",
+    "status": "Issued",
+    "issueddate": "2026-09-28T15:38:00+00:00",
+    "businesstype": "Restaurant",
+    "businesssubtype": "Class 1 with liquor service",
+    "unit": null,
+    "house": "1851",
+    "street": "COMMERCIAL DRIVE",
+    "city": "Vancouver",
+    "province": "BC",
+    "localarea": "Grandview-Woodland"
+   }
+  ]
+ }
+}
