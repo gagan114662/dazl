@@ -129,18 +129,23 @@ export function workEmailsForLeads(db: Database.Database, tenantId: string, lead
 // lead, except the test-only fixture lead, whose answer is adjusted exactly as its own GET does) and the stored lookups by lead.
 // guesses (#1036): the shown guessed addresses by lead (flag off or none: {}), so a reload shows a stored guess with no per-lead request.
 export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, GuessView[]> }
+// The test-only fixture lead never calls Apollo and runs its saved PDL key (the staging fake) regardless of the opt-in and the paid-vendor policy.
+export const fixtureProviders = (p: WorkEmailProviders, env: Record<string, string | undefined> = process.env): WorkEmailProviders =>
+  ({ ...p, apollo: false, pdl: !!(p.saved?.pdl || p.saved?.pdlNeedsOptIn) && (workEmailFixtureFakesOn(env) || paidVendorOn('pdl', env)), pdlNeedsOptIn: false, policyOff: null })
+
 export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
-  // Refs #1099: what the leads page offers is what can run: a saved Apollo / PDL key the paid-vendor policy keeps off is not offered
-  const saved = workEmailProviders(db, tenantId, env)
-  const providers = { ...saved, apollo: saved.apollo && paidVendorOn('apollo', env), pdl: saved.pdl && (paidVendorOn('pdl', env) || workEmailFixtureFakesOn(env)) }
+  const providers = workEmailProviders(db, tenantId, env)
   const providers_by_lead: Record<string, WorkEmailProviders> = {}
-  for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
+  for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = fixtureProviders(providers, env)
   return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)), guesses: guessesForLeads(db, tenantId, leads.map(l => l.id), env) }
 }
 
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
 // mailboxCheck (#1036): the free-tier mailbox check can run at all here (flag, key and both caps set), so the UI offers it.
-export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean }
+// apollo / pdl / pdlNeedsOptIn: what can run, after the paid-vendor policy (Refs #1099, lib/paid-vendors.ts). saved: the keys as saved (the
+// staging fixture's fake PDL costs nothing and uses it). policyOff: a saved key the policy keeps off (the vendor named first), so every
+// surface says why instead of "add your own key".
+export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean; saved?: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }; policyOff?: 'apollo' | 'pdl' | null }
 export function workEmailProviders(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): WorkEmailProviders {
   const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
   const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
@@ -154,7 +159,12 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
       if (used >= verifyMonthlyCap(env)) mailboxCheck = false
     } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
   }
-  return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
+  const apolloOn = paidVendorOn('apollo', env), pdlOn = paidVendorOn('pdl', env)
+  return {
+    apollo: apollo && apolloOn, pdl: pdlSaved && optIn && pdlOn, pdlNeedsOptIn: pdlSaved && !optIn && pdlOn, mailboxCheck,
+    saved: { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn },
+    policyOff: apollo && !apolloOn ? 'apollo' : pdlSaved && !pdlOn ? 'pdl' : null,
+  }
 }
 
 // guess (#1036): with EMAIL_GUESS_ENABLED, when nothing was found for this person ('not_found', or no key to look further), an address
@@ -303,22 +313,21 @@ async function lookupWorkEmail(
   // is not finished: it ends retryable ('error'), never as a final 'not found' / 'rejected' / 'not_us'.
   const notes: string[] = []
   let incomplete = false
-  const allowed = workEmailProviders(db, tenantId)
+  const env = deps.env ?? process.env
+  const allowed = workEmailProviders(db, tenantId, env)
   // The fixture never uses Apollo, so the opt-in that only gates PDL-after-Apollo does not apply to it: its saved PDL key runs.
-  const pdlAllowed = fixture ? allowed.pdl || allowed.pdlNeedsOptIn : allowed.pdl
+  // the fixture's fake PDL costs nothing: it runs on the SAVED key whatever the policy (lib/paid-vendors.ts)
+  const pdlAllowed = fixture ? !!(allowed.saved?.pdl || allowed.saved?.pdlNeedsOptIn) && (workEmailFixtureFakesOn(env) || paidVendorOn('pdl', env)) : allowed.pdl
   const pdlOff = !fixture && allowed.pdlNeedsOptIn
   const loadKey = (c: string, P: string): string | null => {
     try { const k = getEnabledCredential(db, tenantId, c, deps.master); if (typeof k === 'string' && k) return k } catch { /* recorded below */ }
     notes.push(`${P} key could not be read`); incomplete = true; return null
   }
-  // Refs #1099 (lib/paid-vendors.ts): Apollo and PDL are paid per call, so a saved key is used only when the operator named the vendor in
-  // DAZL_PAID_VENDORS. The staging fixture's fake PDL costs nothing and stays as it was.
-  const env = deps.env ?? process.env
-  const apolloOn = paidVendorOn('apollo', env), pdlOn = fixture || paidVendorOn('pdl', env)
-  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture && apolloOn ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed && pdlOn ? loadKey('enrich:pdl', 'People Data Labs') : null }
+  // Refs #1099: allowed already applies the paid-vendor policy (workEmailProviders); a saved key it keeps off says so
+  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
-    if ((allowed.apollo && !fixture && !apolloOn) || (pdlAllowed && !pdlOn)) return { status: 'no_key', detail: `${paidVendorOffNote(allowed.apollo && !fixture && !apolloOn ? 'apollo' : 'pdl')}; only an address printed on the company's own website is used` }
+    if (allowed.policyOff && !fixture) return { status: 'no_key', detail: `${paidVendorOffNote(allowed.policyOff)}; only an address printed on the company's own website is used` }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
   }
   const foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].filter(c => c !== 'US')

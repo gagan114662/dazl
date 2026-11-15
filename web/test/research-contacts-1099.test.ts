@@ -91,10 +91,14 @@ test('guesses off (the default): no DNS lookup and no guess; one MX lookup per d
   let n = 0
   await saveResearchContacts(b.db, b.jobId, [lead([]), second], { mx: async () => { n++; return true }, env: ON })
   assert.equal(n, 1)
-  // a site on a subdomain keeps the address at its parent domain (the rule company research uses)
+  // a site on a hosting platform's subdomain never takes the platform's address (council round 2)
   const c = seed()
-  const sub = { ...lead([{ email: 'info@kestreldental.example', url: `${SITE}/contact` }]) }
-  sub.company = { ...sub.company, site: 'https://book.kestreldental.example' }
+  const sub = { ...lead([{ email: 'hello@webflow.example', url: 'https://kestrel.webflow.example/contact' }, { email: 'info@kestrel.webflow.example', url: 'https://kestrel.webflow.example/contact' }]) }
+  sub.company = { ...sub.company, site: 'https://kestrel.webflow.example' }
   await saveResearchContacts(c.db, c.jobId, [sub], { mx: async () => true, env: {} })
-  assert.deepEqual(emailRows(c.db).map(r => r[0]), ['info@kestreldental.example'])
+  assert.deepEqual(emailRows(c.db).map(r => r[0]), ['info@kestrel.webflow.example'])
+  // the MX budget spent: no lookup, no guess, counted apart from "takes no mail"
+  const d = seed(); learn(d.db); let calls = 0
+  const rd = await saveResearchContacts(d.db, d.jobId, [lead([])], { mx: async () => { calls++; return true }, mxBudgetMs: -1, env: ON })
+  assert.deepEqual([calls, rd.mx_skipped, rd.no_mx, rd.guessed], [0, 1, 0, 0])
 })

@@ -1,3 +1,4 @@
+import { PAID_VENDOR_OFF } from '../paid-vendors.ts'
 // One plain sentence per recorded provider failure, for the scan view. Pure text: this module is
 // imported by the browser bundle, so it must never pull the data layer or any server-only import.
 // 'auth' names the key as the thing to fix; nothing here guesses WHY a provider rate-limited or errored.
@@ -18,7 +19,7 @@ export const SPEND_REFUSAL_PREFIX = 'spend refused: '
 export const NO_KEY_STATUS = 'no_key' as const
 // Refs #1099 (lib/paid-vendors.ts): Apollo / People Data Labs not called because dazl uses no paid third-party service by default. Recorded
 // once per scan on the shared 'enrich' connector. Not a failure: nothing was tried.
-export const PAID_VENDOR_OFF_STATUS = 'paid_vendor_off' as const
+export const PAID_VENDOR_OFF_STATUS = PAID_VENDOR_OFF   // one string, defined once (lib/paid-vendors.ts)
 export type EnrichSkipStatus = (typeof ENRICH_SKIP_STATUSES)[number]
 
 export interface ProviderIssue {

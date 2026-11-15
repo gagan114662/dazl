@@ -38,10 +38,10 @@ export function isTheirs(email: string, person: string): boolean {
   return TWO_NAME.some(f => localFor(f, n) === local)
 }
 
-export interface ContactsResult { published: number; guessed: number; no_mx: number; leads: number }
+export interface ContactsResult { published: number; guessed: number; no_mx: number; mx_skipped: number; leads: number }
 
 export async function saveResearchContacts(db: Database.Database, jobId: string, leads: VerifiedLead[], o: { mx?: MxLookup; mxBudgetMs?: number; env?: Record<string, string | undefined>; now?: Date } = {}): Promise<ContactsResult> {
-  const out: ContactsResult = { published: 0, guessed: 0, no_mx: 0, leads: 0 }
+  const out: ContactsResult = { published: 0, guessed: 0, no_mx: 0, mx_skipped: 0, leads: 0 }
   const job = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string } | undefined
   if (!job) return out
   const byKey = new Map(leads.map(l => [key(l.event.sourceUrl, l.event.company), l]))
@@ -49,9 +49,10 @@ export async function saveResearchContacts(db: Database.Database, jobId: string,
   const today = now.toISOString().slice(0, 10), at = Math.floor(now.getTime() / 1000)
   const mx = o.mx ?? mxLookup
   // one MX lookup per domain per scan, and all of them inside one budget: the scan is already 'done', this must not hold it open
-  const mxSeen = new Map<string, Promise<boolean>>()
+  const mxSeen = new Map<string, Promise<boolean | null>>()
   const mxBy = o.mxBudgetMs ?? MX_BUDGET_MS, mxStart = Date.now()
-  const takesMail = (d: string): Promise<boolean> => { let p = mxSeen.get(d); if (!p) { p = Date.now() - mxStart > mxBy ? Promise.resolve(false) : mx(d); mxSeen.set(d, p) } return p }
+  // null: the budget was spent before this domain was asked (no guess; counted apart from a domain that takes no mail)
+  const takesMail = (d: string): Promise<boolean | null> => { let p = mxSeen.get(d); if (!p) { p = Date.now() - mxStart > mxBy ? Promise.resolve(null) : mx(d); mxSeen.set(d, p) } return p }
   const guessing = emailGuessEnabled(o.env)
   for (const row of db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(jobId) as { id: string; company: string; source_url: string }[]) {
     const l = byKey.get(key(row.source_url, row.company))
@@ -60,8 +61,8 @@ export async function saveResearchContacts(db: Database.Database, jobId: string,
     const site = host(l.company.site)
     const person = l.verification.personOk ? l.company.person : null
     // 1. published: only the company's own domain (company.ts keeps only those), with the page it was printed on
-    // the same own-domain rule as company research (company.ts ownEmails): the site, its subdomains, or the domain the site is a subdomain of
-    const atSite = (email: string) => { const d = (email.split('@')[1] ?? '').toLowerCase(); return !!site && !!d && (d === site || d.endsWith(`.${site}`) || site.endsWith(`.${d}`)) }
+    // the site or its subdomains only: a parent domain can be a hosting platform's (acme.webflow.io is not webflow.io), so it is not the company's
+    const atSite = (email: string) => { const d = (email.split('@')[1] ?? '').toLowerCase(); return !!site && !!d && (d === site || d.endsWith(`.${site}`)) }
     const mine = l.company.emails.filter(e => atSite(e.email)).slice(0, MAX_PUBLISHED)
     for (const e of mine) {
       const theirs = !!person && isTheirs(e.email, person.name)
@@ -73,7 +74,9 @@ export async function saveResearchContacts(db: Database.Database, jobId: string,
     // 2. the named person without an address of their own: one guess from the workspace's learned format, only for a domain that takes mail
     // (guesses are off unless EMAIL_GUESS_ENABLED=1, as everywhere: no DNS lookup is made then)
     if (guessing && person && site && !mine.some(e => isTheirs(e.email, person.name))) {
-      if (!(await takesMail(site))) { out.no_mx++; continue }
+      const mail = await takesMail(site)
+      if (mail === null) { out.mx_skipped++; continue }
+      if (!mail) { out.no_mx++; continue }
       try { if (guessFromLearnedFormat(db, job.user_id, row.id, { name: person.name, title: person.title }, site, [], o.env)) out.guessed++ } catch { /* a guess is a bonus */ }
     }
   }

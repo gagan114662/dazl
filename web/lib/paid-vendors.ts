@@ -24,7 +24,7 @@ export const paidVendorOn = (v: PaidVendor, env: Record<string, string | undefin
 // The one sentence every skipped call records (an audit row, a trace note): why nothing was asked of the vendor.
 export const paidVendorOffNote = (v: PaidVendor): string => `${NAMES[v]} not called: dazl uses no paid third-party service by default (DAZL_PAID_VENDORS)`
 // The status a skipped call writes where a status column exists (short, stable, greppable)
-export const PAID_VENDOR_OFF = 'paid_vendor_off'
+export const PAID_VENDOR_OFF = 'paid_vendor_off' as const
 
 // The model vendor dazl may call for a tenant, from its saved keys newest first: Claude always; OpenAI only when the operator named
 // 'openai'. Every place that picks "the tenant's key" uses this, so no feature quietly keeps calling OpenAI.

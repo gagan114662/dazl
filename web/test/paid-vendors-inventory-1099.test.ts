@@ -7,7 +7,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 const ROOT = join(import.meta.dirname, '..')
-const PAID = /from '[^']*(?:enrich\/apollo|enrich\/pdl|people\/zerobounce|scrape\/jina|\.\/apollo|\.\/pdl|\.\/zerobounce)(?:\.ts)?'|r\.jina\.ai|tenant_llm_keys|\bkeyStatus\(|\breadKeyStatus\(/
+// a paid client, a paid host named in code, or a module that CHOOSES a model vendor itself (reads the key table or keyStatus directly, or asks
+// for an OpenAI key / provider by name). Calling an already-gated selector (pickVendor, defaultVendor, hasKey, readHasKey, usableVendor) is
+// not choosing (council round 2).
+const PAID = /from '[^']*(?:enrich\/apollo|enrich\/pdl|people\/zerobounce|scrape\/jina|\.\/apollo|\.\/pdl|\.\/zerobounce)(?:\.ts)?'|import\('[^']*(?:enrich\/apollo|enrich\/pdl|people\/zerobounce|scrape\/jina)|r\.jina\.ai|api\.openai\.com|tenant_llm_keys|\b(?:keyStatus|readKeyStatus)\(|\b(?:readKey|getKey|fetchKey|readTenantKey)\([^)]*'openai'|providers(?:\.openai|\[\s*'openai'\s*\])/
 // modules that match but never decide whether a paid vendor is called
 const EXEMPT: Record<string, string> = {
   'lib/enrich/pdl.ts': 'the PDL client itself; every caller is gated',
@@ -18,6 +21,9 @@ const EXEMPT: Record<string, string> = {
   'lib/queue/scan-claimer.ts': 'claims a pending job of a keyed tenant; intake (hasKey) is gated, the runner picks the vendor',
   'lib/scan/queue-runner.ts': 'claims a pending job of a keyed tenant; intake (hasKey) is gated, the runner picks the vendor',
   'lib/scan/worker.ts': 'checks the tables exist and whether work is pending; chooses nothing',
+  'lib/llm/provider.ts': 'the model clients themselves; which one runs is chosen by the gated selectors (usableVendor)',
+  'lib/llm/vendors.ts': 'checks a key with its vendor; the save route refuses an OpenAI key unless named, before this runs',
+  'lib/evals/trace.ts': 'classifies recorded request URLs in an eval trace; makes no request',
   'lib/secrets-rewrap.ts': 're-encrypts stored keys, calls nothing',
   'lib/tenant/lifecycle.ts': 'deletes a deleted tenant\'s credential rows, calls nothing',
 }

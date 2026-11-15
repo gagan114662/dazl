@@ -135,7 +135,7 @@ test('PDL saved without the paid-fallback opt-in is never called, and the result
   const r = await run(s, DANA, stub(() => json({ person: null }), never, calls))
   assert.equal(r.status, 'not_found'); assert.ok('row' in r); assert.match(r.row.detail ?? '', /fallback is off/)
   assert.equal(calls.pdl, 0)
-  assert.deepEqual(workEmailProviders(s.db, 'A', {}), { apollo: true, pdl: false, pdlNeedsOptIn: true, mailboxCheck: false })
+  assert.deepEqual(workEmailProviders(s.db, 'A', {}), { apollo: true, pdl: false, pdlNeedsOptIn: true, mailboxCheck: false, saved: { apollo: true, pdl: false, pdlNeedsOptIn: true }, policyOff: null })
   assert.match(workEmailCostNote(workEmailProviders(s.db, 'A')), /People Data Labs fallback is off/)
 })
 
@@ -520,4 +520,14 @@ test('Refs #1099 (council review): a PDL-only workspace is told PDL was not call
   assert.deepEqual([off.apollo, off.pdl], [false, false])
   const on = workEmailPageRead(b.db, 'A', [{ id: b.lead }], { DAZL_PAID_VENDORS: 'apollo,pdl' }).providers
   assert.deepEqual([on.apollo, on.pdl], [true, true])
+})
+
+test('Refs #1099 (council round 2): the providers every surface reads apply the policy, and the cost note says why instead of "add your own key"', () => {
+  const b = seed({ keys: 'both' })
+  const off = workEmailProviders(b.db, 'A', { DAZL_PAID_VENDORS: '' })
+  assert.deepEqual([off.apollo, off.pdl, off.pdlNeedsOptIn, off.policyOff], [false, false, false, 'apollo'])
+  assert.match(workEmailCostNote(off), /dazl uses no paid third-party service \(Apollo, People Data Labs\) by default/)
+  assert.doesNotMatch(workEmailCostNote(off), /add your own key|fallback is off/)
+  const on = workEmailProviders(b.db, 'A', { DAZL_PAID_VENDORS: 'apollo,pdl' })
+  assert.deepEqual([on.apollo, on.pdl, on.policyOff], [true, true, null])
 })

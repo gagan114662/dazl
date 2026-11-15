@@ -16,7 +16,8 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
-  return NextResponse.json({ keys: await readKeyStatus(db, user.tenantId), rejection: await openKeyRejection(db, user.tenantId) })
+  // openai_allowed: whether a saved OpenAI key is used at all (Refs #1099, lib/paid-vendors.ts); the panel offers OpenAI only then
+  return NextResponse.json({ keys: await readKeyStatus(db, user.tenantId), rejection: await openKeyRejection(db, user.tenantId), openai_allowed: paidVendorOn('openai') })
 }
 
 export async function PUT(req: NextRequest) {

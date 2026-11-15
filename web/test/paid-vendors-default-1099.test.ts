@@ -15,7 +15,8 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { enrichCommenters, migrateCommenterImport } from '../lib/scan/commenter-import.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
-import { migrateKeys, saveKey, defaultVendor, hasKey } from '../lib/llm/key-store.ts'
+import { migrateKeys, saveKey, defaultVendor, hasKey, readHasKey } from '../lib/llm/key-store.ts'
+import { readFileSync } from 'node:fs'
 import { pickVendor } from '../lib/scan/runner.ts'
 import { verifierFromEnv } from '../lib/people/email-pattern.ts'
 import { jinaAdapter, resetJinaState } from '../lib/sources/jina.ts'
@@ -100,7 +101,7 @@ test('commenter import: saved Apollo and PDL keys are not used unless named; the
   assert.ok((calls as string[]).some(u => u.includes('api.apollo.io')), 'control: named, Apollo is asked')
 })
 
-test('model vendor: a saved OpenAI key is not used unless named; the Anthropic key is used even when it is older', () => {
+test('model vendor: a saved OpenAI key is not used unless named; the Anthropic key is used even when it is older', async () => {
   const db = new Database(':memory:'); migrateKeys(db)
   saveKey(db, 't1', 'anthropic', 'sk-ant-' + 'a'.repeat(40), master)
   db.prepare("UPDATE tenant_llm_keys SET created_at = created_at - 100 WHERE tenant_id = 't1'").run()
@@ -113,6 +114,8 @@ test('model vendor: a saved OpenAI key is not used unless named; the Anthropic k
   // ...and every intake gate (scan, play, watch, CSV, estimate) sees it as keyless up front, instead of accepting a scan that cannot run
   assert.equal(hasKey(db, 't2', OFF), false); assert.equal(hasKey(db, 't1', OFF), true)
   assert.equal(hasKey(db, 't2', { DAZL_PAID_VENDORS: 'openai' }), true)
+  // the Db-layer read the watch, play, usage and estimate gates use (council round 2)
+  assert.equal(await readHasKey(sqliteDb(db), 't2', OFF), false); assert.equal(await readHasKey(sqliteDb(db), 't1', OFF), true)
   assert.equal(usableVendor([{ vendor: 'openai' }, { vendor: 'anthropic' }], OFF)?.vendor, 'anthropic')
 })
 
@@ -162,4 +165,24 @@ test('the price estimate lists no Apollo / PDL credits for saved keys the policy
   const ids = (env: Record<string, string>) => estimateRun({ budget: null, payer: 'you', enrichmentVendors: ['apollo', 'pdl'], env }).rows.map(r => r.id)
   assert.ok(!ids(OFF).some(id => id === 'apollo_credits' || id === 'pdl_credits'), JSON.stringify(ids(OFF)))
   assert.ok(ids({ DAZL_PAID_VENDORS: 'apollo,pdl' }).includes('apollo_credits'))
+})
+
+test('saving an OpenAI key is refused (with the reason) before the key is sent anywhere, unless OpenAI is named', () => {
+  // the repo checks its routes by their source (as test/enrich-fallback-optin.test.ts does): the refusal comes before validateKey and writeKey
+  const src = readFileSync(new URL('../app/api/settings/llm-key/route.ts', import.meta.url), 'utf8')
+  const refuse = src.indexOf("if (vendor === 'openai' && !paidVendorOn('openai'))")
+  assert.ok(refuse > 0, 'the refusal exists')
+  assert.ok(refuse < src.indexOf('await validateKey(') && refuse < src.indexOf('await writeKey('), 'refused before the key is checked with the vendor or stored')
+  assert.match(src.slice(refuse, refuse + 300), /status: 400/)
+  assert.match(src.slice(refuse, refuse + 300), /dazl runs on Claude/)
+})
+
+test('the key panel offers OpenAI only when the operator named it, and says a saved OpenAI key is not used; onboarding asks for an Anthropic key', () => {
+  const panel = readFileSync(new URL('../app/app/settings/llm-key-panel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /\{openaiAllowed && <option value="openai">OpenAI<\/option>\}/)
+  assert.match(panel, /not used: dazl runs on Claude/)
+  const route = readFileSync(new URL('../app/api/settings/llm-key/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /openai_allowed: paidVendorOn\('openai'\)/)
+  const inline = readFileSync(new URL('../app/app/key-inline.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(inline, /platform\.openai\.com|or sk-\.\.\./)
 })
