@@ -57,9 +57,11 @@ What protects the copies kept on the operator machine:
 - a copy the box drops or prunes stays there (the pull never deletes on the box's word);
 - every copy is checked against its manifest; a bad or future-dated copy goes to `.bad/` and alerts;
 - the operator machine's own retention (the box's policy: 48 hourly + 14 daily + 8 weekly) never deletes outright: a copy
-  past the policy moves to `.retired/` and is deleted 7 days later; at most 3 per kind are retired per run (more due is
-  an alert); a new copy named older than the newest one already held (a box never backdates a copy) stops retention and
-  alerts. So a compromised box that writes fake copies cannot quietly push the real ones out.
+  past the policy moves to `.retired/` and is deleted 7 days later; of the copies already kept here, at most 3 per kind
+  are retired per run (more due is an alert); a new copy named older than the newest one held when it arrived (a box
+  never backdates a copy) is set aside in `.bad/` and alerts, so it never counts for retention. So a compromised box
+  that writes fake copies cannot quietly push the real ones out.
+- a copy in `.bad/` is never pulled again; every run alerts until someone inspects and removes it.
 
 Alerts: the operator machine alerts when a pull fails, a copy is bad, or the newest copy is older than 2 h. When the
 operator machine itself is off it cannot alert, so after each good pull it touches a marker on the box (a second key
@@ -141,9 +143,10 @@ systemctl --user start dazl-offhost-pull.service; journalctl --user -u dazl-offh
 # one JSON line: {"type":"offhost_pull",...,"backups":N,"ledgers":N,"newest":"dazl-backup-....db.age","newest_age_s":...,"acked":true,"ok":true}
 ```
 
-The `~/.ssh/config` and `authorized_keys` steps append: run them once. When the box already holds more copies than the
-retention policy (the first pull, or after a long outage), the operator machine retires 3 per kind per run and says so
-in an alert each hour until it has caught up; that is the flood guard, not a fault.
+The `~/.ssh/config` and `authorized_keys` steps append: run them once. On the first pull the box's whole outbox (a week of
+hourly copies) arrives and the copies past the policy are retired at once, without an alert. After a long outage the
+newly pulled copies push older ones that were kept here past the policy: those are retired 3 per kind per run, with an
+alert each hour until it has caught up; that is the flood guard, not a fault.
 
 ## 1. Install (root, on the box)
 

@@ -12,15 +12,19 @@
 //   2. every copy here with a manifest is checked: the ciphertext must have the manifest's bytes and sha256. A copy that
 //      fails, or whose times lie in the future, is moved to .bad/ (never restored from, never pulled again) and is a
 //      problem; while .bad/ holds a copy every run alerts (without holding retention or the ack).
-//   3. problems (each alerts, and none of them lets retention run): the pull failed; a copy failed its check; a copy
-//      new this run is named OLDER than the newest copy already held (a box never backdates a copy: this is how a box
-//      that writes fake old copies to push real ones out of retention is caught); a ciphertext still has no manifest
+//   3. problems (each alerts, and none of them lets retention run): the pull failed; a copy failed its check; a copy is
+//      named OLDER than the newest copy held when its ciphertext arrived (a box never backdates a copy: this is how a box
+//      that writes fake old copies to push real ones out of retention is caught; it goes to .bad/ like a bad copy, so it
+//      never counts for retention, and the reference is remembered for a manifest that arrives a run later in
+//      .retired/pending.json); a ciphertext still has no manifest
 //      after two hours; there is no checked backup copy, or the newest is older than --max-age-s (7200); there is no
 //      deletion-ledger copy.
 //   4. retention, only when there is no problem: the box's policy (retainedCopies in offhost.mts, RETAIN_OFFHOST_HOURLY
 //      48 / _DAILY 14 / _WEEKLY 8), per kind. Nothing is deleted outright: a copy past the policy is MOVED to .retired/,
-//      at most RETIRE_MAX_PER_RUN (3) per kind per run (more due is an alert, so a flood of fake new copies cannot push
-//      the real ones out quietly), and a retired copy is deleted only RETIRED_KEEP_DAYS (7) after it was retired.
+//      and of the copies this machine already held, at most RETIRE_MAX_PER_RUN (3) per kind per run (more due is an
+//      alert, so a flood of fake new copies cannot push the real ones out quietly; copies first pulled this run that are
+//      already past the policy, as on a first pull, are retired at once); a retired copy is deleted only
+//      RETIRED_KEEP_DAYS (7) after it was retired.
 //   5. after a run with no problem, `ssh ACKHOST` (a second key whose only command, on the box, touches the pull marker
 //      that backup-check.mts reads as OFFHOST_PULL_MARKER): so the box alerts when this machine stops pulling.
 // Alerts go to OPS_ALERT_WEBHOOK_URL (https; lib/ops/alert-destination.ts) or, for tests, BACKUP_ALERT_CMD (run with the
@@ -48,6 +52,7 @@ const whole = (name: string, raw: string | undefined, d: number, min: number) =>
 const from = arg('--from'), to = arg('--to'), ack = arg('--ack')
 if (!from || !to) usage('--from and --to are required')
 if (/\s/.test(from!) || (ack !== undefined && /\s/.test(ack))) usage('--from and --ack must have no spaces')
+if (!from!.includes(':') && !path.isAbsolute(from!)) usage('--from must be HOST: (the restricted key\'s outbox) or an absolute directory')
 if (!existsSync(to!) || !statSync(to!).isDirectory()) usage(`--to ${to} is not a directory (create it: install -d -m 700 ${to})`)
 const maxAgeS = whole('--max-age-s', arg('--max-age-s'), 7200, 1)
 const retain = { hourly: whole('RETAIN_OFFHOST_HOURLY', process.env.RETAIN_OFFHOST_HOURLY, 48, 1), daily: whole('RETAIN_OFFHOST_DAILY', process.env.RETAIN_OFFHOST_DAILY, 14, 1), weekly: whole('RETAIN_OFFHOST_WEEKLY', process.env.RETAIN_OFFHOST_WEEKLY, 8, 1) }
@@ -88,7 +93,9 @@ out.pulled = pulled.length
 
 // ---- 2. check every copy that has its manifest
 const readJson = (f: string) => { try { return JSON.parse(readFileSync(f, 'utf8')) as Record<string, unknown> } catch { return null } }
-type Copy = { base: string; t: number; copiedAt: number }
+type Copy = { base: string; t: number; copiedAt: number; held: boolean }
+const pendingFile = path.join(retiredDir, 'pending.json')
+const pending: Record<string, number> = (() => { try { const j = JSON.parse(readFileSync(pendingFile, 'utf8')); return j && typeof j === 'object' ? j : {} } catch { return {} } })()
 const good: { backup: Copy[]; ledger: Copy[] } = { backup: [], ledger: [] }
 const bad: string[] = [], backdated: string[] = [], orphans: string[] = []
 const setAside = (f: string) => {
@@ -100,7 +107,9 @@ for (const f of readdirSync(dir)) {
   if (!m || m[2]) continue // manifests are read with their ciphertext
   const base = m[1], kind = kindOf(base), t = timeOf(base)
   if (!existsSync(path.join(dir, `${f}.json`))) {
-    // the manifest is copied after the ciphertext: the next run checks it; one still missing after two hours is a problem
+    // the manifest is copied after the ciphertext: the next run checks it (against the newest copy held NOW, remembered);
+    // one still missing after two hours is a problem
+    if (pulled.includes(f) && Number.isFinite(newestHeld[kind])) pending[f] = newestHeld[kind]
     if (t === null || now - t > NO_MANIFEST_MS) orphans.push(f)
     continue
   }
@@ -110,12 +119,16 @@ for (const f of readdirSync(dir)) {
   const copiedAt = typeof j?.copied_at === 'string' ? Date.parse(j.copied_at) : NaN
   if (!ok || t === null || !Number.isFinite(copiedAt)) { bad.push(f); setAside(f); continue }
   if (t - now > SKEW_MS || copiedAt - now > SKEW_MS) { bad.push(`${f} (future time)`); setAside(f); continue }
-  // new this run (its ciphertext or its manifest arrived now) and named older than the newest copy already held
-  if ((pulled.includes(f) || pulled.includes(`${f}.json`)) && t < newestHeld[kind]) backdated.push(f)
-  good[kind].push({ base, t, copiedAt })
+  // named older than the newest copy held when its ciphertext arrived (this run, or an earlier one if its manifest came later):
+  // a backdated copy is set aside like a bad one, so it never counts for retention and is never pulled again
+  const ref = pulled.includes(f) ? newestHeld[kind] : pending[f]
+  delete pending[f]
+  if (ref !== undefined && t < ref) { backdated.push(f); setAside(f); continue }
+  good[kind].push({ base, t, copiedAt, held: heldBefore.has(f) && heldBefore.has(`${f}.json`) })
 }
+try { writeFileSync(pendingFile, JSON.stringify(pending), { mode: 0o600 }) } catch { /* the next run treats such a copy as held before */ }
 if (bad.length) problems.push(`${bad.length} copy(ies) failed the manifest check (moved to .bad): ${bad.slice(0, 5).join(', ')}`)
-if (backdated.length) problems.push(`${backdated.length} new copy(ies) named older than the newest copy already here (the box does not backdate copies): ${backdated.slice(0, 5).join(', ')}; retention is held`)
+if (backdated.length) problems.push(`${backdated.length} new copy(ies) named older than the newest copy already here (the box does not backdate copies; moved to .bad): ${backdated.slice(0, 5).join(', ')}`)
 if (orphans.length) problems.push(`${orphans.length} copy(ies) without a manifest for over 2 h: ${orphans.slice(0, 5).join(', ')}`)
 for (const k of ['backup', 'ledger'] as const) good[k].sort((a, b) => b.t - a.t || b.base.localeCompare(a.base))
 const newest = good.backup[0]
@@ -133,9 +146,12 @@ const retired: string[] = [], failed: string[] = [], warnings: string[] = []
 if (!problems.length) {
   for (const k of ['backup', 'ledger'] as const) {
     const keep = retainedCopies(good[k].map(c => [c.base, c.t]), retain)
+    // copies first pulled this run and already past the policy were never kept here: retired at once (a first pull, or a
+    // catch-up). Copies this machine already held are retired at most retireMax per run: that is what a flood would push out.
     const due = good[k].filter(c => !keep.has(c.base)).reverse() // oldest first
-    if (due.length > retireMax) warnings.push(`${due.length} ${k} copies are past retention; ${retireMax} retired this run (a catch-up after downtime, or a flood of new copies from the box)`)
-    for (const c of due.slice(0, retireMax)) {
+    const dueHeld = due.filter(c => c.held), dueNew = due.filter(c => !c.held)
+    if (dueHeld.length > retireMax) warnings.push(`${dueHeld.length} ${k} copies held here are past retention; ${retireMax} retired this run (a catch-up after downtime, or a flood of new copies from the box)`)
+    for (const c of [...dueNew, ...dueHeld.slice(0, retireMax)]) {
       try {
         for (const x of [`${c.base}.age`, `${c.base}.age.json`]) { renameSync(path.join(dir, x), path.join(retiredDir, x)); utimesSync(path.join(retiredDir, x), new Date(now), new Date(now)) }
         appendFileSync(retiredNames, `${c.base}.age\n${c.base}.age.json\n`)

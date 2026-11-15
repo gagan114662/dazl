@@ -291,6 +291,7 @@ if (process.env.OFFHOST_PULL_MARKER?.trim()) {
   const marker = process.env.OFFHOST_PULL_MARKER.trim()
   const rawMax = process.env.OFFHOST_PULL_MAX_AGE_S?.trim()
   const max = rawMax && /^\d+$/.test(rawMax) ? Number(rawMax) : 10_800
+  if (rawMax && !/^\d+$/.test(rawMax)) problems.push(`OFFHOST_PULL_MAX_AGE_S must be a whole number of seconds (got ${JSON.stringify(rawMax.slice(0, 20))}); 10800 used`)
   try {
     const age = Math.max(0, Math.round((Date.now() - statSync(marker).mtimeMs) / 1000))
     facts.offhost_pull_age_s = age

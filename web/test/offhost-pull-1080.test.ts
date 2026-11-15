@@ -111,6 +111,41 @@ test('#1080 pull: a box that writes BACKDATED copies (to push real ones out of r
   assert.match(alerts()[0].problems.join('\n'), /new copy\(ies\) named older than the newest copy already here/)
   assert.equal(r.json.retired, 0)
   for (const f of real) assert.ok(existsSync(path.join(here, f)), `${f} kept`)
+  // the fakes are set aside: later runs neither pull them again nor count them, so no real copy is ever retired for them
+  for (let i = 0; i < 2; i++) {
+    const again = run(box, here)
+    assert.equal(again.json.pulled, 0, again.out); assert.equal(again.json.retired, 0, again.out)
+    assert.match(alerts()[0].problems.join('\n'), /set aside in \.bad\/ earlier/)
+  }
+  for (const f of real) assert.ok(existsSync(path.join(here, f)), `${f} still kept`)
+  assert.equal(copies(path.join(here, '.bad')).length, 67)
+})
+
+test('#1080 pull: the first pull of a box holding a week of hourly copies keeps the policy at once, without an alert', { skip }, () => {
+  const { box, here } = dirs()
+  for (let i = 0; i < 168; i++) { copy(box, now - 60_000 - i * HOUR, i); copy(box, now - 60_000 - i * HOUR, i, { kind: 'ledger' }) }
+  const r = run(box, here)
+  assert.equal(r.code, 0, r.out)
+  assert.equal(r.json.pulled, 672)
+  const base = (f: string) => f.slice(0, -'.age'.length)
+  const kept = copies(here)
+  assert.equal(kept.length + (r.json.retired as number) / 2, 168)
+  assert.ok(kept.length >= 48 && kept.length < 60, String(kept.length))
+  assert.equal(new Set(kept.map(base)).size, kept.length)
+})
+
+test('#1080 pull: a copy whose manifest arrives a run later is judged against what was held when its ciphertext came (no false backdating)', { skip }, () => {
+  const { box, here } = dirs()
+  copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 2 * HOUR + 60_000, 1)
+  assert.equal(run(box, here).code, 0)
+  const late = copy(box, now - 50 * 60_000, 2, { noManifest: true }) // interrupted: ciphertext only
+  copy(box, now - 5 * 60_000, 3) // and a newer complete copy
+  assert.equal(run(box, here).code, 0)
+  const body = readFileSync(path.join(box, late), 'utf8')
+  writeFileSync(path.join(box, `${late}.json`), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: late, ciphertext_sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body), copied_at: new Date(now - 49 * 60_000).toISOString() }))
+  const r = run(box, here)
+  assert.equal(r.code, 0, r.out); assert.equal(r.json.backups, 3)
+  assert.ok(existsSync(path.join(here, late)))
 })
 
 test('#1080 pull: a flood of new copies retires at most 3 per run and alerts; a retired copy is never pulled again and is deleted only after 7 days', { skip }, () => {
@@ -123,7 +158,7 @@ test('#1080 pull: a flood of new copies retires at most 3 per run and alerts; a 
   for (let i = 0; i < 10; i++) copy(box, now - 60_000 - i * 6 * 60_000, 200 + i)
   const r = run(box, here)
   assert.equal(r.code, 1, r.out); assert.equal(r.json.retired, 3)
-  assert.match(alerts()[0].problems.join('\n'), /backup copies are past retention; 3 retired this run/)
+  assert.match(alerts()[0].problems.join('\n'), /backup copies held here are past retention; 3 retired this run/)
   assert.equal(readdirSync(path.join(here, '.retired')).filter(f => f.endsWith('.db.age')).length, 3)
   // the box still holds them: they are not pulled again, and the next run retires the next 3
   const r2 = run(box, here)
@@ -180,6 +215,7 @@ test('#1080 pull: usage errors exit 2 and touch nothing', () => {
   assert.equal(run(box, T, ['--max-age-s', 'soon']).code, 2)
   assert.equal(run(box, T, [], { RETAIN_OFFHOST_HOURLY: '0' }).code, 2)
   assert.equal(run(box, T, [], { RETIRE_MAX_PER_RUN: '0' }).code, 2)
+  assert.equal(run('dazl-offhost-pull', T).code, 2, 'a host without its colon is not taken for a local directory')
 })
 
 test('#1080 backup-check (on the box): OFFHOST_PULL_MARKER older than OFFHOST_PULL_MAX_AGE_S, or missing, is a problem; fresh is not', () => {
@@ -195,4 +231,5 @@ test('#1080 backup-check (on the box): OFFHOST_PULL_MARKER older than OFFHOST_PU
   assert.match(check({ OFFHOST_PULL_MARKER: marker }), /the operator machine has not pulled the off-host copies for \d+s \(limit 10800s\)/)
   utimesSync(marker, new Date(), new Date())
   assert.doesNotMatch(check({ OFFHOST_PULL_MARKER: marker }), /pull/, 'a fresh marker is not a problem (the other problems are the empty backup dir)')
+  assert.match(check({ OFFHOST_PULL_MARKER: marker, OFFHOST_PULL_MAX_AGE_S: '3h' }), /OFFHOST_PULL_MAX_AGE_S must be a whole number of seconds/)
 })
