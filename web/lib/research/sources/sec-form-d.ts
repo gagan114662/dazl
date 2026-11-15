@@ -18,7 +18,7 @@ import { caseMentions } from './registry.ts'
 const SEARCH = 'https://efts.sec.gov/LATEST/search-index'
 const ARCHIVE = 'https://www.sec.gov/Archives/edgar/data'
 const UA = 'dazl-sources/1.0 (+https://dazl.ai)'
-const PAGE = 100, MAX_PAGES = 6, MAX_FILINGS = 120
+const PAGE = 100, MAX_PAGES = 6, MAX_FILINGS = 120, BUDGET_MS = 60_000   // one collect never holds the hunt for more than a minute
 export const SEC_MIN_GAP_MS = 120   // < 10 requests a second, with room
 
 // The case's category words -> Form D industry groups (the form's own list). A case whose category means none of them is not covered.
@@ -48,7 +48,7 @@ export function usCity(where: string): { city: string; state: string } | null {
   const p = parts[1].replace(/\./g, '').trim(), state = CODES.has(p.toUpperCase()) && p.length === 2 ? p.toUpperCase() : STATES[p.toLowerCase()]
   return state ? { city: parts[0], state } : null
 }
-export const formDGroups = (c: Pick<ResearchCase, 'category' | 'query' | 'where'>): string[] =>
+export const formDGroups = (c: Pick<ResearchCase, 'category' | 'where'>): string[] =>
   [...new Set(FORM_D_CATEGORIES.filter(x => caseMentions(c, 'category', x.words)).flatMap(x => x.groups))]
 
 export function formDSearchUrl(city: string, state: string, since: string, today: string, from = 0): string {
@@ -58,11 +58,13 @@ export const formDDocUrl = (cik: string, adsh: string, rendered = false) => `${A
 
 export interface FormDHit { cik: string; adsh: string; company: string; fileDate: string; location: string }
 // One search page -> the new (not amended) Form D filings whose business address is the case's city; fund exemptions (3(c)) out.
-export function formDHits(page: unknown, city: string, state: string): { hits: FormDHit[]; total: number } {
-  const h = isRecord(page) && isRecord(page.hits) ? page.hits : null
-  const total = h && isRecord(h.total) && typeof h.total.value === 'number' ? h.total.value : 0
+// A page without the index's shape (an error object with status 200) is null: unreadable, never an empty market.
+export function formDHits(page: unknown, city: string, state: string): { hits: FormDHit[]; total: number } | null {
+  const h = isRecord(page) && isRecord(page.hits) && Array.isArray(page.hits.hits) ? page.hits : null
+  if (!h) return null
+  const total = isRecord(h.total) && typeof h.total.value === 'number' ? h.total.value : 0
   const at = `${city}, ${state}`.toLowerCase(), out: FormDHit[] = []
-  for (const x of h && Array.isArray(h.hits) ? h.hits : []) {
+  for (const x of h.hits as unknown[]) {
     const s = isRecord(x) && isRecord(x._source) ? x._source : null, id = isRecord(x) && typeof x._id === 'string' ? x._id : ''
     if (!s || s.file_type !== 'D' || !id) continue
     const items = Array.isArray(s.items) ? s.items.map(String) : []
@@ -115,39 +117,45 @@ export function formDCandidate(h: FormDHit, f: FormDFiling, category: string): C
   }
 }
 
-// One pace for the whole process: every SEC request waits its turn (fair access: < 10 a second).
+// One pace for the whole process: every SEC request waits its turn (fair access: < 10 a second). Per PROCESS: two app processes on one
+// host would each keep their own pace; dazl runs one web process per host today, and a 429/403 stops this source's requests at once.
 let nextSlot = 0
 const secPace = async () => { const now = Date.now(), at = Math.max(now, nextSlot); nextSlot = at + SEC_MIN_GAP_MS; if (at > now) await new Promise(r => setTimeout(r, at - now)) }
 
-export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: number } = {}): RegistrySource {
-  const pace = o.pace ?? secPace, maxFilings = o.maxFilings ?? MAX_FILINGS
+export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: number; budgetMs?: number; now?: () => number } = {}): RegistrySource {
+  const pace = o.pace ?? secPace, maxFilings = o.maxFilings ?? MAX_FILINGS, now = o.now ?? Date.now
   const get = async (http: SafeGet, url: string, accept: string) => { await pace(); return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
+  const failure = (res: Awaited<ReturnType<SafeGet>>) => !res ? 'unreachable' : res.status === 429 || res.status === 403 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : null
   return {
     id: 'sec-form-d',
     covers: c => !!usCity(c.where) && formDGroups(c).length > 0,
     async collect(c, since, http) {
       const at = usCity(c.where), groups = formDGroups(c)
       if (!at || !groups.length) return { candidates: [], notes: ['not_covered'] }
+      const deadline = now() + (o.budgetMs ?? BUDGET_MS)
       const notes: string[] = [], hits = new Map<string, FormDHit>()
-      for (let p = 0; p < MAX_PAGES; p++) {
+      for (let p = 0; ; p++) {
+        if (p === MAX_PAGES) { notes.push('page_cap_reached'); break }
         const res = await get(http, formDSearchUrl(at.city, at.state, since, c.today, p * PAGE), 'application/json')
-        if (!res || res.status !== 200 || res.truncated || looksLikeHtml(res.body)) { notes.push(!res ? 'unreachable' : res.status === 429 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : 'not_json'); break }
-        let page: unknown
-        try { page = JSON.parse(res.body) } catch { notes.push('not_json'); break }
-        const { hits: hs, total } = formDHits(page, at.city, at.state)
-        for (const h of hs) { const had = hits.get(h.cik); if (!had || had.fileDate < h.fileDate) hits.set(h.cik, h) }
-        if ((p + 1) * PAGE >= total) break
-        if (p === MAX_PAGES - 1) notes.push('page_cap_reached')
+        let page: ReturnType<typeof formDHits> = null
+        const why = failure(res) ?? (looksLikeHtml(res!.body) ? 'not_json' : null)
+        if (!why) try { page = formDHits(JSON.parse(res!.body), at.city, at.state) } catch { page = null }
+        if (why || !page) { notes.push(why ?? 'not_json'); if (p) notes.push('partial'); break }
+        for (const h of page.hits) { const had = hits.get(h.cik); if (!had || had.fileDate < h.fileDate) hits.set(h.cik, h) }
+        if ((p + 1) * PAGE >= page.total) break
       }
-      if (notes.length && !hits.size) return { candidates: [], notes }
+      if (notes.includes('throttled') || (notes.length && !hits.size)) return { candidates: [], notes }
       const newest = [...hits.values()].sort((a, b) => (a.fileDate < b.fileDate ? 1 : -1))
       if (newest.length > maxFilings) notes.push('filing_cap_reached')
       const out: Candidate[] = []
       let unread = 0
       for (const h of newest.slice(0, maxFilings)) {
+        if (now() > deadline) { notes.push('time_budget_reached'); break }
         const res = await get(http, formDDocUrl(h.cik, h.adsh), 'application/xml')
-        if (!res || res.status !== 200 || res.truncated || !res.body.includes('<edgarSubmission')) { unread++; continue }
-        const f = parseFormD(res.body)
+        const why = failure(res)
+        if (why === 'throttled') { notes.push('throttled'); break }   // SEC asked us to slow down: stop asking
+        if (why || !res!.body.includes('<edgarSubmission')) { unread++; continue }
+        const f = parseFormD(res!.body)
         // the document decides: amended, a fund, or an industry the case does not mean -> not a candidate
         if (f.amendment || f.fund || !f.industry || !groups.includes(f.industry)) continue
         out.push(formDCandidate(h, f, c.category))

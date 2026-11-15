@@ -1,5 +1,5 @@
 {
- "_note": "Real rows of the City of Austin issued construction permits dataset (data.austintexas.gov 3syk-w9eu), fetched 2026-11-15 with upper(description) like %ROOF% over 90 days; a sample including the false matches (solar installer, electrician and plumber on remodels with a roof) and roofing contractors. Phone numbers removed.",
+ "_note": "Real rows of the City of Austin issued construction permits dataset (data.austintexas.gov 3syk-w9eu), fetched 2026-11-15 with upper(description) like %ROOF% over 90 days; a sample including the false matches (solar installer, electrician and plumber on remodels with a roof) and roofing contractors. Phone numbers removed; permit_location replaced by a synthetic address (homeowners are third parties), nothing else edited.",
  "rows": [
   {
    "issue_date": "2026-11-13T00:00:00.000",
@@ -8,7 +8,7 @@
    "contractor_trade": "Electrical Contractor",
    "description": "Install new  6.09 kw rooftop solar system for existing residential only.",
    "permit_number": "2026-145208 EP",
-   "permit_location": "2314 ALDFORD DR",
+   "permit_location": "100 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13800156"
    },
@@ -21,7 +21,7 @@
    "contractor_trade": "Electrical Contractor",
    "description": "REMODEL OF AN EXTERIOR ROOF DECK ON THE 30TH FLOOR - SCOPE INCLUDES REPLACEMENT OF EXTERIOR DOORS AND WINDOWS AND ROOFING STRUCTURAL REINFORCEMENT AND MODIFICATION OF EXISTING ELECTRICAL AND PLUMBING SYSTEMS.",
    "permit_number": "2026-136436 EP",
-   "permit_location": "600 CONGRESS AVE UNIT 3000",
+   "permit_location": "101 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13790335"
    },
@@ -34,7 +34,7 @@
    "contractor_trade": "Plumbing Contractor",
    "description": "Addition/remodel- Garage conversion interior remodel with addition and full roof replacement.",
    "permit_number": "2026-089033 PP",
-   "permit_location": "309 ROWLAND DR",
+   "permit_location": "102 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13735754"
    },
@@ -47,7 +47,7 @@
    "contractor_trade": "Mechanical Contractor",
    "description": "Renovate existing 1-story ADU: Replace windows doors siding & roofing.  Update MEP.  Reconfigure floor plan/plumbing locations.  Replace foundation in exact same footprint as existing.",
    "permit_number": "2026-030707 MP",
-   "permit_location": "4205 RAMSEY AVE",
+   "permit_location": "103 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13669533"
    },
@@ -60,7 +60,7 @@
    "contractor_trade": "General Contractor",
    "description": "Express: Re-roof (not going past decking)",
    "permit_number": "2026-146769 BP",
-   "permit_location": "13320 HYMEADOW CIR",
+   "permit_location": "104 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13801988"
    },
@@ -73,7 +73,7 @@
    "contractor_trade": "General Contractor",
    "description": "Express: Reroofing (located in WUI)",
    "permit_number": "2026-146179 BP",
-   "permit_location": "8012 ALOPHIA DR",
+   "permit_location": "105 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13801276"
    },
@@ -86,7 +86,7 @@
    "contractor_trade": "General Contractor",
    "description": "Remove existing roofing system and install GAF Timberline HDZ (weather wood) shingles - no structural repairs decking will remain the same. We will only be replacing the shingles.",
    "permit_number": "2026-143533 BP",
-   "permit_location": "10601 MENCHACA RD BLDG 4",
+   "permit_location": "106 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13798318"
    },
@@ -99,7 +99,7 @@
    "contractor_trade": "General Contractor",
    "description": "Remove existing roofing system and install GAF Timberline HDZ (weather wood) shingles - no structural repairs decking will remain the same. We will only be replacing the shingles.",
    "permit_number": "2026-143601 BP",
-   "permit_location": "10601 MENCHACA RD BLDG 1",
+   "permit_location": "107 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13798391"
    },
@@ -112,7 +112,7 @@
    "contractor_trade": "Electrical Contractor",
    "description": "Installing 187.62 PV rooftop solar in West lake Hills Jurisdiction",
    "permit_number": "2026-088890 EP",
-   "permit_location": "3901 BEE CAVE RD BLDG B",
+   "permit_location": "108 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13735575"
    },
@@ -125,7 +125,7 @@
    "contractor_trade": "General Contractor",
    "description": "Express: Re-roof (located in WUI)",
    "permit_number": "2026-139369 BP",
-   "permit_location": "11129 COMISO PALA PATH",
+   "permit_location": "109 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13793679"
    },
@@ -138,7 +138,7 @@
    "contractor_trade": "General Contractor",
    "description": "Express- Residential Reroof (shingle to shingle)",
    "permit_number": "2026-136758 BP",
-   "permit_location": "7705 KESWICK DR",
+   "permit_location": "110 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13790692"
    },
@@ -151,7 +151,7 @@
    "contractor_trade": "General Contractor",
    "description": "Express - Reroof: tear off and replace existing shingle roof 50 squares with Malarkey Vista Class 4 impact-resistant shingles. Replace damaged roof decking as needed not to exceed 128 sq ft. No structural changes.",
    "permit_number": "2026-131734 BP",
-   "permit_location": "5720 KEMPSON DR",
+   "permit_location": "111 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13784919"
    },
@@ -164,7 +164,7 @@
    "contractor_trade": "General Contractor",
    "description": "Simple re-roof. Existing Austin Water offices.",
    "permit_number": "2026-127253 BP",
-   "permit_location": "3907 SOUTH INDUSTRIAL DR",
+   "permit_location": "112 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13779726"
    },
@@ -177,7 +177,7 @@
    "contractor_trade": "General Contractor",
    "description": "TPO Roof Overlay",
    "permit_number": "2026-126272 BP",
-   "permit_location": "1250 S CAPITAL OF TEXAS HWY SB BLDG 2",
+   "permit_location": "113 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13778595"
    },
@@ -190,7 +190,7 @@
    "contractor_trade": "General Contractor",
    "description": "Re-roof",
    "permit_number": "2026-121366 BP",
-   "permit_location": "3600 GREYSTONE DR BLDG 13",
+   "permit_location": "114 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13772959"
    },
@@ -203,7 +203,7 @@
    "contractor_trade": "General Contractor",
    "description": "Re-roof",
    "permit_number": "2026-121094 BP",
-   "permit_location": "3600 GREYSTONE DR BLDG 4",
+   "permit_location": "115 EXAMPLE ST",
    "link": {
     "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13772608"
    },

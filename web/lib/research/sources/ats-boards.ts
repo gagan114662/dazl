@@ -20,7 +20,7 @@ export function boardOf(raw: string): Board | null {
   try { u = new URL(raw) } catch { return null }
   if (u.protocol !== 'https:') return null
   const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean), tok = (s: string | undefined | null) => (s && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(s) ? s.toLowerCase() : null)
-  if (/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(h)) {
+  if (/^(?:boards|job-boards)\.greenhouse\.io$/.test(h)) {   // EU boards (*.eu.greenhouse.io) have another API host: not read
     const t = seg[0] === 'embed' ? tok(u.searchParams.get('for')) : tok(seg[0])
     return t ? { ats: 'greenhouse', token: t } : null
   }
@@ -40,8 +40,10 @@ const isoDay = (v: unknown): string | null => {
   const ms = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN
   return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : null
 }
-// The board's JSON -> its roles (pure; the tests run it on recorded real boards).
-export function boardRoles(b: Board, body: unknown): Role[] {
+// The board's JSON -> its roles (pure; the tests run it on recorded real boards). A body without the board's shape (an error object with
+// status 200) is null: unreadable, never "no roles".
+export function boardRoles(b: Board, body: unknown): Role[] | null {
+  if (b.ats === 'lever' ? !Array.isArray(body) : !(isRecord(body) && Array.isArray(body.jobs))) return null
   const out: Role[] = []
   if (b.ats === 'greenhouse') {
     for (const j of isRecord(body) && Array.isArray(body.jobs) ? body.jobs : []) {
@@ -71,13 +73,25 @@ export function boardRoles(b: Board, body: unknown): Role[] {
 
 const ATS_NAME: Record<Ats, string> = { greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby' }
 const pretty = (token: string) => token.replace(/[-_.]+/g, ' ').replace(/\b([a-z])/g, m => m.toUpperCase())
-// The case's city ("Austin, Texas" -> Austin) as a whole word in a role's location
+const STATE: Record<string, string> = { alabama: 'al', alaska: 'ak', arizona: 'az', arkansas: 'ar', california: 'ca', colorado: 'co', connecticut: 'ct', delaware: 'de', florida: 'fl', georgia: 'ga', hawaii: 'hi', idaho: 'id', illinois: 'il', indiana: 'in', iowa: 'ia', kansas: 'ks', kentucky: 'ky', louisiana: 'la', maine: 'me', maryland: 'md', massachusetts: 'ma', michigan: 'mi', minnesota: 'mn', mississippi: 'ms', missouri: 'mo', montana: 'mt', nebraska: 'ne', nevada: 'nv', 'new hampshire': 'nh', 'new jersey': 'nj', 'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd', ohio: 'oh', oklahoma: 'ok', oregon: 'or', pennsylvania: 'pa', 'rhode island': 'ri', 'south carolina': 'sc', 'south dakota': 'sd', tennessee: 'tn', texas: 'tx', utah: 'ut', vermont: 'vt', virginia: 'va', washington: 'wa', 'west virginia': 'wv', wisconsin: 'wi', wyoming: 'wy', 'district of columbia': 'dc',
+  'british columbia': 'bc', alberta: 'ab', ontario: 'on', quebec: 'qc', manitoba: 'mb', saskatchewan: 'sk', 'nova scotia': 'ns', 'new brunswick': 'nb' }
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// The case's place ("Austin, Texas") as a test on a role's location: the city as a whole word, not inside another place ("Port Austin",
+// "North Vancouver"), and, when the case names a region, that region too ("Austin, MN" is not Austin, Texas).
 export const cityOf = (c: Pick<ResearchCase, 'where'>) => c.where.split(',')[0].trim()
-export function boardCandidate(b: Board, roles: Role[], c: Pick<ResearchCase, 'where'>, since: string): Candidate | null {
-  const city = cityOf(c)
+export function placeTest(c: Pick<ResearchCase, 'where'>): ((location: string) => boolean) | null {
+  const [city, region] = c.where.split(',').map(s => s.trim().toLowerCase())
   if (!city) return null
-  const at = new RegExp(`(?:^|[^a-z])${city.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[^a-z])`)
-  const here = roles.filter(r => r.posted >= since && at.test(r.location.toLowerCase())).sort((x, y) => (x.posted < y.posted ? 1 : -1))
+  const cityRe = new RegExp(`(?:^|[;,(/|]\\s*)${esc(city)}(?=$|[^a-z])`)
+  const r = (region ?? '').replace(/\./g, '')
+  const code = STATE[r] ?? (Object.values(STATE).includes(r) ? r : null), full = Object.keys(STATE).find(k => STATE[k] === code) ?? r
+  const regionRe = r ? new RegExp(`(?:^|[^a-z])(?:${[full, code].filter(Boolean).map(x => esc(x!)).join('|')})(?=$|[^a-z])`) : null
+  return loc => { const l = loc.toLowerCase(); return cityRe.test(l) && (!regionRe || regionRe.test(l)) }
+}
+export function boardCandidate(b: Board, roles: Role[], c: Pick<ResearchCase, 'where'>, since: string): Candidate | null {
+  const city = cityOf(c), at = placeTest(c)
+  if (!city || !at) return null
+  const here = roles.filter(r => r.posted >= since && at(r.location)).sort((x, y) => (x.posted < y.posted ? 1 : -1))
   if (!here.length) return null
   const company = here.find(r => r.company)?.company ?? pretty(b.token), latest = here[0]
   const titles = [...new Set(here.map(r => r.title))]
@@ -102,7 +116,9 @@ export async function boardCandidates(c: ResearchCase, found: Candidate[], since
     let body: unknown = null
     if (!why) try { body = JSON.parse(res!.body) } catch { body = null }
     if (why || body === null) { const k = why ?? 'not_json'; fail[k] = (fail[k] ?? 0) + 1; continue }
-    const cand = boardCandidate(b, boardRoles(b, body), c, since)
+    const roles = boardRoles(b, body)
+    if (!roles) { fail.not_json = (fail.not_json ?? 0) + 1; continue }
+    const cand = boardCandidate(b, roles, c, since)
     if (cand) out.push(cand)
   }
   for (const [k, n] of Object.entries(fail)) notes.push(`${k}_${n}`)

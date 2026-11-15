@@ -18,7 +18,7 @@ import { caseMentions } from './registry.ts'
 export interface PermitDataset {
   id: string                       // adapter id suffix, e.g. 'austin'
   city: string; region: string; country: string
-  where: RegExp                    // the case's place words that mean this city (tested on ' austin texas ')
+  where: RegExp                    // the case's whole place that means this city, anchored (tested on ' austin texas ')
   url: string                      // the SODA resource, e.g. https://data.austintexas.gov/resource/3syk-w9eu.json
   fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string; phone: string }
   generalTrade: string             // the trade value of a general contractor in this dataset
@@ -36,7 +36,7 @@ export interface PermitCategory {
 }
 
 export const AUSTIN_PERMITS: PermitDataset = {
-  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: / austin /,
+  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:(?:tx|texas)(?: usa?| united states)? )?$/,
   url: 'https://data.austintexas.gov/resource/3syk-w9eu.json',
   fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link', phone: 'contractor_phone' },
   generalTrade: 'General Contractor',
@@ -51,7 +51,7 @@ export const AUSTIN_PERMITS: PermitDataset = {
   },
 }
 
-const MAX_ROWS = 2000
+const PAGE_ROWS = 500, MAX_PAGES = 4   // 500 rows a page stays far under the getter's 1 MB cap; at most 2000 rows a market
 // one company's permits, before it becomes a Candidate (internal)
 export interface PermitRecord { company: string; eventSummary: string; eventDate: string; eventCount: number; recordUrl: string; pageUrl: string; personName: string | null; personTitle: string | null; eventKind: string; city: string; category: string }
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '')
@@ -63,23 +63,24 @@ const companyKey = (s: string) => cleanCompany(s).toLowerCase().replace(/\b(?:ll
 const looksLikePerson = (s: string) => /^[A-Za-z][A-Za-z'.-]+(?:\s+[A-Za-z][A-Za-z'.-]+){1,3}$/.test(s) && !/\b(?:llc|inc|ltd|roofing|construction|company|n\/?a|none)\b/i.test(s)
 const titleCase = (s: string) => s.toLowerCase().replace(/\b([a-z])/g, m => m.toUpperCase())
 
-export function permitQuery(d: PermitDataset, c: PermitCategory, since: string): string {
+export function permitQuery(d: PermitDataset, c: PermitCategory, since: string, page = 0): string {
   const f = d.fields
   const select = [f.date, f.company, f.person, f.trade, f.description, f.number, f.location, f.link, f.phone].join(',')
   const where = `${f.date} >= '${since}T00:00:00' AND ${f.company} IS NOT NULL AND upper(${f.description}) like '%${c.serverLike}%'`
-  return `${d.url}?${new URLSearchParams({ $select: select, $where: where, $order: `${f.date} DESC`, $limit: String(MAX_ROWS) })}`
+  return `${d.url}?${new URLSearchParams({ $select: select, $where: where, $order: `${f.date} DESC, ${f.number}`, $limit: String(PAGE_ROWS), $offset: String(page * PAGE_ROWS) })}`
 }
 
 // The category rule on one row (pure; the tests run it on recorded real rows).
 export function permitMatches(d: PermitDataset, c: PermitCategory, row: Record<string, unknown>): boolean {
   const desc = str(row[d.fields.description]), company = cleanCompany(str(row[d.fields.company])), trade = str(row[d.fields.trade])
   if (!company || c.exclude.test(desc)) return false
-  if (trade && trade !== d.generalTrade) return false
+  if (trade !== d.generalTrade) return false   // an empty trade is not the general trade (fails closed)
   return c.primary.test(desc) || c.companyName.test(company)
 }
 
 // One record per company: its latest matching permit, how many it holds in the window, and the person the permits name most often.
-export function permitSignals(d: PermitDataset, category: string, rows: Record<string, unknown>[], since: string): PermitRecord[] {
+// partial: the window was cut (row cap or a later page unreadable), so a company's count is a floor ("at least N")
+export function permitSignals(d: PermitDataset, category: string, rows: Record<string, unknown>[], since: string, partial = false): PermitRecord[] {
   const c = d.categories[category]
   if (!c) return []
   const f = d.fields
@@ -106,7 +107,7 @@ export function permitSignals(d: PermitDataset, category: string, rows: Record<s
       company, eventKind: c.eventKind, eventDate: day(latest[f.date])!, eventCount: rs.length, pageUrl: url,
       // the readable public record: this one permit as JSON on the open-data API (the human page is behind a captcha)
       recordUrl: `${d.url}?${new URLSearchParams({ [f.number]: str(latest[f.number]) })}`,
-      eventSummary: `${rs.length} ${c.noun}${rs.length === 1 ? '' : 's'} issued in ${d.city} since ${since}; latest ${str(latest[f.number])} at ${str(latest[f.location])}: ${str(latest[f.description]).slice(0, 140)}`,
+      eventSummary: `${partial ? 'at least ' : ''}${rs.length} ${c.noun}${rs.length === 1 ? '' : 's'} issued in ${d.city} since ${since}; latest ${str(latest[f.number])} at ${str(latest[f.location])}: ${str(latest[f.description]).slice(0, 140)}`,
       personName: person ? titleCase(person) : null, personTitle: person ? `Contractor of record on the ${d.city} permit` : null, city: d.city, category: c.label,
     })
   }
@@ -128,15 +129,22 @@ export const permitsSourceFor = (d: PermitDataset): RegistrySource => {
     async collect(c, since, http) {
       const cat = category(c)
       if (!cat || !caseMentions(c, 'where', d.where)) return { candidates: [], notes: ['not_covered'] }
-      const res = await http(permitQuery(d, d.categories[cat], since), { accept: 'application/json' }).catch(() => null)
-      if (!res) return { candidates: [], notes: ['unreachable'] }
-      if (res.status !== 200) return { candidates: [], notes: [res.status === 429 ? 'throttled' : `http_${res.status}`] }
-      if (res.truncated) return { candidates: [], notes: ['oversize'] }
-      if (looksLikeHtml(res.body)) return { candidates: [], notes: ['not_json'] }
-      let rows: unknown
-      try { rows = JSON.parse(res.body) } catch { return { candidates: [], notes: ['not_json'] } }
-      if (!Array.isArray(rows)) return { candidates: [], notes: ['not_json'] }
-      return { candidates: permitSignals(d, cat, rows.filter(isRecord), since).map(r => permitCandidate(d, cat, r)), notes: rows.length >= MAX_ROWS ? ['row_cap_reached'] : [] }
+      const rows: Record<string, unknown>[] = [], notes: string[] = []
+      for (let p = 0; p < MAX_PAGES; p++) {
+        const res = await http(permitQuery(d, d.categories[cat], since, p), { accept: 'application/json' }).catch(() => null)
+        let page: unknown = null
+        const why = !res ? 'unreachable' : res.status !== 200 ? (res.status === 429 ? 'throttled' : `http_${res.status}`) : res.truncated ? 'oversize' : looksLikeHtml(res.body) ? 'not_json' : null
+        if (!why) try { page = JSON.parse(res!.body) } catch { page = null }
+        if (why || !Array.isArray(page)) {
+          notes.push(why ?? 'not_json')
+          if (!p) return { candidates: [], notes }   // nothing read: no records, the note says why
+          notes.push('partial'); break
+        }
+        rows.push(...page.filter(isRecord))
+        if (page.length < PAGE_ROWS) break
+        if (p === MAX_PAGES - 1) notes.push('row_cap_reached')
+      }
+      return { candidates: permitSignals(d, cat, rows, since, notes.length > 0).map(r => permitCandidate(d, cat, r)), notes }
     },
   }
 }

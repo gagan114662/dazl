@@ -42,13 +42,13 @@ export function researchCaseFor(ctx: ResearchScanContext): ResearchCase | null {
 export type StageExtension = (ctx: ResearchScanContext, base: ResearchStages) => ResearchStages
 const extensions: StageExtension[] = []
 export const extendResearchStages = (x: StageExtension) => { extensions.push(x) }
-export function researchStagesFor(ctx: ResearchScanContext): ResearchStages {
+export function researchStagesFor(ctx: ResearchScanContext, env: Record<string, string | undefined> = process.env): ResearchStages {
   const sonnet = ctx.model(SONNET)
   const spent = ctx.spent ?? { searches: 0 }
   const base: ResearchStages = {
     plan: c => planResearch(c, (p, max) => sonnet.complete!(ctx.key, p, undefined, max), ctx.isRefusal),
     // E's registry sources (free public records, dated by construction) join the search hits (lib/research/hunt.ts huntWithRegistry)
-    hunt: (c, plan) => huntWithRegistry(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.http ?? safeGet),
+    hunt: (c, plan) => huntWithRegistry(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.http ?? safeGet, { env }),
   }
   return extensions.reduce((s, x) => x({ ...ctx, spent }, s), base)
 }
@@ -95,7 +95,7 @@ export async function runResearchScan(ctx: ResearchScanContext, env: Record<stri
   if (!researchEngineOn(env)) return null
   const c = researchCaseFor(ctx)
   if (!c) return null
-  const stages = researchStagesFor(ctx)
+  const stages = researchStagesFor(ctx, env)
   if (!researchReady(stages)) return null
   const run = await runResearch(c, stages, { isRefusal: ctx.isRefusal })
   const rows = run.leads.map(l => toScanRow(l, ctx.now))

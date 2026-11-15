@@ -108,12 +108,16 @@ export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, sear
   const h = await hunt(c, plan, search, { ...ho, extra: [...(ho.extra ?? []), ...reg.candidates] })
   const boards = await boardCandidates(c, h.candidates, since, http)
   const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
-  if (!boards.candidates.length) return { ...h, registry }
   // a board's dated record wins over the search hit for the same URL (hunt's own rule)
   const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
-  for (const x of boards.candidates) { const k = urlKey(x.url), had = byUrl.get(k); if (!had || had.dated !== 'registry') byUrl.set(k, x) }
+  let replaced = 0
+  for (const x of boards.candidates) { const k = urlKey(x.url), had = byUrl.get(k); if (had && had.dated === 'registry') continue; if (had) replaced++; byUrl.set(k, x) }
   const candidates = [...byUrl.values()]
-  return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length }, registry }
+  // every source's note reaches the scan's funnel: a source that could not be read is never shown as a market with nothing in it
+  const dropped = { ...h.funnel.dropped }
+  for (const [id, ns] of Object.entries(registry)) for (const n of ns) dropped[`registry_${id}_${n}`] = (dropped[`registry_${id}_${n}`] ?? 0) + 1
+  if (boards.candidates.length) dropped.board_record_over_hit = replaced
+  return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length, dropped }, registry }
 }
 
 // The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws

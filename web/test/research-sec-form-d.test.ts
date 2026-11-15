@@ -15,6 +15,8 @@ test('the case decides coverage: a US city plus a category Form D industries mea
   assert.deepEqual(usCity('Austin, Texas'), { city: 'Austin', state: 'TX' }); assert.deepEqual(usCity('Chicago, IL, USA'), { city: 'Chicago', state: 'IL' })
   assert.equal(usCity('Vancouver, British Columbia'), null); assert.equal(usCity('United States'), null); assert.equal(usCity('Berlin, Germany'), null)
   assert.ok(formDGroups(SW).includes('Other Technology'))
+  assert.deepEqual(formDGroups({ where: 'Austin, Texas', category: 'restaurants' }), ['Restaurants'])
+  assert.deepEqual(formDGroups({ ...SW, category: 'roofing contractors', query: 'roofing contractors using software' } as ResearchCase), [], 'the category decides, not words in the query')
   const src = secFormDSource()
   assert.equal(src.covers(SW), true)
   assert.equal(src.covers({ ...SW, category: 'roofing contractors', query: 'roofing contractors in Austin' }), false)
@@ -25,10 +27,12 @@ test('the case decides coverage: a US city plus a category Form D industries mea
 })
 
 test('the search page: new filings in the city only (no D/A amendment, no 3(c) investment fund, no other city)', () => {
-  const { hits } = formDHits(FX.page, 'Austin', 'TX')
+  const { hits } = formDHits(FX.page, 'Austin', 'TX')!
   const names = hits.map(h => h.company)
   assert.deepEqual(names.sort(), ['ASURE SOFTWARE INC', 'DegreeSight Inc', 'Expressable, Inc.'])
   assert.ok(hits.every(h => /^\d{4}-\d{2}-\d{2}$/.test(h.fileDate) && h.location === 'Austin, TX'))
+  assert.equal(formDHits({ error: 'quota exceeded' }, 'Austin', 'TX'), null, 'a 200 without the index shape is unreadable, not empty')
+  assert.equal(formDHits(FX.page, 'Austin', 'MN')!.hits.length, 0, 'the same city name in another state is another market')
 })
 
 test('the filing document: industry, amounts, the executive officer it names; a pooled investment fund is a fund', () => {
@@ -62,4 +66,36 @@ test("the source end to end: A's Candidate, dated by the filing day, the filing'
   assert.deepEqual((await src.collect(SW, '2026-08-17', async () => ({ status: 429, body: '' }))), { candidates: [], notes: ['throttled'] })
   const docsDown = await src.collect(SW, '2026-08-17', async u => (u.startsWith('https://efts') ? { status: 200, body: JSON.stringify(FX.page) } : { status: 503, body: '' }))
   assert.deepEqual(docsDown, { candidates: [], notes: ['unread_3'] })
+  assert.deepEqual(await src.collect(SW, '2026-08-17', async () => ({ status: 200, body: '{"error":"quota exceeded"}' })), { candidates: [], notes: ['not_json'] })
+})
+
+test('fair access and time: a throttled document stops every further SEC request; a slow EDGAR stops at the time budget', async () => {
+  const asked: string[] = []
+  const throttled = await secFormDSource({ pace: async () => {} }).collect(SW, '2026-08-17', async u => {
+    asked.push(u)
+    return u.startsWith('https://efts') ? { status: 200, body: JSON.stringify(FX.page) } : { status: 429, body: '' }
+  })
+  assert.deepEqual(throttled, { candidates: [], notes: ['throttled'] })
+  assert.equal(asked.filter(u => u.endsWith('primary_doc.xml')).length, 1, 'one document request, then stop')
+  let t = 0
+  const slow = await secFormDSource({ pace: async () => {}, budgetMs: 1000, now: () => t }).collect(SW, '2026-08-17', async u => {
+    t += 600
+    if (u.startsWith('https://efts')) return { status: 200, body: JSON.stringify(FX.page) }
+    const adsh = Object.keys(FX.docs).find(k => u.includes(`/${k.replace(/-/g, '')}/`))
+    return { status: 200, body: FX.docs[adsh!] }
+  })
+  assert.ok(slow.notes.includes('time_budget_reached'), JSON.stringify(slow.notes))
+})
+
+test('the filing document decides: an amended filing or an investment fund is never a candidate, even when the index says new', async () => {
+  const exp = Object.keys(FX.docs).find(k => FX.docs[k].includes('Expressable'))!
+  const run = async (edit: (xml: string) => string) => (await secFormDSource({ pace: async () => {} }).collect(SW, '2026-08-17', async u => {
+    if (u.startsWith('https://efts')) return { status: 200, body: JSON.stringify(FX.page) }
+    const adsh = Object.keys(FX.docs).find(k => u.includes(`/${k.replace(/-/g, '')}/`))!
+    return { status: 200, body: adsh === exp ? edit(FX.docs[adsh]) : FX.docs[adsh] }
+  })).candidates.map(x => x.title.split(':')[0])
+  assert.ok((await run(x => x)).includes('Expressable, Inc.'))
+  // the real document with one field changed (labelled: the recorded filing is new and an operating company)
+  assert.ok(!(await run(x => x.replace('<isAmendment>false</isAmendment>', '<isAmendment>true</isAmendment>'))).includes('Expressable, Inc.'), 'amended')
+  assert.ok(!(await run(x => x.replace('</industryGroup>', '<investmentFundInfo><investmentFundType>Venture Capital Fund</investmentFundType></investmentFundInfo></industryGroup>'))).includes('Expressable, Inc.'), 'a fund')
 })

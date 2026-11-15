@@ -14,6 +14,8 @@ const ROOF = AUSTIN_PERMITS.categories.roofing
 const AUSTIN: ResearchCase = { tenant: 't', jobId: 'j', query: 'roofing contractors in Austin', offer: 'x', where: 'Austin, Texas', category: 'roofing contractors', windowDays: 90, today: '2026-11-15' }
 
 test('the category rule on real rows: roofing contractors in, the solar installer and the electrician / plumber on a remodel "with a roof" out', () => {
+  const kanga = FX.rows.find(r => String(r.contractor_company_name).startsWith('Kanga Roof LLC'))!
+  assert.equal(permitMatches(AUSTIN_PERMITS, ROOF, { ...kanga, contractor_trade: null }), false, 'no trade on the row: not provably the general contractor')
   const by = (name: string) => FX.rows.filter(r => String(r.contractor_company_name).startsWith(name))
   assert.ok(by('Freedom Solar Power').length > 0 && by('Freedom Solar Power').every(r => !permitMatches(AUSTIN_PERMITS, ROOF, r)), 'rooftop solar is not roofing')
   for (const n of ['Beckett Electrical Services', 'We Plumb LLC', 'Thermal Energy Heating']) assert.ok(by(n).every(r => !permitMatches(AUSTIN_PERMITS, ROOF, r)), `${n}: a trade sub on a remodel is not a roofer`)
@@ -55,16 +57,23 @@ test("A's Candidate: via registry, dated by the record, the readable record URL,
   const on = await huntWithRegistry(AUSTIN, plan, none, serve, { env: { LEAD_ENGINE: 'research' } })
   assert.deepEqual(on.candidates, candidates); assert.equal(on.funnel.out, candidates.length)
   assert.equal((await huntWithRegistry({ ...AUSTIN, where: 'Dallas, Texas' }, plan, none, serve, { env: { LEAD_ENGINE: 'research' } })).candidates.length, 0)
+  // a source that throws, and one that cannot read: the hunt goes on, and both show in the scan funnel (never an empty market)
+  const boom = { id: 'boom', covers: () => true, collect: async () => { throw new Error('x') } }
+  const down = await huntWithRegistry(AUSTIN, plan, none, async () => ({ status: 503, body: '' }), { env: { LEAD_ENGINE: 'research' }, sources: [boom, austinPermitsSource] })
+  assert.equal(down.candidates.length, 0)
+  assert.equal(down.funnel.dropped.registry_boom_error, 1); assert.equal(down.funnel.dropped['registry_socrata-permits:austin_http_503'], 1)
 })
 
 test('the source: covers only its city and category, builds a bounded server query, and reports a failed read instead of an empty market', async () => {
   const src = austinPermitsSource
   assert.equal(src.covers(AUSTIN), true); assert.equal(src.covers({ ...AUSTIN, where: 'Dallas, Texas' }), false); assert.equal(src.covers({ ...AUSTIN, category: 'dentists', query: 'dentists in Austin' }), false)
-  assert.equal(src.covers({ ...AUSTIN, where: 'Austin, TX', category: 'roofers' }), true)
+  assert.equal(src.covers({ ...AUSTIN, where: 'Austin, TX', category: 'roofers' }), true); assert.equal(src.covers({ ...AUSTIN, where: 'Austin, Texas, USA' }), true)
+  for (const where of ['Austin, Minnesota', 'Austin, MN', 'Port Austin, Michigan', 'Lake Austin, Texas']) assert.equal(src.covers({ ...AUSTIN, where }), false, where)
+  assert.equal(src.covers({ ...AUSTIN, category: 'solar installers', query: 'solar roofing installers in Austin' }), false, 'the category decides, not words in the query')
   const q = new URL(permitQuery(AUSTIN_PERMITS, ROOF, SINCE))
   assert.equal(q.origin + q.pathname, 'https://data.austintexas.gov/resource/3syk-w9eu.json')
   assert.match(q.searchParams.get('$where')!, /issue_date >= '2026-08-17T00:00:00' AND contractor_company_name IS NOT NULL AND upper\(description\) like '%ROOF%'/)
-  assert.equal(q.searchParams.get('$limit'), '2000'); assert.match(q.searchParams.get('$select')!, /^issue_date,contractor_company_name,contractor_full_name,/)
+  assert.equal(q.searchParams.get('$limit'), '500'); assert.equal(q.searchParams.get('$offset'), '0'); assert.equal(new URL(permitQuery(AUSTIN_PERMITS, ROOF, SINCE, 2)).searchParams.get('$offset'), '1000'); assert.match(q.searchParams.get('$select')!, /^issue_date,contractor_company_name,contractor_full_name,/)
   const serve = (status: number, body: string, truncated = false): SafeGet => async () => ({ status, body, truncated })
   const ok = await src.collect(AUSTIN, SINCE, serve(200, JSON.stringify(FX.rows)))
   assert.ok(ok.candidates.length >= 6 && ok.notes.length === 0, JSON.stringify(ok.notes))
@@ -72,6 +81,12 @@ test('the source: covers only its city and category, builds a bounded server que
   assert.deepEqual((await src.collect(AUSTIN, SINCE, serve(200, '<!doctype html><html>blocked</html>'))).notes, ['not_json'])
   assert.deepEqual((await src.collect(AUSTIN, SINCE, serve(200, '[{', true))).notes, ['oversize'])
   assert.deepEqual((await src.collect(AUSTIN, SINCE, async () => null)).notes, ['unreachable'])
+  assert.deepEqual((await src.collect(AUSTIN, SINCE, serve(200, '{"error":"x"}'))).notes, ['not_json'], 'a 200 without rows is unreadable, not empty')
+  // a full first page and an unreadable second: what was read is kept, every count says "at least"
+  const full = Array.from({ length: 500 }, (_, i) => ({ ...FX.rows.find(r => String(r.contractor_company_name).startsWith('Kanga Roof LLC'))!, permit_number: `P-${i}` }))
+  let page = 0
+  const partial = await src.collect(AUSTIN, SINCE, async () => (page++ === 0 ? { status: 200, body: JSON.stringify(full) } : { status: 503, body: '' }))
+  assert.deepEqual(partial.notes, ['http_503', 'partial']); assert.match(partial.candidates[0].snippet, /^Kanga Roof LLC - at least 500 roofing permits issued/)
   assert.deepEqual((await src.collect({ ...AUSTIN, where: 'Dallas, Texas' }, SINCE, serve(200, '[]'))).notes, ['not_covered'])
 })
 

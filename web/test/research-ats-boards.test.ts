@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { boardApi, boardCandidate, boardCandidates, boardOf, boardRoles, type Board } from '../lib/research/sources/ats-boards.ts'
+import { boardApi, boardCandidate, boardCandidates, boardOf, boardRoles, placeTest, type Board } from '../lib/research/sources/ats-boards.ts'
 import { huntWithRegistry } from '../lib/research/hunt.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import type { Candidate, ResearchCase } from '../lib/research/types.ts'
@@ -18,6 +18,7 @@ test('a search result names a board only on a board host; anything else (the com
   assert.deepEqual(boardOf('https://boards.greenhouse.io/embed/job_board?for=Tenstorrent'), GH)
   assert.deepEqual(boardOf('https://jobs.lever.co/palantir/6ed76ce8-4156-4b60-b120-403538bd66cd'), LV)
   assert.deepEqual(boardOf('https://jobs.eu.lever.co/acme'), { ats: 'lever', token: 'acme', host: 'eu' })
+  assert.equal(boardOf('https://job-boards.eu.greenhouse.io/acme'), null, 'EU Greenhouse boards have another API host: not read rather than misread as missing')
   assert.deepEqual(boardOf('https://jobs.ashbyhq.com/expressable/34413f8d'), AB)
   for (const u of ['https://www.linkedin.com/jobs/view/1', 'https://tenstorrent.com/careers', 'http://jobs.lever.co/palantir', 'https://greenhouse.io/tenstorrent', 'not a url']) assert.equal(boardOf(u), null, u)
   assert.equal(boardApi(GH), 'https://boards-api.greenhouse.io/v1/boards/tenstorrent/jobs')
@@ -25,7 +26,7 @@ test('a search result names a board only on a board host; anything else (the com
 })
 
 test("each board's own posting day and location, on real boards: only roles in the case's city and inside the window count", () => {
-  const gh = boardRoles(GH, FX.greenhouse.body), ab = boardRoles(AB, FX.ashby.body), lv = boardRoles(LV, FX.lever.body)
+  const gh = boardRoles(GH, FX.greenhouse.body)!, ab = boardRoles(AB, FX.ashby.body)!, lv = boardRoles(LV, FX.lever.body)!
   assert.ok(gh.length === 11 && ab.length > 0 && lv.length > 0)
   assert.ok([...gh, ...ab, ...lv].every(r => /^\d{4}-\d{2}-\d{2}$/.test(r.posted) && /^https:\/\//.test(r.url)))
   const t = boardCandidate(GH, gh, AUSTIN, SINCE)!
@@ -39,6 +40,20 @@ test("each board's own posting day and location, on real boards: only roles in t
   assert.equal(boardCandidate(GH, gh, AUSTIN, '2026-11-13'), null, 'no role inside the window: nothing')
   const city = FX.lever_city.split(',')[0]
   assert.ok(boardCandidate(LV, lv, { where: FX.lever_city }, '2026-01-01')?.title.startsWith(`Palantir: `), `Lever: ${city}`)
+  assert.equal(boardRoles(LV, { ok: false, error: 'rate limited' }), null, 'a 200 without the board shape is unreadable, not empty')
+  assert.equal(boardRoles(GH, { error: 'x' }), null)
+})
+
+test("the case's place, city AND region: another state's Austin, Port Austin and North Vancouver are other places", () => {
+  const tx = placeTest({ where: 'Austin, Texas' })!
+  assert.equal(tx('Austin, Texas, United States'), true); assert.equal(tx('Austin, TX'), true); assert.equal(tx('Texas; Austin'), true)
+  assert.equal(tx('Austin, MN'), false); assert.equal(tx('Port Austin, Texas'), false); assert.equal(tx('Remote'), false); assert.equal(tx('Austin'), false, 'no region on the role: not provably this Austin')
+  const bc = placeTest({ where: 'Vancouver, British Columbia' })!
+  assert.equal(bc('Vancouver, BC'), true); assert.equal(bc('Vancouver, WA'), false); assert.equal(bc('North Vancouver, BC'), false)
+  assert.equal(placeTest({ where: 'Portland, Maine' })!('Portland, OR'), false)
+  assert.equal(placeTest({ where: 'Austin' })!('Austin, MN'), true, 'a case without a region: the city alone')
+  const roles = [{ title: 'Roofer', location: 'Austin, MN', posted: '2026-11-01', url: 'https://jobs.lever.co/acme/1', company: null }]
+  assert.equal(boardCandidate(LV, roles, AUSTIN, SINCE), null)
 })
 
 test('the hook reads the boards the hunt found (one request per board), and a board record wins over the search hit for the same URL', async () => {
@@ -65,6 +80,13 @@ test('the hook reads the boards the hunt found (one request per board), and a bo
   assert.equal(h.candidates.filter(x => x.via === 'tinyfish').length, 4)
   assert.equal(h.candidates.filter(x => x.dated === 'registry').length, 2); assert.equal(h.funnel.out, 6)
   assert.deepEqual(h.registry, { 'ats-boards': ['no_board_1'] })
+  assert.equal(h.funnel.dropped['registry_ats-boards_no_board_1'], 1, 'the note reaches the scan funnel')
+  // the board's role page was also a search hit: one candidate, the board's dated record
+  const tenstorrentLatest = r.candidates.find(x => x.title.startsWith('Tenstorrent'))!.url
+  const sameUrl = async () => ({ ok: true as const, hits: [...found, { url: tenstorrentLatest, title: 'search hit', snippet: '', date: null }].map(f => ({ url: f.url, title: f.title, snippet: f.snippet, date: f.date })) })
+  const h2 = await huntWithRegistry(AUSTIN, plan, sameUrl, http, { env: { LEAD_ENGINE: 'research' }, sources: [] })
+  const at = h2.candidates.filter(x => x.url === tenstorrentLatest)
+  assert.equal(at.length, 1); assert.equal(at[0].dated, 'registry'); assert.equal(h2.funnel.dropped.board_record_over_hit, 1)
   const off = await huntWithRegistry(AUSTIN, plan, search, async () => { throw new Error('no request when off') }, { env: {} })
   assert.equal(off.candidates.length, 4)
 })
