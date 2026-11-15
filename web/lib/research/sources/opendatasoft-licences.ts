@@ -45,10 +45,12 @@ const addressText = (r: Row) => [str(r.unit) && `${str(r.unit)}-`, str(r.house),
 // the licence's day where it was issued: the dataset stamps issueddate in UTC ("2026-09-29T01:30:00+00:00" is the 28th in Vancouver)
 const LOCAL = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit' })
 export const licenceDay = (v: unknown): string | null => {
-  const s = str(v)
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? null : s
-  const ms = /^\d{4}-\d{2}-\d{2}T/.test(s) ? Date.parse(s) : NaN
-  return Number.isNaN(ms) ? null : LOCAL.format(new Date(ms))
+  const s = str(v), d = s.slice(0, 10)
+  // the calendar day must exist (2026-02-30 never rolls over to March) and a timestamp must say its offset (no server-timezone guess)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`)) || new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) !== d) return null
+  if (s.length === 10) return d
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(s)) return null
+  return LOCAL.format(new Date(Date.parse(s)))
 }
 const day = licenceDay
 // an Opendatasoft (ODSQL) string literal: double quotes, a quote inside doubled

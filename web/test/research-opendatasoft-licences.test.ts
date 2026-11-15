@@ -98,4 +98,6 @@ test("a licence's day is Vancouver's day, not UTC's: an evening licence is not d
   assert.equal(licenceDay('2026-09-29T01:30:00+00:00'), '2026-09-28')
   assert.equal(licenceDay('2026-09-28T15:38:00+00:00'), '2026-09-28')
   assert.equal(licenceDay('2026-09-28'), '2026-09-28'); assert.equal(licenceDay('soon'), null); assert.equal(licenceDay(null), null)
+  assert.equal(licenceDay('2026-02-30'), null, 'a day that does not exist'); assert.equal(licenceDay('2026-02-30T05:00:00+00:00'), null, 'never rolled over to March')
+  assert.equal(licenceDay('2026-09-28T01:00:00'), null, 'no offset: the day would depend on the server')
 })
