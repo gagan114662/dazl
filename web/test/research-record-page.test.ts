@@ -43,6 +43,9 @@ test('a permit and a licence render as one dated sentence naming the business; a
   assert.ok(a.text.length <= 300)
   const v = renderRegistryRecord(FX.vancouver, registryRecordRef(FX.vancouver_url)!)!
   assert.equal(v.published, '2026-09-28')
+  const evening = renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], issueddate: '2026-09-29T01:30:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!)!
+  assert.equal(evening.published, '2026-09-28', "an evening licence is dated on Vancouver's day"); assert.match(evening.text, /was issued on 2026-09-28/)
+  assert.equal(renderRegistryRecord({ results: [FX.vancouver.results[0], { ...FX.vancouver.results[0], status: 'Gone Out of Business', issueddate: '2026-01-05T10:00:00+00:00' }] }, registryRecordRef(FX.vancouver_url)!), null, 'two rows of one licence: no single day and status')
   assert.match(v.text, /^City of Vancouver business licence 26-210140 was issued on 2026-09-28 to Skewers Souvlaki Pita Bar \(licensee: Andre Skewers Souvlaki Pita Bar Ltd; type: Restaurant.*at 1851 COMMERCIAL DRIVE, Grandview-Woodland, Vancouver, BC\)\.$/)
   assert.equal(renderRegistryRecord([], { kind: 'austin-permit', id: '2026-121002 BP' }), null, 'no rows')
   // a permit's rows: one per contractor (derived from the real row, labelled)
@@ -51,6 +54,7 @@ test('a permit and a licence render as one dated sentence naming the business; a
   assert.match(renderRegistryRecord([sub, gc], ref)!.text, /with Precision Reconstruction Group as general contractor/, 'the general contractor, whatever the row order')
   assert.equal(renderRegistryRecord([sub], ref), null, 'no general contractor: no business is named (never the subcontractor)')
   assert.equal(renderRegistryRecord([gc, { ...sub, issue_date: '2026-10-01T00:00:00.000' }], ref), null, 'rows that disagree on the day are not one dated fact')
+  assert.doesNotMatch(renderRegistryRecord([{ ...gc, contractor_full_name: 'N/A' }], ref)!.text, /contractor of record/, "'N/A' is not a person")
   const long = renderRegistryRecord([{ ...gc, contractor_company_name: 'X'.repeat(400) }], ref)!
   assert.ok(long.text.length <= 300, `quote limit: ${long.text.length}`)
   assert.equal(renderRegistryRecord(FX.austin, { kind: 'austin-permit', id: '2026-999999 BP' }), null, 'another permit')
@@ -80,9 +84,17 @@ test('through the real page fetcher: the cited record is a readable page with it
   try { assert.ok(isFail(await fetchPageDetailed('https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-999999+BP', async () => null))) } finally { restore() }
   // a record URL that answers HTML, or a licence body that is not an object, is not a page
   restore = fakeHttps(() => ({ status: 200, type: 'text/html', body: '<html><body>City of Austin permit</body></html>' }))
-  try { const p = await fetchPageDetailed(FX.austin_url, async () => null); assert.ok(isFail(p) || !/was issued on/.test(p.text), 'HTML on a record URL is never rendered as the record') } finally { restore() }
+  try { assert.ok(isFail(await fetchPageDetailed(FX.austin_url, async () => null)), 'HTML on a record URL is a failed read, never a page') } finally { restore() }
   restore = fakeHttps(json(['not', 'a', 'licence']))
   try { assert.ok(isFail(await fetchPageDetailed(FX.vancouver_url, async () => null))) } finally { restore() }
+  // a body over the size cap is not read; rows of two permits are not this permit's record
+  restore = fakeHttps(() => ({ status: 200, type: 'application/json', body: '[' + ' '.repeat(2_000_000) + ']' }))
+  try { assert.ok(isFail(await fetchPageDetailed(FX.austin_url, async () => null)), 'oversize') } finally { restore() }
+  restore = fakeHttps(json([FX.austin[0], { ...(FX.austin[0] as object), permit_number: '2026-999999 BP' }]))
+  try { assert.ok(isFail(await fetchPageDetailed(FX.austin_url, async () => null)), 'mixed permits') } finally { restore() }
+  // a record URL that redirects to the same record id on another host does not borrow it
+  restore = fakeHttps(u => u.startsWith('https://data.austintexas.gov') ? { status: 302, type: 'text/html', body: '', location: 'https://evil.example/resource/3syk-w9eu.json?permit_number=2026-121002+BP' } : json(FX.austin)())
+  try { assert.ok(isFail(await fetchPageDetailed(FX.austin_url, async () => null)), 'cross-host redirect') } finally { restore() }
   // a record URL that redirects to another record does not borrow it
   restore = fakeHttps(u => u.includes('2026-555555') ? { status: 302, type: 'text/html', body: '', location: FX.austin_url } : json(FX.austin)())
   try { assert.ok(isFail(await fetchPageDetailed('https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-555555+BP', async () => null))) } finally { restore() }

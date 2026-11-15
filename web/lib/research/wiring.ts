@@ -59,11 +59,12 @@ export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: {
     ...base,
     // registry records skip the web filter (dated, in the place and category by construction), up to MAX_REGISTRY_PAGES; the rest share the page budget
     filter: async (c, plan, cands) => {
-      const reg = cands.filter(x => x.dated === 'registry').slice(0, MAX_REGISTRY_PAGES)
+      const regAll = cands.filter(x => x.dated === 'registry'), reg = regAll.slice(0, MAX_REGISTRY_PAGES)
+      for (const x of regAll.slice(MAX_REGISTRY_PAGES)) { x.keep = false; x.dropped = 'registry page budget' }   // counted, never silently gone
       const web = cands.filter(x => x.dated !== 'registry')
       const f = await filterStage({ decider, fallback: ask, maxPages: Math.max(10, MAX_PAGES - reg.length) })(c, plan, web)
       for (const x of reg) { x.keep = true; x.dropped = null }
-      return { all: [...reg, ...f.all], keep: [...reg, ...f.keep] }
+      return { all: [...regAll, ...f.all], keep: [...reg, ...f.keep] }
     },
     gate: gateStage(ask),
     read: async (c, plan, cand: Candidate) => {

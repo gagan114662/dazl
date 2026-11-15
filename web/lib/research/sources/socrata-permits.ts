@@ -60,7 +60,7 @@ const day = (v: unknown): string | null => { const d = str(v).slice(0, 10); retu
 const cleanCompany = (s: string) => s.replace(/\*+\s*MAIN\s*\*+/gi, '').replace(/[\s,]+$/, '').trim()
 const companyKey = (s: string) => cleanCompany(s).toLowerCase().replace(/\b(?:llc|inc|ltd|co|corp|company|l\.l\.c\.?|lp)\b\.?/g, ' ').replace(/[^a-z0-9]+/g, '')
 // a contractor of record is a person's name: two to four words, letters only (the dataset sometimes holds a company or "N/A")
-const looksLikePerson = (s: string) => /^[A-Za-z][A-Za-z'.-]+(?:\s+[A-Za-z][A-Za-z'.-]+){1,3}$/.test(s) && !/\b(?:llc|inc|ltd|roofing|construction|company|n\/?a|none)\b/i.test(s)
+export const looksLikePerson = (s: string) => /^[A-Za-z][A-Za-z'.-]+(?:\s+[A-Za-z][A-Za-z'.-]+){1,3}$/.test(s) && !/\b(?:llc|inc|ltd|roofing|construction|company|n\/?a|none)\b/i.test(s)
 const titleCase = (s: string) => s.toLowerCase().replace(/\b([a-z])/g, m => m.toUpperCase())
 
 export function permitQuery(d: PermitDataset, c: PermitCategory, since: string, page = 0): string {

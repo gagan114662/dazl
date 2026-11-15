@@ -3,6 +3,9 @@
 // stages open it through the shared page fetcher (lib/scan/fetch-page.ts), which reads no JSON but the records it knows. This module tells the
 // fetcher which URLs are such records and renders exactly that record as one sentence: the business, the record's number, what it is and the
 // day the record states, side by side, so a quote cut from it carries its own date. A body that is not the record the URL names renders null.
+import { looksLikePerson } from './socrata-permits.ts'
+import { licenceDay } from './opendatasoft-licences.ts'
+
 export type RegistryRecordRef = { kind: 'austin-permit'; id: string } | { kind: 'vancouver-licence'; id: string }
 
 const AUSTIN = 'https://data.austintexas.gov/resource/3syk-w9eu.json'
@@ -47,16 +50,18 @@ export function renderRegistryRecord(body: unknown, ref: RegistryRecordRef): Rec
     if (!gc || !issued || days.size !== 1) return null
     const company = cap(str(gc.contractor_company_name).replace(/\*+\s*MAIN\s*\*+/gi, '').trim()), at = str(gc.permit_location), what = str(gc.description).slice(0, 140)
     if (!company) return null
-    const person = cap(str(gc.contractor_full_name))
+    const person = looksLikePerson(str(gc.contractor_full_name)) ? cap(str(gc.contractor_full_name)) : ''   // never 'N/A' or a company as a person
     const text = fit(f => `City of Austin permit ${ref.id} was issued on ${issued} with ${company} as general contractor${f.length ? ` (${f.join('; ')})` : ''}.`,
       [what ? `work: ${what}` : '', at ? `at ${at}, Austin, Texas` : '', person ? `contractor of record: ${person}` : ''].filter(Boolean))
     return { text, title: `City of Austin permit ${ref.id}: ${company}`, published: issued }
   }
   // Vancouver: {total_count, results: [...]}: exactly the licence the URL names
   const results = isObj(body) && Array.isArray(body.results) ? body.results.filter(isObj) : null
-  const r = results?.find(x => str(x.licencenumber) === ref.id)
-  if (!r) return null
-  const issued = day(r.issueddate), legal = cap(str(r.businessname)), trade = cap(str(r.businesstradename)), name = trade || legal
+  // exactly one row of this licence: several (a revision, a status change) do not state one licence's day and status
+  const matches = results?.filter(x => str(x.licencenumber) === ref.id) ?? []
+  if (matches.length !== 1) return null
+  const r = matches[0]
+  const issued = licenceDay(r.issueddate), legal = cap(str(r.businessname)), trade = cap(str(r.businesstradename)), name = trade || legal
   if (!issued || !name || str(r.status) !== 'Issued') return null
   const address = [str(r.unit) && `${str(r.unit)}-`, str(r.house), str(r.street)].filter(Boolean).join(' ').replace('- ', '-')
   const kind = [str(r.businesstype), str(r.businesssubtype)].filter(Boolean).join(', ')

@@ -295,6 +295,9 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         if (!rec) return { fail: 'error' }
         const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
         return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
+      } else if (registryRecordRef(rawUrl) && !/^application\/json\b/i.test(r.type)) {
+        // a city record URL that answers HTML (an error page, a portal shell) is a failed read, never a page of that record
+        return { fail: 'error' }
       } else if (/^application\/json\b/i.test(r.type)) {
         // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
         const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date

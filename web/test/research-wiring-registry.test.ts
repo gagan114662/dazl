@@ -33,6 +33,7 @@ test('the wired filter lets registry records through without the web filter, up 
   const cands = Array.from({ length: MAX_REGISTRY_PAGES + 5 }, (_, i) => reg(i))
   const f = await st.filter!(C('Austin, Texas', 'roofing contractors'), plan, cands)
   assert.equal(f.keep.length, MAX_REGISTRY_PAGES); assert.ok(f.keep.every(x => x.dated === 'registry' && x.keep === true && x.dropped === null))
+  assert.equal(f.all.filter(x => x.dropped === 'registry page budget').length, 5, 'records over the page budget are counted, not silently gone')
   assert.equal(asked, 0, 'no web-filter question is asked about a registry record')
 })
 
