@@ -129,3 +129,71 @@ test('a person on a blog post is not the company\'s person, even when "/contact"
   for (const url of ['https://acme-law.example/about-us/', 'https://acme-law.example/en-us/our-team', 'https://acme-law.example/locations/chicago', 'https://acme-law.example/people/'])
     assert.deepEqual(extractPeople(page, url, 'Partner').map(f => f.value), ['Dana Okoye, Partner'], url)
 })
+
+// Review fixes (council at e99b7747): R1 bio links, R2 other offices, R3 one city + the office page's own place, R4 whole segments,
+// R5 this company only, R6 a mislabelled plain body.
+test('R1: a bio link counts only under a people directory, never under testimonials, case studies, blog authors or a portfolio', () => {
+  const page = (href: string) => `<html><body>${prose('Our people.')}<h5><a href="${href}">Dana L. Okoye</a></h5><div>Managing Partner</div></body></html>`
+  const kept = (href: string) => extractPeople(page(href), 'https://acme-law.example/our-team/', 'Managing Partner').map(f => f.value)
+  for (const href of ['/people/dana-l-okoye', '/our-team/dana-l-okoye', '/attorneys/dana-l-okoye/', '/en-us/professionals/dana-l-okoye.html'])
+    assert.deepEqual(kept(href), ['Dana L. Okoye, Managing Partner'], href)
+  for (const href of ['/testimonials/dana-l-okoye', '/case-studies/dana-l-okoye', '/blog/author/dana-l-okoye', '/portfolio/dana-l-okoye', '/dana-l-okoye', '/news/people/dana-l-okoye', '/client-reviews/team/dana-l-okoye'])
+    assert.deepEqual(kept(href), [], href)
+})
+
+test('R2: another city\'s office page is never read nor its people kept; with no city requested no office page is read', async () => {
+  const office = (city: string, who: string) => `<html><body><h1>${city}</h1>${prose(`Our ${city} office.`)}<div>${who}</div><div>Office Managing Partner</div></body></html>`
+  const pages = {
+    '/robots.txt': '',
+    '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/locations/denver">Denver</a><a href="/locations/boston">Boston</a><a href="/offices/denver/team">Denver team</a></body></html>`,
+    '/locations/denver': office('Denver', 'Rae Mendel'), '/locations/boston': office('Boston', 'Ola Brandt'), '/offices/denver/team': office('Denver', 'Ivo Grant'),
+  }
+  for (const where of [['Chicago, Illinois'], []]) {
+    const s = site(pages)
+    const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, where)
+    assert.ok(!s.fetched.some(p => /denver|boston/.test(p)), `${where}: ${s.fetched.join(' ')}`)
+    assert.deepEqual(r.found.filter(f => f.kind === 'person'), [], String(where))
+  }
+  // a redirect onto another city's office page keeps nobody from it
+  const s = site(pages, { '/contact': '/locations/denver' })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Chicago, Illinois'])
+  assert.deepEqual(r.found.filter(f => f.kind === 'person'), [])
+  assert.deepEqual(contactPaths(pages['/'], new URL('https://acme-law.example/'), ['Chicago, Illinois']).filter(p => /denver|boston/.test(p)), [])
+})
+
+test('R3: several requested cities seek no office page; an office page in a same-name place elsewhere keeps nobody', async () => {
+  const home = `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/locations/chicago">Chicago</a><a href="/locations/paris">Paris</a></body></html>`
+  assert.deepEqual(officeLinks(home, new URL('https://acme-law.example/'), ['Chicago, Illinois', 'Denver, Colorado']), [])
+  const s = site({ '/robots.txt': '', '/': home, '/locations/paris': `<html><body><h1>Paris</h1>${prose('Our office at 8 Rue de Rivoli, 75001 Paris, France.')}<div>Rae Mendel</div><div>Office Managing Partner</div></body></html>` })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, Texas'])
+  assert.ok(s.fetched.includes('/locations/paris'), s.fetched.join(' '))
+  assert.deepEqual(r.found.filter(f => f.kind === 'person'), [], 'Paris, France is not Paris, Texas')
+})
+
+test('R4: a people or contact page is a WHOLE segment (joined forms and a container allowed); a post that starts with the word is not', () => {
+  const page = `<html><body>${prose('Who we are.')}<div>Dana Okoye</div><div>Partner</div></body></html>`
+  for (const p of ['/aboutus', '/AboutUs.aspx', '/about_us/', '/contactus', '/firm/our-people', '/company/leadership', '/about/team', '/meet-the-team'])
+    assert.deepEqual(extractPeople(page, `https://acme-law.example${p}`, 'Partner').map(f => f.value), ['Dana Okoye, Partner'], p)
+  for (const p of ['/contact-tracing-guide', '/about-the-case-of-x', '/company-news/new-ceo-joins', '/teamwork-tips', '/firm/news/partner-joins'])
+    assert.deepEqual(extractPeople(page, `https://acme-law.example${p}`, 'Partner').map(f => f.value), [], p)
+  const cp = contactPaths(['/contact-tracing-guide', '/about-the-case-of-x', '/company-news/new-ceo-joins', '/aboutus', '/firm/our-people'].map(h => `<a href="${h}">x</a>`).join(''), new URL('https://acme-law.example/'))
+  assert.ok(cp.includes('/aboutus') && cp.includes('/firm/our-people'), cp.join(' '))
+  assert.ok(!cp.some(p => /tracing|case-of|company-news/.test(p)), cp.join(' '))
+})
+
+test('R5: the company after a title must be THIS company: a legal suffix may differ, a group / other name may not', () => {
+  const page = (title: string) => `<html><body>${prose('About us.')}<div>Dana Okoye</div><div>${title}</div></body></html>`
+  const run = (title: string, company: string) => extractPeople(page(title), 'https://acme.example/about/', 'CEO', company).map(f => f.value)
+  assert.deepEqual(run('CEO, Acme LLC', 'Acme'), ['Dana Okoye, CEO'])
+  assert.deepEqual(run('CEO, Acme', 'Acme Inc.'), ['Dana Okoye, CEO'])
+  assert.deepEqual(run('CEO, Acme Group', 'Acme'), [], 'Acme Group is another business')
+  assert.deepEqual(run('CEO, Acme Holdings', 'Acme'), [])
+})
+
+test('R6: a body labelled gzip but sent as plain HTML is read as the page; a corrupt real gzip body is still no page', async () => {
+  const s = await serve((_p, res) => { res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' }); res.end(PAGE) })
+  try { assert.equal((await rawGet(`https://127.0.0.1:${s.port}/`, 0, 3000, loopbackLookup as never))?.body, PAGE) } finally { await s.close() }
+  const bad = Buffer.concat([zlib.gzipSync(Buffer.from(PAGE)).subarray(0, 10), Buffer.from('garbage-not-deflate')])
+  const s2 = await serve((_p, res) => { res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' }); res.end(bad) })
+  try { assert.equal(await rawGet(`https://127.0.0.1:${s2.port}/`, 0, 3000, loopbackLookup as never), null) } finally { await s2.close() }
+})

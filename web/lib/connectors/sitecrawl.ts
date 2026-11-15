@@ -69,11 +69,15 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
       const decoder = enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip() : enc === 'deflate' ? zlib.createInflate() : enc === 'br' ? zlib.createBrotliDecompress() : null
       if (enc && enc !== 'identity' && !decoder) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      // A body LABELLED compressed but sent plain (some servers): if decoding fails before anything was decoded and the raw bytes do not
+      // start like a compressed stream, the raw bytes are the page.
+      const raw: Buffer[] = []; let rawN = 0
+      if (decoder) res.on('data', (c: Buffer) => { if (rawN <= MAX_BYTES) { raw.push(c); rawN += c.length } })
       const body = decoder ? res.pipe(decoder) : res
       const chunks: Buffer[] = []; let n = 0
       body.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BYTES) { res.destroy(); decoder?.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }) } else chunks.push(c) })
       body.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
-      body.on('error', () => resolve(null))   // a corrupt compressed body is no page
+      body.on('error', () => { const b = Buffer.concat(raw); if (n === 0 && b.length > 0 && b[0] !== 0x1f && rawN <= MAX_BYTES && /^\s*</.test(b.subarray(0, 64).toString('utf8'))) { const done = () => resolve({ status, body: Buffer.concat(raw).toString('utf8'), finalUrl: u.toString() }); if (res.readableEnded || res.complete) done(); else { res.on('end', done); res.on('close', done); res.resume() } } else resolve(null) })   // a corrupt compressed body is no page; a mislabelled plain one is
       res.on('error', () => resolve(null))
       res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder the decoder's 'end' settles it
     })
@@ -322,12 +326,19 @@ const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|dir
 export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|(?:office )?managing (?:partner|shareholder|principal)|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
-const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist|locations?|offices?)/i
-// A people page by its FIRST path segment (after a locale such as "en-us"), at most four segments deep: "/about-us", "/our-team",
-// "/locations/chicago". Matching the word anywhere took a blog post ("/insights/blog-posts/contact-tracing-in-the-uk", reached when
-// "/contact" redirected there) for a contact page and kept its author as the company's person (#1102 measurement).
-const peoplePage = (pathname: string) => { const seg = pathname.toLowerCase().split('/').filter(Boolean); const at = /^[a-z]{2}(?:-[a-z]{2})?$/.test(seg[0] ?? '') ? 1 : 0; return seg.length > at && seg.length <= at + 4 && PEOPLE_PAGE_START.test(seg[at]) }
-const PEOPLE_PAGE_START = new RegExp(`^(?:our-|meet-(?:the-|our-)?)?(?:${PEOPLE_PAGE.source})(?:$|[-.])`, 'i')   // "our-team", "meet-the-team" too
+// A people page by a WHOLE path segment, after a locale such as "en-us": "/about", "/about-us", "/aboutus", "/AboutUs.aspx", "/our-team",
+// "/meet-the-team", "/contact-us", "/locations/chicago"; or the second segment under a container ("/firm/our-people", "/company/leadership",
+// "/about/team"). A segment that merely STARTS with such a word is a post, not the page: "/contact-tracing-guide", "/about-the-case-of-x",
+// "/our-meetup-recap", and anything under "/insights/blog-posts/" (#1102 measurement: a UK blog post reached through a /contact redirect
+// gave a wrong person). At most four segments deep.
+const PEOPLE_SEGMENT = /^(?:our-|meet-(?:the-|our-)?)?(?:about(?:-?us)?|our-story|our-firm|who-we-are|team|leadership|management|people|staff|attorneys|lawyers|professionals|doctors?|dentists?|providers|owners?|contact(?:-?us)?|company|locations?|offices?)(?:\.[a-z]{2,5})?$/
+const CONTAINER_SEGMENT = /^(?:about(?:-?us)?|firm|our-firm|company|who-we-are)$/
+const segmentsOf = (pathname: string) => { const seg = pathname.toLowerCase().replace(/_/g, '-').split('/').filter(Boolean); const at = /^[a-z]{2}(?:-[a-z]{2})?$/.test(seg[0] ?? '') ? 1 : 0; return seg.slice(at) }
+const peoplePage = (pathname: string) => { const seg = segmentsOf(pathname); return seg.length > 0 && seg.length <= 4 && (PEOPLE_SEGMENT.test(seg[0]) || (CONTAINER_SEGMENT.test(seg[0]) && seg.length >= 2 && PEOPLE_SEGMENT.test(seg[1]))) }
+// A link to a person's own bio: under a people-directory segment ("/people/<slug>", "/attorneys/<slug>", "/our-team/<slug>"), never under
+// testimonials, case studies, blog authors, portfolios or press (MARK words), and the last segment is the person's name slug.
+const BIO_MARK = /testimonial|review|case-stud|blog|author|portfolio|press|news|client|customer|success-stor|sponsor|award/
+const BIO_PARENT = /^(?:our-|meet-(?:the-|our-)?)?(?:people|team|staff|attorneys|lawyers|professionals|bios?|leadership|doctors?|dentists?|providers|partners)$/
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -417,13 +428,14 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   const ownBioLink = (name: string) => {
     let base: URL; try { base = new URL(pageUrl) } catch { return false }
     const slug = slugOf(name), host = base.hostname.replace(/^www\./, '')
-    return (linkTargets.get(name.toLowerCase()) ?? []).some(h => { try { const u = new URL(h.replace(/&amp;/g, '&'), base); return u.hostname.replace(/^www\./, '') === host && (u.pathname.replace(/\/+$/, '').split('/').pop() ?? '').replace(/\.html?$/, '') === slug } catch { return false } })
+    return (linkTargets.get(name.toLowerCase()) ?? []).some(h => { try { const u = new URL(h.replace(/&amp;/g, '&'), base); const seg = segmentsOf(u.pathname.replace(/\/+$/, '')); if (seg.length < 2 || !BIO_PARENT.test(seg[seg.length - 2]) || seg.slice(0, -1).some(x => BIO_MARK.test(x))) return false; return u.hostname.replace(/^www\./, '') === host && (u.pathname.replace(/\/+$/, '').split('/').pop() ?? '').replace(/\.html?$/, '') === slug } catch { return false } })
   }
-  const companyNorm = company ? norm(company) : ''
+  const strict = (x: string) => x.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/[,.]?\s*\b(inc|llc|ltd|llp|pllc|pc|plc|corp|co|pty ltd|pty)\.?\s*$/i, '').replace(/[^a-z0-9]+/g, '')
+  const companyNorm = company ? strict(company) : ''
   const ownCompanyTail = (title: string) => {
     if (!companyNorm) return title
     const m = /^(.*?)\s*(?:,|\bat\b|\bof\b|@|\u2013|\u2014|-)\s*([^,]{2,80})$/i.exec(title)
-    return m && norm(m[2]) === companyNorm ? m[1] : title
+    return m && strict(m[2]) === companyNorm ? m[1] : title
   }
   // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
   const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
@@ -491,14 +503,19 @@ const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
-const PAGE_HINT = /^(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|our-people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
-// A path is a candidate page only when its first segment (after a locale) STARTS with a hint word and it is at most three segments deep: a blog
-// post such as "/insights/blog-posts/contact-tracing-in-the-uk" or "/blog/about-stats-gaps" is not the company's contact or about page.
-const hinted = (pathname: string) => { const seg = pathname.split('/').filter(Boolean); const at = /^[a-z]{2}(?:-[a-z]{2})?$/i.test(seg[0] ?? '') ? 1 : 0; return seg.length > at && seg.length <= at + 3 && PAGE_HINT.test(seg[at]) }   // the first segment (after a locale such as "en-us")
+// A path is a candidate page only when a WHOLE segment (the first after a locale, or the second under a container such as /firm/) is a hint
+// word and it is at most three segments deep: "/contact-tracing-guide" and "/company-news/new-ceo-joins" are not; a blog post such as "/insights/blog-posts/contact-tracing-in-the-uk" or "/blog/about-stats-gaps" is not the company's contact or about page.
+const HINT_SEGMENT = /^(?:our-|meet-(?:the-|our-)?)?(?:contact(?:-?us)?|about(?:-?us)?|impressum|kontakt|contacto|contato|nous-contacter|contactez(?:-nous)?|chi-siamo|company|team|leadership|management|people|staff|attorneys|lawyers|professionals|reach(?:-us)?|locations?|offices?|careers?|our-practice|providers|doctors?|dentists?|our-story|who-we-are|our-firm)(?:\.[a-z]{2,5})?$/
+const hinted = (pathname: string) => { const seg = segmentsOf(pathname); return seg.length > 0 && seg.length <= 3 && (HINT_SEGMENT.test(seg[0]) || (CONTAINER_SEGMENT.test(seg[0]) && seg.length >= 2 && HINT_SEGMENT.test(seg[1]))) }
 // A firm's index of its offices ("/locations", "/offices", "/firm-offices", "/locations.html").
+// A page under a locations / offices segment (an office page or the index).
+const LOCATION_PAGE = /\/(?:[a-z-]*-)?(?:locations?|offices?)(?:\/|\.html?$|$)/i
 const LOCATIONS_INDEX = /^\/(?:[a-z-]*-)?(?:locations?|offices?)(?:\.html?)?\/?$/i
 // The city slugs a request names ("Chicago, Illinois" -> "chicago"; "Kansas City" -> "kansas-city").
 export function citySlugs(places: string[]): string[] {
+  // exactly one city: with several (a multi-city scan), which office a lead belongs to is not known here, so no office page is sought
+  const one = [...new Set(places.map(p => String(p).split(',')[0].trim().toLowerCase()).filter(Boolean))]
+  if (one.length !== 1) return []
   return [...new Set(places.map(p => String(p).split(',')[0].trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')).filter(x => x.length >= 3))]
 }
 // Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
@@ -516,6 +533,13 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
   }
   return out.slice(0, 2)
 }
+// A path under a locations / offices segment ("/locations/denver") is the page of ONE office: read only when that office is the requested city.
+export function otherOffice(pathname: string, places: string[]): boolean {
+  const seg = segmentsOf(pathname).map(x => x.replace(/\.html?$/, ''))
+  const i = seg.findIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
+  if (i < 0 || i === seg.length - 1) return false
+  return !citySlugs(places).includes(seg[seg.length - 1])
+}
 export function contactPaths(homeHtml: string, home: URL, places: string[] = []): string[] {
   const offices = officeLinks(homeHtml, home, places)
   const set = new Set<string>([...offices, '/contact', '/contact-us', '/about', '/team', '/leadership'])
@@ -523,7 +547,7 @@ export function contactPaths(homeHtml: string, home: URL, places: string[] = [])
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
-    if (u.search || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || !hinted(u.pathname)) continue
+    if (u.search || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || !hinted(u.pathname) || otherOffice(u.pathname, places)) continue
     // with a city requested and no direct office link, the locations index goes first: it leads to the office page
     if (offices.length === 0 && citySlugs(places).length > 0 && LOCATIONS_INDEX.test(u.pathname)) indexes.push(u.pathname)
     set.add(u.pathname)
@@ -638,7 +662,10 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       onPage?.(r.body, r.finalUrl, r.status)
       // a locations index: the office page for the requested city, read next
       if (LOCATIONS_INDEX.test(p)) for (const o of officeLinks(r.body, new URL(r.finalUrl), places).reverse()) if (!queue.includes(o)) queue.splice(qi + 1, 0, o)
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles, expectName)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      // An office page's people count only when it is the requested office (a redirect or a homepage link may still land on another one).
+      let officePath = ''; try { officePath = new URL(r.finalUrl).pathname } catch { /* keep '' */ }
+      const officeOk = !otherOffice(officePath, places) && (!LOCATION_PAGE.test(officePath) || LOCATIONS_INDEX.test(officePath) || placeAgreement(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '), places, expectName ?? '') === 'agrees')
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...(officeOk && !LOCATIONS_INDEX.test(officePath) ? extractPeople(r.body, r.finalUrl, buyerRoles, expectName) : [])]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
