@@ -417,3 +417,14 @@ test('round 8 (opus): a state before the office segment, a state-named city foll
   const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
   assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
 })
+
+test('round 9 (opus): a state AFTER the city is checked too; a state-named city with its own region or "-city" is that city', () => {
+  assert.equal(otherOffice('/locations/springfield/mo', ['Springfield, IL']), true)
+  assert.equal(otherOffice('/locations/portland/oregon', ['Portland, Maine']), true)
+  assert.equal(otherOffice('/locations/paris/texas', ['Paris, France']), true)
+  assert.equal(otherOffice('/locations/springfield/il', ['Springfield, IL']), false)
+  assert.equal(otherOffice('/offices/washington/dc', ['Washington, DC']), false)
+  assert.equal(otherOffice('/offices/new-york/new-york-city', ['New York, NY']), false)
+  assert.equal(otherOffice('/offices/new-york/ny', ['New York, NY']), false)
+  assert.equal(otherOffice('/offices/new-york/buffalo', ['New York, NY']), true)
+})

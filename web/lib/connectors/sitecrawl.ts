@@ -694,14 +694,14 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   let j = -1
   if (slugs.length > 0) for (let k = seg.length - 1; k > i; k--) if (cityMatch(slugs, seg[k], places)) { j = k; break }
   if (j < 0) return 'other'
-  // a city named like a state ("new-york", "washington") followed by anything but a people word is that state's other office ("buffalo")
-  if (pathState(seg[j], false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x))) return 'other'
-  // a US state anywhere before the city that is not the requested region: "/locations/texas/paris", "/texas/locations/paris",
-  // "/locations/texas/offices/paris" are not Paris, France. Two-letter codes count only after the office segment ("/de/" is a locale).
-  if (!bareCity(places)) {
-    const codes = regionCodes(places)
-    if (seg.slice(0, j).some((x, k) => { const st = pathState(x, k > i); return !!st && !codes.has(st) })) return 'other'
-  }
+  const codes = regionCodes(places)
+  // a city named like a state ("new-york", "washington") followed by anything but a people word, the requested region or "<city>-city" is that
+  // state's other office ("/offices/new-york/buffalo"; "/offices/washington/dc" and "/offices/new-york/new-york-city" are the city itself)
+  if (pathState(seg[j], false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== `${seg[j]}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
+  // a US state anywhere in the path (before or after the city) that is not the requested region: "/locations/texas/paris",
+  // "/texas/locations/paris", "/locations/paris/texas" are not Paris, France; "/locations/springfield/mo" is not Springfield, IL.
+  // Two-letter codes count only after the office segment ("/de/" is a locale).
+  if (!bareCity(places) && seg.some((x, k) => { if (k === j) return false; const st = pathState(x, k > i); return !!st && !codes.has(st) })) return 'other'
   return 'requested'
 }
 // A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.
