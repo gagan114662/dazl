@@ -117,7 +117,7 @@ test('#1095 review: a profile naming SEVERAL places is never narrowed to its fir
   const f = fx(http); f.modelIcp = { ...ICP, where: ['Austin, TX', 'Boston, MA'] }
   const x = await runFixture(f)
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
-  assert.equal(run?.status, 'skipped_no_place')
+  assert.match(run?.status ?? '', /^skipped_no_place:several:/, '#1205: the skip names the places')
   assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
 })
 
@@ -225,7 +225,7 @@ test('#1095 live check: two profile entries naming the same place are one place;
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'Austin and Austin, TX are one place')
   const two = boards(); const f2 = fx(two.http); f2.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Boston'] }
   const x = await runFixture(f2)
-  assert.equal((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status, 'skipped_no_place')
+  assert.match((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status ?? '', /^skipped_no_place:several:/)
   assert.ok(!two.seen.some(u => u.includes('greenhouse')))
 })
 
@@ -241,7 +241,7 @@ test('#1095 review: a profile place "<City>, <Country>" keeps the board source a
     const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: [w], country: c }
     const x = await runFixture(f)
     const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
-    assert.ok(run && run.status !== 'skipped_no_place', `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
+    assert.ok(run && !run.status.startsWith('skipped_no_place'), `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
     assert.ok(seen.some(u => u.includes('greenhouse')), `${w}: boards were read`)
   }
 })
