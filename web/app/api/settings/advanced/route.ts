@@ -81,9 +81,9 @@ export async function POST(req: NextRequest) {
     await audit(user, req, { action: 'credential.pairing_started', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ code: pairing.code, expires_at: pairing.expires_at })
   }
-  // "Test connection": ONE read of the saved session's own profile, behind every LinkedIn guard; names the account (at most 6 per workspace per hour).
+  // "Test connection": ONE read of the saved session's own profile, behind every LinkedIn guard; names the account (at most 3 per workspace per hour; each uses one of the day's LinkedIn reads).
   if (body.action === 'test' && p === 'linkedin') {
-    const rl = await rateLimit(`adv-me:${user.tenantId}`, 6, 60 * 60 * 1000)
+    const rl = await rateLimit(`adv-me:${user.tenantId}`, 3, 60 * 60 * 1000)
     if (!rl.ok) return NextResponse.json({ error: 'Too many checks. Try again later.' }, { status: 429 })
     const me = await guardedAccountCheck(db, user.tenantId)
     if (me.ok) await recordAccountForTenant(db, user.tenantId, me)

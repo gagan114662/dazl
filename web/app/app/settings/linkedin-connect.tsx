@@ -23,8 +23,8 @@ function ask(msg: unknown, timeoutMs = 30_000): Promise<Record<string, unknown> 
 
 // What each refused or failed check means, in plain words.
 const OUTCOME: Record<string, string> = {
-  auth_failed: 'LinkedIn signed this session out, so dazl switched it off. Sign in to LinkedIn in this browser, then click Turn on.',
-  challenge: 'LinkedIn asked this account for a security check, so dazl switched it off. Clear the check on linkedin.com, then click Turn on.',
+  auth_failed: 'LinkedIn signed this session out, so dazl switched it off. Sign in to LinkedIn in this browser, then click Turn on; dazl then waits a day before using it again.',
+  challenge: 'LinkedIn asked this account for a security check, so dazl switched it off. Clear the check on linkedin.com, then click Turn on; dazl then waits a day before using it again.',
   throttled: 'LinkedIn asked dazl to slow down. dazl waits a day before the next LinkedIn request.',
   cooldown: 'dazl is waiting a day after LinkedIn last stopped it, before any LinkedIn request.',
   budget: 'The LinkedIn requests for this hour are used up. Try again in an hour.',
@@ -76,7 +76,7 @@ export default function LinkedinConnect({ state, enabled, onToggle, onChange, pa
           <span>Connected as <strong>{state.name ?? 'your LinkedIn account'}</strong>{state.synced_at ? `, synced ${new Date(state.synced_at * 1000).toLocaleString()}` : ''}, <span data-testid="linkedin-enabled">{enabled ? 'on' : 'off'}</span>{!enabled ? ' (switched off: dazl reads nothing until you turn it on)' : ''}</span>
           <span className="flex gap-4">
             <button disabled={busy} className="underline underline-offset-2" onClick={onToggle}>{enabled ? 'Turn off' : 'Turn on'}</button>
-            <button disabled={busy} className="underline underline-offset-2" onClick={test}>Test connection</button>
+            <button disabled={busy} className="underline underline-offset-2" onClick={test} title="One LinkedIn read: it counts toward today's LinkedIn reads">Test connection</button>
             <button disabled={busy} className="underline underline-offset-2" onClick={disconnect}>Disconnect</button>
           </span>
         </div>

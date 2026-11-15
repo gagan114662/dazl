@@ -12,7 +12,9 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { CONSENT_VERSION } from '../../lib/advanced/config.ts'
 import { readEnabledCredential, connectorStatus } from '../../lib/connectors/store.ts'
-import { createPairing, PAIR_TTL_S, redeemPairing } from '../../lib/advanced/linkedin-connect.ts'
+import { createPairing, PAIR_TTL_S, redeemPairing, recordAccount, saveSessionFromDevice, DEVICE_CONNECTOR } from '../../lib/advanced/linkedin-connect.ts'
+import { encryptSecret, decryptSecret } from '../../lib/secrets.ts'
+import type { Db, Tx } from '../../lib/db/client.ts'
 import { setEnabled } from '../../lib/connectors/store.ts'
 import { reserveRequest } from '../../lib/advanced/request-budget.ts'
 import * as settings from '../../app/api/settings/advanced/route.ts'
@@ -235,4 +237,42 @@ test('Connect LinkedIn review round 2: a same-device concurrent write is not a r
   assert.equal((await extPost(tokI, { action: 'session', li_at: `${LI_AT}x`, jsessionid: JSID })).status, 200)
   assert.equal(workerCalls.length, nI, 'a rotation never re-runs the check')
   workerAnswer = { status: 200, body: { name: 'Dana Okoye', public_id: 'dana-okoye-test', upstream_requests: 1 } }
+})
+
+test('Connect LinkedIn review round 3: the device secret is the write key (a replaced browser writes nothing); a same-device write underneath is absorbed by the retry', async () => {
+  db.prepare('DELETE FROM rate_limits').run()
+  db.prepare("INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES ('J', 'J', 'owner', 0)").run()
+  await consent('J'); asUser('J')
+  const pair = async () => { const c = (await (await settingsPost({ action: 'pair', platform: 'linkedin' })).json() as { code: string }).code; return (await (await extPost(c, { action: 'pair' })).json() as { device_token: string }).device_token }
+  const d1 = await pair()
+  assert.equal((await extPost(d1, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 200)
+  const d2 = await pair()   // the user paired again (another browser): d1 is replaced
+  const credBefore = (db.prepare("SELECT ciphertext FROM tenant_connectors WHERE tenant_id = 'J' AND connector = 'adv:linkedin'").get() as { ciphertext: string }).ciphertext
+  const devBefore = (db.prepare("SELECT ciphertext FROM tenant_connectors WHERE tenant_id = 'J' AND connector = ?").get(DEVICE_CONNECTOR) as { ciphertext: string }).ciphertext
+  assert.equal(await saveSessionFromDevice(adb, 'J', d1.split('.')[1], `li_at=${LI_AT}OLD; JSESSIONID="ajax:1234567890123456789"`), false, "the replaced browser's secret writes nothing")
+  assert.equal(await recordAccount(adb, 'J', d1.split('.')[1], { name: 'Someone Else', public_id: null }), false)
+  assert.equal((db.prepare("SELECT ciphertext FROM tenant_connectors WHERE tenant_id = 'J' AND connector = 'adv:linkedin'").get() as { ciphertext: string }).ciphertext, credBefore)
+  assert.equal((db.prepare("SELECT ciphertext FROM tenant_connectors WHERE tenant_id = 'J' AND connector = ?").get(DEVICE_CONNECTOR) as { ciphertext: string }).ciphertext, devBefore)
+  assert.equal((await extPost(d1, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 401)
+  assert.equal((await extPost(d2, { action: 'status' })).status, 200)
+
+  // The retry: a Db whose transaction re-encrypts the device row (the same device, a fresh IV) just before the conditional UPDATE runs, as a
+  // concurrent same-device write would on Postgres. The write still lands (on the second try) and keeps the other write's content.
+  const ctxOf = `connector:J:${DEVICE_CONNECTOR}`
+  let interfered = 0
+  const racing: Db = { ...adb, tx: (body: (t: Tx) => ReturnType<Parameters<Db['tx']>[0]>) => adb.tx(function* (t: Tx) {
+    const wrapped: Tx = { ...t, run: function* (sql: string, params?: unknown[]) {
+      if (interfered === 0 && /^UPDATE tenant_connectors SET ciphertext = \? WHERE .* AND ciphertext = \?$/.test(sql) && params?.[2] === DEVICE_CONNECTOR) {
+        interfered++
+        const cur = db.prepare('SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ?').get('J', DEVICE_CONNECTOR) as { ciphertext: string }
+        db.prepare('UPDATE tenant_connectors SET ciphertext = ? WHERE tenant_id = ? AND connector = ?').run(encryptSecret(decryptSecret(cur.ciphertext, ctxOf), ctxOf), 'J', DEVICE_CONNECTOR)
+      }
+      return yield* t.run(sql, params as never)
+    } } as Tx
+    return yield* body(wrapped)
+  }) } as Db
+  assert.equal(await recordAccount(racing, 'J', d2.split('.')[1], { name: 'Dana Okoye', public_id: null }), true, 'absorbed by the retry')
+  assert.equal(interfered, 1)
+  const st = JSON.parse(decryptSecret((db.prepare('SELECT ciphertext FROM tenant_connectors WHERE tenant_id = ? AND connector = ?').get('J', DEVICE_CONNECTOR) as { ciphertext: string }).ciphertext, ctxOf)) as { name: string }
+  assert.equal(st.name, 'Dana Okoye')
 })

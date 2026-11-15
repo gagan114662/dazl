@@ -51,10 +51,10 @@ export async function POST(req: NextRequest) {
   await audit({ tenantId: dev.tenantId, actorId: dev.device.u }, req, { action: 'credential.saved', resource: 'social', id: 'linkedin', summary: { platform: 'linkedin', via: 'extension' } })
   // Name the account on the device's FIRST save (just after pairing) and when the user asks (check: true); never on a background rotation,
   // so a failing check cannot spend the shared LinkedIn budget sync after sync. ONE read of the session's own profile, behind every LinkedIn
-  // guard (notice, connector on, no cooldown, the shared hourly and daily budgets) and at most 6 per workspace per hour.
+  // guard (notice, connector on, no cooldown, the shared hourly and daily budgets) and at most 3 per workspace per hour.
   let name = dev.device.name, outcome: string | null = null
   if (dev.device.synced_at === null || body.check === true) {
-    const me = (await rateLimit(`adv-me:${dev.tenantId}`, 6, 60 * 60 * 1000)).ok ? await guardedAccountCheck(db, dev.tenantId) : { ok: false as const, outcome: 'rate_limited' }
+    const me = (await rateLimit(`adv-me:${dev.tenantId}`, 3, 60 * 60 * 1000)).ok ? await guardedAccountCheck(db, dev.tenantId) : { ok: false as const, outcome: 'rate_limited' }
     if (me.ok) {
       if (!(await recordAccount(db, dev.tenantId, dev.device.s, me))) return no(401, 'unauthorized')
       name = me.name

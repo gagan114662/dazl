@@ -20,7 +20,7 @@ import type { Tx, TxBody } from '../db/client.ts'
 import { connectorId, maxCallsPerHour } from './config.ts'
 import { coolingDown, reserveRequest } from './request-budget.ts'
 import { readConsent } from './index.ts'
-import { setEnabled, writeAudit } from '../connectors/store.ts'
+import { writeAudit } from '../connectors/store.ts'
 import { DAY_CONNECTOR, sessionLimits } from '../signals/linkedin-people.ts'
 import { can } from '../workspaces.ts'
 
@@ -158,7 +158,9 @@ export async function guardedAccountCheck(db: Db, tenantId: string, env: Record<
   if (!res.ok && (res.outcome === 'throttled' || res.outcome === 'challenge' || res.outcome === 'auth_failed')) {
     const status = res.outcome === 'auth_failed' ? 'unauthorized' : res.outcome
     await writeAudit(db, { tenantId, connector: id, jobId: null, lookup: 'account check', status: `stopped_${status}`, results: 0 })
-    if (status !== 'throttled') { await setEnabled(db, tenantId, id, false); await writeAudit(db, { tenantId, connector: id, jobId: null, lookup: 'account check', status: 'session_disabled', results: 0 }) }
+    // ... the session that was checked: a fresh one saved while the check was in flight (a rotation) is not switched off by the old one's answer
+    if (status !== 'throttled' && (await db.run('UPDATE tenant_connectors SET enabled = 0 WHERE tenant_id = ? AND connector = ? AND ciphertext = ? AND enabled = 1', [tenantId, id, row.ciphertext])).changes === 1)
+      await writeAudit(db, { tenantId, connector: id, jobId: null, lookup: 'account check', status: 'session_disabled', results: 0 })
   }
   return res
 }
