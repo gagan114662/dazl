@@ -49,6 +49,33 @@ function seed(over: { extra?: number; domain?: string | null; excerpt?: string; 
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
 const counts = (db: Database.Database) => db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
 
+// Lane D (verify / ready rule), matrix chicago-law 15 Nov: the runner's model-inferred profile for a law-firm request carried "Hired lateral partners recently" and,
+// as a DIFFERENT signal, "Press release about practice area growth" ("growth" is a GTM word). Joined into one text they read as "hiring" + "a GTM role", the request
+// "needed the sales-hiring proof", and every verified lead was default-denied (held: "a required check has not passed") - 14 of 22 leads, 0 ready.
+// Real inferences for that query (1 of 4 hit it); the signals are the model's own words.
+test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a request need the sales-hiring proof; the same part still does', () => {
+  const Q = 'Law firms in Chicago, Illinois that opened a new office or expanded a practice group in the last 90 days'
+  const icp = (...signals: string[]) => JSON.stringify({ signals: ['Opened new office in last 90 days', 'Expanded practice group in last 90 days', ...signals] })
+  for (const extra of [['Hired lateral partners recently', 'Press release about practice area growth'], ['Hiring multiple attorneys recently', 'Revenue growth announced'], ['Hired lateral partners recently', 'Announced a new partnership'], ['Hired new practice group head', 'Press release about practice area growth']])
+    assert.equal(salesHiringRequired(Q, icp(...extra)), false, extra.join(' | '))
+  // a real sales-hiring request still needs it: hiring and the sales role in one signal, or ANYWHERE in the user's own request (however it is punctuated)
+  const seed = JSON.stringify({ signals: ['raised seed funding'] })
+  assert.equal(salesHiringRequired('Law firms in Chicago that opened a new office.', icp('Hiring a business development manager')), true, 'one signal')
+  for (const r of ['Startups that raised seed funding and are hiring a head of sales.', 'Startups that raised seed funding. They are hiring sales reps.', 'Startups that raised seed funding and are hiring a Sr. Account Executive', 'Startups that raised seed funding and are hiring a Jr. SDR', 'Seed-funded startups that are hiring! Sales roles only.', 'Startups that raised seed and are hiring; sales, BD, AEs', 'Startups that raised seed funding and are hiring. Focus on sales roles.'])
+    assert.equal(salesHiringRequired(r, seed), true, r)
+  // the request paired with ONE signal counts, as before (the user said hiring, the profile names the sales role, or the reverse)
+  for (const [r, sig] of [['Seed-funded startups that are hiring', ['Raised seed round', 'Open SDR roles']], ['Seed-funded startups that are hiring', ['Raised seed round', 'Job postings for account executives']], ['Startups that raised money and are hiring', ['Recently raised funding', 'Sales team expansion']], ['Series A SaaS companies scaling their sales team', ['Raised Series A', 'Actively hiring']]] as [string, string[]][])
+    assert.equal(salesHiringRequired(r, JSON.stringify({ signals: sig })), true, `${r} + ${sig.join(' | ')}`)
+  // what changed: the model's signals joined with EACH OTHER, under a request that says neither (the user did not ask for sales hiring)
+  assert.equal(salesHiringRequired('Seed-funded startups opening new offices', JSON.stringify({ signals: ['Raised seed round', 'Actively hiring', 'Growing sales team'] })), false)
+  assert.equal(salesHiringRequired(Q, JSON.stringify({ signals: ['Opened new office', 'Hired lateral partners recently', 'Business development push'] })), false)
+  // KNOWN GAP, unchanged from main (an over-hold: leads are held, never shipped without the proof): a hiring word and a GTM word ("growth") in the user's OWN
+  // request still join. If this is ever fixed, flip this assertion; it is here so the gap is on record, not because it is wanted.
+  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), true, 'known gap: the same as main')
+  // the borderline case of the signals-with-signals change: the user said "job postings", only the model's signals say sales
+  assert.equal(salesHiringRequired('Seed-funded startups with job postings', JSON.stringify({ signals: ['Raised seed', 'Hiring', 'Sales roles'] })), false, 'defensible: the user did not ask for sales hiring')
+})
+
 test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
   assert.equal(salesHiringRequired(REQUEST, ICP), true)
   assert.equal(salesHiringRequired('Find London UK startups that announced seed funding within the past 90 days.', JSON.stringify({ signals: ['announced seed funding'] })), false, 'seed only')
