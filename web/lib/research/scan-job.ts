@@ -97,7 +97,7 @@ export async function runResearchScan(ctx: ResearchScanContext, env: Record<stri
   if (!c) return null
   const stages = researchStagesFor(ctx)
   if (!researchReady(stages)) return null
-  const run = await runResearch(c, stages)
+  const run = await runResearch(c, stages, { isRefusal: ctx.isRefusal })
   const rows = run.leads.map(l => toScanRow(l, ctx.now))
   const hunted = run.funnel.stages.find(s => s.stage === 'hunt')?.out ?? 0
   return { run, leads: rows.filter(r => !r.review_reason), review: rows.filter((r): r is ScanLeadRow & { review_reason: string } => !!r.review_reason), candidates: hunted,
