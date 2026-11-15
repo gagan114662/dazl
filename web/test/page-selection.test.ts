@@ -26,6 +26,16 @@ test('isJobPage / needsEventBeyondHiring', () => {
   assert.equal(needsEventBeyondHiring(['posted a front desk receptionist job'], 'dental practices in New York City that posted a front desk receptionist job'), false)
 })
 
+// #1201 (Refs #1095): the event requirement comes from the user's own words only; a model-written signal never adds a gate.
+test('#1201: model-expanded signals never raise the event bar', () => {
+  const q = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
+  const modelSignals = ['Hired first account executive in last 30 days', 'First sales hire', 'New account executive job posting filled', 'Sales team expansion from zero', 'First AE hire']
+  assert.equal(needsEventBeyondHiring(modelSignals, q), false, 'the model re-wording the hire as "expansion" must not demand a second event')
+  assert.equal(needsEventBeyondHiring(['announced seed funding'], HIRING_ONLY), false, 'a funding signal the user never asked for adds no gate')
+  assert.equal(needsEventBeyondHiring([], LONDON), true, 'the user asking for seed funding still requires the event')
+  assert.equal(needsEventBeyondHiring(undefined, 'dental practices that opened a new location'), true)
+})
+
 test('seed-funding + hiring request: undated news pages are fetched before dated big-company job pages (before the fix every slot went to a job page)', async () => {
   const r = await runFixture(fx(LONDON, ICP, [...jobHits(7), ...newsHits(3)]))
   const urls = fetched(r)
