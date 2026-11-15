@@ -241,3 +241,24 @@ test('review round 4 (opus + haiku): one lookup per (handle, name); credentials,
   const base = { platform: 'linkedin' as const, handle: 'dana-okoye', name: 'Dana Okoye', profileUrl: 'https://www.linkedin.com/in/dana-okoye', kind: 'person' as const }
   assert.equal(authorPerson({ ...base, headline: 'Dana Okoye, CPA - Partner at Okoye LLP | x' })?.title, 'Partner at Okoye LLP')
 })
+
+test('review round 5 (haiku + opus): a company verdict is final; person-signal titles go first; at most 3 lookups per handle; name suffixes', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  // a handle decided as a company is never re-labelled a person by a later name
+  const co = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('acme-growth', '2026-10-10', 'a'), 'Acme Growth on LinkedIn: our launch'), mk(liPost('acme-growth', '2026-10-11', 'b'), "Jane Smith's Post")] : q.includes('Acme Growth') ? [mk('https://www.linkedin.com/company/acme-growth', 'Acme Growth')] : q.includes('Jane Smith') ? [mk('https://www.linkedin.com/in/acme-growth', 'Jane Smith - Founder at Acme Growth')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(co.candidates.length, 0); assert.ok(!Object.values(co.authors).some(a => a.kind === 'person'))
+  // company-titled posts on other handles do not use up the budget before a real author
+  const many = Array.from({ length: 5 }, (_, i) => mk(liPost(`co${i}-corp`, `2026-10-0${i + 1}`), `Cold Email Tips on LinkedIn: n${i}`))
+  const order = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [...many, mk(liPost('dana-okoye', '2026-10-09'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : [], maxQueries: 2, maxResolve: 1 })
+  assert.equal(order.authors[liPost('dana-okoye', '2026-10-09')].kind, 'person')
+  // one handle with many names: at most 3 lookups
+  const lots = Array.from({ length: 6 }, (_, i) => mk(liPost('busy', `2026-10-1${i}`, `p${i}`), `Topic ${['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot'][i]} on LinkedIn: x`))
+  const capped = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? lots : [], maxQueries: 2, maxResolve: 20 })
+  assert.equal(capped.searches.sent, 2 + 3)
+  for (const n of ['Chris Head', 'Jane Lead']) assert.equal(nameShaped(n), true, n)
+  for (const n of ['Head Of Sales', 'Founder Stories', 'Growth at Acme']) assert.equal(nameShaped(n), false, n)
+  const u = liPost('dana-okoye', '2026-10-01')
+  assert.equal(authorOf({ url: u, title: 'Dana Okoye (She/Her), CPA on LinkedIn: hi' })?.name, 'Dana Okoye')
+  assert.equal(authorOf({ url: u, title: 'Dana Okoye, CPA, MBA on LinkedIn: hi' })?.name, 'Dana Okoye')
+  assert.equal(authorOf({ url: u, title: 'Five Growth Tips, Revenue on LinkedIn: hi' })?.name, null, 'comma prose is not a credential')
+})

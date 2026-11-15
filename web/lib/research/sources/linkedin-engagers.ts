@@ -44,12 +44,17 @@ export const readsAsRole = (role: string): boolean => {
   if (!r || /^(?:linkedin|x|twitter|profile|about|experience|location|greater .+|.+ (?:area|region|metropolitan area))$/i.test(r)) return false
   return ROLE_WORD.test(r)   // a job word is required: "<anything> at Acme" alone is prose ("Eat at Joe"), not a role
 }
+// Credentials and pronouns after a display name ("Dana Okoye, CPA, MBA", "Dana Okoye (She/Her), CPA"): only real credentials (all-caps
+// acronyms, PhD, Esq, Jr ...) are stripped, so comma-separated prose stays prose.
+const CREDENTIAL = /,\s*(?:[A-Z]{2,6}|Ph\.?D\.?|Esq\.?|Jr\.?|Sr\.?|M\.?D\.?|M\.?B\.?A\.?|CPA|P\.?E\.?|J\.?D\.?)\s*$/
+const stripSuffixes = (n: string): string => { let prev = ''; while (prev !== n) { prev = n; n = n.replace(/\s*\([^)]{1,30}\)\s*$/, '').replace(CREDENTIAL, '').trim() } return n }
 // A person's display name: 2-5 words, each capitalised, with the usual particles ("de", "van", "al"). Prose before " on LinkedIn -"
 // ("Cold email tips") or a platform word is not one; an all-lowercase real name is lost (fail closed).
 const NAME_PARTICLE = /^(?:de|da|del|della|di|du|van|von|der|den|la|le|bin|binti|al|el|y|e)$/
 export const nameShaped = (n: string): boolean => {
   const w = n.trim().split(/\s+/)
-  if (w.length < 2 || w.length > 5 || ROLE_WORD.test(n)) return false   // "Head Of Sales" is a role, not a name
+  // "Head Of Sales" is a role; "Chris Head" is a person (a role word as a surname is fine)
+  if (w.length < 2 || w.length > 5 || ROLE_WORD.test(w[0]) || /\s(?:of|at|&)\s/i.test(n)) return false
   return w.every((x, i) => /^\p{Lu}[\p{L}'’.\-]*$/u.test(x) || (i > 0 && i < w.length - 1 && NAME_PARTICLE.test(x)))
 }
 const isoDay = (ms: number): string | null => { if (!Number.isFinite(ms) || ms < Date.UTC(2006, 0, 1) || ms > Date.UTC(2100, 0, 1)) return null; return new Date(ms).toISOString().slice(0, 10) }
@@ -71,7 +76,7 @@ export function authorOf(hit: { url: string; title: string }): Pick<Author, 'pla
     const t = (hit.title ?? '').trim().replace(/(?:\s*\|\s*(?:\d[\d,.]*\s*(?:comments?|reactions?|likes?)|linkedin))+\s*$/i, '')
     const m = /^(.{2,80}?)(?:'s|’s) Post\b/.exec(t) ?? /^(.{2,80}?) on LinkedIn\s*[:\-–]/.exec(t) ?? /^(.{2,80}?) posted on the topic\b/.exec(t) ?? /\|\s*([^|#@\s][^|#@]{0,58}\s[^|#@]{1,58}?)\s*$/.exec(t)
     // a display name may carry a credential or pronouns ("Dana Okoye, CPA", "Dana Okoye (She/Her)"): the name is the part before them
-    const name = m ? m[1].trim().replace(/\s*\([^)]{1,30}\)\s*$/, '').replace(/,\s*[A-Z][A-Za-z.]{1,12}(?:,\s*[A-Z][A-Za-z.]{1,12})*\s*$/, '').trim() : null
+    const name = m ? stripSuffixes(m[1].trim()) : null
     return { platform: 'linkedin', handle, name: name && nameShaped(name) ? name : null, profileUrl: null }
   }
   const x = X_POST.exec(hit.url)
@@ -135,14 +140,22 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
   const authors: Record<string, Author> = {}
   const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: Set<string> }>()
   let resolved = 0
-  for (const p of posts.values()) {
+  // strong person signals ("<Name>'s Post", "posted on the topic") are looked up first, so company pages titled "<Name> on LinkedIn:" or topic
+  // titles do not spend the shared budget before real authors
+  const strong = (t: string) => /(?:'s|\u2019s) Post\b|posted on the topic\b/.test(t)
+  // whole handles are ordered (a handle with any person signal first); a handle's own posts keep the index order, so its earlier
+  // company-titled post is still looked up before a later name on the same handle
+  const hk = (p: { author: { platform: string; handle: string } }) => `${p.author.platform}:${p.author.handle.toLowerCase()}`
+  const strongHandle = new Set([...posts.values()].filter(p => strong(p.hit.title ?? '')).map(hk))
+  const firstPass = [...posts.values()].sort((a, b) => Number(strongHandle.has(hk(b))) - Number(strongHandle.has(hk(a))))
+  for (const p of firstPass) {
     const key = `${p.author.platform}:${p.author.handle.toLowerCase()}`
     let r = byHandle.get(key)
     if (!r) { r = { kind: 'unresolved', headline: null, profileUrl: p.author.profileUrl, name: null, tried: new Set() }; byHandle.set(key, r) }
     // only an author the post title names can become a Person, so the resolve budget goes to those
     // one lookup per (handle, name): a Title Case non-name ("Cold Email Tips") or another person's name earlier in the results does
     // not use up the lookup a later real name needs; maxResolve still caps the total
-    if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && resolved < (deps.maxResolve ?? 20)) {
+    if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && r.tried.size < 3 && resolved < (deps.maxResolve ?? 20)) {   // at most 3 names per handle
       r.tried.add(p.author.name.toLowerCase()); resolved++; sent++
       const hits = await safeSearch(deps.search, `${p.author.name} linkedin ${p.author.handle}`, {})
       if (hits === null) failed++
