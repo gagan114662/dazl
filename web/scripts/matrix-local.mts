@@ -5,7 +5,12 @@
 // BEFORE a change and AFTER it, and show both in the PR.
 //
 //   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
-//        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir]
+//        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir] [--engine old|research]
+//
+// --engine research (MISSION v2): runs every case on the research engine (LEAD_ENGINE=research, lib/research/scan-job.ts) with its own
+// per-scan search budget (RESEARCH_SEARCH_BUDGET, default 60); a case the engine cannot run (a stage not built, no place or category)
+// runs the old engine, and the table says which engine was asked for. --engine old (default) clears LEAD_ENGINE, so an inherited value
+// never switches a before-run.
 //
 // Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
 //   TINYFISH_API_KEY                         search and fetch; without it scans fall back to model web search, which no cap bounds: refused
@@ -44,6 +49,10 @@ if (envFile) {
   for (const [k, v] of Object.entries(parseEnvFile(readFileSync(p, 'utf8')))) if (!process.env[k]) process.env[k] = v
 }
 
+const engine = opt('engine') ?? 'old'
+if (engine !== 'old' && engine !== 'research') refuse(`--engine must be old or research (got ${engine}). Not running.`)
+if (engine === 'research') process.env.LEAD_ENGINE = 'research'; else delete process.env.LEAD_ENGINE
+
 const matrixPath = expand(opt('matrix') ?? process.env.MATRIX_FILE ?? path.join(root, '..', 'scorecard', 'matrix.json'))
 if (!existsSync(matrixPath)) refuse(`matrix file ${matrixPath} not found (set --matrix or MATRIX_FILE). Not running.`)
 const matrix = JSON.parse(readFileSync(matrixPath, 'utf8')) as { thresholds: MatrixThresholds; cases: MatrixCase[] }
@@ -69,6 +78,7 @@ const contacts = flag('contacts')
 const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
+  console.log(`engine: ${engine}${engine === 'research' ? ` (research search budget ${process.env.RESEARCH_SEARCH_BUDGET || 60} per scan)` : ''}`)
   console.log(`matrix:local --dry @ ${commit}: ${cases.length} case(s) from ${matrixPath}, cap US$${cap.toFixed(2)} each (total at most US$${(cap * cases.length).toFixed(2)}), timeout ${timeoutS}s each`)
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
@@ -121,9 +131,10 @@ for (const c of cases) {
 const table = matrixTable(results, thresholds, { commit, date, contacts: contacts ? savedContactKeys : null })
 const outDir = path.resolve(expand(opt('out') ?? process.env.MATRIX_OUT ?? path.join(root, '..', 'matrix-local-results')))
 mkdirSync(outDir, { recursive: true })
-const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}-${Date.now().toString(36)}`
+const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}${engine === 'research' ? '-research' : ''}-${Date.now().toString(36)}`
 writeFileSync(path.join(outDir, `${stamp}.txt`), table + '\n')
-if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, mode: contacts ? 'contacts' : 'budget', cap_usd: cap, thresholds, results }, null, 2))
+if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, engine, mode: contacts ? 'contacts' : 'budget', cap_usd: cap, thresholds, results }, null, 2))
+console.log(`engine: ${engine}`)
 console.log(table)
 console.error(`written: ${path.join(outDir, `${stamp}.txt`)}`)
 process.exit(crashed ? 1 : 0)

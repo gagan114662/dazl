@@ -4,7 +4,8 @@
 // Other sources (E: registries, permits, ATS boards; F: engagers) hand their Candidates in as `extra`: they merge into the same queue, and a
 // registry's dated record wins over a search hit for the same URL.
 import type { Candidate, FunnelStage, ResearchCase, ResearchPlan } from './types.ts'
-import { tfSearch, type SearchHit, type Fail, type TfDeps } from '../search/tinyfish.ts'
+import type { SearchHit, Fail, TfDeps } from '../search/tinyfish.ts'
+import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
 
 export const RESULTS_PER_QUERY = 10
@@ -37,8 +38,9 @@ const STOPS = new Set(['cap', 'auth', 'quota', 'disabled'])
 
 export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; queries: number; failed: Record<string, number>; stopped: string | null }
 
-// `wait` is injected so tests do not sleep. A 'rate' answer (TinyFish's per-minute limit, enforced before sending) is retried after a pause,
-// up to `rateRetries` times per query; any other failure skips that query.
+// `wait` is injected so tests do not sleep. A 'rate' answer (TinyFish's per-minute limit, enforced before anything is sent, so it costs nothing)
+// is retried after a pause for up to a minute and a half per query (measured 15 Nov: 8 tries x 2.5 s with 6 workers lost 12 of 46 queries per case,
+// three whole triggers); any other failure skips that query.
 export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
   const t0 = Date.now()
   const qs = huntQueries(plan), after = afterDate(c)
@@ -53,10 +55,10 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
       const i = next++
       if (o.deadline && now() > o.deadline) { stopped = 'deadline'; return }
       let r: Awaited<ReturnType<SearchFn>> | null = null
-      for (let attempt = 0; attempt <= (o.rateRetries ?? 8); attempt++) {
+      for (let attempt = 0; attempt <= (o.rateRetries ?? 18); attempt++) {
         r = await search(qs[i].query, after)
         if (r.ok || r.reason !== 'rate') break
-        await wait(o.waitMs ?? 2500)
+        await wait(o.waitMs ?? 5000)
       }
       if (!r) continue
       if (r.ok) { results.push({ i, hits: r.hits }); continue }
@@ -64,7 +66,7 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
       if (STOPS.has(r.reason)) stopped = r.reason
     }
   }
-  await Promise.all(Array.from({ length: Math.max(1, o.concurrency ?? 6) }, worker))
+  await Promise.all(Array.from({ length: Math.max(1, o.concurrency ?? 3) }, worker))
   // the query order decides which trigger keeps a URL found twice, so the result does not depend on which search answered first
   results.sort((a, b) => a.i - b.i)
   const byUrl = new Map<string, Candidate>()
@@ -90,7 +92,9 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
     funnel: { stage: 'hunt', in: qs.length, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
 }
 
-// The real search: TinyFish inside the scan's caps (searches per scan, the tenant's and the platform's daily allowance, the per-minute limit)
-// and the scan's spend ledger (a refusal throws SpendRefused, which stops the scan; it is never swallowed here).
-export const tinyfishSearch = (db: DbLike, tenant: string, spent: { searches: number }, deps: TfDeps = {}): SearchFn =>
-  (query, after) => tfSearch(db, tenant, query, { afterDate: after }, spent, deps)
+// The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws
+// SpendRefused, which stops the scan; it is never swallowed here).
+export const tinyfishSearch = (db: DbLike, tenant: string, spent: { searches: number }, deps: TfDeps = {}, queue?: SearchQueue): SearchFn => {
+  const s = researchSearch(db, tenant, spent, deps, queue)
+  return (query, after) => s(query, { afterDate: after })
+}
