@@ -19,6 +19,8 @@ NOT_HYDRATED = "<html><body><form action=/api/auth/signup method=post><input nam
 HYDRATION_ERROR = HYDRATED.replace('</script>', ";console.error('Minified React error #418; visit https://react.dev/errors/418')</script>")
 NO_FORM = "<html><body><p>Welcome</p></body></html>"
 NO_SUBMIT = HYDRATED.replace("{onSubmit(){}}", "{}")
+# how Next reports React's recoverable hydration error (reportError), on a form React then rendered on the client
+REPORTED_418 = HYDRATED.replace('</body>', "<script>reportError(new Error('Minified React error #418; visit https://react.dev/errors/418'))</script></body>")
 LATE = ("<html><body><form id=f action=/api/auth/signup method=post><input name=email></form><script>setTimeout(()=>{"
         "const f=document.getElementById('f');f['__reactProps$x']={onSubmit(){}};f['__reactFiber$x']={}},3000)</script></body></html>")
 THROWS_NOT_HYDRATED = NOT_HYDRATED.replace('</body>', "<script>throw new Error('boom')</script></body>")
@@ -84,6 +86,10 @@ class CheckHydration(unittest.TestCase):
         r = run({'/sign-up': HYDRATED, '/sign-in': HYDRATED})   # /app serves no form
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn('/app: no form on the page', r.stdout)
+
+    def test_a_hydration_error_reported_by_next_fails_even_on_a_hydrated_form(self):
+        r = run({'/sign-up': REPORTED_418, '/sign-in': HYDRATED, '/app': HYDRATED})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn('hydration error reported: ', r.stdout)
 
     def test_a_form_without_a_react_submit_handler_fails(self):
         r = run({'/sign-up': NO_SUBMIT, '/sign-in': HYDRATED, '/app': HYDRATED})

@@ -105,7 +105,12 @@ async function checkPage(c, path) {
   const problems = [], exceptions = []
   c.on(m => {
     if (m.sessionId !== sessionId) return
-    if (m.method === 'Runtime.exceptionThrown') exceptions.push(`uncaught exception: ${(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').split('\n')[0].slice(0, 160)}`)
+    if (m.method === 'Runtime.exceptionThrown') {
+      const text = (m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').split('\n')[0].slice(0, 160)
+      // Next reports React's recoverable hydration errors through reportError (an exception here), and React 19 then renders on the client, so
+      // the form ends up with props: a hydration message fails the page whether or not the form hydrated (council round 2)
+      if (HYDRATION_ERROR.test(text)) problems.push(`hydration error reported: ${text}`); else exceptions.push(`uncaught exception: ${text}`)
+    }
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       const text = m.params.args.map(a => a.value ?? a.description ?? '').join(' ')
       if (HYDRATION_ERROR.test(text)) problems.push(`hydration error in the console: ${text.split('\n')[0].slice(0, 160)}`)

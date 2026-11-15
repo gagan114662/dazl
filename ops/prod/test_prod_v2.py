@@ -34,7 +34,7 @@ PINNED = {
     # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
     # this PR's files; Hermes installs them (check-installed.sh says so until then).
     'deploy-prod.sh': 'a562aa3ad8613a01227c58927a4ab08fd1cafb37415710938ec0e95ca0a6a467',
-    'check-hydration.mjs': '6769e2f59be30eafea0be1187a39d057673b7f2ce8212f0133c0b81e0878ab04',
+    'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
