@@ -49,6 +49,23 @@ function seed(over: { extra?: number; domain?: string | null; excerpt?: string; 
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
 const counts = (db: Database.Database) => db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
 
+// Lane D (verify / ready rule), matrix chicago-law 15 Nov: the runner's model-inferred profile for a law-firm request carried "Hired lateral partners recently" and,
+// as a DIFFERENT signal, "Press release about practice area growth" ("growth" is a GTM word). Joined into one text they read as "hiring" + "a GTM role", the request
+// "needed the sales-hiring proof", and every verified lead was default-denied (held: "a required check has not passed") - 14 of 22 leads, 0 ready.
+// Real inferences for that query (1 of 4 hit it); the signals are the model's own words.
+test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a request need the sales-hiring proof; the same part still does', () => {
+  const Q = 'Law firms in Chicago, Illinois that opened a new office or expanded a practice group in the last 90 days'
+  const icp = (...signals: string[]) => JSON.stringify({ signals: ['Opened new office in last 90 days', 'Expanded practice group in last 90 days', ...signals] })
+  for (const extra of [['Hired lateral partners recently', 'Press release about practice area growth'], ['Hiring multiple attorneys recently', 'Revenue growth announced'], ['Hired lateral partners recently', 'Announced a new partnership'], ['Hired new practice group head', 'Press release about practice area growth']])
+    assert.equal(salesHiringRequired(Q, icp(...extra)), false, extra.join(' | '))
+  // a real sales-hiring request still needs it: hiring and the sales role in one signal, in the request's own sentence, or an explicit sales title
+  assert.equal(salesHiringRequired('Law firms in Chicago that opened a new office.', icp('Hiring a business development manager')), true, 'one signal')
+  assert.equal(salesHiringRequired('Startups that raised seed funding. They are hiring sales reps.', JSON.stringify({ signals: ['raised seed funding'] })), true, 'one sentence of the request')
+  assert.equal(salesHiringRequired('Startups that raised seed funding and are hiring a head of sales.', JSON.stringify({ signals: ['raised seed funding'] })), true)
+  // a hiring sentence and a GTM sentence of the request itself, apart, is not "sales hiring"
+  assert.equal(salesHiringRequired('Law firms that are hiring attorneys. Growth firms only.', JSON.stringify({ signals: ['hiring attorneys'] })), false)
+})
+
 test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
   assert.equal(salesHiringRequired(REQUEST, ICP), true)
   assert.equal(salesHiringRequired('Find London UK startups that announced seed funding within the past 90 days.', JSON.stringify({ signals: ['announced seed funding'] })), false, 'seed only')

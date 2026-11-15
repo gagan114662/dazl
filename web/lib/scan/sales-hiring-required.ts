@@ -10,8 +10,12 @@ const HIRING_WORDS = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*|\b(?:new|open|several|
 export function salesHiringRequired(query: string | null | undefined, icp: string | null | undefined): boolean {
   let signals: string[] = []
   try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) signals = j!.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  const text = [...signals, query ?? ''].join(' . ')
-  return requestedHiringRoles(query, icp).some(roleNeedsSourceProof) || needsEventBeyondHiring(signals, query ?? '') && HIRING_WORDS.test(text) && isGtmRole(text.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' '))
+  // The hiring word and the sales / GTM role must sit in the SAME part: one profile signal, or one sentence of the request. Joined across parts, "Hired lateral
+  // partners recently" and an unrelated "Press release about practice area growth" (the word "growth") made a law-firm request that never mentions sales hiring
+  // "need the sales-hiring proof": every verified lead of a model-inferred profile was default-denied (lib/scan/held-state.ts) and the matrix read 0 ready.
+  const parts = [...signals, ...(query ?? '').split(/[.;!?]+/)].filter(p => p.trim() !== '')
+  const sameClause = parts.some(p => HIRING_WORDS.test(p) && isGtmRole(p.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' ')))
+  return requestedHiringRoles(query, icp).some(roleNeedsSourceProof) || needsEventBeyondHiring(signals, query ?? '') && sameClause
 }
 
 // #380 / #204 Test B: how the request joins the event half and the sales-hiring half, read from its compiled targeting plan (targeting.ts).
