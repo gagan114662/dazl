@@ -92,6 +92,7 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'dazl.ai': 'own domain (user-agent string, links)',
   'staging.dazl.ai': 'own domain',
   'docs.github.com': 'documentation link',
+  'github.com': 'link to the dazl Connect extension install steps (a page the user opens; dazl requests nothing there)',
   'docs.anthropic.com': 'documentation link',
   'developers.openai.com': 'documentation link in a comment',
   'docs.tinyfish.ai': 'documentation link',
