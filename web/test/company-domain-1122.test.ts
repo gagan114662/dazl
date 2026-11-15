@@ -266,3 +266,40 @@ test('#1122 council (redirect guards): only a name-built guess is followed; a ta
   const same = await run({ company: 'TDot Dental', evidenceUrl: BOARD, evidence: plain('TDot Dental'), redirects: { 'tdotdental.com': 'tdot-dental.example', 'tdotdental.ca': 'tdot-dental.example' }, sites: { 'tdot-dental.example': { '/': ELSEWHERE_HOME('TDot Dental') } } })
   NOTHING(same); assert.equal(same.fetched.filter(f => f === 'tdot-dental.example/').length, 1); assert.equal(same.audit.filter(a => a.status === 'redirects_to tdot-dental.example').length, 1)
 })
+
+test('#1122 review at 576f9c8c (blocker 2): a site named only in structured data is tried even when the page ALSO links a company-named site that is refused', async () => {
+  const page = html(`<p><a href="https://restordental.ca/">Restor Dental</a> is hiring in Toronto.</p>${ld({ '@type': 'JobPosting', hiringOrganization: { '@type': 'Organization', name: 'Restor Dental', sameAs: 'https://www.smilesbyrestor.ca/' } })}`)
+  const r = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: page, findSites: async () => [], sites: { 'restordental.ca': { '/': html(`<h1>Another Clinic</h1><p>Toronto, ON</p>${PROSE}`) }, 'smilesbyrestor.ca': { '/': TORONTO_HOME('Restor Dental'), '/contact': CONTACT('hello@smilesbyrestor.ca') } } })
+  assert.equal(r.domain, 'smilesbyrestor.ca'); assert.deepEqual(r.emails, ['hello@smilesbyrestor.ca'])
+  assert.ok(r.audit.some(a => a.lookup === 'restordental.ca' && a.status === 'name_mismatch'), 'the linked site was read first and refused')
+  assert.deepEqual(r.searched, [], 'a linked site that is refused still ends the search and the name guesses, as before')
+})
+
+test('#1122 review at 576f9c8c (blocker 1, the real qsdc.ca shape): a homepage larger than the stored page cap is read for its TEXT, so a place in its footer counts; nothing else is loosened', async () => {
+  // qsdc.ca\'s real homepage is 1.8 MB (site-builder styling) with "Toronto" and "930 Queen Street East Toronto, ON, M4M 1J5" past 1.1 MB: the
+  // crawl stored and read only the first 800 KB and refused it as "no place stated". rawGet now returns the page\'s visible text beside the capped body.
+  const padding = '<div class="sqs-block sqs-block-html" data-block-type="2"><div class="sqs-html-content"></div></div>'.repeat(9_000)   // ~900 KB of site-builder markup, like the real page
+  const big = html(`<h1>Queen Street Dental Centre</h1>${PROSE}<a href="/contact">Contact</a>${padding}<footer>LOCATION 930 Queen Street East Toronto, ON, M4M 1J5</footer>`)
+  const capped = big.slice(0, 800_000)
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)').run('L1', job, 'Queen Street Dental Centre', null, 's', 'https://ca.linkedin.example/jobs/1', 'Queen Street Dental Centre is hiring in Toronto, Ontario', null, 85, 'blocked_by_site')
+  const serve = (withText: boolean): Get => async url => { const u = new URL(url); if (u.hostname.replace(/^www\./, '') !== 'qsdc.example') return null; if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }; if (u.pathname === '/') return withText ? { status: 200, body: capped, finalUrl: url, text: sc.plainText(big) } : { status: 200, body: capped, finalUrl: url }; return u.pathname === '/contact' ? { status: 200, body: CONTACT('info@qsdc.example'), finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+  const redirectOf = async (h: string) => (h === 'queenstreetdentalcentre.ca' ? 'qsdc.example' : null)
+  await crawlJob(db, 'A', job, { get: serve(false), gapMs: 0, env: {}, redirectOf })
+  assert.equal((db.prepare('SELECT company_domain d FROM leads').get() as { d: string | null }).d, null, 'without the text beyond the cap: refused, as on 576f9c8c')
+  db.prepare('DELETE FROM lead_enrichments').run(); db.prepare('DELETE FROM connector_audit').run()
+  await crawlJob(db, 'A', job, { get: serve(true), gapMs: 0, env: {}, redirectOf })
+  assert.equal((db.prepare('SELECT company_domain d FROM leads').get() as { d: string | null }).d, 'qsdc.example')
+  // the same big page for a namesake in another city is still refused (the place check is unchanged; it only sees the whole page now)
+  const elsewhere = html(`<h1>Queen Street Dental Centre</h1>${PROSE}${padding}<footer>LOCATION 1 Queen Street, Brampton, ON L6V 1A1</footer>`)
+  assert.match(sc.plainText(elsewhere), /Brampton, ON L6V 1A1$/)
+  const r2 = await run({ company: 'Queen Street Dental Centre', evidenceUrl: 'https://ca.linkedin.example/jobs/view/1', evidence: plain('Queen Street Dental Centre'), sites: {}, redirects: {} })
+  NOTHING(r2)
+})
+
+test('#1122 plainText is linear on hostile pages and drops script, style, svg, template blocks and comments', () => {
+  for (const h of ['<script '.repeat(500_000), '<'.repeat(4_000_000), '<!--'.repeat(1_000_000), '<style>'.repeat(500_000)]) { const t0 = Date.now(); sc.plainText(h); assert.ok(Date.now() - t0 < 1500, `${h.slice(0, 8)}: ${Date.now() - t0} ms`) }
+  assert.equal(sc.plainText('<p>A<script>x<y</script>B<!-- c -->C<STYLE>d</STYLE>D<svg><path/></svg>E &amp; F&nbsp;G</p>'), 'A B C D E & F G')
+})

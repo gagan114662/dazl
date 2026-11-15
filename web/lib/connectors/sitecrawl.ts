@@ -41,15 +41,42 @@ export const sitecrawlEnabled = (env: Record<string, string | undefined> = proce
 // opts.signal: the caller's abort (and the crawl's own deadline, #871) handed to the fetch itself, so a timed-out or
 // aborted crawl CANCELS the native operation instead of abandoning a running socket. A Get that ignores it is still
 // bounded by the crawl's own race, but production Gets (rawGet, crawl4ai) honor it.
-export type Get = (url: string, opts?: { signal?: AbortSignal }) => Promise<{ status: number; body: string; finalUrl: string } | null>
+export type Get = (url: string, opts?: { signal?: AbortSignal }) => Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>
+
+// #1122: a page's visible text, in ONE linear pass (no backtracking pattern: a page of unclosed "<script" or "<" must not cost quadratic time,
+// as /<(script|style)[\s\S]*?<\/\1>/ and /<[^>]+>/ do - measured 22 s and 53 s on 800 KB of "<script "). Script, style, noscript, svg and
+// template blocks and HTML comments are dropped; every tag becomes a space; whitespace is collapsed.
+const SKIP_BLOCK = new Set(['script', 'style', 'noscript', 'svg', 'template'])
+export function plainText(html: string, max = 200_000): string {
+  const out: string[] = []; let len = 0, i = 0
+  const low = html.replace(/[A-Z]/g, c => c.toLowerCase())   // same length (ASCII only), so offsets match
+  while (i < html.length && len < max) {
+    const lt = html.indexOf('<', i)
+    const end = lt < 0 ? html.length : lt
+    if (end > i) { const piece = html.slice(i, end); out.push(piece); len += piece.length }
+    if (lt < 0) break
+    if (low.startsWith('<!--', lt)) { const c = html.indexOf('-->', lt + 4); i = c < 0 ? html.length : c + 3; out.push(' '); continue }
+    const gt = html.indexOf('>', lt + 1)
+    if (gt < 0) break
+    const name = /^<\/?\s*([a-z0-9-]+)/.exec(low.slice(lt, Math.min(gt + 1, lt + 40)))?.[1] ?? ''
+    i = gt + 1
+    if (SKIP_BLOCK.has(name) && low[lt + 1] !== '/') { const close = low.indexOf(`</${name}`, i); i = close < 0 ? html.length : (html.indexOf('>', close) + 1 || html.length) }
+    out.push(' ')
+  }
+  return out.join('').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+// A page larger than MAX_BYTES (a site builder's homepage can be 2 MB of inline styling, with the address in its footer) is still read for its
+// TEXT up to TEXT_BYTES: the stored body stays capped at MAX_BYTES (what every extractor reads, unchanged), and its visible text, from the whole
+// read, is returned beside it (`text`) for the homepage name and place checks.
+const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
-export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string } | null> {
+export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
     let hard: NodeJS.Timeout | undefined
-    const resolve = (v: { status: number; body: string; finalUrl: string } | null | Promise<{ status: number; body: string; finalUrl: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
+    const resolve = (v: { status: number; body: string; finalUrl: string; text?: string } | null | Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
     if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
@@ -64,8 +91,9 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const chunks: Buffer[] = []; let n = 0
-      res.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }) } else chunks.push(c) })
-      res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
+      const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
+      res.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); resolve(done()) } else chunks.push(c) })
+      res.on('end', () => resolve(done()))
       res.on('error', () => resolve(null))
       res.on('close', () => resolve(null)) // no-op once already settled
     })
@@ -605,7 +633,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const home = await polite(`${origin}/`, robots.delayMs)
     if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
     // The normalised homepage text is returned so a later lead on the same domain is checked against it without a second fetch.
-    const homePlain = home.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    const homePlain = home.text ?? plainText(home.body)   // #1122: the whole page's text (beyond the stored body's cap), in one linear pass
     const homeNorm = norm(homePlain)
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
@@ -937,6 +965,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // before. A site named only in the page's structured data is a candidate: it is tried first, and its refusal stops nothing (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
+      // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
+      // anchored link existed): after the linked sites, under the same checks; it never turns into a reason to skip what the page links
+      if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
@@ -968,7 +999,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
       const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
-      const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? ev.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ') : ''].join(' '), l.company)
+      const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? (ev.text ?? plainText(ev.body)) : ''].join(' '), l.company)
       for (const cand of sites) {
         site = cand
         r = await readSite(cand, l.company)
