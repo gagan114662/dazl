@@ -106,7 +106,7 @@ test('review: a role must read as a role; the same post through another host or 
   const base = { platform: 'linkedin' as const, handle: 'dana-okoye', name: 'Dana Okoye', profileUrl: 'https://www.linkedin.com/in/dana-okoye', kind: 'person' as const }
   for (const h of ['Dana Okoye - LinkedIn | x', 'Dana Okoye - Acme Corp | LinkedIn', 'Dana Okoye - Greater Boston | x', 'Dana Okoye | # Dana Okoye\nGreater Boston\n## About'])
     assert.equal(authorPerson({ ...base, headline: h }), null, h)
-  for (const [h, t] of [['Dana Okoye - Head of Growth | x', 'Head of Growth'], ['Dana Okoye - Building things @ Acme | x', 'Building things @ Acme'], ['Dana Okoye | # Dana Okoye\nPartner at Taft\n', 'Partner at Taft']] as const)
+  for (const [h, t] of [['Dana Okoye - Head of Growth | x', 'Head of Growth'], ['Dana Okoye | # Dana Okoye\nPartner at Taft\n', 'Partner at Taft']] as const)
     assert.equal(authorPerson({ ...base, headline: h })?.title, t, h)
   assert.equal(readsAsRole('Founder & CEO | LinkedIn'), true)
   const id = liId('2026-10-10')
@@ -162,4 +162,27 @@ test('review (haiku): the window is [today - windowDays, today]; an X-only resul
   const x = r.candidates.find(c => c.url.startsWith('https://x.com/'))
   assert.ok(x && x.query.startsWith('site:x.com '), 'found by the X query')
   assert.equal(r.authors[x!.url].profileUrl, 'https://x.com/ivogrant'); assert.equal(r.authors[x!.url].kind, 'unresolved')
+})
+
+test('review round 2 (opus): a profile is the author only when its own title names them; a later named post still resolves the handle', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const wrong = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('rae-mendel', '2026-10-10'), 'Dana Okoye on LinkedIn: great')] : q.includes('rae-mendel') ? [mk('https://www.linkedin.com/in/rae-mendel', 'Rae Mendel - CEO at Mendel')] : [], maxQueries: 2, maxResolve: 5 })
+  const w = wrong.authors[liPost('rae-mendel', '2026-10-10')]
+  assert.equal(w.kind, 'unresolved'); assert.equal(w.profileUrl, null); assert.equal(authorSource(w), null)
+  const later = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), 'Big launch'), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : [], maxQueries: 2, maxResolve: 5 })
+  const b = later.authors[liPost('dana-okoye', '2026-10-11', 'b')]
+  assert.equal(b.kind, 'person'); assert.equal(b.name, 'Dana Okoye'); assert.equal(authorPerson(b)?.title, 'Founder at Okoye')
+  assert.equal(later.searches.sent, 3, 'two post queries + one resolve')
+  for (const r of ['Looking at options', 'Eat at Joe', 'Coffee @ 9am', 'Sydney at Night', 'AI-native ERP for Europe']) assert.equal(readsAsRole(r), false, r)
+  assert.equal(readsAsRole('Head of Growth at Acme'), true)
+})
+
+test('review round 2 (haiku): an all-failed run is an outage, not "no posts"; title name shapes', async () => {
+  const down = await linkedinPostCandidates(rc, plan(), { search: async () => { throw new Error('down') }, maxQueries: 3, maxResolve: 3 })
+  assert.equal(down.ok, false); assert.equal(down.candidates.length, 0); assert.equal(down.searches.failed, down.searches.sent)
+  const empty = await linkedinPostCandidates(rc, plan(), { search: async () => [], maxQueries: 3, maxResolve: 3 })
+  assert.equal(empty.ok, true)
+  const u = liPost('dana-okoye', '2026-10-01')
+  assert.equal(authorOf({ url: u, title: 'Top 5 tips | Sales' })?.name, null, 'a one-word tail is not a name')
+  assert.equal(authorOf({ url: u, title: 'Dana Okoye on LinkedIn - hi' })?.name, 'Dana Okoye')
 })

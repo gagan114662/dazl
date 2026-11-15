@@ -29,19 +29,20 @@ export interface Author {
   headline: string | null          // the indexed profile's title + snippet, as the index shows it (not a page read)
 }
 // funnel: `in` = index hits read, and in - out = the sum of `dropped` (per hit). Searches that failed or hit a cap are counted apart.
-export interface PostsResult { candidates: Candidate[]; authors: Record<string, Author>; funnel: FunnelStage; searches: { sent: number; failed: number } }
+// `ok` is false when every search failed: an outage, not "no posts".
+export interface PostsResult { ok: boolean; candidates: Candidate[]; authors: Record<string, Author>; funnel: FunnelStage; searches: { sent: number; failed: number } }
 
 const LI_POST = /^https:\/\/(?:[a-z]{2,3}\.|www\.)?linkedin\.com\/posts\/([A-Za-z0-9%\-]{2,100})_/i
 const LI_ID = /(?:activity|ugcPost|share)[-:](\d{19})(?!\d)/
 const X_POST = /^https:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/(\d{6,20})(?!\d)/i
 const X_EPOCH_MS = 1288834974657
 
-// A role is a job title or "<something> at/@ <company>"; a bare company, a place or the site's own name is not.
+// A role names a job (founder, partner, head, director, ...); a bare company, a place, prose or the site's own name is not.
 const ROLE_WORD = /\b(?:founder|co-?founder|ceo|cto|coo|cfo|cmo|cro|cpo|chief|president|owner|co-?owner|partner|principal|director|head|vp|vice president|manager|lead|consultant|sdr|bdr|ae|account executive|analyst|engineer|associate|attorney|lawyer|counsel|solicitor|dentist|doctor|officer|executive|advisor|adviser|specialist|strategist|marketer|recruiter|investor|chair(?:man|woman|person)?|board member|managing|operator|entrepreneur)\b/i
 export const readsAsRole = (role: string): boolean => {
   const r = role.replace(/\s*\|\s*linkedin\s*$/i, '').trim()
   if (!r || /^(?:linkedin|x|twitter|profile|about|experience|location|greater .+|.+ (?:area|region|metropolitan area))$/i.test(r)) return false
-  return ROLE_WORD.test(r) || /(?:\s@\s?|\bat\s)\S/i.test(r)
+  return ROLE_WORD.test(r)   // a job word is required: "<anything> at Acme" alone is prose ("Eat at Joe"), not a role
 }
 const isoDay = (ms: number): string | null => { if (!Number.isFinite(ms) || ms < Date.UTC(2006, 0, 1) || ms > Date.UTC(2100, 0, 1)) return null; return new Date(ms).toISOString().slice(0, 10) }
 // LinkedIn: the first 41 bits of the 64-bit activity ID are the creation time in ms. X: a snowflake (ms since the Twitter epoch).
@@ -60,7 +61,7 @@ export function authorOf(hit: { url: string; title: string }): Pick<Author, 'pla
     // name: resolution below tells person from company)
     // LinkedIn's page-title tails ("| 15 comments", "| LinkedIn") are not names
     const t = (hit.title ?? '').trim().replace(/(?:\s*\|\s*(?:\d[\d,.]*\s*(?:comments?|reactions?|likes?)|linkedin))+\s*$/i, '')
-    const m = /^(.{2,80}?)(?:'s|’s) Post\b/.exec(t) ?? /^(.{2,80}?) on LinkedIn:/.exec(t) ?? /^(.{2,80}?) posted on the topic\b/.exec(t) ?? /\|\s*([^|#@]{2,60}?)\s*$/.exec(t)
+    const m = /^(.{2,80}?)(?:'s|’s) Post\b/.exec(t) ?? /^(.{2,80}?) on LinkedIn\s*[:\-–]/.exec(t) ?? /^(.{2,80}?) posted on the topic\b/.exec(t) ?? /\|\s*([^|#@\s][^|#@]{0,58}\s[^|#@]{1,58}?)\s*$/.exec(t)
     const name = m ? m[1].trim() : null
     return { platform: 'linkedin', handle, name: name && !/^(?:linkedin|\d.*)$/i.test(name) ? name : null, profileUrl: null }
   }
@@ -120,41 +121,41 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     }
   }
   // Resolve each LinkedIn author once: person (with the indexed headline), company page (dropped) or unresolved (kept, marked).
+  // The lookup is keyed on the handle but made on the first post that NAMES the author (an earlier unnamed post does not use it up).
   const authors: Record<string, Author> = {}
-  const byHandle = new Map<string, Author>()
+  const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: boolean }>()
   let resolved = 0
   for (const p of posts.values()) {
     const key = `${p.author.platform}:${p.author.handle.toLowerCase()}`
-    let a = byHandle.get(key)
-    if (!a) {
-      a = { ...p.author, kind: 'unresolved', headline: null }
-      // only an author the post title names can become a Person, so the resolve budget goes to those
-      if (p.author.platform === 'linkedin' && p.author.name && resolved < (deps.maxResolve ?? 20)) {
-        resolved++
-        sent++
-        const hits = await safeSearch(deps.search, `${p.author.name ?? ''} linkedin ${p.author.handle}`.trim(), {})
-        if (hits === null) failed++
-        const esc = p.author.handle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        const urlOf = (h: IndexHit) => h.url.toLowerCase().split(/[?#]/)[0]
-        // /in/ and /company/ are separate namespaces: a company page with this handle means the POST is the company's, even if some
-        // member also owns the same /in/ vanity. A person needs the post's own title to have named them (the profile's name is never
-        // copied in, so a stranger's profile cannot pass the name check by construction).
-        if ((hits ?? []).some(h => new RegExp(`linkedin\\.com/company/${esc}/?$`).test(urlOf(h)))) a.kind = 'company'
-        else {
-          const h = (hits ?? []).find(h => new RegExp(`linkedin\\.com/in/${esc}/?$`).test(urlOf(h)))
-          if (h && a.name) { a.kind = 'person'; a.headline = `${h.title ?? ''} | ${h.snippet ?? ''}`.slice(0, 500); a.profileUrl = `https://www.linkedin.com/in/${encodeURIComponent(p.author.handle)}` }
-        }
-      }   // an X handle is an account (a person, a firm or a newsroom): left 'unresolved' for the filter to judge
-      byHandle.set(key, a)
-    }
-    if (a.kind === 'company') { drop('company page, not a person'); continue }
-    authors[p.hit.url] = a
+    let r = byHandle.get(key)
+    if (!r) { r = { kind: 'unresolved', headline: null, profileUrl: p.author.profileUrl, name: null, tried: false }; byHandle.set(key, r) }
+    // only an author the post title names can become a Person, so the resolve budget goes to those
+    if (!r.tried && p.author.platform === 'linkedin' && p.author.name && resolved < (deps.maxResolve ?? 20)) {
+      r.tried = true; resolved++; sent++
+      const hits = await safeSearch(deps.search, `${p.author.name} linkedin ${p.author.handle}`, {})
+      if (hits === null) failed++
+      const esc = p.author.handle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const urlOf = (h: IndexHit) => h.url.toLowerCase().split(/[?#]/)[0]
+      // /in/ and /company/ are separate namespaces: a company page with this handle means the POST is the company's, even if some
+      // member also owns the same /in/ vanity. A person: the /in/<handle> profile's own title must start with the name the post title
+      // gives (so one person's name is never paired with another person's profile); the profile's name is never copied in.
+      const nameEsc = p.author.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      if ((hits ?? []).some(h => new RegExp(`linkedin\\.com/company/${esc}/?$`).test(urlOf(h)))) r.kind = 'company'
+      else {
+        const h = (hits ?? []).find(h => new RegExp(`linkedin\\.com/in/${esc}/?$`).test(urlOf(h)) && new RegExp(`^\\s*${nameEsc}(?:\\s*$|\\s+[-–|,(])`, 'i').test(h.title ?? ''))
+        if (h) { r.kind = 'person'; r.name = p.author.name; r.headline = `${h.title ?? ''} | ${h.snippet ?? ''}`.slice(0, 500); r.profileUrl = `https://www.linkedin.com/in/${encodeURIComponent(p.author.handle)}` }
+      }
+    }   // an X handle is an account (a person, a firm or a newsroom): left 'unresolved' for the filter to judge
+    if (r.kind === 'company') { drop('company page, not a person'); continue }
+    // each post keeps the name its own title gives; a resolved person's profile is shared only with posts naming the same person
+    const same = r.kind === 'person' && (!p.author.name || p.author.name.toLowerCase() === r.name?.toLowerCase())
+    authors[p.hit.url] = { ...p.author, name: p.author.name ?? (same ? r.name : null), kind: same ? 'person' : 'unresolved', headline: same ? r.headline : null, profileUrl: same ? r.profileUrl : p.author.profileUrl }
   }
   const candidates: Candidate[] = [...posts.values()].filter(p => authors[p.hit.url]).map(p => ({
     url: p.hit.url, title: p.hit.title, snippet: p.hit.snippet, date: p.date, triggerId: p.triggerId, query: p.query,
     via: 'engager', dated: 'registry',   // the post ID is the date (see the header)
   }))
-  return { candidates, authors, searches: { sent, failed }, funnel: { stage: 'hunt', in: seenHits, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
+  return { ok: sent === 0 || failed < sent, candidates, authors, searches: { sent, failed }, funnel: { stage: 'hunt', in: seenHits, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
 }
 
 // For the read / research stages: LinkedIn and X are login-walled (the fetcher never opens them), so an engager's evidence is the index
