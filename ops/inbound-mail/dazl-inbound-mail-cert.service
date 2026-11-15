@@ -1,0 +1,8 @@
+# /etc/systemd/system/dazl-inbound-mail-cert.service
+# Copies Caddy's certificate for the mail host to where the receiver (not root, not caddy) can read it.
+[Unit]
+Description=dazl inbound mail: copy the Caddy-managed TLS certificate for STARTTLS
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dazl-inbound-mail/sync-cert.sh

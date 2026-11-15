@@ -6,6 +6,8 @@ import { widenActions } from '../lib/play-card.ts'
 import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
 import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
+import { RESEARCH_HELD } from '../lib/research/scan-job.ts'
+import { peopleSearchable } from '../lib/people/searchable-holds.ts'
 
 // Synthetic leads shaped like the two reported failures: an undated customer-mention and a blocked, undated page.
 // No real company, run id or URL.
@@ -98,6 +100,31 @@ test('#352 inventory: every reason the Leads view labels is classified exactly o
   assert.ok(REVIEW_LABEL_KEYS.length >= 20, `parsed ${REVIEW_LABEL_KEYS.length} labels`)
   for (const r of REVIEW_LABEL_KEYS) assert.equal(Number(REVIEWABLE.has(r)) + Number(RESEARCH_REASONS.has(r)), 1, r)
   for (const r of [...REVIEWABLE, ...RESEARCH_REASONS]) assert.ok(REVIEW_LABEL_KEYS.includes(r), `${r} has a Leads label`)
+})
+
+// #1267 review (Hermes-PC): the inventory above iterates the Leads view's LABELS, so a reason the code writes that has no label is invisible to it
+// (research_unverified shipped that way: "Not verified" on the card, never reviewable on Home, no person line). This one starts from the reasons
+// the code can WRITE. Add a new engine's reason here, and it must have a label, exactly one class, and a decision on the people pass.
+const WRITTEN_REASONS: Record<string, string> = { research_unverified: RESEARCH_HELD }
+test('#1267 every review reason the code writes has a Leads label, exactly one class, and a decision on the people pass', () => {
+  for (const [what, r] of Object.entries(WRITTEN_REASONS)) {
+    assert.ok(REVIEW_LABEL_KEYS.includes(r), `${what}: "${r}" has no label in the Leads view (the card would say only "Not verified")`)
+    assert.equal(Number(REVIEWABLE.has(r)) + Number(RESEARCH_REASONS.has(r)), 1, `${what}: "${r}" must be in exactly one of REVIEWABLE / RESEARCH_REASONS`)
+    assert.equal(peopleSearchable(r), true, `${what}: decide the people pass for "${r}"`)
+  }
+})
+
+test('#1267 a held research lead is reviewable: Home counts it as review, the card offers the confirm, a window hold still wins', () => {
+  const held = lead({ review_reason: RESEARCH_HELD, event_date: '2026-11-02', date_status: 'verified', day_verified: true })
+  assert.equal(heldState(held)?.state, 'review', 'Home: review, not research')
+  assert.notEqual(reviewAction(held, new Date('2026-11-10T12:00:00Z')).label, 'Keep as research', 'the card offers a confirm')
+  // the user's time window is a hard gate on top: undated, or older than the window, stays research whatever the reason
+  const windowed = lead({ review_reason: RESEARCH_HELD, event_date: null, date_status: 'undated', window_held: true })
+  assert.equal(heldState(windowed)?.state, 'research')
+  assert.equal(previewSplit([held]).review.length, 1)
+  // and the label is the plain one, with its next step
+  const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(src, /research_unverified: 'The event is quoted on the source page, but its day or a named decision-maker is not proven there - read the source before you use it'/)
 })
 
 test('#352 Home and the Leads view agree for every reason, dated or undated, with and without a time-window hold', () => {
