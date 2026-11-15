@@ -167,8 +167,8 @@ bothEngines('scan spend cap: malformed cap, price, cost and kind refuse before a
   }
   await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('render', () => { throw new TypeError('boom') })), refusedWith('cost_invalid'))
   await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('stripe.charge' as never, () => 0)), refusedWith('kind_unknown'))
-  // one huge reservation alone
-  await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('pdl.people', () => 1e9)), refusedWith('over_cap'))
+  // one reservation over the scan cap alone (5 > the CAD 5 cap; under the account's default USD 10 day, which #1167 now counts it on)
+  await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('pdl.people', () => 5)), refusedWith('over_cap'))
   const calls = await scanSpendCalls(db, 'j1', A)
   assert.ok(calls.every(c => c.status === 'refused'))
   assert.deepEqual(calls.map(c => c.reason).sort(), ['cap_config_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'kind_unknown', 'model_unpriced', 'over_cap', 'price_invalid'])

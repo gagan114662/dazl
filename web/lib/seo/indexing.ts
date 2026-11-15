@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
 import { normalizeDomain } from './audit.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 
 // Weekly indexing checks: does a search engine list the tenant's domain for their keywords?
 // For each saved keyword we run one TinyFish search "site:<domain> <keyword>" and record whether
@@ -110,7 +112,11 @@ export type IndexResult = IndexCheck & { domain: string; checked_at: number }
 // Returns null when there is nothing to do (no config/keywords) or the allowance is spent, and 'stale_domain' when the
 // domain was edited while the searches were in flight (results discarded, searches stay spent). [] is reserved for a
 // provider failure so callers can tell an outage from a concurrent edit.
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
+  return runWithTenantSpend(db, tenantId, () => runIndexChecksCounted(db, tenantId, deps))
+}
+async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const env = deps.env ?? process.env
   const cfg = await getConfig(db, tenantId)
@@ -138,8 +144,9 @@ export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?:
   const out: IndexCheck[] = []
   try {
     for (const keyword of keywords.slice(0, claimed)) {
-      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now })
-      if (!r.ok) break // cap/rate/auth/quota: stop the batch, keep what we have
+      // #1167: an account at its day or month spend cap is refused before anything is sent (SpendRefused): the batch stops like a cap
+      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now }).catch((e: unknown) => { if (e instanceof SpendRefused) return null; throw e })
+      if (!r || !r.ok) break // cap/rate/auth/quota/spend cap: stop the batch, keep what we have
       const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
       out.push({ keyword, indexed: !!own, top_url: own?.url ?? null })
     }

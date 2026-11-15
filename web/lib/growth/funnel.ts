@@ -400,7 +400,8 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
   const trialRows = d.trial.filter(t => tenantsOf.has(t.tenant_id))
   const trialUsd = trialRows.reduce((s, t) => s + (t.settled_at !== null ? t.spent_usd ?? 0 : 0), 0)
   // Model spend: the token-priced calls, or the spend pool's vendor-settled total when that is larger. The pool holds the
-  // same calls (only while an owner limit is set) plus a few kinds with no token row; adding the two would count a call twice.
+  // same calls plus a few kinds with no token row and, since #1167, the workspace's other priced steps (render, TinyFish,
+  // Apollo / PDL); adding the two would count a call twice.
   const priced = priceModelRows(d.modelRows)
   const tokenUsd = priced.scans.usd + priced.outreach_drafting.usd + priced.evaluation.usd
   const modelUsd = Math.max(tokenUsd, d.researchUsd)
@@ -437,7 +438,7 @@ export function computeFunnel(d: Data, opts: { now: number; staging: boolean; in
         { name: 'trial_subsidy', usd: round(trialUsd), status: 'recorded', note: 'settled dazl-funded trial runs of measured accounts' },
         { name: 'enrichment', usd: null, status: 'not_recorded', note: 'Apollo / People Data Labs credits have no listed dollar price in dazl, so they are not converted' },
       ],
-      model_spend: { token_priced_usd: round(tokenUsd), pool_reported_usd: round(d.researchUsd), counted_usd: round(modelUsd), rule: 'the larger of the two; the spend pool settles the same calls while an owner limit is set, so they are never added' },
+      model_spend: { token_priced_usd: round(tokenUsd), pool_reported_usd: round(d.researchUsd), counted_usd: round(modelUsd), rule: 'the larger of the two; the spend pool settles the same model calls, plus (#1167) every other priced step of the workspace (rendering, priced TinyFish, Apollo / PDL at their listed prices), so they are never added and the pool figure can be more than model calls alone' },
       recorded_usd: round(recorded),
       complete: false,
       per_activated_paying: { customers: activatedPaying, usd_lower_bound: activatedPaying ? round(recorded / activatedPaying) : null },

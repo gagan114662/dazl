@@ -41,6 +41,7 @@ import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
 // DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
@@ -219,7 +220,11 @@ const failText = (e: unknown, P: string) => {
 type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 // What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
 interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
+  return runWithTenantSpend(db, tenantId, () => findWorkEmailCounted(db, tenantId, leadId, target, deps))
+}
+async function findWorkEmailCounted(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
   const derived: Derived = {}
   const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
   // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.

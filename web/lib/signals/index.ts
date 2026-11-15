@@ -14,6 +14,7 @@ import { classifyEntityMatch, domainSlug, withinEventWindow } from './entity-mat
 import { atsGtmBoard, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, dedupeTitles, COVERAGE_LABEL, WINDOW_DAYS } from './ats-gtm.ts'
 import { storeFilingOfficers, CONNECTOR as OFFICERS_CONNECTOR } from '../people/sec-officers.ts'
 import { domainRelationship, HEURISTIC_NOTE } from './domain-basis.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
 
 const TIMEOUT = 8000
 const MAX_LEADS = 10
@@ -129,7 +130,11 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
 
 // Post-scan pass over a job's verified leads. Bounded, parallel within a lead,
 // never throws into the runner. Audited per connector for the settings page.
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function enrichJobSignals(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; alive?: () => boolean } = {}): Promise<void> {
+  return runWithTenantSpend(db, tenantId, () => enrichJobSignalsCounted(db, tenantId, jobId, deps))
+}
+async function enrichJobSignalsCounted(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; alive?: () => boolean } = {}): Promise<void> {
   if (process.env.SIGNALS_ENRICH === '0') return
   const fetchImpl = deps.fetchImpl ?? fetch
   const leads = (listLeads(db, tenantId, jobId, MAX_LEADS) as { id: string; company: string; company_domain: string | null }[]).filter(l => l.company)

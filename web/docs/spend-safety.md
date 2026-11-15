@@ -32,7 +32,7 @@ own transaction (`ScanSpendCtx.accountLimits`, set by the runner), outside one t
 on both windows before the request; past either limit the call is refused `owner_pool_limit` and nothing is sent or
 written; after it the windows settle to the vendor-reported cost (a failed or unreported call keeps its worst case). That
 path writes no pending marker: a crash keeps the worst case counted. A model with no listed price is refused on it.
-A model call with neither a scan nor an account context is refused (`no_spend_context`, review R2): every real path opens
+Outside the runner, every tenant path that can send a priced non-model step runs in the tenant's account context (`runWithTenantSpend`, #1167): the commenter import's enrichment, signal enrichment, the SEO index checks, the fit-check preview's page reads, page signals and the work-email lookup (its PDL person match included). A model call there still goes through `ownerGuarded`; a non-model step with no context at all is on no account (no app path does that). A model call with neither a scan nor an account context is refused (`no_spend_context`, review R2): every real path opens
 one (the runner's scan context; `ownerGuarded`, for a named account too with `limits: null`; the free-trial website read
 through `inAccount` with the account's caps, review R1). The only way past is the named escape hatch
 `runWithoutAccountSpend('offline_eval' | 'test', ...)`. Lock order: a reservation and a settle both take the account's

@@ -10,7 +10,7 @@ import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import {
   accountLimits, OWNER_DAY_CEILING_USD, OWNER_DAY_DEFAULT_USD, OWNER_MONTH_CEILING_USD, OWNER_MONTH_DEFAULT_USD, ownerLimits, poolRows, windowCap,
 } from '../lib/llm/spend-pool.ts'
-import { reserveScanSpend, runWithAccountSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
+import { reserveScanSpend, runWithAccountSpend, runWithTenantSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendRow, type ScanSpendCtx } from '../lib/scan/spend-cap.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
@@ -170,6 +170,101 @@ bothEngines('#1167 an operator-named account (limits null: its PooledGuard count
     if (prevD === undefined) delete process.env.DAZL_RUN_MAX_USD_USERS; else process.env.DAZL_RUN_MAX_USD_USERS = prevD
     if (prevM === undefined) delete process.env.DAZL_OWNER_MONTH_MAX_USD_USERS; else process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = prevM
   }
+})
+
+const withEnv = async (vars: Record<string, string>, fn: () => Promise<void>) => {
+  const prev = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+  Object.assign(process.env, vars)
+  try { await fn() } finally { for (const [k, v] of Object.entries(prev)) if (v === undefined) delete process.env[k]; else process.env[k] = v }
+}
+
+bothEngines('#1167 council: a non-model hold settles like a model one (lower actual -> windows drop; kept / uncertain -> the worst case stays), a scan-cap refusal gives its windows back, and a named account whose entry no longer resolves is counted on the defaults', async ({ db }) => {
+  await withEnv({ DAZL_RUN_MAX_USD_USERS: `${B}:5`, DAZL_OWNER_MONTH_MAX_USD_USERS: `${B}:20` }, async () => {
+    await job(db, 'jn', B)
+    const named = scanCtx(db, 'jn', B, { accountLimits: null })
+    const pdl = await runWithScanSpend(named, () => reserveScanSpend('pdl.people', () => 1.4))
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 1.4, 0, 1], ['m:2026-11', 1.4, 0, 1]])
+    await pdl!.settle(0.56)
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.56, 0.56, 1], ['m:2026-11', 0.56, 0.56, 1]], 'the named account\'s own windows settle to the actual')
+    const r = await runWithScanSpend(named, () => reserveScanSpend('render', () => 0.2))
+    r!.uncertain()
+    await r!.settle(0.01)
+    assert.deepEqual(await rows(db, B), [['d:2026-11-13', 0.76, 0.56, 2], ['m:2026-11', 0.76, 0.56, 2]], 'an uncertain hold keeps its worst case')
+  })
+  await job(db, 'j1', A)
+  const ctx = scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 10 } })
+  const kept = await runWithScanSpend(ctx, () => reserveScanSpend('render', () => 0.3))
+  await kept!.settle(null)
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'no reported cost: the worst case stays')
+  // the scan's own cap (CAD 5) refuses a priced render: the windows it took in that transaction are given back
+  await assert.rejects(runWithScanSpend({ ...ctx }, () => reserveScanSpend('render', () => 3.3)), refusedWith('over_cap'))
+  assert.deepEqual(await rows(db, A), [['d:2026-11-13', 0.3, 0, 1], ['m:2026-11', 0.3, 0, 1]], 'released')
+  // fail closed: accountLimits null but the account has no operator entry (any more): its non-model steps count on the defaults
+  const C = 'c'.repeat(32)
+  await job(db, 'jc', C)
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    await runWithScanSpend(scanCtx(db, 'jc', C, { accountLimits: null }), () => reserveScanSpend('tinyfish.fetch', () => 0.4))
+    assert.deepEqual(await rows(db, C), [['d:2026-11-13', 0.4, 0, 1], ['m:2026-11', 0.4, 0, 1]])
+    await assert.rejects(runWithScanSpend(scanCtx(db, 'jc', C, { accountLimits: null }), () => reserveScanSpend('render', () => 0.2)), refusedWith('owner_pool_limit'))
+  })
+})
+
+bothEngines('#1167 runWithTenantSpend (the tenant paths outside the runner): priced steps count on the account windows, a model call is still refused no_spend_context, and inside a scan it changes nothing', async ({ db }) => {
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    const h = await runWithTenantSpend(db, A, () => reserveScanSpend('render', () => 0.3))
+    assert.ok(h)
+    assert.equal((await rows(db, A)).length, 2)
+    assert.equal((await rows(db, A))[0][1], 0.3)
+    await assert.rejects(runWithTenantSpend(db, A, () => reserveScanSpend('apollo.org', () => 0.3)), refusedWith('owner_pool_limit'))
+    await assert.rejects(runWithTenantSpend(db, A, () => reserveScanSpend('llm.anthropic', () => 0.01)), refusedWith('no_spend_context'))
+    // inside a scan the scan's own context decides: its accountLimits (here a larger day) apply, not the tenant default
+    await job(db, 'j1', A)
+    await runWithScanSpend(scanCtx(db, 'j1', A, { accountLimits: { day: 5, month: 10 } }), () => runWithTenantSpend(db, A, () => reserveScanSpend('render', () => 0.3)))
+  })
+})
+
+bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron or route): its priced TinyFish searches count on the account windows; an account at its cap sends none', async ({ db }) => {
+  const { saveDomain, addKeyword, runIndexChecks } = await import('../lib/seo/indexing.ts')
+  const { resetTinyfishState } = await import('../lib/search/tinyfish.ts')
+  const { reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  await resetTinyfishState(db)
+  let sent = 0
+  const f = (async () => { sent++; return new Response(JSON.stringify({ results: [{ url: 'https://acme.com/', title: 't', snippet: 'a long enough snippet for the test', date: '2027-01-01' }] }), { status: 200 }) }) as unknown as typeof fetch
+  const env = { TINYFISH_API_KEY: 'tf-key', DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01' }
+  await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
+    for (const t of [A, B]) { await saveDomain(db, t, 'acme.com'); await addKeyword(db, t, 'crm'); await addKeyword(db, t, 'sales tool') }
+    const out = await runIndexChecks(db, A, { env, fetchImpl: f })
+    assert.equal(Array.isArray(out) && out.length, 2)
+    assert.equal(sent, 2)
+    const a = await rows(db, A)
+    assert.equal(a.length, 2); assert.ok(Math.abs((a[0][1] as number) - 0.02) < 1e-9 && a[0][3] === 2, JSON.stringify(a))
+    // B is at its day cap: the check sends nothing
+    const now = Math.floor(Date.now() / 1000)
+    await db.tx(function* (t) { assert.equal(yield* reservePoolWindows(t, B, accountLimits(B), 0.5, now), true) })
+    const outB = await runIndexChecks(db, B, { env, fetchImpl: f })
+    assert.equal(sent, 2, 'no search sent for an account at its cap')
+    assert.ok(!Array.isArray(outB) || outB.length === 0, JSON.stringify(outB))
+  })
+})
+
+bothEngines('#1167 the work-email PDL person match reserves one profile before it is sent: a match counts it, an unbilled 404 gives it back, at the cap nothing is sent', async ({ db }) => {
+  const { pdlPersonEnrich } = await import('../lib/enrich/pdl.ts')
+  let sent = 0
+  const answer = (status: number) => (async () => { sent++; return new Response(JSON.stringify(status === 200 ? { status: 200, data: { full_name: 'Ada Lovelace', work_email: 'ada@acme.com' } } : { status }), { status }) }) as unknown as typeof fetch
+  const q = { first: 'Ada', last: 'Lovelace', domain: 'acme.com' }
+  await withEnv({ DAZL_OWNER_DAY_MAX_USD: '0.6' }, async () => {
+    const hit = await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} }))
+    assert.equal(hit.match?.email, 'ada@acme.com')
+    const day = async () => (await rows(db, A))[0]
+    assert.equal((await day())[1], 0.28); assert.equal((await day())[2], 0.28)
+    const miss = await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(404), { env: {} }))
+    assert.equal(miss.billed, false)
+    assert.equal((await day())[1], 0.28, 'the 404 gave its reservation back')
+    await runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} }))
+    assert.equal(sent, 3)
+    await assert.rejects(runWithTenantSpend(db, A, () => pdlPersonEnrich('k', q, answer(200), { env: {} })), refusedWith('owner_pool_limit'))
+    assert.equal(sent, 3, 'refused before it was sent')
+  })
 })
 
 bothEngines('#846 a store that does not answer refuses the call (reservation_not_saved), on the account path too', async ({ db }) => {

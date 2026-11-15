@@ -20,6 +20,7 @@ import { pdlPeopleSearch } from '../enrich/pdl.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { contactAgreement, organizationContradicts, recordContactRejection, regradeFromKeptContacts } from './contact-agreement.ts'
 import { getMasterKey } from '../secrets.ts'
+import { runWithTenantSpend } from './spend-cap.ts'
 
 export const MAX_PROFILES = 100
 export const MAX_COMPANY_LOOKUPS = 50 // Apollo/PDL credit discipline: 1 org credit per distinct company, capped
@@ -189,7 +190,11 @@ export function importCommenters(db: Database.Database, userId: string, rows: Im
 // people lookup on the tenant's own BYOK key, PDL people as the alternative. No emails are
 // stored - people results are name/title strings, same as the scan waterfall. Silent on
 // failure: a bonus, never the bar.
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function enrichCommenters(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined> } = {}): Promise<void> {
+  return runWithTenantSpend(db, tenantId, () => enrichCommentersCounted(db, tenantId, batchId, deps))
+}
+async function enrichCommentersCounted(db: Database.Database, tenantId: string, batchId: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined> } = {}): Promise<void> {
   try { await enrichCommentersInner(db, tenantId, batchId, deps) } finally {
     // The score follows the evidence kept: a contact refused by the agreement checks must not keep contributing to the lead's reachability grade.
     try { const j = (db.prepare('SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?').get(batchId, tenantId) as { job_id: string | null } | undefined)?.job_id; if (j) regradeFromKeptContacts(db, tenantId, j) } catch { /* the regrade never blocks the import */ }

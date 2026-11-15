@@ -178,10 +178,11 @@ export interface ScanSpendCtx {
   // The request's own run_budget.max_usd, when it set one: it can only lower the cap.
   requestMaxUsd?: number | null
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
-  // in the same transaction as this scan's cap, for every model completion of the scan. Null when the runner reserves the
-  // owner pool itself (an account with its own operator entry: PooledGuard), so a call is never counted twice.
-  // #1167: REQUIRED. A context opened without it (a cast, a JS caller) refuses every model call ('account_limits_missing'):
-  // a forgotten field must never mean a scan whose model calls skip the day and month caps.
+  // in the same transaction as this scan's cap, for every priced step of the scan (#1167: models, render, TinyFish, Apollo /
+  // PDL). Null when the runner reserves the owner pool itself for model calls (an account with its own operator entry:
+  // PooledGuard), so a call is never counted twice; that account's other priced steps are counted on its own entry.
+  // #1167: REQUIRED. A context opened without it (a cast, a JS caller) refuses every paid step ('account_limits_missing',
+  // thrown before the ledger, so it writes no refusal row): a forgotten field must never mean a scan that skips the caps.
   accountLimits: PoolLimits | null
   clock?: () => number
 }
@@ -213,9 +214,20 @@ export async function noteAccountLimitRefusal(kind: SpendKind): Promise<void> {
 // its own operator entry (those keep their PooledGuard).
 // limits null: the account's own PooledGuard (an operator-named account, lib/llm/owner-guard.ts) already reserved the
 // call, so the transport adds nothing.
-export interface AccountSpendCtx { db: DbLike; tenantId: string; limits: PoolLimits | null; clock?: () => number }
+// stepsOnly (runWithTenantSpend): the context counts the non-model steps only; a model call in it still needs ownerGuarded's own context.
+export interface AccountSpendCtx { db: DbLike; tenantId: string; limits: PoolLimits | null; clock?: () => number; stepsOnly?: boolean }
 const accountStore = new AsyncLocalStorage<AccountSpendCtx>()
 export function runWithAccountSpend<T>(ctx: AccountSpendCtx, fn: () => Promise<T>): Promise<T> { return accountStore.run(ctx, fn) }
+// #1167: a tenant's work that can send paid steps outside the scan runner (the commenter import's enrichment, the site crawl,
+// signal enrichment, SEO index checks, the fit-check page reads) runs in the tenant's account context, so its priced
+// steps are counted on the account's day/month windows. The account's own limits: an operator-named account's entry, else
+// the deployment defaults. A model call inside is refused here as it was with no context (no_spend_context): it goes through
+// ownerGuarded, whose own inner context decides how it is counted, so nothing is counted twice. Inside a scan or an account context already: unchanged.
+const tenantLimits = (tenantId: string): PoolLimits => ownerLimits(tenantId) ?? accountLimits(tenantId)
+export function runWithTenantSpend<T>(db: DbLike, tenantId: string, fn: () => Promise<T>): Promise<T> {
+  if (store.getStore() || accountStore.getStore()) return fn()
+  return runWithAccountSpend({ db, tenantId, limits: tenantLimits(tenantId), stepsOnly: true }, fn)
+}
 // #846 review R2: a model call with neither a scan nor an account context is refused ('no_spend_context'): a new path
 // that forgets its account cannot spend uncapped. The only way past is this explicit, named escape hatch, for work that
 // is not an account's (offline evals, test doubles of the transport itself); test/spend-caps-846-847.test.ts lists
@@ -228,7 +240,7 @@ const isModel = (kind: string) => kind === 'llm.anthropic' || kind === 'llm.open
 // already counts it for an operator-named account, so it is never counted twice). Every OTHER priced step (TinyFish search / fetch past the
 // free allowance, render, the BYOK Apollo / PDL lookups): the same windows, or the named account's own entry when the runner guards its
 // models itself (the PooledGuard counts models only). A free step (US$0) moves no window.
-const windowsFor = (ctx: ScanSpendCtx, kind: string): PoolLimits | null => (isModel(kind) ? ctx.accountLimits : ctx.accountLimits ?? ownerLimits(ctx.tenantId))
+const windowsFor = (ctx: ScanSpendCtx, kind: string): PoolLimits | null => (isModel(kind) ? ctx.accountLimits : ctx.accountLimits ?? tenantLimits(ctx.tenantId))
 // Runs fn with the scan's spend context: every gated paid call inside it (awaited or not) reserves on this scan.
 export function runWithScanSpend<T>(ctx: ScanSpendCtx, fn: () => Promise<T>): Promise<T> { return store.run(ctx, fn) }
 export function scanSpendContext(): ScanSpendCtx | undefined { return store.getStore() }
@@ -335,7 +347,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
       // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
       if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON
       // a free step moves no window but is still refused once a window is at its cap (an account at its limit sends nothing)
-      const acct = ctx.accountLimits ?? ownerLimits(ctx.tenantId)
+      const acct = ctx.accountLimits ?? tenantLimits(ctx.tenantId)
       if (!why && usd === 0 && !isModel(kind) && acct && (yield* poolWindowsFull(t, ctx.tenantId, acct, at))) why = OWNER_POOL_LIMIT_REASON
       // #846/#847 + #1167: the owner's day/month caps first, in this same transaction, for EVERY priced step; refused there, the scan's cap is untouched.
       const windows = windowsFor(ctx, kind)
@@ -452,8 +464,9 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
     if (uncappedStore.getStore()) return null
     throw new SpendRefused('no_spend_context')
   }
+  if (a.stepsOnly && isModel(kind)) throw new SpendRefused('no_spend_context') // as with no context at all: models go through ownerGuarded
   // limits null = an operator-named account whose PooledGuard counts its MODEL calls; its other priced steps are counted on its own entry (#1167)
-  const limits = a.limits ?? (isModel(kind) ? null : ownerLimits(a.tenantId))
+  const limits = a.limits ?? (isModel(kind) ? null : tenantLimits(a.tenantId))
   if (!limits) return null
   if (unsettledAccounts.has(a)) throw new SpendRefused('accounting_unsettled')
   const db = asDb(a.db)
