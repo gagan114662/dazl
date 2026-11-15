@@ -174,7 +174,7 @@ try {
           const tipText = tip.getByTestId('infotip-text'); await tipText.waitFor({ state: 'visible' })
           assert.equal((await tipText.textContent()).trim(), '2: Event day verified on the cited source; the rest of the lead is not confirmed yet. 2: No usable event date. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.', `${tag}: the tip`)
           const rows = (await page.getByTestId('research-row').allTextContents()).map(t => t.trim())
-          assert.deepEqual(rows.map(r => r.split(':')[0]).sort(), ['Armstrong Teasdale', 'Norton Rose Fulbright', 'Ogletree Deakins', 'Zayed Law'])
+          assert.deepEqual(rows.map(r => r.split(':')[0]).sort(), ['Norton Rose Fulbright', 'Ogletree Deakins', 'Zayed Law'], 'the first 3 lines, as on prod (Home shows at most 3)')
           assert.equal(rows.filter(r => /event day verified on the cited source/.test(r)).length, 2, 'the lines below say the same')
           const box = await tipText.boundingBox(); assert.ok(box && box.x >= 0 && box.x + box.width <= w + 1, `${tag}: the open tip fits the viewport`)
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${tag}: no horizontal overflow`)
