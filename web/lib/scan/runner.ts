@@ -2149,27 +2149,29 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // be the company's own (sitecrawl.ts companyHostsFromSearch) are returned; crawlJob still runs the homepage name check and the place
 // check on each before anything is recorded. undefined when TinyFish is off: the crawl then guesses domains from the name as before.
 // A search the scan's budget refuses ends the searching for this scan (nothing was sent); it never ends the crawl.
-export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; crawlGet?: unknown; first5?: boolean; paidFallback?: boolean; env?: Record<string, string | undefined> }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; crawlGet?: unknown; first5?: boolean; paidFallback?: boolean; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
   const free = freeSiteFinderFor(db, job, deps, signal)
   const paid = paidSiteFinderFor(db, job, deps, signal)
   if (!free) return paid
   if (!paid) return free
   // free public data first; the paid search only for a company the free sources could not place
-  return async (company, where) => { const f = await free(company, where); return f.length > 0 ? f : paid(company, where) }
+  return Object.assign(async (company: string, where: string[]) => { const f = await free(company, where); return f.length > 0 ? f : paid(company, where) }, { recordSite: free.recordSite })
 }
 
 // #1122: the company's own site from free public data (Wikidata's official website, OpenStreetMap's website tag), for EVERY scan kind:
 // it costs nothing, so a trial, a first play and a scheduled run get it too. One lookup per company per scan, at most
 // FREE_SITE_LOOKUPS_PER_SCAN; every lookup leaves an audit row (site_free_<outcome>). DAZL_FREE_SITE_FINDER=0 turns it off.
 export const FREE_SITE_LOOKUPS_PER_SCAN = 20
-export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string) => boolean }
+export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
   if ((deps.env ?? process.env).DAZL_FREE_SITE_FINDER === '0') return undefined
   // a run whose crawl fetch is injected (tests, fixtures) never reaches the public internet through this finder unless its fetch is injected too
   if (deps.crawlGet && !deps.freeSiteFetch) return undefined
   let asked = 0
   const answers = new Map<string, Promise<string[]>>()
+  const records = new Set<string>()
   const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_free_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
-  return (company, where) => {
+  const find = (company: string, where: string[]): Promise<string[]> => {
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
     const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
     const had = answers.get(key)
@@ -2184,6 +2186,7 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
         const named = companyHostsFromSearch(company, hits.filter(h => h.source === 'wikidata'), 3, where)
         const mapped = hits.filter(h => h.source === 'openstreetmap').map(h => ownSiteHost(h.url)).filter((x): x is string => !!x)
         const hosts = [...new Set([...named, ...mapped])].slice(0, 3)
+        for (const h of named) if (hosts.includes(h)) records.add(h)   // Wikidata's official website of an item named exactly like the company
         const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : [])])].join('+') || 'none'
         note(company, hosts.length > 0 ? `ok_${from}` : 'no_match', hosts.length)
         return hosts
@@ -2192,6 +2195,7 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
     answers.set(key, answer)
     return answer
   }
+  return Object.assign(find, { recordSite: (site: string) => records.has(site) })
 }
 
 function paidSiteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
@@ -2240,7 +2244,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else {
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
-      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites, ...(findSites.recordSite ? { recordSite: findSites.recordSite } : {}) } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }

@@ -160,14 +160,20 @@ test('crawlJob + the free finder: a Greenhouse lead with no linked site gets the
   const { db: jdb, job } = scan()
   const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { Mercury: [{ id: 'Q1', label: 'Mercury', site: 'https://mercury.com/' }] } }) })!
   // mercury.com is the real company; the name guess mercury.io is a different business that the crawl must not pick first
-  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Mercury - banking for startups</body></html>', 'mercury.io': '<html><body>Mercury Plumbing, Leeds</body></html>' }), gapMs: 0, env: {}, findSites: (c, w) => findSites(c, w) })
+  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Mercury - banking for startups</body></html>', 'mercury.io': '<html><body>Mercury Plumbing, Leeds</body></html>' }), gapMs: 0, env: {}, findSites: (c, w) => findSites(c, w), recordSite: findSites.recordSite })
   assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, 'mercury.com')
+})
+
+test('crawlJob: without the public-record mark, a name-guessed site for a no-geography scan is still refused for having no place (unchanged)', async () => {
+  const db = seed()
+  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Mercury - banking for startups</body></html>' }), gapMs: 0, env: {}, findSites: async () => ['mercury.com'] })
+  assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, null)
 })
 
 test('crawlJob + the free finder: a site the free data names but whose homepage does not name the company is still refused', async () => {
   resetFreeSiteFinderPacing(); const db = seed()
   const { db: jdb, job } = scan()
   const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { Mercury: [{ id: 'Q1', label: 'Mercury', site: 'https://mercury.com/' }] } }) })!
-  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Domain for sale</body></html>' }), gapMs: 0, env: {}, findSites: (c, w) => findSites(c, w) })
+  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Domain for sale</body></html>' }), gapMs: 0, env: {}, findSites: (c, w) => findSites(c, w), recordSite: findSites.recordSite })
   assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, null)
 })

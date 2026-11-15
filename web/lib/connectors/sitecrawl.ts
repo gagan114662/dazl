@@ -942,7 +942,7 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
   })
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; findSites?: (company: string, where: string[]) => Promise<string[]>; recordSite?: (site: string) => boolean } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -1086,7 +1086,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (r.homeText !== undefined) answered = true   // some candidate's homepage was read (and then accepted or refused)
         // a guessed site whose robots rules stop the read: remembered, so the lead's reason says the likely site could not be read
         if (r.reason === 'robots_disallow' && basisOf.get(cand) === 'name_probe') robotsStopped = true   // only a site that ANSWERED with rules forbidding it; an unreachable host is just absent
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        // #1122: a scan with NO geography has nothing to place a company that is not local (a SaaS company hiring an SDR); a site a public
+        // record gives as THIS company's official website (Wikidata P856, the item named exactly like the company, its host carrying the
+        // name) is not asked for a place there. Every other check (homepage names the company, address, robots) still applies.
+        const recordNoGeo = where.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.recordSite?.(cand)
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
