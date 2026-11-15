@@ -39,3 +39,17 @@ test('#1248 visibleQuote: only markdown link and bold syntax is reduced to its v
   assert.equal(visibleQuote('**Acme** raised __$5M__ ![logo](https://x.example/a.png)'), 'Acme raised $5M logo')
   for (const s of ['a [bracket] note', 'f(x) = [1, 2]', 'snake_case and 2*3*4', 'a ** b']) assert.equal(visibleQuote(s), s, s)
 })
+
+test('#1248 review: the company named at the end of a quote, before a closing quote mark or bracket and a full stop, still names it; the full-stop join never merges numbers or addresses; reference-style links and nested brackets are left as written', () => {
+  const page = (text: string) => ({ text, title: 'News', retrievedAt: 1 })
+  const cand = (company: string, excerpt: string) => ({ name: '', company, contact: null, signal: 's', source_url: 'https://news.example/a', score: 80, excerpt, event_date: null } as Candidate)
+  const at = new Date('2026-11-14T12:00:00Z')
+  for (const q of ['The new contract was awarded to “Acme”.', 'The new contract was awarded to Beta (a unit of Acme).']) {
+    const v = verifyEvidence(cand('Acme', q), page(`Background. ${q} More text follows here.`), at)
+    assert.ok(!(!v.ok && (v.reason === 'entity_mismatch' || v.reason === 'excerpt_not_on_page')), `${q}: ${JSON.stringify(v)}`)
+  }
+  // "1 .5 million" on a page is not "1.5 million" in a quote, and the reverse
+  const v1 = verifyEvidence(cand('Acme', 'Acme raised 1.5 million dollars in new funding this week'), page('Acme raised 1 .5 million dollars in new funding this week, it said.'), at)
+  assert.ok(!v1.ok && v1.reason === 'excerpt_not_on_page')
+  assert.equal(visibleQuote('[Acme][1] raised'), '[Acme][1] raised'); assert.equal(visibleQuote('[a [b] c](https://x.example/)'), '[a [b] c](https://x.example/)')
+})

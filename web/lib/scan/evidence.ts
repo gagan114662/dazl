@@ -282,15 +282,17 @@ function parseDay(s: string | null): Date | null {
 // #1248: the quote and the page are compared as the words a reader sees. A search result can carry a quote in markdown ("Das Berliner FinTech
 // [mika](https://www.startbase.de/organization/mika-f5ff77dc/) hat ...", "unit in [Bengaluru](/tag/bengaluru)"): the page shows "mika" and
 // "Bengaluru", so the link syntax is reduced to its visible text (and **bold** / __bold__ markers dropped) before matching. A page's text can
-// put a space before a full stop at a tag boundary ("real estate practice ."): a space before . , ; : ! ? is ignored on both sides. The words
+// put a space before a full stop at a tag boundary ("real estate practice ."): a space before a word-ending full stop is ignored on both sides
+// (norm has already turned , ; : ! ? into spaces). The company-name check reads the quote WITHOUT that joining, so "... to \u201cAcme\u201d." still names Acme. The words
 // themselves must still appear contiguously on the page; nothing else is relaxed, and the saved quote is never rewritten.
 export const visibleQuote = (s: string) => s.replace(/!?\[([^\]\n]{0,300})\]\([^)\s]{0,600}\)/g, '$1').replace(/(\*\*|__)(?=\S)([^*_\n]{1,300}?\S)\1/g, '$2')
-const tightPunct = (s: string) => s.replace(/ +([.,;:!?])/g, '$1')
+const tightPunct = (s: string) => s.replace(/ +\.(?= |$)/g, '.')   // only a full stop that ends a word: never joins "1 .5" or "acme .com"
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
   const text = tightPunct(norm(page.text))
   // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
   // appear contiguously on the page. An ellipsis inside the quote (words skipped) still fails, and the saved quote is never rewritten.
-  const excerpt = tightPunct(norm(visibleQuote(c.excerpt).replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, '')))
+  const loose = norm(visibleQuote(c.excerpt).replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, ''))
+  const excerpt = tightPunct(loose)
   if (excerpt.length < 20 || c.excerpt.length > 400) return { ok: false, reason: 'no_excerpt' }
   const at = text.indexOf(excerpt)
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
@@ -299,7 +301,7 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const entityOk = hasPhrase(excerpt, key) || pageHeadingNames(page, key)
+  const entityOk = hasPhrase(loose, key) || pageHeadingNames(page, key)
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70
