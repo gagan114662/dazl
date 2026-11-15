@@ -104,7 +104,20 @@ export function researchTip(causes: ResearchCause[]): string {
   return `${parts.length ? `${parts.join(' ')} ` : ''}Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.`
 }
 const LOOKED_FOR: Record<string, string> = { undated: 'a dated source', quote_unconfirmed: 'a page that carries the quote', counterparty_signal: 'a source about the company itself', blocked_by_site: 'a readable source', needs_javascript: 'a readable source' }
-const NOT_RUN: Record<string, string> = { 'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run' }
+const NOT_RUN: Record<string, string> = {
+  'the run disabled the paid fallback': 'this run allowed no extra search', 'news search is off': 'news search is off', 'no model for this run': 'no model was available for this run',
+  // #381: the reasons the TinyFish recovery pass gives when it does not run (runner.ts)
+  'no request profile to search with': 'the scan had no request profile to search with',
+  'the web search is not configured': 'the web search is not configured',
+  'the extra search round is switched off': 'the extra search round is switched off',
+  'the scan already used its extra search round on a wider search': 'the scan already used its one extra search round on a wider search',
+  'a scheduled play run keeps the caps it was confirmed with': 'a scheduled play run keeps the caps it was confirmed with',
+  "the scan's budget was already used": "the scan's budget was already used",
+  "the scan's budget did not fit the search": "the scan's budget did not fit the search",
+  'too little time was left in the scan': 'too little time was left in the scan',
+  'the search limit was reached': 'the search limit was reached',
+  'the search failed': 'the search failed',
+}
 export interface RecoveryNote { ran: boolean; text: string }
 export function recoveryNote(l: { enrichments?: { connector: string; label: string | null; value: string }[] | null }): RecoveryNote | null {
   const r = (l.enrichments ?? []).find(e => e.connector === 'scan:recovery')

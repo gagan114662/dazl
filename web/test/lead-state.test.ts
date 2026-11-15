@@ -72,6 +72,9 @@ test('#352 recovery record: research leads say what the automatic recovery pass 
   assert.deepEqual(recoveryNote(undated), { ran: true, text: 'dazl already searched other press for a dated source; none verified.' })
   assert.deepEqual(recoveryNote(notRun), { ran: false, text: 'dazl did not search other sources for it: this run allowed no extra search.' })
   assert.equal(recoveryNote(lead({ enrichments: [rec('recovery:undated', 'Recovery pass did not run (something new).')] }))?.text, 'dazl did not search other sources for it: the search was not available for this run.')
+  // #381: the TinyFish pass's own skip reasons are shown as they are, not as "not available"
+  assert.equal(recoveryNote(lead({ enrichments: [rec('recovery:blocked_by_site', 'Recovery pass did not run (the scan already used its extra search round on a wider search).')] }))?.text, 'dazl did not search other sources for it: the scan already used its one extra search round on a wider search.')
+  assert.equal(recoveryNote(lead({ enrichments: [rec('recovery:blocked_by_site', "Recovery pass did not run (the scan's budget did not fit the search).")] }))?.text, "dazl did not search other sources for it: the scan's budget did not fit the search.")
   assert.equal(recoveryNote(lead({ enrichments: [{ connector: 'scan:fallback', kind: 'fallback', value: 'x', label: 'other_sources', source_url: 'https://n.example' }] })), null)
   assert.equal(recoveryNote(lead()), null)
   // The record is display only: the NYC/London-shaped runs with it stay research_only, with zero actionable review.
