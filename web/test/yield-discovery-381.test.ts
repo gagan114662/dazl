@@ -61,7 +61,7 @@ test('#381 page reads go to pages that report an event: on the real Chicago resu
   assert.equal(pageKindRank('https://www.milbank.com/en/news/milbank-to-open-chicago-office.html'), 0)
   assert.equal(pageKindRank('https://smilecitydental.ca/'), 0.6, 'a home page')
   assert.equal(pageKindRank('https://dentix24.com/en/locations/'), 0.3)
-  assert.equal(pageKindRank('https://job-boards.greenhouse.io/clutch/jobs/6255161004'), 0, 'a job posting is an event page for a hiring request')
+  assert.equal(pageKindRank('https://job-boards.greenhouse.io/clutch/jobs/6255161004'), 0.3, 'a job posting is neutral for a hiring request (search order decides, as before)')
   assert.equal(pageKindRank('https://job-boards.greenhouse.io/clutch/jobs/6255161004', '', false), 0.6, 'and the least useful readable page for any other request')
   assert.equal(pageKindRank('https://example.com/x', 'Acme opens a second location in Vancouver'), 0, 'an event word in the title')
   // walled pages stay last, whatever they look like

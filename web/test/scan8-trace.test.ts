@@ -22,11 +22,13 @@ const sel16 = (hits: ReturnType<typeof mk>[]) => {
 const kind = (u: string) => u.includes('raises-seed') ? 'funding' : u.includes('greenhouse') ? 'ats' : /\/\/co\d\.io/.test(u) ? 'company' : 'noise'
 const tally = (urls: string[]) => urls.reduce((t, u) => ({ ...t, [kind(u)]: (t[kind(u)] ?? 0) + 1 }), {} as Record<string, number>)
 
-test('FETCH SLOTS (compound request, 16 slots of ~78 results): ranking is date class then job-page, then SEARCH ORDER by host — no relevance signal', () => {
+test('FETCH SLOTS (compound request, 16 slots of ~78 results): ranking is date class then job-page, then the kind of page (#381: an address or title that reports an event first), then SEARCH ORDER by host', () => {
   const mixed = [...noise.slice(0, 30), ...funding, ...company, ...ats, ...noise.slice(30)]   // 78 results; search puts irrelevant roundups first
   const a = tally(sel16(mixed)); console.log(`# slots, noise ranked first by the engine: ${JSON.stringify(a)}`)
   const b = tally(sel16([...funding, ...company, ...ats, ...noise]));  console.log(`# slots, relevant results ranked first by the engine: ${JSON.stringify(b)}`)
-  assert.equal(a.funding ?? 0, 0, 'dated, irrelevant roundups ahead in search order take every slot; the funding articles and company pages behind them are never fetched')
+  // before #381 this was 0: the 30 dated roundups ahead in search order took every slot. The funding articles say what happened in their address ("raises-seed"),
+  // so they are read first now, wherever the engine put them; the roundups still fill the rest
+  assert.equal(a.funding, 6, 'all six funding articles are read even when 30 roundups come first in search order')
   assert.equal(b.funding, 6, 'the same pages are fetched when the engine ranks them first'); assert.equal(b.ats ?? 0, 0, 'job-board pages come after every non-job page for a compound request')
   // undated company homepages (class 1) sit behind ALL dated inside-window pages, relevant or not
   assert.equal(tally(sel16([...company, ...noise]))['company'] ?? 0, 0)

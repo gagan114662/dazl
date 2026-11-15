@@ -1149,7 +1149,9 @@ export const pagesAskHiring = (request: string, icp: { signals?: string[]; langu
 export function pageKindRank(url: string, title = '', hiringAsked = true, now = new Date()): number {
   let u: URL
   try { u = new URL(url) } catch { return 0.3 }
-  if (isJobPage(url)) return hiringAsked ? 0 : 0.6
+  // a job posting is neutral for a hiring request (order by search position, as before: on a real Austin scan all four reads went to unrelated Greenhouse postings),
+  // and the least useful readable page for any other request
+  if (isJobPage(url)) return hiringAsked ? 0.3 : 0.6
   // (review) a path dated before last year (/news/2019/...) is an archive page: it can never pass the date gate, so it is not preferred
   // the year must be a whole path segment (/news/2019/...): a number inside a headline slug ("opens-office-at-2000-main-street") is not a date
   const year = /\/((?:19|20)\d\d)(?=\/|$)/.exec(u.pathname)
