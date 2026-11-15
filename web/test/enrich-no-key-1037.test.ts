@@ -29,7 +29,7 @@ test('#1037 a keyless scan: the scan view lists why nothing was looked up, in wo
   const issues = await readProviderIssues(sqliteDb(db), 'u1', jobId)
   assert.deepEqual(issues?.map(i => [i.connector, i.status, i.lookups_affected]), [['enrich', 'no_key', 1]])
   const text = providerIssueText(issues![0])
-  assert.match(text, /^No contacts were looked up in this scan: no Apollo or People Data Labs key is saved for this workspace/)
+  assert.match(text, /^No contacts were looked up in this scan: no enabled Apollo or People Data Labs key is saved for this workspace/)
   assert.match(text, /Settings > Enrichment/)
   // another tenant's scan view never shows it
   assert.deepEqual(await readProviderIssues(sqliteDb(db), 'someone-else', jobId), [])
@@ -41,7 +41,7 @@ test('#1037 the enrichment trace says "no key" (not "no key, or no eligible lead
   const o = paidEnrichmentOutcomes(db, 'u1', jobId)
   assert.deepEqual([o.passFailed, o.failed, o.total], [0, 0, 0], 'nothing was tried, so nothing failed')
   const t = new EnrichmentTrace(); notePaidEnrichment(t, db, 'u1', jobId)
-  assert.deepEqual(t.stages.map(s => [s.stage, s.status, s.reason]), [['paid_enrichment', 'unavailable', 'no Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made']])
+  assert.deepEqual(t.stages.map(s => [s.stage, s.status, s.reason]), [['paid_enrichment', 'unavailable', 'no enabled Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made']])
   // a real pass failure on the same connector is still a failure
   audit(db, { tenantId: 'u1', connector: 'enrich', jobId, lookup: 'pass setup', status: 'setup failed: x', results: 0 })
   assert.equal(paidEnrichmentOutcomes(db, 'u1', jobId).passFailed, 1)
@@ -57,4 +57,20 @@ test('#1037 no row when there is no lead to look up, and none when a key is save
   saveCredential(b.db, 'u1', 'enrich:pdl', 'test-pdl-key-1234', master)
   await enrichLeadContacts(b.db, 'u1', b.jobId, [b.lead], { fetchImpl: (async () => new Response(JSON.stringify({ status: 404 }), { status: 404 })) as unknown as typeof fetch, master })
   assert.equal((b.db.prepare("SELECT count(*) AS n FROM connector_audit WHERE status = 'no_key'").get() as { n: number }).n, 0)
+})
+
+test('#1037 review: a saved key that could not be READ is never reported as "no key" (its own setup-unreadable row stands), and a repeated pass writes the note once', async () => {
+  // a key saved under one master key, read with another: unreadable, not absent
+  const a = seed()
+  saveCredential(a.db, 'u1', 'enrich:pdl', 'test-pdl-key-1234', randomBytes(32))
+  await enrichLeadContacts(a.db, 'u1', a.jobId, [a.lead], { fetchImpl: never, master })
+  const rows = a.db.prepare("SELECT connector, status FROM connector_audit WHERE scan_job_id = ? ORDER BY rowid").all(a.jobId) as { connector: string; status: string }[]
+  assert.ok(!rows.some(r => r.status === 'no_key'), JSON.stringify(rows))
+  assert.ok(rows.some(r => r.connector === 'enrich:pdl' && /^setup unreadable/.test(r.status)), JSON.stringify(rows))
+  assert.ok(!((await readProviderIssues(sqliteDb(a.db), 'u1', a.jobId)) ?? []).some(i => /no enabled Apollo/.test(providerIssueText(i))))
+  // the pass runs again on the same scan (a commenter import re-runs it): still one note
+  const b = seed()
+  await enrichLeadContacts(b.db, 'u1', b.jobId, [b.lead], { fetchImpl: never, master })
+  await enrichLeadContacts(b.db, 'u1', b.jobId, [b.lead], { fetchImpl: never, master })
+  assert.equal((b.db.prepare("SELECT count(*) AS n FROM connector_audit WHERE scan_job_id = ? AND status = 'no_key'").get(b.jobId) as { n: number }).n, 1)
 })

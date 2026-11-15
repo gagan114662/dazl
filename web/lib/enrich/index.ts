@@ -144,9 +144,11 @@ export async function enrichLeadContacts(
   // (#382): a PDL key saved under the original wording ("used only when no Apollo key is saved") is not consent
   // to paid fallback credits. Off by default - without it, a tenant with both keys gets exactly the old
   // Apollo-only behavior the settings page describes.
+  let unreadable = false // a saved key that could not be read is NOT "no key" (#1037 review): the no_key note is never written then
   const loadKey = (prov: Prov): string | null => {
     try { return getEnabledCredential(db, tenantId, connector[prov], master) }
     catch {
+      unreadable = true
       try { audit(db, { tenantId, connector: connector[prov], jobId, lookup: 'key load', status: `setup unreadable: ${prov} key could not be read`, results: 0 }) } catch { /* db down: the log line still carries it */ }
       console.error(`[enrich] setup unreadable: ${prov} key could not be read`)
       return null
@@ -162,7 +164,13 @@ export async function enrichLeadContacts(
     if (!keys.apollo && !keys.pdl) {
       // #1037: no key is not silent. One row per scan, so the scan view says why nothing was looked up (provider-issues.ts) and the
       // enrichment trace can tell "no key" from "no eligible lead" or a failed pass (enrichment-trace.ts reads NO_KEY_STATUS apart).
-      if (leads.length > 0) audit(db, { tenantId, connector: 'enrich', jobId, lookup: 'contact pass', status: NO_KEY_STATUS, results: 0 })
+      // Only when no key was UNREADABLE (that is its own 'setup unreadable' row), once per scan (the pass re-runs on a commenter import), and a
+      // failed write is logged, never turned into a "pass failed" row: nothing was tried.
+      if (leads.length > 0 && !unreadable) {
+        try {
+          if (!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, 'enrich', NO_KEY_STATUS)) audit(db, { tenantId, connector: 'enrich', jobId, lookup: 'contact pass', status: NO_KEY_STATUS, results: 0 })
+        } catch (e) { console.error('[enrich] no_key note not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+      }
       return summary
     }
     where = scanWhere(db, jobId) // an agreement basis: unreadable = the pass refuses rather than agrees on a guess

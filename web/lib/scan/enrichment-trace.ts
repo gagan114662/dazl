@@ -227,7 +227,7 @@ export function notePaidEnrichment(trace: EnrichmentTrace, db: Database.Database
   else if (o.total === 0 && o.unconfirmed === 0 && o.held === 0 && o.failed === 0) {
     let noKey = false
     try { noKey = !!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR, NO_KEY_STATUS) } catch { /* unreadable: the old wording */ }
-    trace.note('paid_enrichment', 'unavailable', noKey ? 'no Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made' : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
+    trace.note('paid_enrichment', 'unavailable', noKey ? 'no enabled Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made' : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
   }
   else if (o.ok > 0) {
     const lookupFailed = o.failed - o.passFailed
