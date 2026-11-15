@@ -58,8 +58,9 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
   const hasInitial = initial !== undefined
   // The list was read again (a scan finished, a filter changed): its guesses are the whole truth for this lead, like the per-lead GET.
   const initialGuesses = initial?.guesses
-  const firstGuesses = useRef(initialGuesses)
-  useEffect(() => { if (initialGuesses !== firstGuesses.current) { firstGuesses.current = initialGuesses; if (Array.isArray(initialGuesses)) takeGuesses(initialGuesses, true) } }, [initialGuesses, takeGuesses])
+  // adjusted while rendering (not in an effect): React's pattern for state that follows a changed prop, with no extra render pass
+  const [seenGuesses, setSeenGuesses] = useState(initialGuesses)
+  if (initialGuesses !== seenGuesses) { setSeenGuesses(initialGuesses); if (Array.isArray(initialGuesses)) setGuesses(guessMap(initialGuesses)) }
   useEffect(() => {
     mounted.current = true
     if (!lazy && !hasInitial) load()
