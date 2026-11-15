@@ -130,3 +130,50 @@ test('the proof of a READY verdict makes a stored lead Ready by the same rule Ho
   assert.equal(researchProofGap(db, 'A', 'L1', new Date(Date.parse('2027-01-15T12:00:00Z'))), 'out_of_window')
   assert.equal(home().ready, 1)
 })
+
+test('the proof fits the store whatever the person page and name (Lane A: 5 of 9 ready Chicago leads lost it to the 254-character value CHECK); a store refusal returns false and writes nothing', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { writeResearchProof, researchProofGap } = await import('../lib/research/proof.ts')
+  const r = rec('Mouledoux, Bland, Legrand & Brackett')
+  const setup = () => {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    const J = 'r'.repeat(24)
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', 'Law firms in Chicago', 'running', 1, ?)").run(J, Math.floor(NOW / 1000) - 3600)
+    db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, fit, created_at) VALUES ('L1', ?, ?, 'moved', ?, 80, ?, 4, ?)").run(J, r.company, r.source_url, r.trigger_quote, Math.floor(NOW / 1000) - 600)
+    return db
+  }
+  const ev = { company: r.company, whatHappened: r.why_now, whyNow: r.why_now, quote: r.trigger_quote, eventDate: r.event_date, dateQuote: r.date_quote, sourceUrl: r.source_url }
+  const base = { name: r.person!, title: r.title, quote: r.person_quote!, sourceUrl: r.person_url!, sourceText: r.person_text ?? r.source_text }
+  const v = await verifyLead(ev, { url: r.source_url, text: r.source_text, readAt: NOW }, base, recorded(r), { now: NOW })
+  assert.equal(v.ready, true)
+  // a team / bio page URL of 240 characters, and a name of 300 (model output): written, and the proof stands
+  const longUrl = `https://www.mblb.com/our-team/attorneys/managing-members/${'alan-g-brackett-'.repeat(12)}profile`
+  assert.ok(longUrl.length > 200)
+  for (const person of [{ ...base, sourceUrl: longUrl }, { ...base, name: `${r.person!} ${'X'.repeat(300)}`, sourceUrl: longUrl }]) {
+    const db = setup()
+    assert.equal(writeResearchProof(db, 'A', 'L1', v, ev, person, new Date(NOW)), true, `url ${person.sourceUrl.length}, name ${person.name.length}`)
+    assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), null, 'never person_missing for a long name or page')
+    const rows = db.prepare("SELECT kind, length(value) n FROM lead_enrichments WHERE lead_id = 'L1'").all() as { kind: string; n: number }[]
+    for (const row of rows) assert.ok(row.n <= 254, JSON.stringify(row))
+  }
+  // the store refuses (here: a trigger, standing in for any constraint or store fault): false, nothing written, nothing thrown
+  const db = setup()
+  db.exec("CREATE TRIGGER refuse BEFORE INSERT ON lead_enrichments BEGIN SELECT RAISE(ABORT, 'refused by the store'); END")
+  assert.equal(writeResearchProof(db, 'A', 'L1', v, ev, base, new Date(NOW)), false)
+  assert.deepEqual({ ...(db.prepare("SELECT event_date, event_date_proof FROM leads WHERE id = 'L1'").get() as object) }, { event_date: null, event_date_proof: null }, 'rolled back')
+  assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), 'no_record')
+})
+
+test('a lead the research proof never marked costs the gate one read (the old engine path)', async () => {
+  const Database = (await import('better-sqlite3')).default
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const { researchProofGap } = await import('../lib/research/proof.ts')
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('J', 'A', 'x', 'y', 'z', 'running')").run()
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence) VALUES ('L1', 'J', 'Co', 's', 'https://co.example/', 80)").run()
+  const seen: string[] = []
+  const spy = new Proxy(db, { get: (t, k) => k === 'prepare' ? (sql: string) => { seen.push(sql); return t.prepare(sql) } : Reflect.get(t, k) })
+  assert.equal(researchProofGap(spy as typeof db, 'A', 'L1', new Date(NOW)), 'no_record')
+  assert.equal(seen.length, 1, seen.join('\n'))
+})
