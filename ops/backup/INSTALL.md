@@ -123,6 +123,9 @@ echo 'OFFHOST_PULL_MARKER=/var/backups/dazl-offhost/.pulled' | sudo tee -a /etc/
 grep -E '^(RETAIN_OFFHOST_HOURLY|OFFHOST_PULL_MARKER|OFFHOST_DEST)=' /etc/dazl-backup/env
 ```
 
+The env file now differs from the installer's defaults: a later re-install (a new release) needs `--keep-env`, or the
+installer stops and names `RETAIN_OFFHOST_HOURLY` and `OFFHOST_PULL_MARKER`.
+
 **Back on the operator machine** (host key first, then the timer, then one pull by hand):
 
 ```bash
