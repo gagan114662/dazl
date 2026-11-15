@@ -38,7 +38,7 @@ test('runResearch: stages in order, only trigger-verified leads returned, the co
     filter: async (_c: unknown, _p: unknown, all: Candidate[]) => { order.push('filter'); return { all: all.map((x, i) => i === 2 ? { ...x, dropped: 'filter' } : x), keep: all.slice(0, 2) } },
     read: async (_c: unknown, _p: unknown, x: Candidate) => { order.push('read'); const e = [ev(`Acme${x.title}`), ev(`Beta${x.title}`)]; return { events: e, pageText: e.map(page).join(' ') } },
     gate: async (_c: unknown, es: ResearchEvent[]) => { order.push('gate'); return es.filter(e => e.company !== 'Betab') },
-    research: async (_c: unknown, _p: unknown, e: ResearchEvent) => research(e.company !== 'Betaa'),
+    company: async (_c: unknown, _p: unknown, e: ResearchEvent) => research(e.company !== 'Betaa'),
     verify: async (_c: unknown, e: ResearchEvent) => v(e.company !== 'Acmeb', e.company === 'Acmea'),
   }
   assert.ok(researchReady(s)); assert.equal(researchReady({ plan: s.plan, hunt: s.hunt }), false)
