@@ -34,7 +34,7 @@ test('#1036 the Leads page renders that block on every "Needs your review" row, 
   const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   const lane = src.slice(src.indexOf('{leads.filter(l => l.review_reason).map(l => ('), src.indexOf('data-testid="review-actions"'))
   assert.match(lane, /reviewLaneWorkEmailTargets\(l, icp && icp\.icp\.who\.length > 0 \? icp\.icp\.who\.join\('; '\) : ''\)/)
-  assert.match(lane, /data-testid="review-work-email"><WorkEmail leadId=\{l\.id\} targets=\{t\} lazy \/>/)
+  assert.match(lane, /data-testid="review-work-email"><WorkEmail leadId=\{l\.id\} initial=\{workEmailInitial\(l\.id\)\} targets=\{t\} lazy \/>/)
 })
 
 // The server side (independent review): the real lookup on a lead still in review, with a stubbed provider. No network.

@@ -43,3 +43,34 @@ test('sitecrawl rawGet returns body from a responsive server (injected lookup ke
   assert.equal(out?.status, 200)
   assert.ok(out?.body.includes('Acme Roofing'))
 })
+
+// #1122: a page larger than the stored-body cap (800 KB) is read on (up to 4 MB) for its TEXT: the body every extractor reads stays capped,
+// and the whole page's visible text comes back beside it. A slow tail past the cap never costs the page.
+const serve = (handler: (res: import('node:http').ServerResponse) => void) => new Promise<{ port: number; close: () => void }>(r => {
+  const server = https.createServer({ cert: CERT, key: KEY }, (_req, res) => handler(res))
+  server.listen(0, '127.0.0.1', () => r({ port: (server.address() as AddressInfo).port, close: () => { server.closeAllConnections?.(); server.close() } }))
+})
+const filler = (n: number) => '<div class="sqs-block"><div class="sqs-html-content"></div></div>'.repeat(Math.ceil(n / 64)).slice(0, n)
+
+test('#1122 rawGet: a 1.2 MB page comes back with its body capped at 800 KB and its whole text, so a footer address past the cap is seen', async () => {
+  const page = `<html><body><h1>Queen Street Dental Centre</h1>${filler(1_100_000)}<footer>LOCATION 930 Queen Street East Toronto, ON, M4M 1J5</footer></body></html>`
+  const s = await serve(res => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(page) })
+  const out = await rawGet(`https://127.0.0.1:${s.port}/`, 0, 5000, loopbackLookup as never); s.close()
+  assert.equal(out?.status, 200)
+  assert.ok(out!.body.length <= 800_000, String(out!.body.length)); assert.doesNotMatch(out!.body, /M4M 1J5/)
+  assert.match(out!.text ?? '', /^Queen Street Dental Centre LOCATION 930 Queen Street East Toronto, ON, M4M 1J5$/)
+})
+
+test('#1122 rawGet: a small page has no separate text (unchanged), a stream past 4 MB still settles with a capped body, and a slow tail past the cap keeps what was read', async () => {
+  const small = await serve(res => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<p>Acme Roofing</p>') })
+  const a = await rawGet(`https://127.0.0.1:${small.port}/`, 0, 2000, loopbackLookup as never); small.close()
+  assert.equal(a?.text, undefined); assert.equal(a?.body, '<p>Acme Roofing</p>')
+  const huge = await serve(res => { res.writeHead(200, { 'content-type': 'text/html' }); const chunk = filler(64_000); let sent = 0; const pump = () => { while (sent < 6_000_000) { sent += chunk.length; if (!res.write(chunk)) return res.once('drain', pump) } res.end() }; pump() })
+  const b = await rawGet(`https://127.0.0.1:${huge.port}/`, 0, 8000, loopbackLookup as never); huge.close()
+  assert.ok(b && b.body.length <= 800_000 && typeof b.text === 'string', 'settles with the capped body and a text')
+  const slow = await serve(res => { res.writeHead(200, { 'content-type': 'text/html' }); res.write(`<h1>Acme Roofing</h1>${filler(900_000)}`) /* then never ends */ })
+  const t0 = Date.now(); const c = await rawGet(`https://127.0.0.1:${slow.port}/`, 0, 1500, loopbackLookup as never); slow.close()
+  assert.ok(Date.now() - t0 < 4000); assert.ok(c && c.body.length > 0 && (c.text ?? '').startsWith('Acme Roofing'), 'past the cap, the hard timeout returns what was read instead of nothing')
+  const early = await serve(res => { res.writeHead(200, { 'content-type': 'text/html' }); res.write('<h1>Acme Roofing</h1>') /* stalls under the cap */ })
+  assert.equal(await rawGet(`https://127.0.0.1:${early.port}/`, 0, 800, loopbackLookup as never), null, 'under the cap a timeout is still a failed read, as before'); early.close()
+})

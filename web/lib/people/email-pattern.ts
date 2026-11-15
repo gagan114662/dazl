@@ -58,7 +58,7 @@ export function personalLocals(html: string, site: string): string[] {
 
 // The same addresses, kept whole (local part AND domain), for the published tier: a published address is stored lower-cased as
 // the site printed it, never rebuilt onto another domain.
-// at: where the address is printed on the page (its first 6 places, with the printed length), recorded in this ONE pass so nothing
+// at: where the address is printed on the page (its first 12 places, with the printed length), recorded in this ONE pass so nothing
 // ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
 export function personalAddresses(html: string, site: string): { local: string; address: string; at: { i: number; len: number }[] }[] {
   const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[] }>()
@@ -69,7 +69,7 @@ export function personalAddresses(html: string, site: string): { local: string; 
     if (address.length > 254) continue
     const had = out.get(address)
     if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }] })
-    else if (had.at.length < 6) had.at.push({ i: m.index, len: m[0].length })
+    else if (had.at.length < 12) had.at.push({ i: m.index, len: m[0].length })
   }
   return [...out.values()]
 }
@@ -134,10 +134,16 @@ const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normal
 // This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
 // "Maya Ortiz Thornton Realty" must not read as Maya [Ortiz] Thornton), no punctuation between them ("Maya, Thornton Realty" is a
 // first-name-only staffer at a firm named after the owner), and not followed by a company word ("Maya Thornton Realty").
-const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|&|and'
+const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|mortgage|financial|&|and'
 function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
   const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-  const own = new RegExp(`(?<![A-Za-z])${n.first}(?:[ \\t]+[A-Za-z]\\.?)?[ \\t]+${n.last}(?:['\u2019]s)?(?![A-Za-z])(?![ \\t]+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  // #1173: only spaces between the first and the last name (a tab or newline kept from an attribute or a <pre> separates two
+  // records: "Ana Maya<tab>Thornton Lee"), and no hyphen or dash of any kind on either side ("Maya Thornton-Ortiz", "Anna-Maya
+  // Thornton" are someone else).
+  // Known limits, stated rather than guessed at: a preceding name word cannot be told from a label ("Tom Maya Thornton" reads like
+  // "Contact Maya Thornton"), and a firm word not on the list below ("Maya Thornton Staffing") is not recognised. Up to 12 places per
+  // page are read (72 per site); a page that prints the address more often than that before another person's card is not fully seen.
+  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?!\\s+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
   let found = false
   const rest = raw.replace(own, () => { found = true; return ' | ' })
   return { rest: nameWords(rest), found }

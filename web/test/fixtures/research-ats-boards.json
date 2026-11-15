@@ -1,0 +1,461 @@
+{
+ "fetched": "2026-11-15",
+ "note": "real public ATS board answers, trimmed to these roles; descriptions and compensation dropped, nothing else edited",
+ "lever_city": "New York, NY",
+ "greenhouse": {
+  "token": "tenstorrent",
+  "body": {
+   "jobs": [
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5233854007",
+     "internal_job_id": 4679186007,
+     "location": {
+      "name": "Austin, Texas, United States; Boston, Massachusetts, United States; Fort Collins, Colorado, United States; Santa Clara, California, United States"
+     },
+     "id": 5233854007,
+     "updated_at": "2026-11-12T10:11:11-05:00",
+     "requisition_id": "20231463",
+     "title": "Accounting Manager ",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-11-12T10:11:11-05:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/4361751007",
+     "internal_job_id": 4233596007,
+     "location": {
+      "name": "Austin, Texas, United States; Toronto, Ontario, Canada"
+     },
+     "id": 4361751007,
+     "updated_at": "2026-11-13T08:26:28-05:00",
+     "requisition_id": "20230251",
+     "title": "AI Accelerator Architect",
+     "company_name": "Tenstorrent",
+     "first_published": "2024-06-04T14:31:30-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5098932007",
+     "internal_job_id": 4613990007,
+     "location": {
+      "name": "Austin, Texas, United States; Fort Collins, Colorado, United States; Santa Clara, California, United States"
+     },
+     "id": 5098932007,
+     "updated_at": "2026-09-24T13:30:07-04:00",
+     "requisition_id": "20231164",
+     "title": "AI/ML Physical Design Flow Engineer",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-04-03T14:56:04-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5256828007",
+     "internal_job_id": 4689591007,
+     "location": {
+      "name": "Austin, Texas, United States; Fort Collins, Colorado, United States; Santa Clara, California, United States"
+     },
+     "id": 5256828007,
+     "updated_at": "2026-10-08T11:50:21-04:00",
+     "requisition_id": "20231518",
+     "title": "ATE Test Development Engineer ",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-10-08T11:50:21-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5198712007",
+     "internal_job_id": 4662105007,
+     "location": {
+      "name": "Austin, Texas, United States; Santa Clara, California, United States; Toronto, Ontario, Canada"
+     },
+     "id": 5198712007,
+     "updated_at": "2026-09-30T19:04:10-04:00",
+     "requisition_id": "20231335",
+     "title": "Cost Accounting Lead",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-07-30T11:07:56-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5138858007",
+     "internal_job_id": 4632976007,
+     "location": {
+      "name": "Austin, Texas, United States; Santa Clara, California, United States"
+     },
+     "id": 5138858007,
+     "updated_at": "2026-09-24T13:30:07-04:00",
+     "requisition_id": "20231232",
+     "title": "CPU Core Design Verification Testbench Lead ",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-05-22T07:29:51-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5148052007",
+     "internal_job_id": 4637468007,
+     "location": {
+      "name": "Austin, Texas, United States; Santa Clara, California, United States"
+     },
+     "id": 5148052007,
+     "updated_at": "2026-09-24T13:30:07-04:00",
+     "requisition_id": "20231244",
+     "title": "CPU Verification Fellow, RISC-V High-Performance Processor",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-05-28T13:30:11-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5270525007",
+     "internal_job_id": 4696151007,
+     "location": {
+      "name": "Austin, Texas, United States; Fort Collins, Colorado, United States; Santa Clara, California, United States"
+     },
+     "id": 5270525007,
+     "updated_at": "2026-11-06T15:16:59-05:00",
+     "requisition_id": "20231550",
+     "title": "DFT Engineer",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-11-06T15:16:59-05:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5286199007",
+     "internal_job_id": 4703649007,
+     "location": {
+      "name": "Santa Clara, California, United States"
+     },
+     "id": 5286199007,
+     "updated_at": "2026-11-05T13:00:12-05:00",
+     "requisition_id": "20231683",
+     "title": "Americas Regional Logistics Manager",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-11-05T13:00:12-05:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5198062007",
+     "internal_job_id": 4661775007,
+     "location": {
+      "name": "Asia; Japan; Korea; Singapore"
+     },
+     "id": 5198062007,
+     "updated_at": "2026-11-03T22:02:16-05:00",
+     "requisition_id": "20231331",
+     "title": "Business Development Lead Autonomy APAC",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-08-04T01:07:54-04:00",
+     "language": "en",
+     "application_deadline": null
+    },
+    {
+     "absolute_url": "https://job-boards.greenhouse.io/tenstorrent/jobs/5278000007",
+     "internal_job_id": 4699791007,
+     "location": {
+      "name": "Santa Clara, California, United States"
+     },
+     "id": 5278000007,
+     "updated_at": "2026-10-28T18:24:24-04:00",
+     "requisition_id": "20231665",
+     "title": "Business Development Lead, Autonomy & Robotics ",
+     "company_name": "Tenstorrent",
+     "first_published": "2026-10-28T18:24:15-04:00",
+     "language": "en",
+     "application_deadline": null
+    }
+   ],
+   "meta": {
+    "total": 133
+   }
+  }
+ },
+ "ashby": {
+  "token": "expressable",
+  "body": {
+   "apiVersion": "1",
+   "jobs": [
+    {
+     "id": "c181bb50-23f2-4cbf-9089-92f25c1f076a",
+     "title": "Occupational Therapist (TX Salary)",
+     "department": "Clinical-OT",
+     "team": "Clinical-OT",
+     "employmentType": "FullTime",
+     "location": "Texas",
+     "secondaryLocations": [],
+     "publishedAt": "2026-10-20T19:52:10.658+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Texas",
+       "addressCountry": "United States",
+       "addressLocality": "Austin"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/c181bb50-23f2-4cbf-9089-92f25c1f076a",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/c181bb50-23f2-4cbf-9089-92f25c1f076a/application"
+    },
+    {
+     "id": "4b281407-14eb-4848-9193-bd0319c3e6e6",
+     "title": "Speech-Language Pathologist ",
+     "department": "Hourly Part-Time (Clinical)",
+     "team": "Hourly Part-Time (Clinical)",
+     "employmentType": "PartTime",
+     "location": "Texas",
+     "secondaryLocations": [],
+     "publishedAt": "2026-07-23T17:57:36.073+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Texas",
+       "addressCountry": "United States",
+       "addressLocality": "Austin"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/4b281407-14eb-4848-9193-bd0319c3e6e6",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/4b281407-14eb-4848-9193-bd0319c3e6e6/application"
+    },
+    {
+     "id": "0c759d50-d234-4431-8642-3c5c7439354f",
+     "title": "Sales Development Representative - San Antonio / Austin TX",
+     "department": "Corporate",
+     "team": "Corporate",
+     "employmentType": "FullTime",
+     "location": "Texas",
+     "secondaryLocations": [],
+     "publishedAt": "2026-10-19T19:28:12.798+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Texas",
+       "addressCountry": "United States",
+       "addressLocality": "Austin"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/0c759d50-d234-4431-8642-3c5c7439354f",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/0c759d50-d234-4431-8642-3c5c7439354f/application"
+    },
+    {
+     "id": "65d86983-3b1e-4c90-8f78-70d083d04ae1",
+     "title": "Occupational Therapist",
+     "department": "Clinical-OT",
+     "team": "Clinical-OT",
+     "employmentType": "PartTime",
+     "location": "Texas",
+     "secondaryLocations": [],
+     "publishedAt": "2026-10-21T19:20:46.442+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Texas",
+       "addressCountry": "United States",
+       "addressLocality": "Austin"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/65d86983-3b1e-4c90-8f78-70d083d04ae1",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/65d86983-3b1e-4c90-8f78-70d083d04ae1/application"
+    },
+    {
+     "id": "c92d59c6-2bbc-4deb-a8ea-6edc4c96dcf2",
+     "title": "Occupational Therapist",
+     "department": "Clinical-OT",
+     "team": "Clinical-OT",
+     "employmentType": "PartTime",
+     "location": "Georgia",
+     "secondaryLocations": [],
+     "publishedAt": "2026-10-21T22:32:44.441+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "Georgia",
+       "addressCountry": "United States",
+       "addressLocality": "Atlanta"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/c92d59c6-2bbc-4deb-a8ea-6edc4c96dcf2",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/c92d59c6-2bbc-4deb-a8ea-6edc4c96dcf2/application"
+    },
+    {
+     "id": "fb6fce79-2f63-412a-8941-95bd015ed7ab",
+     "title": "Speech-Language Pathologist (100% Remote)",
+     "department": "Clinical General Posts",
+     "team": "Clinical General Posts",
+     "employmentType": "PartTime",
+     "location": "Remote",
+     "secondaryLocations": [],
+     "publishedAt": "2026-07-14T15:54:10.994+00:00",
+     "isListed": true,
+     "isRemote": true,
+     "workplaceType": "Remote",
+     "address": {
+      "postalAddress": {
+       "addressRegion": "USA",
+       "addressCountry": "United States",
+       "addressLocality": "USA"
+      }
+     },
+     "jobUrl": "https://jobs.ashbyhq.com/expressable/fb6fce79-2f63-412a-8941-95bd015ed7ab",
+     "applyUrl": "https://jobs.ashbyhq.com/expressable/fb6fce79-2f63-412a-8941-95bd015ed7ab/application"
+    }
+   ]
+  }
+ },
+ "lever": {
+  "token": "palantir",
+  "body": [
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "New York, NY",
+     "team": "Dev",
+     "allLocations": [
+      "New York, NY"
+     ]
+    },
+    "createdAt": 1710191082166,
+    "id": "ab7e3425-81d5-4705-a7b5-cd60c8a45cdb",
+    "text": "Backend Software Engineer - Application Development",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/palantir/ab7e3425-81d5-4705-a7b5-cd60c8a45cdb",
+    "applyUrl": "https://jobs.lever.co/palantir/ab7e3425-81d5-4705-a7b5-cd60c8a45cdb/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "New York, NY",
+     "team": "Dev",
+     "allLocations": [
+      "New York, NY"
+     ]
+    },
+    "createdAt": 1793825826330,
+    "id": "9aadca04-df88-4b46-95d8-c3b2628b30b0",
+    "text": "Backend Software Engineer - Data Connectors",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/palantir/9aadca04-df88-4b46-95d8-c3b2628b30b0",
+    "applyUrl": "https://jobs.lever.co/palantir/9aadca04-df88-4b46-95d8-c3b2628b30b0/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "New York, NY",
+     "team": "Dev",
+     "allLocations": [
+      "New York, NY"
+     ]
+    },
+    "createdAt": 1740435575088,
+    "id": "d33e0c31-ac7e-4f57-ba74-36f2df6ae2f5",
+    "text": "Backend Software Engineer - Defense",
+    "country": "US",
+    "workplaceType": "onsite",
+    "hostedUrl": "https://jobs.lever.co/palantir/d33e0c31-ac7e-4f57-ba74-36f2df6ae2f5",
+    "applyUrl": "https://jobs.lever.co/palantir/d33e0c31-ac7e-4f57-ba74-36f2df6ae2f5/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "New York, NY",
+     "team": "Dev",
+     "allLocations": [
+      "New York, NY"
+     ]
+    },
+    "createdAt": 1754508487190,
+    "id": "6fe5515f-f677-4d98-8ac2-1775a425f5e7",
+    "text": "Backend Software Engineer - Infrastructure",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/palantir/6fe5515f-f677-4d98-8ac2-1775a425f5e7",
+    "applyUrl": "https://jobs.lever.co/palantir/6fe5515f-f677-4d98-8ac2-1775a425f5e7/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "New York, NY",
+     "team": "Dev",
+     "allLocations": [
+      "New York, NY"
+     ]
+    },
+    "createdAt": 1708449747920,
+    "id": "fb2d3222-dbd8-4e03-8d39-47b820e9509c",
+    "text": "Backend Software Engineer - Infrastructure, Foundations",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/palantir/fb2d3222-dbd8-4e03-8d39-47b820e9509c",
+    "applyUrl": "https://jobs.lever.co/palantir/fb2d3222-dbd8-4e03-8d39-47b820e9509c/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "Singapore, Singapore",
+     "team": "Administrative",
+     "allLocations": [
+      "Singapore, Singapore"
+     ]
+    },
+    "createdAt": 1786469891368,
+    "id": "6ed76ce8-4156-4b60-b120-403538bd66cd",
+    "text": "Administrative Business Partner",
+    "country": "SG",
+    "workplaceType": "hybrid",
+    "hostedUrl": "https://jobs.lever.co/palantir/6ed76ce8-4156-4b60-b120-403538bd66cd",
+    "applyUrl": "https://jobs.lever.co/palantir/6ed76ce8-4156-4b60-b120-403538bd66cd/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Full-time",
+     "location": "London, United Kingdom",
+     "team": "Administrative",
+     "allLocations": [
+      "London, United Kingdom"
+     ]
+    },
+    "createdAt": 1711403416463,
+    "id": "ac978161-6f46-4f6b-ad9e-a258e642751c",
+    "text": "Administrative Business Partner",
+    "country": "GB",
+    "workplaceType": "onsite",
+    "hostedUrl": "https://jobs.lever.co/palantir/ac978161-6f46-4f6b-ad9e-a258e642751c",
+    "applyUrl": "https://jobs.lever.co/palantir/ac978161-6f46-4f6b-ad9e-a258e642751c/apply"
+   },
+   {
+    "categories": {
+     "commitment": "Scholarship",
+     "location": "North America",
+     "team": "Business Development",
+     "allLocations": [
+      "North America"
+     ]
+    },
+    "createdAt": 1750119374985,
+    "id": "0ccbe620-a3ef-41d1-a5c4-68e56b3c91d0",
+    "text": "American Tech Fellowship",
+    "country": "US",
+    "workplaceType": "remote",
+    "hostedUrl": "https://jobs.lever.co/palantir/0ccbe620-a3ef-41d1-a5c4-68e56b3c91d0",
+    "applyUrl": "https://jobs.lever.co/palantir/0ccbe620-a3ef-41d1-a5c4-68e56b3c91d0/apply"
+   }
+  ]
+ }
+}

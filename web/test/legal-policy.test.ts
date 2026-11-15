@@ -73,8 +73,8 @@ test('the policies are public and linked from the home footer and sign-up', () =
     assert.match(src, /href="\/terms"/)
     assert.match(src, /href="\/privacy"/)
   }
-  // the auth proxy only guards /app and /api; robots and the sitemap list both pages
-  assert.match(read('proxy.ts'), /matcher: \['\/app\/:path\*', '\/api\/:path\*'\]/)
+  // the auth proxy only guards /app and /api (its third matcher entry runs only for a request with a Next-Action header: a probe, answered 400, #1088); robots and the sitemap list both pages
+  assert.match(read('proxy.ts'), /matcher: \['\/app\/:path\*', '\/api\/:path\*', \{ source: '\/:path\*', has: \[\{ type: 'header', key: 'next-action' \}\] \}\] \}/)
   assert.match(read('app/robots.ts'), /allow: \['\/', '\/privacy', '\/terms'\]/)
   assert.match(read('app/sitemap.ts'), /'\/privacy', '\/terms'/)
 })
@@ -283,7 +283,7 @@ test('guessed addresses are off by default, never leave the unverified state and
   }
   walk('lib/outreach'); walk('app')
   assert.deepEqual(readers, [])
-  assert.match(privacy, /never shown to you or emailed/)
+  assert.match(privacy, /never emailed or used as a recipient/) // #1036: shown only where Find work email found nothing, labelled guessed, unverified (test/email-formats-1036.test.ts)
 })
 
 test('outbound mail carries the sender name, mailing address and an unsubscribe link and header', () => {
