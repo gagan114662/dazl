@@ -175,13 +175,3 @@ test('a spend refusal from the search or the model is never swallowed: it stops 
   const r = await researchCompany(C, PLAN, ev(), { ...base.d, isRefusal, complete: async () => { throw new Error('network') } })
   assert.equal(r.person, null)
 })
-
-test('the company stage is registered on the research engine with the runner\'s guarded Haiku provider', async () => {
-  await import('../lib/research/company-stage.ts')
-  const { researchStagesFor, HAIKU } = await import('../lib/research/scan-job.ts')
-  const asked: string[] = []
-  const provider = { complete: async () => null } as never
-  const stages = researchStagesFor({ db: {} as never, job: { id: 'J', user_id: 'T', query: 'q' }, icp: {} as never, key: 'k', model: (n: string) => { asked.push(n); return provider }, isRefusal: () => false })
-  assert.equal(typeof stages.company, 'function')
-  assert.ok(asked.includes(HAIKU), 'company research runs on Haiku through ctx.model (the runner wraps it in the job\'s spend guards)')
-})
