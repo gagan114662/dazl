@@ -202,3 +202,13 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
   }
   return { bound: false, why: unbound ? 'the day is stated on the page, but not for this company and event' : stamped ? 'the day appears only as a publication / update stamp' : 'no bound statement of the day' }
 }
+
+// #878 (prod matrix 14 Nov, berlin-fintech "Pliant"): the model can claim the story's publication day (2026-11-05) while the quote itself says when the
+// event happened ("... announced an $80 million Series C on Nov. 4, 2026"). The claimed day rightly fails the binding above, and the lead was held
+// undated although the page dates the event. This reads the days the QUOTE states and keeps one only when the SAME binding rule ties it to this company
+// and event on the fetched page; two different bound days, or none, return null (undated, as before). Nothing is guessed: the day is the page's.
+export function dayStatedForEvent(pageText: string, quote: string, company: string): { day: string; why: string } | null {
+  const days = [...new Set(datePositions(normalise(quote)).filter(d => !d.ambiguous).map(d => d.day))]
+  const bound = days.flatMap(day => { const b = eventDateBound(day, pageText, quote, company); return b.bound ? [{ day, why: b.why }] : [] })
+  return bound.length === 1 ? bound[0] : null
+}
