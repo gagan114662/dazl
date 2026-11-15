@@ -123,4 +123,26 @@ test('when the adaptive round runs (round one verified no lead), the recovery pa
   assert.deepEqual(recoverySearches(x), [], 'no recovery search on top of it')
   assert.ok(x.calls.searches.length - 1 <= ADAPTIVE_SEARCHES, JSON.stringify(x.calls.searches))
   assert.ok(nova, 'the held lead is still reported')
+  // review (Hermes) of 19def037: the lead says the real reason, never "news search is off" (news off is what enables this pass)
+  const notes = x.db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:recovery'").all(nova!.id) as { value: string }[]
+  assert.ok(notes.some(n => /^Recovery pass did not run \(the scan already used its extra search round on a wider search\)/.test(n.value)), JSON.stringify(notes))
+  assert.ok(!notes.some(n => /news search is off/.test(n.value)), JSON.stringify(notes))
+})
+
+test('the extra search round switched off: no recovery search, and the lead says so (not "news search is off")', async () => {
+  const { x, nova, notes } = await withEnv({ DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' }, () => run())
+  assert.equal(nova?.review_reason, 'blocked_by_site')
+  assert.deepEqual(recoverySearches(x), [])
+  assert.ok(notes.some(n => /^Recovery pass did not run \(the extra search round is switched off\)/.test(n.value)), JSON.stringify(notes))
+  assert.ok(!notes.some(n => /news search is off/.test(n.value)), JSON.stringify(notes))
+})
+
+test('the recovery searches stay within the adaptive round\'s allowance (the price estimate counts one of them)', async () => {
+  const { MAX_FALLBACK } = await import('../lib/scan/blocked-fallback.ts')
+  const { ADAPTIVE_SEARCHES } = await import('../lib/scan/run-budget.ts')
+  // the two constants are independent: the pass may never ask for more targets than the allowance it borrows (review of 19def037, finding 2)
+  assert.ok(MAX_FALLBACK <= ADAPTIVE_SEARCHES, `MAX_FALLBACK ${MAX_FALLBACK} > ADAPTIVE_SEARCHES ${ADAPTIVE_SEARCHES}`)
+  const { x } = await run()
+  const sent = x.calls.searches.slice(1)
+  assert.ok(sent.length >= 1 && sent.length <= ADAPTIVE_SEARCHES, JSON.stringify(sent))
 })

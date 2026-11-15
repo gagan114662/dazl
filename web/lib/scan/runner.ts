@@ -1679,7 +1679,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
-    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !complete ? 'no model for this run' : !newsOn ? 'no request profile to search with' : 'nothing recoverable' }   // news off: the TinyFish pass below says its own reason
     if (blocked.length > 0) {
       const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
@@ -1786,7 +1786,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // row (mergeFallback). It uses the adaptive round's allowance (at most ADAPTIVE_SEARCHES searches, the same page reads and one extraction), so
     // it runs only when that round did not run in this scan: the price estimate's maxima already include it. Same exclusions as the adaptive round:
     // never a run with paid steps off (a free trial), never a scheduled play run, never after a budget refusal, never too close to the deadline.
-    if (!newsOn && adaptiveDiscoveryOn(process.env) && !adaptiveRan && tinyfishEnabled() && complete && icpForSources && job.query) {
+    if (!newsOn && complete && icpForSources && job.query) {
       const targets = fallbackTargets(outcome.review, icpForSources.where ?? [], icpForSources.window_days ? outcome.leads.filter(l => !l.event_date) : [])
       const stop = (status: string) => ledger.record('fallback:tinyfish', status)
       let recurring = !!job.watch_id
@@ -1795,6 +1795,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // every held lead says why the pass did or did not run (blocked-fallback.ts recordRecovery): "searched" only when a search was really sent
       const skip = (status: string, why: string) => { stop(status); recoveryTargets = targets; recoveryRan = { searched: false, why } }
       if (targets.length === 0) { /* nothing held for a reason another source can fix */ }
+      else if (!tinyfishEnabled()) skip('skipped:no_web_search', 'the web search is not configured')
+      else if (!adaptiveDiscoveryOn(process.env)) skip('skipped:adaptive_off', 'the extra search round is switched off')
+      // the adaptive round and this pass share one allowance (the price estimate counts one of them): the round already ran
+      else if (adaptiveRan) skip('skipped:adaptive_ran', 'the scan already used its extra search round on a wider search')
       else if (recurring) skip('skipped:recurring_run', 'a scheduled play run keeps the caps it was confirmed with')
       else if (deps.paidFallback === false) skip('skipped:paid_steps_off', 'the run disabled the paid fallback')
       else if (budgetRefused) skip('budget_stopped', "the scan's budget was already used")
