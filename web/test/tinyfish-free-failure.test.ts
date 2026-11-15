@@ -59,12 +59,12 @@ test('a free TinyFish call that SUCCEEDS is unchanged: settled at $0', async () 
   await runWithScanSpend(s.ctx(), () => tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }))
   const c = await scanSpendCalls(s.db, s.id, 'A'); assert.equal(c[0].status, 'settled'); assert.equal(c[0].actual_usd, 0)
 })
-test('a 429 on a free call is a wait, not a rejection (Hermes 15 Nov 03:35): settled at $0, nothing recorded, the scan continues', async () => {
+test('research engine only (rateIsWait): a 429 on a free call is a wait, not a rejection (Hermes 15 Nov 03:35): settled at $0, nothing recorded', async () => {
   for (const call of ['search', 'fetch'] as const) {
     const s = await setup()
     const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch
     const out = await runWithScanSpend(s.ctx(), async () => {
-      const deps = { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }
+      const deps = { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0, rateIsWait: true }
       const r = call === 'search' ? await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, deps) : await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, deps)
       return { r, rej: spendAttemptRejected(), unc: spendAttemptUncertain() }
     })
@@ -73,11 +73,34 @@ test('a 429 on a free call is a wait, not a rejection (Hermes 15 Nov 03:35): set
     const c = await scanSpendCalls(s.db, s.id, 'A'); assert.equal(c[0].status, 'settled'); assert.equal(c[0].actual_usd, 0)
   }
 })
-test('documented rejections (401/403) on a free call keep their own handling: the attempt records the rejection', async () => {
-  for (const status of [401, 403]) {
+test('documented rejections (401/403/429) on a free call keep their own handling outside the research engine: the attempt records the rejection', async () => {
+  for (const status of [401, 403, 429]) {
     const s = await setup()
     const f = (async () => new Response('{}', { status })) as unknown as typeof fetch
     const out = await runWithScanSpend(s.ctx(), async () => { await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return { rej: spendAttemptRejected(), unc: spendAttemptUncertain() } })
     assert.equal(out.rej, status, String(status)); assert.equal(out.unc, false)
   }
+})
+
+test('rateIsWait never lifts a PRICED call\'s 429 or a free call\'s 401/403: those still record the rejection', async () => {
+  for (const [status, price] of [[429, '0.001'], [401, undefined], [403, undefined]] as const) {
+    const s = await setup()
+    if (price) process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = price
+    try {
+      const f = (async () => new Response('{}', { status })) as unknown as typeof fetch
+      const out = await runWithScanSpend(s.ctx(), async () => { await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', ...(price ? { DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: price } : {}) }, fetchImpl: f, now: T0, rateIsWait: true }); return spendAttemptRejected() })
+      assert.equal(out, status, `${status}${price ? ' priced' : ' free'}`)
+    } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD }
+  }
+})
+
+test('the research engine\'s own search (researchSearch) is the one caller that treats a free 429 as a wait', async () => {
+  const { researchSearch, SearchQueue } = await import('../lib/research/search-queue.ts')
+  const s = await setup()
+  const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch
+  const out = await runWithScanSpend(s.ctx(), async () => {
+    const r = await researchSearch(s.db, 'A', { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }, new SearchQueue(1000, () => 0, async () => {}))('q')
+    return { r, rej: spendAttemptRejected() }
+  })
+  assert.equal(out.r.ok, false); assert.equal(out.rej, null, 'no rejection recorded: the hunt retries it')
 })
