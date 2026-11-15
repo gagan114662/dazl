@@ -8,7 +8,7 @@
 //        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir] [--engine old|research]
 //
 // --engine research (MISSION v2): runs every case on the research engine (LEAD_ENGINE=research, lib/research/scan-job.ts) with its own
-// per-scan search budget (RESEARCH_SEARCH_BUDGET, default 60); a case the engine cannot run (a stage not built, no place or category)
+// per-scan search budget (RESEARCH_SEARCH_BUDGET, default 160); a case the engine cannot run (a stage not built, no place or category)
 // runs the old engine, and the table says which engine was asked for. --engine old (default) clears LEAD_ENGINE, so an inherited value
 // never switches a before-run.
 //
@@ -78,7 +78,7 @@ const contacts = flag('contacts')
 const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
-  console.log(`engine: ${engine}${engine === 'research' ? ` (research search budget ${process.env.RESEARCH_SEARCH_BUDGET || 60} per scan)` : ''}`)
+  console.log(`engine: ${engine}${engine === 'research' ? ` (research search budget ${process.env.RESEARCH_SEARCH_BUDGET || 160} per scan)` : ''}`)
   console.log(`matrix:local --dry @ ${commit}: ${cases.length} case(s) from ${matrixPath}, cap US$${cap.toFixed(2)} each (total at most US$${(cap * cases.length).toFixed(2)}), timeout ${timeoutS}s each`)
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']

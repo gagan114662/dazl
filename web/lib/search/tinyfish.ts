@@ -177,7 +177,11 @@ export interface SearchHit { url: string; title: string; snippet: string; date: 
 // body) cannot have cost anything we could account for: it ends as one failed page or search (settled at $0), not as accounting_uncertain, which
 // discarded a whole scan's results (owner-approved 2026-11-11). Only free TinyFish search/fetch: a priced call, any other kind and a 402 (billing
 // error) keep the maybe-billed rule, and every spend cap stays on.
-function freeFailure(hold: { usd: number }, r: { ok: boolean; maybeBilled?: boolean; status?: number }): boolean { return !r.ok && r.maybeBilled === true && hold.usd === 0 && r.status !== 402 }
+// A 429 on a free call (Hermes decision 15 Nov 03:35): TinyFish's per-minute limit on its free tier is shared by every scan on the key, so a 429
+// there costs nothing and says only "wait": it settles at $0 like the failures above, records no rejection, and the caller backs off and retries
+// (lib/research/hunt.ts), so the scan continues. A priced call's 429 keeps the documented-rejection rule.
+const freeRateLimit = (hold: { usd: number }, r: { ok: boolean; status?: number }): boolean => !r.ok && r.status === 429 && hold.usd === 0
+function freeFailure(hold: { usd: number }, r: { ok: boolean; maybeBilled?: boolean; status?: number }): boolean { return (!r.ok && r.maybeBilled === true && hold.usd === 0 && r.status !== 402) || freeRateLimit(hold, r) }
 async function call(db: DbLike, url: string, init: RequestInit, key: string, f: typeof fetch, now: number, outer?: AbortSignal): Promise<{ ok: true; json: unknown } | { ok: false; reason: Fail; maybeBilled?: boolean; status?: number }> {
   // maybeBilled (#363): the request may have been processed (timeout/dropped connection, 5xx, 402, unlisted status, unreadable body). The caller then
   // leaves its spend row 'reserved' so no automatic retry re-sends it. 401/403/429 are documented rejections (assumption, see lib/llm/provider.ts).

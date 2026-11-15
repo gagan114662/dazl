@@ -59,8 +59,22 @@ test('a free TinyFish call that SUCCEEDS is unchanged: settled at $0', async () 
   await runWithScanSpend(s.ctx(), () => tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }))
   const c = await scanSpendCalls(s.db, s.id, 'A'); assert.equal(c[0].status, 'settled'); assert.equal(c[0].actual_usd, 0)
 })
-test('documented rejections (401/403/429) on a free call keep their own handling: the attempt records the rejection', async () => {
-  for (const status of [401, 403, 429]) {
+test('a 429 on a free call is a wait, not a rejection (Hermes 15 Nov 03:35): settled at $0, nothing recorded, the scan continues', async () => {
+  for (const call of ['search', 'fetch'] as const) {
+    const s = await setup()
+    const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch
+    const out = await runWithScanSpend(s.ctx(), async () => {
+      const deps = { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }
+      const r = call === 'search' ? await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, deps) : await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, deps)
+      return { r, rej: spendAttemptRejected(), unc: spendAttemptUncertain() }
+    })
+    assert.equal(out.r.ok, false); assert.equal((out.r as { reason: string }).reason, 'rate', `${call}: the caller still sees the limit and backs off`)
+    assert.equal(out.rej, null, call); assert.equal(out.unc, false, call)
+    const c = await scanSpendCalls(s.db, s.id, 'A'); assert.equal(c[0].status, 'settled'); assert.equal(c[0].actual_usd, 0)
+  }
+})
+test('documented rejections (401/403) on a free call keep their own handling: the attempt records the rejection', async () => {
+  for (const status of [401, 403]) {
     const s = await setup()
     const f = (async () => new Response('{}', { status })) as unknown as typeof fetch
     const out = await runWithScanSpend(s.ctx(), async () => { await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return { rej: spendAttemptRejected(), unc: spendAttemptUncertain() } })
