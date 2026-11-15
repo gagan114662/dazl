@@ -45,12 +45,120 @@ sudo install -d -m 750 -g ubuntu /etc/dazl-backup && echo 'age1...' | sudo tee /
 `DAZL_MASTER_KEY` escrow (acceptance 3) is the owner's: two places other than the box, apart from the age identity.
 Record on the issue **where**, never the value. A restored database opens without it; the secrets stored inside it do not.
 
+## 0b. Or: off-host with no bucket, pulled to an operator machine (free, no cloud account)
+
+When there is no bucket yet (creating one needs the owner's IAM permission), use storage we already have: an operator
+machine that can already `ssh` to the box and stays on (a Linux machine with systemd; see the WSL note below). The box
+writes its encrypted copies to a local outbox directory; the operator machine **pulls** them every hour with `rsync`
+over `ssh` (`scripts/backup/pull-offhost.mts`). Only ciphertext leaves the box.
+
+What protects the copies kept on the operator machine:
+- the box holds no credential for it, and the pull key can only READ the outbox (`rrsync -ro`);
+- a copy the box drops or prunes stays there (the pull never deletes on the box's word);
+- every copy is checked against its manifest; a bad or future-dated copy goes to `.bad/` and alerts;
+- the operator machine's own retention (the box's policy: 48 hourly + 14 daily + 8 weekly) never deletes outright: a copy
+  past the policy moves to `.retired/` and is deleted 7 days later; of the copies already kept here, at most 3 per kind
+  are retired per run (more due is an alert); a new copy named older than the newest one held when it arrived (a box
+  never backdates a copy) is set aside in `.bad/` and alerts, so it never counts for retention. So a compromised box
+  that writes fake copies cannot quietly push the real ones out.
+- a copy in `.bad/` is never pulled again; every run alerts until someone inspects and removes it (its name stays in
+  `.retired/bad-names`, so it does not come back). A copy set aside as "named older" may be a real one the box wrote late (an
+  `offhost-copy.sh` run by hand on an older backup): compare its manifest's `copied_at` and `source_sha256` with the box's
+  local backups before removing it.
+
+Alerts: the operator machine alerts when a pull fails, a copy is bad, or the newest copy is older than 2 h. When the
+operator machine itself is off it cannot alert, so after each good pull it touches a marker on the box (a second key
+whose only command is that touch), and the box's 15-minute check alerts when that marker is older than 3 h
+(`OFFHOST_PULL_MARKER`). While it is off the box keeps writing to the outbox and the next pull catches up; the box keeps
+a week of hourly copies in the outbox in this mode (below), so an outage of up to a week loses no hourly copy.
+WSL: the WSL VM stops when no Windows session keeps it running, and its timers stop with it; the box's alert then
+fires. Prefer a Linux machine that stays on. Config bundles (`dazl-config-*`, a later step) are not pulled by this mode.
+A bucket (section 0) can replace this later by re-running the installer with `--offhost rclone:...`.
+
+**On the operator machine** (the identity and the copies stay here; nothing of this goes to the box):
+
+```bash
+sudo apt-get install -y rsync age sqlite3 ca-certificates curl
+# node 22 (the distribution's nodejs package is older than the 22.6 that --experimental-strip-types needs)
+curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh && sudo bash /tmp/nodesource_setup.sh && sudo apt-get install -y nodejs
+node -v                                                          # must print v22.6 or later
+age-keygen -o ~/dazl-data-identity.txt && chmod 600 ~/dazl-data-identity.txt   # PRIVATE: keep it offline as in section 0
+grep -o 'age1[0-9a-z]*' ~/dazl-data-identity.txt                 # PUBLIC key -> the box (below)
+ssh-keygen -t ed25519 -N '' -C dazl-offhost-pull -f ~/.ssh/dazl_offhost_pull   # reads the outbox, nothing else
+ssh-keygen -t ed25519 -N '' -C dazl-offhost-ack -f ~/.ssh/dazl_offhost_ack     # touches the pull marker, nothing else
+cat >> ~/.ssh/config <<'CFG'
+Host dazl-offhost-pull dazl-offhost-ack
+  HostName <the box's address>
+  User ubuntu
+  IdentitiesOnly yes
+Host dazl-offhost-pull
+  IdentityFile ~/.ssh/dazl_offhost_pull
+Host dazl-offhost-ack
+  IdentityFile ~/.ssh/dazl_offhost_ack
+CFG
+git clone --depth 1 --branch main <this repository's clone URL> ~/dazl-offhost/tools   # a reviewed commit; no npm install
+install -d -m 700 ~/dazl-offhost/copies ~/.config/dazl-offhost
+printf 'NODE=%s\nPULL_FROM=dazl-offhost-pull:\nPULL_TO=%s/dazl-offhost/copies\nPULL_ACK=dazl-offhost-ack\nOPS_ALERT_WEBHOOK_URL=<https webhook>\n' "$(command -v node)" "$HOME" > ~/.config/dazl-offhost/env
+chmod 600 ~/.config/dazl-offhost/env
+cat ~/.ssh/dazl_offhost_pull.pub ~/.ssh/dazl_offhost_ack.pub      # the two public keys -> the box (below)
+```
+
+`PULL_FROM=dazl-offhost-pull:` ends at the colon: under `rrsync` the path is relative to the outbox, and an absolute
+path would be refused.
+
+**On the box** (root, before the installer of section 1):
+
+```bash
+sudo apt-get install -y age rsync                                  # no rclone in this mode
+sudo install -d -m 700 -o ubuntu -g ubuntu /var/backups/dazl-offhost
+sudo install -d -m 750 -g ubuntu /etc/dazl-backup && echo 'age1...' | sudo tee /etc/dazl-backup/recipients.txt
+command -v rrsync || ls /usr/share/doc/rsync/scripts/                # rrsync: /usr/bin/rrsync (rsync >= 3.2.4)
+# the pull key may only READ the outbox; the ack key may only touch the marker (no shell, no forwarding for either)
+tail -c1 /home/ubuntu/.ssh/authorized_keys | od -c | grep -q '\\n' || echo | sudo tee -a /home/ubuntu/.ssh/authorized_keys   # end on a newline first
+echo 'command="/usr/bin/rrsync -ro /var/backups/dazl-offhost",restrict <contents of dazl_offhost_pull.pub>' | sudo tee -a /home/ubuntu/.ssh/authorized_keys
+echo 'command="touch /var/backups/dazl-offhost/.pulled",restrict <contents of dazl_offhost_ack.pub>' | sudo tee -a /home/ubuntu/.ssh/authorized_keys
+```
+
+Then section 1 with `--offhost /var/backups/dazl-offhost` instead of the bucket, and after it, on the box:
+
+```bash
+# the pull marker the 15-minute check reads, and a week of hourly copies kept in the outbox (about 0.7 GB at today's
+# 3.7 MB database: (168 + 14 + 8) copies), so an operator-machine outage of up to a week loses no hourly copy
+sudo sed -i 's/^RETAIN_OFFHOST_HOURLY=.*/RETAIN_OFFHOST_HOURLY=168/' /etc/dazl-backup/env
+echo 'OFFHOST_PULL_MARKER=/var/backups/dazl-offhost/.pulled' | sudo tee -a /etc/dazl-backup/env
+grep -E '^(RETAIN_OFFHOST_HOURLY|OFFHOST_PULL_MARKER|OFFHOST_DEST)=' /etc/dazl-backup/env
+```
+
+From the installer's first run until the operator machine's first good pull, the box's check alerts "no off-host pull
+recorded yet": expected until the last step below. The env file now differs from the installer's defaults: a later re-install (a new release) needs `--keep-env`, or the
+installer stops and names `RETAIN_OFFHOST_HOURLY` and `OFFHOST_PULL_MARKER`.
+
+**Back on the operator machine** (host key first, then the timer, then one pull by hand):
+
+```bash
+ssh -o StrictHostKeyChecking=accept-new dazl-offhost-ack            # records the host key; touches the marker, no shell
+ssh dazl-offhost-pull ls; echo "exit $? (refused: the key cannot run a shell; expected)"
+install -D -m 644 ~/dazl-offhost/tools/ops/backup/dazl-offhost-pull.service ~/.config/systemd/user/dazl-offhost-pull.service
+install -D -m 644 ~/dazl-offhost/tools/ops/backup/dazl-offhost-pull.timer ~/.config/systemd/user/dazl-offhost-pull.timer
+systemctl --user daemon-reload && systemctl --user enable --now dazl-offhost-pull.timer
+sudo loginctl enable-linger "$USER"                               # runs while nobody is logged in
+systemctl --user start dazl-offhost-pull.service; journalctl --user -u dazl-offhost-pull -n 5 --no-pager
+# one JSON line: {"type":"offhost_pull",...,"backups":N,"ledgers":N,"newest":"dazl-backup-....db.age","newest_age_s":...,"acked":true,"ok":true}
+```
+
+The `~/.ssh/config` and `authorized_keys` steps append: run them once. On the first pull the box's whole outbox (a week of
+hourly copies) arrives and the copies past the policy are retired at once, without an alert. After a long outage the
+newly pulled copies push older ones that were kept here past the policy: those are retired 3 per kind per run, with an
+alert each hour until it has caught up; that is the flood guard, not a fault.
+
 ## 1. Install (root, on the box)
 
 ```bash
 cd "$(bash ops/backup/live-release.sh)"        # the live release's checkout
 sudo bash ops/backup/install-prod.sh --offhost rclone:dazl-s3:<bucket>/prod --alert-url <https webhook>
 ```
+
+Pull mode (section 0b): `--offhost /var/backups/dazl-offhost` instead of the bucket (no rclone needed).
 
 It checks first (user, database, node on the app user's default PATH, age, rclone, public keys only), writes
 `/etc/dazl-backup/env` only when there is none, installs the four units, enables both timers and runs the first backup
@@ -85,6 +193,7 @@ sudo bash ops/backup/install-prod.sh --status          # installed = this checko
 systemctl list-timers | grep dazl-backup
 journalctl -u dazl-backup -n 5 --no-pager              # {"type":"backup","ok":true,...,"offhost":true}
 rclone lsl dazl-s3:<bucket>/prod | tail -4             # an object less than 1 h old
+# pull mode: on the operator machine, journalctl --user -u dazl-offhost-pull -n 3 shows "ok":true and newest_age_s < 3600
 sudo -u ubuntu bash -c 'set -a; . /etc/dazl-backup/env; bash /usr/local/lib/dazl-backup/prod-run.sh check'   # "ok":true
 ```
 
@@ -97,6 +206,9 @@ box's role is not there, so give the scratch host its own read-only credentials 
 ```bash
 bash ops/backup/restore-offhost.sh --offhost rclone:dazl-s3:<bucket>/prod --identity dazl-data-identity.txt --out /var/tmp/dazl-restore-$(date -u +%Y%m%dT%H%M%SZ)
 ```
+
+Pull mode: on the operator machine, from its own copies (no bucket access needed):
+`bash ~/dazl-offhost/tools/ops/backup/restore-offhost.sh --offhost ~/dazl-offhost/copies --identity ~/dazl-data-identity.txt --out /var/tmp/dazl-restore-$(date -u +%Y%m%dT%H%M%SZ)`.
 
 One JSON line: the restored file, `rpo_s` (what losing the box at that moment would have lost), `restore_ms`,
 `integrity: ok` and the row counts of `users`, `scan_jobs` and `leads`. A damaged or foreign manifest at the destination
