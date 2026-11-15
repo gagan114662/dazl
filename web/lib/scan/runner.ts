@@ -1401,6 +1401,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const owned = finish(db, job, 'done', refusal ? 'budget_stopped' : null, { leads, review, dropped }, r.candidates, ledger)
         // D's proof rows and G's people: a failure there is reported, never turns a finished scan into a retry
         if (owned) { try { await r.afterSave?.(db, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:after-save', tenantId: job.user_id, ref: job.id }) } }
+        // The old engine's post-finish steps that apply to research leads as they are (#1267 review blocker 3). The rest are not run for a research
+        // scan, by design, and named in the PR: buyer-fit scoring, the sales-hiring gate, the #377 timing-proof record and completeLeads (D's research
+        // proof is the ready rule instead), the old people pass (G's company research names the person), enrichment and autopilot (a new engine
+        // never sends on its own).
+        if (owned) {
+          if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+          try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
+          try { enforceContactSource(db, job.user_id, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:contact-source', tenantId: job.user_id, ref: job.id }) }
+        }
         if (trialGuard?.refused) holdTrialBudget(db, job)
         return 'done'
       }
