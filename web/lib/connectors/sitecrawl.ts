@@ -346,7 +346,7 @@ export function probeDomains(company: string, where: string[] = []): string[] {
 export const MAX_PROBES_PER_SCAN = 8
 
 // ---- extraction ----
-export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
+export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect|reception|frontdesk|frontoffice|appointments?|clients?|services?|customerservice|customercare|care|estimates?|quotes?|scheduling|schedule|orders|welcome|newpatients|patients|enquire)$/i   // #1036: the front-office inboxes small businesses publish (reception@ on a dental clinic's site, client@ on a firm's)
 export const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
 export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }
