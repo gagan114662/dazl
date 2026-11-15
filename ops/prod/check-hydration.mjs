@@ -19,14 +19,17 @@ import { join } from 'node:path'
 
 const PAGES = ['/sign-up', '/sign-in', '/app']
 const HYDRATE_WAIT_MS = 15_000
-const HYDRATION_ERROR = /Minified React error #(?:418|423|425)\b|hydrat|did not match|server rendered HTML didn't match/i
+// React's own hydration messages only (an app message that merely contains "hydrate" is not one)
+const HYDRATION_ERROR = /Minified React error #(?:418|423|425)\b|Hydration failed|hydration (?:error|mismatch)|There was an error while hydrating|did not match|server rendered HTML didn't match/i
+const CALL_TIMEOUT_MS = 15_000
 
 const base = process.argv[2]
 if (!base || process.argv.length > 3 || !/^https?:\/\/[^/\s]+$/.test(base.replace(/\/$/, ''))) {
   console.error('usage: check-hydration.mjs <base-url>   (e.g. https://dazl.ai or http://127.0.0.1:3105)'); process.exit(2)
 }
 const BASE = base.replace(/\/$/, '')
-const DEADLINE = Date.now() + 1000 * (Number(process.env.HYDRATION_CHECK_DEADLINE_S) || 90)
+const START = Date.now()
+const DEADLINE = START + 1000 * (Number(process.env.HYDRATION_CHECK_DEADLINE_S) || 90)
 
 function browserPath() {
   const want = process.env.HYDRATION_CHECK_BROWSER
@@ -37,7 +40,7 @@ function browserPath() {
     // x64 (dev machines), arm64 (the prod box), and the older layout
     for (const p of [join(cache, d, 'chrome-headless-shell-linux64', 'chrome-headless-shell'), join(cache, d, 'chrome-headless-shell-linux-arm64', 'chrome-headless-shell'), join(cache, d, 'chrome-linux', 'headless_shell')]) if (existsSync(p)) return p
   }
-  for (const p of ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium']) if (existsSync(p)) return p
+  for (const p of ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']) if (existsSync(p)) return p
   return null
 }
 
@@ -51,7 +54,8 @@ function launch(bin, profile) {
     '--disable-renderer-backgrounding', '--force-color-profile=srgb', '--metrics-recording-only', '--password-store=basic', '--use-mock-keychain',
     '--no-service-autorun', '--disable-sync', '--enable-unsafe-swiftshader', '--hide-scrollbars', '--mute-audio', `--user-data-dir=${profile}`,
     '--remote-debugging-port=0', '--no-startup-window']
-  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+  // its own process group, so the whole browser (renderers included) is killed with it; no inherited descriptor (the deploy's lock) is kept
+  const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true })
   const ws = new Promise((resolve, reject) => {
     let err = ''
     const t = setTimeout(() => reject(new Error('the browser did not start within 20 s')), 20_000)
@@ -74,15 +78,22 @@ function cdp(url) {
   const open = new Promise((res, rej) => { sock.onopen = res; sock.onerror = () => rej(new Error('could not connect to the browser')) })
   return {
     open,
-    send: (method, params = {}, sessionId) => new Promise((resolve, reject) => { const n = ++id; waiting.set(n, { resolve, reject }); sock.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })) }),
+    // every call is bounded: a page that never answers cannot hold the check past CALL_TIMEOUT_MS (the watchdog below bounds the whole run)
+    send: (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+      const n = ++id
+      const t = setTimeout(() => { waiting.delete(n); reject(new Error(`${method} did not answer within ${CALL_TIMEOUT_MS / 1000} s`)) }, Math.max(1000, Math.min(CALL_TIMEOUT_MS, DEADLINE - Date.now())))
+      waiting.set(n, { resolve: v => { clearTimeout(t); resolve(v) }, reject: e => { clearTimeout(t); reject(e) } })
+      sock.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }))
+    }),
     on: l => listeners.push(l),
     close: () => { try { sock.close() } catch { /* already closed */ } },
   }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
+// the sign-up / sign-in form itself: the one posting to /api/auth/, else the one with a password field, else the first form
 const PROBE = `(() => {
-  const f = document.querySelector('form')
+  const f = document.querySelector('form[action*="/api/auth/"]') || [...document.querySelectorAll('form')].find(x => x.querySelector('input[type=password]')) || document.querySelector('form')
   if (!f) return { path: location.pathname, form: false }
   const k = Object.keys(f).find(k => k.startsWith('__reactProps$'))
   return { path: location.pathname, form: true, react: !!k || Object.keys(f).some(k => k.startsWith('__reactFiber$')), onSubmit: !!(k && typeof f[k].onSubmit === 'function') }
@@ -91,10 +102,10 @@ const PROBE = `(() => {
 async function checkPage(c, path) {
   const { targetId } = await c.send('Target.createTarget', { url: 'about:blank' })
   const { sessionId } = await c.send('Target.attachToTarget', { targetId, flatten: true })
-  const problems = []
+  const problems = [], exceptions = []
   c.on(m => {
     if (m.sessionId !== sessionId) return
-    if (m.method === 'Runtime.exceptionThrown') problems.push(`uncaught exception: ${(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').split('\n')[0].slice(0, 160)}`)
+    if (m.method === 'Runtime.exceptionThrown') exceptions.push(`uncaught exception: ${(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').split('\n')[0].slice(0, 160)}`)
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       const text = m.params.args.map(a => a.value ?? a.description ?? '').join(' ')
       if (HYDRATION_ERROR.test(text)) problems.push(`hydration error in the console: ${text.split('\n')[0].slice(0, 160)}`)
@@ -103,26 +114,33 @@ async function checkPage(c, path) {
   })
   await c.send('Runtime.enable', {}, sessionId); await c.send('Page.enable', {}, sessionId)
   if (process.env.HYDRATION_CHECK_BLOCK) await c.send('Fetch.enable', { patterns: [{ urlPattern: `*${process.env.HYDRATION_CHECK_BLOCK}*` }] }, sessionId)
-  await c.send('Page.navigate', { url: BASE + path }, sessionId)
+  try { await c.send('Page.navigate', { url: BASE + path }, sessionId) } catch (e) { await c.send('Target.closeTarget', { targetId }).catch(() => {}); return { path, landed: null, problems: [`the page did not load: ${String(e?.message ?? e).slice(0, 120)}`], notes: [] } }
   let last = null
   const until = Math.min(Date.now() + HYDRATE_WAIT_MS, DEADLINE)
   while (Date.now() < until) {
     await sleep(500)
     try { last = (await c.send('Runtime.evaluate', { expression: PROBE, returnByValue: true }, sessionId)).result.value } catch { last = null }
-    if (last?.form && last.react && last.onSubmit) break
+    if (last?.form && last.react && last.onSubmit) { await sleep(1000); break }   // a moment more for a late hydration error
   }
   await c.send('Target.closeTarget', { targetId }).catch(() => {})
   if (!last) problems.unshift('the page could not be read')
   else if (!last.form) problems.unshift(`no form on the page (landed on ${last.path})`)
   else if (!last.react) problems.unshift(`the form on ${last.path} has no React props: the page did not hydrate, so submitting it does nothing`)
   else if (!last.onSubmit) problems.unshift(`the form on ${last.path} has no React submit handler`)
-  return { path, landed: last?.path ?? null, problems }
+  // an uncaught exception fails the page only when the form did not hydrate (a third-party script error on a working form is a note)
+  const hydrated = !!(last?.form && last.react && last.onSubmit)
+  if (!hydrated) problems.push(...exceptions)
+  return { path, landed: last?.path ?? null, problems, notes: hydrated ? exceptions : [] }
 }
 
 const bin = browserPath()
 if (!bin) { console.error('check-hydration: no headless browser found (set HYDRATION_CHECK_BROWSER, or install the Playwright Chromium headless shell)'); process.exit(2) }
 const profile = mkdtempSync(join(tmpdir(), 'dazl-hydration-'))
 const { proc, ws } = launch(bin, profile)
+const cleanup = () => { try { process.kill(-proc.pid, 'SIGKILL') } catch { try { proc.kill('SIGKILL') } catch { /* gone */ } } rmSync(profile, { recursive: true, force: true }) }
+// the whole check is bounded, whatever hangs (a server that accepts and never answers, a stuck browser): FAIL, never a hang
+const watchdog = setTimeout(() => { console.log(`FAIL the check did not finish within ${Math.round((DEADLINE - START) / 1000)} s`); cleanup(); process.exit(1) }, Math.max(1, DEADLINE - Date.now()))
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { cleanup(); process.exit(1) })
 let failed = false
 try {
   const c = cdp(await ws); await c.open
@@ -130,9 +148,9 @@ try {
     if (Date.now() > DEADLINE) { console.log(`FAIL ${p}: the check ran out of time`); failed = true; break }
     const r = await checkPage(c, p)
     if (r.problems.length) { failed = true; console.log(`FAIL ${BASE}${p}${r.landed && r.landed !== p ? ` (landed on ${r.landed})` : ''}: ${r.problems.join('; ')}`) }
-    else console.log(`ok   ${BASE}${p}${r.landed && r.landed !== p ? ` (landed on ${r.landed})` : ''}: the form hydrated (React props and submit handler attached), no hydration error`)
+    else console.log(`ok   ${BASE}${p}${r.landed && r.landed !== p ? ` (landed on ${r.landed})` : ''}: the form hydrated (React props and submit handler attached), no hydration error${r.notes.length ? ` (note: ${r.notes.join('; ').slice(0, 200)})` : ''}`)
   }
   c.close()
 } catch (e) { failed = true; console.log(`FAIL the check could not run: ${String(e?.message ?? e).slice(0, 200)}`) }
-finally { proc.kill('SIGKILL'); rmSync(profile, { recursive: true, force: true }) }
+finally { clearTimeout(watchdog); cleanup() }
 process.exit(failed ? 1 : 0)

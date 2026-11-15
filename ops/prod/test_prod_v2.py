@@ -33,8 +33,8 @@ PINNED = {
     # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
     # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
     # this PR's files; Hermes installs them (check-installed.sh says so until then).
-    'deploy-prod.sh': '88a839a279252579924ea38e6d1515a840f6e0d1c2746a0411b7feb04d2144ef',
-    'check-hydration.mjs': 'f508f5d8ea08aaef58e3ccb5cba03bf78367f4b9242d16f4f01130cab484d64e',
+    'deploy-prod.sh': 'a562aa3ad8613a01227c58927a4ab08fd1cafb37415710938ec0e95ca0a6a467',
+    'check-hydration.mjs': '6769e2f59be30eafea0be1187a39d057673b7f2ce8212f0133c0b81e0878ab04',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
@@ -68,12 +68,13 @@ class RepoCopiesAreTheBoxCopies(unittest.TestCase):
         self.assertIn('for f in "$SELF" "$PULL" "$RUNNER" "$PAGES" "$HYD"; do', src)
         fn = src[src.index('hydration_check() {'):]
         fn = fn[:fn.index('\n}\n')]
-        self.assertIn('as_app env -u HYDRATION_CHECK_BLOCK', fn)
+        self.assertIn('as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK', fn)
+        self.assertIn('8>&-', fn)
         self.assertIn('[ "${PROD_HYDRATION_CHECK:-fatal}" = warn ]', fn)
         local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
         self.assertIn('hydration_check "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
         self.assertIn('NOT switching', local[local.index('hydration_check "http://127.0.0.1:$NEW"'):])
-        self.assertIn('hydration_check "$PUBLIC_URL" || fail_back', src)
+        self.assertIn('hydration_check "$PUBLIC_URL" 2 || fail_back', src)
         # a rollback is never refused for it
         for line in [l for l in src.splitlines() if 'hydration_check "' in l]:
             self.assertNotIn('PREV_SHA', line); self.assertNotIn('OLD_SHA', line)

@@ -64,8 +64,14 @@ as_app() { as_user "$APP_USER" "$@"; }
 # #1116: the headless-browser hydration check (check-hydration.mjs), as the app user (its ~/.cache/ms-playwright has the browser). Fatal by
 # default; PROD_HYDRATION_CHECK=warn only logs a failure. Its proof-only HYDRATION_CHECK_BLOCK is never passed on.
 [[ ${PROD_HYDRATION_CHECK:-fatal} =~ ^(fatal|warn)$ ]] || { echo "PROD_HYDRATION_CHECK must be fatal or warn" >&2; exit 1; }
+# Bounded twice (the script's own 90 s watchdog, then timeout 120 s), never handed the deploy lock (fd 8). $2 = tries (the public check after the
+# switch tries twice, 5 s apart, before the rollback: a cold first load must not roll back a good release).
 hydration_check() {
-  as_app env -u HYDRATION_CHECK_BLOCK HYDRATION_CHECK_DEADLINE_S=90 node "$HYD" "$1" && return 0
+  local t tries=${2:-1}
+  for t in $(seq 1 "$tries"); do
+    as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK HYDRATION_CHECK_DEADLINE_S=90 node "$HYD" "$1" 8>&- && return 0
+    [ "$t" -lt "$tries" ] && { log "hydration check try $t on $1 failed; trying again"; sleep 5; }
+  done
   [ "${PROD_HYDRATION_CHECK:-fatal}" = warn ] && { log "WARNING: the hydration check failed on $1 (PROD_HYDRATION_CHECK=warn: not fatal)"; return 0; }
   return 1
 }
@@ -417,7 +423,7 @@ switch_caddy "$NEW" || { stop_port "$NEW" "caddy switch failed" || true; die "ca
 TSW=$(date +%s)
 log "8/10 switched Caddy to :$NEW"
 public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed"
-hydration_check "$PUBLIC_URL" || fail_back "the hydration check failed on $PUBLIC_URL (the sign-up / sign-in form did not hydrate)"
+hydration_check "$PUBLIC_URL" 2 || fail_back "the hydration check failed on $PUBLIC_URL (the sign-up / sign-in form did not hydrate)"
 NR0=$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")
 # stability window: checked every second, so a crash of the new release switches back within ~1-2 s, not at the end
 for _ in $(seq 1 "$STABLE_S"); do
