@@ -1,7 +1,7 @@
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
 import zlib from 'node:zlib'
-import type { Readable } from 'node:stream'
+import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -76,6 +76,24 @@ const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+// 'deflate' is zlib-wrapped by the spec, but some servers send raw deflate under that name (review): the first two bytes tell them apart (a zlib header is a
+// multiple of 31 with method 8). Decided on the first chunk; either way the same limits and handlers apply.
+function inflateEitherWay(): Transform {
+  let inner: zlib.Inflate | zlib.InflateRaw | null = null
+  const t: Transform = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      if (!inner) {
+        const wrapped = chunk.length >= 2 && (chunk[0] & 0x0f) === 8 && ((chunk[0] << 8) | chunk[1]) % 31 === 0
+        inner = wrapped ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH })
+        inner.on('data', (d: Buffer) => t.push(d)); inner.on('error', (e: Error) => t.destroy(e))
+      }
+      inner.write(chunk, () => cb())
+    },
+    flush(cb) { if (!inner) return cb(); inner.once('end', () => cb()); inner.end() },
+    destroy(err, cb) { inner?.destroy(); cb(err) },
+  })
+  return t
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -101,14 +119,14 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       // company-name check as binary, the company's own site was refused (name_mismatch) and a lead with a proven day was held at no_domain. The body is decoded
       // here, and the same limits count DECODED bytes, so a small compressed body cannot expand past them. An unknown encoding is not read.
       const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
-      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
+      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? inflateEitherWay() : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
       if (decoder === undefined) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const src: Readable = decoder ? res.pipe(decoder) : res
       const stop = () => { res.destroy(); decoder?.destroy() }
       src.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { stop(); resolve(done()) } else chunks.push(c) })
       src.on('end', () => resolve(done()))
-      src.on('error', () => resolve(chunks.length ? done() : null))   // a truncated compressed tail keeps what was decoded
-      res.on('error', () => resolve(null))
+      src.on('error', () => { const kept = chunks.length ? done() : null; stop(); resolve(kept) })   // a truncated compressed tail keeps what was decoded; the socket is closed (review)
+      res.on('error', () => { stop(); resolve(null) })
       res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder, its own end/error settles
     })
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(readSoFar()) }, timeoutMs)   // past the stored-body cap, a slow tail never costs the page (council)

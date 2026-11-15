@@ -27,7 +27,8 @@ async function serve(handler: (req: import('node:http').IncomingMessage, res: im
 const html = { 'content-type': 'text/html; charset=UTF-8' }
 
 test('a body compressed against the request (gzip, x-gzip, deflate, br) is decoded before anyone reads it; the request still asks for identity', async () => {
-  for (const [enc, body] of [['gzip', zlib.gzipSync(PAGE)], ['x-gzip', zlib.gzipSync(PAGE)], ['deflate', zlib.deflateSync(PAGE)], ['br', zlib.brotliCompressSync(PAGE)]] as const) {
+  // 'deflate' both as the spec says (zlib-wrapped) and as some servers send it (raw deflate, review)
+  for (const [enc, body] of [['gzip', zlib.gzipSync(PAGE)], ['x-gzip', zlib.gzipSync(PAGE)], ['deflate', zlib.deflateSync(PAGE)], ['deflate', zlib.deflateRawSync(PAGE)], ['br', zlib.brotliCompressSync(PAGE)]] as const) {
     const { r, seen } = await serve((_q, res) => { res.writeHead(200, { ...html, 'content-encoding': enc }); res.end(body) })
     assert.equal(seen[0], 'identity', 'unchanged request')
     assert.equal(r?.status, 200); assert.equal(r?.body, PAGE, enc)
@@ -56,4 +57,12 @@ test('a compressed body cut off mid-stream keeps what was decoded', async () => 
   const full = PAGE + ' '.repeat(5000) + 'TAIL'
   assert.ok(r && r.body.length > 0 && full.startsWith(r.body), JSON.stringify(r?.body.slice(0, 80)))
   assert.match(r!.body, /Ogletree Deakins/, 'the decoded part is kept, not dropped')
+})
+
+test('a corrupt compressed body: no text from it, and the connection is closed rather than left open (review)', async () => {
+  let closed = false
+  const { r } = await serve((req, res) => { req.socket.on('close', () => { closed = true }); res.writeHead(200, { ...html, 'content-encoding': 'gzip' }); res.write(Buffer.from('this is not gzip at all, just text pretending')) })   // the server never ends the response
+  assert.equal(r, null, 'nothing decoded: no body')
+  await new Promise(res => setTimeout(res, 300))
+  assert.equal(closed, true, 'the socket was torn down, not left until its inactivity timeout')
 })
