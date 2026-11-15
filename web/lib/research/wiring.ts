@@ -21,10 +21,22 @@ const key = (sourceUrl: string, company: string) => `${sourceUrl}|${company.toLo
 // what verify decided per event, so the proof rows can be written once the runner has saved the leads (per job)
 const verdicts = new Map<string, Map<string, { v: Verdict; ev: EventToVerify; person: PersonToVerify | null }>>()
 
+class Slots {
+  private free: number; private waiting: (() => void)[] = []
+  constructor(n: number) { this.free = n }
+  acquire(): Promise<void> { if (this.free > 0) { this.free--; return Promise.resolve() } return new Promise(r => this.waiting.push(r)) }
+  release(): void { const next = this.waiting.shift(); if (next) next(); else this.free++ }
+}
+export const RESEARCH_MODEL_CONCURRENCY = Number(process.env.RESEARCH_MODEL_CONCURRENCY) || 3
+const modelSlots = new Slots(RESEARCH_MODEL_CONCURRENCY)
+
 export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: { fetch?: (url: string) => Promise<Page | { fail: string }>; get?: ReturnType<typeof defaultGet>; decider?: Decider } = {}): ResearchStages {
   const haiku = ctx.model(HAIKU)
+  // At most RESEARCH_MODEL_CONCURRENCY (3) model calls in flight per scan: a vendor 429 ends the whole scan (provider_rate_limited, never retried
+  // automatically, #363), and the key is shared, so the engine keeps its burst small rather than racing the vendor's limit.
   const ask = async (prompt: string, max: number): Promise<string> => {
-    try { return await haiku.complete!(ctx.key, prompt, undefined, max) } catch (e) { if (ctx.isRefusal(e)) throw e; return '' }
+    await modelSlots.acquire()
+    try { return await haiku.complete!(ctx.key, prompt, undefined, max) } catch (e) { if (ctx.isRefusal(e)) throw e; return '' } finally { modelSlots.release() }
   }
   const decider = o.decider ?? new Decider()
   // D asks yes/no questions only, so every answer is a probability; a string answer (a choice question) is not one and reads as no answer
