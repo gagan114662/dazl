@@ -403,3 +403,17 @@ test('round 8 (haiku): state abbreviations are a fixed list: "Ill. 60601" and "O
   assert.equal(otherOffice('/locations/main/chicago', ['Chicago, IL']), false)
   assert.equal(otherOffice('/locations/tex/paris', ['Paris, France']), true)
 })
+
+test('round 8 (opus): a state before the office segment, a state-named city followed by another city, and "us-texas" are other offices', async () => {
+  for (const path of ['/locations/texas/offices/paris', '/texas/locations/paris', '/locations/us-texas/paris']) assert.equal(otherOffice(path, ['Paris, France']), true, path)
+  assert.equal(otherOffice('/offices/new-york/buffalo', ['New York, NY']), true)
+  assert.equal(otherOffice('/offices/washington/seattle', ['Washington, DC']), true)
+  assert.equal(otherOffice('/offices/new-york', ['New York, NY']), false)
+  assert.equal(otherOffice('/offices/new-york/team', ['New York, NY']), false)
+  assert.equal(otherOffice('/locations/illinois/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/illinois/locations/chicago', ['Chicago, IL']), false)
+  const texas = `<html><body>${prose('Our Paris office.')}<a href="tel:+19035550100">903 555 0100</a><div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}</body></html>`, '/locations/texas/offices/paris': texas }, { '/team': '/locations/texas/offices/paris' })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
+  assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
+})

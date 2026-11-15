@@ -680,16 +680,28 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
 // "/locations/us/chicago"), or "other" (any other office: "/locations/denver", "/offices/team/dallas", "/locations/texas/paris" for Paris, France).
 // A "requested" page still has to agree with the requested place before its people count (crawlSite), so "/offices/new-york/dallas" for Dallas is
 // judged by what the page says.
+const US_CODES = new Set(Object.keys(US_STATES).map(k => k.toLowerCase()))
+// A path segment read as a US state: "texas", "tx", "tex", "us-texas", "new-york"; null otherwise. `codes`: also two-letter codes.
+const pathState = (x: string, codes: boolean): string | null => { const r = x.replace(/^(?:usa?|united-states)-/, '').replace(/-/g, ' '); if (!codes && /^[a-z]{2}$/.test(r)) return null; const st = stateCode(r); return st && US_CODES.has(st) ? st : null }
 function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'other' {
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
   if (i < 0 || i === seg.length - 1) return 'none'
   if (i === seg.length - 2 && PEOPLE_SEGMENT.test(seg[i + 1])) return 'none'
   const slugs = citySlugs(places)
-  const j = slugs.length > 0 ? seg.findIndex((x, k) => k > i && cityMatch(slugs, x, places)) : -1
+  // the requested city's segment: the LAST match, so for a city that is also a state name ("/offices/new-york/buffalo" for New York, NY)
+  // the state segment is not taken for the city
+  let j = -1
+  if (slugs.length > 0) for (let k = seg.length - 1; k > i; k--) if (cityMatch(slugs, seg[k], places)) { j = k; break }
   if (j < 0) return 'other'
-  // a US state between the office segment and the city that is not the requested region: "/locations/texas/paris" is not Paris, France
-  if (!bareCity(places)) { const codes = regionCodes(places); if (seg.slice(i + 1, j).some(x => { const name = x.replace(/-/g, ' '); const st = stateCode(name); return !!st && st in Object.fromEntries(Object.keys(US_STATES).map(k => [k.toLowerCase(), 1])) && !codes.has(st) })) return 'other' }
+  // a city named like a state ("new-york", "washington") followed by anything but a people word is that state's other office ("buffalo")
+  if (pathState(seg[j], false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x))) return 'other'
+  // a US state anywhere before the city that is not the requested region: "/locations/texas/paris", "/texas/locations/paris",
+  // "/locations/texas/offices/paris" are not Paris, France. Two-letter codes count only after the office segment ("/de/" is a locale).
+  if (!bareCity(places)) {
+    const codes = regionCodes(places)
+    if (seg.slice(0, j).some((x, k) => { const st = pathState(x, k > i); return !!st && !codes.has(st) })) return 'other'
+  }
   return 'requested'
 }
 // A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.
