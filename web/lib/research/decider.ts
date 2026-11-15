@@ -34,12 +34,17 @@ export class Decider {
     const f = this.deps.fetchImpl ?? fetch
     const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
     for (let attempt = 0; attempt < 3; attempt++) {
+      if (!this.up) return null   // another call switched it off while this one waited (review)
       this.calls++
       let res: Response
       try {
         res = await f(DECIDER_URL, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ model: DECIDER_MODEL, state, questions }), signal: AbortSignal.timeout(this.deps.timeoutMs ?? 40_000) })
       } catch { return this.failed() }   // network error or timeout: no retry here, the next call may succeed
-      if (res.status === 429) { await sleep(3000 * (attempt + 1)); continue }
+      if (res.status === 429) {
+        if (attempt === 2) break   // no sleep after the last try (review)
+        const after = Number(res.headers.get('retry-after'))
+        await sleep(Number.isFinite(after) && after > 0 && after <= 30 ? after * 1000 : 3000 * (attempt + 1)); continue
+      }
       if (res.status !== 200) return this.failed()
       const parsed = parseAnswers(await res.json().catch(() => null), questions)
       if (!parsed) return this.failed()
