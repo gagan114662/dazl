@@ -337,3 +337,19 @@ test('#1122 council: a self-closing <svg/> or an unclosed block never hides the 
   const r = await run({ company: 'Acme Dental', where: ['Rome, NY'], evidenceUrl: 'https://www.facebook.com/acmedental/posts/1', evidence: 'never read', reviewReason: 'blocked_by_site', sites: { 'acmedental.com': { '/': home, '/contact': CONTACT('info@acmedental.com') } } })
   NOTHING(r)
 })
+
+test('#1122 review of #1219 (finding B): a structured-data site keeps its own slot even when the page links TWO company-named sites that are refused', async () => {
+  const page = html(`<p><a href="https://restordental.ca/">Restor Dental</a> and <a href="https://restordental.example/">Restor Dental</a> are hiring in Toronto.</p>${ld({ '@type': 'JobPosting', hiringOrganization: { '@type': 'Organization', name: 'Restor Dental', sameAs: 'https://www.smilesbyrestor.ca/' } })}`)
+  const found = sc.findCompanySitesWithBasis('Restor Dental', page, BOARD)
+  assert.deepEqual(found.map(o => [o.site, !!o.structured]), [['restordental.ca', false], ['restordental.example', false], ['smilesbyrestor.ca', true]])
+  const r = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: page, sites: { 'restordental.ca': { '/': html(`<h1>Another Clinic</h1><p>Toronto, ON</p>${PROSE}`) }, 'restordental.example': { '/': html(`<h1>Another Clinic</h1>${PROSE}`) }, 'smilesbyrestor.ca': { '/': TORONTO_HOME('Restor Dental'), '/contact': CONTACT('hello@smilesbyrestor.ca') } } })
+  assert.equal(r.domain, 'smilesbyrestor.ca')
+  // main's cap still bounds the page's own links at two
+  const three = html(['a', 'b', 'c'].map(x => `<a href="https://restordental-${x}.example/">Restor Dental</a>`).join(' '))
+  assert.equal(sc.findCompanySitesWithBasis('Restor Dental', three, BOARD).length, 2)
+})
+
+test('#1122 review of #1219 (finding C2): siteHostOk refuses hex, octal and numeric label forms of an address whatever the caller normalised', () => {
+  for (const h of ['0x7f.0.0.1', '0177.0.0.1', '0x7f000001.example', '127.1', '2130706433']) assert.equal(sc.siteHostOk(h), false, h)
+  for (const h of ['acme.ca', '3m.com', '1800flowers.com', '0xacme.com']) assert.equal(sc.siteHostOk(h), true, h)
+})
