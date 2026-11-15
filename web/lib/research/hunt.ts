@@ -7,6 +7,9 @@ import type { Candidate, FunnelStage, ResearchCase, ResearchPlan } from './types
 import type { SearchHit, Fail, TfDeps } from '../search/tinyfish.ts'
 import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
+import type { SafeGet } from '../sources/types.ts'
+import { collectRegistry, type RegistrySource } from './sources/index.ts'
+import { boardCandidates } from './sources/ats-boards.ts'
 
 export const RESULTS_PER_QUERY = 10
 export type SearchFn = (query: string, afterDate: string) => Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail | string }>
@@ -90,6 +93,40 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
   for (const [k, n] of Object.entries(failed)) dropped[`query_${k}`] = n
   return { candidates, queries: qs.length, failed, stopped,
     funnel: { stage: 'hunt', in: qs.length, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
+}
+
+// E's hook (one function, behind the same switch as engine.ts researchEngineOn): A's hunt plus the registry sources (lib/research/sources).
+// Alongside the search: the sources that cover this case's place and category (city permits, city licences, SEC Form D). After it: the job
+// boards the search itself found (Greenhouse / Lever / Ashby), read for their roles' own posting days. Both merge into hunt's candidates by
+// hunt's own rule (a registry's dated record wins over a search hit for the same URL). Every source is a free
+// public API through the guarded getter (https, public IPs, 1 MB cap); one that fails adds a note, never throws. Without LEAD_ENGINE=research
+// this is exactly hunt().
+export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, search: SearchFn, http: SafeGet, o: Parameters<typeof hunt>[3] & { env?: Record<string, string | undefined>; sources?: RegistrySource[] } = {}): Promise<HuntResult & { registry: Record<string, string[]> }> {
+  const { env, sources, ...ho } = o
+  if ((env ?? process.env).LEAD_ENGINE !== 'research') return { ...await hunt(c, plan, search, ho), registry: {} }
+  const since = afterDate(c)
+  // the registry sources run alongside the search (never before it: a slow public API never delays the paid search), then merge by hunt's rule
+  // a registry failure can never reject the hunt (and so lose the paid search): it becomes a note
+  const registryRun = collectRegistry(c, since, http, sources).catch(() => ({ candidates: [] as Candidate[], notes: { registry: ['error'] } as Record<string, string[]> }))
+  const [reg, h] = await Promise.all([registryRun, hunt(c, plan, search, ho)])
+  const boards = await boardCandidates(c, h.candidates, since, http).catch(() => ({ candidates: [] as Candidate[], notes: ['error'] }))
+  const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
+  // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept
+  const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
+  let replaced = 0, duplicate = 0
+  for (const x of [...reg.candidates, ...boards.candidates]) {
+    const k = urlKey(x.url), had = byUrl.get(k)
+    if (had?.dated === 'registry') { duplicate++; continue }
+    if (had) replaced++
+    byUrl.set(k, x)
+  }
+  const candidates = [...byUrl.values()]
+  // every source's note reaches the scan's funnel: a source that could not be read is never shown as a market with nothing in it
+  const dropped = { ...h.funnel.dropped }
+  for (const [id, ns] of Object.entries(registry)) for (const n of ns) dropped[`registry_${id}_${n}`] = (dropped[`registry_${id}_${n}`] ?? 0) + 1
+  if (replaced) dropped.registry_record_over_hit = replaced
+  if (duplicate) dropped.duplicate_url = (dropped.duplicate_url ?? 0) + duplicate
+  return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length, dropped }, registry }
 }
 
 // The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws
