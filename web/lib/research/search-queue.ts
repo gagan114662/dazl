@@ -38,6 +38,6 @@ export function researchSearch(db: DbLike, tenant: string, spent: { searches: nu
   env.TINYFISH_SEARCHES_PER_SCAN = String(researchSearchBudget(env))
   return async (query: string, opts: { afterDate?: string; location?: string; language?: string } = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail; status?: number }> => {
     await queue.slot()
-    return tfSearch(db, tenant, query, opts, spent, { ...deps, env })
+    return tfSearch(db, tenant, query, opts, spent, { ...deps, env, rateIsWait: true })   // a free 429 is a wait here (the hunt retries it)
   }
 }
