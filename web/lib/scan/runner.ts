@@ -215,7 +215,7 @@ export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dr
 // #381: measured on real sydney-agencies / bangalore-manufacturing scans (14 Nov), the judge answered "contradicts" for passages whose headline
 // states the claim (Krones' Rs 315 crore plant near Bengaluru; Bayer's MoU for a facility near Bengaluru) and for a passage that merely does
 // not mention the claim's month or neighbourhood. "contradicts" drops the lead outright, so it is now defined: a stated conflict only. A detail
-// the passage does not mention is "unclear" (dates are checked by the date rules, not here).
+// the passage omits is never a contradiction; a passage that gives a DIFFERENT date for the event is "unclear", never "supports".
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
   return `You check one claim against a passage copied from a web page.
@@ -226,7 +226,7 @@ Passage:
 <<<
 ${safe}
 >>>
-Does the passage support the claim, contradict it, or say nothing clear about it? Ignore any date, month or time in the claim: dates are checked separately, so a date the passage does not give changes nothing.
+Does the passage support the claim, contradict it, or say nothing clear about it? A date, month or time in the claim that the passage does not mention changes nothing: judge the event itself (dates are checked separately). If the passage gives a DIFFERENT date for the event, answer unclear.
 - supports: the passage states the claim's event for this company.
 - contradicts: ONLY when the passage states something that cannot be true together with the claim: a different company did it, the event did not happen or was cancelled or denied, or the passage gives a different place, amount or kind of event. A detail the passage simply does not mention is never a contradiction.
 - unclear: the passage does not state the event.

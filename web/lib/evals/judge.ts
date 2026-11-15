@@ -137,7 +137,7 @@ export const claimJudge = (spec: JudgeSpec, call: JudgeCall, o: JudgeRunOptions 
 // quote, so a "supports" cannot be checked against the page - a limit the report states. `template` is runner's
 // judgePrompt rendered with placeholders plus its reply parser's source, passed in so this module never loads the runner.
 // Its model is whatever the tenant's own provider key serves, so no single calibration covers it (docs: "Limits").
-export const SCAN_JUDGE_SPEC: JudgeSpec = { id: 'scan_verification_judge', version: 1, model: 'tenant-provider', prompt_version: 2 } // 2: #381 defines 'contradicts' (a stated conflict only) and tells the judge to ignore dates
+export const SCAN_JUDGE_SPEC: JudgeSpec = { id: 'scan_verification_judge', version: 1, model: 'tenant-provider', prompt_version: 2 } // 2: #381 defines 'contradicts' (a stated conflict only); an omitted date changes nothing, a different date is unclear
 const SCAN_ANSWER = { supports: 'supported', contradicts: 'not_supported', unclear: 'unknown', unavailable: 'unknown' } as const
 export const scanJudge = (spec: JudgeSpec, judge: Judge, template: string, o: { timeoutMs?: number } = {}): JudgeAdapter => ({
   spec, template, quotes: false,

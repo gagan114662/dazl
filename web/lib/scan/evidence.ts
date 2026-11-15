@@ -279,27 +279,6 @@ function parseDay(s: string | null): Date | null {
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s ? null : d
 }
 
-// #381: a passage on the company's OWN site speaks for the company even when it does not repeat the name ("We help Sydney B2B teams ...").
-// Measured on real scans (sydney-agencies, 14 Nov): Garner Collective's own service page (title "... | Garner") and Nousu Collective's own
-// guide were dropped as entity_mismatch. Own site, strictly: the cited page's registrable host label is the company's FULL name with the
-// spaces removed (garnercollective.com.au for "Garner Collective"); no partial, prefix or fuzzy match, and at least 4 letters. So a client's
-// story told on an agency's site is still not the client's (the host is the agency's), and a rival's page never names this company.
-// AND the passage must be the site speaking for itself, in the first person ("we", "our", "us"): an own site also quotes other companies
-// ("Southside Roofing opened a second yard" on Northside's site is Southside's news, not Northside's), and such a passage stays a mismatch.
-// Second-level public suffixes (com.au, co.uk, ...) are skipped so the label is the brand, not "com".
-const FIRST_PERSON = /(^| )(we|our|ours|us|we re|we ve|we ll)( |$)/
-const SECOND_LEVEL = new Set(['com', 'co', 'net', 'org', 'gov', 'edu', 'ac'])
-export function ownSiteNamed(url: string, key: string): boolean {
-  let host: string
-  try { host = new URL(url).hostname.toLowerCase() } catch { return false }
-  const labels = host.split('.').filter(Boolean)
-  if (labels.length < 2) return false
-  const ccSecond = labels.length >= 3 && labels[labels.length - 1].length === 2 && SECOND_LEVEL.has(labels[labels.length - 2])
-  const label = labels[labels.length - (ccSecond ? 3 : 2)]
-  const compact = key.replace(/[^a-z0-9]/g, '')
-  return compact.length >= 4 && label.replace(/-/g, '') === compact
-}
-
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
   const text = norm(page.text)
   // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
@@ -313,7 +292,7 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const entityOk = hasPhrase(excerpt, key) || pageHeadingNames(page, key) || (ownSiteNamed(c.source_url, key) && FIRST_PERSON.test(excerpt))
+  const entityOk = hasPhrase(excerpt, key) || pageHeadingNames(page, key)
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70
