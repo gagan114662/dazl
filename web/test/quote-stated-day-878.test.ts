@@ -81,6 +81,15 @@ test('fail closed: a quote whose only day is background, another event, a plan o
   assert.equal(day(`The lead investor in Kestrel Pay closed a new fund on ${written(EVENT)}`), null)
   assert.equal(day(`Investors backing Kestrel Pay raised a fund on ${written(EVENT)}`), null)
   assert.equal(day(`The bank advising Kestrel Pay closed a deal on ${written(EVENT)}`), null)
+  // verification after round 3: a relative clause in the lead-in, an event noun, a later backer, "ahead of"
+  assert.equal(day(`The VC that backed Kestrel Pay closed its fourth fund on ${written(EVENT)}`), null)
+  assert.equal(day(`Investors who backed Kestrel Pay raised a new fund on ${written(EVENT)}`), null)
+  assert.equal(day(`The bank that advised Kestrel Pay closed a deal on ${written(EVENT)}`), null)
+  assert.equal(day(`The fund Acme backed Kestrel Pay raised a round on ${written(EVENT)}`), null)   // a verb in the lead-in
+  assert.equal(day(`Rivals as big as Kestrel Pay raised new funds on ${written(EVENT)}`), null)     // a clause word in the lead-in
+  assert.equal(day(`Kestrel Pay raised $80 million for a store opening on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay raised a Series C joined by Acme on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay raised $80 million ahead of its IPO on ${written(EVENT)}`), null)
   // a day with no year is not a stated day
   assert.equal(day('Kestrel Pay raised an $80 million Series C on Nov. 4'), null)
   // a lone numeric day the quote does not settle (April 11 or November 4)

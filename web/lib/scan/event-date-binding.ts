@@ -210,23 +210,24 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
 // Fail closed: only a quote that is ONE simple statement ending on its ONE day (oneEventOnDay), names no other year, and has no background,
 // sequence, plan or deadline wording gives its day: "founded on <day>", "up from the round it raised on <day>", "will open on <day>", "hired a CFO on
 // <day>, months after it raised ...", "is hiring after closing a round on <day>", "to start on / apply before <day>" all stay undated.
-const NOT_THIS_EVENT = /\b(?:founded|incorporated|established|since|previous(?:ly)?|prior|earlier|last|ago|up from|will|plans?|planned|expected|scheduled|set to|aims?|intends?|upcoming|after|before|following|followed|follows|then|until|months?|weeks?|years?|start(?:s|ing)?|apply|applications?|deadline|closes|closing)\b/i
+const NOT_THIS_EVENT = /\b(?:founded|incorporated|established|since|previous(?:ly)?|prior|earlier|last|ago|up from|will|plans?|planned|expected|scheduled|set to|aims?|intends?|upcoming|after|before|ahead|following|followed|follows|then|until|months?|weeks?|years?|start(?:s|ing)?|apply|applications?|deadline|closes|closing)\b/i
 // The quote must be ONE simple statement that ends on its day: [any lead-in] <Company> <one past-tense verb> <its object, with no
 // clause, relative, conjunction or second verb> on <day>[.]. "Pliant announced an $80 million Series C on Nov. 4, 2026." fits; "Pliant, which
 // closed its Series B on <day>, opened ...", "... opened an office, having raised a round on <day>", "... raised a round on <day> and opened ...",
 // "... announced on <day> that it had raised ...", "... filed to raise a round on <day>", "... the company confirmed on <day>" do not (council review).
 const PAST_VERB = /^(?:(?:has|have)\s+)?(?:[a-z]+[^e\W]ed|won|made|held|began|broke|took|ran|built|cut|set|led|got|struck|sold|went|bought|grew|hit|rose|spent|paid)$/
 const CLAUSE_WORD = /^(?:and|or|but|nor|that|which|who|whose|whom|it|they|as|when|while|once|amid|having|had|was|were|is|are|be|been|being|to|so|if|because|though|although|whereas|per|via|said|says|confirmed|according|off|heels)$/
-const BACKER = /^(?:led|co-led|backed|funded|financed|underwritten|joined)$/
-const ING_NOUN = /^(?:funding|financing|offering|opening|listing|building|lending|banking|clearing|accounting|consulting|engineering|manufacturing|catering|marketing|training)$/
+const BACKER = /^(?:led|co-led|backed|funded|financed|underwritten)$/
+const ING_NOUN = /^(?:funding|financing)$/   // other -ing nouns can be dated events of their own ("ahead of its listing on <day>")
 const OBJECT_OF = /^(?:in|of|for|at|from|with|to|by|and|or|like|than|via|behind|into|on|about|against|over|under|toward|towards|including|backing|beside|besides|among)$/
 function oneEventOnDay(q: string, company: string): string | null {
   const t = q.replace(/[.!]\s*$/, '')
   const at = t.toLowerCase().indexOf(normalise(company).toLowerCase())
   if (at < 0) return null   // the quote must name the company (precondition for reading what follows the name)
   // the company must be the statement's subject, not inside another subject ("The lead investor in <Company> closed a fund", "Investors backing <Company> raised")
-  const before = /([A-Za-z'’-]+)\s*$/.exec(t.slice(0, at))?.[1].toLowerCase() ?? ''
-  if (OBJECT_OF.test(before) || /ing$/.test(before)) return null
+  // ... and the lead-in before it is descriptors only: no verb, clause word or -ing word anywhere ("The VC that backed <Company> closed a fund")
+  const lead = t.slice(0, at).toLowerCase().split(/[^a-z0-9'’-]+/).filter(Boolean)
+  if (OBJECT_OF.test(lead[lead.length - 1] ?? '') || lead.some(w => PAST_VERB.test(w) || CLAUSE_WORD.test(w) || /ing$/.test(w))) return null
   // the first stated day ends the statement, so it is the only one (an ambiguous numeric day is then refused by eventDateBound)
   const pos = datePositions(t)
   if (pos.length === 0 || t.slice(pos[0].end).trim() !== '') return null
