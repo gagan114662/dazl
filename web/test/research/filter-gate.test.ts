@@ -5,11 +5,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { Decider, parseAnswers, parseJsonObject } from '../lib/research/decider.ts'
-import { filterResults, filterQuestions, judge, unopenable, hostOf, parseFallback, fallbackPrompt, type FilterCandidate } from '../lib/research/filter.ts'
-import { gateEvents, parseGate } from '../lib/research/gate.ts'
+import { Decider, parseAnswers, parseJsonObject } from '../../lib/research/decider.ts'
+import { filterResults, filterQuestions, judge, unopenable, hostOf, parseFallback, fallbackPrompt, type FilterCandidate } from '../../lib/research/filter.ts'
+import { gateEvents, parseGate } from '../../lib/research/gate.ts'
 
-const FX = JSON.parse(readFileSync(new URL('./fixtures/research-filter-austin-20261114.json', import.meta.url), 'utf8'))
+const FX = JSON.parse(readFileSync(new URL('../fixtures/research-filter-austin-20261114.json', import.meta.url), 'utf8'))
 const TARGET = { triggers: FX.triggers.map((t: { name: string }) => t.name), location: FX.case.location, category: FX.case.category }
 const RESULTS: (FilterCandidate & { trigger: string; decider: Record<string, unknown> | null; proto_keep: boolean; proto_score: number })[] = FX.results.map((r: { trigger: string }) => ({ ...r, triggerId: r.trigger }))
 const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -119,9 +119,9 @@ test('gate: one call; only "no" drops; "unknown" and a failed or unreadable call
 })
 
 // The engine's stage functions (engine.ts ResearchStages.filter / .gate), on the contract's own types (types.ts, part A).
-import { filterStage } from '../lib/research/filter.ts'
-import { gateStage } from '../lib/research/gate.ts'
-import type { Candidate, ResearchCase, ResearchEvent, ResearchPlan } from '../lib/research/types.ts'
+import { filterStage } from '../../lib/research/filter.ts'
+import { gateStage } from '../../lib/research/gate.ts'
+import type { Candidate, ResearchCase, ResearchEvent, ResearchPlan } from '../../lib/research/types.ts'
 const CASE: ResearchCase = { tenant: 't', jobId: 'j', query: 'Roofing companies in Austin, Texas that are hiring estimators', offer: 'estimating software', where: FX.case.location, category: FX.case.category, windowDays: 90, today: '2026-11-14' }
 const PLAN: ResearchPlan = { persona: 'owner', decisionMakerTitles: ['Owner'], triggers: FX.triggers.map((t: { id: string; name: string }) => ({ id: t.id, name: t.name, why: '', footprint: '', queries: [] })), askingQueries: [], source: 'model' }
 test('filterStage: every contract Candidate gets filter / score / keep / dropped; keep is the page list; a switched-off trigger is not asked about', async () => {
