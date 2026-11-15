@@ -207,8 +207,17 @@ export function eventDateBound(eventDate: string | null, pageText: string, quote
 // event happened ("... announced an $80 million Series C on Nov. 4, 2026"). The claimed day rightly fails the binding above, and the lead was held
 // undated although the page dates the event. This reads the days the QUOTE states and keeps one only when the SAME binding rule ties it to this company
 // and event on the fetched page; two different bound days, or none, return null (undated, as before). Nothing is guessed: the day is the page's.
+// Fail closed: only a quote that states exactly ONE day (no other day, ambiguous or not), names no other year, and tells ONE event with no background,
+// sequence, plan or deadline wording gives its day: "founded on <day>", "up from the round it raised on <day>", "will open on <day>", "hired a CFO on
+// <day>, months after it raised ...", "is hiring after closing a round on <day>", "to start on / apply before <day>" all stay undated.
+const NOT_THIS_EVENT = /\b(?:founded|incorporated|established|since|previous(?:ly)?|prior|earlier|last|ago|up from|will|plans?|planned|expected|scheduled|set to|aims?|intends?|upcoming|after|before|following|followed|follows|then|until|months?|weeks?|years?|start(?:s|ing)?|apply|applications?|deadline|closes|closing|by)\b/i
 export function dayStatedForEvent(pageText: string, quote: string, company: string): { day: string; why: string } | null {
-  const days = [...new Set(datePositions(normalise(quote)).filter(d => !d.ambiguous).map(d => d.day))]
-  const bound = days.flatMap(day => { const b = eventDateBound(day, pageText, quote, company); return b.bound ? [{ day, why: b.why }] : [] })
-  return bound.length === 1 ? bound[0] : null
+  const q = normalise(quote)
+  if (NOT_THIS_EVENT.test(q)) return null
+  const days = [...new Set(datePositions(q).map(d => d.day))]
+  if (days.length !== 1) return null   // an ambiguous numeric day counts once per reading, so it is never "one day"
+  const day = days[0]
+  if ([...q.matchAll(/\b(?:19|20)\d\d\b/g)].some(m => m[0] !== day.slice(0, 4))) return null
+  const b = eventDateBound(day, pageText, quote, company)
+  return b.bound ? { day, why: b.why } : null
 }

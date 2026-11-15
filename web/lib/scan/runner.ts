@@ -392,10 +392,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     }
     // #878: no bound day yet (none claimed, or the claimed one is not this event's), but the quote itself states one that the same rule ties to this
     // company and event on this page: that day is the event's. A claimed day the date rules reject (stale, future) is still on c0, so it keeps its hold
-    // and is never replaced. The window and date rules below judge the day like any other.
-    if (page && !isFail(page) && !c0.event_date) {
+    // and is never replaced; a hiring candidate is dated by the job board's own day only (above), never by a day in its text. The window and date rules
+    // below judge the day like any other.
+    if (page && !isFail(page) && !c0.event_date && !hiringCand) {
       const q = dayStatedForEvent(page.text, cIn.excerpt, cIn.company)
-      if (q) { c0 = { ...c0, event_date: q.day, event_date_proof: 'page_bound', event_date_proof_note: `the day the quote states (${q.why})`.slice(0, 200) }; undatedWhy = null }
+      if (q) c0 = { ...c0, event_date: q.day, event_date_proof: 'page_bound', event_date_proof_note: `the day the quote states (${q.why})${cIn.event_date ? `; the claimed ${cIn.event_date} is not this event's day` : ''}`.slice(0, 200) }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
