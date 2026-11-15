@@ -8,7 +8,8 @@
 //   - the AUTHOR: the post URL's own path (`linkedin.com/posts/<handle>_...`, `x.com/<handle>/status/<id>`) and the result title
 //     ("<Name>'s Post", "<Name> on X: ...");
 //   - the DATE: the post ID itself. LinkedIn activity / ugcPost / share IDs and X status IDs carry their creation time in the top bits,
-//     so the date is exact and needs no page read; the Candidate is marked `dated: 'registry'` (dated by construction);
+//     so the date is exact and needs no page read. The Candidate is NOT marked `dated: 'registry'`: that tier means "in the place and
+//     category by construction" in the wiring, which a post is not;
 //   - the PERSON (not a company page) and the headline: one more index search per author for `linkedin.com/in/<handle>` (capped). A
 //     handle that resolves to `linkedin.com/company/<handle>` is a company page and is dropped; an unresolved one stays, marked.
 // Known error source (prototype): the snippet can come from another post or a comment shown on the same page, so it may credit a
@@ -113,14 +114,26 @@ export function postKey(url: string): string | null {
 const safeSearch = async (search: SearchFn, q: string, o: { afterDate?: string }): Promise<IndexHit[] | null> => { try { return await search(q, o) } catch { return null } }
 const windowStart = (today: string, days: number) => new Date(Date.parse(`${today}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10)
 
-export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPlan, deps: { search: SearchFn; maxQueries?: number; maxResolve?: number; platforms?: ('linkedin' | 'x')[] }): Promise<PostsResult> {
+// Repeat calls (the goal-driven scan's loop, MISSION2 "GOAL-DRIVEN SCAN"): a caller-held state makes each call add only NEW work. Queries
+// already sent are not sent again, posts already returned are not returned again, and a handle's lookups are reused.
+export interface PostsState {
+  queries: Set<string>
+  posts: Set<string>
+  handles: Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: Set<string> }>
+}
+export const newPostsState = (): PostsState => ({ queries: new Set(), posts: new Set(), handles: new Map() })
+
+export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPlan, deps: { search: SearchFn; maxQueries?: number; maxResolve?: number; platforms?: ('linkedin' | 'x')[]; state?: PostsState }): Promise<PostsResult> {
+  const state = deps.state ?? newPostsState()
   const t0 = Date.now(); const dropped: Record<string, number> = {}
   const drop = (why: string) => { dropped[why] = (dropped[why] ?? 0) + 1 }
   const after = windowStart(rc.today, rc.windowDays)
-  const queries = postQueries(plan, deps.platforms ?? ['linkedin', 'x'], deps.maxQueries ?? 12)
+  // a repeat call spends its query budget on queries not sent before
+  const queries = postQueries(plan, deps.platforms ?? ['linkedin', 'x'], Number.MAX_SAFE_INTEGER).filter(x => !state.queries.has(x.q.toLowerCase())).slice(0, deps.maxQueries ?? 12)
   const posts = new Map<string, { hit: IndexHit; date: string; author: ReturnType<typeof authorOf> & object; triggerId: string; query: string }>()
   let seenHits = 0, sent = 0, failed = 0
   for (const { q, triggerId } of queries) {
+    state.queries.add(q.toLowerCase())
     const hits = await safeSearch(deps.search, q, { afterDate: after })
     sent++
     if (hits === null) { failed++; continue }
@@ -132,7 +145,7 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
       if (!date) { drop('no date in the post ID'); continue }
       if (date < after || date > rc.today) { drop('outside the window'); continue }
       const key = postKey(hit.url) ?? hit.url.split(/[?#]/)[0]   // the same post through uk.linkedin.com, twitter.com or a #fragment is one post
-      if (posts.has(key)) { drop('same post'); continue }
+      if (posts.has(key) || state.posts.has(key)) { drop('same post'); continue }
       posts.set(key, { hit: { ...hit, url: hit.url.split(/[?#]/)[0] }, date, author, triggerId, query: q })
     }
   }
@@ -140,7 +153,7 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
   // First pass: the lookup is keyed on the handle but made on the first post that NAMES the author (an earlier unnamed post does not
   // use it up). Second pass: every post gets its handle's final answer.
   const authors: Record<string, Author> = {}
-  const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: Set<string> }>()
+  const byHandle = state.handles
   let resolved = 0
   // strong person signals ("<Name>'s Post", "posted on the topic") are looked up first, so company pages titled "<Name> on LinkedIn:" or topic
   // titles do not spend the shared budget before real authors
@@ -183,9 +196,12 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     const same = r.kind === 'person' && (!p.author.name || p.author.name.toLowerCase() === r.name?.toLowerCase())
     authors[p.hit.url] = { ...p.author, name: p.author.name ?? (same ? r.name : null), kind: same ? 'person' : 'unresolved', headline: same ? r.headline : null, profileUrl: same ? r.profileUrl : p.author.profileUrl }
   }
+  for (const [k, p] of posts) if (authors[p.hit.url]) state.posts.add(k)
   const candidates: Candidate[] = [...posts.values()].filter(p => authors[p.hit.url]).map(p => ({
     url: p.hit.url, title: p.hit.title, snippet: p.hit.snippet, date: p.date, triggerId: p.triggerId, query: p.query,
-    via: 'engager', dated: 'registry',   // the post ID is the date (see the header)
+    // the date above is the post ID's own (exact), but this is NOT a registry record: the post is not in the requested place or category by
+    // construction, and its page is login-walled, so it must go through the filter like any search result (no `dated: 'registry'`)
+    via: 'engager',
   }))
   return { ok: sent === 0 || failed < sent, candidates, authors, searches: { sent, failed }, funnel: { stage: 'hunt', in: seenHits, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
 }

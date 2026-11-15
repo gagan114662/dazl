@@ -2,7 +2,7 @@
 // TEST-ONLY: invented people and handles; no network (the search is a fake).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { postDate, authorOf, postQueries, linkedinPostCandidates, authorPerson, authorSource, postKey, readsAsRole, nameShaped, type IndexHit } from '../lib/research/sources/linkedin-engagers.ts'
+import { postDate, authorOf, postQueries, linkedinPostCandidates, authorPerson, authorSource, postKey, readsAsRole, nameShaped, newPostsState, type IndexHit } from '../lib/research/sources/linkedin-engagers.ts'
 import type { ResearchCase, ResearchPlan } from '../lib/research/types.ts'
 
 // A LinkedIn activity ID / X status ID for a UTC day (the creation time sits in the top bits).
@@ -70,7 +70,7 @@ test('posts become dated Candidates: window, same post once, company pages dropp
   assert.deepEqual(r.candidates.map(c => c.url).sort(), [liPost('dana-okoye', '2026-11-06', 'we-hired'), liPost('rae-mendel', '2026-10-02'), `https://x.com/ivogrant/status/${xId('2026-10-30')}`].sort())
   const dana = r.candidates.find(c => c.url.includes('dana-okoye'))!
   assert.equal(dana.date, '2026-11-06', 'the post ID date, not the index date')
-  assert.equal(dana.via, 'engager'); assert.equal(dana.dated, 'registry'); assert.equal(dana.triggerId, 't1')
+  assert.equal(dana.via, 'engager'); assert.equal(dana.dated, undefined, 'not a registry record: it goes through the place / category filter'); assert.equal(dana.triggerId, 't1')
   assert.deepEqual(r.authors[dana.url], { platform: 'linkedin', handle: 'dana-okoye', name: 'Dana Okoye', profileUrl: 'https://www.linkedin.com/in/dana-okoye', kind: 'person', headline: 'Dana Okoye - Founder at Okoye Growth | Sydney, Australia' })
   assert.equal(r.authors[liPost('rae-mendel', '2026-10-02')].kind, 'unresolved')
   assert.equal(r.authors[`https://x.com/ivogrant/status/${xId('2026-10-30')}`].kind, 'unresolved')
@@ -282,4 +282,23 @@ test('known limits, pinned (council round 7): topic titles can take a handle\'s 
   const strongPost = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [...topics, mk(liPost('busy', '2026-10-09', 'd'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 20 })
   assert.equal(strongPost.authors[liPost('busy', '2026-10-09', 'd')].kind, 'person', 'a strong signal is still looked up')
   for (const n of ['Growth Director', 'Sales Consultant']) assert.equal(nameShaped(n), true, `known: ${n} passes the shape (a lookup may be spent; a Person still needs the profile title to match)`)
+})
+
+test('goal-driven scan: repeat calls with one state add only new work (no repeated query, post or lookup)', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const sent: string[] = []
+  const search = async (q: string) => { sent.push(q); return q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-11'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : [] }
+  const state = newPostsState()
+  const first = await linkedinPostCandidates(rc, plan(), { search, maxQueries: 2, maxResolve: 5, state })
+  assert.equal(first.candidates.length, 1); assert.equal(first.authors[first.candidates[0].url].kind, 'person')
+  const n1 = sent.length
+  const second = await linkedinPostCandidates(rc, plan(), { search, maxQueries: 2, maxResolve: 5, state })
+  assert.equal(second.candidates.length, 0, 'the same post is not returned twice')
+  assert.ok(!sent.slice(n1).some(q => sent.slice(0, n1).includes(q)), 'no query is sent twice')
+  assert.equal(sent.slice(n1).filter(q => !q.startsWith('site:')).length, 0, 'no lookup is repeated')
+  assert.equal(sent.length - n1, 2, 'the second call spends its budget on the next unsent queries')
+  // a new trigger from the planner is searched; the resolved handle is reused (no new lookup)
+  const third = await linkedinPostCandidates(rc, plan({ triggers: [{ id: 't9', name: 'new', why: '', footprint: '', queries: ['cold email agency founder Sydney'] }], askingQueries: [] }), { search: async q => { sent.push(q); return q.startsWith('site:linkedin.com/posts cold email agency founder') ? [mk(liPost('dana-okoye', '2026-10-11'), "Dana Okoye's Post"), mk(liPost('dana-okoye', '2026-10-12', 'n'), "Dana Okoye's Post")] : [] }, maxQueries: 2, maxResolve: 5, state })
+  assert.deepEqual(third.candidates.map(c => c.url), [liPost('dana-okoye', '2026-10-12', 'n')], 'a post an earlier call returned is not returned again'); assert.equal(third.authors[third.candidates[0].url].kind, 'person')
+  assert.equal(third.searches.sent, 2, 'two new post queries, no lookup')
 })
