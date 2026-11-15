@@ -103,8 +103,13 @@ test("a licence's day is Vancouver's day, not UTC's: an evening licence is not d
   for (const bad of ['2026-09-28T25:00:00Z', '2026-09-28T01:00:60Z', '2026-09-28T01:00:00+99:00']) assert.equal(licenceDay(bad), null, `${bad}: no day, not a throw`)
 })
 
-test('one malformed issue timestamp is that row skipped, never the whole licence source', () => {
-  const bad = { ...FX.window[0], licencenumber: '26-999998', issueddate: '2026-09-28T25:00:00Z', house: '9999' }
-  const withBad = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [...FX.window, bad], FX.prior, FX.same, FX.since)
-  assert.deepEqual(withBad, licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since), 'the same records, word for word: the bad row is neither a candidate nor a counted location')
+test('a licence with a malformed issue timestamp is never a candidate itself, but it is still one of the business\'s licensed locations', () => {
+  const base = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since)
+  const hunger = FX.window.find(r => r.businesstradename === 'Hunger Street')!
+  // the real row moved to another address with an impossible timestamp (labelled)
+  const bad = { ...hunger, licencenumber: '26-999998', issueddate: '2026-09-28T25:00:00Z', house: '999', street: 'MAIN ST' }
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [...FX.window, bad], FX.prior, FX.same, FX.since)
+  assert.ok(!s.some(x => x.licence === '26-999998'), 'no candidate from a licence without a valid day')
+  assert.equal(s.length, base.length)
+  assert.equal(s.find(x => x.company === 'Hunger Street')!.eventKind, 'additional_location_licence', 'its other issued licence still makes Hunger Street an additional location')
 })
