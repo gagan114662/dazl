@@ -683,6 +683,8 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
 const US_CODES = new Set(Object.keys(US_STATES).map(k => k.toLowerCase()))
 // A path segment read as a US state: "texas", "tx", "tex", "us-texas", "new-york"; null otherwise. `codes`: also two-letter codes.
 const pathState = (x: string, codes: boolean): string | null => { const r = x.replace(/^(?:usa?|united-states)-/, '').replace(/-/g, ' '); if (!codes && /^[a-z]{2}$/.test(r)) return null; const st = stateCode(r); return st && US_CODES.has(st) ? st : null }
+// Two-letter codes that are both a US state and a language locale ("/de/", "/ar/", "/hi/"): as a leading segment they are read as the locale.
+const LOCALE_LIKE = new Set(['ak', 'ar', 'ca', 'co', 'de', 'ga', 'hi', 'ia', 'id', 'in', 'ks', 'ky', 'la', 'mn', 'ms', 'mt', 'nd', 'ne', 'or', 'pa', 'sc', 'sd', 'tn', 'wa'])
 function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'other' {
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
@@ -697,10 +699,13 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   const codes = regionCodes(places)
   // a city named like a state ("new-york", "washington") followed by anything but a people word, the requested region or "<city>-city" is that
   // state's other office ("/offices/new-york/buffalo"; "/offices/washington/dc" and "/offices/new-york/new-york-city" are the city itself)
-  if (pathState(seg[j], false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== `${seg[j]}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
+  if (pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== `${seg[j].replace(/-[a-z]{2}$/, '')}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
   // a US state anywhere in the path (before or after the city) that is not the requested region: "/locations/texas/paris",
   // "/texas/locations/paris", "/locations/paris/texas" are not Paris, France; "/locations/springfield/mo" is not Springfield, IL.
   // Two-letter codes count only after the office segment ("/de/" is a locale).
+  // a leading state code that segmentsOf took for a locale ("/tx/locations/paris", "/us-tx/locations/paris")
+  const lead = (pathname.toLowerCase().split('/').filter(Boolean)[0] ?? '').replace(/^(?:usa?|united-states)-/, '')
+  if (!bareCity(places) && /^[a-z]{2}$/.test(lead) && US_CODES.has(lead) && !LOCALE_LIKE.has(lead) && !codes.has(lead)) return 'other'
   if (!bareCity(places) && seg.some((x, k) => { if (k === j) return false; const st = pathState(x, k > i); return !!st && !codes.has(st) })) return 'other'
   return 'requested'
 }

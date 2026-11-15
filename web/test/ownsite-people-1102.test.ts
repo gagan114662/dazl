@@ -428,3 +428,16 @@ test('round 9 (opus): a state AFTER the city is checked too; a state-named city 
   assert.equal(otherOffice('/offices/new-york/ny', ['New York, NY']), false)
   assert.equal(otherOffice('/offices/new-york/buffalo', ['New York, NY']), true)
 })
+
+test('round 9 (haiku): a leading state code is not a locale; "new-york-ny/buffalo" is another office', async () => {
+  assert.equal(otherOffice('/tx/locations/paris', ['Paris, France']), true)
+  assert.equal(otherOffice('/us-tx/locations/paris', ['Paris, France']), true)
+  assert.equal(otherOffice('/offices/new-york-ny/buffalo', ['New York, NY']), true)
+  assert.equal(otherOffice('/offices/new-york-ny', ['New York, NY']), false)
+  assert.equal(otherOffice('/fr/locations/paris', ['Paris, France']), false)
+  assert.equal(otherOffice('/il/locations/chicago', ['Chicago, IL']), false)
+  const texas = `<html><body>${prose('Our Paris office.')}<a href="tel:+19035550100">903 555 0100</a><div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/tx/locations/paris">Paris</a></body></html>`, '/tx/locations/paris': texas })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
+  assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
+})
