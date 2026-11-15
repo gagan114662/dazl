@@ -293,7 +293,8 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
   //   a. the pages already opened (the event page and the company's own home / about / team / people / contact / imprint pages): one model call;
   //   b. a senior person the trigger article itself names (no call);
   //   c. only then the person searches (snippets are sources, at most two result pages opened), one more call, and the second look.
-  const known = ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none'
+  const seed = registrySeed(ev)
+  const known = (ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none') + (seed ? `. The city's permit record names ${seed} as contractor of record: that is a lead to check, NOT a role. Use ${seed} only if a source states their role at THIS company (owner, president, CEO, general manager...)` : '')
   const promptFor = () => {
     const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
     return `Company: ${ev.company} (${c.category}, ${c.where}). A seller of "${c.offer}" wants the person who decides on buying it.
@@ -321,9 +322,9 @@ Rules: never invent a name; the quote must be copied character for character fro
   // c. the searches, only for a company whose own pages and trigger article name nobody
   if (!person) {
     const t2 = plan.decisionMakerTitles.slice(0, 3)
-    const pq = [`"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
+    const pq = [...(seed ? [`"${seed}" "${ev.company}" ${city}`] : []), `"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
       `${ev.company} ${city} ${t2.map(t => `"${t}"`).join(' OR ')} linkedin`,
-      `who owns ${ev.company} ${city}`]
+      ...(seed ? [] : [`who owns ${ev.company} ${city}`])]
     if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
     const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
     let opened = 0, added = 0
@@ -352,6 +353,19 @@ Rules: never invent a name; the quote must be copied character for character fro
   return { site, sources, person, location, whatTheyDo: str(j.what_they_do)?.slice(0, 300) ?? null, emails: ownEmails(emails, siteHost, person) }
 }
 
+// A registry lead (a city permit) names a contractor of record: that name is a SEED to search for, never a decision-maker by itself. A permit
+// "Applicant" / "System Administrator" is whoever filed the paper; only a page that states a real role at this company makes a person.
+const ROLE_ONLY_RX = /^(?:contractor of record(?: on the .{1,40} permit)?|applicant|system administrator|administrator|agent|contact|registered agent)$/i
+export function registrySeed(ev: ResearchEvent): string | null {
+  const texts = [ev.quote, ev.whyNow, ev.whatHappened, ...ev.people.flatMap(p => [p.quote, p.name])]
+  for (const t of texts) {
+    const m = /contractor of record:?\s+([\p{L}][\p{L}.'’-]*(?:\s+[\p{L}][\p{L}.'’-]*){1,3})/iu.exec(t ?? '')
+    if (m) return m[1].trim().replace(/[.\s]+$/, '')
+  }
+  const p = ev.people.find(x => x.name && /contractor of record/i.test(`${x.title ?? ''} ${x.quote}`))
+  return p ? p.name : null
+}
+
 // The model's person, kept only when its quote is literally in the source it cites and names the person: never trusted to have copied it.
 function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Person['from']): Person | null {
   const dm = j.decision_maker && typeof j.decision_maker === 'object' ? j.decision_maker as Record<string, unknown> : null
@@ -363,7 +377,9 @@ function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Perso
   if (!last || !norm(quote).split(' ').includes(last)) return null   // the quote must contain the person's name
   const profile = str(j.profile_url)
   const profileUrl = profile && /^https?:\/\//i.test(profile) && sources.some(s => s.url === profile || s.text.includes(profile)) ? profile : null
-  return { name, title: str(dm.title), sourceId: src.id, quote, profileUrl, from }
+  const title = str(dm.title)
+  if (title && ROLE_ONLY_RX.test(title.trim())) return null   // a filing role is not a decision-maker's title
+  return { name, title, sourceId: src.id, quote, profileUrl, from }
 }
 
 // The addresses printed on the company's own pages: its domain (or a subdomain), never a recruiting or no-reply inbox; the named person's own

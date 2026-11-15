@@ -3,7 +3,7 @@
 // page shapes taken from real pages the prototype read (names replaced).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cfEmails, companySearch, findSite, guessedSites, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../lib/research/company.ts'
+import { cfEmails, companySearch, registrySeed, findSite, guessedSites, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../lib/research/company.ts'
 import type { ResearchCase, ResearchEvent, ResearchPlan } from '../lib/research/types.ts'
 
 const C: ResearchCase = { tenant: 'T', jobId: 'J', query: 'Roofing companies in Austin hiring estimators', offer: 'estimating software', where: 'Austin, Texas', category: 'roofing contractors', windowDays: 90, today: '2026-11-15' }
@@ -250,4 +250,21 @@ test('review: one distinctive word must open the homepage; a public suffix addre
   const { d } = deps({ answers: [null, null] })
   const r = await researchCompany(C, PLAN, ev({ sourceUrl: 'https://roofingnews.example/tarrytown-hires', people: [{ name: 'Pat Moreno', title: null, quote: 'In a partnership with a lender, said Pat Moreno, the way ahead is clear' }] }), d)
   assert.equal(r.person, null)
+})
+
+test('registry seed (Hermes 09:00): the contractor of record is searched for by name, and is a decision-maker only when a page states a real role', async () => {
+  const REG = ev({ company: 'Lone Star Roofing LLC', sourceUrl: 'https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-1', quote: 'Lone Star Roofing LLC - 3 permits issued in Austin. Contractor of record: Rudy Alvarez.', people: [{ name: 'Rudy Alvarez', title: 'Contractor of record on the Austin permit', quote: 'Contractor of record: Rudy Alvarez' }] })
+  assert.equal(registrySeed(REG), 'Rudy Alvarez')
+  assert.equal(registrySeed(ev()), null)
+  const press = 'Rudy Alvarez, owner of Lone Star Roofing, said the crew grew to forty roofers across the Austin area this year.'
+  const search = { '"Rudy Alvarez" "Lone Star Roofing LLC"': [{ url: 'https://austinbiz.example/lone-star-roofing-grows', title: 'Lone Star Roofing grows', snippet: press }] }
+  const good = deps({ search, answers: [null, JSON.stringify({ decision_maker: { name: 'Rudy Alvarez', title: 'Owner', source_id: 'S1', quote: press }, profile_url: null, location: null, what_they_do: 'roofing' })] })
+  const r = await researchCompany(C, PLAN, REG, good.d)
+  assert.equal(r.person?.name, 'Rudy Alvarez'); assert.equal(r.person?.title, 'Owner')
+  assert.ok(good.asked[0]?.includes('"Rudy Alvarez" "Lone Star Roofing LLC"') || good.asked.some(q => q.includes('"Rudy Alvarez"')), 'the seed name is searched')
+  assert.ok(good.prompts.every(p => p.includes('contractor of record: that is a lead to check')), 'the model is told the permit role is not a title')
+  // a model that takes the filing role as the title is refused
+  const bad = deps({ search, answers: [null, JSON.stringify({ decision_maker: { name: 'Rudy Alvarez', title: 'Contractor of record on the Austin permit', source_id: 'S1', quote: press }, profile_url: null, location: null, what_they_do: null }), null] })
+  assert.equal((await researchCompany(C, PLAN, REG, bad.d)).person, null)
+  assert.equal(registrySeed(ev({ people: [{ name: 'System Administrator', title: 'Applicant', quote: 'Applicant: System Administrator' }] })), null)
 })
