@@ -34,7 +34,7 @@ const GUARDED_BY_CALLER: [string, string, string, RegExp][] = [
   ['lib/scan/icp.ts', 'inferIcp', 'lib/scan/runner.ts', /inferIcp\(providers_\[vendor\]/],
 ]
 // Scan work: the runner's providers are guarded per job and reserved on the scan cap (#848, scan-spend-cap-paths).
-const SCAN = ['lib/scan/runner.ts', 'lib/scan/buyer-fit.ts', 'lib/scan/score.ts', 'lib/research/scan-job.ts']   // scan-job: the research engine, on providers the runner guards per job (modelFor)
+const SCAN = ['lib/scan/runner.ts', 'lib/scan/buyer-fit.ts', 'lib/scan/score.ts', 'lib/research/scan-job.ts', 'lib/research/company-stage.ts', 'lib/research/company.ts']   // scan-job: the research engine, on providers the runner guards per job (modelFor); company-stage / company: part G on the same ctx.model
 // Provider wrappers (decorate a provider, add no call of their own) and the guard itself.
 const WRAPPERS = ['lib/evals/trace.ts', 'lib/outreach/launch-policy.ts', 'lib/scan/model-usage.ts']
 // lib/llm itself: the providers (each delegates complete to its own completeDetailed), the spend guard that wraps

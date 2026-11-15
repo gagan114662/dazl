@@ -21,6 +21,8 @@ const HANDED_A_GUARDED_PROVIDER: Record<string, string> = {
   'lib/scan/score.ts': 'scoreLeads(provider, ...) is called by the runner with providers_',
   'lib/scan/buyer-fit.ts': 'applyBuyerFitGate(provider, ...) is called by the runner with providers_',
   'lib/scan/model-usage.ts': 'records usage around the runner\'s guarded provider',
+  'lib/research/company-stage.ts': 'part G\'s company stage: calls ctx.model(HAIKU), the provider the runner wraps in the run, job and owner-pool guards (same as scan-job.ts)',
+  'lib/research/company.ts': 'researchCompany(c, plan, ev, deps) calls only deps.complete, which company-stage.ts builds from the runner\'s guarded ctx.model; a spend refusal is rethrown (deps.isRefusal)',
   'lib/research/scan-job.ts': 'the research engine (LEAD_ENGINE=research) calls only providers the runner hands it through ctx.model: meterProvider + guardProvider over the run, job and owner-pool guards + flagAccounting, as providers_',
   'lib/scan/lead-qualify.ts': 'qualifyLead(provider, ...) is called only by qualify-run.ts with ownerGuarded',
   'lib/evals/trace.ts': 'offline eval tooling: wraps a provider it is handed, never in the app',

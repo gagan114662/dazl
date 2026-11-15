@@ -25,6 +25,8 @@ export interface CompanyDeps {
   search: (query: string) => Promise<SearchResult[]>
   get: (url: string) => Promise<Fetched | null>                    // raw HTML, direct (free); null = could not open
   complete: (prompt: string, maxTokens: number) => Promise<string | null>   // the model's text answer; null = no answer
+  // a spend refusal (the scan's cap, SpendRefused) is never swallowed here: it stops the scan (the engine's own rule)
+  isRefusal?: (e: unknown) => boolean
 }
 
 // Hosts a direct fetch cannot open or that are never a company's own site (the prototype's BLOCKED + DIRECTORY lists).
@@ -114,7 +116,7 @@ async function firstSite(ev: ResearchEvent, city: string, deps: CompanyDeps, als
   for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(host(shown)) ? shown : null]) if (u && !also.some(o => host(o) === host(u))) also.push(u)
   const toks = nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario'].includes(t))
   let rs: SearchResult[] = []
-  try { rs = await deps.search(`${ev.company} ${city} official website`) } catch { rs = [] }
+  try { rs = await deps.search(`${ev.company} ${city} official website`) } catch (e) { if (deps.isRefusal?.(e)) throw e; rs = [] }
   let best: string | null = null
   for (const r of rs.slice(0, 8)) {
     const h = host(r.url)
@@ -171,6 +173,7 @@ const str = (v: unknown): string | null => typeof v === 'string' && v.trim() ? v
 
 // 2-6. the research of one company
 export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent, deps: CompanyDeps): Promise<CompanyResearch> {
+  const soft = <T>(fallback: T) => (e: unknown): T => { if (deps.isRefusal?.(e)) throw e; return fallback }
   const city = c.where.split(',')[0].trim()
   const cands = await siteCandidates(ev, city, deps)
   const sources: Source[] = []
@@ -213,7 +216,7 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
   if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
   const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
   let opened = 0
-  const results = await Promise.all(pq.map(q => deps.search(q).catch(() => [] as SearchResult[])))
+  const results = await Promise.all(pq.map(q => deps.search(q).catch(soft([] as SearchResult[]))))
   for (const rs of results) for (const r of rs.slice(0, 6)) {
     const u = r.url ?? '', sn = `${r.title ?? ''} — ${r.snippet ?? ''}`
     if (!u || seenU.has(u) || !toks.some(t => norm(sn).includes(t))) continue
@@ -237,13 +240,13 @@ Return ONLY JSON:
 "location":{"source_id":"S#","quote":"VERBATIM text showing the company's address/city"} or null,
 "what_they_do":"one line from the sources"}
 Rules: never invent a name; the quote must be copied character for character from the cited source; prefer the most senior relevant person; if no person is named for this exact company, decision_maker.name = null.`
-  let j = sources.length ? parseJson(await deps.complete(prompt, 900).catch(() => null)) ?? {} : {}
+  let j = sources.length ? parseJson(await deps.complete(prompt, 900).catch(soft(null))) ?? {} : {}
   let person = acceptPerson(j, sources, 'research')
   if (!person) {
     const cand = ev.people.find(x => x.name && x.quote && SENIOR.test(`${x.title ?? ''} ${x.quote}`))
     if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article')
     if (!person && sources.length) {
-      const j2 = parseJson(await deps.complete(`${prompt}\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`, 900).catch(() => null))
+      const j2 = parseJson(await deps.complete(`${prompt}\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`, 900).catch(soft(null)))
       const p2 = j2 ? acceptPerson(j2, sources, 'second look') : null
       if (p2) { person = p2; j = { ...j, ...j2 } }
     }
