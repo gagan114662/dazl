@@ -236,7 +236,8 @@ export function probeDomains(company: string): string[] {
 export const MAX_PROBES_PER_SCAN = 8
 
 // ---- extraction ----
-export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
+import { ROLE } from './role-words.ts'
+export { ROLE }
 export const sameSite = (emailDomain: string, site: string) => { const a = emailDomain.toLowerCase(); return a === site || a.endsWith('.' + site) }
 
 export interface Found { kind: 'email' | 'phone' | 'person'; value: string; label: string; url: string }

@@ -20,7 +20,7 @@
 // a listed word is rejected - a bare title or department word is never a person, and a provider "name" of one
 // unknown word still passes (fail-open). Identity/provenance stays with upstream contact provenance and rank
 // honesty (provider record dates, first-party pages, verified-current labelling).
-import { ROLE } from '../connectors/sitecrawl.ts'
+import { ROLE } from '../connectors/role-words.ts'   // pure: this rule runs in the browser too (work-email-eligible.ts)
 
 // Department words a provider puts in the name field when it has no person: the "name" is the team. Kept out of
 // ROLE (the crawl's mailbox list) so this guard can grow without changing what the crawl treats as a role inbox.
