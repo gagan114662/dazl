@@ -31,7 +31,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
-import { resolveTiming } from './page-timing.ts'
+import { relativeEventDay, resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
@@ -402,7 +402,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         else drop('duplicate')
         note(c0, 'review', why); continue
       }
-      if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
+      // #1099: "Krones on Wednesday inaugurated ..." on a page published Wednesday Aug 19 dates the event Aug 19 (page-timing.ts relativeEventDay):
+      // the publication day only resolves the weekday the quote itself states. Everything after (the window, the verifier's quote check) judges it as any date.
+      const rel = relativeEventDay(c0.excerpt ?? '', c0.company, t.published)
+      if (rel) c = { ...c0, event_date: rel.day, event_date_proof: 'page_bound', event_date_proof_note: rel.why.slice(0, 200), published_at: t.published }
+      else if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
