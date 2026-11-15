@@ -1668,7 +1668,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
     // One automatic recovery pass before anything is marked held: a verified lead with no date (when the request has a window) first gets the date the page itself declares (structured data), then the
     // same company's dated coverage elsewhere; a held lead whose page is unreadable or lacks the quote gets the same search. Every replacement goes through the SAME verifier and window gate.
-    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ } }
+    if (icpForSources?.window_days) { try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only */ } }
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
@@ -1831,13 +1831,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // gate), so verified / qualified counts never include a lead the gate would hold. Stored, not dropped.
     if (icpForSources?.window_days) {
       // Finish undated candidates first (bounded): an event date the source page itself declares as structured data. The window gate below judges it like any other date.
-      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only: the candidate stays undated and is held with its own reason */ }
       const { inside, outside, outsideReasons } = splitByWindow(outcome.leads, icpForSources.window_days, deps.now ?? new Date())
       outcome.leads = inside
       outside.forEach((l, i) => outcome.review.push({ ...l, contact: null, review_reason: outsideReasons[i] }))
     } else if (icpForSources) {
       // No date window: an undated lead is still kept, so give it the date its own page declares as structured data (same rules; nothing is held or dropped by it).
-      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? []) } catch { /* bonus only */ }
+      try { datesFinished = await finishUndatedLeads(outcome.leads, fetchP, 6, icpForSources.where ?? [], job.query) } catch { /* bonus only */ }
     }
     // Quality stage: grade each verified lead for ICP fit, timing and actionability. One model call
     // per scan; a scoring failure never fails the scan - but it no longer passes the raw
