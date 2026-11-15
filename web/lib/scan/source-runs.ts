@@ -45,6 +45,8 @@ export class SourceRunLedger {
   private parts: ReportParts = {}
   // Stage facts for the run report (scan/run-report.ts); merged, written once with the job.
   report(p: ReportParts): void { this.parts = { ...this.parts, ...p } }
+  // Queries sent by a later pass of the same scan (the #381 recovery pass) join the list, never replace it.
+  reportMoreQueries(q: string[]): void { if (q.length) this.parts = { ...this.parts, queries: [...(this.parts.queries ?? []), ...q] } }
   // The report contract: stop.code IS the code written as the job error. finish() applies the authoritative terminal
   // overrides (accounting_failed / accounting_uncertain / provider rejection) AFTER stop blocks are staged, so it
   // reconciles a staged stop to the final code here. The staged classification survives as superseded_stop_code and

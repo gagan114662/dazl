@@ -1801,6 +1801,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag3, undefined, { queries: targets.map(t => t.query), skipUrls: new Set([...diag.hitUrls, ...targets.map(t => t.url)]) })
           const st = summarizeTrace(diag3.trace)
           ledger.stats('fallback:tinyfish', { ...st, ...diag3.info })
+          // the run report lists every query the scan sent, the recovery pass's included
+          ledger.reportMoreQueries(st.queries)
           diag.tfTextUrls.push(...diag3.tfTextUrls)
           const wanted = new Set(targets.map(t => companyKey(t.company)))
           // only candidates for the held companies: anything else this search turns up is not this pass's business
@@ -1819,7 +1821,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         } catch (e) {
           if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
           if (e instanceof ProviderError && e.kind === 'auth') throw e
-          if (e instanceof SpendRefused) { budgetRefused = true; budgetRefusal ??= e.reason; stop('budget_stopped') }
+          // an optional pass the scan's budget cannot fit is skipped, not sent; it does not mark the scan itself as budget-stopped
+          if (e instanceof SpendRefused) stop('budget_stopped')
           else stop('error')
         }
       }

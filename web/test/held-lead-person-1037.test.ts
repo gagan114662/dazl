@@ -155,7 +155,8 @@ test('#1037 THROUGH THE RUNNER (review finding 3): a people search that no longe
   assert.equal(st?.reason, "the people search stopped at this scan's spend cap (the next search did not fit, so it was not sent); 0 person(s) stored before it stopped")
   assert.equal(st?.detail?.search_failed_spend_cap, 1); assert.equal(st?.detail?.stopped, 'spend_cap'); assert.equal(st?.detail?.results, 0)
   const refused = r.db.prepare("SELECT kind, status, reason FROM scan_spend_calls WHERE status = 'refused'").all()
-  assert.deepEqual(refused, [{ kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }])
+  // two refusals, both never sent: the held lead's recovery search (#381) and the people search; each did not fit the cap
+  assert.deepEqual(refused, [{ kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }, { kind: 'tinyfish.search', status: 'refused', reason: 'over_cap' }])
 })
 
 const reserved = (r: Awaited<ReturnType<typeof runFixture>>) => (r.db.prepare('SELECT spend_reserved_usd AS s FROM scan_jobs').get() as { s: number | null }).s ?? 0
