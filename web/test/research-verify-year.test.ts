@@ -43,4 +43,23 @@ test('a date quote that states a different YEAR never dates the day ("2 October 
   // a year that ENDS a sentence or clause before a bare month and day is not the date's year (review: these were refused by the year-before-month rule)
   for (const q of ['Revenue grew in 2025. On October 2 we open a new office.', 'Prices in 2025 may rise; the store opens October 2.', 'Best of 2025: October 2 launch of our new line', 'Since 2019, on October 2 we open', 'The 2025 Mar-a-Lago event; opens October 2', 'Revenue grew in 2025.\nOctober 2 we open']) assert.equal(names('2026-10-02', q), true, q)
   assert.equal(names('2026-05-02', 'After a strong 2025, May 2 marks our relaunch.'), true, 'comma then month-first is prose, not a date')
+  // a year that STARTS the next sentence or clause after the date is not the date's year (the after-month rule ran on the flattened quote)
+  for (const q of ['We open on October 2. 2025 was our best year.', 'We open October 2; 2025 sales rose 10%', 'Opening October 2 | 2025 Awards Winner', 'October 2 / 2025 recap', 'opens Oct 2 \u2013 2025 Annual Report', 'Opens Oct. 2nd. 2025 revenue topped $1M', 'October 2 - 2030 goals announced']) assert.equal(names('2026-10-02', q), true, q)
+  // more English wrong-year forms
+  for (const q of ['October 2 of 2025', 'October 2nd of 2025', 'October 2nd, of 2025', 'October the 2nd, 2025', 'October 2 in 2025', 'October 2 (2025)', '2 October (2025)', '2  October  2025', '2\tOctober\t2025']) assert.equal(names('2026-10-02', q), false, q)
+  // German and French dates with the year first or an accented month (the raw quote is accent-folded like flat())
+  assert.equal(names('2026-03-02', '2025, 2. M\u00e4rz'), false); assert.equal(names('2026-08-02', '2025, 2 ao\u00fbt'), false); assert.equal(names('2026-03-02', '2. M\u00e4rz 2026'), true)
+  assert.equal(names('2026-10-01', '1er octobre 2025'), false); assert.equal(names('2026-10-01', '1er octobre 2026'), true)
+  // apostrophe years in either quote mark
+  for (const q of ["Oct 2nd \u201825", "2 October \u201925", "Oct 2nd '25"]) assert.equal(names('2026-10-02', q), false, q)
+  for (const q of ["Oct 2nd \u201826", "2 October '26"]) assert.equal(names('2026-10-02', q), true, q)
+  // only spaces join a year to a date: ":", ")", "." and a newline do not (pinned)
+  for (const q of ['2025: October 2', '(2025) October 2', 'in 2025.\nOctober 2']) assert.equal(names('2026-10-02', q), true, q)
+  // a bare two-digit year is NOT read, because it would refuse real times and counts: "October 2, 10:30 am", "2 October 10 guests"
+  for (const q of ['October 2, 10:30 am', 'October 2 at 10 am', '2 October 10 guests', 'October 2, 11:00']) assert.equal(names('2026-10-02', q), true, q)
+  // trade-offs of the strict rule, pinned (fail closed): a second date in another year inside the date quote, a year joined to a bare month and day
+  assert.equal(names('2026-01-05', 'Posted December 30, 2025: the store opens January 5'), false, 'year boundary: the quote states a date in 2025 (fails closed; the date quote should hold only the event\'s date)')
+  assert.equal(names('2026-01-05', 'The store opens January 5'), true)
+  assert.equal(names('2026-01-05', 'Posted December 30, 2025, the store opens January 5, 2026'), false, 'the date quote carries another year')
+  assert.equal(names('2026-10-02', 'Since 2019 October 2 is our day'), false, 'a year directly before a month and day joins the date: fails closed')
 })

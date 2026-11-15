@@ -45,31 +45,32 @@ const MONTH_ALT = ['january', 'jan', 'february', 'feb', 'march', 'mar', 'april',
   'januar', 'februar', 'marz', 'mai', 'juni', 'juli', 'oktober', 'okt', 'dezember', 'dez',
   'janvier', 'janv', 'fevrier', 'fevr', 'mars', 'avril', 'avr', 'juin', 'juillet', 'juil', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'].join('|')
 const YEAR = '((?:19|20)\\d{2})'
-// Month-name forms run on the flattened quote (flat() turns punctuation into spaces); numeric dates keep their / . - separators, so they run on the
-// raw quote, lower-cased with non-breaking spaces made plain.
+// Every year pattern runs on the RAW quote: lower-cased, accents folded like flat(), non-breaking spaces and tabs made plain, the apostrophe forms
+// unified, but its punctuation KEPT. (On the flattened quote a year that starts the next sentence, "We open on October 2. 2025 was our best year", or
+// ends the last one, "Revenue grew in 2025. On October 2 we open", reads as the date's year.) Only spaces join the parts of a date.
+const DAY = '\\d{1,2}(?:st|nd|rd|th|er)?'
+const BEFORE_YEAR = '(?:,? |,? ?\\()(?:(?:of|in) )?'                      // "2025", ", 2025", " of 2025", " in 2025", " (2025"
 const YEAR_AFTER_MONTH = [
-  new RegExp(`\\b(?:${MONTH_ALT})\\b\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:(?:and|to)\\s+)?)*${YEAR}\\b`, 'g'),                    // October 2, 2025 / October 2-4, 2025 / October 2 and 3, 2025 / Oct 2025
-  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?(?:${MONTH_ALT})\\b\\.?,?\\s+${YEAR}\\b`, 'g'),                                // 2 October 2025 / 2nd of October, 2025
+  new RegExp(`\\b(?:${MONTH_ALT})\\b\\.? (?:the )?${DAY}(?:(?:\\s?[-\u2013\u2014&]\\s?| and | to )${DAY})*${BEFORE_YEAR}${YEAR}\\b`, 'g'),   // October 2, 2025 / October 2-4, 2025 / October 2 and 3, 2025 / October 2 of 2025 / October the 2nd (2025)
+  new RegExp(`\\b(?:${MONTH_ALT})\\b\\.?${BEFORE_YEAR}${YEAR}\\b`, 'g'),                                                                          // Oct 2025
+  new RegExp(`\\b${DAY}\\.? (?:of )?(?:${MONTH_ALT})\\b\\.?${BEFORE_YEAR}${YEAR}\\b`, 'g'),                                                      // 2 October 2025 / 2nd of October, 2025 / 1er octobre 2025
 ]
-// A year BEFORE the month, on the raw quote (punctuation kept, so a year that ends a sentence or a clause is not read as the year of the next date):
-// day-first may follow a comma ("2025, 2 October"); month-first must follow the year directly with a day after the month ("2025 October 2"), so
-// "Prices in 2025 may rise" is not a date and "Revenue grew in 2025. On October 2" is not 2025. A newline never joins them.
-const APOSTROPHE_YEAR = [   // "Oct 2nd '25", "2 October '25" (raw quote)
-  new RegExp(`(?:${MONTH_ALT})\\b\\.? \\d{1,2}(?:st|nd|rd|th)?,? ['\u2019](\\d{2})\\b`, 'g'),
-  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)? (?:of )?(?:${MONTH_ALT})\\b\\.?,? ['\u2019](\\d{2})\\b`, 'g'),
+const APOSTROPHE_YEAR = [   // "Oct 2nd '25", "2 October '25"
+  new RegExp(`(?:${MONTH_ALT})\\b\\.? ${DAY},? '(\\d{2})\\b`, 'g'),
+  new RegExp(`\\b${DAY} (?:of )?(?:${MONTH_ALT})\\b\\.?,? '(\\d{2})\\b`, 'g'),
 ]
+// A year BEFORE the month: day-first may follow a comma ("2025, 2 October"); month-first must follow the year directly with a day after the month
+// ("2025 October 2"), so "Prices in 2025 may rise" is prose. A newline, ":", ";", "." or a bracket never joins them.
 const YEAR_BEFORE_MONTH = [
-  new RegExp(`(?<![\\d./-])${YEAR},? (?:(?:on|of|the) )?\\d{1,2}(?:st|nd|rd|th)?\\.? (?:of )?(?:${MONTH_ALT})\\b`, 'g'),                      // 2025, 2 October / in 2025 on 2 October / 2025 the 2nd of October
-  new RegExp(`(?<![\\d./-])${YEAR} (?:(?:on|of|the) )?(?:${MONTH_ALT})\\b\\.? \\d{1,2}(?:st|nd|rd|th)?\\b`, 'g'),                              // 2025 October 2
+  new RegExp(`(?<![\\d./-])${YEAR},? (?:(?:on|of|the) )?${DAY}\\.? (?:of )?(?:${MONTH_ALT})\\b`, 'g'),                                  // 2025, 2 October / in 2025 on 2 October / 2025 the 2nd of October
+  new RegExp(`(?<![\\d./-])${YEAR} (?:(?:on|of|the) )?(?:${MONTH_ALT})\\b\\.? ${DAY}\\b`, 'g'),                                         // 2025 October 2
 ]
 const YEAR_IN_NUMERIC_DATE = [
   new RegExp(`(?<![\\d./-])\\d{1,2}[./-]\\d{1,2}[./-]${YEAR}(?![\\d])`, 'g'),                                                                   // 02/10/2025, 2.10.2025, 2-10-2025
   new RegExp(`(?<![\\d./-])${YEAR}[./-]\\d{1,2}[./-]\\d{1,2}(?![\\d])`, 'g'),                                                                   // 2025-10-02
 ]
-const statedYears = (q: string, raw: string): number[] => [
-  ...YEAR_AFTER_MONTH.flatMap(re => [...q.matchAll(re)].map(m => Number(m[1]))),
-  ...YEAR_IN_NUMERIC_DATE.flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
-  ...YEAR_BEFORE_MONTH.flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
+const statedYears = (raw: string): number[] => [
+  ...[...YEAR_AFTER_MONTH, ...YEAR_BEFORE_MONTH, ...YEAR_IN_NUMERIC_DATE].flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
   ...APOSTROPHE_YEAR.flatMap(re => [...raw.matchAll(re)].map(m => 2000 + Number(m[1]))),
 ]
 const parseDay = (s: string | null | undefined): number | null => {
@@ -99,7 +100,7 @@ export function dateQuoteNames(isoDay: string, dateQuote: string, readAt: number
   // date position counts (after a month name and its day, or inside a numeric date; an apostrophe year "'25"): "1944 W 4th Ave. on Sept. 20" has a
   // street number, not a year. No stated year ("2 October") is judged on the month and day alone, as before. A bare two-digit year ("2 Oct 25") is
   // not read: it cannot be told from a count ("2 October, 25 people").
-  const years = statedYears(q, dateQuote.toLowerCase().replace(/[\u00a0\u2009\u202f]/g, ' '))
+  const years = statedYears(dateQuote.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u00a0\u2009\u202f]/g, ' ').replace(/[\u2018\u2019]/g, "'").replace(/[ \t]+/g, ' '))
   if (years.some(v => v !== y)) return false
   const hasDay = new RegExp(`(^|\\D)0?${dd}(st|nd|rd|th)?(\\D|$)`).test(q)
   // a quote that states a day of the month must state THIS day ("October 2, 2026" never dates 2026-10-03); month and year alone are accepted
