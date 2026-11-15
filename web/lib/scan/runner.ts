@@ -32,6 +32,7 @@ import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { relativeEventDay, resolveTiming } from './page-timing.ts'
+import { announcementDatelineDay, DATE_BASIS_DATELINE } from './announcement-date.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
@@ -405,7 +406,11 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       // #1099: "Krones on Wednesday inaugurated ..." on a page published Wednesday Aug 19 dates the event Aug 19 (page-timing.ts relativeEventDay):
       // the publication day only resolves the weekday the quote itself states. Everything after (the window, the verifier's quote check) judges it as any date.
       const rel = relativeEventDay(c0.excerpt ?? '', c0.company, t.published)
+      // #1099 (Hermes decision, reversing #460 only in this labelled form): a page that IS the announcement of a completed event dates the ANNOUNCEMENT by its
+      // own publication day (announcement-date.ts). Never a hiring candidate (a posting is dated by its board), never when the quote states its own day or period.
+      const ann = rel || hiringCand ? null : announcementDatelineDay({ quote: c0.excerpt ?? '', company: c0.company, title: page.title, pageText: page.text, published: t.published, structured: (page as { structured?: string[] }).structured })
       if (rel) c = { ...c0, event_date: rel.day, event_date_proof: 'page_bound', event_date_proof_note: rel.why.slice(0, 200), published_at: t.published }
+      else if (ann?.day) c = { ...c0, event_date: ann.day, event_date_proof: 'page_bound', event_date_proof_note: ann.why.slice(0, 200), date_basis: DATE_BASIS_DATELINE, published_at: t.published }
       else if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
@@ -699,14 +704,14 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note, date_basis) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null, l.date_basis ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note, date_basis) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null, l.date_basis ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,

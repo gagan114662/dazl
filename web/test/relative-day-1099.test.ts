@@ -49,7 +49,7 @@ async function run(o: { quote: string; claimed: string | null; published: string
   const http = async (url: string) => { const u = new URL(url); if (u.hostname === 'hn.algolia.com') return null; return { status: 404, body: '' } }
   const page = async () => ({ text: o.pageText, title: 'Krones opens plant', retrievedAt: Math.floor(Date.now() / 1000), ...(o.published ? { published: o.published } : {}) })
   await runJob(db, claimKeyedJob(db, id)!, { providers: prov as never, master, fetchPage: page as never, sourceHttp: http as never, crawlGet: async () => null, score: false, now: new Date('2026-09-01T12:00:00Z') })
-  return listLeads(db, 'A', id, 200, true) as unknown as { company: string; event_date: string | null; event_date_proof: string | null; event_date_proof_note: string | null; review_reason: string | null }[]
+  return listLeads(db, 'A', id, 200, true) as unknown as { company: string; event_date: string | null; event_date_proof: string | null; event_date_proof_note: string | null; review_reason: string | null; date_basis?: string | null }[]
 }
 const pageText = (q: string) => `Krones opens Rs 315-crore bottling machinery plant near Bengaluru Rakesh Prakash / Aug 19, 2026, 16:57 IST Bengaluru: ${q}, marking the company's latest expansion in India.`
 
@@ -62,9 +62,14 @@ test('through the runner: the weekday in the quote dates the lead page_bound (it
   assert.notEqual(k!.review_reason, 'outside_window_undated')
 })
 
-test('through the runner: without the weekday the same byline still dates nothing (the lead stays outside_window_undated)', async () => {
+test('through the runner: without the weekday the byline dates the page as an ANNOUNCEMENT only (labelled), never as the event day', async () => {
+  // Hermes decision 15 Nov (announcement-date.ts): the page that announces a completed event dates the announcement, with date_basis 'announcement_dateline'
   const q = 'German packaging and bottling equipment major Krones inaugurated its new manufacturing facility at Vemagal Industrial Area'
   const rows = await run({ quote: q, claimed: '2026-08-19', published: '2026-08-19', pageText: pageText(q) })
-  const k = rows.find(r => r.company === 'Krones')
-  assert.ok(k, JSON.stringify(rows)); assert.equal(k!.event_date, null); assert.equal(k!.review_reason, 'outside_window_undated')
+  const k = rows.find(r => r.company === 'Krones') as unknown as { event_date: string | null; date_basis: string | null; event_date_proof_note: string | null }
+  assert.ok(k, JSON.stringify(rows)); assert.equal(k.event_date, '2026-08-19'); assert.equal(k.date_basis, 'announcement_dateline')
+  assert.match(k.event_date_proof_note ?? '', /^announced 2026-08-19/)
+  // the weekday version is the event's own day, not an announcement: no announcement basis
+  const withDay = (await run({ quote: KRONES, claimed: '2026-08-19', published: '2026-08-19', pageText: pageText(KRONES) })).find(r => r.company === 'Krones') as unknown as { date_basis: string | null }
+  assert.equal(withDay.date_basis, null)
 })

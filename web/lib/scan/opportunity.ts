@@ -103,7 +103,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const ageDays = l.event_date ? Math.floor((now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000) : null
   // date_status 'verified' is a legacy nearby-year verdict, not proof the page dates the EVENT; same wording as the lead
   // list and CSV (date-copy.ts). Never "confirmed on the page" (#198 live acceptance finding).
-  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })}, ${ageDays} days ago`
+  const dateNote = !l.event_date ? 'event date unknown' : `${eventDateCopy(l.event_date, l.date_status, l.timing, { basis: (l as { date_basis?: string | null }).date_basis ?? null, dayVerified: l.day_verified, windowMissed: l.window_missed })}, ${ageDays} days ago`
 
   const people: PersonContact[] = rows.filter(r => r.kind === 'contact' || r.kind === 'person').map(r => {
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)

@@ -1409,7 +1409,7 @@ export default function LeadsClient() {
                 {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} initial={workEmailInitial(l.id)} targets={t} lazy /></div> : null })()}
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
-                  <p>{eventDateCopy(l.event_date,l.date_status)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
+                  <p>{eventDateCopy(l.event_date,l.date_status,undefined,{ basis: (l as { date_basis?: string | null }).date_basis ?? null })}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
                 </div>}
                 <EvidenceRecheck leadId={l.id} />
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
