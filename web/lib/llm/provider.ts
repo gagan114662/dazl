@@ -113,26 +113,7 @@ export const anthropicProvider: Provider = {
     return process.env.DAZL_ANTHROPIC_MODEL || 'claude-sonnet-4-5'
   },
   async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 10): Promise<DetailedCompletion> {
-    return anthropicCompletion(anthropicProvider.configuredModel!(), apiKey, prompt, fetchImpl, maxTokens)
-  },
-  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
-    return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
-  },
-}
-
-// The same Anthropic completion for one FIXED model (the research engine's Haiku stages): same spend reservation, settlement and errors;
-// a model with no listed price is refused by the spend guard and the scan ledger exactly as for the configured one.
-export function anthropicModel(model: string): Provider {
-  const p: Provider = {
-    research: anthropicProvider.research,
-    configuredModel: () => model,
-    completeDetailed: (apiKey, prompt, fetchImpl = fetch, maxTokens = 10) => anthropicCompletion(model, apiKey, prompt, fetchImpl, maxTokens),
-    complete: async (apiKey, prompt, fetchImpl = fetch, maxTokens = 10) => (await anthropicCompletion(model, apiKey, prompt, fetchImpl, maxTokens)).text,
-  }
-  return p
-}
-
-async function anthropicCompletion(requested: string, apiKey: string, prompt: string, fetchImpl: typeof fetch, maxTokens: number): Promise<DetailedCompletion> {
+    const requested = anthropicProvider.configuredModel!()
     const hold = await reserveScanSpend('llm.anthropic', () => modelCostUsd(requested, prompt, maxTokens))
     let json: Record<string, unknown>
     try {
@@ -154,6 +135,10 @@ async function anthropicCompletion(requested: string, apiKey: string, prompt: st
     }
     await settleScanSpend(hold, out)
     return out
+  },
+  async complete(apiKey, prompt, fetchImpl = fetch, maxTokens = 10) {
+    return (await anthropicProvider.completeDetailed!(apiKey, prompt, fetchImpl, maxTokens)).text
+  },
 }
 
 export const openaiProvider: Provider = {

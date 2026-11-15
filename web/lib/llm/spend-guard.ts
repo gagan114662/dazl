@@ -12,7 +12,6 @@ import type { SharedPool } from './spend-pool.ts'
 // Prices are USD per million tokens from the vendor's published page, keyed by the exact model id.
 export const PRICES_USD_PER_M: Record<string, { in: number; out: number }> = {
   'claude-sonnet-4-5': { in: 3, out: 15 }, // https://docs.anthropic.com/en/docs/about-claude/pricing
-  'claude-haiku-4-5': { in: 1, out: 5 },   // same page; the research engine's page reading and company research (MISSION v2, Hermes 15 Nov 02:15)
 }
 export const INPUT_MARGIN_TOKENS = 1000
 
