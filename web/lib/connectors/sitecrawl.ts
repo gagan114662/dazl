@@ -16,6 +16,7 @@ export { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN, domainUnresolvedWords 
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
+import { revealEmails } from '../people/email-reveal.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -410,6 +411,7 @@ function deobfuscatedEmails(body: string): string[] {
 }
 
 export function extractContacts(html: string, pageUrl: string, site: string): Found[] {
+  html = revealEmails(html) // #1036: Cloudflare-protected and [at]/[dot] addresses read as a visitor sees them
   const out = new Map<string, Found>()
   const body = html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
   const add = (f: Found) => { if (!out.has(f.kind + f.value)) out.set(f.kind + f.value, f) }
@@ -977,7 +979,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
-      const onPage = (html: string, url: string, status: number) => {
+      const onPage = (raw: string, url: string, status: number) => {
+        const html = revealEmails(raw) // #1036: decode Cloudflare-protected / bracketed addresses in place, so `at` and contexts line up
         recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
         // #1036: printed personal addresses are always collected (the published tier is a fact, not a guess); only guessing is flagged.
         for (const a of personalAddresses(html, cand)) {
