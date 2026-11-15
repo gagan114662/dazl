@@ -17,7 +17,10 @@ import { enrichState } from './enrichment.ts'
 //   in the record proves a scan used the user's own key (the column defaults to 'user', also for rows from before it
 //   existed), so every other rejection gets neutral wording: no owner and no service outage is claimed.
 export type ScanOutcomeKind = 'running' | 'enriching' | 'leads' | 'review_only' | 'all_dropped' | 'zero_match' | 'none_extracted' | 'unrecorded' | 'stopped' | 'failed'
-export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null }
+// accounts_for_failed_source (#1157): this outcome already says which source failed and why the run still stopped the way it did
+// (the allowance, or a clean zero from the other source). A view that would otherwise replace a 'stopped' outcome with
+// "Failed - <source> had an error" (lib/scan/first5.ts) must show this one as it is.
+export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null; accounts_for_failed_source?: true }
 export interface ScanRecord {
   id: string; status: string; error: string | null; funded_by?: string | null
   candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; lead_count?: number | null
@@ -76,6 +79,15 @@ function trialStopped(j: ScanRecord, open: string): ScanOutcome {
 }
 
 const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped', 'none_extracted', 'zero_match']
+// #1157 (review at 7723d55f): the words the current-job view (app/app/leads/leads-client.tsx) shows for a failed job whose outcome
+// already accounts for a failed source, instead of its fixed per-error copy, which would say "searched and found nothing" without
+// naming the source that never ran. null for every other outcome: that view keeps its own copy. Reads the status payload's `outcome`.
+export function outcomeOwnCopy(o: unknown): string | null {
+  const x = o && typeof o === 'object' ? o as Partial<ScanOutcome> : null
+  if (!x || x.accounts_for_failed_source !== true || typeof x.label !== 'string' || !x.label) return null
+  return typeof x.detail === 'string' && x.detail ? `${x.label}. ${x.detail}` : x.label
+}
+
 export function scanOutcome(j: ScanRecord): ScanOutcome {
   const o = baseOutcome(j), partial = j.partial_sources ?? []
   if (partial.length === 0 || !PARTIAL_KINDS.includes(o.kind)) return o
@@ -106,9 +118,13 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'source_error': return sourcesFailed(j)
         ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the run stopped before it could conclude. The budget did not cause this: raising or removing it would not have searched further. This is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
         : { kind: 'failed', label: 'Failed - a source had an error', detail: 'A source failed, so the run stopped before it could conclude. The budget did not cause this. This is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
-      case 'no_discovery': return { kind: 'stopped', label: 'Nothing found in the sources this run could use', detail: 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for it. This does not show that no company matches.', next: { text: 'Run a broader search', href: NEW_SCAN } }
+      // #1157: one source failed while another searched clean and found nothing: the search concluded with that source missing
+      case 'no_discovery': if (sourcesFailed(j)) return { kind: 'stopped', accounts_for_failed_source: true, label: `Nothing found - ${j.failed_sources!.join(', ')} could not be searched`, detail: 'One source had an error and was skipped; the other sources this run could use searched and found nothing. Broader paid research was out of scope for this run. This does not show that no company matches: the skipped source may have had results.', next: { text: 'Try again', href: NEW_SCAN } }
+        return { kind: 'stopped', label: 'Nothing found in the sources this run could use', detail: 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for it. This does not show that no company matches.', next: { text: 'Run a broader search', href: NEW_SCAN } }
       case 'no_lead_source': return { kind: 'stopped', label: 'Stopped - no lead source could run', detail: 'No source this run may use could search: the free news search did not run (switched off on this server, or the request has no usable profile) and the capped web search was off, not set up or refused before any search, so nothing was searched. Nothing was concluded about whether leads exist, and nothing was charged for a search.', next: { text: 'Start a new scan', href: NEW_SCAN } }
-      case 'search_allowance_reached': return { kind: 'stopped', label: 'Stopped - the web search allowance for today was used up', detail: 'The search step was refused before it sent anything because this account\'s web search allowance for the day (or its share of the platform\'s) is used up. It is not an empty search and not a budget limit: raising or removing the budget would not change it. Nothing was concluded about whether leads exist.', next: { text: 'Try again after the day turns over (UTC)', href: NEW_SCAN } }
+      case 'search_allowance_reached': { const o: ScanOutcome = { kind: 'stopped', label: 'Stopped - the web search allowance for today was used up', detail: 'The search step was refused before it sent anything because this account\'s web search allowance for the day (or its share of the platform\'s) is used up. It is not an empty search and not a budget limit: raising or removing the budget would not change it. Nothing was concluded about whether leads exist.', next: { text: 'Try again after the day turns over (UTC)', href: NEW_SCAN } }
+        // #1157: the allowance is what stopped the main search; a source that also failed is named beside it, never instead of it
+        return sourcesFailed(j) ? { ...o, accounts_for_failed_source: true, detail: `${o.detail} Also, ${j.failed_sources!.join(', ')} had an error and gave nothing either.` } : o }
       case 'unbounded_fallback_hold': return { kind: 'stopped', label: 'Stopped - the free sources could not conclude', detail: 'The broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.', next: { text: 'Try again', href: NEW_SCAN } }
       case 'model_unpriced': return { kind: 'failed', label: 'Failed - the configured model has no known price', detail: 'No paid step was allowed because its cost could not be bounded. Raising the budget would not help.', next: { text: 'Check the model setup', href: '/app/settings' } }
       case 'spend_count_failed': return { kind: 'failed', label: 'Failed - a paid step\'s cost could not be estimated in advance', detail: 'The step was not sent. Raising the budget would not help.', next: { text: 'Try again', href: NEW_SCAN } }
