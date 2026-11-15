@@ -178,37 +178,47 @@ test('a lead the research proof never marked costs the gate one read (the old en
   assert.equal(seen.length, 1, seen.join('\n'))
 })
 
-test('goal loop (run.ts calls verify many times per run): a stable code per verdict; a spend refusal reads "budget", not a dead end; no model call for a lead a free check already failed; memoDecide pays an identical question once', async () => {
+test('goal loop (run.ts calls verify many times per run): a stable code per verdict; a spend refusal reads "budget", not a dead end; the held lead keeps its event score; memoDecide pays an identical question once and never keeps a failed answer', async () => {
   const { memoDecide } = await import('../lib/research/verify.ts')
   const { SpendRefused } = await import('../lib/llm/spend-guard.ts')
   const r = rec('Mouledoux, Bland, Legrand & Brackett')
   let calls = 0
   const counting = (d: Decide): Decide => async (s, q) => { calls++; return d(s, q) }
-  // ready, and each failing check has its code
+  // each outcome has its code
   assert.equal((await verify(r)).code, 'ready')
   assert.equal((await verify(r, { trigger_quote: 'a sentence that is nowhere on this page at all' })).code, 'quote_not_on_page')
   assert.equal((await verify(r, { person: null })).code, 'no_person')
   assert.equal((await verify(r, {}, async (_s, q) => ('claim' in q ? { claim: 0.1 } : { role: 0.9 }))).code, 'event_unsupported')
   assert.equal((await verify(r, {}, async (_s, q) => ('claim' in q ? { claim: 0.9 } : { role: 0.1 }))).code, 'person_unsupported')
-  // a provider error vs the spend limit: both fail closed, only the second says the run is out of money
+  // a held lead (no day on the page) still carries the event score the review lane shows: the checks are asked as before
+  const noDay = await verify(r, { date_quote: 'not a date that is on the page' })
+  assert.deepEqual([noDay.code, noDay.event.ok, typeof noDay.event.support], ['no_day_on_page', true, 'number'])
+  // a provider error vs the spend limit (thrown, or as the cause, on either question): both fail closed, only the latter says "budget"
   const broken = await verify(r, {}, async () => { throw new Error('provider down') })
   assert.deepEqual([broken.ready, broken.code], [false, 'check_failed'])
   const capped = await verify(r, {}, async () => { throw new SpendRefused('owner_pool_limit') })
   assert.deepEqual([capped.ready, capped.code, capped.why], [false, 'budget', 'the spend limit stopped the second check'])
-  // free checks first: no day on the page / no person -> no model call at all
-  calls = 0
-  assert.equal((await verify(r, { date_quote: 'not a date that is on the page' }, counting(recorded(r)))).code, 'no_day_on_page')
-  assert.equal((await verify(r, { person: null }, counting(recorded(r)))).code, 'no_person')
-  assert.equal(calls, 0)
-  // memoDecide: the same lead verified again in a later round costs nothing; a failed answer is asked again
+  const wrapped = await verify(r, {}, async () => { throw new Error('fallback failed', { cause: new SpendRefused('owner_pool_limit') }) })
+  assert.equal(wrapped.code, 'budget')
+  const roleCapped = await verify(r, {}, async (_s, q) => { if ('claim' in q) return { claim: 0.9 }; throw new SpendRefused('owner_pool_limit') })
+  assert.deepEqual([roleCapped.ready, roleCapped.code], [false, 'budget'])
+  // memoDecide: the same lead verified again in a later round costs nothing
   calls = 0
   const memo = memoDecide(counting(recorded(r)))
   await verify(r, {}, memo); await verify(r, {}, memo)
   assert.equal(calls, 2, 'claim + role once, not twice')
-  let fail = true
-  const flaky = memoDecide(counting(async (s, q) => { if (fail) return null; return recorded(r)(s, q) }))
+  // an unreadable answer ({ claim: null }) or a thrown one is asked again on the next round
+  let first = true
+  const flaky = memoDecide(counting(async (s, q) => { if (first && 'claim' in q) { first = false; return { claim: null } } return recorded(r)(s, q) }))
   calls = 0
   assert.equal((await verify(r, {}, flaky)).code, 'check_failed')
+  assert.equal((await verify(r, {}, flaky)).code, 'ready', 'the unreadable answer was not remembered')
+  // two identical questions at once share one call; when it fails, both see the failure and the next round asks again
+  calls = 0
+  let fail = true
+  const shared = memoDecide(counting(async (s, q) => { await new Promise(res => setTimeout(res, 5)); if (fail) throw new SpendRefused('owner_pool_limit'); return recorded(r)(s, q) }))
+  const [a1, a2] = await Promise.all([verify(r, {}, shared), verify(r, {}, shared)])
+  assert.deepEqual([a1.code, a2.code, calls], ['budget', 'budget', 2], 'the claim and the role question, each once for both')
   fail = false
-  assert.equal((await verify(r, {}, flaky)).code, 'ready', 'a failed answer is not remembered')
+  assert.equal((await verify(r, {}, shared)).code, 'ready')
 })
