@@ -23,7 +23,7 @@ test('#878 controls: no proof, a retired "verified" without a proof, a board dat
   assert.equal(eventAssociation({ ...ZAYED, event_date_proof: 'ats_structured' }, NOW), 'unverified', 'a job board date proves only a hiring claim')
   assert.match(eventAssociation({ ...ZAYED, event_date_proof: 'ats_structured', signal: 'Hiring a paralegal', signal_kind: 'hiring' }, NOW), /^verified/)
   assert.equal(eventAssociation({ ...ZAYED, event_date: '2026-12-01' }, NOW), 'unverified', 'a day in the future is not proven')
-  assert.equal(eventAssociation({ company: 'X', date_status: null }, NOW), 'unknown')
+  assert.equal(eventAssociation({ date_status: null }, NOW), 'unknown')
 })
 
 test('#878 the grade: a model that reads the proven day keeps its intent (inside the window); the same answer for an unproven day is still held at 0', async () => {
