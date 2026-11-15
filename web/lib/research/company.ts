@@ -25,6 +25,8 @@ export interface CompanyDeps {
   search: (query: string) => Promise<SearchResult[]>
   get: (url: string) => Promise<Fetched | null>                    // raw HTML, direct (free); null = could not open
   complete: (prompt: string, maxTokens: number) => Promise<string | null>   // the model's text answer; null = no answer
+  // a spend refusal (the scan's cap, SpendRefused) is never swallowed here: it stops the scan (the engine's own rule)
+  isRefusal?: (e: unknown) => boolean
 }
 
 // Hosts a direct fetch cannot open or that are never a company's own site (the prototype's BLOCKED + DIRECTORY lists).
@@ -32,9 +34,9 @@ const BLOCKED = ['linkedin.com', 'indeed.com', 'glassdoor.', 'ziprecruiter.com',
 const DIRECTORY = ['facebook.com', 'instagram.com', 'yellowpages', 'bbb.org', 'mapquest', 'tripadvisor', 'zoominfo', 'crunchbase', 'bloomberg.com', 'dnb.com', 'wikipedia.org', 'opencorporates', 'manta.com', 'chamberofcommerce', 'yelp.', 'angi.com', 'houzz.com', 'thumbtack', 'nextdoor', 'google.com', 'apple.com', 'bing.com', 'superpages', 'justia.com', 'avvo.com', 'martindale', 'lawyers.com', 'findlaw', 'healthgrades', 'zocdoc', 'ratemds', 'opentable', 'ubereats', 'doordash', 'theorg.com', 'rocketreach', 'apollo.io', 'signalhire', 'clutch.co', 'g2.com']
 const LINK_RX = /about|team|people|staff|leadership|founder|our-story|story|contact|impressum|imprint|attorney|lawyer|professional|doctor|dentist|meet|management|ber-uns|kontakt|who-we-are|partners/i
 const FIRST_RX = /team|people|leadership|about|attorney|impressum|doctor|founder/i
-const EMAIL_RX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const EMAIL_RX = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g
 const NOT_EMAIL = /\.(png|jpe?g|gif|webp|svg)$|sentry|wixpress|example\.|@2x/i
-const SENIOR = /founder|ceo|owner|partner|president|chief|director|managing|gesch.ftsf.hr|principal|head|chair|gr.nder|inhaber|dentist|dr\.?\b|chef|proprietor|vorstand/i
+const SENIOR = /\b(?:founder|ceo|owner|partner|president|chief|director|managing|gesch.ftsf.hr|principal|head|chair|gr.nder|inhaber|dentist|dr\.?\b|chef|proprietor|vorstand)\b/i
 const STOP_TOKENS = new Set(['the', 'and', 'inc', 'llc', 'llp', 'ltd', 'gmbh', 'group', 'company', 'pvt', 'limited', 'law', 'dental', 'roofing'])
 export const PAGE_TEXT = 3500, TEAM_TEXT = 5000, RESULT_TEXT = 3000, SNIPPET_TEXT = 500, PROMPT_SOURCES = 22000, MAX_OWN_PAGES = 4, MAX_RESULT_PAGES = 2
 
@@ -76,17 +78,59 @@ export function cfEmails(html: string): string[] {
 // and its mailto addresses. Pure.
 export interface ReadPage { url: string; finalUrl: string; text: string; links: { url: string; text: string }[]; mailtos: string[] }
 const decode = (s: string) => s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|&#8217;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d{1,6});/g, (_m, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
+const MAX_HTML = 400_000
+// scripts, styles, svg, templates and comments removed by index scans (linear), never a lazy pattern over the whole page
+function stripBlocks(html: string): string {
+  let out = '', i = 0
+  const low = html.toLowerCase()
+  while (i < html.length) {
+    const lt = low.indexOf('<', i)
+    if (lt < 0) { out += html.slice(i); break }
+    out += html.slice(i, lt)
+    if (low.startsWith('<!--', lt)) { const e = low.indexOf('-->', lt + 4); i = e < 0 ? html.length : e + 3; out += ' '; continue }
+    const m = /^<(script|style|noscript|svg|template)\b/.exec(low.slice(lt, lt + 12))
+    if (m) { const e = low.indexOf(`</${m[1]}`, lt + 1); const end = e < 0 ? -1 : low.indexOf('>', e); i = end < 0 ? html.length : end + 1; out += ' '; continue }
+    out += '<'; i = lt + 1
+  }
+  return out
+}
+// Linear anchor scan (a regex over hostile HTML backtracks badly): each '<a' is looked at within bounded windows, so cost stays O(n).
+function anchors(body: string): [string, string, string][] {
+  const out: [string, string, string][] = []
+  const low = body.toLowerCase()
+  let i = 0
+  while (out.length < 2000) {
+    i = low.indexOf('<a', i)
+    if (i < 0) break
+    const next = low.charCodeAt(i + 2)
+    const start = i
+    i += 2
+    if (!(next === 32 || next === 9 || next === 10 || next === 13 || next === 47)) continue
+    const gt = low.slice(start, start + 1400).indexOf('>') + start
+    if (gt < start) continue
+    const tag = body.slice(start, gt)
+    const hm = /\bhref\s*=\s*(?:"([^"]{1,2000})"|'([^']{1,2000})')/i.exec(tag)
+    if (!hm) continue
+    const cl = low.slice(gt, gt + 405).indexOf('</a>')
+    const end = cl < 0 ? gt + 1 + 400 : gt + cl
+    out.push(['', hm[1] ?? hm[2], body.slice(gt + 1, Math.min(end, body.length))])
+    i = gt + 1
+  }
+  return out
+}
+
 export function readHtml(html: string, url: string, finalUrl = url): ReadPage {
-  const body = html.slice(0, 1_500_000).replace(/<(script|style|noscript|svg|template)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+  // bounded input and bounded patterns: a hostile page (20,000 unclosed "<script ") must not cost seconds of synchronous CPU
+  const body = stripBlocks(html.slice(0, MAX_HTML))
   const links: { url: string; text: string }[] = [], mailtos: string[] = [...cfEmails(body)]
-  for (const m of body.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,400}?)<\/a>/gi)) {
+  for (const m of anchors(body)) {
     const href = decode(m[1].trim())
     if (/^mailto:/i.test(href)) { mailtos.push(href.slice(7).split('?')[0]); continue }
     let u: string; try { u = new URL(href, finalUrl).toString() } catch { continue }
     if (!/^https?:/i.test(u)) continue
-    links.push({ url: u, text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 80) })
+    links.push({ url: u, text: decode(m[2].replace(/<[^>]{1,400}>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 80) })
   }
-  const text = decode(body.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|header|footer|nav|figure|figcaption|address|blockquote|dd|dt|table)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' '))
+  const text = decode(body.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|header|footer|nav|figure|figcaption|address|blockquote|dd|dt|table)\b[^>]{0,400}>/gi, '\n').replace(/<[^>]{1,400}>/g, ' '))
     .split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n')
   return { url, finalUrl, text, links: links.slice(0, 600), mailtos: mailtos.slice(0, 60) }
 }
@@ -99,34 +143,57 @@ async function open(deps: CompanyDeps, url: string): Promise<ReadPage | null> {
   return p.text.length > 400 ? p : null   // the prototype's floor: a near-empty page (a block page, a JS shell) is not a source
 }
 
-// 1. the company's own site: the candidates in order (at most 3); researchCompany keeps the first whose pages match the case
+// 1. the company's own site, in three stages, cheapest first; researchCompany keeps the first candidate whose own pages match the case
+//    a. the site the event page IS or shows (no cost);
+//    b. hosts guessed from the company's name and the place's country domain (a free direct fetch each, no search: purebread.ca,
+//       passiondental.ca, ybdentistry.com were never in the "official website" search results, which are news about the event);
+//    c. one search "<company> <city> official website", only when a and b found no site that matches.
+// Every candidate, whatever its stage, must pass the same check (place + category + the homepage names the company), so a guessed host
+// that is another business is refused exactly as a searched one (#1122).
 export async function findSite(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string | null> { return (await siteCandidates(ev, city, deps))[0] ?? null }
-export async function siteCandidates(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string[]> {
+const PLACE_WORDS = ['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario']
+const nameOnly = (ev: ResearchEvent, city: string) => nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !PLACE_WORDS.includes(t))
+export function shownSites(ev: ResearchEvent): string[] {
   const out: string[] = []
-  const push = (u: string | null) => { if (u && !out.some(o => host(o) === host(u)) && out.length < 3) out.push(u) }
-  push(await firstSite(ev, city, deps, out))
-  return out
-}
-async function firstSite(ev: ResearchEvent, city: string, deps: CompanyDeps, also: string[]): Promise<string | null> {
   const own = ev.pageIsCompanySite && host(ev.sourceUrl) && !blocked(ev.sourceUrl) && !directory(host(ev.sourceUrl)) ? `https://${host(ev.sourceUrl)}` : null
   const w = (ev.website ?? '').trim()
   const shown = w && w.includes('.') && !/\s/.test(w) ? (/^https?:\/\//i.test(w) ? w : `https://${w}`) : null
-  for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(host(shown)) ? shown : null]) if (u && !also.some(o => host(o) === host(u))) also.push(u)
-  const toks = nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario'].includes(t))
+  for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(shown ? host(shown) : '') ? shown : null]) if (u && !out.some(o => host(o) === host(u))) out.push(u)
+  return out
+}
+// the country domains a place implies, from the case's own keywords (".ca", ".com.au", ".co.uk", ".de", ".in"), then the generic ones
+export function guessedSites(ev: ResearchEvent, c: ResearchCase, city: string): string[] {
+  const toks = nameOnly(ev, city); if (!toks.length) return []
+  const slugs = [...new Set([toks.join(''), toks.join('-'), norm(ev.company).split(' ').filter(w => w.length > 1 && !STOP_TOKENS.has(w)).join('')].filter(x => x.length >= 4 && x.length <= 40))].slice(0, 2)
+  const cc = (c.whereKeywords ?? []).filter(k => /^\.[a-z.]{2,8}$/.test(k) && k !== '.com')
+  const tlds = [...new Set([...cc, '.com', '.co', '.io'])].slice(0, 4)
+  const out: string[] = []
+  for (const sl of slugs) for (const t of tlds) { const h = `${sl}${t}`; if (!directory(h) && !out.includes(`https://${h}`)) out.push(`https://${h}`) }
+  return out.slice(0, 6)
+}
+async function searchedSites(ev: ResearchEvent, city: string, deps: CompanyDeps, skip: string[]): Promise<string[]> {
+  const toks = nameOnly(ev, city)
   let rs: SearchResult[] = []
-  try { rs = await deps.search(`${ev.company} ${city} official website`) } catch { rs = [] }
+  try { rs = await deps.search(`${ev.company} ${city} official website`) } catch (e) { if (deps.isRefusal?.(e)) throw e; rs = [] }
+  const out: string[] = []
   let best: string | null = null
   for (const r of rs.slice(0, 8)) {
     const h = host(r.url)
-    if (!h || blocked(r.url) || directory(h)) continue
+    if (!h || blocked(r.url) || directory(h) || skip.some(o => host(o) === h) || out.some(o => host(o) === h)) continue
     const hn = (h.split('.').length === 2 ? h.split('.')[0] : h).replace(/[^a-z0-9]/g, '')
     const u = `https://${h}`
-    if (also.some(o => host(o) === h) || also.length >= 3) continue
-    if (toks.some(t => hn.includes(t))) also.push(u)
+    if (toks.some(t => hn.includes(t))) { if (out.length < 3) out.push(u) }
     else if (best === null && toks.slice(0, 2).every(t => norm(r.title).includes(t))) best = u
   }
-  if (best && also.length < 3 && !also.some(o => host(o) === host(best!))) also.push(best)
-  return also[0] ?? null
+  if (best && out.length < 3 && !out.some(o => host(o) === host(best!))) out.push(best)
+  return out
+}
+// all stages at once (tests and callers that want the list); researchCompany walks them lazily instead
+export async function siteCandidates(ev: ResearchEvent, city: string, deps: CompanyDeps, c?: ResearchCase): Promise<string[]> {
+  const a = shownSites(ev), b = c ? guessedSites(ev, c, city) : []
+  const out = [...a, ...b]
+  for (const u of await searchedSites(ev, city, deps, out)) if (out.length < 8) out.push(u)
+  return out
 }
 
 // #1122: is this site THIS business? Its own pages show the case's place (a place keyword, or a country domain like ".com.au") AND its
@@ -158,7 +225,10 @@ export function homeNamesCompany(company: string, homeText: string, c: ResearchC
   const toks = nameTokens(company).filter(w => !place.has(w))
   if (!toks.length) return false
   const hit = toks.filter(w => t.includes(` ${w} `)).length
-  return hit >= Math.min(2, toks.length)
+  if (hit < Math.min(2, toks.length)) return false
+  // one distinctive word is thin evidence ("Apex" is in every other Austin roofer's text): it must open the page (title / first heading)
+  if (toks.length === 1) return ` ${norm(homeText.slice(0, 300))} `.includes(` ${toks[0]} `)
+  return true
 }
 
 const parseJson = (s: string | null): Record<string, unknown> | null => {
@@ -171,17 +241,23 @@ const str = (v: unknown): string | null => typeof v === 'string' && v.trim() ? v
 
 // 2-6. the research of one company
 export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent, deps: CompanyDeps): Promise<CompanyResearch> {
+  const soft = <T>(fallback: T) => (e: unknown): T => { if (deps.isRefusal?.(e)) throw e; return fallback }
   const city = c.where.split(',')[0].trim()
-  const cands = await siteCandidates(ev, city, deps)
   const sources: Source[] = []
   const emails = new Map<string, string>()
   const add = (url: string, text: string, kind: Source['kind']) => { sources.push({ id: `S${sources.length + 1}`, url, text, kind }) }
   const ev0 = await open(deps, ev.sourceUrl)
   if (ev0) add(ev.sourceUrl, ev0.text.slice(0, PAGE_TEXT), 'page')
   let site: string | null = null, wrongSite = false
-  for (const cand of cands) {
+  const tried = new Set<string>(), rejectedGuess = new Set<string>()
+  // one candidate: open it, read its own pages, and keep it only when it is THIS business (place + category + the homepage names the company)
+  const tryCandidate = async (cand: string, speculative = false): Promise<boolean> => {
+    // a host first tried as a guess and refused, then pointed at by the event or a search, IS a mis-identified site
+    if (tried.has(host(cand))) { if (!speculative && rejectedGuess.has(host(cand))) wrongSite = true; return false }
+    tried.add(host(cand))
     const home = await open(deps, cand)
-    if (!home) continue
+    if (!home) return false
+    tried.add(host(home.finalUrl))
     const sh = host(home.finalUrl), picks: string[] = [], seen = new Set<string>()
     for (const l of home.links) {
       const u = l.url.split('#')[0]
@@ -192,7 +268,9 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
     picks.sort((a, b) => (FIRST_RX.test(a) ? 0 : 1) - (FIRST_RX.test(b) ? 0 : 1) || a.length - b.length)
     const pages = [home, ...(await Promise.all(picks.slice(0, MAX_OWN_PAGES).map(u => open(deps, u)))).filter((p): p is ReadPage => !!p)]
     const m = siteMatchesCase(c, sh, pages.map(p => p.text))
-    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { wrongSite = true; continue }
+    // a GUESSED host that is some other business is not evidence that the company's site was mis-identified: only a site the event or a search
+    // pointed at, and that fails, stops the person hunt (#1122)
+    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { if (!speculative) wrongSite = true; else { rejectedGuess.add(host(cand)); rejectedGuess.add(host(home.finalUrl)) } return false }
     site = `https://${sh}`
     add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
     for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
@@ -200,33 +278,26 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
       const e = mm.replace(/^\.+|\.+$/g, '').toLowerCase()
       if (!NOT_EMAIL.test(e) && !emails.has(e)) emails.set(e, p.finalUrl)
     }
-    break
+    return true
   }
+  // stages: the site the event shows, then hosts guessed from the name (free fetches), then one search; stop at the first that is the business
+  const stage1 = shownSites(ev)
+  let found = false
+  for (const cand of stage1) if (!found) found = await tryCandidate(cand)
+  if (!found) for (const cand of guessedSites(ev, c, city).filter(u => !stage1.includes(u))) { if (!found) found = await tryCandidate(cand, true) }
+  if (!found) for (const cand of await searchedSites(ev, city, deps, [])) { if (!found) found = await tryCandidate(cand) }
   // #1122: a site was found but none of its candidates is this business: no site, no person (a name from the wrong company is worse than none)
   if (!site && wrongSite) return { site: null, sources, person: null, location: null, whatTheyDo: null, emails: [] }
   const siteHost = site ? host(site) : ''
-  // 3. person searches; snippets are sources, and at most two result pages that name the company are opened
-  const t2 = plan.decisionMakerTitles.slice(0, 3)
-  const pq = [`"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
-    `${ev.company} ${city} ${t2.map(t => `"${t}"`).join(' OR ')} linkedin`,
-    `who owns ${ev.company} ${city}`]
-  if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
-  const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
-  let opened = 0
-  const results = await Promise.all(pq.map(q => deps.search(q).catch(() => [] as SearchResult[])))
-  for (const rs of results) for (const r of rs.slice(0, 6)) {
-    const u = r.url ?? '', sn = `${r.title ?? ''} — ${r.snippet ?? ''}`
-    if (!u || seenU.has(u) || !toks.some(t => norm(sn).includes(t))) continue
-    seenU.add(u)
-    let pg: ReadPage | null = null
-    if (opened < MAX_RESULT_PAGES && !blocked(u) && !directory(host(u))) { pg = await open(deps, u); opened++ }
-    if (pg && toks.some(t => norm(pg!.text.slice(0, 6000)).includes(t))) add(u, pg.text.slice(0, RESULT_TEXT), 'page')
-    else add(u, sn.slice(0, SNIPPET_TEXT), 'snippet')
-  }
-  // 4. one model call; the second look only for the misses
-  const known = ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none'
-  const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
-  const prompt = `Company: ${ev.company} (${c.category}, ${c.where}). A seller of "${c.offer}" wants the person who decides on buying it.
+  // 3-4. The person, cheapest first (Hermes 03:3x: the hunt uses most of the scan's searches, so a search per company is the scarce thing):
+  //   a. the pages already opened (the event page and the company's own home / about / team / people / contact / imprint pages): one model call;
+  //   b. a senior person the trigger article itself names (no call);
+  //   c. only then the person searches (snippets are sources, at most two result pages opened), one more call, and the second look.
+  const seed = registrySeed(ev, sources.filter(s => s.url === ev.sourceUrl).map(s => s.text))
+  const known = (ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none') + (seed ? `. The city's permit record names ${seed} as contractor of record: that is a lead to check, NOT a role. Use ${seed} only if a source states their role at THIS company (owner, president, CEO, general manager...)` : '')
+  const promptFor = () => {
+    const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
+    return `Company: ${ev.company} (${c.category}, ${c.where}). A seller of "${c.offer}" wants the person who decides on buying it.
 Typical decision-maker titles: ${plan.decisionMakerTitles.join(', ')}. People named in the trigger article: ${known}.
 SOURCES:
 ${body}
@@ -237,14 +308,41 @@ Return ONLY JSON:
 "location":{"source_id":"S#","quote":"VERBATIM text showing the company's address/city"} or null,
 "what_they_do":"one line from the sources"}
 Rules: never invent a name; the quote must be copied character for character from the cited source; prefer the most senior relevant person; if no person is named for this exact company, decision_maker.name = null.`
-  let j = sources.length ? parseJson(await deps.complete(prompt, 900).catch(() => null)) ?? {} : {}
-  let person = acceptPerson(j, sources, 'research')
+  }
+  let j: Record<string, unknown> = {}
+  let person: Person | null = null
+  const askModel = async (extra = '') => parseJson(await deps.complete(promptFor() + extra, 900).catch(soft(null)))
+  // a. the pages already opened, when the company's own site is among them
+  if (siteHost && sources.length) { j = await askModel() ?? {}; person = acceptPerson(j, sources, 'research', !!seed) }
+  // b. the trigger article's own senior person (its quote checked on that article)
   if (!person) {
     const cand = ev.people.find(x => x.name && x.quote && SENIOR.test(`${x.title ?? ''} ${x.quote}`))
-    if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article')
+    if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article', !!seed)
+  }
+  // c. the searches, only for a company whose own pages and trigger article name nobody
+  if (!person) {
+    const t2 = plan.decisionMakerTitles.slice(0, 3)
+    const pq = [...(seed ? [`"${seed}" "${ev.company}" ${city}`] : []), `"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
+      `${ev.company} ${city} ${t2.map(t => `"${t}"`).join(' OR ')} linkedin`,
+      ...(seed ? [] : [`who owns ${ev.company} ${city}`])]
+    if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
+    const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
+    let opened = 0, added = 0
+    const results = await Promise.all(pq.map(q => deps.search(q).catch(soft([] as SearchResult[]))))
+    for (const rs of results) for (const r of rs.slice(0, 6)) {
+      const u = r.url ?? '', sn = `${r.title ?? ''} \u2014 ${r.snippet ?? ''}`
+      if (!u || seenU.has(u) || !toks.some(t => norm(sn).includes(t))) continue
+      seenU.add(u); added++
+      let pg: ReadPage | null = null
+      if (opened < MAX_RESULT_PAGES && !blocked(u) && !directory(host(u))) { pg = await open(deps, u); opened++ }
+      if (pg && toks.some(t => norm(pg!.text.slice(0, 6000)).includes(t))) add(u, pg.text.slice(0, RESULT_TEXT), 'page')
+      else add(u, sn.slice(0, SNIPPET_TEXT), 'snippet')
+    }
+    // a new call only when the searches added a source, or when no call has been made yet
+    if (sources.length && (added > 0 || !(siteHost && sources.length))) { const jj = await askModel() ?? {}; j = { ...j, ...jj }; person = acceptPerson(jj, sources, 'research', !!seed) }
     if (!person && sources.length) {
-      const j2 = parseJson(await deps.complete(`${prompt}\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`, 900).catch(() => null))
-      const p2 = j2 ? acceptPerson(j2, sources, 'second look') : null
+      const j2 = await askModel(`\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`)
+      const p2 = j2 ? acceptPerson(j2, sources, 'second look', !!seed) : null
       if (p2) { person = p2; j = { ...j, ...j2 } }
     }
   }
@@ -255,8 +353,42 @@ Rules: never invent a name; the quote must be copied character for character fro
   return { site, sources, person, location, whatTheyDo: str(j.what_they_do)?.slice(0, 300) ?? null, emails: ownEmails(emails, siteHost, person) }
 }
 
+// A registry lead (a city permit) names a contractor of record: that name is a SEED to search for, never a decision-maker by itself. A permit
+// "Applicant" / "System Administrator" is whoever filed the paper; only a page that states a real role at this company makes a person.
+const ROLE_ONLY_RX = /^(?:contractor of record(?: on the .{1,40} permit)?|applicant|system administrator|administrator|agent|contact|registered agent)$/i
+// A seed is a person's name: cut at a company suffix, refuse a company or a place ("the city of Austin", "Lone Star Roofing") and one-word names.
+const COMPANY_SUFFIX = /^(?:llc|inc|corp|corporation|co|company|ltd|lp|llp|pllc|construction|roofing|services|group)$/i
+function seedName(raw: string, company: string): string | null {
+  const toks: string[] = []
+  for (const w of raw.trim().replace(/[.\s]+$/, '').split(/\s+/)) { if (COMPANY_SUFFIX.test(w.replace(/\.$/, ''))) break; toks.push(w) }
+  if (toks.length < 2 || /^(?:the|city|county|town|state|n\/a)$/i.test(toks[0])) return null
+  const name = toks.join(' ').replace(/[.\s]+$/, '')
+  const ct = nameTokens(company)
+  if (norm(name).split(' ').filter(w => ct.includes(w)).length >= 2) return null   // that is the company's own name
+  return name
+}
+export function registrySeed(ev: ResearchEvent, pageTexts: string[] = []): string | null {
+  const texts = [ev.quote, ev.whyNow, ev.whatHappened, ...ev.people.flatMap(p => [p.quote, p.name]), ...pageTexts.map(t => t.slice(0, 20_000))]
+  for (const t of texts) {
+    const m = /[Cc]ontractor of record:?\s+(\p{Lu}[\p{L}.'’-]*(?:\s+\p{Lu}[\p{L}.'’-]*){1,2})/u.exec(t ?? '')   // capitalised words only: "Rudy Alvarez issued 3 permits" stops at "issued"
+    const nm = m ? seedName(m[1], ev.company) : null
+    if (nm) return nm
+  }
+  const p = ev.people.find(x => x.name && /contractor of record/i.test(`${x.title ?? ''} ${x.quote}`))
+  if (p && seedName(p.name, ev.company)) return seedName(p.name, ev.company)
+  for (const t of pageTexts) {   // the open-data record as JSON: the model may have left the contractor out of ev.people
+    const j = /"contractor_full_name"\s*:\s*"([\p{L}][\p{L}.' -]{3,60})"/iu.exec(t.slice(0, 200_000))
+    const nm = j ? seedName(j[1], ev.company) : null
+    if (nm) return nm
+  }
+  return null
+}
+
 // The model's person, kept only when its quote is literally in the source it cites and names the person: never trusted to have copied it.
-function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Person['from']): Person | null {
+// A filing label is not a role. Titles that are only a filing role; and, for a registry lead, a quote that is the permit's own line.
+const FILING_TITLE = /\b(?:contractor of record|applicant|permit ?holder|system administrator|registered agent|licen[cs]ee)\b|^(?:licensed |general )?contractor\W*$|^(?:administrator|agent|contact)\W*$/i
+const FILING_QUOTE = /contractor of record|\bapplicant\b|permit ?holder|\"contractor_full_name\"/i
+function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Person['from'], registry = false): Person | null {
   const dm = j.decision_maker && typeof j.decision_maker === 'object' ? j.decision_maker as Record<string, unknown> : null
   const name = str(dm?.name), quote = str(dm?.quote)
   if (!dm || !name || !quote || /^null$/i.test(name)) return null
@@ -266,15 +398,21 @@ function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Perso
   if (!last || !norm(quote).split(' ').includes(last)) return null   // the quote must contain the person's name
   const profile = str(j.profile_url)
   const profileUrl = profile && /^https?:\/\//i.test(profile) && sources.some(s => s.url === profile || s.text.includes(profile)) ? profile : null
-  return { name, title: str(dm.title), sourceId: src.id, quote, profileUrl, from }
+  const title = str(dm.title)
+  if (title && (ROLE_ONLY_RX.test(title.trim()) || FILING_TITLE.test(title.trim()))) return null   // a filing role is not a decision-maker's title
+  // a registry lead: the quote must state a real role in its own words (not the permit's "contractor of record" line)
+  if (registry && (FILING_QUOTE.test(quote) || !SENIOR.test(`${title ?? ''} ${quote}`))) return null
+  return { name, title, sourceId: src.id, quote, profileUrl, from }
 }
 
 // The addresses printed on the company's own pages: its domain (or a subdomain), never a recruiting or no-reply inbox; the named person's own
 // address first (its local part carries their first or last name), then the company's inboxes, in page order. At most 5.
+// a bare public suffix is not a company's domain: an address @co.uk must never ride on the site acme.co.uk
+const PUBLIC_SUFFIX = /^(?:co|com|org|net|gov|edu|ac|ltd|plc)\.[a-z]{2}$|^[a-z]{2,3}$/i
 const NOT_A_CONTACT = /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|webmaster|careers?|jobs?|recruit\w*|talent|hr|hiring|applications?|resumes?|privacy|gdpr|dpo|abuse|unsubscribe|wordpress)$/i
 export function ownEmails(found: Map<string, string>, siteHost: string, person: Person | null): { email: string; url: string }[] {
   if (!siteHost) return []
-  const own = [...found].filter(([e]) => { const [local, d = ''] = e.split('@'); return (d === siteHost || d.endsWith(`.${siteHost}`) || siteHost.endsWith(`.${d}`)) && !NOT_A_CONTACT.test(local.replace(/[._-]/g, '')) })
+  const own = [...found].filter(([e]) => { const [local, d = ''] = e.split('@'); return (d === siteHost || d.endsWith(`.${siteHost}`) || (siteHost.endsWith(`.${d}`) && !PUBLIC_SUFFIX.test(d))) && !NOT_A_CONTACT.test(local.replace(/[._-]/g, '')) })
   const parts = person ? norm(person.name).split(' ').filter(w => w.length >= 3 && !/^(?:dr|mr|mrs|ms)$/.test(w)) : []
   const mine = (e: string) => parts.some(p => e.split('@')[0].replace(/[^a-z]/g, '').includes(p))
   return [...own.filter(([e]) => mine(e)), ...own.filter(([e]) => !mine(e))].slice(0, 5).map(([email, url]) => ({ email, url }))
@@ -293,4 +431,27 @@ export function companySearch(search: SearchFn, after: string, o: { retries?: nu
     }
     return []
   }
+}
+
+// GOAL-DRIVEN SCAN (MISSION v2, Hermes 05:40): the orchestrator (A's run.ts) calls the company stage again on every loop, and the same company
+// often comes back from another trigger or source. One memo per scan: the same company (by its distinctive name words) in the same place is
+// researched once and its result reused, so a later loop spends no search, fetch or model call on it. A failed research (an exception, a
+// spend refusal) is not kept, so it is tried again. `size` is how many companies were researched; `hits` how many calls were answered from it.
+export function memoCompanyResearch(research: (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent) => Promise<CompanyResearch>) {
+  const done = new Map<string, Promise<CompanyResearch>>()
+  let hits = 0
+  const keyOf = (c: ResearchCase, ev: ResearchEvent) => `${norm(ev.company).replace(/\b(?:inc|llc|llp|ltd|gmbh|pvt|limited|the)\b/g, ' ').replace(/\s+/g, ' ').trim()}|${norm(c.where)}`
+  const fn = async (c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent): Promise<CompanyResearch> => {
+    const k = keyOf(c, ev), had = done.get(k)
+    if (had) { hits++; return had }
+    const p = research(c, plan, ev)
+    done.set(k, p)
+    try {
+      const r = await p
+      // nothing opened and nothing decided (a network blip, a blocked page): not a final answer, so a later loop tries again
+      if (!r.site && !r.person && r.sources.length === 0) done.delete(k)
+      return r
+    } catch (e) { done.delete(k); throw e }
+  }
+  return Object.defineProperties(fn, { size: { get: () => done.size }, hits: { get: () => hits } }) as typeof fn & { readonly size: number; readonly hits: number }
 }
