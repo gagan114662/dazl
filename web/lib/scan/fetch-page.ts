@@ -317,6 +317,8 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       }
       // a board API that refused the record is a refusal: never sent to the rendering service
       if (posting) return { fail: thin ?? 'error' }
+      // nor is a city open-data record (a 401/403/429 from the portal): the record is read only as the record, never through the paid renderer
+      if (registryRecordRef(rawUrl) || registryRecordRef(url.toString())) return { fail: thin ?? 'error' }
       // blocked or JavaScript-only: try the rendering service if one is configured
       const rendered = await render(url.toString())
       if (rendered) {
