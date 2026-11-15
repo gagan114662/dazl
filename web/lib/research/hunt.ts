@@ -4,7 +4,8 @@
 // Other sources (E: registries, permits, ATS boards; F: engagers) hand their Candidates in as `extra`: they merge into the same queue, and a
 // registry's dated record wins over a search hit for the same URL.
 import type { Candidate, FunnelStage, ResearchCase, ResearchPlan } from './types.ts'
-import { tfSearch, type SearchHit, type Fail, type TfDeps } from '../search/tinyfish.ts'
+import type { SearchHit, Fail, TfDeps } from '../search/tinyfish.ts'
+import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { collectRegistry, type RegistrySource } from './sources/index.ts'
@@ -101,7 +102,9 @@ export async function registryCandidates(c: ResearchCase, http: SafeGet, o: { en
   return collectRegistry(c, afterDate(c), http, o.sources)
 }
 
-// The real search: TinyFish inside the scan's caps (searches per scan, the tenant's and the platform's daily allowance, the per-minute limit)
-// and the scan's spend ledger (a refusal throws SpendRefused, which stops the scan; it is never swallowed here).
-export const tinyfishSearch = (db: DbLike, tenant: string, spent: { searches: number }, deps: TfDeps = {}): SearchFn =>
-  (query, after) => tfSearch(db, tenant, query, { afterDate: after }, spent, deps)
+// The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws
+// SpendRefused, which stops the scan; it is never swallowed here).
+export const tinyfishSearch = (db: DbLike, tenant: string, spent: { searches: number }, deps: TfDeps = {}, queue?: SearchQueue): SearchFn => {
+  const s = researchSearch(db, tenant, spent, deps, queue)
+  return (query, after) => s(query, { afterDate: after })
+}

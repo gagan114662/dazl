@@ -74,3 +74,18 @@ test('the source: covers only its city and category, builds a bounded server que
   assert.deepEqual((await src.collect(AUSTIN, SINCE, async () => null)).notes, ['unreachable'])
   assert.deepEqual((await src.collect({ ...AUSTIN, where: 'Dallas, Texas' }, SINCE, serve(200, '[]'))).notes, ['not_covered'])
 })
+
+test("the engine's hunt stage (scan-job researchStagesFor) hands the registry records to hunt under LEAD_ENGINE=research, and only then", async () => {
+  const { researchStagesFor } = await import('../lib/research/scan-job.ts')
+  const plan = { persona: 'p', decisionMakerTitles: [], triggers: [], askingQueries: [], source: 'fallback' as const }
+  const ctx = { db: {} as never, job: { id: 'j', user_id: 't', query: AUSTIN.query }, icp: {} as never, key: 'k', model: () => ({}) as never, isRefusal: () => false,
+    http: (async () => ({ status: 200, body: JSON.stringify(FX.rows) })) as SafeGet }
+  const run = async (env: string | undefined) => {
+    const was = process.env.LEAD_ENGINE
+    if (env) process.env.LEAD_ENGINE = env; else delete process.env.LEAD_ENGINE
+    try { return await researchStagesFor(ctx).hunt(AUSTIN, plan) } finally { if (was === undefined) delete process.env.LEAD_ENGINE; else process.env.LEAD_ENGINE = was }
+  }
+  const on = await run('research')
+  assert.ok(on.candidates.length >= 6 && on.candidates.every(x => x.via === 'registry' && x.dated === 'registry'), JSON.stringify(on.funnel))
+  assert.equal((await run(undefined)).candidates.length, 0)
+})
