@@ -93,6 +93,7 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
     if (!states.has(src.id)) states.set(src.id, src.newState?.())
     const run = await src.run(c, plan, search, { rateRetries: o.rateRetries, waitMs: o.waitMs, jitter: o.jitter, wait: o.wait, deadline: o.deadline, now: o.now }, states.get(src.id))
     fromSources.push(...run.candidates); sourceStats.push(run.stat)
+    if (run.stopped) { stopped = run.stopped; break }   // a STOP answer inside a source stops the hunt as it does for its own queries
   }
   let extraIn = 0
   for (const x of [...(o.extra ?? []), ...fromSources]) {

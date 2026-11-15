@@ -111,3 +111,53 @@ test('a spend refusal inside the source stops it and is rethrown by the hunt; a 
   const r3 = await hunt(CASE, PLAN, fakeSearch(log3), { sources: [linkedinPostsSource()], wait: async () => {}, deadline: 5, now: (() => { let t = 0; return () => (t += 3) })() })
   assert.ok(r3.stopped === 'deadline')
 })
+
+test('review (opus): a STOP answer in the post-query phase stops the source at once, nothing more is sent, and the hunt reports it as `stopped`', async () => {
+  for (const reason of ['cap', 'auth', 'quota', 'disabled']) {
+    const log: string[] = []
+    let postQueries = 0
+    const search: SearchFn = async q => {
+      log.push(q)
+      if (!q.startsWith('site:')) return { ok: true, hits: [] }
+      if (++postQueries === 1) return { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] }
+      return { ok: false, reason }
+    }
+    const r = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 })
+    const afterStop = log.slice(log.findIndex((q, i) => q.startsWith('site:') && i > log.findIndex(x => x.startsWith('site:'))) + 1)
+    assert.deepEqual(afterStop, [], `${reason}: no search is sent after the stop answer`)
+    assert.equal(r.stopped, reason); assert.equal(r.sources![0].dropped[`stopped: ${reason}`], 1, 'the unsearched post is counted as stopped, not lost')
+    assert.equal(postQueries, 2, 'the third and fourth post queries were not sent')
+  }
+})
+
+test('review (opus): a post whose derived search was capped or failed is searched on the next call, not lost; a query is remembered only once it succeeded', async () => {
+  const posts = [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.'),
+    hit(liPost('sendtech', '2026-10-20'), 'SendTech Launches Email Infrastructure for Deliverability', 'Excited to launch our newest platform for agencies running cold email at scale.')]
+  const sourceState = new Map<string, unknown>()
+  const log: string[] = []
+  let failSendTech = true
+  const search: SearchFn = async q => { log.push(q); if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: posts }; if (q.startsWith('site:')) return { ok: true, hits: [] }
+    if (/^SendTech/.test(q) && failSendTech) return { ok: false, reason: 'error' }
+    return { ok: true, hits: [hit(`https://found.example/${q.split(' ')[0].toLowerCase()}`, 'x', 'x')] } }
+  // call 1: a cap of ONE derived search: the newer post (Uplift) is searched, SendTech waits
+  const first = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  assert.deepEqual(first.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://found.example/uplift'])
+  assert.equal(first.sources![0].dropped['deferred: derived search cap'], 1)
+  // call 2: SendTech's search is made first and FAILS: it is retried on call 3
+  const n2 = log.length
+  const second = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  assert.ok(log.slice(n2).some(q => /^SendTech/.test(q)), 'the deferred post is searched on the next call')
+  assert.equal(second.candidates.filter(c => c.via === 'engager').length, 0)
+  failSendTech = false
+  const n3 = log.length
+  const third = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  assert.ok(log.slice(n3).some(q => /^SendTech/.test(q)), 'a failed search is retried')
+  assert.deepEqual(third.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://found.example/sendtech'])
+})
+
+test('review (opus): only http(s) pages are Candidates', async () => {
+  const search: SearchFn = async q => q.startsWith('site:linkedin.com/posts') ? { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] }
+    : q.startsWith('site:') ? { ok: true, hits: [] } : /^Uplift/.test(q) ? { ok: true, hits: [hit('mailto:info@upliftsales.example', 'x', 'x'), hit('data:text/html,hi', 'x', 'x'), hit('ftp://files.example/brochure.pdf', 'x', 'x'), hit('https://upliftsales.example/', 'ok', 'x')] } : { ok: true, hits: [] }
+  const r = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], wait: async () => {} })
+  assert.deepEqual(r.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://upliftsales.example/']); assert.equal(r.sources![0].dropped['unopenable host'], 3)
+})
