@@ -81,6 +81,8 @@ test('fail closed: a quote whose only day is background, another event, a plan o
   assert.equal(day(`The lead investor in Kestrel Pay closed a new fund on ${written(EVENT)}`), null)
   assert.equal(day(`Investors backing Kestrel Pay raised a fund on ${written(EVENT)}`), null)
   assert.equal(day(`The bank advising Kestrel Pay closed a deal on ${written(EVENT)}`), null)
+  // a day with no year is not a stated day
+  assert.equal(day('Kestrel Pay raised an $80 million Series C on Nov. 4'), null)
   // a lone numeric day the quote does not settle (April 11 or November 4)
   assert.equal(day(`Kestrel Pay closed its Series C on 04/11/${Y}`), null)
   // a day named before the statement, or a statement that goes on after its day, or a second clause about the company (council round 2)
