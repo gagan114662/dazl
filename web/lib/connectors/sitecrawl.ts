@@ -647,10 +647,14 @@ export function citySlugs(places: string[]): string[] {
 // The requested city's office segment: the slug itself or the slug plus a two-letter state ("chicago", "chicago-il").
 // The suffix must be the REQUESTED region's code: "portland-or" is not Portland, Maine; "paris-fr" is not Paris, Texas.
 // "Chicago, IL", "Chicago, Illinois", "Chicago, IL, USA", "Chicago, IL 60601": the first region after the city.
-const regionCodes = (places: string[]) => new Set(places.flatMap(p => String(p).split(',').slice(1).map(x => x.toLowerCase().replace(/\d[\d-]*/g, ' ').replace(/\b(?:usa|u\.s\.a?\.?|us|united states(?: of america)?|america)\b/g, ' ').replace(/\s+/g, ' ').trim()).flatMap(r => { if (/^[a-z]{2}$/.test(r)) return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] })))
+// The request's region text after the city, without dots, ZIPs or country words ("IL.", "U.S.", "USA", "60601" -> "il", "", "", "").
+const regionParts = (places: string[]) => places.flatMap(p => String(p).split(',').slice(1).map(x => x.toLowerCase().replace(/\./g, '').replace(/\d[\d-]*/g, ' ').replace(/\b(?:usa|us|united states(?: of america)?|america)\b/g, ' ').replace(/\s+/g, ' ').trim())).filter(Boolean)
+// A two-letter code, a state name, or an unambiguous state abbreviation ("ill" -> il; "miss" names two states, so none).
+const stateCode = (r: string): string | null => { if (/^[a-z]{2}$/.test(r)) return r; const exact = Object.entries(US_STATES).find(([, name]) => name === r); if (exact) return exact[0].toLowerCase(); if (r.length < 3) return null; const pre = Object.entries(US_STATES).filter(([, name]) => name.startsWith(r)); return pre.length === 1 ? pre[0][0].toLowerCase() : null }
+const regionCodes = (places: string[]) => new Set(regionParts(places).flatMap(r => { const c = stateCode(r); return c ? [c] : [] }))
 // No region in the request at all ("Chicago"): any two-letter suffix is accepted, as the request cannot tell them apart. A region this
 // reader does not know ("Paris, France") is NOT "no region": only the exact slug matches.
-const bareCity = (places: string[]) => places.every(p => !String(p).includes(','))
+const bareCity = (places: string[]) => regionParts(places).length === 0   // "Chicago", "Chicago, USA"
 const cityMatch = (slugs: string[], x: string, places: string[]) => { const codes = regionCodes(places); return slugs.some(c => x === c || (x.startsWith(c + '-') && /^[a-z]{2}$/.test(x.slice(c.length + 1)) && ((codes.size === 0 && bareCity(places)) || codes.has(x.slice(c.length + 1))))) }
 // Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
 // last segment that is the slug itself under a locations / offices path ("/locations/chicago", "/locations/offices/chicago.html").
@@ -679,7 +683,11 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   if (i < 0 || i === seg.length - 1) return 'none'
   if (i === seg.length - 2 && PEOPLE_SEGMENT.test(seg[i + 1])) return 'none'
   const slugs = citySlugs(places)
-  return slugs.length > 0 && seg.slice(i + 1).some(x => cityMatch(slugs, x, places)) ? 'requested' : 'other'
+  const j = slugs.length > 0 ? seg.findIndex((x, k) => k > i && cityMatch(slugs, x, places)) : -1
+  if (j < 0) return 'other'
+  // a US state between the office segment and the city that is not the requested region: "/locations/texas/paris" is not Paris, France
+  if (!bareCity(places)) { const codes = regionCodes(places); if (seg.slice(i + 1, j).some(x => { const name = x.replace(/-/g, ' '); const st = Object.entries(US_STATES).find(([ab, n]) => n === name || ab.toLowerCase() === x); return !!st && !codes.has(st[0].toLowerCase()) })) return 'other' }
+  return 'requested'
 }
 // A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.
 export function otherOffice(pathname: string, places: string[]): boolean { return officeOf(pathname, places) === 'other' }

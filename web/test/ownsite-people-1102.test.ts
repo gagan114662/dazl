@@ -364,3 +364,17 @@ test('round 5 (opus/haiku): a city nested under a region is judged by its page; 
   const r2 = await crawlSite('acme-law.example', tx.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
   assert.ok(!r2.found.some(f => /9035550100|903 555 0100/.test(f.value)), JSON.stringify(r2.found))
 })
+
+test('round 6 (haiku): a US state in the path that is not the requested region is another office; dotted and country-only regions keep the city office', async () => {
+  const texas = `<html><body>${prose('Our Paris office.')}<a href="tel:+19035550100">903 555 0100</a><div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}</body></html>`, '/locations/texas/paris': texas }, { '/team': '/locations/texas/paris' })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
+  assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
+  assert.equal(otherOffice('/locations/texas/paris', ['Paris, France']), true)
+  assert.equal(otherOffice('/locations/texas/paris', ['Paris, TX']), false)
+  assert.equal(otherOffice('/locations/illinois/chicago', ['Chicago']), false)
+  for (const where of ['Chicago, IL.', 'Chicago, U.S.', 'Chicago, USA', 'Chicago, United States', 'Chicago, Ill.']) assert.equal(otherOffice('/offices/chicago-il', [where]), false, where)
+  assert.equal(otherOffice('/offices/washington-dc', ['Washington, D.C.']), false)
+  assert.deepEqual(officeLinks('<a href="/locations/chicago-il">a</a>', new URL('https://acme-law.example/'), ['Chicago, Ill.']), ['/locations/chicago-il'])
+  assert.equal(otherOffice('/offices/portland-or', ['Portland, Miss.']), true)
+})
