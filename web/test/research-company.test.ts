@@ -57,7 +57,7 @@ test('research: event page + homepage + its own team/about/contact pages; the de
   assert.deepEqual(r.location, { sourceId: 'S3', quote: '400 Example Rd, Austin, TX 78704' })
   assert.deepEqual(r.emails, [{ email: 'dana@tarrytownroofing.com', url: 'https://tarrytownroofing.com/our-team' }, { email: 'office@tarrytownroofing.com', url: 'https://tarrytownroofing.com' }], 'the named person\'s own address first;' + 'own domain only: the news page\'s hello@ is not on the company\'s pages; sales@othercompany.com and logo@2x are not addresses of this company')
   assert.equal(prompts.length, 1, 'one model call when it names someone')
-  assert.ok(asked.some(q => q.startsWith('site:tarrytownroofing.com')) && asked.some(q => q.startsWith('who owns Tarrytown Roofing Austin')))
+  assert.deepEqual(asked, ['Tarrytown Roofing Austin official website'], 'the team page named the owner: no person search was spent (only the site search)')
 })
 
 test('no invented person: a quote that is not on its cited page, a name the quote does not contain, or no answer -> null after the second look', async () => {
@@ -86,13 +86,16 @@ test('the trigger article\'s own senior person is used before a second model cal
 
 test('a person-search snippet is a source; a profile URL is kept only when it appears in the sources', async () => {
   const snip = { 'linkedin': [{ url: 'https://www.linkedin.com/in/dana-whitlock-roofing', title: 'Dana Whitlock - Owner - Tarrytown Roofing | LinkedIn', snippet: 'Owner at Tarrytown Roofing. Austin, Texas.' }] }
-  const answer = JSON.stringify({ decision_maker: { name: 'Dana Whitlock', title: 'Owner', source_id: 'S6', quote: 'Dana Whitlock - Owner - Tarrytown Roofing | LinkedIn' }, profile_url: 'https://www.linkedin.com/in/dana-whitlock-roofing', location: null, what_they_do: null })
-  const { d } = deps({ search: { ...SITE_HIT, ...snip }, answers: [answer] })
+  const answer = JSON.stringify({ decision_maker: { name: 'Dana Whitlock', title: 'Owner', source_id: 'S5', quote: 'Dana Whitlock - Owner - Tarrytown Roofing | LinkedIn' }, profile_url: 'https://www.linkedin.com/in/dana-whitlock-roofing', location: null, what_they_do: null })
+  // the team page has no one here: the site-first call answers null, then the searches run and the snippet names the owner
+  const team = PAGES['https://tarrytownroofing.com/our-team']; delete PAGES['https://tarrytownroofing.com/our-team']
+  const { d } = deps({ search: { ...SITE_HIT, ...snip }, answers: [null, answer] })
   const r = await researchCompany(C, PLAN, ev(), d)
-  assert.equal(r.sources.find(s => s.id === 'S6')?.kind, 'snippet', 'LinkedIn is never opened, its snippet is the source')
+  assert.equal(r.sources.find(s => s.id === 'S5')?.kind, 'snippet', 'LinkedIn is never opened, its snippet is the source')
   assert.deepEqual([r.person?.name, r.person?.profileUrl], ['Dana Whitlock', 'https://www.linkedin.com/in/dana-whitlock-roofing'])
   const made = JSON.stringify({ ...JSON.parse(answer), profile_url: 'https://www.linkedin.com/in/someone-else' })
-  assert.equal((await researchCompany(C, PLAN, ev(), deps({ search: { ...SITE_HIT, ...snip }, answers: [made] }).d)).person?.profileUrl, null)
+  assert.equal((await researchCompany(C, PLAN, ev(), deps({ search: { ...SITE_HIT, ...snip }, answers: [null, made] }).d)).person?.profileUrl, null)
+  PAGES['https://tarrytownroofing.com/our-team'] = team
 })
 
 test('nothing found: no site, no pages, no sources -> no model call, an empty research', async () => {

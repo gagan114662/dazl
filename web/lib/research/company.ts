@@ -208,28 +208,14 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
   // #1122: a site was found but none of its candidates is this business: no site, no person (a name from the wrong company is worse than none)
   if (!site && wrongSite) return { site: null, sources, person: null, location: null, whatTheyDo: null, emails: [] }
   const siteHost = site ? host(site) : ''
-  // 3. person searches; snippets are sources, and at most two result pages that name the company are opened
-  const t2 = plan.decisionMakerTitles.slice(0, 3)
-  const pq = [`"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
-    `${ev.company} ${city} ${t2.map(t => `"${t}"`).join(' OR ')} linkedin`,
-    `who owns ${ev.company} ${city}`]
-  if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
-  const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
-  let opened = 0
-  const results = await Promise.all(pq.map(q => deps.search(q).catch(soft([] as SearchResult[]))))
-  for (const rs of results) for (const r of rs.slice(0, 6)) {
-    const u = r.url ?? '', sn = `${r.title ?? ''} — ${r.snippet ?? ''}`
-    if (!u || seenU.has(u) || !toks.some(t => norm(sn).includes(t))) continue
-    seenU.add(u)
-    let pg: ReadPage | null = null
-    if (opened < MAX_RESULT_PAGES && !blocked(u) && !directory(host(u))) { pg = await open(deps, u); opened++ }
-    if (pg && toks.some(t => norm(pg!.text.slice(0, 6000)).includes(t))) add(u, pg.text.slice(0, RESULT_TEXT), 'page')
-    else add(u, sn.slice(0, SNIPPET_TEXT), 'snippet')
-  }
-  // 4. one model call; the second look only for the misses
+  // 3-4. The person, cheapest first (Hermes 03:3x: the hunt uses most of the scan's searches, so a search per company is the scarce thing):
+  //   a. the pages already opened (the event page and the company's own home / about / team / people / contact / imprint pages): one model call;
+  //   b. a senior person the trigger article itself names (no call);
+  //   c. only then the person searches (snippets are sources, at most two result pages opened), one more call, and the second look.
   const known = ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none'
-  const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
-  const prompt = `Company: ${ev.company} (${c.category}, ${c.where}). A seller of "${c.offer}" wants the person who decides on buying it.
+  const promptFor = () => {
+    const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
+    return `Company: ${ev.company} (${c.category}, ${c.where}). A seller of "${c.offer}" wants the person who decides on buying it.
 Typical decision-maker titles: ${plan.decisionMakerTitles.join(', ')}. People named in the trigger article: ${known}.
 SOURCES:
 ${body}
@@ -240,13 +226,40 @@ Return ONLY JSON:
 "location":{"source_id":"S#","quote":"VERBATIM text showing the company's address/city"} or null,
 "what_they_do":"one line from the sources"}
 Rules: never invent a name; the quote must be copied character for character from the cited source; prefer the most senior relevant person; if no person is named for this exact company, decision_maker.name = null.`
-  let j = sources.length ? parseJson(await deps.complete(prompt, 900).catch(soft(null))) ?? {} : {}
-  let person = acceptPerson(j, sources, 'research')
+  }
+  let j: Record<string, unknown> = {}
+  let person: Person | null = null
+  const askModel = async (extra = '') => parseJson(await deps.complete(promptFor() + extra, 900).catch(soft(null)))
+  // a. the pages already opened, when the company's own site is among them
+  if (siteHost && sources.length) { j = await askModel() ?? {}; person = acceptPerson(j, sources, 'research') }
+  // b. the trigger article's own senior person (its quote checked on that article)
   if (!person) {
     const cand = ev.people.find(x => x.name && x.quote && SENIOR.test(`${x.title ?? ''} ${x.quote}`))
     if (cand && sources[0]?.url === ev.sourceUrl) person = acceptPerson({ decision_maker: { name: cand.name, title: cand.title, source_id: sources[0].id, quote: cand.quote } }, sources, 'trigger article')
+  }
+  // c. the searches, only for a company whose own pages and trigger article name nobody
+  if (!person) {
+    const t2 = plan.decisionMakerTitles.slice(0, 3)
+    const pq = [`"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
+      `${ev.company} ${city} ${t2.map(t => `"${t}"`).join(' OR ')} linkedin`,
+      `who owns ${ev.company} ${city}`]
+    if (siteHost) pq.push(`site:${siteHost} founder OR owner OR president OR CEO OR partner OR director`)
+    const seenU = new Set(sources.map(s => s.url)), toks = nameTokens(ev.company)
+    let opened = 0, added = 0
+    const results = await Promise.all(pq.map(q => deps.search(q).catch(soft([] as SearchResult[]))))
+    for (const rs of results) for (const r of rs.slice(0, 6)) {
+      const u = r.url ?? '', sn = `${r.title ?? ''} \u2014 ${r.snippet ?? ''}`
+      if (!u || seenU.has(u) || !toks.some(t => norm(sn).includes(t))) continue
+      seenU.add(u); added++
+      let pg: ReadPage | null = null
+      if (opened < MAX_RESULT_PAGES && !blocked(u) && !directory(host(u))) { pg = await open(deps, u); opened++ }
+      if (pg && toks.some(t => norm(pg!.text.slice(0, 6000)).includes(t))) add(u, pg.text.slice(0, RESULT_TEXT), 'page')
+      else add(u, sn.slice(0, SNIPPET_TEXT), 'snippet')
+    }
+    // a new call only when the searches added a source, or when no call has been made yet
+    if (sources.length && (added > 0 || !(siteHost && sources.length))) { const jj = await askModel() ?? {}; j = { ...j, ...jj }; person = acceptPerson(jj, sources, 'research') }
     if (!person && sources.length) {
-      const j2 = parseJson(await deps.complete(`${prompt}\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`, 900).catch(soft(null)))
+      const j2 = await askModel(`\n\nSECOND LOOK: a founder, co-founder, owner, CEO, managing partner, principal dentist/chef-owner or general manager of this company IS a valid decision-maker. Search-result snippets (LinkedIn titles, directory lines) count as sources. If ANY source names such a person for this exact company, return them with the verbatim quote; only return null when no source names anyone.`)
       const p2 = j2 ? acceptPerson(j2, sources, 'second look') : null
       if (p2) { person = p2; j = { ...j, ...j2 } }
     }
