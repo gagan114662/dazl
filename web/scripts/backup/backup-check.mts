@@ -10,6 +10,7 @@
 //   - the tombstone ledger copy at that destination (#359; offhost-copy.sh step 4), when DAZL_TOMBSTONE_LEDGER is set
 //     (with OFFHOST_REQUIRED=1, unset is a problem): no dazl-ledger-* copy, a copy that is missing or does not match its
 //     manifest, or a newest ledger copy older than the newest backup copy (a restore could undo deletions made since);
+//   - pull mode (OFFHOST_PULL_MARKER): the operator machine's last pull is older than OFFHOST_PULL_MAX_AGE_S (10800);
 //   - the drill report: --drill-report FILE, else DRILL_REPORT from the environment, else <BACKUP_DIR>/drill-report.json
 //     (an empty value is an unexpanded variable: the default, as with --max-age-s). That default is the file every
 //     run-backup.sh run writes with restore-drill --report (pass or fail), so the shipped producer and this monitor
@@ -281,6 +282,20 @@ if (!offSpec) {
       }
     }
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable for the config bundle: ${reason(e)}`) }
+}
+
+// Pull mode (#1080, ops/backup/INSTALL.md 0b): the copies leave the box only when the operator machine pulls them, and a
+// machine that is off says nothing. After each good pull it touches OFFHOST_PULL_MARKER on the box (through a key whose only
+// command is that touch); older than OFFHOST_PULL_MAX_AGE_S (default 10800: three missed hourly pulls) or missing is a problem.
+if (process.env.OFFHOST_PULL_MARKER?.trim()) {
+  const marker = process.env.OFFHOST_PULL_MARKER.trim()
+  const rawMax = process.env.OFFHOST_PULL_MAX_AGE_S?.trim()
+  const max = rawMax && /^\d+$/.test(rawMax) ? Number(rawMax) : 10_800
+  try {
+    const age = Math.max(0, Math.round((Date.now() - statSync(marker).mtimeMs) / 1000))
+    facts.offhost_pull_age_s = age
+    if (age > max) problems.push(`the operator machine has not pulled the off-host copies for ${age}s (limit ${max}s)`)
+  } catch (e) { problems.push(`no off-host pull recorded yet (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
 }
 
 const drillFlag = arg('--drill-report')

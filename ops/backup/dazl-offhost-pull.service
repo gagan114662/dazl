@@ -1,12 +1,11 @@
 [Unit]
-Description=dazl: pull the box's encrypted backup copies to this machine (#1080, ops/backup/INSTALL.md "Off-host without a bucket")
-After=network-online.target
+Description=dazl: pull the box's encrypted backup copies to this machine (#1080, ops/backup/INSTALL.md section 0b)
 
 [Service]
 Type=oneshot
-# PULL_FROM, PULL_TO and OPS_ALERT_WEBHOOK_URL; mode 600 (the webhook URL is a secret)
+# NODE (absolute path, node >= 22.6), PULL_FROM, PULL_TO, PULL_ACK and OPS_ALERT_WEBHOOK_URL; mode 600 (the webhook URL is a secret)
 EnvironmentFile=%h/.config/dazl-offhost/env
 # a checkout of a reviewed commit of this repository (no npm install needed)
 WorkingDirectory=%h/dazl-offhost/tools/web
-ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/backup/pull-offhost.mts --from ${PULL_FROM} --to ${PULL_TO} --max-age-s 7200
+ExecStart=/bin/sh -c 'exec "$NODE" --experimental-strip-types --no-warnings scripts/backup/pull-offhost.mts --from "$PULL_FROM" --to "$PULL_TO" --ack "$PULL_ACK" --max-age-s 7200'
 TimeoutStartSec=15min
