@@ -48,7 +48,7 @@ export type Get = (url: string, opts?: { signal?: AbortSignal }) => Promise<{ st
 // template blocks and HTML comments are dropped; every tag becomes a space; whitespace is collapsed.
 const SKIP_BLOCK = new Set(['script', 'style', 'noscript', 'svg', 'template'])
 export function plainText(html: string, max = 200_000): string {
-  const out: string[] = []; let len = 0, i = 0
+  const out: string[] = []; let len = 0, i = 0; const unclosed = new Set<string>()
   const low = html.replace(/[A-Z]/g, c => c.toLowerCase())   // same length (ASCII only), so offsets match
   while (i < html.length && len < max) {
     const lt = html.indexOf('<', i)
@@ -60,7 +60,9 @@ export function plainText(html: string, max = 200_000): string {
     if (gt < 0) break
     const name = /^<\/?\s*([a-z0-9-]+)/.exec(low.slice(lt, Math.min(gt + 1, lt + 40)))?.[1] ?? ''
     i = gt + 1
-    if (SKIP_BLOCK.has(name) && low[lt + 1] !== '/') { const close = low.indexOf(`</${name}`, i); i = close < 0 ? html.length : (html.indexOf('>', close) + 1 || html.length) }
+    // a block is skipped only when it is OPENED (not "<svg .../>", not a closing tag) AND closed later; an unclosed one keeps the rest of the page
+    // (council: a self-closing <svg/> used to swallow everything after it, hiding a namesake's out-of-state address from the place check)
+    if (SKIP_BLOCK.has(name) && low[lt + 1] !== '/' && html[gt - 1] !== '/' && !unclosed.has(name)) { const close = low.indexOf(`</${name}`, i); if (close >= 0) i = html.indexOf('>', close) + 1 || html.length; else unclosed.add(name) }   // a name never closed later is not searched for again (linear)
     out.push(' ')
   }
   return out.join('').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -80,6 +82,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
     if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
+    const chunks: Buffer[] = []; let n = 0, readSoFar: () => { status: number; body: string; finalUrl: string; text?: string } | null = () => null
     const req = https.request(u, { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': UA, accept: 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } }, res => {
       const status = res.statusCode ?? 0
       if (status >= 300 && status < 400 && res.headers.location) {
@@ -90,14 +93,14 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
-      const chunks: Buffer[] = []; let n = 0
       const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
+      readSoFar = () => (n >= MAX_BYTES ? done() : null)
       res.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); resolve(done()) } else chunks.push(c) })
       res.on('end', () => resolve(done()))
       res.on('error', () => resolve(null))
       res.on('close', () => resolve(null)) // no-op once already settled
     })
-    hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
+    hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(readSoFar()) }, timeoutMs)   // past the stored-body cap, a slow tail never costs the page (council)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
     // event is observed Node behavior, not a documented guarantee - a silent
     // destroy would leave this promise pending forever, and the caller's

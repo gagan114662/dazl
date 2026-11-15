@@ -292,11 +292,13 @@ test('#1122 review at 576f9c8c (blocker 1, the real qsdc.ca shape): a homepage l
   db.prepare('DELETE FROM lead_enrichments').run(); db.prepare('DELETE FROM connector_audit').run()
   await crawlJob(db, 'A', job, { get: serve(true), gapMs: 0, env: {}, redirectOf })
   assert.equal((db.prepare('SELECT company_domain d FROM leads').get() as { d: string | null }).d, 'qsdc.example')
-  // the same big page for a namesake in another city is still refused (the place check is unchanged; it only sees the whole page now)
-  const elsewhere = html(`<h1>Queen Street Dental Centre</h1>${PROSE}${padding}<footer>LOCATION 1 Queen Street, Brampton, ON L6V 1A1</footer>`)
-  assert.match(sc.plainText(elsewhere), /Brampton, ON L6V 1A1$/)
-  const r2 = await run({ company: 'Queen Street Dental Centre', evidenceUrl: 'https://ca.linkedin.example/jobs/view/1', evidence: plain('Queen Street Dental Centre'), sites: {}, redirects: {} })
-  NOTHING(r2)
+  // the same big page for a namesake in another city is still refused: its own address is in the text beyond the cap, and the place check reads it
+  const elsewhere = html(`<h1>Queen Street Dental Centre</h1>${PROSE}<a href="/contact">Contact</a>${padding}<footer>LOCATION 1 Queen Street, Brampton, ON L6V 1A1</footer>`)
+  db.prepare('DELETE FROM lead_enrichments').run(); db.prepare('DELETE FROM connector_audit').run(); db.prepare("UPDATE leads SET company_domain = NULL").run()
+  const serveElsewhere: Get = async url => { const u = new URL(url); if (u.hostname.replace(/^www\./, '') !== 'qsdc.example') return null; if (u.pathname === '/robots.txt') return { status: 200, body: '', finalUrl: url }; if (u.pathname === '/') return { status: 200, body: elsewhere.slice(0, 800_000), finalUrl: url, text: sc.plainText(elsewhere) }; return { status: 404, body: '', finalUrl: url } }
+  await crawlJob(db, 'A', job, { get: serveElsewhere, gapMs: 0, env: {}, redirectOf })
+  assert.equal((db.prepare('SELECT company_domain d FROM leads').get() as { d: string | null }).d, null, 'a namesake in Brampton is refused')
+  assert.ok((db.prepare("SELECT status FROM connector_audit WHERE lookup = 'qsdc.example'").all() as { status: string }[]).some(a => /^contact rejected: location/.test(a.status)), 'refused on its own place')
 })
 
 test('#1122 plainText is linear on hostile pages and drops script, style, svg, template blocks and comments', () => {
@@ -326,4 +328,12 @@ test('#1122 the REAL qsdc.ca pages (saved from the production box and from anoth
       assert.ok((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'phone'").all() as { value: string }[]).some(r => r.value.replace(/\D/g, '').endsWith('4164695261')), `${variant}: the site's published phone is read`)
     }
   }
+})
+
+test('#1122 council: a self-closing <svg/> or an unclosed block never hides the rest of the page - a namesake whose own address is after it is still refused', async () => {
+  assert.equal(sc.plainText('<p>A</p><svg class="i"/><p>Acme Dental Toronto</p>'), 'A Acme Dental Toronto')
+  assert.equal(sc.plainText('<p>A<noscript>B'), 'A B', 'an unclosed block keeps its text')
+  const home = html(`<h1>Acme Dental</h1>${PROSE}<p>Proud sponsor of the Rome, NY youth league.</p><a href="/contact">Contact</a><svg class="icon" viewBox="0 0 1 1"/><footer>Visit us: 8500 Whittier Blvd, Pico Rivera, CA 90660</footer>`)
+  const r = await run({ company: 'Acme Dental', where: ['Rome, NY'], evidenceUrl: 'https://www.facebook.com/acmedental/posts/1', evidence: 'never read', reviewReason: 'blocked_by_site', sites: { 'acmedental.com': { '/': home, '/contact': CONTACT('info@acmedental.com') } } })
+  NOTHING(r)
 })
