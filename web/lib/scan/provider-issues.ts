@@ -9,7 +9,7 @@
 // cutover. created_at is an epoch integer in both dialects; count(*) comes back as a string from
 // the pg driver, so both aggregates go through Number().
 export { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, providerIssueText } from './provider-issue-text.ts'
-import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, SPEND_REFUSAL_PREFIX } from './provider-issue-text.ts'
+import { PROVIDER_FAILURE_STATUSES, ENRICH_SKIP_STATUSES, NO_KEY_STATUS, SPEND_REFUSAL_PREFIX } from './provider-issue-text.ts'
 import type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus } from './provider-issue-text.ts'
 export type { ProviderIssue, ProviderFailureStatus, EnrichSkipStatus }
 import { getDb, type Db } from '../db/client.ts'
@@ -27,12 +27,13 @@ export async function providerIssues(tenantId: string, jobId: string): Promise<P
 export async function readProviderIssues(db: Db, tenantId: string, jobId: string): Promise<ProviderIssue[] | null> {
   try {
     // Enrichment skips (budget, circuit, held, fallback off) count only on the enrichment connectors.
-    const rows = await db.all<{ connector: string; status: ProviderFailureStatus | EnrichSkipStatus; n: number | string; latest: number | string }>(
+    const rows = await db.all<{ connector: string; status: ProviderFailureStatus | EnrichSkipStatus | typeof NO_KEY_STATUS; n: number | string; latest: number | string }>(
       `SELECT connector, status, count(*) AS n, max(created_at) AS latest FROM connector_audit
        WHERE tenant_id = ? AND scan_job_id = ? AND (status IN (${PROVIDER_FAILURE_STATUSES.map(() => '?').join(',')})
-         OR (connector IN ('enrich:apollo','enrich:pdl') AND status IN (${ENRICH_SKIP_STATUSES.map(() => '?').join(',')})))
+         OR (connector IN ('enrich:apollo','enrich:pdl') AND status IN (${ENRICH_SKIP_STATUSES.map(() => '?').join(',')}))
+         OR (connector = 'enrich' AND status = ?))
        GROUP BY connector, status ORDER BY latest DESC`,
-      [tenantId, jobId, ...PROVIDER_FAILURE_STATUSES, ...ENRICH_SKIP_STATUSES],
+      [tenantId, jobId, ...PROVIDER_FAILURE_STATUSES, ...ENRICH_SKIP_STATUSES, NO_KEY_STATUS],
     )
     const issues: ProviderIssue[] = rows.map(r => ({ connector: r.connector, status: r.status, lookups_affected: Number(r.n), latest_at: Number(r.latest) }))
     // A credit_cap carries the numbers the refusing window had AT the refusal (stored on its audit row), never a later re-read.

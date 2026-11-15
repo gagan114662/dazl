@@ -174,6 +174,25 @@ export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline
     default: return { tone: 'none', checked: false, showAddress: false, headline: 'Unknown state', note: 'Not shown.' }
   }
 }
+// #1036: a GUESSED address (lib/people/email-formats.ts): built from the company's address format learned from addresses this
+// workspace already holds as confirmed. Shown only with its label. "guessed, unverified" is amber, has no Copy and says nothing
+// confirmed the mailbox; "guessed, verified" needs a mailbox check that really answered valid (who, when). Never "published", never
+// a draft recipient. `learned_from`: the confirmed addresses that taught the format, each with the page it was printed on.
+export interface GuessShown {
+  person: string; address: string; label: 'guessed, verified' | 'guessed, unverified'
+  state: 'not_checked' | 'catch_all' | 'uncertain' | 'verified'
+  verifier: string | null; checked_at: number | null; format: string; confidence: string | null; domain: string
+  learned_from: { person: string; address: string; url: string | null }[]
+}
+export function guessCopy(g: GuessShown): { checked: boolean; chip: string; headline: string; note: string; learned: string } {
+  const by = VERIFIER_NAME[g.verifier ?? ''] ?? 'a mailbox check'
+  const from = g.learned_from.length ? g.learned_from.slice(0, 2).map(e => e.address).join(' and ') : 'addresses this workspace already confirmed at this company'
+  const learned = `Format learned from ${from}${g.learned_from.length > 2 ? ` and ${g.learned_from.length - 2} more` : ''}.`
+  if (g.label === 'guessed, verified') return { checked: true, chip: 'guessed, verified', headline: 'Guessed work email, verified', note: `${by} confirmed the mailbox accepts mail on ${day(g.checked_at)}. The address itself is built from the company's format, not printed anywhere; dazl does not draft to it.`, learned }
+  const why = g.state === 'catch_all' ? ' The domain accepts every address (catch-all), so a check proves nothing.' : g.state === 'uncertain' ? ' A mailbox check did not finish.' : ' No mailbox check has run on it.'
+  return { checked: false, chip: 'guessed, unverified', headline: 'Guessed work email, not verified', note: `Built from the company's address format; nothing confirmed that this mailbox exists.${why} Do not send to it unverified; dazl does not draft to it.`, learned }
+}
+
 export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }): string {
   // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
   if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'

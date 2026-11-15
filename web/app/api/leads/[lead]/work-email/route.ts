@@ -4,6 +4,7 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { findWorkEmail, workEmailProviders, workEmailsFor } from '@/lib/people/work-email'
+import { guessesForLead } from '@/lib/people/email-formats'
 import { isWorkEmailFixtureLead } from '@/lib/people/work-email-eligible'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -24,7 +25,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   // The test-only work-email fixture lead never calls Apollo and runs its saved PDL key regardless of the Apollo-gated opt-in
   // (lib/people/work-email.ts), so the panel states exactly that.
   const providers = workEmailProviders(db, user.tenantId)
-  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead) })
+  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead), guesses: guessesForLead(db, user.tenantId, lead) })
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
@@ -49,6 +50,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   if (r.status === 'lead_not_found') return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
   if (r.status === 'not_eligible' || r.status === 'site_unsettled') return NextResponse.json({ error: r.detail, status: r.status }, { status: 422 })
   if (r.status === 'busy') return NextResponse.json({ error: r.detail, status: r.status }, { status: 409 })
-  if (!('row' in r)) return NextResponse.json({ status: r.status, detail: r.detail }) // no_key: nothing ran, nothing stored
-  return NextResponse.json({ status: r.status, lookup: r.row, replayed: r.replayed })
+  if (!('row' in r)) return NextResponse.json({ status: r.status, detail: r.detail, ...(r.guess ? { guess: r.guess } : {}) }) // no_key: nothing ran, nothing stored (a learned-format guess may still come with it)
+  return NextResponse.json({ status: r.status, lookup: r.row, replayed: r.replayed, ...(r.guess ? { guess: r.guess } : {}) })
 }

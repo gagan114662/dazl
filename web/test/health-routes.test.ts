@@ -13,9 +13,12 @@ const TITLES: Record<string, string> = {
   'pg-behind': 'Postgres missing a shipped migration: 503 not ready (schema behind)',
   'env-missing': 'a required environment variable missing: 503 not ready by count only; /api/health (databases) and liveness 200',
   'stats-hang': 'the queue answers but its alert statistics hang: 200 ready, alerts null with reason timeout (#430)',
+  'mail-port-25': 'account mail set to port 25: reported (checks.mail port_25, launch.ok false) and still 200 while not required (#1089)',
+  'mail-port-25-required': 'the same with DAZL_READY_REQUIRES_LAUNCH=1: 503 not ready (#1089)',
+  'ledger-missing': 'no deletion ledger, required: 503 not ready, checks.deletion says not_configured (#1089)',
 }
 
-for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing', 'stats-hang']) {
+for (const mode of ['sqlite', 'pg-down', 'pg', 'pg-behind', 'env-missing', 'stats-hang', 'mail-port-25', 'mail-port-25-required', 'ledger-missing']) {
   test(`health routes: ${TITLES[mode]}`, { skip: mode === 'pg' || mode === 'pg-behind' ? pgSkip : false }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, HEALTH_MODE: mode }
     delete env.NODE_TEST_CONTEXT

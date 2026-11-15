@@ -558,7 +558,8 @@ test('REGRESSION: a job-board source with unknown (null) evidence/candidate coun
 test('REGRESSION (Instinct): every news request returns HTTP 503 -> NOT a successful zero-result search; with a clean TinyFish 0 the scan is failed, not zero-match, and says so', async () => {
   resetNewsQueue()
   const r = await newsSearch(async () => ({ status: 503, body: 'upstream down' }), ['a', 'b', 'c'], 'en', { gapMs: 0, sleep: async () => {} })
-  assert.deepEqual([r.hits.length, r.attempted, r.failed], [0, 3, 3])
+  // #1157: a 503 is retried once; when the retry fails too the stage gives up (the other two queries are not sent): every request that ran failed
+  assert.deepEqual([r.hits.length, r.attempted, r.failed, r.retried, r.gave_up], [0, 1, 1, 1, true])
   const note = { searched: true, hits: r.hits.length, attempted: r.attempted, failed: r.failed }
   assert.equal(newsStatus(null, note), 'error')
   const o = outcomeOf([R('search:tinyfish', 'unavailable', null, null), R('search:news', newsStatus(null, note), 0, null)])

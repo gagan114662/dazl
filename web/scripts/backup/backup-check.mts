@@ -46,9 +46,10 @@
 //     failed or older than --key-drill-max-age-s (default 92 days).
 //   node --experimental-strip-types scripts/backup/backup-check.mts --dir /var/backups/dazl --max-age-s 7200 \
 //     [--offhost DIR|rclone:REMOTE:PATH --offhost-max-age-s 7200] [--drill-report FILE --drill-max-age-s 691200] [--state-dir DIR]
+import { alertDestinationProblem, alertRequest } from '../../lib/ops/alert-destination.ts'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -98,6 +99,24 @@ try {
     const n = local[0], age = ageS(n.side.createdAt)
     facts.newest_backup = n.f; facts.newest_backup_age_s = age; facts.backups = local.length
     if (age === null || age > maxAge) problems.push(`newest backup is ${age}s old (limit ${maxAge}s)`)
+    // Space (#1080): every backup is a full copy on the database's own disk, and a full disk stops the database. Alert while
+    // there is still room: less than BACKUP_MIN_FREE_MB (default 1024) free on the backup directory's filesystem, or - when
+    // retention is off (BACKUP_RETENTION is not 1), so every hourly copy stays - fewer than BACKUP_MIN_DAYS_LEFT (14) days
+    // until that filesystem is full at 24 copies a day of the newest backup's size. Off is never silent.
+    try {
+      const fsStat = statfsSync(dir), freeMb = Math.floor(Number(fsStat.bavail) * Number(fsStat.bsize) / 1048576)
+      const mb = (name: string, d: number) => { const raw = process.env[name]?.trim(); return raw && /^\d+$/.test(raw) ? Number(raw) : d }
+      const minFree = mb('BACKUP_MIN_FREE_MB', 1024), minDays = mb('BACKUP_MIN_DAYS_LEFT', 14)
+      facts.backup_dir_free_mb = freeMb
+      if (freeMb < minFree) problems.push(`backup directory filesystem has ${freeMb} MB free (limit ${minFree} MB)`)
+      const retention = process.env.BACKUP_RETENTION === '1'; facts.retention = retention ? 'on' : 'off'
+      if (!retention) {
+        const perDayMb = statSync(path.join(dir, n.f)).size * 24 / 1048576
+        const days = perDayMb > 0 ? Math.floor(freeMb / perDayMb) : null
+        facts.days_until_full = days
+        if (days !== null && days < minDays) problems.push(`retention is off (BACKUP_RETENTION is not 1) and the backup directory filesystem is full in about ${days} days (limit ${minDays} days)`)
+      }
+    } catch (e) { problems.push(`backup directory free space could not be read (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
     try { if (await sha256(path.join(dir, n.f)) !== n.side.sha256) problems.push(`newest backup ${n.f} no longer matches its sidecar sha256`) }
     catch (e) { problems.push(`newest backup ${n.f} unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
   }
@@ -299,7 +318,7 @@ const drill = (drillFlag && drillFlag.trim() ? drillFlag : undefined) ?? (proces
 }
 
 const state = arg('--state-dir') ?? path.join(dir, '.backup-check')
-const kind = (p: string) => p.replace(/\d+s old/, 'Ns old') // numbers change every run; the kind of problem is what is throttled
+const kind = (p: string) => p.replace(/\d+s old/, 'Ns old').replace(/\d+ MB free/, 'N MB free').replace(/about \d+ days/, 'about N days') // numbers change every run; the kind of problem is what is throttled
 problems.sort((a, b) => kind(a).localeCompare(kind(b)) || a.localeCompare(b)) // one set, one stamp, whatever the discovery order or the ages
 const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', ok: problems.length === 0, host: os.hostname(), at: new Date(now).toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))
@@ -321,9 +340,12 @@ const send = async (b: object): Promise<boolean> => {
     if (result.error || result.status !== 0) { console.error('backup-check: alert command failed'); return false }
     return true
   }
-  if (!hook?.startsWith('https://')) { console.error('backup-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
+  const bb = b as { host?: string; problems?: string[] }
+  const text = [`dazl backup problem${bb.host ? ` on ${bb.host}` : ''}:`, ...(bb.problems ?? []).map(x => `- ${x}`)].join('\n')
+  const req = alertRequest(hook, b as Record<string, unknown>, text)
+  if (!req) { console.error(`backup-check: no alert destination (${alertDestinationProblem(hook)}); problems are in the journal only`); return false }
   try {
-    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b), redirect: 'error', signal: AbortSignal.timeout(10_000) })
+    const r = await fetch(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, redirect: 'error', signal: AbortSignal.timeout(10_000) })
     if (!r.ok) { console.error(`backup-check: alert webhook HTTP ${r.status}`); return false }
     return true
   } catch (e) { console.error(`backup-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }

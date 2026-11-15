@@ -328,7 +328,8 @@ const VERIFIER_NAMES = /\b(MailboxVerifier|verifierFromEnv|verifyCandidates)\b/
 // is the only constructor), and the scan runner (calls verifyJobCandidates, which reserves inside the verifier module).
 // lib/people/smtp-verify.ts (#1036): dazl's own mailbox check, another MailboxVerifier adapter; its callers are the same two (verifyCandidates and
 // Find work email's checkMailbox), both of which reserve a slot (reserveVerifySlot) before calling .verify.
-const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/people/smtp-verify.ts', 'lib/people/smtp-staging-fake.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts']
+// #1036: lib/people/verify-usage.ts only reads the configured verifier's NAME for Settings > Enrichment and never calls .verify.
+const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/people/smtp-verify.ts', 'lib/people/smtp-staging-fake.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts', 'lib/people/verify-usage.ts']
 // Modules besides the verifier module that call .verify themselves: every such call must be reserved (the same guard rules).
 const VERIFY_CALLERS = ['lib/people/work-email.ts']
 function unreservedVerifyCalls(rel: string, text: string): string[] {
