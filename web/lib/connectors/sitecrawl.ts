@@ -1,5 +1,8 @@
+import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
+import zlib from 'node:zlib'
+import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -74,6 +77,24 @@ const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+// 'deflate' is zlib-wrapped by the spec, but some servers send raw deflate under that name (review): the first two bytes tell them apart (a zlib header is a
+// multiple of 31 with method 8). Decided on the first chunk; either way the same limits and handlers apply.
+function inflateEitherWay(): Transform {
+  let inner: zlib.Inflate | zlib.InflateRaw | null = null
+  const t: Transform = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      if (!inner) {
+        const wrapped = chunk.length >= 2 && (chunk[0] & 0x0f) === 8 && ((chunk[0] << 8) | chunk[1]) % 31 === 0
+        inner = wrapped ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH })
+        inner.on('data', (d: Buffer) => t.push(d)); inner.on('error', (e: Error) => t.destroy(e))
+      }
+      inner.write(chunk, () => cb())
+    },
+    flush(cb) { if (!inner) return cb(); inner.once('end', () => cb()); inner.end() },
+    destroy(err, cb) { inner?.destroy(); cb(err) },
+  })
+  return t
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -95,10 +116,19 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
       readSoFar = () => (n >= MAX_BYTES ? done() : null)
-      res.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); resolve(done()) } else chunks.push(c) })
-      res.on('end', () => resolve(done()))
-      res.on('error', () => resolve(null))
-      res.on('close', () => resolve(null)) // no-op once already settled
+      // Some servers compress the body even though this request asks for 'identity' (prod mxprod5: ogletree.com answers gzip). Read raw, those bytes reached the
+      // company-name check as binary, the company's own site was refused (name_mismatch) and a lead with a proven day was held at no_domain. The body is decoded
+      // here, and the same limits count DECODED bytes, so a small compressed body cannot expand past them. An unknown encoding is not read.
+      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
+      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? inflateEitherWay() : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
+      if (decoder === undefined) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      const src: Readable = decoder ? res.pipe(decoder) : res
+      const stop = () => { res.destroy(); decoder?.destroy() }
+      src.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { stop(); resolve(done()) } else chunks.push(c) })
+      src.on('end', () => resolve(done()))
+      src.on('error', () => { const kept = chunks.length ? done() : null; stop(); resolve(kept) })   // a truncated compressed tail keeps what was decoded; the socket is closed (review)
+      res.on('error', () => { stop(); resolve(null) })
+      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder, its own end/error settles
     })
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(readSoFar()) }, timeoutMs)   // past the stored-body cap, a slow tail never costs the page (council)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
@@ -158,7 +188,7 @@ const registrable = (host: string) => { const h = host.toLowerCase().replace(/^w
 const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('')
 // A host that can be a company's website: a DNS name with at least two labels. Never an IP literal (the resolver guard that refuses private
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
-export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) }
+export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) && !/(^|\.)0x[0-9a-f]*(\.|$)/i.test(h) && !h.split('.').every(p => /^(0x[0-9a-f]+|0[0-7]*|\d+)$/i.test(p)) }   // also no hex / octal / numeric label forms of an address, whatever the caller normalised
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
@@ -187,7 +217,9 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // refusal never stops the name guesses or the web search (crawlJob).
   const anchors = out.length
   for (const h of jsonLdCompanySites(company, evidenceHtml, own)) push(h, labelMatches(nameLabel(h), want) ? 'evidence_link_domain_label' : 'evidence_link_text')
-  return out.slice(0, 2).map((o, i) => (i >= anchors ? { ...o, structured: true } : o))
+  // main's cap of 2 applies to the page's own links; a structured-data site keeps its own slot after them (review of #1219: with 2 anchored
+  // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
+  return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
 }
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
@@ -421,10 +453,12 @@ const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|me
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
-const MARK = '(?:testimonial|review|quote|client|customer|partner|sponsor|press|award|feedback|rating)'
+// #1183: a search/filter control (a datalist or dropdown of job titles) is page chrome, never a person card: its options are cut by CONTEXT, so an
+// unlisted title ("Managing Member") next to a listed one cannot pair into a fake person the way a word list alone would let it.
+const MARK = '(?:testimonial|review|quote|client|customer|partner|sponsor|press|award|feedback|rating|datalist|dropdown|facet|refine|filter-?(?:option|list|menu|bar|group|panel))'
 function cutBlocks(html: string): string | null {
   let out = html
-  const open = new RegExp(`<(blockquote|cite|q)\\b[^>]*>|<([a-z][a-z0-9]*)\\b[^>]*\\b(?:class|id)\\s*=\\s*["'][^"']*${MARK}[^"']*["'][^>]*>`, 'i')
+  const open = new RegExp(`<(blockquote|cite|q|select|datalist)\\b[^>]*>|<([a-z][a-z0-9]*)\\b[^>]*\\b(?:class|id)\\s*=\\s*["'][^"']*${MARK}[^"']*["'][^>]*>`, 'i')
   for (let guard = 0; guard < 200; guard++) {
     const m = open.exec(out); if (!m) return out
     const tag = (m[1] ?? m[2]).toLowerCase()
@@ -482,6 +516,7 @@ export function buyerTitle(title: string, buyerRoles?: string): boolean {
 }
 const HEAD_MARK = '\u0001H'
 const FORMER_SECTION = /\b(?:alumni|alumnae|former\s+(?:team|staff|members?|employees?|leadership|colleagues)|past\s+(?:team|staff|members?|employees?|leadership)|previous\s+(?:team|staff|members?)|in\s+memoriam|emeriti)\b/i
+const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'this', 'your', 'team'])
 export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
@@ -512,24 +547,39 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // listed beside them, so they are removed before the lower-case word test.
   const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
   const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
-  const add = (name: string, title: string, viaJson = false) => {
+  const titleWords = new Set<string>()
+  const addWords = (t: string) => { for (const w of titleNorm(t).split(' ')) if (w.length >= 4 && !TITLE_STOP.has(w)) titleWords.add(w) }
+  for (const r of (buyerRoles ?? '').split(';')) addWords(r)
+  for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
+  const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
+  const add = (name: string, title: string, viaJson = false): boolean => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
-    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
-    if (!NAME_LINE.test(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return
+    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return false // an explicit past end date or a past-tense title: not current staff
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
-      if (!PEOPLE_PAGE.test(path)) return
-      if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
-      if (linkText.has(name.toLowerCase())) return
-      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
+      if (!PEOPLE_PAGE.test(path)) return false
+      if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
+      if (linkText.has(name.toLowerCase())) return false
+      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return false
     }
     if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
+    return true
   }
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
+  const isTitleLine = (l: string) => l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))
+  const paired: boolean[] = [] // paired[j]: line j was accepted as the title of the person on line j-1
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1]) add(lines[i], lines[i + 1])
+    // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
+    // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
+    // #1183 (multilingual): "Diretor Comercial" beside a buyer role "Gerente de Vendas" shares no word with any collected title, so the check above
+    // cannot see it. Structure does: a title line that no accepted person precedes is an orphan, and a "name" straight after an orphan title is the next
+    // item of a title list, not a person (on a real team page every title follows an accepted name). Fail closed: if the person before was dropped for
+    // another reason, the next one is dropped too (recall cost, never a fabricated person).
+    const afterOrphan = i >= 1 && isTitleLine(lines[i - 1]) && !paired[i - 1] && !inFormer[i - 1]
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i]) && !afterOrphan && add(lines[i], lines[i + 1])) paired[i + 1] = true
   }
   // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
   return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
@@ -899,7 +949,7 @@ export function redirectTargetIsCompanys(target: string, company: string, places
 // contact, never a domain row. A lead that already has a confirmed domain keeps it: one failed re-read is not "no website".
 function recordDomainUnresolved(db: Database.Database, tenantId: string, l: { id: string; source_url: string }, code: string, today: string, now: number): void {
   try {
-    if ((db.prepare('SELECT company_domain FROM leads WHERE id = ?').get(l.id) as { company_domain: string | null } | undefined)?.company_domain) return
+    if ((db.prepare('SELECT l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(l.id, tenantId) as { company_domain: string | null } | undefined)?.company_domain) return
     db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)
     addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: DOMAIN_UNRESOLVED_KIND, value: 'No company website confirmed', label: `${DOMAIN_UNRESOLVED_TOKEN}${code}`.slice(0, 200), confidence: null, source_url: /^https?:\/\//.test(l.source_url) ? l.source_url.slice(0, 500) : 'https://invalid.example/', source_date: today, retrieved_at: now })
   } catch { /* the reason is a note beside the lead; never fails the crawl */ }

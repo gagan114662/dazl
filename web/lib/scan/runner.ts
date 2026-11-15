@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
-import { ProviderError, providers, type Provider } from '../llm/provider.ts'
+import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
+import { runResearchScan } from '../research/scan-job.ts'
+import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
@@ -32,7 +34,7 @@ import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
-import { eventDateBound } from './event-date-binding.ts'
+import { eventDateBound, dayStatedForEvent } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -212,6 +214,10 @@ export function scoringSellerContext(db: Database.Database, userId: string, jobI
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
+// #381: measured on real sydney-agencies / bangalore-manufacturing scans (14 Nov), the judge answered "contradicts" for passages whose headline
+// states the claim (Krones' Rs 315 crore plant near Bengaluru; Bayer's MoU for a facility near Bengaluru) and for a passage that merely does
+// not mention the claim's month or neighbourhood. "contradicts" drops the lead outright, so it is now defined: a stated conflict only. A detail
+// the passage omits is never a contradiction; a passage that gives a DIFFERENT date for the event is "unclear", never "supports".
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
   return `You check one claim against a passage copied from a web page.
@@ -222,7 +228,11 @@ Passage:
 <<<
 ${safe}
 >>>
-Does the passage support the claim, contradict it, or say nothing clear about it? Reply with exactly one word: supports, contradicts, or unclear.`
+Does the passage support the claim, contradict it, or say nothing clear about it? A date, month or time in the claim that the passage does not mention changes nothing: judge the event itself (dates are checked separately). If the passage gives a DIFFERENT date for the event, answer unclear.
+- supports: the passage states the claim's event for this company.
+- contradicts: ONLY when the passage states something that cannot be true together with the claim: a different company did it, the event did not happen or was cancelled or denied, or the passage gives a different place, amount or kind of event. A detail the passage simply does not mention is never a contradiction.
+- unclear: the passage does not state the event.
+Reply with exactly one word: supports, contradicts, or unclear.`
 }
 
 export function parseJudgement(text: string): Judgement {
@@ -389,6 +399,14 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
         else c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
       }
+    }
+    // #878: no bound day yet (none claimed, or the claimed one is not this event's), but the quote itself states one that the same rule ties to this
+    // company and event on this page: that day is the event's. A claimed day the date rules reject (stale, future) is still on c0, so it keeps its hold
+    // and is never replaced; a hiring candidate is dated by the job board's own day only (above), never by a day in its text. The window and date rules
+    // below judge the day like any other.
+    if (page && !isFail(page) && !c0.event_date && !hiringCand) {
+      const q = dayStatedForEvent(page.text, cIn.excerpt, cIn.company)
+      if (q) c0 = { ...c0, event_date: q.day, event_date_proof: 'page_bound', event_date_proof_note: `the day the quote states (${q.why})${cIn.event_date ? `; the claimed ${cIn.event_date} is not this event's day` : ''}`.slice(0, 200) }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
@@ -1356,6 +1374,45 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       }
       icpForSources = icp
       prompt = buildIcpPrompt(job.query, icp)
+    }
+    // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
+    // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
+    // this job's own spend guards, meter and accounting flags; its searches through the queued research search inside this scan's caps.
+    if (icpForSources && vendor === 'anthropic' && researchEngineOn()) {
+      const modelFor = (m: string): Provider => {
+        const p = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(m), c => ledger.model(c))
+        return spendLimit === null ? flagAccounting(db, job, p, vendor) : flagAccounting(db, job, guardProvider(p, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      }
+      const deadline = jobDeadlines.get(job)
+      const r = await runResearchScan({ db, job, icp: icpForSources, key, model: modelFor, isRefusal: e => e instanceof SpendRefused, checkpoint: () => assertOwned(db, job), ...(deadline ? { deadline } : {}),
+        tf: { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), charge: trialCharges.get(job) } })
+      if (r) {
+        const leads = r.leads as unknown as VerifiedLead[], review = r.review as unknown as ReviewLead[]
+        // the funnel's drops ('held' leads are kept in review, not dropped)
+        const dropped = Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).filter(([k]) => k !== 'held').map(([k, n]) => [`research_${s.stage}_${k}`, n])))
+        const refusal = r.run.refusal
+        // A refusal is read exactly as the old engine reads it: the trial's budget holds every lead in review (finishTrialBudget); only a NUMERIC
+        // budget is a budget stop that keeps what was verified; any other refusal (count_failed, model_unpriced, ...) fails the run, since no
+        // budget can fix it.
+        if (refusal instanceof SpendRefused) {
+          if (trialGuard && (refusal.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, { candidates: null, outcome: { leads, review, dropped } }, ledger)
+          if (refusalCode(refusal, ledger) !== 'budget_stopped') throw refusal
+        }
+        const owned = finish(db, job, 'done', refusal ? 'budget_stopped' : null, { leads, review, dropped }, r.candidates, ledger)
+        // D's proof rows and G's people: a failure there is reported, never turns a finished scan into a retry
+        if (owned) { try { await r.afterSave?.(db, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:after-save', tenantId: job.user_id, ref: job.id }) } }
+        // The old engine's post-finish steps that apply to research leads as they are (#1267 review blocker 3). The rest are not run for a research
+        // scan, by design, and named in the PR: buyer-fit scoring, the sales-hiring gate, the #377 timing-proof record and completeLeads (D's research
+        // proof is the ready rule instead), the old people pass (G's company research names the person), enrichment and autopilot (a new engine
+        // never sends on its own).
+        if (owned) {
+          if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+          try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
+          try { enforceContactSource(db, job.user_id, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:contact-source', tenantId: job.user_id, ref: job.id }) }
+        }
+        if (trialGuard?.refused) holdTrialBudget(db, job)
+        return 'done'
+      }
     }
     const complete = providers_[vendor].complete
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the

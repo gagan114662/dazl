@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
       // Manual run, still inside the 10/week allowance.
       const r = await runIndexChecks(db, user.tenantId)
       if (r === null) return NextResponse.json({ error: 'Nothing to run, or this week\'s checks are spent. They re-run weekly.' }, { status: 400 })
+      if (r === 'spend_cap') return NextResponse.json({ error: 'Your account has reached its daily or monthly spend limit, so nothing was searched and this week\'s checks are not used. The check runs again after the limit resets.' }, { status: 429 })
       if (r === 'stale_domain') return NextResponse.json({ error: 'Your domain changed while the check was running, so those results were discarded. The searches already sent still count toward this week. Run the check again for the new domain.' }, { status: 409 })
       if (r.length === 0) return NextResponse.json({ error: 'The search backend did not answer or is at its daily cap right now - nothing was checked. A search it did answer still counts toward this week. The weekly check will retry automatically.' }, { status: 503 })
       return NextResponse.json({ ok: true, results: r })
