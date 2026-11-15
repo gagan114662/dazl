@@ -7,6 +7,7 @@ import type { Candidate, FunnelStage, ResearchCase, ResearchPlan } from './types
 import type { SearchHit, Fail, TfDeps } from '../search/tinyfish.ts'
 import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
+import { huntSourcesFromEnv, type HuntSource, type HuntSourceStat } from './sources/linkedin-discovery.ts'
 
 export const RESULTS_PER_QUERY = 10
 export type SearchFn = (query: string, afterDate: string) => Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail | string }>
@@ -36,12 +37,13 @@ export function urlKey(raw: string): string {
 // Stops the hunt (no further query is sent): the scan's or the day's allowance is used up, the key is refused, or search is off.
 const STOPS = new Set(['cap', 'auth', 'quota', 'disabled'])
 
-export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; queries: number; failed: Record<string, number>; stopped: string | null }
+// `sources`: what each extra hunt source (F's linkedin-posts) read, searched and produced; absent when none ran.
+export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; queries: number; failed: Record<string, number>; stopped: string | null; sources?: HuntSourceStat[] }
 
 // `wait` is injected so tests do not sleep. A 'rate' answer (TinyFish's per-minute limit, enforced before anything is sent, so it costs nothing)
 // is retried after a pause (5 s plus up to 5 s of jitter, at most 18 times, so 1.5 to 3 minutes per query) (measured 15 Nov: 8 tries x 2.5 s with 6 workers lost 12 of 46 queries per case,
 // three whole triggers); any other failure skips that query.
-export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; jitter?: () => number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
+export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { sources?: HuntSource[]; sourceState?: Map<string, unknown>; extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; jitter?: () => number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
   const t0 = Date.now()
   const qs = huntQueries(plan), after = afterDate(c)
   const wait = o.wait ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
@@ -81,8 +83,19 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
       byUrl.set(k, { url: h.url, title: h.title ?? '', snippet: (h.snippet ?? '').slice(0, 400), date: h.date ? h.date.slice(0, 10) : null, triggerId: qs[i].triggerId, query: qs[i].query, via: 'tinyfish' })
     }
   }
+  // Extra hunt sources (MISSION v2: F's public posts -> openable pages) run after the queries, on the same search (so the scan's search budget
+  // counts them), and only while the hunt has not been stopped. A source keeps its own state in `o.sourceState` across repeated calls (the
+  // goal loop), so a repeat call adds only new work. A spend refusal inside a source is rethrown by the source itself.
+  const sourceStats: HuntSourceStat[] = [], fromSources: Candidate[] = []
+  if (!stopped) for (const src of o.sources ?? huntSourcesFromEnv()) {
+    if (o.deadline && now() > o.deadline) { stopped = 'deadline'; break }
+    const states = o.sourceState ?? (o.sourceState = new Map())
+    if (!states.has(src.id)) states.set(src.id, src.newState?.())
+    const run = await src.run(c, plan, search, { rateRetries: o.rateRetries, waitMs: o.waitMs, jitter: o.jitter, wait: o.wait, deadline: o.deadline, now: o.now }, states.get(src.id))
+    fromSources.push(...run.candidates); sourceStats.push(run.stat)
+  }
   let extraIn = 0
-  for (const x of o.extra ?? []) {
+  for (const x of [...(o.extra ?? []), ...fromSources]) {
     extraIn++
     const k = urlKey(x.url), had = byUrl.get(k)
     if (!had || (x.dated === 'registry' && had.dated !== 'registry')) byUrl.set(k, x)
@@ -90,7 +103,7 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
   const candidates = [...byUrl.values()]
   const dropped: Record<string, number> = { duplicate_url: hits + extraIn - candidates.length }
   for (const [k, n] of Object.entries(failed)) dropped[`query_${k}`] = n
-  return { candidates, queries: qs.length, failed, stopped,
+  return { candidates, queries: qs.length, failed, stopped, ...(sourceStats.length ? { sources: sourceStats } : {}),
     funnel: { stage: 'hunt', in: qs.length, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
 }
 
