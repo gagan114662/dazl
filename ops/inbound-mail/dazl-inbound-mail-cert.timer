@@ -1,0 +1,11 @@
+# /etc/systemd/system/dazl-inbound-mail-cert.timer
+[Unit]
+Description=dazl inbound mail: daily TLS certificate copy (Caddy renews about every 60 days)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1d
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
