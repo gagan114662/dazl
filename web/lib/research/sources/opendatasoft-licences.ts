@@ -50,7 +50,8 @@ export const licenceDay = (v: unknown): string | null => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`)) || new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) !== d) return null
   if (s.length === 10) return d
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(s)) return null
-  return LOCAL.format(new Date(Date.parse(s)))
+  const ms = Date.parse(s)
+  return Number.isNaN(ms) ? null : LOCAL.format(new Date(ms))   // a malformed instant (hour 25, second 60) is no day, never a thrown row
 }
 const day = licenceDay
 // an Opendatasoft (ODSQL) string literal: double quotes, a quote inside doubled
