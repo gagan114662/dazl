@@ -33,7 +33,7 @@ test('the model claimed the publication day; the quote states the event day: the
 })
 
 test('no day claimed at all, the quote states one: dated by it', async () => {
-  const q = `Kestrel Pay raised an $80 million Series C on ${written(EVENT)} to expand in Berlin`
+  const q = `Kestrel Pay raised an $80 million Series C in Berlin on ${written(EVENT)}`
   const r = await lead(q, `${q}.`, null)
   assert.equal(r.event_date, EVENT, JSON.stringify(r))
   assert.equal(r.review_reason, null)
@@ -66,8 +66,38 @@ test('fail closed: a quote whose only day is background, another event, a plan o
   assert.equal(day(`Kestrel Pay is hiring a CFO in Berlin, apply before ${written(EVENT)}`), null)
   // a day plus an ambiguous numeric day: the quote does not settle which is the event's
   assert.equal(day(`Kestrel Pay closed its Series C on ${written(EVENT)} (filed 04/11/${Y})`), null)
+  // only the cue list catches these: one statement ending on a day that belongs to another event
+  assert.equal(day(`Kestrel Pay raised its first round since the pivot on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay closed its previous round on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay raised $80 million up from the seed on ${written(EVENT)}`), null)
+  // a statement whose first word after the name is not a past-tense verb, a participle clause, an aside after punctuation
+  assert.equal(day(`Kestrel Pay CEO Jane Doe spoke at a Berlin fintech summit on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay opened a London office celebrating its Series C on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay opened a London office, the Series C on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay opened a London office - its Series C on ${written(EVENT)}`), null)
+  // a lone numeric day the quote does not settle (April 11 or November 4)
+  assert.equal(day(`Kestrel Pay closed its Series C on 04/11/${Y}`), null)
+  // a day named before the statement, or a statement that goes on after its day, or a second clause about the company (council round 2)
+  for (const q of [
+    `Kestrel Pay, which closed its Series B on ${written(EVENT)}, opened a London office`,
+    `Kestrel Pay, whose Series B closed on ${written(EVENT)}, opened a London office`,
+    `Kestrel Pay, fresh off a Series C on ${written(EVENT)}, opened a London office`,
+    `Kestrel Pay, which was first reported on ${written(EVENT)}, announced an $80 million Series C`,
+    `Kestrel Pay opened a London office, having raised a Series C on ${written(EVENT)}`,
+    `Kestrel Pay opened a London office as it closed a Series C on ${written(EVENT)}`,
+    `Kestrel Pay opened a London office when it closed a Series C on ${written(EVENT)}`,
+    `Kestrel Pay opened a London office on the heels of its Series C on ${written(EVENT)}`,
+    `Kestrel Pay raised a Series C on ${written(EVENT)} and opened a London office`,
+    `Kestrel Pay announced on ${written(EVENT)} that it had raised a Series C in March`,
+    `Kestrel Pay filed to raise a Series C on ${written(EVENT)}`,
+    `Kestrel Pay raised a Series C, the company confirmed on ${written(EVENT)}`,
+    `Kestrel Pay raised a Series C per filings dated ${written(EVENT)}`,
+    `Kestrel Pay announced it raised a Series C on ${written(EVENT)}`,
+  ]) assert.equal(day(q), null, q)
   // the quote names the event's year and states only ANOTHER event's day (one year back, which the binder's older-year rule lets through)
   assert.equal(day(`Kestrel Pay raised its ${Y} Series C, matching the seed it raised on ${written(`${+Y - 1}-03-03`)}`), null)
+  // only the other-year rule catches this one: a single statement whose day is in another year than the one it names
+  assert.equal(day(`Kestrel Pay closed its ${Y} seed extension on ${written(`${+Y - 1}-12-03`)}`), null)
 })
 
 test('two different days in the quote, both bound: neither is chosen', () => {
@@ -75,6 +105,16 @@ test('two different days in the quote, both bound: neither is chosen', () => {
   assert.equal(dayStatedForEvent(`${q}.`, q, 'Kestrel Pay'), null)
   const one = `Kestrel Pay closed its Series C on ${written(EVENT)}`
   assert.deepEqual(dayStatedForEvent(`${one}.`, one, 'Kestrel Pay')?.day, EVENT)
+  // ordinary funding wording and a company whose name holds a cue word still date (council round 2)
+  const led = `Berlin-based fintech Kestrel Pay announced an $80 million Series C led by Acme Capital on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(led, led, 'Kestrel Pay')?.day, EVENT)
+  // "seed" is not a second verb; a lead-in clause before the company does not hold the day
+  const seed = `Kestrel Pay closed its seed round on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(seed, seed, 'Kestrel Pay')?.day, EVENT)
+  const lead_in = `In Berlin, Kestrel Pay opened its second office on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(lead_in, lead_in, 'Kestrel Pay')?.day, EVENT)
+  const named = `Apply Digital announced an $80 million Series C on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(named, named, 'Apply Digital')?.day, EVENT)
 })
 
 test('through the runner: a funding lead whose quote dates another event of the company stays undated and held', async () => {
@@ -94,6 +134,12 @@ test('a claimed day the date rules reject (stale) keeps its hold: the quote\'s d
   const r = await lead(q, `${q}.`, '2019-03-01')
   assert.equal(r.event_date, '2019-03-01', JSON.stringify(r))
   assert.equal(r.review_reason, 'event_date_stale')
+})
+
+test('a quote day in the future is judged by the date rules: held for review, never passed', async () => {
+  const q = `Kestrel Pay announced an $80 million Series C on ${written(daysAgo(-20))}`
+  const r = await lead(q, `${q}.`, PUB)
+  assert.notEqual(r.review_reason, null, JSON.stringify(r))
 })
 
 test('a quote day older than the window is still judged by the window: held, never passed', async () => {
