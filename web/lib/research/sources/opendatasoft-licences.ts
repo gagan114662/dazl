@@ -91,7 +91,8 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   const renewed = new Set(priorYearRows.filter(r => !((day(r.issueddate) ?? '') >= since)).flatMap(r => namesOf(r).map(n => `${n}|${where(r)}`)))
   // locations per name (a licence counts under both its trade and its legal name); a window licence's count is its busiest name's
   const locations = new Map<string, Set<string>>()
-  for (const r of [...sameNameRows, ...windowRows]) for (const k of namesOf(r)) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)]))
+  // a licence with no valid issue day is not counted as a location (it is skipped as a candidate for the same reason)
+  for (const r of [...sameNameRows, ...windowRows]) if (day(r.issueddate)) for (const k of namesOf(r)) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)]))
   const seen = new Set<string>(), out: LicenceRecord[] = []
   for (const r of windowRows) {
     const date = day(r.issueddate), k = who(r), a = where(r)
