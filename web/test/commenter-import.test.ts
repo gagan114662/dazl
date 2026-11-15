@@ -133,3 +133,28 @@ test('enrichCommenters: a stale reserved org row (crashed pass) skips the paid o
   assert.equal(calls.org, 0, 'the possibly-paid org call is never repeated')
   assert.equal(calls.people, 1, 'the 0-credit people search still runs under its own gate')
 })
+
+test('#1167 enrichCommenters at the account day spend cap: nothing is sent, the credits go back, no error claim is left, and a later run (under the cap) does the lookups', async () => {
+  const { accountLimits, migrateSpendPools, reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const { creditUse } = await import('../lib/enrich/credit-pool.ts')
+  const { asDb } = await import('../lib/db/client.ts')
+  const prev = process.env.DAZL_OWNER_DAY_MAX_USD
+  process.env.DAZL_OWNER_DAY_MAX_USD = '0.5'
+  try {
+    const { db, master } = seedBatch()
+    migrateSpendPools(db)
+    const at = Math.floor(Date.now() / 1000)
+    await asDb(db).tx(function* (t) { assert.equal(yield* reservePoolWindows(t, 'A', accountLimits('A'), 0.5, at), true) })
+    const calls = { org: 0, people: 0 }
+    await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+    assert.equal(calls.org + calls.people, 0, 'nothing sent')
+    for (const u of await creditUse(db, 'A')) assert.equal(u.reserved, 0, `${u.provider} ${u.window}: no credit held for an unsent lookup`)
+    const rows = db.prepare("SELECT lookup, status FROM connector_audit WHERE tenant_id = 'A'").all() as { lookup: string; status: string }[]
+    assert.ok(rows.every(r => r.status === 'spend_cap'), JSON.stringify(rows))
+    assert.equal((db.prepare("SELECT count(*) AS n FROM connector_claims WHERE tenant_id = 'A'").get() as { n: number }).n, 0, 'no claim left to block a retry')
+    // the window resets (a new day): the same batch runs its lookups
+    db.prepare("DELETE FROM tenant_spend_pools WHERE tenant_id = 'A' AND (period LIKE 'd:%' OR period LIKE 'm:%')").run()
+    await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+    assert.equal(calls.org, 1); assert.equal(calls.people, 1)
+  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev }
+})

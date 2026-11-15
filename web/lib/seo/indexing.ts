@@ -113,10 +113,10 @@ export type IndexResult = IndexCheck & { domain: string; checked_at: number }
 // domain was edited while the searches were in flight (results discarded, searches stay spent). [] is reserved for a
 // provider failure so callers can tell an outage from a concurrent edit.
 // #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
-export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
+export async function runIndexChecks(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | 'spend_cap' | null> {
   return runWithTenantSpend(db, tenantId, () => runIndexChecksCounted(db, tenantId, deps))
 }
-async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | null> {
+async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch; now?: number; id?: string } = {}): Promise<IndexCheck[] | 'stale_domain' | 'spend_cap' | null> {
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   const env = deps.env ?? process.env
   const cfg = await getConfig(db, tenantId)
@@ -142,10 +142,11 @@ async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?:
   const batchEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(WEEKLY_ALLOWANCE) }
   const spent = { searches: 0 } // searches actually sent (tfSearch counts one before each request, failed or not)
   const out: IndexCheck[] = []
+  let refusedBySpend = false
   try {
     for (const keyword of keywords.slice(0, claimed)) {
       // #1167: an account at its day or month spend cap is refused before anything is sent (SpendRefused): the batch stops like a cap
-      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now }).catch((e: unknown) => { if (e instanceof SpendRefused) return null; throw e })
+      const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now }).catch((e: unknown) => { if (e instanceof SpendRefused) { spent.searches--; refusedBySpend = true; return null } throw e }) // counted before the reserve; it was never sent
       if (!r || !r.ok) break // cap/rate/auth/quota/spend cap: stop the batch, keep what we have
       const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
       out.push({ keyword, indexed: !!own, top_url: own?.url ?? null })
@@ -154,6 +155,11 @@ async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?:
     // give back what was claimed but never sent (a throw included); what was sent stays spent
     const unsent = claimed - spent.searches
     if (unsent > 0) await asDb(db).run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, -unsent])
+  }
+  if (out.length === 0 && refusedBySpend) {
+    // the account's spend cap: nothing was sent and this week's searches are given back; the cron retries in an hour, not every tick
+    await asDb(db).run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ? AND domain = ?', [now + 3600, tenantId, cfg.domain])
+    return 'spend_cap'
   }
   if (out.length > 0) {
     const stamp = deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`

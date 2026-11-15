@@ -222,11 +222,13 @@ export function runWithAccountSpend<T>(ctx: AccountSpendCtx, fn: () => Promise<T
 // signal enrichment, SEO index checks, the fit-check page reads) runs in the tenant's account context, so its priced
 // steps are counted on the account's day/month windows. The account's own limits: an operator-named account's entry, else
 // the deployment defaults. A model call inside is refused here as it was with no context (no_spend_context): it goes through
-// ownerGuarded, whose own inner context decides how it is counted, so nothing is counted twice. Inside a scan or an account context already: unchanged.
+// ownerGuarded, whose own inner context decides how it is counted, so nothing is counted twice. Inside a scan or an account context of the same tenant already: unchanged.
 const tenantLimits = (tenantId: string): PoolLimits => ownerLimits(tenantId) ?? accountLimits(tenantId)
 export function runWithTenantSpend<T>(db: DbLike, tenantId: string, fn: () => Promise<T>): Promise<T> {
-  if (store.getStore() || accountStore.getStore()) return fn()
-  return runWithAccountSpend({ db, tenantId, limits: tenantLimits(tenantId), stepsOnly: true }, fn)
+  const open = store.getStore() ?? accountStore.getStore()
+  if (open && open.tenantId === tenantId) return fn() // already counted on this tenant's windows (another tenant's context is never reused)
+  // another tenant's scan context must not count this work: it runs outside it (a scan context wins over an account one)
+  return store.exit(() => runWithAccountSpend({ db, tenantId, limits: tenantLimits(tenantId), stepsOnly: true }, fn))
 }
 // #846 review R2: a model call with neither a scan nor an account context is refused ('no_spend_context'): a new path
 // that forgets its account cannot spend uncapped. The only way past is this explicit, named escape hatch, for work that
@@ -427,7 +429,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
         // and a parallel reservation of the same scan can never wait on each other in a cycle (a Postgres deadlock).
         // scan_spend_calls above is this hold's own row: no other transaction locks it.
         const moved = r.changes === 1 && actual !== null
-        if (moved && pooled) yield* settlePoolWindows(t, ctx.tenantId, pooled, actual - usd, actual, at, now())
+        // reported_usd stays the MODEL calls' vendor-reported cost (lib/growth/funnel.ts reads it as model spend): a non-model step moves
+        // reserved_usd, which the caps check, to its settled cost only (#1167)
+        if (moved && pooled) yield* settlePoolWindows(t, ctx.tenantId, pooled, actual - usd, isModel(kind) ? actual : 0, at, now())
         if (r.changes === 1) {
           // A REAL reserved->settled/kept transition proves this hold's attempt was alive when its vendor call ended: refresh
           // its claim (DB clock at statement time) so a long call is not reaped mid-settle. A REPLAYED settle changes no spend
@@ -495,7 +499,7 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
       done = true
       const actual = typeof actualUsd === 'number' && Number.isFinite(actualUsd) && actualUsd >= 0 ? actualUsd : null
       if (actual === null) return // the worst case stands
-      const write = () => db.tx(function* (t: Tx): TxBody<void> { yield* settlePoolWindows(t, a.tenantId, limits, actual - usd, actual, at, now()) })
+      const write = () => db.tx(function* (t: Tx): TxBody<void> { yield* settlePoolWindows(t, a.tenantId, limits, actual - usd, isModel(kind) ? actual : 0, at, now()) }) // reported: models only, as above
       try { await write() } catch {
         try { await write() } catch (e) {
           // Unsaved: the worst case stands, but the window may be missing its row. This context makes no further paid request.

@@ -13,7 +13,8 @@
 // contact-page crawl, and SEC/job-board signals.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
+import { addEnrichment, audit, auditReleaseUnsent, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { CreditRefused, refundCredits, refusalLookup, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
@@ -262,6 +263,8 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         }
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: org ? 'ok' : 'empty', results: org ? 1 : 0 }, orgGate.id, org ? 'ok' : 'empty', org ? 1 : 0)
       } catch (e) {
+        // #1167: the account's spend cap refused it before it was sent: credit back, claim released (a retry may run it), batch stops
+        if (e instanceof SpendRefused) { await quietly(() => refundCredits(db, hold)); auditReleaseUnsent(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: 'reserved', results: 0 }, orgGate.id, 'spend_cap'); return }
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `org ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, orgGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
@@ -287,6 +290,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:apollo', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:apollo', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : 'empty', results: people.length }, peopleGate.id, people.length ? 'ok' : 'empty', people.length)
       } catch (e) {
+        if (e instanceof SpendRefused) { auditReleaseUnsent(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 }, peopleGate.id, 'spend_cap'); return } // #1167, as above
         auditSettleClaim(db, { tenantId, connector: 'enrich:apollo', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, peopleGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }
@@ -313,6 +317,7 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
         for (const leadId of g.leadIds) for (const p of people) addEnrichment(db, tenantId, leadId, { connector: 'enrich:pdl', kind: 'contact', value: `${p.name}${p.title ? ` - ${p.title}` : ''}`.slice(0, 254), label: providerContactLabel('enrich:pdl', p.recordDay ?? null), confidence: 70, source_url: p.linkedin ?? `https://${g.domain ?? ''}`, source_date: today, retrieved_at: now })
         auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), results: people.length }, pdlGate.id, people.length ? 'ok' : (found.length ? 'contact rejected: no candidate confirmed the company domain' : 'empty'), people.length)
       } catch (e) {
+        if (e instanceof SpendRefused) { await quietly(() => refundCredits(db, hold)); auditReleaseUnsent(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: 'reserved', results: 0 }, pdlGate.id, 'spend_cap'); return } // #1167, as above
         auditSettleClaim(db, { tenantId, connector: 'enrich:pdl', jobId: batch.job_id, lookup: `people ${g.company}`.slice(0, 200), status: e instanceof EnrichError ? e.code : 'error', results: 0 }, pdlGate.id, e instanceof EnrichError ? e.code : 'error', 0)
         if (e instanceof EnrichError && e.code === 'auth') return
       }

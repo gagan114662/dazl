@@ -30,7 +30,8 @@ import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
-import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
 import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
@@ -350,7 +351,12 @@ async function lookupWorkEmail(
           await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
           v = judgeMatch('pdl', r.match, want, site.site, icpText)
         }
-      } catch (e) { notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
+      } catch (e) {
+        // #1167: the account's day / month spend cap refused the lookup BEFORE it was sent: the credit goes back, and the
+        // next provider would be refused by the same cap
+        if (e instanceof SpendRefused) { await refundCredits(db, hold).catch(() => {}); notes.push('account spend limit reached: nothing was sent'); incomplete = true; log('spend_cap'); break }
+        notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue // charge unknown: the reservation stays
+      }
       answered = true
       seen.add(v.kind); notes.push(v.note); log(v.kind, v.kind === 'verified' || v.kind === 'unverified' ? 1 : 0)
       if (v.kind === 'verified' || v.kind === 'unverified') { best = { ...v, provider: prov }; break } // a kept address: no further spend
