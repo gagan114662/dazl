@@ -49,7 +49,7 @@ export const readsAsRole = (role: string): boolean => {
 const NAME_PARTICLE = /^(?:de|da|del|della|di|du|van|von|der|den|la|le|bin|binti|al|el|y|e)$/
 export const nameShaped = (n: string): boolean => {
   const w = n.trim().split(/\s+/)
-  if (w.length < 2 || w.length > 5 || /^(?:linkedin|x|twitter)$/i.test(n.trim())) return false
+  if (w.length < 2 || w.length > 5 || ROLE_WORD.test(n)) return false   // "Head Of Sales" is a role, not a name
   return w.every((x, i) => /^\p{Lu}[\p{L}'’.\-]*$/u.test(x) || (i > 0 && i < w.length - 1 && NAME_PARTICLE.test(x)))
 }
 const isoDay = (ms: number): string | null => { if (!Number.isFinite(ms) || ms < Date.UTC(2006, 0, 1) || ms > Date.UTC(2100, 0, 1)) return null; return new Date(ms).toISOString().slice(0, 10) }
@@ -70,7 +70,8 @@ export function authorOf(hit: { url: string; title: string }): Pick<Author, 'pla
     // LinkedIn's page-title tails ("| 15 comments", "| LinkedIn") are not names
     const t = (hit.title ?? '').trim().replace(/(?:\s*\|\s*(?:\d[\d,.]*\s*(?:comments?|reactions?|likes?)|linkedin))+\s*$/i, '')
     const m = /^(.{2,80}?)(?:'s|’s) Post\b/.exec(t) ?? /^(.{2,80}?) on LinkedIn\s*[:\-–]/.exec(t) ?? /^(.{2,80}?) posted on the topic\b/.exec(t) ?? /\|\s*([^|#@\s][^|#@]{0,58}\s[^|#@]{1,58}?)\s*$/.exec(t)
-    const name = m ? m[1].trim() : null
+    // a display name may carry a credential or pronouns ("Dana Okoye, CPA", "Dana Okoye (She/Her)"): the name is the part before them
+    const name = m ? m[1].trim().replace(/\s*\([^)]{1,30}\)\s*$/, '').replace(/,\s*[A-Z][A-Za-z.]{1,12}(?:,\s*[A-Z][A-Za-z.]{1,12})*\s*$/, '').trim() : null
     return { platform: 'linkedin', handle, name: name && nameShaped(name) ? name : null, profileUrl: null }
   }
   const x = X_POST.exec(hit.url)
@@ -132,15 +133,17 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
   // First pass: the lookup is keyed on the handle but made on the first post that NAMES the author (an earlier unnamed post does not
   // use it up). Second pass: every post gets its handle's final answer.
   const authors: Record<string, Author> = {}
-  const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: boolean }>()
+  const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: Set<string> }>()
   let resolved = 0
   for (const p of posts.values()) {
     const key = `${p.author.platform}:${p.author.handle.toLowerCase()}`
     let r = byHandle.get(key)
-    if (!r) { r = { kind: 'unresolved', headline: null, profileUrl: p.author.profileUrl, name: null, tried: false }; byHandle.set(key, r) }
+    if (!r) { r = { kind: 'unresolved', headline: null, profileUrl: p.author.profileUrl, name: null, tried: new Set() }; byHandle.set(key, r) }
     // only an author the post title names can become a Person, so the resolve budget goes to those
-    if (!r.tried && p.author.platform === 'linkedin' && p.author.name && resolved < (deps.maxResolve ?? 20)) {
-      r.tried = true; resolved++; sent++
+    // one lookup per (handle, name): a Title Case non-name ("Cold Email Tips") or another person's name earlier in the results does
+    // not use up the lookup a later real name needs; maxResolve still caps the total
+    if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && resolved < (deps.maxResolve ?? 20)) {
+      r.tried.add(p.author.name.toLowerCase()); resolved++; sent++
       const hits = await safeSearch(deps.search, `${p.author.name} linkedin ${p.author.handle}`, {})
       if (hits === null) failed++
       const esc = p.author.handle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -181,7 +184,7 @@ export function authorSource(a: Author): Source | null {
 export function authorPerson(a: Author): Person | null {
   const src = authorSource(a); if (!src || !a.name) return null
   const first = a.headline!.split(' | ')[0]
-  const m = new RegExp(`^${a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+[-\u2013|]\\s+(.{2,120})$`).exec(first.trim())
+  const m = new RegExp(`^${a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:,[^-\u2013|]{1,40})?\\s+[-\u2013|]\\s+(.{2,120})$`).exec(first.trim())   // also "Name, CPA - Partner"
   if (m && readsAsRole(m[1])) return { name: a.name, title: m[1].trim(), sourceId: src.id, quote: m[0], profileUrl: a.profileUrl, from: 'research' }
   // the index's markdown profile: "# <Name>" then the headline line ("Litigation Partner at Taft Stettinius & Hollister")
   const esc = a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

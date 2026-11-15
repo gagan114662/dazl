@@ -220,3 +220,21 @@ test('review round 3 (haiku): prose is not a name and does not use up the lookup
   assert.equal(longer.authors[liPost('dana-okoye', '2026-10-11')].kind, 'unresolved')
   for (const role of ['Designer at Acme', 'Copywriter at Acme', 'Sales Development Representative at Acme']) assert.equal(readsAsRole(role), true, role)
 })
+
+test('review round 4 (opus + haiku): one lookup per (handle, name); credentials, pronouns and role phrases around a name', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const prof = (q: string) => q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : []
+  for (const first of ['Cold Email Tips on LinkedIn - part 2', 'Random Other on LinkedIn: hello']) {
+    const r = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), first), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 5 })
+    assert.equal(r.authors[liPost('dana-okoye', '2026-10-11', 'b')].kind, 'person', first)
+  }
+  // the same name twice costs one lookup; a resolved handle is not looked up again
+  const twice = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), "Dana Okoye's Post"), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 5 })
+  assert.equal(twice.searches.sent, 3, 'two post queries + one lookup')
+  const u = liPost('dana-okoye', '2026-10-01')
+  assert.equal(authorOf({ url: u, title: 'Dana Okoye, CPA on LinkedIn: hi' })?.name, 'Dana Okoye')
+  assert.equal(authorOf({ url: u, title: 'Dana Okoye (She/Her) on LinkedIn: hi' })?.name, 'Dana Okoye')
+  assert.equal(authorOf({ url: u, title: 'Head Of Sales on LinkedIn: hi' })?.name, null)
+  const base = { platform: 'linkedin' as const, handle: 'dana-okoye', name: 'Dana Okoye', profileUrl: 'https://www.linkedin.com/in/dana-okoye', kind: 'person' as const }
+  assert.equal(authorPerson({ ...base, headline: 'Dana Okoye, CPA - Partner at Okoye LLP | x' })?.title, 'Partner at Okoye LLP')
+})
