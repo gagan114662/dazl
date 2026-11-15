@@ -148,3 +148,19 @@ test('companySearch waits out A\'s per-minute "rate" answers and retries; any ot
   let k = 0
   assert.deepEqual(await companySearch(async () => { k++; return { ok: false, reason: 'rate' } }, 'x', { retries: 3, wait: async () => {} })('q'), []); assert.equal(k, 4)
 })
+
+test('#1122 replay findings: a weak category hit, a place word in the name and a site whose homepage does not name the company are not this business', async () => {
+  const { homeNamesCompany } = await import('../../lib/research/company.ts')
+  // makeitfable.com (an accessibility research firm) for the Vancouver restaurant Fable: "menu" and "barrier" are not two restaurant words
+  assert.equal(siteMatchesCase(VAN, 'makeitfable.com', ['Fable | Accessibility research in Canada. Skip to menu. Remove every barrier.']).category, false)
+  assert.equal(siteMatchesCase(VAN, 'fablekitchen.ca', ['Our chef and our menu']).category, true)
+  // australia.com (tourism) for the agency "Special Australia": the place word is not the company's name
+  const SYD = { ...C, where: 'Sydney, New South Wales, Australia', whereKeywords: ['sydney', 'australia', '.com.au'] }
+  assert.equal(homeNamesCompany('Special Australia', 'Visit Australia, see the reef and the outback', SYD), false)
+  assert.equal(homeNamesCompany('Special Australia', 'Special Group Australia is a creative agency', SYD), true)
+  // dailycoffeenews.com for the cafe chain Caffè Artigiano: a news site whose homepage is about many companies
+  assert.equal(homeNamesCompany('Mouledoux, Bland, Legrand & Brackett', 'Mouledoux, Bland, Legrand & Brackett is a law firm', C), true)
+  assert.equal(homeNamesCompany('Mouledoux, Bland, Legrand & Brackett', 'MBLB attorneys at law: Brackett and Legrand lead our team', C), true, 'two distinctive words')
+  assert.equal(homeNamesCompany('Pliant', 'Pliant: the corporate card for finance teams', C), true)
+  assert.equal(homeNamesCompany('Pliant', 'Payments news from Berlin', C), false)
+})

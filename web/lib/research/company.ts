@@ -112,7 +112,7 @@ async function firstSite(ev: ResearchEvent, city: string, deps: CompanyDeps, als
   const w = (ev.website ?? '').trim()
   const shown = w && w.includes('.') && !/\s/.test(w) ? (/^https?:\/\//i.test(w) ? w : `https://${w}`) : null
   for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(host(shown)) ? shown : null]) if (u && !also.some(o => host(o) === host(u))) also.push(u)
-  const toks = nameTokens(ev.company)
+  const toks = nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario'].includes(t))
   let rs: SearchResult[] = []
   try { rs = await deps.search(`${ev.company} ${city} official website`) } catch { rs = [] }
   let best: string | null = null
@@ -136,9 +136,29 @@ export function siteMatchesCase(c: ResearchCase, siteHost: string, pageTexts: st
   const text = ` ${pageTexts.join(' \n ').toLowerCase().replace(/\s+/g, ' ')} `
   const placeKw = c.whereKeywords?.length ? c.whereKeywords : words(c.where, 3)
   const catKw = c.categoryKeywords?.length ? c.categoryKeywords : words(c.category, 4).map(w => w.replace(/(?:ies|es|s)$/, ''))
-  const place = placeKw.some(k => { const kw = k.toLowerCase(); return kw.startsWith('.') ? siteHost.endsWith(kw) || text.includes(kw) : text.includes(kw) })
-  const category = catKw.some(k => text.includes(k.toLowerCase()))
+  const place = placeKw.some(k => { const kw = k.toLowerCase(); return kw.startsWith('.') ? siteHost.endsWith(kw) : kwIn(text, kw) })
+  // TWO different category words: one is chance (a "menu" on any site, "bar" in "barrier"), two is what the business does
+  // (with only the words of the category name to go on, one of them is enough: there is no list to count against)
+  const category = new Set(catKw.map(k => k.toLowerCase()).filter(k => kwIn(text, k))).size >= (c.categoryKeywords?.length ? 2 : 1)
   return { place, category }
+}
+// A keyword at the start of a word (a stem like "manufactur" matches "manufacturing"); a keyword of 4 letters or fewer only as a whole word;
+// one with punctuation in it (", tx") as written.
+const kwIn = (text: string, kw: string): boolean => {
+  if (!/^[a-z\u00c0-\u024f0-9 -]+$/.test(kw)) return text.includes(kw)
+  const e = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(kw.length <= 4 ? `(?<![a-z0-9\u00c0-\u024f])${e}(?![a-z0-9\u00c0-\u024f])` : `(?<![a-z0-9\u00c0-\u024f])${e}`).test(text)
+}
+// The site's homepage must name THIS company: its full name, or (a name of several words) two of its distinctive words, or (one word) that word.
+// Place words are not distinctive ("Special Australia" is not australia.com).
+export function homeNamesCompany(company: string, homeText: string, c: ResearchCase): boolean {
+  const t = ` ${norm(homeText)} `, full = norm(company)
+  if (full && t.includes(` ${full} `)) return true
+  const place = new Set(words(c.where, 3).concat((c.whereKeywords ?? []).flatMap(k => words(k, 3))))
+  const toks = nameTokens(company).filter(w => !place.has(w))
+  if (!toks.length) return false
+  const hit = toks.filter(w => t.includes(` ${w} `)).length
+  return hit >= Math.min(2, toks.length)
 }
 
 const parseJson = (s: string | null): Record<string, unknown> | null => {
@@ -172,7 +192,7 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
     picks.sort((a, b) => (FIRST_RX.test(a) ? 0 : 1) - (FIRST_RX.test(b) ? 0 : 1) || a.length - b.length)
     const pages = [home, ...(await Promise.all(picks.slice(0, MAX_OWN_PAGES).map(u => open(deps, u)))).filter((p): p is ReadPage => !!p)]
     const m = siteMatchesCase(c, sh, pages.map(p => p.text))
-    if (!m.place || !m.category) { wrongSite = true; continue }
+    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { wrongSite = true; continue }
     site = `https://${sh}`
     add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
     for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
