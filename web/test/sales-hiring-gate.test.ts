@@ -69,8 +69,11 @@ test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a
   // what changed: the model's signals joined with EACH OTHER, under a request that says neither (the user did not ask for sales hiring)
   assert.equal(salesHiringRequired('Seed-funded startups opening new offices', JSON.stringify({ signals: ['Raised seed round', 'Actively hiring', 'Growing sales team'] })), false)
   assert.equal(salesHiringRequired(Q, JSON.stringify({ signals: ['Opened new office', 'Hired lateral partners recently', 'Business development push'] })), false)
-  // unchanged from main, pinned (an over-hold, never a skipped proof): a hiring sentence and a GTM word in the user's OWN request still join
-  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), true, 'known: the same as main')
+  // KNOWN GAP, unchanged from main (an over-hold: leads are held, never shipped without the proof): a hiring word and a GTM word ("growth") in the user's OWN
+  // request still join. If this is ever fixed, flip this assertion; it is here so the gap is on record, not because it is wanted.
+  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), true, 'known gap: the same as main')
+  // the borderline case of the signals-with-signals change: the user said "job postings", only the model's signals say sales
+  assert.equal(salesHiringRequired('Seed-funded startups with job postings', JSON.stringify({ signals: ['Raised seed', 'Hiring', 'Sales roles'] })), false, 'defensible: the user did not ask for sales hiring')
 })
 
 test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
