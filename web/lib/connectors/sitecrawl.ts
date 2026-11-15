@@ -117,7 +117,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       body.on('error', () => {
         if (n > 0) { res.destroy(); return resolve(done()) }   // a late error (trailing bytes after the stream): what was decoded is the page
         const b = Buffer.concat(raw)
-        if (!(b.length > 0 && b[0] !== 0x1f && /^\s*</.test(b.subarray(0, 64).toString('utf8')))) return resolve(null)   // a corrupt compressed body is no page
+        if (!(b.length > 0 && b[0] !== 0x1f && /^\s*</.test(b.subarray(0, 64).toString('utf8')))) { res.destroy(); return resolve(null) }   // a corrupt compressed body is no page; stop reading it
         // labelled compressed, sent plain: the raw bytes are the page, under the same caps as any body
         const plain = () => { const all = Buffer.concat(raw); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
         if (res.readableEnded || res.complete || rawN > TEXT_BYTES) { res.destroy(); return resolve(plain()) }

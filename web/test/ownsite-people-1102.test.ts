@@ -279,3 +279,17 @@ test('round 2 (haiku): another city\'s office reached by redirect is not even ha
   assert.deepEqual(officeLinks('<a href="/locations/paris">p</a>', new URL('https://acme-law.example/'), ['Paris, Texas', 'Paris, France']), [])
   assert.deepEqual(officeLinks('<a href="/locations/paris">p</a>', new URL('https://acme-law.example/'), ['Paris, Texas']), ['/locations/paris'])
 })
+
+test('round 3: a corrupt compressed body that never ends is dropped AND its connection closed (no read past the call)', async () => {
+  let closed = false
+  const head = zlib.gzipSync(Buffer.from(PAGE)).subarray(0, 10)
+  const s = await serve((_p, res) => {
+    res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' }); res.write(Buffer.concat([head, Buffer.from('garbage-not-deflate')]))
+    const t = setInterval(() => res.write(Buffer.alloc(1000, 0x41)), 50); res.on('close', () => { closed = true; clearInterval(t) })
+  })
+  try {
+    assert.equal(await rawGet(`https://127.0.0.1:${s.port}/`, 0, 5000, loopbackLookup as never), null)
+    await new Promise(r => setTimeout(r, 400))
+    assert.equal(closed, true, 'the server saw the connection close')
+  } finally { await s.close() }
+})
