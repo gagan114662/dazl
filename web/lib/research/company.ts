@@ -293,7 +293,7 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
   //   a. the pages already opened (the event page and the company's own home / about / team / people / contact / imprint pages): one model call;
   //   b. a senior person the trigger article itself names (no call);
   //   c. only then the person searches (snippets are sources, at most two result pages opened), one more call, and the second look.
-  const seed = registrySeed(ev)
+  const seed = registrySeed(ev, sources.filter(s => s.url === ev.sourceUrl).map(s => s.text))
   const known = (ev.people.map(p => `${p.name} (${p.title ?? ''})`).join('; ') || 'none') + (seed ? `. The city's permit record names ${seed} as contractor of record: that is a lead to check, NOT a role. Use ${seed} only if a source states their role at THIS company (owner, president, CEO, general manager...)` : '')
   const promptFor = () => {
     const body = sources.map(s => `[${s.id}] (${s.kind}) ${s.url}\n${s.text}`).join('\n\n').slice(0, PROMPT_SOURCES)
@@ -356,14 +356,19 @@ Rules: never invent a name; the quote must be copied character for character fro
 // A registry lead (a city permit) names a contractor of record: that name is a SEED to search for, never a decision-maker by itself. A permit
 // "Applicant" / "System Administrator" is whoever filed the paper; only a page that states a real role at this company makes a person.
 const ROLE_ONLY_RX = /^(?:contractor of record(?: on the .{1,40} permit)?|applicant|system administrator|administrator|agent|contact|registered agent)$/i
-export function registrySeed(ev: ResearchEvent): string | null {
-  const texts = [ev.quote, ev.whyNow, ev.whatHappened, ...ev.people.flatMap(p => [p.quote, p.name])]
+export function registrySeed(ev: ResearchEvent, pageTexts: string[] = []): string | null {
+  const texts = [ev.quote, ev.whyNow, ev.whatHappened, ...ev.people.flatMap(p => [p.quote, p.name]), ...pageTexts.map(t => t.slice(0, 20_000))]
   for (const t of texts) {
     const m = /contractor of record:?\s+([\p{L}][\p{L}.'’-]*(?:\s+[\p{L}][\p{L}.'’-]*){1,3})/iu.exec(t ?? '')
     if (m) return m[1].trim().replace(/[.\s]+$/, '')
   }
   const p = ev.people.find(x => x.name && /contractor of record/i.test(`${x.title ?? ''} ${x.quote}`))
-  return p ? p.name : null
+  if (p) return p.name
+  for (const t of pageTexts) {   // the open-data record as JSON: the model may have left the contractor out of ev.people
+    const j = /"contractor_full_name"\s*:\s*"([\p{L}][\p{L}.' -]{3,60})"/iu.exec(t.slice(0, 200_000))
+    if (j && /\s/.test(j[1].trim())) return j[1].trim()
+  }
+  return null
 }
 
 // The model's person, kept only when its quote is literally in the source it cites and names the person: never trusted to have copied it.

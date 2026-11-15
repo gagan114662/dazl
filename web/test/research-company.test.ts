@@ -268,3 +268,11 @@ test('registry seed (Hermes 09:00): the contractor of record is searched for by 
   assert.equal((await researchCompany(C, PLAN, REG, bad.d)).person, null)
   assert.equal(registrySeed(ev({ people: [{ name: 'System Administrator', title: 'Applicant', quote: 'Applicant: System Administrator' }] })), null)
 })
+
+test('registry seed: read from the event page text when the model left the contractor out of the event (the record as JSON, or the rendered line)', () => {
+  const bare = ev({ company: 'Lone Star Roofing LLC', people: [], quote: 'permits issued' })
+  assert.equal(registrySeed(bare), null)
+  assert.equal(registrySeed(bare, ['{"contractor_company_name":"Lone Star Roofing LLC","contractor_full_name":"RUDY ALVAREZ","permit_number":"2026-1"}']), 'RUDY ALVAREZ')
+  assert.equal(registrySeed(bare, ['work: re-roof; at 1 Main St; contractor of record: Rudy Alvarez.']), 'Rudy Alvarez')
+  assert.equal(registrySeed(bare, ['{"contractor_full_name":"N/A"}']), null)
+})
