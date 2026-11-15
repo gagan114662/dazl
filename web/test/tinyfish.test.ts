@@ -99,20 +99,3 @@ test('a quote that only exists after the markdown transform is not verified agai
   const literal = await verifyLeads([lead('Acme Logistics is hiring a Payroll Specialist in Columbus, Ohio')], async () => realPage, new Date('2026-10-26T00:00:00Z'), judge)
   assert.equal(literal.leads.length, 1, 'control: the same page verifies a quote that is literally on it')
 })
-
-// #1099 (yield): the extraction call's evidence cap grows with the pages a scan may read, instead of a fixed 30.
-test('evidence cap: three items per fetch slot, never under 30 or over 90; the reply budget grows past 30 items', async () => {
-  const { evidenceCap, extractionMaxTokens, EVIDENCE_CAP_MIN, EVIDENCE_CAP_MAX } = await import('../lib/scan/run-budget.ts')
-  assert.equal(evidenceCap(4), 30, 'a scan that reads 4 pages keeps the old 30')
-  assert.equal(evidenceCap(10), 30); assert.equal(evidenceCap(16), 48, 'the code default of 16 fetches: 48 items')
-  assert.equal(evidenceCap(20), 60); assert.equal(evidenceCap(30), 90); assert.equal(evidenceCap(500), EVIDENCE_CAP_MAX, 'never over 90')
-  assert.equal(evidenceCap(0), EVIDENCE_CAP_MIN); assert.equal(evidenceCap(NaN), EVIDENCE_CAP_MIN); assert.equal(evidenceCap(-3), EVIDENCE_CAP_MIN)
-  assert.equal(extractionMaxTokens(30), 3000, 'up to 30 items: the reply budget is unchanged'); assert.equal(extractionMaxTokens(31), 6000); assert.equal(extractionMaxTokens(90), 6000)
-  // toEvidence keeps exactly the cap it is given, fetched pages first
-  const hits = Array.from({ length: 70 }, (_, i) => ({ url: `https://site${i}.example/p`, title: `T${i}`, snippet: `Company ${i} opened a new location in Toronto this month`, date: null, via: 'tinyfish' as const }))
-  const pages = hits.slice(50, 70).map(h => ({ url: h.url, title: 'page', text: `Full page text for ${h.url} with enough words to count as evidence` }))
-  assert.equal(toEvidence(hits as never, pages).length, 30, 'the default stays 30 for callers that pass no cap')
-  const ev = toEvidence(hits as never, pages, undefined, evidenceCap(20))
-  assert.equal(ev.length, 60, '60 of the 70 results reach extraction at 20 fetches (30 before)')
-  assert.equal(ev.slice(0, 20).every(e => e.quote.startsWith('Full page text')), true, 'the 20 fetched pages come first')
-})

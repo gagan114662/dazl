@@ -148,13 +148,3 @@ export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSe
     ],
   }
 }
-
-// How many evidence items one extraction call is given (#1099, yield). It was a fixed 30 whatever the scan had read, so a scan
-// that fetched 20 pages and found 60-70 result URLs still showed the model 30 of them. Now three items per fetch slot (each
-// fetched page plus about two snippet-only results), never under the old 30 and never over 90 (one extraction prompt: 90 items
-// of at most 1200 characters stay well inside the model's input and the scan's spend cap).
-export const EVIDENCE_CAP_MIN = 30, EVIDENCE_CAP_MAX = 90
-export const evidenceCap = (fetchesPerScan: number): number => Math.min(EVIDENCE_CAP_MAX, Math.max(EVIDENCE_CAP_MIN, Math.floor(Number.isFinite(fetchesPerScan) ? fetchesPerScan : 0) * 3))
-// The reply budget for that call: about 200 output tokens per returned lead. Past 30 items a 3000-token reply could be cut
-// mid-array, which loses every lead in it (an unparseable reply is no leads), so the larger prompt gets the larger reply.
-export const extractionMaxTokens = (items: number): number => (items > EVIDENCE_CAP_MIN ? 6000 : 3000)

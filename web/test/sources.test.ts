@@ -192,14 +192,16 @@ test('selfDescribedUrls matches a model-returned URL with or without a trailing 
 })
 
 // #381 (yield, extraction): on a real 60-item toronto-dental extraction, "Pick only items that show... a recent buying signal"
-// returned 6 leads twice; asking for every named matching company returned 9 and 10 on the identical input. The instruction
+// returned 6 leads twice; asking for every named matching company returned 9 and 10 on the identical input (#381). The instruction
 // must ask for completeness, and must still refuse items with no named company, vendor pages and directories.
 test('extraction prompt: every item is considered, one lead per named matching company, never only the strongest few', async () => {
   const { buildSourcePrompt } = await import('../lib/sources/index.ts')
   const p = buildSourcePrompt('Dental clinics in Toronto hiring front-desk staff', { summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }, [{ source: 'tinyfish', url: 'https://a.example/x', title: 't', quote: 'Acme Dental is hiring a receptionist in Toronto', date: null } as never])
   assert.match(p, /Go through EVERY item, one by one/)
   assert.match(p, /Do not stop after the strongest few: completeness matters as much as precision/)
-  assert.match(p, /one lead per company/)
+  assert.match(p, /one lead per company, at most 3 from any one item/, 'one round-up cannot fill the parse cap (MAX_LEADS_PER_SOURCE = 3 survive anyway)')
+  assert.match(p, /shows a recent buying signal from the request/, 'recency is still asked for')
+  assert.match(p, /or one of its facts, see below/, 'an AND / OR request\'s halves block is not contradicted')
   assert.match(p, /Skip items that name no specific company, items about a vendor's own product, and generic directory or salary pages/)
   assert.match(p, /Use only these items\. Do not invent anything\./)
   assert.doesNotMatch(p, /Pick only items that show/)
