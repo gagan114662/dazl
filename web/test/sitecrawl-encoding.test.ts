@@ -17,7 +17,7 @@ const CERT = pem('CERT'), KEY = pem('KEY')
 const loopback = (_h: string, _o: { all?: boolean }, cb: (...a: unknown[]) => void) => cb(null, '127.0.0.1', 4)
 const PAGE = '<html><head><title>Ogletree Deakins | Employment Law Firm</title></head><body><h1>Ogletree Deakins</h1><p>Offices in Chicago, Atlanta and Boston.</p></body></html>'
 
-async function serve(handler: (req: https.IncomingMessage, res: import('node:http').ServerResponse) => void, path = '/') {
+async function serve(handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void, path = '/') {
   const seen: (string | undefined)[] = []
   const server = https.createServer({ cert: CERT, key: KEY }, (req, res) => { seen.push(req.headers['accept-encoding'] as string | undefined); handler(req, res) })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
