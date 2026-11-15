@@ -646,8 +646,10 @@ export function citySlugs(places: string[]): string[] {
 }
 // The requested city's office segment: the slug itself or the slug plus a two-letter state ("chicago", "chicago-il").
 // The suffix must be the REQUESTED region's code: "portland-or" is not Portland, Maine; "paris-fr" is not Paris, Texas.
-const regionCodes = (places: string[]) => new Set(places.flatMap(p => { const r = String(p).split(',').slice(1).join(',').trim().toLowerCase(); if (/^[a-z]{2}$/.test(r)) return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] }))
-const cityMatch = (slugs: string[], x: string, places: string[]) => slugs.some(c => x === c || (x.startsWith(c + '-') && regionCodes(places).has(x.slice(c.length + 1))))
+// "Chicago, IL", "Chicago, Illinois", "Chicago, IL, USA", "Chicago, IL 60601": the first region after the city.
+const regionCodes = (places: string[]) => new Set(places.flatMap(p => String(p).split(',').slice(1).map(x => x.trim().toLowerCase().replace(/\s+\d[\d-]*$/, '')).flatMap(r => { if (/^[a-z]{2}$/.test(r) && r !== 'us') return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] })))
+// No region in the request ("Chicago"): any two-letter suffix is accepted, as the request cannot tell them apart.
+const cityMatch = (slugs: string[], x: string, places: string[]) => { const codes = regionCodes(places); return slugs.some(c => x === c || (x.startsWith(c + '-') && /^[a-z]{2}$/.test(x.slice(c.length + 1)) && (codes.size === 0 || codes.has(x.slice(c.length + 1))))) }
 // Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
 // last segment that is the slug itself under a locations / offices path ("/locations/chicago", "/locations/offices/chicago.html").
 export function officeLinks(html: string, base: URL, places: string[]): string[] {
@@ -668,8 +670,9 @@ export function otherOffice(pathname: string, places: string[]): boolean {
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
   if (i < 0 || i === seg.length - 1) return false
-  if (PEOPLE_SEGMENT.test(seg[i + 1])) return false   // "/offices/leadership" is a people page, not an office
-  return !cityMatch(citySlugs(places), seg[i + 1], places)   // "/locations/chicago/team" is the Chicago office; "/locations/us/chicago" fails closed
+  if (i === seg.length - 2 && PEOPLE_SEGMENT.test(seg[i + 1])) return false   // "/offices/leadership" is a people page; "/offices/team/dallas" is Dallas's
+  if (seg.slice(i + 1).some(x => cityMatch(citySlugs(places), x, places))) return false
+  return true   // "/locations/chicago/team" is the Chicago office; "/locations/us/chicago" fails closed
 }
 // The requested city's own office page ("/locations/chicago", "/offices/chicago-il/team"): its people count only when the page agrees with the
 // requested place. A generic "/about-us/our-office" is not a city office page and is judged like any people page.
@@ -801,12 +804,13 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       // An office page's people count only when it is the requested office (a redirect or a homepage link may still land on another one).
       let officePath = ''; try { officePath = new URL(r.finalUrl).pathname } catch { /* keep '' */ }
       // another city's office, or the requested city's office path whose page places it elsewhere ("Paris" in France for Paris, Texas):
-      // not stored, not read for people, contacts or addresses
-      if (otherOffice(officePath, places) || (cityOffice(officePath, places) && placeAgreement(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '), places, expectName ?? '') !== 'agrees')) continue   // contacts or addresses
+      // not stored, not read for people, contacts or addresses. A page that does not say where it is keeps its contacts; its people need 'agrees'.
+      const officeVerdict = cityOffice(officePath, places) ? placeAgreement(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '), places, expectName ?? '') : null
+      if (otherOffice(officePath, places) || officeVerdict === 'mismatch') continue
       onPage?.(r.body, r.finalUrl, r.status)
       // a locations index: the office page for the requested city, read next
       if (LOCATIONS_INDEX.test(p)) for (const o of officeLinks(r.body, new URL(r.finalUrl), places).reverse()) if (!queue.includes(o)) queue.splice(qi + 1, 0, o)
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...(!LOCATIONS_INDEX.test(officePath) ? extractPeople(r.body, r.finalUrl, buyerRoles, expectName) : [])]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...(!LOCATIONS_INDEX.test(officePath) && (officeVerdict === null || officeVerdict === 'agrees') ? extractPeople(r.body, r.finalUrl, buyerRoles, expectName) : [])]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.

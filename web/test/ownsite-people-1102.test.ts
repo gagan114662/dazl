@@ -311,3 +311,28 @@ test('round 3 (opus/haiku): a requested-city office page placed elsewhere gives 
   const biz = `<html><body>${prose('About us.')}<div><a href="/partners/bright-labs">Bright Labs</a></div><div>Director</div></body></html>`
   assert.deepEqual(extractPeople(biz, 'https://acme.example/about/', 'Director').map(f => f.value), [])
 })
+
+test('round 4 (opus): another city under a people segment is still another office; the requested state may come with a country or ZIP', async () => {
+  assert.equal(otherOffice('/offices/team/dallas', ['Chicago, IL']), true)
+  assert.equal(otherOffice('/locations/people/dallas-tx', ['Chicago, IL']), true)
+  assert.equal(otherOffice('/offices/team/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/offices/leadership', ['Chicago, IL']), false)
+  const dallas = `<html><body><h1>Dallas</h1>${prose('Our office at 2200 Ross Ave, Dallas, TX 75201.')}<div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}</body></html>`, '/offices/team/dallas': dallas }, { '/team': '/offices/team/dallas' })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Chicago, IL'])
+  assert.deepEqual(r.found.filter(f => /Mendel/.test(f.value)), [])
+  const base = new URL('https://acme-law.example/')
+  for (const where of [['Chicago, IL, USA'], ['Chicago, IL 60601'], ['Chicago, Illinois']]) assert.deepEqual(officeLinks('<a href="/offices/chicago-il">a</a>', base, where), ['/offices/chicago-il'], String(where))
+})
+
+test('round 4 (haiku): an office page that does not say where it is keeps its phone (not its people); region from any part; a bare city takes any state suffix', async () => {
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/locations/chicago">Chicago</a></body></html>`, '/locations/chicago': `<html><body>${prose('Our office. Visit us today.')}<a href="tel:+13125550100">312 555 0100</a><div>Rae Mendel</div><div>Office Managing Partner</div></body></html>` })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Chicago, IL'])
+  assert.ok(r.found.some(f => f.kind === 'phone' && /3125550100|312 555 0100/.test(f.value)), JSON.stringify(r.found))
+  assert.deepEqual(r.found.filter(f => f.kind === 'person'), [])
+  const base = new URL('https://acme-law.example/')
+  assert.deepEqual(officeLinks('<a href="/offices/portland-or">a</a>', base, ['Portland, OR, USA']), ['/offices/portland-or'])
+  assert.deepEqual(officeLinks('<a href="/offices/chicago-il">a</a>', base, ['Chicago, IL, US']), ['/offices/chicago-il'])
+  assert.deepEqual(officeLinks('<a href="/locations/chicago-il">a</a>', base, ['Chicago']), ['/locations/chicago-il'])
+  assert.deepEqual(officeLinks('<a href="/offices/portland-or">a</a>', base, ['Portland, Maine, USA']), [])
+})
