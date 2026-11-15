@@ -31,7 +31,7 @@ export function boardOf(raw: string): Board | null {
 
 export const boardApi = (b: Board): string =>
   b.ats === 'greenhouse' ? `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(b.token)}/jobs`
-    : b.ats === 'lever' ? `https://api${b.host === 'eu' ? '.eu' : ''}.lever.co/v0/postings/${encodeURIComponent(b.token)}?mode=json`
+    : b.ats === 'lever' ? `${b.host === 'eu' ? 'https://api.eu.lever.co/v0/postings/' : 'https://api.lever.co/v0/postings/'}${encodeURIComponent(b.token)}?mode=json`
       : `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(b.token)}`
 
 export interface Role { title: string; location: string; posted: string; url: string; company: string | null }
