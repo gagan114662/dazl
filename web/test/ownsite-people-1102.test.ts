@@ -393,3 +393,13 @@ test('round 7 (haiku): a ZIP-only region is not a bare city; "Kent" is not Kentu
   // known limit, fails closed: a two-letter path segment that is also a state code reads as that state
   assert.equal(otherOffice('/locations/de/chicago', ['Chicago, IL']), true)
 })
+
+test('round 8 (haiku): state abbreviations are a fixed list: "Ill. 60601" and "Ore. 97201" keep their office; "Kent." and a path "west" or "main" are no state', () => {
+  assert.equal(otherOffice('/offices/chicago-il', ['Chicago, Ill. 60601']), false)
+  assert.equal(otherOffice('/offices/chicago-il', ['Chicago, Ill., USA']), false)
+  assert.equal(otherOffice('/offices/portland-or', ['Portland, Ore. 97201']), false)
+  assert.equal(otherOffice('/offices/ashford-ky', ['Ashford, Kent.']), true)
+  assert.equal(otherOffice('/locations/west/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/locations/main/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/locations/tex/paris', ['Paris, France']), true)
+})

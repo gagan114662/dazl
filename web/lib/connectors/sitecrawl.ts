@@ -647,13 +647,14 @@ export function citySlugs(places: string[]): string[] {
 // The requested city's office segment: the slug itself or the slug plus a two-letter state ("chicago", "chicago-il").
 // The suffix must be the REQUESTED region's code: "portland-or" is not Portland, Maine; "paris-fr" is not Paris, Texas.
 // "Chicago, IL", "Chicago, Illinois", "Chicago, IL, USA", "Chicago, IL 60601": the first region after the city.
-// The request's region parts after the city, without dots, ZIPs or country words ("IL." -> "il"; "U.S.", "USA", "60601" -> nothing).
-// `abbrev`: the part was written with a period ("Ill."), so a state-name prefix may be meant.
+// The request's region parts after the city, without dots, ZIPs or country words ("IL." -> "il"; "Ill. 60601" -> "ill"; "U.S.", "USA" -> nothing).
 const COUNTRY_WORDS = /\b(?:usa|us|united states(?: of america)?|america)\b/g
-const regionParts = (places: string[]) => places.flatMap(p => String(p).split(',').slice(1).map(x => ({ text: x.toLowerCase().replace(/\./g, '').replace(/\d[\d-]*/g, ' ').replace(COUNTRY_WORDS, ' ').replace(/\s+/g, ' ').trim(), abbrev: /[a-z]\.\s*$/i.test(x.trim()) }))).filter(r => r.text)
-// A two-letter code, a state name, or (written as an abbreviation, "Ill.") an unambiguous state-name prefix; "Kent" is not Kentucky.
-const stateCode = (r: string, prefixOk: boolean): string | null => { if (/^[a-z]{2}$/.test(r)) return r; const exact = Object.entries(US_STATES).find(([, name]) => name === r); if (exact) return exact[0].toLowerCase(); if (!prefixOk || r.length < 3) return null; const pre = Object.entries(US_STATES).filter(([, name]) => name.startsWith(r)); return pre.length === 1 ? pre[0][0].toLowerCase() : null }
-const regionCodes = (places: string[]) => new Set(regionParts(places).flatMap(r => { const c = stateCode(r.text, r.abbrev); return c ? [c] : [] }))
+const regionParts = (places: string[]) => places.flatMap(p => String(p).split(',').slice(1).map(x => x.toLowerCase().replace(/\./g, '').replace(/\d[\d-]*/g, ' ').replace(COUNTRY_WORDS, ' ').replace(/\s+/g, ' ').trim())).filter(Boolean)
+// The standard (AP) state abbreviations: a fixed list, never a guessed name prefix ("Kent" is not Kentucky; a path "west" is not West Virginia).
+const STATE_ABBREV: Record<string, string> = { ala: 'al', ariz: 'az', ark: 'ar', calif: 'ca', cal: 'ca', colo: 'co', conn: 'ct', del: 'de', fla: 'fl', ill: 'il', ind: 'in', kan: 'ks', kans: 'ks', mass: 'ma', mich: 'mi', minn: 'mn', miss: 'ms', mont: 'mt', neb: 'ne', nebr: 'ne', nev: 'nv', okla: 'ok', ore: 'or', oreg: 'or', penn: 'pa', tenn: 'tn', tex: 'tx', wash: 'wa', wis: 'wi', wisc: 'wi', wyo: 'wy' }
+// A two-letter code, a state name, or a standard abbreviation.
+const stateCode = (r: string): string | null => { if (/^[a-z]{2}$/.test(r)) return r; const exact = Object.entries(US_STATES).find(([, name]) => name === r); if (exact) return exact[0].toLowerCase(); return STATE_ABBREV[r] ?? null }
+const regionCodes = (places: string[]) => new Set(regionParts(places).flatMap(r => { const c = stateCode(r); return c ? [c] : [] }))
 // No region in the request at all ("Chicago"): any two-letter suffix is accepted, as the request cannot tell them apart. A region this
 // reader does not know ("Paris, France") is NOT "no region": only the exact slug matches.
 const bareCity = (places: string[]) => places.every(p => String(p).split(',').slice(1).every(x => !x.toLowerCase().replace(/\./g, '').replace(COUNTRY_WORDS, ' ').trim()))   // "Chicago", "Chicago, USA"; not "Paris, 75001"
@@ -688,7 +689,7 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   const j = slugs.length > 0 ? seg.findIndex((x, k) => k > i && cityMatch(slugs, x, places)) : -1
   if (j < 0) return 'other'
   // a US state between the office segment and the city that is not the requested region: "/locations/texas/paris" is not Paris, France
-  if (!bareCity(places)) { const codes = regionCodes(places); if (seg.slice(i + 1, j).some(x => { const name = x.replace(/-/g, ' '); const st = stateCode(name, true); return !!st && st in Object.fromEntries(Object.keys(US_STATES).map(k => [k.toLowerCase(), 1])) && !codes.has(st) })) return 'other' }
+  if (!bareCity(places)) { const codes = regionCodes(places); if (seg.slice(i + 1, j).some(x => { const name = x.replace(/-/g, ' '); const st = stateCode(name); return !!st && st in Object.fromEntries(Object.keys(US_STATES).map(k => [k.toLowerCase(), 1])) && !codes.has(st) })) return 'other' }
   return 'requested'
 }
 // A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.
