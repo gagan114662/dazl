@@ -31,6 +31,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SELF=$HERE/$(basename "${BASH_SOURCE[0]}")
 PULL=$HERE/pull-release.sh
 RUNNER=$HERE/run-release.sh
+PAGES=$HERE/check-pages.py   # #1116: can a stranger use /sign-up (the page, its form, every bundle it names)
 CADDY=${PROD_CADDYFILE:-/etc/caddy/Caddyfile}
 CADDY_SITE=${PROD_CADDY_SITE:-dazl.ai, www.dazl.ai}          # the site block whose reverse_proxy port is switched
 CADDY_RELOAD=${PROD_CADDY_RELOAD:-systemctl reload caddy}
@@ -92,7 +93,7 @@ trusted_path() {
     dir=$(dirname -- "$dir")
   done
 }
-for f in "$SELF" "$PULL" "$RUNNER"; do
+for f in "$SELF" "$PULL" "$RUNNER" "$PAGES"; do
   trusted_path "$f" || die "$f is not root-owned / root-writable only; nothing done"
 done
 
@@ -182,16 +183,19 @@ set_boot() {  # $1 = port that should start at boot (only when this is the real 
   fi
   systemctl disable --quiet "dazl-prod@$o.service" 2>/dev/null || true
 }
-# public smoke: every path 200, health commit = $1, and (if given) instance = $2. Retries for ~20 s.
+# public smoke: every path 200, health commit = $1, and (if given) instance = $2; with $3 = pages, also the sign-up pages check (#1116), which is
+# run on the NEW release only: a rollback target may predate it (no form action before #1218), and a rollback must never be refused for that.
+# Retries for ~20 s.
 public_smoke() {
-  local want=$1 inst=${2:-} t c i code pth ok
+  local want=$1 inst=${2:-} pages=${3:-} t c i code pth ok
   for t in $(seq 1 10); do
     ok=1
     read -r c i < <(health "$PUBLIC_URL")
     [ "$c" = "$want" ] || ok=0
     [ -z "$inst" ] || [ "$i" = "$inst" ] || ok=0
     for pth in $SMOKE_PATHS; do code=$(http_code "$PUBLIC_URL$pth"); [ "$code" = 200 ] || { ok=0; log "smoke try $t: $PUBLIC_URL$pth -> $code"; }; done
-    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200"; return 0; fi
+    [ $ok = 1 ] && [ "$pages" = pages ] && { python3 -I "$PAGES" "$PUBLIC_URL" || { ok=0; log "smoke try $t: the sign-up pages check failed"; }; }
+    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200${pages:+; sign-up pages ok}"; return 0; fi
     log "smoke try $t: health commit=${c} instance=${i} (want $want${inst:+ / $inst})"; sleep 2
   done
   return 1
@@ -373,7 +377,8 @@ for pth in $SMOKE_PATHS; do
   code=$(http_code "http://127.0.0.1:$NEW$pth")
   [ "$code" = 200 ] || { stop_port "$NEW" "failed local smoke" || true; die "local smoke $pth on :$NEW -> $code; NOT switching (dazl.ai still on :$LIVE)"; }
 done
-log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS]"
+python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the sign-up pages check" || true; die "the sign-up pages check failed on :$NEW; NOT switching (dazl.ai still on :$LIVE)"; }
+log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS] + sign-up pages"
 
 # --- 8+9. switch, public smoke, stability window; auto-rollback on any failure
 fail_back() {
@@ -389,7 +394,7 @@ fail_back() {
 switch_caddy "$NEW" || { stop_port "$NEW" "caddy switch failed" || true; die "caddy switch failed; dazl.ai still on :$LIVE"; }
 TSW=$(date +%s)
 log "8/10 switched Caddy to :$NEW"
-public_smoke "$SHA" "$NEW_INST" || fail_back "public smoke failed"
+public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed"
 NR0=$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")
 # stability window: checked every second, so a crash of the new release switches back within ~1-2 s, not at the end
 for _ in $(seq 1 "$STABLE_S"); do
@@ -398,7 +403,7 @@ for _ in $(seq 1 "$STABLE_S"); do
   [ "$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")" = "$NR0" ] || fail_back "dazl-prod@$NEW restarted during the stability window"
   [ "$(systemctl show -p MainPID --value "dazl-prod@$NEW.service")" = "$MAINPID" ] || fail_back "dazl-prod@$NEW changed MainPID (its process died)"
 done
-public_smoke "$SHA" "$NEW_INST" || fail_back "public smoke failed after the ${STABLE_S}s stability window"
+public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed after the ${STABLE_S}s stability window"
 log "9/10 public smoke + ${STABLE_S}s stability ok"
 
 # --- 10. record, boot enablement, prune (the old release keeps running for an instant rollback)
