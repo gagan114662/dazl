@@ -291,5 +291,6 @@ test('#1036 review c0a39f1d: the Leads page read carries every lead\'s stored gu
   const panel = readFileSync(new URL('../app/app/leads/work-email.tsx', import.meta.url), 'utf8')
   assert.match(panel, /useState<Record<string, GuessShown>>\(\(\) => guessMap\(initial\?\.guesses\)\)/)
   assert.match(panel, /if \(!lazy && !hasInitial\) load\(\)/, 'no per-lead GET on mount when the page already read')
+  assert.match(panel, /if \(initialGuesses !== seenGuesses\) \{ setSeenGuesses\(initialGuesses\); if \(Array\.isArray\(initialGuesses\)\) setGuesses\(guessMap\(initialGuesses\)\) \}/, 'a re-read list replaces the guesses, adjusted while rendering')
   assert.match(readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8'), /guesses: workEmailPage\.guesses\?\.\[leadId\] \?\? NO_GUESSES/)
 })
