@@ -22,6 +22,7 @@ import { verifierFromEnv } from '../lib/people/email-pattern.ts'
 import { jinaAdapter, resetJinaState } from '../lib/sources/jina.ts'
 import { fundingRoundFor } from '../lib/signals/funding-round.ts'
 import { estimateRun } from '../lib/scan/price-estimate.ts'
+import { productTruth } from '../lib/product-truth.ts'
 
 const OFF = { DAZL_PAID_VENDORS: '' }
 const master = randomBytes(32)
@@ -185,4 +186,11 @@ test('the key panel offers OpenAI only when the operator named it, and says a sa
   assert.match(route, /openai_allowed: paidVendorOn\('openai'\)/)
   const inline = readFileSync(new URL('../app/app/key-inline.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(inline, /platform\.openai\.com|or sk-\.\.\./)
+})
+
+test('product truth does not claim OpenAI as available unless it is named (replies and outreach answer from it)', () => {
+  const state = (env: Record<string, string>) => productTruth(env).capabilities.find(c => c.id === 'model:openai')?.state
+  assert.equal(state(OFF), 'unavailable')
+  assert.equal(state({ DAZL_PAID_VENDORS: 'openai' }), 'available')
+  assert.equal(productTruth(OFF).capabilities.find(c => c.id === 'model:anthropic')?.state, 'available')
 })

@@ -61,7 +61,8 @@ export async function saveResearchContacts(db: Database.Database, jobId: string,
     const site = host(l.company.site)
     const person = l.verification.personOk ? l.company.person : null
     // 1. published: only the company's own domain (company.ts keeps only those), with the page it was printed on
-    // the site or its subdomains only: a parent domain can be a hosting platform's (acme.webflow.io is not webflow.io), so it is not the company's
+    // the site or its subdomains only: a parent domain can be a hosting platform's (acme.webflow.io is not webflow.io), so it is not the company's.
+    // Deliberately stricter than company research's own list (company.ts ownEmails also keeps a parent domain): a lead only keeps what is surely theirs
     const atSite = (email: string) => { const d = (email.split('@')[1] ?? '').toLowerCase(); return !!site && !!d && (d === site || d.endsWith(`.${site}`)) }
     const mine = l.company.emails.filter(e => atSite(e.email)).slice(0, MAX_PUBLISHED)
     for (const e of mine) {
