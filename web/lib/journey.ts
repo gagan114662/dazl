@@ -1,6 +1,6 @@
 // The Home journey: which leads a play may show as opportunities, and the one next action for the account's real state.
 // Pure and read-only. It never loosens a gate: a lead enters the preview only when every existing check already passed
-// (identity confirmed or not in doubt, a verified dated source, inside the requested window, not held, rejected or in
+// (identity confirmed or not in doubt, a dated source whose day the cited source proves (day_verified), inside the requested window, not held, rejected or in
 // review). Everything else is counted separately as "needs review / research" and never adds to the opportunity count.
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review.ts'
@@ -20,7 +20,7 @@ export function heldReason(l: PreviewLead): string | null {
   if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return 'source not verified'
   if (l.window_held) return 'outside your time window or undated'
   if (l.currentness_held) return 'event timing unknown'
-  if (!l.event_date || l.date_status !== 'verified') return 'no verified date'
+  if (!l.event_date || l.day_verified !== true) return 'no verified date'   // #1176: the proof the lead's own card shows (eventDayVerified, set by the leads route / home-ready); date_status is not read (no scan writes 'verified' since 2026-10-23)
   if (domainReviewFor({ id: l.id, contact: l.contact }, l.enrichments ?? []).state === 'required') return 'company website not confirmed'
   if (l.fit === 0 && l.intent === null) return 'not a fit'
   return null
