@@ -54,7 +54,9 @@ const NAME_PARTICLE = /^(?:de|da|del|della|di|du|van|von|der|den|la|le|bin|binti
 export const nameShaped = (n: string): boolean => {
   const w = n.trim().split(/\s+/)
   // "Head Of Sales" is a role; "Chris Head" is a person (a role word as a surname is fine)
-  if (w.length < 2 || w.length > 5 || ROLE_WORD.test(w[0]) || /\s(?:of|at|&)\s/i.test(n)) return false
+  // a role word anywhere but the last word makes it a phrase ("Sales Director Secrets", "Cold Email Lead Gen"); as the last word it may be a
+  // surname ("Chris Head")
+  if (w.length < 2 || w.length > 5 || w.slice(0, -1).some(x => ROLE_WORD.test(x)) || /\s(?:of|at|&)\s/i.test(n)) return false
   return w.every((x, i) => /^\p{Lu}[\p{L}'’.\-]*$/u.test(x) || (i > 0 && i < w.length - 1 && NAME_PARTICLE.test(x)))
 }
 const isoDay = (ms: number): string | null => { if (!Number.isFinite(ms) || ms < Date.UTC(2006, 0, 1) || ms > Date.UTC(2100, 0, 1)) return null; return new Date(ms).toISOString().slice(0, 10) }
@@ -155,7 +157,7 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     // only an author the post title names can become a Person, so the resolve budget goes to those
     // one lookup per (handle, name): a Title Case non-name ("Cold Email Tips") or another person's name earlier in the results does
     // not use up the lookup a later real name needs; maxResolve still caps the total
-    if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && r.tried.size < 3 && resolved < (deps.maxResolve ?? 20)) {   // at most 3 names per handle
+    if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && r.tried.size < (strong(p.hit.title ?? '') ? 4 : 3) && resolved < (deps.maxResolve ?? 20)) {   // at most 3 names per handle, plus one for a strong signal
       r.tried.add(p.author.name.toLowerCase()); resolved++; sent++
       const hits = await safeSearch(deps.search, `${p.author.name} linkedin ${p.author.handle}`, {})
       if (hits === null) failed++

@@ -262,3 +262,13 @@ test('review round 5 (haiku + opus): a company verdict is final; person-signal t
   assert.equal(authorOf({ url: u, title: 'Dana Okoye, CPA, MBA on LinkedIn: hi' })?.name, 'Dana Okoye')
   assert.equal(authorOf({ url: u, title: 'Five Growth Tips, Revenue on LinkedIn: hi' })?.name, null, 'comma prose is not a credential')
 })
+
+test('review round 6 (haiku): a strong-signal name still gets looked up after three weak names; role phrases are not names', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const posts = ['Alpha Bravo on LinkedIn: x', 'Charlie Delta on LinkedIn: x', 'Echo Foxtrot on LinkedIn: x'].map((t, i) => mk(liPost('busy', `2026-10-0${i + 1}`, `p${i}`), t))
+  const r = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [...posts, mk(liPost('busy', '2026-10-09', 'd'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : q.includes('Dana Okoye') ? [mk('https://www.linkedin.com/in/busy', 'Dana Okoye - Founder at Okoye')] : [], maxQueries: 2, maxResolve: 20 })
+  assert.equal(r.authors[liPost('busy', '2026-10-09', 'd')].kind, 'person')
+  for (const n of ['Sales Director Secrets', 'Cold Email Lead Gen', 'Hiring Sales Manager Tips', 'Growth Of Outbound']) assert.equal(nameShaped(n), false, n)
+  for (const n of ['Chris Head', 'Jane Lead']) assert.equal(nameShaped(n), true, n)
+  assert.equal(authorOf({ url: liPost('five-tips', '2026-10-01'), title: 'Five Growth Tips, AI on LinkedIn: hi' })?.name, 'Five Growth Tips', 'known: an acronym after a comma is stripped; the lookup still needs the profile title to match')
+})
