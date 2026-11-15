@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
-import { emptyLeadsMessage, scoreLabel, quoteNote } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, readyRepeats, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
@@ -725,7 +725,9 @@ export default function LeadsClient() {
   const businessIcp = startIcp
 
   const input = 'field'
-  const visibleLeads = leads.filter(l => !l.review_reason && (showSeen || !l.seen_before))
+  // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
+  const visibleLeads = visibleReadyLeads(leads, showSeen)
+  const repeats = readyRepeats(leads)
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
@@ -1143,7 +1145,7 @@ export default function LeadsClient() {
             {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To decide', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
           </div>
           {/* "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends. */}
-          <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && leads.some(l => l.seen_before && !l.review_reason) ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>
+          <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && repeats.collapsible ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>
         </div>
       })()}
       {jobId && cardResult && <div className="card px-4 py-3 mb-3 flex flex-wrap items-center gap-3 text-sm" role="status" data-testid="card-result" data-kind={cardResult.kind}>
@@ -1156,7 +1158,7 @@ export default function LeadsClient() {
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review) ?? ''}</p>
+            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
@@ -1367,9 +1369,9 @@ export default function LeadsClient() {
           </div>
         ))}
       </div>
-      {status === 'done' && leads.some(l => l.seen_before) && (
+      {status === 'done' && repeats.collapsible && (
         <button onClick={() => setShowSeen(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2 block">
-          {showSeen ? 'Hide leads from earlier scans' : `Show ${leads.filter(l => l.seen_before).length} lead${leads.filter(l => l.seen_before).length === 1 ? '' : 's'} seen in your earlier scans`}
+          {showSeen ? 'Hide leads from earlier scans' : `Show ${repeats.repeats} lead${repeats.repeats === 1 ? '' : 's'} seen in your earlier scans`}
         </button>
       )}
       {status === 'done' && (hiddenCount > 0 || showHidden) && (
