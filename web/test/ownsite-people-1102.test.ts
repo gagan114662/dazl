@@ -466,3 +466,10 @@ test('round 10 (opus): a state-named city after another place is that place\'s s
   assert.equal(otherOffice('/firm-offices/chicago', ['Chicago, IL']), false)
   assert.equal(otherOffice('/illinois-offices/chicago', ['Chicago, IL']), false)
 })
+
+test('round 11 (opus): country and region words before a state-named city are not another place; "/ca-offices/" is not California', () => {
+  for (const [path, where] of [['/offices/usa/new-york', 'New York, NY'], ['/offices/united-states/new-york', 'New York, NY'], ['/locations/usa/new-york-ny', 'New York, NY'], ['/locations/usa/washington-dc', 'Washington, DC'], ['/locations/united-states/washington', 'Washington, DC'], ['/locations/north-america/new-york', 'New York, NY'], ['/offices/global/new-york', 'New York, NY'], ['/offices/usa/new-york', 'New York'], ['/ca-offices/toronto', 'Toronto, ON']] as const)
+    assert.equal(otherOffice(path, [where]), false, path + ' ' + where)
+  assert.equal(otherOffice('/locations/spokane/washington', ['Washington, DC']), true)
+  assert.equal(otherOffice('/locations/albany/new-york', ['New York, NY']), true)
+})
