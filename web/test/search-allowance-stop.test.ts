@@ -64,12 +64,16 @@ test('a CSV / company run started after the allowance is used up stops the same 
   } finally { for (const [k, v] of [['NEWS_SEARCH_ENABLED', saved.n], ['TINYFISH_TENANT_DAILY', saved.t]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 })
 
-test('stop classification: skipped_cap is the allowance; a hold stays a hold; a failed source stays a source error', () => {
+test('stop classification: skipped_cap is the allowance (also beside a failed news search, #1157); a hold stays a hold', () => {
   const at = (news: string | null, tf: string | null, first5 = false) => { const l = new SourceRunLedger(); if (news) l.record('search:news', news); if (tf) l.record('search:tinyfish', tf); return fallbackStopCode(l, first5) }
   assert.equal(at('skipped_disabled', 'skipped_cap'), 'search_allowance_reached')
   assert.equal(at('empty', 'skipped_cap'), 'search_allowance_reached')
   assert.equal(at('skipped_disabled', 'skipped_cap', true), 'search_allowance_reached', 'also for a first play')
   assert.equal(at('skipped_disabled', 'skipped_hold'), 'unbounded_fallback_hold')
-  assert.equal(at('error:mixed', 'skipped_cap'), 'source_error')
+  // prod 2026-11-14, austin-roofing: the web search refused by the allowance and the news API unreachable was shown as
+  // "Failed - search:news had an error". The allowance is what stopped the main search: it names the stop.
+  assert.equal(at('error:mixed', 'skipped_cap'), 'search_allowance_reached')
+  assert.equal(at('error:network', 'skipped_cap'), 'search_allowance_reached')
+  assert.equal(at('limited', 'skipped_cap'), 'search_allowance_reached')
   assert.equal(at('skipped_disabled', null, true), 'no_lead_source')
 })
