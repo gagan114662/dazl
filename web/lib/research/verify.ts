@@ -40,15 +40,26 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
 const MONTHS_DE = ['jan', 'feb', 'marz', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez']
 const MONTHS_FR = ['janv', 'fevr', 'mars', 'avr', 'mai', 'juin', 'juil', 'aout', 'sept', 'oct', 'nov', 'dec']
 const DAY_MS = 86_400_000
-const MONTH_ALT = [...new Set([...MONTHS, ...MONTHS_DE, ...MONTHS_FR])].join('|')
+// whole month names and their abbreviations (accents are already stripped by flat): "Market 2025" or "Junior 2025" must not read as "Mar 2025" / "Jun 2025"
+const MONTH_ALT = ['january', 'jan', 'february', 'feb', 'march', 'mar', 'april', 'apr', 'may', 'june', 'jun', 'july', 'jul', 'august', 'aug', 'september', 'sept', 'sep', 'october', 'oct', 'november', 'nov', 'december', 'dec',
+  'januar', 'februar', 'marz', 'mai', 'juni', 'juli', 'oktober', 'okt', 'dezember', 'dez',
+  'janvier', 'janv', 'fevrier', 'fevr', 'mars', 'avril', 'avr', 'juin', 'juillet', 'juil', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'].join('|')
 const YEAR = '((?:19|20)\\d{2})'
-const YEAR_IN_DATE = [
-  new RegExp(`\\b(?:${MONTH_ALT})[a-z]*\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?\\s*,?\\s*)?${YEAR}\\b`, 'g'),             // October 2, 2025 / Oct 2025
-  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?(?:${MONTH_ALT})[a-z]*\\.?,?\\s+${YEAR}\\b`, 'g'),            // 2 October 2025 / 2nd of October, 2025
-  new RegExp(`\\b\\d{1,2}[./-]\\d{1,2}[./-]${YEAR}\\b`, 'g'),                                                                // 02/10/2025, 2.10.2025
-  new RegExp(`\\b${YEAR}[./-]\\d{1,2}[./-]\\d{1,2}\\b`, 'g'),                                                                // 2025-10-02
+// Month-name forms run on the flattened quote (flat() turns punctuation into spaces); numeric dates keep their / . - separators, so they run on the
+// raw quote, lower-cased with non-breaking spaces made plain.
+const YEAR_AFTER_MONTH = [
+  new RegExp(`\\b(?:${MONTH_ALT})\\b\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:(?:and|to)\\s+)?)*${YEAR}\\b`, 'g'),                    // October 2, 2025 / October 2-4, 2025 / October 2 and 3, 2025 / Oct 2025
+  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?(?:${MONTH_ALT})\\b\\.?,?\\s+${YEAR}\\b`, 'g'),                                // 2 October 2025 / 2nd of October, 2025
+  new RegExp(`\\b${YEAR},?\\s+(?:(?:on|of|the)\\s+)?(?:\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?)?(?:${MONTH_ALT})\\b`, 'g'),            // 2025, 2 October / 2025 October 2 / in 2025 on 2 October
 ]
-const statedYears = (q: string): number[] => YEAR_IN_DATE.flatMap(re => [...q.matchAll(re)].map(m => Number(m[1])))
+const YEAR_IN_NUMERIC_DATE = [
+  new RegExp(`(?<![\\d./-])\\d{1,2}[./-]\\d{1,2}[./-]${YEAR}(?![\\d])`, 'g'),                                                                   // 02/10/2025, 2.10.2025, 2-10-2025
+  new RegExp(`(?<![\\d./-])${YEAR}[./-]\\d{1,2}[./-]\\d{1,2}(?![\\d])`, 'g'),                                                                   // 2025-10-02
+]
+const statedYears = (q: string, raw: string): number[] => [
+  ...YEAR_AFTER_MONTH.flatMap(re => [...q.matchAll(re)].map(m => Number(m[1]))),
+  ...YEAR_IN_NUMERIC_DATE.flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
+]
 const parseDay = (s: string | null | undefined): number | null => {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
   const t = Date.parse(`${s}T00:00:00Z`)
@@ -74,7 +85,7 @@ export function dateQuoteNames(isoDay: string, dateQuote: string, readAt: number
   // a quote that STATES a year in date position must state THIS one: "2 October 2025" never dates 2026-10-02 (a year-old event read as current).
   // Only a year in date position counts (after a month name and its day, or inside a numeric date): "1944 W 4th Ave. on Sept. 20" has a street
   // number, not a year. No stated year ("2 October") is judged on the month and day alone, as before; another year beside this one is fine.
-  const years = statedYears(q)
+  const years = statedYears(q, dateQuote.toLowerCase().replace(/[\u00a0\u2009\u202f]/g, ' '))
   if (years.length > 0 && !years.includes(y)) return false
   const hasDay = new RegExp(`(^|\\D)0?${dd}(st|nd|rd|th)?(\\D|$)`).test(q)
   // a quote that states a day of the month must state THIS day ("October 2, 2026" never dates 2026-10-03); month and year alone are accepted
