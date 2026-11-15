@@ -91,7 +91,7 @@ export function scorePrompt(icpText: string, leads: { company: string; name: str
   return `You are grading sales leads for one seller. Their target profile (ICP):
 ${icpText}
 
-Today is ${now.toISOString().slice(0, 10)}. Any date before today is in the past.
+Today is ${now.toISOString().slice(0, 10)}. Any date before today is in the past. Knowing today only tells past from future: it never verifies a date, so an unverified date still means intent 0.
 
 Grade each lead below on three axes, 0-5 each:
 - fit: is this company someone the seller would actually sell to, given the ICP (0 = irrelevant or excluded, 5 = exact ICP)
