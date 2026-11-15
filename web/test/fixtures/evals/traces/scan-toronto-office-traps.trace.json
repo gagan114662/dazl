@@ -162,6 +162,23 @@
     "title": "Lakeshore Creative opens Liberty Village studio",
     "retrievedAt": 1792497600
    }
+  },
+  {
+   "id": "s7",
+   "seq": 7,
+   "kind": "http",
+   "name": "tinyfish.search",
+   "start_ms": 350,
+   "duration_ms": 40,
+   "input": {
+    "method": "GET",
+    "url": "https://api.search.tinyfish.ai/?query=%22Northern%20Lights%20Agency%22%20Opened%20a%20new%20office%20Toronto",
+    "body": null
+   },
+   "output": {
+    "status": 200,
+    "body": "{\"results\":[]}"
+   }
   }
  ],
  "synthetic_defaults": {

@@ -1703,6 +1703,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // ADAPTIVE_FETCHES fetches + 1 extraction on top of round one, and the price estimate's maxima include it.
     // DAZL_ADAPTIVE_DISCOVERY_ENABLED=0 turns it off; OFF behaves exactly as without the feature (no round, no calls,
     // no ledger row). Trial scans skip the round on their own policy (paidFallback=false).
+    let adaptiveRan = false
     if (adaptiveDiscoveryOn(process.env) && tfCandidates > 0 && outcome.leads.length === 0 && icpForSources && job.query) {
       const stop = (status: string) => ledger.record('search:adaptive', status)
       // a scheduled play run (a watch's or a monitor's) runs unattended under the caps it was confirmed with: no extra round
@@ -1718,7 +1719,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       else {
         const diag2 = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: diag.recordFetch }
         try {
-          ledger.record('search:adaptive', 'started')
+          ledger.record('search:adaptive', 'started'); adaptiveRan = true
           assertOwned(db, job)
           const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
           const st = summarizeTrace(diag2.trace)
@@ -1767,6 +1768,58 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
           if (e instanceof ProviderError && e.kind === 'auth') throw e
           if (e instanceof SpendRefused) { budgetRefused = true; budgetRefusal ??= e.reason; stop('budget_stopped') } // a bounded stop: never "nothing found"
+          else stop('error')
+        }
+      }
+    }
+    // #381 / #685: a held candidate whose OWN page cannot be read (blocked, JavaScript-only), lacks the quote, or names no day gets one recovery
+    // pass before it is held: the SAME company and event searched on other sources. With the free news search on, that pass ran above (news). With it
+    // off (the staging / prod setting: GDELT rate-limits), the pass now asks TinyFish the same targeted queries ("<company>" <signal> <place>), and
+    // the pages go through the SAME extraction and the SAME verifier as round one; only a verified candidate for the SAME company replaces its held
+    // row (mergeFallback). It uses the adaptive round's allowance (at most ADAPTIVE_SEARCHES searches, the same page reads and one extraction), so
+    // it runs only when that round did not run in this scan: the price estimate's maxima already include it. Same exclusions as the adaptive round:
+    // never a run with paid steps off (a free trial), never a scheduled play run, never after a budget refusal, never too close to the deadline.
+    if (!newsOn && adaptiveDiscoveryOn(process.env) && !adaptiveRan && tinyfishEnabled() && complete && icpForSources && job.query) {
+      const targets = fallbackTargets(outcome.review, icpForSources.where ?? [], icpForSources.window_days ? outcome.leads.filter(l => !l.event_date) : [])
+      const stop = (status: string) => ledger.record('fallback:tinyfish', status)
+      let recurring = !!job.watch_id
+      if (!recurring && targets.length > 0) recurring = isMonitorRun(db, job)
+      const left = jobDeadlines.get(job)
+      if (targets.length === 0) { /* nothing held for a reason another source can fix */ }
+      else if (recurring) stop('skipped:recurring_run')
+      else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
+      else if (budgetRefused) stop('budget_stopped')
+      else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
+      else {
+        const diag3 = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: diag.recordFetch }
+        recoveryTargets = targets
+        recoveryRan = { searched: true }
+        try {
+          stop('started')
+          assertOwned(db, job)
+          // the pages that were held stay skipped: a blocked page answers the same way twice
+          const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag3, undefined, { queries: targets.map(t => t.query), skipUrls: new Set([...diag.hitUrls, ...targets.map(t => t.url)]) })
+          const st = summarizeTrace(diag3.trace)
+          ledger.stats('fallback:tinyfish', { ...st, ...diag3.info })
+          diag.tfTextUrls.push(...diag3.tfTextUrls)
+          const wanted = new Set(targets.map(t => companyKey(t.company)))
+          // only candidates for the held companies: anything else this search turns up is not this pass's business
+          const fresh = (more ?? []).filter(l => wanted.has(companyKey(l.company)))
+          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : (st.searches_not_attempted.cap || st.searches_not_attempted.capacity) ? 'search_cap' : 'empty')
+          else {
+            ledger.candidates('fallback:tinyfish', fresh)
+            assertOwned(db, job)
+            verifiedUrls.push(...fresh.map(l => l.source_url))
+            const held = HeldText.merge(diag.held, diag3.held)
+            const o3 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+            const notes = mergeFallback(outcome, o3, targets)
+            fallbackNotes.push(...notes.filter(n => !fallbackNotes.some(f => f.key === n.key)))
+            stop(notes.length > 0 ? 'ok' : 'empty')
+          }
+        } catch (e) {
+          if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
+          if (e instanceof ProviderError && e.kind === 'auth') throw e
+          if (e instanceof SpendRefused) { budgetRefused = true; budgetRefusal ??= e.reason; stop('budget_stopped') }
           else stop('error')
         }
       }
