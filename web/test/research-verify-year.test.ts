@@ -18,8 +18,9 @@ test('a date quote that states a different YEAR never dates the day ("2 October 
   assert.equal(names('2026-09-20', 'Fable Kitchen will close at 1944 W 4th Ave. on Sept. 20.'), true, 'the real Vancouver lead stays ready')
   assert.equal(names('2026-10-02', 'The office at 2025 Main St opens on October 2.'), true)
   assert.equal(names('2026-10-02', 'Since 1998 the firm opens a second office on October 2.'), true)
-  // another year beside this one is fine; a conflicting year in date position beside a bare day is refused
-  assert.equal(names('2026-10-02', 'Founded March 3, 1998; reopening October 2, 2026'), true)
+  // any other year in date position fails closed, even beside this one: the date quote is the date text
+  assert.equal(names('2026-10-02', 'Founded March 3, 1998; reopening October 2, 2026'), false)
+  for (const q of ['2 October 2025 (updated 2 October 2026)', '2 October 2025 - 2 October 2026', 'Published 2 October 2025, updated 02/10/2026']) assert.equal(names('2026-10-02', q), false, q)
   assert.equal(names('2026-10-02', 'Founded in October 1998, reopening 2 October'), false, 'fails closed: a stated year that is not this one')
   // the day must still match
   assert.equal(names('2026-10-02', 'October 3, 2026'), false)
@@ -30,11 +31,16 @@ test('a date quote that states a different YEAR never dates the day ("2 October 
   for (const q of ['2026, 2 October', 'in 2026 on 2 October', '2026 October 2']) assert.equal(names('2026-10-02', q), true, q)
   // documented gaps, pinned so a change is deliberate: a number right after the day reads as its year (fails closed); 2-digit years are not read
   assert.equal(names('2026-09-20', 'Sept. 20 1944 W 4th Ave.'), false, 'fails closed: a street number straight after the day')
-  assert.equal(names('2026-10-02', '2 Oct 25'), true, 'a 2-digit year is not read (unchanged)')
+  assert.equal(names('2026-10-02', '2 Oct 25'), true, 'a bare 2-digit year is not read (cannot be told from a count)')
+  for (const q of ["Oct 2nd '25", "2 October '25", 'Oct 2, \u201925']) assert.equal(names('2026-10-02', q), false, q)
+  for (const q of ["Oct 2nd '26", "2 October '26"]) assert.equal(names('2026-10-02', q), true, q)
   // the cases only the year rule can change (a named month beside a numeric date, a day range or list, words that start like a month)
   for (const q of ['02/10/2025 opens October 2', '2025-10-02, October 2', '2.10.2025 - opens October 2', 'October 2-4, 2025', 'October 2 and 3, 2025', 'Oct 2 to 4 2025', '2-4 October 2025', '2\u00a0Oct\u00a02025']) assert.equal(names('2026-10-02', q), false, q)
   for (const q of ['02/10/2026 opens October 2', '2026-10-02, October 2', 'October 2-4, 2026', 'October 2 and 3, 2026', 'Decision 2025 plan: we open on October 2', 'Junction 2025 opens October 2', 'Maison 2019 opens October 2', 'The Marathon 2025 winner opens a store October 2']) assert.equal(names('2026-10-02', q), true, q)
   // known trade-offs (fail closed), pinned: a founding month and year beside a bare event day; an address number that follows the month and day
   assert.equal(names('2026-10-02', 'In business since March 2019, our second location opens October 2.'), false)
-  assert.equal(names('2026-10-02', 'Oct 2, 2025 - Oct 2, 2026'), true, 'a range that ends this year names it')
+  assert.equal(names('2026-10-02', 'Oct 2, 2025 - Oct 2, 2026'), false, 'a range that starts in another year: fails closed')
+  // a year that ENDS a sentence or clause before a bare month and day is not the date's year (review: these were refused by the year-before-month rule)
+  for (const q of ['Revenue grew in 2025. On October 2 we open a new office.', 'Prices in 2025 may rise; the store opens October 2.', 'Best of 2025: October 2 launch of our new line', 'Since 2019, on October 2 we open', 'The 2025 Mar-a-Lago event; opens October 2', 'Revenue grew in 2025.\nOctober 2 we open']) assert.equal(names('2026-10-02', q), true, q)
+  assert.equal(names('2026-05-02', 'After a strong 2025, May 2 marks our relaunch.'), true, 'comma then month-first is prose, not a date')
 })

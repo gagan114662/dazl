@@ -50,7 +50,17 @@ const YEAR = '((?:19|20)\\d{2})'
 const YEAR_AFTER_MONTH = [
   new RegExp(`\\b(?:${MONTH_ALT})\\b\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?\\s+(?:(?:and|to)\\s+)?)*${YEAR}\\b`, 'g'),                    // October 2, 2025 / October 2-4, 2025 / October 2 and 3, 2025 / Oct 2025
   new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?(?:${MONTH_ALT})\\b\\.?,?\\s+${YEAR}\\b`, 'g'),                                // 2 October 2025 / 2nd of October, 2025
-  new RegExp(`\\b${YEAR},?\\s+(?:(?:on|of|the)\\s+)?(?:\\d{1,2}(?:st|nd|rd|th)?\\.?\\s+(?:of\\s+)?)?(?:${MONTH_ALT})\\b`, 'g'),            // 2025, 2 October / 2025 October 2 / in 2025 on 2 October
+]
+// A year BEFORE the month, on the raw quote (punctuation kept, so a year that ends a sentence or a clause is not read as the year of the next date):
+// day-first may follow a comma ("2025, 2 October"); month-first must follow the year directly with a day after the month ("2025 October 2"), so
+// "Prices in 2025 may rise" is not a date and "Revenue grew in 2025. On October 2" is not 2025. A newline never joins them.
+const APOSTROPHE_YEAR = [   // "Oct 2nd '25", "2 October '25" (raw quote)
+  new RegExp(`(?:${MONTH_ALT})\\b\\.? \\d{1,2}(?:st|nd|rd|th)?,? ['\u2019](\\d{2})\\b`, 'g'),
+  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)? (?:of )?(?:${MONTH_ALT})\\b\\.?,? ['\u2019](\\d{2})\\b`, 'g'),
+]
+const YEAR_BEFORE_MONTH = [
+  new RegExp(`(?<![\\d./-])${YEAR},? (?:(?:on|of|the) )?\\d{1,2}(?:st|nd|rd|th)?\\.? (?:of )?(?:${MONTH_ALT})\\b`, 'g'),                      // 2025, 2 October / in 2025 on 2 October / 2025 the 2nd of October
+  new RegExp(`(?<![\\d./-])${YEAR} (?:(?:on|of|the) )?(?:${MONTH_ALT})\\b\\.? \\d{1,2}(?:st|nd|rd|th)?\\b`, 'g'),                              // 2025 October 2
 ]
 const YEAR_IN_NUMERIC_DATE = [
   new RegExp(`(?<![\\d./-])\\d{1,2}[./-]\\d{1,2}[./-]${YEAR}(?![\\d])`, 'g'),                                                                   // 02/10/2025, 2.10.2025, 2-10-2025
@@ -59,6 +69,8 @@ const YEAR_IN_NUMERIC_DATE = [
 const statedYears = (q: string, raw: string): number[] => [
   ...YEAR_AFTER_MONTH.flatMap(re => [...q.matchAll(re)].map(m => Number(m[1]))),
   ...YEAR_IN_NUMERIC_DATE.flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
+  ...YEAR_BEFORE_MONTH.flatMap(re => [...raw.matchAll(re)].map(m => Number(m[1]))),
+  ...APOSTROPHE_YEAR.flatMap(re => [...raw.matchAll(re)].map(m => 2000 + Number(m[1]))),
 ]
 const parseDay = (s: string | null | undefined): number | null => {
   if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
@@ -82,11 +94,13 @@ export function dateQuoteNames(isoDay: string, dateQuote: string, readAt: number
   const monthNamed = [MONTHS, MONTHS_DE, MONTHS_FR].some(list => new RegExp(`\\b${list[m]}`).test(q))
   const monthNumber = new RegExp(`(^|\\D)0?${m + 1}[./ -]`).test(q) || new RegExp(`[./ -]0?${m + 1}(\\D|$)`).test(q)
   const hasYear = new RegExp(`\\b${y}\\b`).test(q)
-  // a quote that STATES a year in date position must state THIS one: "2 October 2025" never dates 2026-10-02 (a year-old event read as current).
-  // Only a year in date position counts (after a month name and its day, or inside a numeric date): "1944 W 4th Ave. on Sept. 20" has a street
-  // number, not a year. No stated year ("2 October") is judged on the month and day alone, as before; another year beside this one is fine.
+  // a quote that STATES a year in date position must state only THIS one: "2 October 2025" never dates 2026-10-02 (a year-old event read as current),
+  // and neither does "2 October 2025 (updated 2 October 2026)": the date quote is the date text, so any other year in it fails closed. Only a year in
+  // date position counts (after a month name and its day, or inside a numeric date; an apostrophe year "'25"): "1944 W 4th Ave. on Sept. 20" has a
+  // street number, not a year. No stated year ("2 October") is judged on the month and day alone, as before. A bare two-digit year ("2 Oct 25") is
+  // not read: it cannot be told from a count ("2 October, 25 people").
   const years = statedYears(q, dateQuote.toLowerCase().replace(/[\u00a0\u2009\u202f]/g, ' '))
-  if (years.length > 0 && !years.includes(y)) return false
+  if (years.some(v => v !== y)) return false
   const hasDay = new RegExp(`(^|\\D)0?${dd}(st|nd|rd|th)?(\\D|$)`).test(q)
   // a quote that states a day of the month must state THIS day ("October 2, 2026" never dates 2026-10-03); month and year alone are accepted
   // only when the quote states no day at all
