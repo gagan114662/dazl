@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { getMasterKey } from '@/lib/secrets'
-import { claimPreview, isClaimToken, readPublicClaim } from '@/lib/scan/preview-claim'
+import { claimPreview, isClaimToken, publicClaimCompanies, readPublicClaim } from '@/lib/scan/preview-claim'
 import { clearClaimCookie, PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
 import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit, UNAVAILABLE_RETRY_S } from '@/lib/rate-limit'
@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
   if (c.status === 'ok') {
     const { offer, companies, disclaimer, expiresAt } = c.snapshot
     return NextResponse.json({ ok: true, business: c.business, expiresAt, offer: { text: offer.text, sourceUrl: offer.sourceUrl },
-      companies: companies.map(co => ({ company: co.company, event: co.event, eventDate: co.eventDate, quote: co.quote, sourceUrl: co.sourceUrl })), disclaimer })
+      companies: publicClaimCompanies(companies), disclaimer })
   }
   return NextResponse.json({ error: 'This preview is no longer available.', code: c.status }, { status: c.status === 'unknown' ? 404 : 410 })
 }

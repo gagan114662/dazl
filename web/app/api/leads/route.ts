@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
-    why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
+    why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr, basis: (l as typeof l & {date_basis?:string|null}).date_basis ?? null }),
     currentness_held:currentnessHeld(getScanDb(),user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null,
     lookalike_fit:la && la !== 'unreadable' ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and

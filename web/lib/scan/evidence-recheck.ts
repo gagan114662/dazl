@@ -15,15 +15,18 @@ import {ownPostDate,type OwnPostInput} from './own-post-date.ts'
 const ownPostOr=(b:{bound:boolean;why:string},day:string,i:OwnPostInput)=>{if(b.bound)return b;const o=ownPostDate(i);return o.date===day?{bound:true,why:o.why}:b}
 // #1099: a day the scan took from the quote's relative day or, labelled, from the announcing page's own publication day (announcement-date.ts) is
 // rechecked by the SAME rule that gave it, on the page as it is now: bound only when that rule gives the same day again
-const pageDayOr=(b:{bound:boolean;why:string},day:string,basis:string|null|undefined,i:{quote:string;company:string;title?:string|null;pageText:string;published:string|null|undefined;structured?:string[]})=>{if(b.bound)return b;const r=basis===DATE_BASIS_DATELINE?announcementDatelineDay(i):relativeEventDay(i);return r.day===day?{bound:true,why:r.why}:b}
+// Only the rule that dated it: a dateline lead by the dateline rule, a lead whose stored proof note is the relative-day rule's by that rule (never a hiring lead,
+// never a day the scan took some other way, so a model-claimed day cannot start to recheck as bound).
+const RELATIVE_NOTE=/counted from the page's own publication day/
+const pageDayOr=(b:{bound:boolean;why:string},day:string,lead:{date_basis?:string|null;event_date_proof_note?:string|null;signal:string;signal_kind:string|null},i:{quote:string;company:string;title?:string|null;pageText:string;published:string|null|undefined;structured?:string[]})=>{if(b.bound)return b;const rule=lead.date_basis===DATE_BASIS_DATELINE?announcementDatelineDay:RELATIVE_NOTE.test(lead.event_date_proof_note??'')&&!isHiringTrigger(lead.signal,lead.signal_kind)?relativeEventDay:null;if(!rule)return b;const r=rule(i);return r.day===day?{bound:true,why:r.why}:b}
 import {counterpartySignal} from './counterparty.ts'
 import {isHiringTrigger} from './scoreboard.ts'
 // the verifier's date rejections (lib/scan/runner.ts DATE_REJECTS): a claimed day the date rules reject never takes the board proof
 const DATE_REJECTS=new Set(['bad_date','stale','future_date'])
-interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;signal_kind:string|null;source_url:string;evidence_excerpt:string|null;event_date:string|null;date_basis?:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
+interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;signal_kind:string|null;source_url:string;evidence_excerpt:string|null;event_date:string|null;date_basis?:string|null;event_date_proof_note?:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
 export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=new Date()){
  const d=asDb(db)
- const read=()=>d.get<Saved>(`SELECT l.id,l.scan_job_id,l.company,l.name,l.signal,l.signal_kind,l.source_url,l.evidence_excerpt,l.event_date,l.date_basis,l.review_reason,l.company_domain,l.contact,l.human_confirmed_at,j.query,j.icp FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?`,[id,tenant])
+ const read=()=>d.get<Saved>(`SELECT l.id,l.scan_job_id,l.company,l.name,l.signal,l.signal_kind,l.source_url,l.evidence_excerpt,l.event_date,l.date_basis,l.event_date_proof_note,l.review_reason,l.company_domain,l.contact,l.human_confirmed_at,j.query,j.icp FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?`,[id,tenant])
  const lead=await read();if(!lead)return null
  const offer=await readPlayOffer(db,tenant,lead.scan_job_id)
  const base={lead_id:id,job_id:lead.scan_job_id,company:lead.company,source_url:lead.source_url,checked_at:Math.floor(now.getTime()/1000),offer:offer?.offer??null,query:lead.query,model_call:false,search_call:false,eligibility_changed:false,can_draft:false}
@@ -42,7 +45,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  // day, is bound by the page text or is undated
  const dateRejected=!literal.ok&&DATE_REJECTS.has(literal.reason)
  const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&isHiringTrigger(lead.signal,lead.signal_kind)
- const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...pageDayOr(ownPostOr(eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),lead.event_date,{request:lead.query,company:lead.company,url:lead.source_url,excerpt:candidate.excerpt,page}),lead.event_date,lead.date_basis,{quote:candidate.excerpt,company:lead.company,title:page.title,pageText:page.text,published:page.published,structured:page.structured}),proof:'page_bound' as const}:null
+ const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...pageDayOr(ownPostOr(eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),lead.event_date,{request:lead.query,company:lead.company,url:lead.source_url,excerpt:candidate.excerpt,page}),lead.event_date,lead,{quote:candidate.excerpt,company:lead.company,title:page.title,pageText:page.text,published:page.published,structured:page.structured}),proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')
  const reasons:string[]=[]

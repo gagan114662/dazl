@@ -61,3 +61,41 @@ test('evidence recheck: a stored dateline day is bound while the page still give
   const moved = await evidenceRecheck(db, 'u', 'L1', page('2026-10-13') as never, NOW)
   assert.equal(moved?.checks?.event_date_bound, false, 'the page now gives another day: the stored one is not re-proven')
 })
+
+test('third review: the claim GET keeps the basis; the timing headline, Home research cause and Leads strings never call a dateline day verified', async () => {
+  const { publicClaimCompanies } = await import('../lib/scan/preview-claim.ts')
+  const { timingHeadline } = await import('../lib/scan/leads-view.ts')
+  const { researchCause, researchHint, CAUSE_TEXT } = await import('../lib/lead-state.ts')
+  const co = { company: 'finmid', event: 'raised', quote: FINMID_Q, eventDate: '2026-10-12', sourceUrl: 'https://news.test/finmid' }
+  assert.deepEqual(publicClaimCompanies([{ ...co, dateBasis: 'announcement_dateline' }, co]).map(c => (c as { dateBasis?: string }).dateBasis), ['announcement_dateline', undefined])
+  assert.match(src('../app/api/preview/claim/route.ts'), /companies: publicClaimCompanies\(companies\)/)
+  for (const t of [{ timing: 'proof_backed' as const, basis: 'announcement_dateline' }, { timing: 'unconfirmed' as const, reason: 'out_of_window' as const, basis: 'announcement_dateline' }]) {
+    assert.match(timingHeadline(t), /page announcing the event is dated/); assert.doesNotMatch(timingHeadline(t), /event (?:day|timing) is verified/i)
+  }
+  assert.match(timingHeadline({ timing: 'proof_backed' }), /Event timing is verified/, 'an event-day lead keeps its copy')
+  const lead = { id: 'l', company: 'finmid', event_date: '2026-10-12', day_verified: true, currentness_held: true, review_reason: 'needs_review' } as never
+  assert.equal(researchCause({ ...(lead as object), date_basis: 'announcement_dateline' } as never), 'need_announced')
+  assert.equal(researchCause(lead), 'need')
+  assert.doesNotMatch(CAUSE_TEXT.need_announced, /event day verified/)
+  assert.doesNotMatch(researchHint(['need_announced']), /event day/); assert.match(researchHint(['need_announced']), /announcement/)
+  assert.match(researchHint(['need', 'need_announced', 'undated']), /For 1 of them the event day is verified on the cited source and 1 is dated by the published announcement/)
+  const client = src('../app/app/leads/leads-client.tsx')
+  assert.match(client, /date_basis === 'announcement_dateline' \? ' \(timing: announcement dated\)' : ' \(timing proof-backed\)'/)
+  assert.match(client, /date_basis === 'announcement_dateline' \? 'the page announcing the event is dated on the cited source/)
+})
+
+test('third review R8: the recheck never applies the relative rule to a day the scan took some other way', async () => {
+  const db = new Database(':memory:'); migrateScan(db)
+  db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)'); db.prepare('INSERT INTO users VALUES(?,?,?)').run('u', 'Card issuing for fintechs', '')
+  const job = createQueryJob(db, 'u', { query: 'Fintech startups in Berlin, Germany that raised a funding round in the last 365 days' })
+  db.prepare("UPDATE scan_jobs SET status='running',seller=?,offer=?,icp=? WHERE id=?").run('Card issuing for fintechs', 'Card issuing for fintechs',
+    JSON.stringify({ summary: 'Berlin fintech', who: [], industries: ['Fintech'], sizes: [], where: ['Berlin', 'Germany'], signals: ['raised a funding round'], exclude: [], window_days: 365 }), job)
+  const Q = 'finmid on Monday raised €17m in a Series A extension funding round'
+  const ins = db.prepare('INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,event_date,event_date_proof,event_date_proof_note,review_reason) VALUES(?,?,?,?,?,?,?,?,?,?)')
+  ins.run('CLAIMED', job, 'finmid', 'Raised a Series A extension', 'https://news.test/a', Q, '2026-10-12', null, null, null)
+  ins.run('REL', job, 'finmid', 'Raised a Series A extension', 'https://news.test/b', Q, '2026-10-12', 'page_bound', `"on Monday" in the evidence sentence naming this company, counted from the page's own publication day 2026-10-14`, null)
+  const page = async () => ({ text: `finmid raises €17m. ${Q}. More.`, title: TITLE, published: '2026-10-14', structured: [], retrievedAt: 1 })
+  const NOW = new Date('2026-10-30T12:00:00Z')
+  assert.equal((await evidenceRecheck(db, 'u', 'CLAIMED', page as never, NOW))?.checks?.event_date_bound, false, 'a model-claimed day is not re-proven by the relative rule')
+  assert.equal((await evidenceRecheck(db, 'u', 'REL', page as never, NOW))?.checks?.event_date_bound, true, 'the relative-day lead is re-proven by its own rule')
+})

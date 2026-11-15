@@ -38,6 +38,12 @@ test('nothing is dated without a stated relative day, a publication day, the com
   // re-review R5: the relative day of an ANNOUNCING verb is the announcement's, never the event's own day
   for (const q of ['Acme today announced it raised $20M', 'Acme on Monday announced it had acquired Beta', 'Acme on Monday confirmed it closed its Series B', 'Acme yesterday disclosed it secured $5M', 'Acme rival Beta on Monday raised $5M'])
     assert.equal(rel(q, 'Acme', '2026-10-12'), null, q)
+  // third review R1/R2/R5: the relative day must be the company's own statement's, never another clause's or another subject's
+  for (const q of ['Beta said on Monday that Acme raised $20M', 'Acme raised $20M, Beta said on Monday', 'Beta on Monday confirmed Acme raised $20M', 'Acme raised $20M in 2019, its CEO said on Monday', 'A rival of Acme on Monday raised $20M'])
+    assert.equal(rel(q, 'Acme', '2026-10-14'), null, q)
+  assert.equal(rel('On Wednesday, Krones inaugurated its new facility in Kolar', 'Krones', '2026-08-19'), '2026-08-19', 'a relative day leading the company\'s own sentence')
+  assert.equal(rel('On Tuesday, Krones on Wednesday inaugurated its facility', 'Krones', '2026-08-19'), null, 'two relative days')
+  assert.equal(rel('Krones on Wednesday inaugurated its facility', 'Krones', '2026-08-19'), '2026-08-19')
   assert.equal(rel('Krones today is one of the leading equipment makers', 'Krones', '2026-10-12'), null, 'no completed event')
   assert.equal(rel('Today, Krones operates 20 plants', 'Krones', '2026-10-12'), null, 'no completed event')
   assert.equal(rel('Krones opens its new plant on Friday', 'Krones', '2026-10-12'), null, 'present tense for a future opening')

@@ -50,6 +50,10 @@ export interface ClaimSnapshot {
   companies: ProofCompany[]; disclaimer: string
 }
 
+// The companies a claim page is served: only the fields it renders, and the #1099 date basis so an announcement-dated day reads "announced <date>"
+export const publicClaimCompanies = (companies: ProofCompany[]) => companies.map(co => ({ company: co.company, event: co.event, eventDate: co.eventDate, quote: co.quote, sourceUrl: co.sourceUrl,
+  ...(co.dateBasis === 'announcement_dateline' ? { dateBasis: co.dateBasis } : {}) }))
+
 const claimKey = (master: Buffer) => createHmac('sha256', master).update('dazl-preview-claim-v1').digest()
 const sign = (master: Buffer, id: string) => createHmac('sha256', claimKey(master)).update(id).digest('hex').slice(0, 32)
 export const isClaimToken = (t: unknown): t is string => typeof t === 'string' && /^[a-f0-9]{32}\.[a-f0-9]{32}$/.test(t)

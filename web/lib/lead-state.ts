@@ -8,7 +8,7 @@
 import { heldReason, type PreviewLead } from './journey.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
-export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need'
+export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need' | 'need_announced'
 
 // A person's check of the source can turn these into a usable lead (#352: Home, the Leads view and the draft gate agree):
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
@@ -52,7 +52,8 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   // #1176 reader 2 (prod 2121e61c: "Zayed Law: no usable event date." beside a card that says "verified on the cited source"): the day IS proven.
   // What still holds the lead is the timing gate (currentnessHeld -> timingProofGap: domain, named person, route or record not all confirmed by the
   // machine, and no confirmation by the user). It stays research, as the Leads card says ("Quote-backed research only"); only its words change.
-  if (l.currentness_held) return 'need'
+  // #1099: a day proven as the ANNOUNCEMENT's (date_basis 'announcement_dateline') is said as such, never as the event's verified day
+  if (l.currentness_held) return (l as { date_basis?: string | null }).date_basis === 'announcement_dateline' ? 'need_announced' : 'need'
   return 'unsupported'
 }
 
@@ -84,18 +85,22 @@ export const CAUSE_TEXT: Record<ResearchCause, string> = {
   undated: 'no usable event date', older: 'event older than your time window', customer: "only another company's page names it, as their customer",
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
   need: 'event day verified on the cited source; the rest of the lead is not confirmed yet',
+  need_announced: 'the page announcing the event is dated on the cited source (the event happened on or before that day); the rest of the lead is not confirmed yet',
 }
 // Home's one-line reason under "Nothing ready - the leads found are research only". It used to say for every such play that none has
 // verified, dated evidence - false when a lead's day IS verified and only the rest of the lead is not (#1176 reader 2).
 export function researchHint(causes: ResearchCause[]): string {
-  const need = causes.filter(c => c === 'need').length
-  if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
+  const need = causes.filter(c => c === 'need').length, announced = causes.filter(c => c === 'need_announced').length
+  if (need === 0 && announced === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
+  // #1099: announcement-dated leads are dated by the published announcement, never said to have a verified event day
+  if (need === 0) return `${announced === causes.length ? (announced === 1 ? 'It is' : 'They are') : `${announced} of them are`} dated by the published announcement of the event (the event happened on or before that day), but the rest of the lead is not confirmed yet. Each lead's reason is below.`
+  if (announced > 0) return `For ${need} of them the event day is verified on the cited source and ${announced} ${announced === 1 ? 'is' : 'are'} dated by the published announcement of the event, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
   return `${need === causes.length ? (need === 1 ? 'Its event day is' : 'Their event days are') : `For ${need} of them the event day is`} verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
 }
 // Home's "N research only" chip explains the WHOLE group in its InfoTip. It used to give one fixed list of reasons ("No verified, dated event, outside your
 // time window, or someone else's customer") for every lead in it - false for a lead whose day IS verified and that only the timing gate holds (#1176, the
 // prod live check of 66449147: Zayed Law and Ogletree Deakins under that sentence). It now names the causes the group really has, in the per-lead lines' own words.
-const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported']
+const CAUSE_ORDER: ResearchCause[] = ['need', 'need_announced', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported']
 export function researchTip(causes: ResearchCause[]): string {
   const n = new Map<ResearchCause, number>()
   for (const c of causes) n.set(c, (n.get(c) ?? 0) + 1)

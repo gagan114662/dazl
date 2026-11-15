@@ -38,11 +38,16 @@ const KINDS: { kind: string; verb: RegExp; title: RegExp; needs?: RegExp }[] = [
 ]
 const FUTURE = /\b(?:will|would|shall|plans?|planned|planning|intends?|intended|aims?|set to|to (?:open|launch|hold|host|start|begin|unveil|raise|acquire|hire|expand)|expected|expects|scheduled|upcoming|next|soon|preparing|prepares|considering|in talks|wird|werden|soll|morgen|demnächst|künftig|plant,? (?:ein|eine|einen|den|die|das))\b/i
 const MONTH = /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|januar|februar|märz|mai|juni|juli|oktober|dezember)\b/i
-// a period of the quote's own; a bare 4-digit year only as a year (not "2,026 employees" or "€2025")
-const OWN_PERIOD = /\b(?:q[1-4]|h[12]|(?:first|second|third|fourth) (?:quarter|half)|(?:last|this|past|previous|next) (?:week|month|year|quarter|spring|summer|fall|autumn|winter)|(?:earlier|later) this (?:week|month|year)|recently|ago|tomorrow|spring|summer|autumn|winter|letztes jahr|kürzlich)\b|(?<![\d,.€$£])\b(?:19|20)\d{2}\b(?![\d,.%])/i
+// a period of the quote's own; a bare 4-digit year only as a year (not "2,026 employees" or "€2025"; "in 2019," and "in 2019." are years)
+const OWN_PERIOD = /\b(?:q[1-4]|h[12]|(?:first|second|third|fourth) (?:quarter|half)|(?:last|this|past|previous|next) (?:week|month|year|quarter|spring|summer|fall|autumn|winter)|(?:earlier|later) this (?:week|month|year)|recently|ago|tomorrow|spring|summer|autumn|winter|letztes jahr|kürzlich)\b|(?<![\d,.€$£])\b(?:19|20)\d{2}\b(?![\d%]|[,.]\d)/i
 const RELATIVE = /\b(today|yesterday|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i
 // an appositive between commas that is itself a clause or a recap ("Acme, which previously raised $5M, ...") is not a description of the company
-const NOT_APPOSITIVE = /\b(?:which|who|whom|whose|that|previously|earlier|first|before|after|since|was|were|been|being|by|said|says|reported|reports|according|announced|confirmed|disclosed|revealed|die|der|das|welche|welcher|zuvor|bereits)\b/i
+const NOT_APPOSITIVE = /\b(?:which|who|whom|whose|that|previously|earlier|first|before|after|since|was|were|been|being|by|said|says|say|sources|reported|reports|according|announced|confirmed|disclosed|revealed|die|der|das|welche|welcher|zuvor|bereits)\b/i
+// before the name (same sentence): a preposition, a reporting clause or a role ("Investors in Acme raised", "A rival of Acme raised", "Beta said on
+// Monday that Acme raised", "Like Acme, Beta raised") means the subject is someone else, or the day belongs to someone else's statement
+const NOT_SUBJECT_PREFIX = /\b(?:of|in|for|by|with|from|to|at|on|like|unlike|than|as|after|before|that|which|who|said|says|say|told|according|while|when|whereas|rivals?|competitors?|investors?|backers?|customers?|clients?|partners?|parent|von|für|bei|mit|nach|wie|dass|laut)\b/i
+const JOINED_SUBJECT = /(?:\b(?:and|or|und|oder)|&|,)\s*$/i
+const RELATIVE_LEAD = /^\s*(today|yesterday|on (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s*,?\s*/i
 // a running total is not one event ("has raised a total of $50M over 3 rounds")
 const CUMULATIVE = /\b(?:total|totals|to date|so far|in all|altogether|cumulative|over (?:\d+|two|three|four|five|several|multiple) (?:rounds|years)|insgesamt|bisher|bislang)\b/i
 const NOT_ANNOUNCEMENT_TITLE = /\b(?:profile|directory|about|archive|reviews?|careers?|jobs?|interview|top \d+|\d+ (?:startups|companies|firms|deals|rounds)|round-?up|digest|newsletter|this week in|weekly|monthly|recap|list of)\b/i
@@ -57,29 +62,34 @@ export type PageDateResult = { day: string; why: string } | { day: null; why: st
 // partners raised") is refused: the verb is then not (or not provably) the company's own event, or the day belongs to an announcement of it. German
 // perfect ("mika hat sechs Millionen Euro ... eingesammelt"): "hat"/"haben", then words with no comma, then the participle.
 const GERMAN_PARTICIPLE = /^(?:eingesammelt|erhalten|abgeschlossen|eröffnet|übernommen|gestartet)$/iu
-function predicate(rest: string, whole: string): { kind: string } | null {
+function predicate(rest: string): { kind: string; rel: string | null } | null {
   let r = rest.trim()
-  const rel = /^(?:today|yesterday|on (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+/i.exec(r)
+  const rel = /^(today|yesterday|on (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+/i.exec(r)
   if (rel) r = r.slice(rel[0].length)
-  const words: string[] = []
+  const words: { w: string; object: string }[] = []
   const de = rel ? null : /^(?:hat|haben)\s+([^,.;:!?]{1,160})/iu.exec(r)
-  if (de) words.push(...de[1].split(/\s+/))   // German perfect: the participle, anywhere before a comma
-  else {
+  if (de) {
+    // German perfect: the participle, anywhere before a comma; a negated clause ("hat keine Finanzierung eingesammelt") is no event
+    if (/(?<![\p{L}])(?:nicht|kein\p{L}*|nie|niemals)(?![\p{L}])/iu.test(de[1])) return null
+    for (const w of de[1].split(/\s+/)) words.push({ w, object: de[1] })
+  } else {
     const aux = /^(?:has|have)\s+/i.exec(r)
     if (aux) r = r.slice(aux[0].length)
-    words.push(r.split(/\s+/)[0] ?? '')
+    const ws = r.split(/\s+/)
+    words.push({ w: ws[0] ?? '', object: ws.slice(1, 8).join(' ').split(/[,;.!?]\s|[,;]|\s(?:and|or|und|oder)\s/i)[0] })   // the verb's own object, up to a comma or "and": "closed an €18 million Series A round", not "closed its office, cutting 20 million"
   }
-  for (const w of words) {
+  for (const { w, object } of words) {
     const word = w.replace(/[^\p{L}]/gu, '')
     // a German participle is past only after hat/haben ("Krones eröffnet morgen" is the present: it opens tomorrow)
     if (!de && GERMAN_PARTICIPLE.test(word)) continue
-    for (const k of KINDS) if (k.verb.test(word) && (!k.needs || k.needs.test(whole))) return { kind: k.kind }
+    for (const k of KINDS) if (k.verb.test(word) && (!k.needs || k.needs.test(object))) return { kind: k.kind, rel: rel ? rel[1] : null }
   }
   return null
 }
 // one character for one character (indices kept), accents dropped: "Müller" is found where companyKey says "muller"
 const plainChars = (s: string) => Array.from(s, ch => { const b = ch.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); return b.length === ch.length ? b : ch }).join('')
-function ownCompletedEvent(quote: string, company: string): { kind: string } | { kind: null; why: string } {
+// rel: the relative day that belongs to THIS statement (right after the name, or leading the sentence: "On Wednesday, Krones inaugurated"), else null
+function ownCompletedEvent(quote: string, company: string): { kind: string; rel: string | null } | { kind: null; why: string } {
   const key = companyKey(company)
   if (!key || !hasPhrase(norm(quote), key)) return { kind: null, why: 'the quote does not name the company' }
   if (FUTURE.test(quote)) return { kind: null, why: 'a plan or future event, not a completed one' }
@@ -88,16 +98,21 @@ function ownCompletedEvent(quote: string, company: string): { kind: string } | {
   const name = key.split(' ').map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^\\p{L}\\p{N}]+')
   const at = new RegExp(`(?<![\\p{L}\\p{N}])${name}(?![\\p{L}\\p{N}])`, 'iu').exec(plainChars(q))
   if (!at) return { kind: null, why: 'the quote does not name the company' }
+  const before = q.slice(0, at.index).split(/[.!?;:]\s/).pop() ?? ''
+  const lead = RELATIVE_LEAD.exec(before)
+  const prefix = lead ? before.slice(lead[0].length) : before
+  if (NOT_SUBJECT_PREFIX.test(prefix) || JOINED_SUBJECT.test(prefix)) return { kind: null, why: 'the company is not the subject of the sentence (a preposition, a role, a reporting clause or a joint subject before its name)' }
+  const withLead = (p: { kind: string; rel: string | null }) => (lead && p.rel ? null : { kind: p.kind, rel: p.rel ?? (lead ? lead[1] : null) })
   const after = q.slice(at.index + at[0].length)
-  const direct = predicate(after, q)
-  if (direct) return direct
+  const direct = predicate(after)
+  if (direct) return withLead(direct) ?? { kind: null, why: 'two relative days' }
   if (/^\s*,/.test(after)) {
     const parts = after.replace(/^\s*,/, '').split(',')
     for (let k = 1; k < Math.min(parts.length, 6); k++) {
       const appositive = parts.slice(0, k).join(',')
       if (appositive.length > 220 || NOT_APPOSITIVE.test(appositive) || appositive.split(/\s+/).some(w => KINDS.some(x => x.verb.test(w.replace(/[^\p{L}]/gu, ''))))) break
-      const p = predicate(parts.slice(k).join(','), q)
-      if (p) return p
+      const p = predicate(parts.slice(k).join(','))
+      if (p) return withLead(p) ?? { kind: null, why: 'two relative days' }
     }
   }
   return { kind: null, why: 'the quote does not state a completed event with the company as its subject (another subject, an announcement of it, or a recap)' }
@@ -136,6 +151,8 @@ export function relativeEventDay(i: Omit<PageDateInput, 'title' | 'pageText'> & 
   if (datePositions(rest).length || MONTH.test(rest) || OWN_PERIOD.test(rest) || RELATIVE.test(rest)) return { day: null, why: 'the quote also states another day or period' }
   const ev = ownCompletedEvent(q, i.company)
   if (!ev.kind) return { day: null, why: (ev as { why: string }).why }
+  // the relative day must be the company's own statement's ("Krones on Wednesday inaugurated"), never another clause's ("Acme raised $20M, Beta said on Monday")
+  if (!ev.rel || ev.rel.toLowerCase() !== m[1].toLowerCase()) return { day: null, why: 'the relative day is not the one of the company\'s own statement' }
   const at = new Date(`${pub.day}T00:00:00Z`)
   const back = m[1].toLowerCase() === 'today' ? 0 : m[1].toLowerCase() === 'yesterday' ? 1 : (at.getUTCDay() - WEEKDAYS.indexOf(m[2].toLowerCase()) + 7) % 7
   const day = new Date(at.getTime() - back * 86_400_000).toISOString().slice(0, 10)
