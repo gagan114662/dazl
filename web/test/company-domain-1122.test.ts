@@ -303,3 +303,27 @@ test('#1122 plainText is linear on hostile pages and drops script, style, svg, t
   for (const h of ['<script '.repeat(500_000), '<'.repeat(4_000_000), '<!--'.repeat(1_000_000), '<style>'.repeat(500_000)]) { const t0 = Date.now(); sc.plainText(h); assert.ok(Date.now() - t0 < 1500, `${h.slice(0, 8)}: ${Date.now() - t0} ms`) }
   assert.equal(sc.plainText('<p>A<script>x<y</script>B<!-- c -->C<STYLE>d</STYLE>D<svg><path/></svg>E &amp; F&nbsp;G</p>'), 'A B C D E & F G')
 })
+
+test('#1122 the REAL qsdc.ca pages (saved from the production box and from another edge): the guessed queenstreetdentalcentre.ca forwards there and the site is bound by the unchanged name and place checks', async () => {
+  const { readFileSync } = await import('node:fs'); const { gunzipSync } = await import('node:zlib')
+  const fx = (f: string) => new URL(`./fixtures/qsdc-1122/${f}`, import.meta.url)
+  const page = (f: string) => gunzipSync(readFileSync(fx(f))).toString('utf8')
+  const MAX = 800_000
+  // what the crawl's fetch returns for a page: the body capped at 800 KB and, for a larger page, its whole visible text (rawGet at this head)
+  const served = (html: string, withText: boolean) => (html.length > MAX && withText ? { body: html.slice(0, MAX), text: sc.plainText(html) } : { body: html.slice(0, MAX) })
+  for (const [variant, homeFile, withText, expected] of [['box', 'home-box.html.gz', true, 'qsdc.ca'], ['edge', 'home-edge.html.gz', true, 'qsdc.ca'], ['edge, stored body only (as on 576f9c8c)', 'home-edge.html.gz', false, null]] as [string, string, boolean, string | null][]) {
+    const home = served(page(homeFile), withText), contact = served(page('contact-box.html.gz'), withText), robots = readFileSync(fx('robots.txt'), 'utf8')
+    const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+    const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+    db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+    db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)').run('L1', job, 'Queen Street Dental Centre', null, 'Dental receptionist', 'https://ca.linkedin.com/jobs/view/dental-receptionist-queen-street-dental-at-123dentist-4487372096', 'Queen Street Dental Centre is hiring a dental receptionist', null, 85, 'blocked_by_site')
+    const get: Get = async url => { const u = new URL(url); if (u.hostname.replace(/^www\./, '') !== 'qsdc.ca') return null; if (u.pathname === '/robots.txt') return { status: 200, body: robots, finalUrl: url }; if (u.pathname === '/') return { status: 200, ...home, finalUrl: 'https://www.qsdc.ca/' }; if (u.pathname === '/contact') return { status: 200, ...contact, finalUrl: url }; return { status: 404, body: '', finalUrl: url } }
+    await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async (h: string) => (h === 'queenstreetdentalcentre.ca' ? 'qsdc.ca' : null) })
+    const domain = (db.prepare('SELECT company_domain d FROM leads').get() as { d: string | null }).d
+    assert.equal(domain, expected, variant)
+    if (expected) {
+      assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'domain'").all() as { value: string }[]).map(r => r.value), ['qsdc.ca|name_probe'], `${variant}: a guess reached through the forward, never "linked from the source"`)
+      assert.ok((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'phone'").all() as { value: string }[]).some(r => r.value.replace(/\D/g, '').endsWith('4164695261')), `${variant}: the site's published phone is read`)
+    }
+  }
+})
