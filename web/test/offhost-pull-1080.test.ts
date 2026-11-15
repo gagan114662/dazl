@@ -97,7 +97,7 @@ test('#1080 pull: a bad copy and a future-dated copy go to .bad and alert; with 
   assert.match(alerts()[0].problems.join('\n'), /2 copy\(ies\) in \.bad\/: inspect/)
   assert.ok(!existsSync(path.join(here, bad)))
   // after inspection the operator removes them: they stay excluded (never pulled again) and the alert stops
-  for (const f of readdirSync(path.join(here, '.bad'))) if (f !== 'names') unlinkSync(path.join(here, '.bad', f))
+  for (const f of readdirSync(path.join(here, '.bad'))) unlinkSync(path.join(here, '.bad', f))
   const r3 = run(box, here)
   assert.equal(r3.code, 0, r3.out); assert.equal(r3.json.pulled, 0)
 })
@@ -227,16 +227,16 @@ test('#1080 pull: a LATE manifest for a copy older than what was held when its c
   assert.match(alerts()[0].problems.join('\n'), new RegExp(`named older than the newest copy already here.*${x.replace(/\./g, '\\.')}`))
   // a corrupt pending record: a problem that holds retention (never read as "nothing pending")
   // a corrupt pending record: a problem that holds retention (never read as "nothing pending")
-  for (const bad of ['{"truncat', '[]', 'null', '{"x":"1"}']) {
+  for (const [i, bad] of ['{"truncat', '[]', 'null', '{"x":"1"}'].entries()) {
     writeFileSync(path.join(here, '.retired', 'pending.json'), bad)
-    copy(box, now - 2 * 60_000, 900 + bad.length) // a new copy: one held copy is now past the policy
+    copy(box, now - 2 * 60_000 - i * 1000, 900 + i) // a new copy: one held copy is now past the policy
     const c = run(box, here)
     assert.equal(c.code, 1, bad); assert.equal(c.json.retired, 0, bad)
     assert.match(alerts()[0].problems.join('\n'), /pending\.json is not valid/, bad)
   }
   // removed after inspection: retention runs again
   unlinkSync(path.join(here, '.retired', 'pending.json'))
-  for (const f of readdirSync(path.join(here, '.bad'))) if (f !== 'names') unlinkSync(path.join(here, '.bad', f))
+  for (const f of readdirSync(path.join(here, '.bad'))) unlinkSync(path.join(here, '.bad', f))
   const ok = run(box, here)
   assert.ok((ok.json.retired as number) > 0, ok.out)
 })
@@ -259,6 +259,29 @@ test('#1080 pull: a split fake whose pending record was LOST (removed) is still 
   writeFileSync(path.join(here, '.retired', 'pending.json'), JSON.stringify({ 'dazl-backup-20200101T000000Z-00000000.db.age': 1 }))
   run(box, here)
   assert.deepEqual(JSON.parse(readFileSync(path.join(here, '.retired', 'pending.json'), 'utf8')), {})
+})
+
+test('#1080 pull: when a copy cannot be moved to .bad/ it is never counted, and an unreadable .retired/bad-names is a problem', { skip: (skip || process.getuid?.() === 0) && 'rsync missing or running as root' }, () => {
+  const { box, here } = dirs()
+  copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
+  for (let i = 0; i < 49; i++) copy(box, now - 90 * 60_000 - i * HOUR, 10 + i)
+  assert.equal(run(box, here).code, 0)
+  mkdirSync(path.join(here, '.bad'), { mode: 0o700 }); chmodSync(path.join(here, '.bad'), 0o500) // cannot be written
+  const fake = copy(box, now - 5 * DAY, 99)
+  try {
+    const r = run(box, here)
+    assert.equal(r.code, 1, r.out); assert.match(alerts()[0].problems.join('\n'), /could not move .* to \.bad\//)
+    assert.ok(existsSync(path.join(here, fake)), 'still here')
+    const r2 = run(box, here) // the fake is not new any more: it must still not count
+    assert.equal(r2.code, 1, r2.out); assert.equal(r2.json.retired, 0); assert.equal(r2.json.backups, 48, "the fake is not counted")
+  } finally { chmodSync(path.join(here, '.bad'), 0o700) }
+  const r3 = run(box, here) // writable again: moved, then excluded
+  assert.ok(existsSync(path.join(here, '.bad', fake)), r3.out)
+  chmodSync(path.join(here, '.retired', 'bad-names'), 0o000)
+  try {
+    const u = run(box, here)
+    assert.equal(u.code, 1); assert.equal(u.json.retired, 0); assert.match(alerts()[0].problems.join('\n'), /\.retired\/bad-names unreadable/)
+  } finally { chmodSync(path.join(here, '.retired', 'bad-names'), 0o600) }
 })
 
 test('#1080 pull: usage errors exit 2 and touch nothing', () => {

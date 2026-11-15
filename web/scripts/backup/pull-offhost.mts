@@ -78,11 +78,11 @@ for (const f of heldBefore) { const m = COPY.exec(f); if (m && !m[2] && existsSy
 const exclude = path.join(retiredDir, 'rsync-exclude')
 // never again: a name retired here, or set aside in .bad/ (it alerts below for as long as it is there)
 const badDir = path.join(dir, '.bad')
-// .bad/names lists every name ever set aside, so removing the files after inspection does not bring them back
-const badList = path.join(badDir, 'names')
+// .retired/bad-names lists every name ever set aside, so removing the files after inspection does not bring them back
+const badList = path.join(retiredDir, 'bad-names') // outside .bad/, so a .bad/ that cannot be written still records it
 let badNames: string[] = []
-try { badNames = existsSync(badList) ? readFileSync(badList, 'utf8').split('\n') : [] } catch (e) { problems.push(`.bad/names unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
-if (existsSync(badDir)) badNames.push(...readdirSync(badDir)) // and whatever is in .bad/ now
+try { badNames = existsSync(badList) ? readFileSync(badList, 'utf8').split('\n') : [] } catch (e) { problems.push(`.retired/bad-names unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
+try { if (existsSync(badDir)) badNames.push(...readdirSync(badDir)) } catch (e) { problems.push(`.bad/ unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) } // and whatever is in .bad/ now
 writeFileSync(exclude, [...readFileSync(retiredNames, 'utf8').split('\n'), ...badNames].filter(n => COPY.test(n)).map(n => `/${n}\n`).join(''), { mode: 0o600 })
 const rsync = spawnSync('rsync', [
   '-rt', '--ignore-existing', '--chmod=F600', '--partial-dir=.rsync-partial', `--exclude-from=${exclude}`,
@@ -111,14 +111,22 @@ const pending: Record<string, number> = (() => {
 const good: { backup: Copy[]; ledger: Copy[] } = { backup: [], ledger: [] }
 const bad: string[] = [], backdated: string[] = [], orphans: string[] = []
 const setAside = (f: string) => {
-  mkdirSync(path.join(dir, '.bad'), { recursive: true, mode: 0o700 })
-  for (const x of [f, `${f}.json`]) { try { renameSync(path.join(dir, x), path.join(dir, '.bad', x)) } catch { /* already gone */ } }
-  try { appendFileSync(badList, `${f}\n${f}.json\n`) } catch (e) { problems.push(`.bad/names could not be updated (${(e as NodeJS.ErrnoException).code ?? 'error'}): ${f} may be pulled again`) }
+  try { mkdirSync(path.join(dir, '.bad'), { recursive: true, mode: 0o700 }) } catch { /* the rename below reports it */ }
+  for (const x of [f, `${f}.json`]) {
+    try { renameSync(path.join(dir, x), path.join(dir, '.bad', x)) } catch (e) {
+      // already gone is fine; anything else leaves it here, named in .retired/bad-names, so it is never counted (below) and alerts
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') problems.push(`could not move ${x} to .bad/ (${(e as NodeJS.ErrnoException).code ?? 'error'})`)
+    }
+  }
+  try { appendFileSync(badList, `${f}\n${f}.json\n`) } catch (e) { problems.push(`.retired/bad-names could not be updated (${(e as NodeJS.ErrnoException).code ?? 'error'}): ${f} may be pulled again`) }
 }
+const setAsideBefore = new Set(badNames)
 for (const f of readdirSync(dir)) {
   const m = COPY.exec(f)
   if (!m || m[2]) continue // manifests are read with their ciphertext
   const base = m[1], kind = kindOf(base), t = timeOf(base)
+  // set aside before but still here (its move failed): never counted; moved again, and it alerts until it is gone
+  if (setAsideBefore.has(f)) { bad.push(`${f} (set aside earlier, still here)`); setAside(f); continue }
   if (!existsSync(path.join(dir, `${f}.json`))) {
     // the manifest is copied after the ciphertext: the next run checks it (against the newest copy held NOW, remembered);
     // one still missing after two hours is a problem
