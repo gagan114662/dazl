@@ -24,6 +24,8 @@ export interface ResearchScanContext {
   tf?: TfDeps
   now?: Date
   spent?: { searches: number }
+  checkpoint?: () => void                             // the runner's ownership + deadline check, between stages
+  deadline?: { at: number; now: () => number }        // the job's deadline: the hunt stops sending queries past it
 }
 
 // The case, from the job's own reviewed profile: the places and industries it names, its window (else the prototype's 90 days).
@@ -44,7 +46,7 @@ export function researchStagesFor(ctx: ResearchScanContext): ResearchStages {
   const spent = ctx.spent ?? { searches: 0 }
   const base: ResearchStages = {
     plan: c => planResearch(c, (p, max) => sonnet.complete!(ctx.key, p, undefined, max), ctx.isRefusal),
-    hunt: (c, plan) => hunt(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf)),
+    hunt: (c, plan) => hunt(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.deadline ? { deadline: ctx.deadline.at, now: ctx.deadline.now } : {}),
   }
   return extensions.reduce((s, x) => x({ ...ctx, spent }, s), base)
 }
@@ -60,8 +62,15 @@ export const RESEARCH_HELD = 'research_unverified'
 
 // One verified research lead -> the runner's row. The event day is page_bound only when the page's own date quote proved it (D's verify);
 // an index-dated day is kept unproven. Ready leads go to the leads list; the rest to the review lane with RESEARCH_HELD and what failed.
+// READY is recomputed here from the fields it is defined by (types.ts Verification.ready), never taken on a stage's word: a ready flag with no
+// dated day in the window, no proven person or a failed place check still goes to review.
+export function isReady(l: VerifiedLead): boolean {
+  const v = l.verification
+  return v.ready && v.triggerOk && v.personOk && !!l.company.person && !!v.date && v.dateInWindow && (v.dateTier === 'page' || v.dateTier === 'registry') && v.placeCategoryOk
+}
 export function toScanRow(l: VerifiedLead, now: Date = new Date()): ScanLeadRow {
   const v = l.verification
+  const ready = isReady(l)
   const proven = v.dateTier === 'page' && !!v.date
   return {
     name: l.company.person && v.personOk ? l.company.person.name : '',
@@ -78,7 +87,7 @@ export function toScanRow(l: VerifiedLead, now: Date = new Date()): ScanLeadRow 
     date_status: v.date ? (proven ? 'verified' : 'unverified') : 'undated',
     retrieved_at: Math.floor(now.getTime() / 1000),
     why: l.event.whyNow,
-    ...(v.ready ? {} : { review_reason: RESEARCH_HELD }),
+    ...(ready ? {} : { review_reason: RESEARCH_HELD }),
   }
 }
 
@@ -93,7 +102,7 @@ export async function runResearchScan(ctx: ResearchScanContext, env: Record<stri
   if (!c) return null
   const stages = researchStagesFor(ctx)
   if (!researchReady(stages)) return null
-  const run = await runResearch(c, stages, { isRefusal: ctx.isRefusal })
+  const run = await runResearch(c, stages, { isRefusal: ctx.isRefusal, checkpoint: ctx.checkpoint })
   const rows = run.leads.map(l => toScanRow(l, ctx.now))
   const hunted = run.funnel.stages.find(s => s.stage === 'hunt')?.out ?? 0
   return { run, leads: rows.filter(r => !r.review_reason), review: rows.filter((r): r is ScanLeadRow & { review_reason: string } => !!r.review_reason), candidates: hunted,
