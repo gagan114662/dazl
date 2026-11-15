@@ -42,7 +42,7 @@ const c3 = (n: string, e: string, r: string) => card(n, e, r, n.toLowerCase().re
 const OWNER = 'Real Estate Broker | Owner', AGENT = 'Real Estate Agent'
 
 test('the buyer\'s own printed address is on the lead after the scan, labelled with the person and the page; the role inbox stays as it was', async () => {
-  for (const env of [{}, { EMAIL_GUESS_ENABLED: '1' }]) {
+  for (const env of [{}, { EMAIL_GUESS_ENABLED: '1' }] as Record<string, string>[]) {
     const { emails } = await scan(env)
     const maya = emails.find(e => e.value === 'maya@bluebonnetrealty.com')
     assert.ok(maya, JSON.stringify(emails))
