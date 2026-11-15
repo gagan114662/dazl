@@ -101,34 +101,57 @@ async function open(deps: CompanyDeps, url: string): Promise<ReadPage | null> {
   return p.text.length > 400 ? p : null   // the prototype's floor: a near-empty page (a block page, a JS shell) is not a source
 }
 
-// 1. the company's own site: the candidates in order (at most 3); researchCompany keeps the first whose pages match the case
+// 1. the company's own site, in three stages, cheapest first; researchCompany keeps the first candidate whose own pages match the case
+//    a. the site the event page IS or shows (no cost);
+//    b. hosts guessed from the company's name and the place's country domain (a free direct fetch each, no search: purebread.ca,
+//       passiondental.ca, ybdentistry.com were never in the "official website" search results, which are news about the event);
+//    c. one search "<company> <city> official website", only when a and b found no site that matches.
+// Every candidate, whatever its stage, must pass the same check (place + category + the homepage names the company), so a guessed host
+// that is another business is refused exactly as a searched one (#1122).
 export async function findSite(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string | null> { return (await siteCandidates(ev, city, deps))[0] ?? null }
-export async function siteCandidates(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string[]> {
+const PLACE_WORDS = ['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario']
+const nameOnly = (ev: ResearchEvent, city: string) => nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !PLACE_WORDS.includes(t))
+export function shownSites(ev: ResearchEvent): string[] {
   const out: string[] = []
-  const push = (u: string | null) => { if (u && !out.some(o => host(o) === host(u)) && out.length < 3) out.push(u) }
-  push(await firstSite(ev, city, deps, out))
-  return out
-}
-async function firstSite(ev: ResearchEvent, city: string, deps: CompanyDeps, also: string[]): Promise<string | null> {
   const own = ev.pageIsCompanySite && host(ev.sourceUrl) && !blocked(ev.sourceUrl) && !directory(host(ev.sourceUrl)) ? `https://${host(ev.sourceUrl)}` : null
   const w = (ev.website ?? '').trim()
   const shown = w && w.includes('.') && !/\s/.test(w) ? (/^https?:\/\//i.test(w) ? w : `https://${w}`) : null
-  for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(host(shown)) ? shown : null]) if (u && !also.some(o => host(o) === host(u))) also.push(u)
-  const toks = nameTokens(ev.company).filter(t => !norm(city).split(' ').includes(t) && !['australia', 'canada', 'india', 'germany', 'uk', 'usa', 'america', 'london', 'texas', 'ontario'].includes(t))
+  for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(shown ? host(shown) : '') ? shown : null]) if (u && !out.some(o => host(o) === host(u))) out.push(u)
+  return out
+}
+// the country domains a place implies, from the case's own keywords (".ca", ".com.au", ".co.uk", ".de", ".in"), then the generic ones
+export function guessedSites(ev: ResearchEvent, c: ResearchCase, city: string): string[] {
+  const toks = nameOnly(ev, city); if (!toks.length) return []
+  const slugs = [...new Set([toks.join(''), toks.join('-'), norm(ev.company).split(' ').filter(w => w.length > 1 && !STOP_TOKENS.has(w)).join('')].filter(x => x.length >= 4 && x.length <= 40))].slice(0, 2)
+  const cc = (c.whereKeywords ?? []).filter(k => /^\.[a-z.]{2,8}$/.test(k) && k !== '.com')
+  const tlds = [...new Set([...cc, '.com', '.co', '.io'])].slice(0, 4)
+  const out: string[] = []
+  for (const sl of slugs) for (const t of tlds) { const h = `${sl}${t}`; if (!directory(h) && !out.includes(`https://${h}`)) out.push(`https://${h}`) }
+  return out.slice(0, 6)
+}
+async function searchedSites(ev: ResearchEvent, city: string, deps: CompanyDeps, skip: string[]): Promise<string[]> {
+  const toks = nameOnly(ev, city)
   let rs: SearchResult[] = []
   try { rs = await deps.search(`${ev.company} ${city} official website`) } catch (e) { if (deps.isRefusal?.(e)) throw e; rs = [] }
+  const out: string[] = []
   let best: string | null = null
   for (const r of rs.slice(0, 8)) {
     const h = host(r.url)
-    if (!h || blocked(r.url) || directory(h)) continue
+    if (!h || blocked(r.url) || directory(h) || skip.some(o => host(o) === h) || out.some(o => host(o) === h)) continue
     const hn = (h.split('.').length === 2 ? h.split('.')[0] : h).replace(/[^a-z0-9]/g, '')
     const u = `https://${h}`
-    if (also.some(o => host(o) === h) || also.length >= 3) continue
-    if (toks.some(t => hn.includes(t))) also.push(u)
+    if (toks.some(t => hn.includes(t))) { if (out.length < 3) out.push(u) }
     else if (best === null && toks.slice(0, 2).every(t => norm(r.title).includes(t))) best = u
   }
-  if (best && also.length < 3 && !also.some(o => host(o) === host(best!))) also.push(best)
-  return also[0] ?? null
+  if (best && out.length < 3 && !out.some(o => host(o) === host(best!))) out.push(best)
+  return out
+}
+// all stages at once (tests and callers that want the list); researchCompany walks them lazily instead
+export async function siteCandidates(ev: ResearchEvent, city: string, deps: CompanyDeps, c?: ResearchCase): Promise<string[]> {
+  const a = shownSites(ev), b = c ? guessedSites(ev, c, city) : []
+  const out = [...a, ...b]
+  for (const u of await searchedSites(ev, city, deps, out)) if (out.length < 8) out.push(u)
+  return out
 }
 
 // #1122: is this site THIS business? Its own pages show the case's place (a place keyword, or a country domain like ".com.au") AND its
@@ -175,16 +198,21 @@ const str = (v: unknown): string | null => typeof v === 'string' && v.trim() ? v
 export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent, deps: CompanyDeps): Promise<CompanyResearch> {
   const soft = <T>(fallback: T) => (e: unknown): T => { if (deps.isRefusal?.(e)) throw e; return fallback }
   const city = c.where.split(',')[0].trim()
-  const cands = await siteCandidates(ev, city, deps)
   const sources: Source[] = []
   const emails = new Map<string, string>()
   const add = (url: string, text: string, kind: Source['kind']) => { sources.push({ id: `S${sources.length + 1}`, url, text, kind }) }
   const ev0 = await open(deps, ev.sourceUrl)
   if (ev0) add(ev.sourceUrl, ev0.text.slice(0, PAGE_TEXT), 'page')
   let site: string | null = null, wrongSite = false
-  for (const cand of cands) {
+  const tried = new Set<string>(), rejectedGuess = new Set<string>()
+  // one candidate: open it, read its own pages, and keep it only when it is THIS business (place + category + the homepage names the company)
+  const tryCandidate = async (cand: string, speculative = false): Promise<boolean> => {
+    // a host first tried as a guess and refused, then pointed at by the event or a search, IS a mis-identified site
+    if (tried.has(host(cand))) { if (!speculative && rejectedGuess.has(host(cand))) wrongSite = true; return false }
+    tried.add(host(cand))
     const home = await open(deps, cand)
-    if (!home) continue
+    if (!home) return false
+    tried.add(host(home.finalUrl))
     const sh = host(home.finalUrl), picks: string[] = [], seen = new Set<string>()
     for (const l of home.links) {
       const u = l.url.split('#')[0]
@@ -195,7 +223,9 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
     picks.sort((a, b) => (FIRST_RX.test(a) ? 0 : 1) - (FIRST_RX.test(b) ? 0 : 1) || a.length - b.length)
     const pages = [home, ...(await Promise.all(picks.slice(0, MAX_OWN_PAGES).map(u => open(deps, u)))).filter((p): p is ReadPage => !!p)]
     const m = siteMatchesCase(c, sh, pages.map(p => p.text))
-    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { wrongSite = true; continue }
+    // a GUESSED host that is some other business is not evidence that the company's site was mis-identified: only a site the event or a search
+    // pointed at, and that fails, stops the person hunt (#1122)
+    if (!m.place || !m.category || !homeNamesCompany(ev.company, home.text, c)) { if (!speculative) wrongSite = true; else rejectedGuess.add(host(cand)); return false }
     site = `https://${sh}`
     add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
     for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
@@ -203,8 +233,14 @@ export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: R
       const e = mm.replace(/^\.+|\.+$/g, '').toLowerCase()
       if (!NOT_EMAIL.test(e) && !emails.has(e)) emails.set(e, p.finalUrl)
     }
-    break
+    return true
   }
+  // stages: the site the event shows, then hosts guessed from the name (free fetches), then one search; stop at the first that is the business
+  const stage1 = shownSites(ev)
+  let found = false
+  for (const cand of stage1) if (!found) found = await tryCandidate(cand)
+  if (!found) for (const cand of guessedSites(ev, c, city).filter(u => !stage1.includes(u))) { if (!found) found = await tryCandidate(cand, true) }
+  if (!found) for (const cand of await searchedSites(ev, city, deps, [])) { if (!found) found = await tryCandidate(cand) }
   // #1122: a site was found but none of its candidates is this business: no site, no person (a name from the wrong company is worse than none)
   if (!site && wrongSite) return { site: null, sources, person: null, location: null, whatTheyDo: null, emails: [] }
   const siteHost = site ? host(site) : ''

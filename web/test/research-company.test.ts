@@ -3,7 +3,7 @@
 // page shapes taken from real pages the prototype read (names replaced).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cfEmails, companySearch, findSite, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../lib/research/company.ts'
+import { cfEmails, companySearch, findSite, guessedSites, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../lib/research/company.ts'
 import type { ResearchCase, ResearchEvent, ResearchPlan } from '../lib/research/types.ts'
 
 const C: ResearchCase = { tenant: 'T', jobId: 'J', query: 'Roofing companies in Austin hiring estimators', offer: 'estimating software', where: 'Austin, Texas', category: 'roofing contractors', windowDays: 90, today: '2026-11-15' }
@@ -191,4 +191,27 @@ test('goal-driven scan: the company stage can be called again and again; the sam
   assert.equal(calls, 2, 'another place is another company')
   await assert.rejects(memo(C, PLAN, ev({ company: 'Flaky Co' })))
   assert.equal((await memo(C, PLAN, ev({ company: 'Flaky Co' }))).whatTheyDo, 'Flaky Co', 'a failed research is tried again')
+})
+
+test('site discovery: a host guessed from the name and the place\'s country domain is tried (free) BEFORE any search, and only a site that is the business is kept', async () => {
+  const CA: ResearchCase = { ...VAN, whereKeywords: ['vancouver', 'british columbia', ', bc', '.ca'] }
+  const bread = ev({ company: 'Purebread', sourceUrl: 'https://cafes.newsjive.example/purebread-buys-artigiano', quote: 'Purebread is buying Caffe Artigiano' })
+  assert.deepEqual(guessedSites(bread, CA, 'Vancouver'), ['https://purebread.ca', 'https://purebread.com', 'https://purebread.co', 'https://purebread.io'])
+  assert.deepEqual(guessedSites(ev({ company: 'Yoon Black Dentistry' }), C, 'Austin').slice(0, 2), ['https://yoonblackdentistry.com', 'https://yoonblackdentistry.co'], 'nothing is guessed for a name of no letters')
+  PAGES['https://cafes.newsjive.example/purebread-buys-artigiano'] = `<html><body><p>${'Purebread is buying Caffe Artigiano, a Vancouver cafe chain, in a deal announced this week. '.repeat(6)}</p></body></html>`
+  PAGES['https://purebread.ca'] = `<html><body><p>${'Purebread is a bakery and cafe in Vancouver, British Columbia. Our kitchen bakes bread, sweets and focaccia every morning; visit our menu. '.repeat(4)}</p><a href="/about">About</a></body></html>`
+  PAGES['https://purebread.ca/about'] = `<html><body><p>${'Purebread bakery, Vancouver. '.repeat(20)}</p><p>Christian Bullock, CEO of Purebread Brands, joined in 2021.</p></body></html>`
+  PAGES['https://purebread.com'] = `<html><body><p>${'Purebread: a tribute to David Gates and Bread, the 1970s soft rock band. Music, tour dates and records. '.repeat(5)}</p></body></html>`
+  const answer = JSON.stringify({ decision_maker: { name: 'Christian Bullock', title: 'CEO', source_id: 'S3', quote: 'Christian Bullock, CEO of Purebread Brands, joined in 2021.' }, location: null, what_they_do: null })
+  const withGuess = deps({ search: { 'official website': [{ url: 'https://govancity.com/purebread', title: 'Purebread Bakery + Coffee', snippet: '' }] }, answers: [answer] })
+  const r = await researchCompany(CA, PLAN, bread, withGuess.d)
+  assert.deepEqual([r.site, r.person?.name, withGuess.asked], ['https://purebread.ca', 'Christian Bullock', []], 'found with no search at all: the pages named the owner')
+  // a guessed host that is ANOTHER business (purebread.com, the band) is refused; with nothing else, no site and no person
+  delete PAGES['https://purebread.ca']; delete PAGES['https://purebread.ca/about']
+  const wrong = deps({ answers: [answer] })
+  const w = await researchCompany(CA, PLAN, bread, wrong.d)
+  assert.deepEqual([w.site, w.person], [null, null])
+  // ...but a wrong GUESS does not stop the person hunt (nothing pointed at it): the searches still run
+  assert.ok(wrong.asked.length > 0, 'the person searches ran')
+  delete PAGES['https://purebread.com']
 })
