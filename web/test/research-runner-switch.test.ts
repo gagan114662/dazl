@@ -9,6 +9,7 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { extendResearchStages, extendResearchAfterSave, toScanRow, RESEARCH_HELD } from '../lib/research/scan-job.ts'
+import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import { SearchQueue, researchSearchBudget } from '../lib/research/search-queue.ts'
 import { anthropicModel } from '../lib/llm/provider.ts'
 import { modelCostUsd } from '../lib/scan/spend-cap.ts'
@@ -18,9 +19,13 @@ const master = randomBytes(32)
 const ICP = { summary: 'x', who: [], industries: ['law firms'], sizes: [], where: ['Chicago, Illinois'], signals: ['opened an office'], exclude: [], window_days: 90 }
 const PLAN = JSON.stringify({ persona: 'p', decision_maker_titles: ['Managing Partner'], triggers: [{ name: 'New office', queries: ['Chicago law firm new office 2026'] }], asking_queries: [] })
 let modelPrompts: string[] = []
+let refuseOn: { company: string; reason: string } | null = null
+let onCompany: (() => void) | null = null   // runs inside the company stage (R5: another attempt takes the job over)
+let currentDb: Database.Database | null = null
+let verifyCalls = 0   // the company stage throws this refusal for that company (R1)
 async function scan(env: string | undefined) {
   if (env) process.env.LEAD_ENGINE = env; else delete process.env.LEAD_ENGINE
-  const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const db = new Database(':memory:'); currentDb = db; migrateScan(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const id = createQueryJob(db, 'A', { query: 'Law firms in Chicago that opened a new office in the last 90 days', icp: JSON.stringify(ICP), offer: 'Legal intake software' } as never)
   modelPrompts = []
   const complete = async (_k: string, p: string) => { modelPrompts.push(p); return p.includes('head of research') ? PLAN : '[]' }
@@ -39,8 +44,7 @@ test('switch off, or a stage missing: the old engine runs and the research stage
   const err = (x: { db: Database.Database; id: string }) => (x.db.prepare('SELECT error FROM scan_jobs WHERE id = ?').get(x.id) as { error: string | null }).error
   const off = await scan(undefined)
   assert.equal(err(off), 'no_candidates'); assert.ok(!modelPrompts.some(p => p.includes('head of research')), 'no research plan without LEAD_ENGINE=research')
-  const missing = await scan('research')   // no extension registered yet: filter/read/gate/research/verify do not exist
-  assert.equal(err(missing), 'no_candidates'); assert.equal(missing.leads.length, 0)
+  // (the stage-missing half runs on #1267 alone: on the wiring branch the runner imports lib/research/wiring.ts, so every stage exists)
 })
 
 test('LEAD_ENGINE=research: the plan on the job\'s model, the stages in order, ready leads listed and held ones in review, then afterSave', async () => {
@@ -50,8 +54,8 @@ test('LEAD_ENGINE=research: the plan on the job\'s model, the stages in order, r
     filter: async (_c, _p, all) => ({ all, keep: all }),
     read: async () => { const e = [ev('Zayed Law'), ev('Ogletree Deakins')]; return { events: e, pageText: e.map(x => x.quote).join('. ') } },
     gate: async (_c, es) => es,
-    company: async (_c, _p, e) => comp(e.company === 'Zayed Law'),
-    verify: async (_c, e) => ver(e.company === 'Zayed Law'),
+    company: async (_c, _p, e) => { onCompany?.(); if (refuseOn && e.company === refuseOn.company) throw new SpendRefused(refuseOn.reason); return comp(e.company === 'Zayed Law') },
+    verify: async (_c, e) => (verifyCalls++, ver(e.company === 'Zayed Law')),
   }))
   extendResearchAfterSave((_db, jobId, run) => { saved.push(`${jobId}:${run.leads.length}`) })
   const s = await scan('research')
@@ -70,16 +74,54 @@ test('toScanRow: an index-dated day is kept unproven; the score and confidence a
   assert.equal(r.event_date_proof, null); assert.equal(r.date_status, 'unverified'); assert.equal(r.confidence, 90); assert.equal(r.review_reason, RESEARCH_HELD); assert.equal(r.name, '', 'no person unless verified')
 })
 
-test('the search queue spaces calls 60/perMinute apart in call order; the research budget defaults to 60', async () => {
+test('the search queue spaces calls 60/perMinute apart in call order; the research budget defaults to 160', async () => {
   let t = 0; const slept: number[] = []
   const q = new SearchQueue(18, () => t, async ms => { slept.push(Math.round(ms)); t += ms })
   await Promise.all([q.slot(), q.slot(), q.slot()])
   assert.equal(slept.length, 2, 'the first caller goes at once, two wait'); assert.ok(slept.every(ms => Math.abs(ms - 3333) <= 1), `${slept}`); assert.ok(Math.abs(t - 6667) <= 2, 'the third call goes two gaps after the first')
-  assert.equal(researchSearchBudget({}), 60); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: '120' }), 120); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: 'x' }), 60)
+  assert.equal(researchSearchBudget({}), 160); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: '120' }), 120); assert.equal(researchSearchBudget({ RESEARCH_SEARCH_BUDGET: 'x' }), 160)
 })
 
 test('a fixed-model provider reports its model, and Haiku is priced (US$1 / US$5 per million tokens)', () => {
   assert.equal(anthropicModel('claude-haiku-4-5').configuredModel!(), 'claude-haiku-4-5')
   const usd = modelCostUsd('claude-haiku-4-5', 'x'.repeat(4000), 1000)
   assert.ok(usd !== null && usd > 0 && usd < modelCostUsd('claude-sonnet-4-5', 'x'.repeat(4000), 1000)!, `haiku ${usd}`)
+})
+
+test('a refusal is read as the old engine reads it: a numeric budget keeps what was verified (budget_stopped); any other refusal fails the run', async () => {
+  // the extension registered above serves these runs too; it is read in order (Zayed Law, then Ogletree Deakins)
+  refuseOn = { company: 'Ogletree Deakins', reason: 'over_limit' }
+  try {
+    const b = await scan('research')
+    const j = b.db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(b.id) as { status: string; error: string | null }
+    assert.deepEqual([j.status, j.error], ['done', 'budget_stopped'])
+    assert.ok(b.leads.some(l => l.company === 'Zayed Law' && l.review_reason === null), 'the lead verified before the refusal is kept, ready')
+    refuseOn = { company: 'Ogletree Deakins', reason: 'count_failed' }
+    const f = await scan('research')
+    const k = f.db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(f.id) as { status: string; error: string | null }
+    assert.equal(k.status, 'failed', `a refusal no budget can fix is never a budget stop: ${JSON.stringify(k)}`)
+    assert.notEqual(k.error, 'budget_stopped')
+  } finally { refuseOn = null }
+})
+
+test('ready is recomputed from its fields: a stage\'s ready flag with no dated day, no person or a failed place check goes to review', () => {
+  const base = { event: ev('X Firm'), company: comp(true), verification: ver(true) }
+  assert.equal(toScanRow(base).review_reason, undefined, 'positive control: every field holds')
+  for (const [name, l] of [
+    ['no day', { ...base, verification: { ...ver(true), date: null, dateTier: null, dateInWindow: false } }],
+    ['outside the window', { ...base, verification: { ...ver(true), dateInWindow: false } }],
+    ['index-dated', { ...base, verification: { ...ver(true), dateTier: 'index' as const } }],
+    ['no person', { ...base, company: comp(false) }],
+    ['place or category', { ...base, verification: { ...ver(true), placeCategoryOk: false } }],
+  ] as const) assert.equal(toScanRow(l as never).review_reason, RESEARCH_HELD, name)
+})
+
+test('the ownership check runs between stages: a job another attempt took over mid-run writes nothing and stops at the next stage', async () => {
+  onCompany = () => { currentDb!.prepare("UPDATE scan_jobs SET attempts = attempts + 1").run() }
+  verifyCalls = 0
+  try {
+    const s = await scan('research')
+    assert.equal(s.leads.length, 0, 'finish() never writes for the lost attempt')
+    assert.equal(verifyCalls, 0, 'the checkpoint after company research stops the run before verify')
+  } finally { onCompany = null }
 })

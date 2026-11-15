@@ -1,13 +1,13 @@
 // Every research search waits its turn here (Hermes 15 Nov 02:15): dazl's TinyFish gate allows 20 searches a minute and REFUSES the rest at
 // once ('rate'), which lost G's person searches (companies with no site). One process-wide queue spaces the research engine's searches at
 // ~18 a minute so they are queued, never dropped; hunt.ts still retries a 'rate' answer as a backstop (another scan may share the minute).
-// The research engine's own per-scan search budget (RESEARCH_SEARCH_BUDGET, default 60) applies only when LEAD_ENGINE=research; the old
+// The research engine's own per-scan search budget (RESEARCH_SEARCH_BUDGET, default 160) applies only when LEAD_ENGINE=research; the old
 // engine keeps TINYFISH_SEARCHES_PER_SCAN.
 import { tfSearch, type TfDeps, type SearchHit, type Fail } from '../search/tinyfish.ts'
 import type { DbLike } from '../db/client.ts'
 
 export const RESEARCH_SEARCHES_PER_MINUTE = 18
-export const DEFAULT_RESEARCH_SEARCH_BUDGET = 60
+export const DEFAULT_RESEARCH_SEARCH_BUDGET = 160   // Hermes 15 Nov 03:55: Sydney 8 -> 15 ready at 160 (the hunt alone sends ~46; G needs ~4 per company)
 export const researchSearchBudget = (env: Record<string, string | undefined> = process.env): number => {
   const n = Number(env.RESEARCH_SEARCH_BUDGET)
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_RESEARCH_SEARCH_BUDGET
@@ -38,6 +38,6 @@ export function researchSearch(db: DbLike, tenant: string, spent: { searches: nu
   env.TINYFISH_SEARCHES_PER_SCAN = String(researchSearchBudget(env))
   return async (query: string, opts: { afterDate?: string; location?: string; language?: string } = {}): Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail; status?: number }> => {
     await queue.slot()
-    return tfSearch(db, tenant, query, opts, spent, { ...deps, env })
+    return tfSearch(db, tenant, query, opts, spent, { ...deps, env, rateIsWait: true })   // a free 429 is a wait here (the hunt retries it)
   }
 }

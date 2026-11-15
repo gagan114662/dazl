@@ -122,6 +122,29 @@ test('both providers fail: recorded as error with each reason; a retry claims ag
   assert.equal(r2.status, 'verified', 'error is retryable')
 })
 
+test('#1167 an account at its day spend cap: nothing is sent, the Apollo credit goes back, PDL is not tried, and the detail says why (never "may have used a credit")', async () => {
+  const { accountLimits, reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const { asDb } = await import('../lib/db/client.ts')
+  const prev = process.env.DAZL_OWNER_DAY_MAX_USD
+  process.env.DAZL_OWNER_DAY_MAX_USD = '0.5'
+  try {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+    await asDb(s.db).tx(function* (t) { assert.equal(yield* reservePoolWindows(t, 'A', accountLimits('A'), 0.5, Math.floor(Date.now() / 1000)), true) })
+    const r = await run(s, DANA, stub(never, never, calls))
+    assert.equal(calls.apollo + calls.pdl, 0, 'nothing sent')
+    assert.equal(r.status, 'error'); assert.ok('row' in r)
+    assert.match(r.row.detail ?? '', /account spend limit reached: nothing was sent/)
+    assert.doesNotMatch(r.row.detail ?? '', /may have used a credit/)
+    for (const u of await creditUse(s.db, 'A', { now: NOW })) assert.equal(u.reserved, 0, `${u.provider} ${u.window}: no credit held for an unsent lookup`)
+    // a spend refusal that is not the cap (a malformed price) is named as itself
+    process.env.DAZL_OWNER_DAY_MAX_USD = '10'; process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD = 'abc'
+    const f = seed(); const r2 = await run(f, DANA, stub(never, never, calls))
+    assert.equal(calls.apollo + calls.pdl, 0); assert.ok('row' in r2)
+    assert.match(r2.row.detail ?? '', /spend check refused the lookup \(price_invalid\): nothing was sent/)
+    assert.doesNotMatch(r2.row.detail ?? '', /account spend limit/)
+  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev; delete process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD }
+})
+
 test('PDL 404 is its unbilled no-match: not_found, and the PDL credit is released', async () => {
   const s = seed()
   const r = await run(s, DANA, stub(() => json({ person: null }), () => new Response('{}', { status: 404 })))

@@ -78,13 +78,19 @@ export function readPage(text: string, cap = 60_000, show = 12): PageReading {
 import { asDb, type DbLike } from '../db/client.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { domainConfirmedDb } from '../signals/domain-basis.ts'
+import { runWithTenantSpend } from './spend-cap.ts'
 export interface LeadPageReading { url: string; role: 'posting' | 'company_home'; status: 'read' | 'failed' | 'not_used'; why?: string; reading?: PageReading }
 export interface LeadSignals { lead_id: string; company: string; topic: string; applies_to: string; looked_for: { task_terms: string[]; stack_names: string[] }; pages: LeadPageReading[]; model_call: false }
 
 // Reads the lead's own saved posting page, and its home page only when the lead already has a confirmed site.
-// A posting page is used only if it names the company. Public pages only; no model, no spend, nothing stored.
+// A posting page is used only if it names the company. Public pages only; no model, nothing stored. A page rendered through
+// the render service (when SCAN_RENDER_URL is set) is a priced step, counted on the account's windows (#1167).
 // The lead read is on the Db layer (#354), so the route runs on SQLite or Postgres; a raw handle is wrapped on the same connection.
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function leadSignals(db: DbLike, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
+  return runWithTenantSpend(db, userId, () => leadSignalsCounted(db, userId, leadId, fetchPage))
+}
+async function leadSignalsCounted(db: DbLike, userId: string, leadId: string, fetchPage: (u: string) => Promise<Page | FetchFail> = fetchPageDetailed): Promise<LeadSignals | null> {
   const d = asDb(db)
   const readLead = () => d.get<{ id: string; company: string; source_url: string; company_domain: string | null }>('SELECT l.id, l.company, l.source_url, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, userId])
   const lead = await readLead()
