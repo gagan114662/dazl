@@ -58,6 +58,7 @@ test("the case's place, city AND region: another state's Austin, Port Austin and
   assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, OR'), true)
   assert.equal(placeTest({ where: 'Austin, Indiana' })!('Austin, In-Office'), false, 'a code is a token, never a word'); assert.equal(placeTest({ where: 'London, Ontario' })!('London, On-site'), false)
   assert.equal(placeTest({ where: 'Austin, Indiana' })!('Austin, IN (Hybrid)'), true); assert.equal(tx('Austin, TX 78701'), true)
+  for (const l of ['Austin, TX - Hybrid', 'Austin, TX USA', 'Austin, TX · Remote', 'Austin, TX-', 'Austin, Texas - Remote', 'Austin, TX.', 'Austin, TX & Remote']) assert.equal(tx(l), true, l)
   assert.equal(placeTest({ where: 'Austin' }), null, 'a case without a region: which Austin is not known, nothing is provably there')
   assert.equal(placeTest({ where: 'Austin, USA' }), null, 'a country is not a region'); assert.equal(placeTest({ where: 'Toronto, Canada' }), null)
   assert.equal(placeTest({ where: 'San Francisco, CA' })!('San Francisco, CA'), true, 'CA is California, not Canada'); assert.equal(placeTest({ where: 'San Jose, CA' })!('San Jose, California, United States'), true)
@@ -100,6 +101,9 @@ test('the hook reads the boards the hunt found (one request per board), and a bo
   assert.equal(h.candidates.filter(x => x.via === 'tinyfish').length, 4)
   assert.equal(h.candidates.filter(x => x.dated === 'registry').length, 2); assert.equal(h.funnel.out, 6)
   assert.deepEqual(h.registry, { 'ats-boards': ['no_board_1'] })
+  // a getter that throws outright: the search's candidates survive, the boards are a note
+  const thrown = await huntWithRegistry(AUSTIN, plan, search, (() => { throw new Error('sync') }) as unknown as SafeGet, { env: { LEAD_ENGINE: 'research' }, sources: [] })
+  assert.equal(thrown.candidates.length, 4); assert.equal(thrown.funnel.dropped['registry_ats-boards_error'], 1)
   assert.equal(h.funnel.dropped['registry_ats-boards_no_board_1'], 1, 'the note reaches the scan funnel')
   // the board's role page was also a search hit: one candidate, the board's dated record
   const tenstorrentLatest = r.candidates.find(x => x.title.startsWith('Tenstorrent'))!.url

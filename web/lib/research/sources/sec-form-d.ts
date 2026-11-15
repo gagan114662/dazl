@@ -131,7 +131,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
   const cool = o.cooldown ?? sharedCooldown
   const pace = o.pace ?? secPace, maxFilings = o.maxFilings ?? MAX_FILINGS, now = o.now ?? Date.now
   // the cooldown is checked before EVERY request, so a collect already running in another scan stops too (answered as a 429)
-  const get = async (http: SafeGet, url: string, accept: string) => { await pace(); if (now() < cool.until) return { status: COOLING, body: '' }; return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
+  const get = async (http: SafeGet, url: string, accept: string) => { if (now() < cool.until) return { status: COOLING, body: '' }; await pace(); if (now() < cool.until) return { status: COOLING, body: '' }; return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
   const failure = (res: Awaited<ReturnType<SafeGet>>) => !res ? 'unreachable' : res.status === COOLING ? 'throttled_cooldown' : res.status === 429 || res.status === 403 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : null
   return {
     id: 'sec-form-d',

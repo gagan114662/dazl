@@ -62,17 +62,18 @@ test("A's Candidate: via registry, dated by the record, the readable record URL,
   const down = await huntWithRegistry(AUSTIN, plan, none, async () => ({ status: 503, body: '' }), { env: { LEAD_ENGINE: 'research' }, sources: [boom, austinPermitsSource] })
   assert.equal(down.candidates.length, 0)
   assert.equal(down.funnel.dropped.registry_boom_error, 1);
-  // even a source whose covers() throws: the paid search's candidates are kept, the failure is a note
+  // even a source whose covers() throws: the paid search's candidates and the other sources' records are kept, the failure is that source's note
   const bad = { id: 'bad', covers: () => { throw new Error('x') }, collect: async () => ({ candidates: [], notes: [] }) }
   const hit = async () => ({ ok: true as const, hits: [{ url: 'https://news.test/a', title: 'a', snippet: '', date: null }] })
-  const kept = await huntWithRegistry(AUSTIN, { ...plan, triggers: [{ id: 't1', name: 'n', why: '', footprint: '', queries: ['q'] }] }, hit, serve, { env: { LEAD_ENGINE: 'research' }, sources: [bad] })
+  const kept = await huntWithRegistry(AUSTIN, { ...plan, triggers: [{ id: 't1', name: 'n', why: '', footprint: '', queries: ['q'] }] }, hit, serve, { env: { LEAD_ENGINE: 'research' }, sources: [bad, austinPermitsSource] })
   // the sources run ALONGSIDE the search: a source that waits for the search's first answer finishes (run before the search, it never would)
   let searched!: () => void
   const searchStarted = new Promise<void>(r => { searched = r })
-  const waits = { id: 'waits', covers: () => true, collect: async () => { await searchStarted; return { candidates: [], notes: ['saw_search'] } } }
+  // (raced with a 2 s timer, so the wrong order fails instead of hanging)
+  const waits = { id: 'waits', covers: () => true, collect: async () => ({ candidates: [], notes: [await Promise.race([searchStarted.then(() => 'saw_search'), new Promise<string>(r => setTimeout(() => r('search_never_started'), 2000))])] }) }
   const both = await huntWithRegistry(AUSTIN, { ...plan, triggers: [{ id: 't1', name: 'n', why: '', footprint: '', queries: ['q'] }] }, async () => { searched(); return { ok: true as const, hits: [] } }, serve, { env: { LEAD_ENGINE: 'research' }, sources: [waits] })
   assert.equal(both.funnel.dropped.registry_waits_saw_search, 1)
-  assert.equal(kept.candidates.length, 1); assert.equal(kept.funnel.dropped.registry_registry_error, 1); assert.equal(down.funnel.dropped['registry_socrata-permits:austin_http_503'], 1)
+  assert.equal(kept.candidates.length, 1 + candidates.length, 'the search hit and the healthy source are kept'); assert.equal(kept.funnel.dropped.registry_bad_error, 1); assert.equal(down.funnel.dropped['registry_socrata-permits:austin_http_503'], 1)
 })
 
 test('the source: covers only its city and category, builds a bounded server query, and reports a failed read instead of an empty market', async () => {

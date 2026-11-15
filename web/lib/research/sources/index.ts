@@ -16,8 +16,10 @@ export const REGISTRY_SOURCES: RegistrySource[] = [austinPermitsSource, vancouve
 
 export async function collectRegistry(c: ResearchCase, since: string, http: SafeGet, sources: RegistrySource[] = REGISTRY_SOURCES): Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }> {
   const candidates: Candidate[] = [], notes: Record<string, string[]> = {}
-  for (const s of sources.filter(x => x.covers(c))) {
-    const r = await s.collect(c, since, http).catch(() => ({ candidates: [], notes: ['error'] }))
+  // one bad source (a throwing covers() or collect()) is that source's note; every other source's records are kept
+  for (const s of sources) {
+    let r: { candidates: Candidate[]; notes: string[] }
+    try { if (!s.covers(c)) continue; r = await s.collect(c, since, http) } catch { r = { candidates: [], notes: ['error'] } }
     candidates.push(...r.candidates)
     if (r.notes.length) notes[s.id] = r.notes
   }

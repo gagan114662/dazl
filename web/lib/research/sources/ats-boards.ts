@@ -89,7 +89,7 @@ export function placeTest(c: Pick<ResearchCase, 'where'>): ((location: string) =
   const code = STATE[r] ?? (Object.values(STATE).includes(r) ? r : null), full = Object.keys(STATE).find(k => STATE[k] === code) ?? r
   const at = new RegExp(`(?:^|[-:(]\\s*)${esc(city)}(?=$|[^a-z])`)
   // the full name as a word; a code only as a whole token ("Austin, IN (Hybrid)", "Austin, TX 78701"), never a word ("Austin, In-Office")
-  const regionAfter = new RegExp(`^\\s*,\\s*(?:${esc(full)}(?=$|[^a-z])${code ? `|${esc(code)}(?=\\s*(?:$|[,();/|]|\\d))` : ''})`)
+  const regionAfter = new RegExp(`^\\s*,\\s*(?:${esc(full)}(?=$|[^a-z])${code ? `|${esc(code)}(?=\\s*(?:$|[,();/|·&]|\\.(?:\\s|$)|\\d|-(?:\\s|$)|(?:usa?|united states)(?:$|[^a-z])))` : ''})`)
   return loc => loc.toLowerCase().split(/\s*(?:;|\||\/)\s*|(?<!,)\s+(?:or|and)\s+/).some(place => {
     const m = at.exec(place.trim())
     return !!m && regionAfter.test(place.trim().slice(m.index + m[0].length))
@@ -113,10 +113,11 @@ export function boardCandidate(b: Board, roles: Role[], c: Pick<ResearchCase, 'w
 // The boards named by the hunt's own results -> one dated candidate per board with roles in the city in the window.
 export async function boardCandidates(c: ResearchCase, found: Candidate[], since: string, http: SafeGet, max = MAX_BOARDS, o: { budgetMs?: number; now?: () => number } = {}): Promise<{ candidates: Candidate[]; notes: string[] }> {
   const now = o.now ?? Date.now, deadline = now() + (o.budgetMs ?? BOARDS_BUDGET_MS)
-  // no testable place (no region, or only a country): no board can be shown to be there, so none is asked for
-  if (!placeTest(c)) return { candidates: [], notes: ['place_unknown'] }
   const boards = new Map<string, Board>()
   for (const x of found) { const b = boardOf(x.url); if (b) boards.set(`${b.ats}:${b.token}`, b) }
+  if (!boards.size) return { candidates: [], notes: [] }
+  // no testable place (no region, or only a country): no board can be shown to be there, so none is asked for
+  if (!placeTest(c)) return { candidates: [], notes: ['place_unknown'] }
   const notes: string[] = [], out: Candidate[] = []
   if (boards.size > max) notes.push('board_cap_reached')
   const fail: Record<string, number> = {}
