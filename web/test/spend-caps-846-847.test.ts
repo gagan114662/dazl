@@ -259,6 +259,13 @@ bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron o
     assert.equal(Number(runs?.n), 0, "this week's searches are given back: nothing was sent")
     const cfg = await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [B])
     assert.ok(Number(cfg?.next_run_at) >= now + 3500, 'retried in an hour, not on every tick')
+    // a spend refusal that is NOT the account cap (a malformed price) is a fault: it throws, is never 'spend_cap', and gives the slot back
+    const C = 'c'.repeat(32)
+    await saveDomain(db, C, 'acme.com'); await addKeyword(db, C, 'crm')
+    await assert.rejects(runIndexChecks(db, C, { env: { ...env, DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: 'abc' }, fetchImpl: f }), refusedWith('price_invalid'))
+    assert.equal(sent, 2)
+    const runsC = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [C])
+    assert.equal(Number(runsC?.n), 0)
   })
 })
 

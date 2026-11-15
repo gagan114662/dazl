@@ -32,6 +32,7 @@ import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apol
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
 import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
@@ -354,7 +355,11 @@ async function lookupWorkEmail(
       } catch (e) {
         // #1167: the account's day / month spend cap refused the lookup BEFORE it was sent: the credit goes back, and the
         // next provider would be refused by the same cap
-        if (e instanceof SpendRefused) { await refundCredits(db, hold).catch(() => {}); notes.push('account spend limit reached: nothing was sent'); incomplete = true; log('spend_cap'); break }
+        if (e instanceof SpendRefused) {
+          await refundCredits(db, hold).catch((x) => console.error('[work-email] credit refund not saved (reservation kept):', x instanceof Error ? x.message.slice(0, 120) : 'error'))
+          const cap = e.reason === OWNER_POOL_LIMIT_REASON
+          notes.push(cap ? 'account spend limit reached: nothing was sent' : `spend check refused the lookup (${e.reason}): nothing was sent`); incomplete = true; log(cap ? 'spend_cap' : `spend_refused:${e.reason}`); break
+        }
         notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue // charge unknown: the reservation stays
       }
       answered = true

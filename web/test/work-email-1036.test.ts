@@ -136,7 +136,13 @@ test('#1167 an account at its day spend cap: nothing is sent, the Apollo credit 
     assert.match(r.row.detail ?? '', /account spend limit reached: nothing was sent/)
     assert.doesNotMatch(r.row.detail ?? '', /may have used a credit/)
     for (const u of await creditUse(s.db, 'A', { now: NOW })) assert.equal(u.reserved, 0, `${u.provider} ${u.window}: no credit held for an unsent lookup`)
-  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev }
+    // a spend refusal that is not the cap (a malformed price) is named as itself
+    process.env.DAZL_OWNER_DAY_MAX_USD = '10'; process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD = 'abc'
+    const f = seed(); const r2 = await run(f, DANA, stub(never, never, calls))
+    assert.equal(calls.apollo + calls.pdl, 0); assert.ok('row' in r2)
+    assert.match(r2.row.detail ?? '', /spend check refused the lookup \(price_invalid\): nothing was sent/)
+    assert.doesNotMatch(r2.row.detail ?? '', /account spend limit/)
+  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev; delete process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD }
 })
 
 test('PDL 404 is its unbilled no-match: not_found, and the PDL credit is released', async () => {
