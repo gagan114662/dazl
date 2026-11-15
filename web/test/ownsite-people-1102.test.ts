@@ -378,3 +378,18 @@ test('round 6 (haiku): a US state in the path that is not the requested region i
   assert.deepEqual(officeLinks('<a href="/locations/chicago-il">a</a>', new URL('https://acme-law.example/'), ['Chicago, Ill.']), ['/locations/chicago-il'])
   assert.equal(otherOffice('/offices/portland-or', ['Portland, Miss.']), true)
 })
+
+test('round 7 (haiku): a ZIP-only region is not a bare city; "Kent" is not Kentucky; a path "tex" is Texas', async () => {
+  assert.equal(otherOffice('/offices/paris-tx', ['Paris, 75001']), true)
+  assert.equal(otherOffice('/offices/chicago-tx', ['Chicago, 60601']), true)
+  assert.equal(otherOffice('/offices/chicago-il', ['Chicago, USA']), false)
+  const texas = `<html><body>${prose('Our Paris office.')}<a href="tel:+19035550100">903 555 0100</a><div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/offices/paris-tx">Paris</a></body></html>`, '/offices/paris-tx': texas })
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, 75001'])
+  assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
+  assert.equal(otherOffice('/offices/ashford-ky', ['Ashford, Kent']), true)
+  assert.equal(otherOffice('/offices/chicago-il', ['Chicago, Ill.']), false)
+  assert.equal(otherOffice('/locations/tex/paris', ['Paris, France']), true)
+  // known limit, fails closed: a two-letter path segment that is also a state code reads as that state
+  assert.equal(otherOffice('/locations/de/chicago', ['Chicago, IL']), true)
+})
