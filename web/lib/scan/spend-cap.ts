@@ -57,10 +57,10 @@ import type Database from 'better-sqlite3'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
-import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
+import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, INPUT_MARGIN_TOKENS, PRICES_USD_PER_M, releaseFailure, SpendRefused } from '../llm/spend-guard.ts'
 import type { CompletionUsage } from '../llm/provider.ts'
 import { captureError } from '../ops/errors.ts'
-import { OWNER_POOL_LIMIT_REASON, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
+import { accountLimits, ownerLimits, OWNER_POOL_LIMIT_REASON, poolWindowsFull, releasePoolWindows, reservePoolWindows, settlePoolWindows, type PoolLimits } from '../llm/spend-pool.ts'
 
 type Env = Record<string, string | undefined>
 
@@ -180,10 +180,33 @@ export interface ScanSpendCtx {
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
   // in the same transaction as this scan's cap, for every model completion of the scan. Null when the runner reserves the
   // owner pool itself (an account with its own operator entry: PooledGuard), so a call is never counted twice.
-  accountLimits?: PoolLimits | null
+  // #1167: REQUIRED. A context opened without it (a cast, a JS caller) refuses every model call ('account_limits_missing'):
+  // a forgotten field must never mean a scan whose model calls skip the day and month caps.
+  accountLimits: PoolLimits | null
   clock?: () => number
 }
 const store = new AsyncLocalStorage<ScanSpendCtx>()
+// a release of an unsent call's reservation that could not be saved (lib/llm/spend-guard.ts guardProvider) is recorded here
+releaseFailure.report = e => { captureError(e, { source: 'worker', where: 'spend-guard:release-unsent', tenantId: store.getStore()?.tenantId, ref: store.getStore()?.jobId }) }
+// #1167 (owner decision): an account at its day or month cap sends NOTHING. Once the account limit refused a paid step of this
+// attempt, every later paid step of the attempt (search, fetch, render, enrichment, model) is refused before it is sent.
+const accountStopped = new WeakSet<ScanSpendCtx>()
+export const spendAttemptAccountStopped = (): boolean => { const c = store.getStore(); return !!c && accountStopped.has(c) }
+// The runner's own guard of a NAMED account (PooledGuard) refuses a model call before the transport sees it: the runner reports
+// it here, so the attempt stops the same way and the refusal is in the ledger (scan_spend_calls) like every other one.
+export async function noteAccountLimitRefusal(kind: SpendKind): Promise<void> {
+  const ctx = store.getStore()
+  if (!ctx || accountStopped.has(ctx)) return
+  accountStopped.add(ctx)
+  const at = (ctx.clock ?? (() => Math.floor(Date.now() / 1000)))()
+  try {
+    await asDb(ctx.db).tx(function* (t: Tx): TxBody<void> {
+      yield* t.run('UPDATE scan_jobs SET spend_cap_refusals = spend_cap_refusals + 1 WHERE id = ? AND user_id = ?', [ctx.jobId, ctx.tenantId])
+      yield* t.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, ?, 0, NULL, 'refused', ?, ?, NULL)",
+        [newId(), ctx.tenantId, ctx.jobId, Number.isSafeInteger(ctx.attempt) ? ctx.attempt : -1, kind, OWNER_POOL_LIMIT_REASON, at])
+    })
+  } catch (e) { captureError(e, { source: 'worker', where: 'scan-spend-cap:note-account-limit', tenantId: ctx.tenantId, ref: ctx.jobId }) }
+}
 // #846/#847: a paid model call made for an account outside any scan (ownerGuarded paths: replies, drafts, sequences, SEO,
 // qualification, the website read) reserves its worst case on the account's day/month windows at the transport, before
 // the request, and settles to the vendor-reported cost after it. Set by lib/llm/owner-guard.ts for every account without
@@ -220,7 +243,8 @@ export async function runWithJobSpend<T>(d: DbLike, tenantId: string, jobId: str
   if (j && !j.csv_domain && j.run_budget) {
     try { const m = (JSON.parse(j.run_budget) as { max_usd?: unknown } | null)?.max_usd; if (typeof m === 'number' && Number.isFinite(m) && m > 0) requestMaxUsd = m } catch { /* no budget: the cap alone */ }
   }
-  return runWithScanSpend({ db: d, jobId, tenantId, attempt: j ? Number(j.attempts) : -1, cap: scanCapConfig(), requestMaxUsd }, fn)
+  // no PooledGuard runs here, so the account's own windows are carried whoever the owner is (it makes no model call today)
+  return runWithScanSpend({ db: d, jobId, tenantId, attempt: j ? Number(j.attempts) : -1, cap: scanCapConfig(), requestMaxUsd, accountLimits: ownerLimits(tenantId) ?? accountLimits(tenantId) }, fn)
 }
 
 export function effectiveCapUsd(ctx: ScanSpendCtx): number | null {
@@ -259,6 +283,8 @@ export interface SpendHold {
   settle(actualUsd: number | null): Promise<void>
   // The request may have been billed and its outcome is unknown: the row stays 'reserved' and this attempt makes no further paid request.
   uncertain(): void
+  // #1157: uncertain(), plus a durable mark on a FREE row (awaited). The TinyFish paths use it; see the implementation.
+  uncertainDurable(): Promise<void>
   // The vendor refused the request (documented rejection status); call after settle(). The attempt stops paying and the scan ends with its own status
   // (a BYOK enrichment vendor: only that vendor stops, see VENDOR_SCOPED_REJECTION).
   rejected(status: number): void
@@ -278,6 +304,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   if (rejectedAttempts.has(ctx)) throw new SpendRefused('provider_rejected')
   const vendor = VENDOR_SCOPED_REJECTION[kind]
   if (vendor && rejectedVendors.get(ctx)?.has(vendor)) throw new SpendRefused('vendor_rejected') // its own reason: THIS vendor refused, not the scan's providers
+  if (isModel(kind) && (ctx as { accountLimits?: unknown }).accountLimits === undefined) throw new SpendRefused('account_limits_missing')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
   const at = now()
@@ -296,6 +323,11 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
+      // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
+      // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
+      if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON
+      const acct = ctx.accountLimits ?? ownerLimits(ctx.tenantId)
+      if (!why && !isModel(kind) && acct && (yield* poolWindowsFull(t, ctx.tenantId, acct, at))) why = OWNER_POOL_LIMIT_REASON
       // #846/#847: the owner's day/month caps first, in this same transaction; refused there, the scan's cap is untouched.
       const pool = !why && isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
       if (pool && !(yield* reservePoolWindows(t, ctx.tenantId, pool, usd, at))) why = OWNER_POOL_LIMIT_REASON
@@ -339,12 +371,22 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     captureError(e, { source: 'worker', where: 'scan-spend-cap:reserve', tenantId: ctx.tenantId, ref: ctx.jobId })
     throw new SpendRefused('ledger_unavailable')
   }
+  if (refused === OWNER_POOL_LIMIT_REASON) accountStopped.add(ctx)
   if (refused) throw new SpendRefused(refused)
   const pooled = isModel(kind) && ctx.accountLimits ? ctx.accountLimits : null
   let done = false
   return {
     id, kind, usd,
+    // #1157: the maybe-billed fact must outlive this process. The row stays 'reserved' either way; without a durable mark a free (US$0)
+    // call flagged here (a 402 billing error) would look like any free call a lost attempt left behind, and lib/scan/free-orphans.ts would settle it at $0.
     uncertain() { done = true; uncertainAttempts.add(ctx) },
+    async uncertainDurable() {
+      done = true; uncertainAttempts.add(ctx)
+      if (usd !== 0) return // a priced row is never a candidate for the free settle: nothing to mark
+      // If the write fails the attempt is still closed in this process (uncertainAttempts): the mark only matters once the process is gone.
+      try { await db.run("UPDATE scan_spend_calls SET reason = 'maybe_billed' WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved'", [id, ctx.tenantId, ctx.jobId]) }
+      catch (e) { captureError(e, { source: 'worker', where: 'scan-spend-cap:mark-uncertain', tenantId: ctx.tenantId, ref: ctx.jobId }) }
+    },
     rejected(status) {
       // A 404 is not scoped: no source shows an Apollo not-found is unbilled or harmless, so it keeps the attempt-wide stop (PDL's
       // documented, unbilled 404 no-match never calls rejected()).
@@ -419,6 +461,7 @@ async function reserveAccountSpend(kind: SpendKind, cost: () => number): Promise
   return {
     id: newId(), kind, usd,
     uncertain() { done = true }, // maybe billed: the worst case stays reserved
+    async uncertainDurable() { done = true },
     rejected() { /* outside a scan there is no attempt to stop; the caller sees the provider's error */ },
     async settle(actualUsd) {
       if (done) return

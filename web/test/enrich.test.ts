@@ -80,12 +80,13 @@ function seedLead() {
   return { db, jobId, lead: { id: 'lead1', company: 'Acme', company_domain: 'acme.com' } }
 }
 
-test('enrichLeadContacts: no keys saved -> no outbound calls, no rows', async () => {
+test('enrichLeadContacts: no keys saved -> no outbound calls, no enrichment rows, and ONE visible no_key audit row (#1037: never a silent zero)', async () => {
   const { db, jobId, lead } = seedLead()
   let calls = 0
   await enrichLeadContacts(db, 'u1', jobId, [lead], { fetchImpl: (async () => { calls++; return ok({}) }) as never, master })
   assert.equal(calls, 0)
-  assert.equal((recentAudit(db, 'u1', 10) as unknown[]).length, 0)
+  assert.deepEqual((recentAudit(db, 'u1', 10) as { connector: string; status: string }[]).map(r => [r.connector, r.status]), [['enrich', 'no_key']])
+  assert.equal((db.prepare('SELECT count(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0)
 })
 
 test('enrichLeadContacts: apollo key -> firmographic + contact enrichments, audited, emails never stored', async () => {
