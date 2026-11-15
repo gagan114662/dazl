@@ -680,7 +680,7 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
 // "/locations/us/chicago"), or "other" (any other office: "/locations/denver", "/offices/team/dallas", "/locations/texas/paris" for Paris, France).
 // A "requested" page still has to agree with the requested place before its people count (crawlSite), so "/offices/new-york/dallas" for Dallas is
 // judged by what the page says.
-const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|east-coast|downtown|midtown|uptown|metro|nyc|dc|city|main)$/
+const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|east-coast|downtown|midtown|uptown|metro|city|main)$/
 const US_CODES = new Set(Object.keys(US_STATES).map(k => k.toLowerCase()))
 // A path segment read as a US state: "texas", "tx", "tex", "us-texas", "new-york"; null otherwise. `codes`: also two-letter codes.
 const pathState = (x: string, codes: boolean): string | null => { const r = x.replace(/^(?:usa?|united-states)-/, '').replace(/-/g, ' '); if (!codes && /^[a-z]{2}$/.test(r)) return null; const st = stateCode(r); return st && US_CODES.has(st) ? st : null }

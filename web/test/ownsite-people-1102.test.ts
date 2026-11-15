@@ -475,7 +475,7 @@ test('round 11 (opus): country and region words before a state-named city are no
 })
 
 test('round 11 (haiku): descriptor words before a state-named city keep the requested office', () => {
-  for (const path of ['/locations/usa/new-york', '/locations/midtown/new-york', '/offices/nyc/new-york', '/offices/east-coast/new-york', '/offices/north-america/new-york']) assert.equal(otherOffice(path, ['New York, NY']), false, path)
+  for (const path of ['/locations/usa/new-york', '/locations/midtown/new-york', '/offices/east-coast/new-york', '/offices/north-america/new-york']) assert.equal(otherOffice(path, ['New York, NY']), false, path)
   for (const path of ['/offices/united-states/washington', '/offices/downtown/washington']) assert.equal(otherOffice(path, ['Washington, DC']), false, path)
 })
 
@@ -495,4 +495,12 @@ test('round 12 (opus): descriptor words after a state-named city keep it; "west-
   assert.equal(otherOffice('/offices/washington/downtown', ['Washington, DC']), false)
   assert.equal(otherOffice('/offices/west-coast/washington', ['Washington, DC']), true)
   assert.equal(otherOffice('/offices/east-coast/new-york', ['New York, NY']), false)
+})
+
+test('round 13: another city name after a state-named city is another office; known trade-offs pinned', () => {
+  assert.equal(otherOffice('/offices/washington/nyc', ['Washington, DC']), true)
+  assert.equal(otherOffice('/offices/new-york/dc', ['New York, NY']), true)
+  // trade-offs (fail closed): a borough or unlisted region before a suffixed state-named city, and a country folder after the office segment
+  assert.equal(otherOffice('/offices/brooklyn/new-york-ny', ['New York, NY']), true)
+  assert.equal(otherOffice('/locations/ca/toronto', ['Toronto, ON']), true)
 })
