@@ -289,7 +289,25 @@ test('round 3: a corrupt compressed body that never ends is dropped AND its conn
   })
   try {
     assert.equal(await rawGet(`https://127.0.0.1:${s.port}/`, 0, 5000, loopbackLookup as never), null)
-    await new Promise(r => setTimeout(r, 400))
+    const until = Date.now() + 3000; while (!closed && Date.now() < until) await new Promise(r => setTimeout(r, 25))
     assert.equal(closed, true, 'the server saw the connection close')
   } finally { await s.close() }
+})
+
+test('round 3 (opus/haiku): a requested-city office page placed elsewhere gives nothing; a state suffix must be the requested state; /partners/ is not a bio directory', async () => {
+  const home = `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="/locations/paris">Paris</a></body></html>`
+  const paris = `<html><body><h1>Paris</h1>${prose('Our office at 8 Rue de Rivoli, 75001 Paris, France.')}<a href="mailto:info@acme-law.example">info@acme-law.example</a><a href="tel:+33142000000">+33 1 42 00 00 00</a><div>Rae Mendel</div><div>Office Managing Partner</div></body></html>`
+  const s = site({ '/robots.txt': '', '/': home, '/locations/paris': paris })
+  const seen: string[] = []
+  const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, (_h, url) => { seen.push(url) }, 'Managing Partner', 30_000, ['Paris, Texas'])
+  assert.ok(s.fetched.includes('/locations/paris'))
+  assert.deepEqual(r.found.filter(f => /acme-law\.example|33142|Mendel/.test(f.value)), [], JSON.stringify(r.found))
+  assert.ok(!seen.some(u => u.endsWith('/locations/paris')), seen.join(' '))
+  const base = new URL('https://acme-law.example/')
+  assert.deepEqual(officeLinks('<a href="/offices/portland-or">a</a>', base, ['Portland, Maine']), [])
+  assert.deepEqual(officeLinks('<a href="/offices/portland-me">a</a><a href="/offices/portland">b</a>', base, ['Portland, Maine']), ['/offices/portland-me', '/offices/portland'])
+  assert.deepEqual(officeLinks('<a href="/locations/paris-fr">a</a>', base, ['Paris, Texas']), [])
+  assert.equal(otherOffice('/offices/leadership', []), false)
+  const biz = `<html><body>${prose('About us.')}<div><a href="/partners/bright-labs">Bright Labs</a></div><div>Director</div></body></html>`
+  assert.deepEqual(extractPeople(biz, 'https://acme.example/about/', 'Director').map(f => f.value), [])
 })

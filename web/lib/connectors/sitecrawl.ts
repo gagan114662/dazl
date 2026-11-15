@@ -459,7 +459,7 @@ const peoplePage = (pathname: string) => { const seg = segmentsOf(pathname); ret
 // A link to a person's own bio: under a people-directory segment ("/people/<slug>", "/attorneys/<slug>", "/our-team/<slug>"), never under
 // testimonials, case studies, blog authors, portfolios or press (MARK words), and the last segment is the person's name slug.
 const BIO_MARK = /testimonial|review|case-stud|blog|author|portfolio|press|news|client|customer|success-stor|sponsor|award/
-const BIO_PARENT = /^(?:our-|meet-(?:the-|our-)?)?(?:people|team|staff|attorneys|lawyers|professionals|bios?|leadership|doctors?|dentists?|providers|partners)$/
+const BIO_PARENT = /^(?:our-|meet-(?:the-|our-)?)?(?:people|team|staff|attorneys|lawyers|professionals|bios?|leadership|doctors?|dentists?|providers)$/
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -645,7 +645,9 @@ export function citySlugs(places: string[]): string[] {
   return [...new Set(places.map(p => String(p).split(',')[0].trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')).filter(x => x.length >= 3))]
 }
 // The requested city's office segment: the slug itself or the slug plus a two-letter state ("chicago", "chicago-il").
-const cityMatch = (slugs: string[], x: string) => slugs.some(c => x === c || (x.startsWith(c + '-') && /^[a-z]{2}$/.test(x.slice(c.length + 1))))
+// The suffix must be the REQUESTED region's code: "portland-or" is not Portland, Maine; "paris-fr" is not Paris, Texas.
+const regionCodes = (places: string[]) => new Set(places.flatMap(p => { const r = String(p).split(',').slice(1).join(',').trim().toLowerCase(); if (/^[a-z]{2}$/.test(r)) return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] }))
+const cityMatch = (slugs: string[], x: string, places: string[]) => slugs.some(c => x === c || (x.startsWith(c + '-') && regionCodes(places).has(x.slice(c.length + 1))))
 // Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
 // last segment that is the slug itself under a locations / offices path ("/locations/chicago", "/locations/offices/chicago.html").
 export function officeLinks(html: string, base: URL, places: string[]): string[] {
@@ -657,7 +659,7 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
     const seg = u.pathname.toLowerCase().replace(/\.html?$/, '').split('/').filter(Boolean)
     if (seg.length < 2 || seg.length > 4) continue
     const last = seg[seg.length - 1]
-    if (cityMatch(slugs, last) && seg.slice(0, -1).some(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))) { if (!out.includes(u.pathname)) out.push(u.pathname) }
+    if (cityMatch(slugs, last, places) && seg.slice(0, -1).some(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))) { if (!out.includes(u.pathname)) out.push(u.pathname) }
   }
   return out.slice(0, 2)
 }
@@ -666,7 +668,8 @@ export function otherOffice(pathname: string, places: string[]): boolean {
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
   if (i < 0 || i === seg.length - 1) return false
-  return !cityMatch(citySlugs(places), seg[i + 1])   // "/locations/chicago/team" is the Chicago office; "/locations/us/chicago" fails closed
+  if (PEOPLE_SEGMENT.test(seg[i + 1])) return false   // "/offices/leadership" is a people page, not an office
+  return !cityMatch(citySlugs(places), seg[i + 1], places)   // "/locations/chicago/team" is the Chicago office; "/locations/us/chicago" fails closed
 }
 // The requested city's own office page ("/locations/chicago", "/offices/chicago-il/team"): its people count only when the page agrees with the
 // requested place. A generic "/about-us/our-office" is not a city office page and is judged like any people page.
@@ -674,7 +677,7 @@ function cityOffice(pathname: string, places: string[]): boolean {
   const slugs = citySlugs(places); if (slugs.length === 0) return false
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
-  return i >= 0 && i < seg.length - 1 && cityMatch(slugs, seg[i + 1])
+  return i >= 0 && i < seg.length - 1 && cityMatch(slugs, seg[i + 1], places)
 }
 export function contactPaths(homeHtml: string, home: URL, places: string[] = []): string[] {
   const offices = officeLinks(homeHtml, home, places)
@@ -797,12 +800,13 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       pages++
       // An office page's people count only when it is the requested office (a redirect or a homepage link may still land on another one).
       let officePath = ''; try { officePath = new URL(r.finalUrl).pathname } catch { /* keep '' */ }
-      if (otherOffice(officePath, places)) continue   // another city's office: not stored, not read for people, contacts or addresses
+      // another city's office, or the requested city's office path whose page places it elsewhere ("Paris" in France for Paris, Texas):
+      // not stored, not read for people, contacts or addresses
+      if (otherOffice(officePath, places) || (cityOffice(officePath, places) && placeAgreement(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '), places, expectName ?? '') !== 'agrees')) continue   // contacts or addresses
       onPage?.(r.body, r.finalUrl, r.status)
       // a locations index: the office page for the requested city, read next
       if (LOCATIONS_INDEX.test(p)) for (const o of officeLinks(r.body, new URL(r.finalUrl), places).reverse()) if (!queue.includes(o)) queue.splice(qi + 1, 0, o)
-      const officeOk = (!cityOffice(officePath, places) || placeAgreement(r.body.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' '), places, expectName ?? '') === 'agrees')
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...(officeOk && !LOCATIONS_INDEX.test(officePath) ? extractPeople(r.body, r.finalUrl, buyerRoles, expectName) : [])]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...(!LOCATIONS_INDEX.test(officePath) ? extractPeople(r.body, r.finalUrl, buyerRoles, expectName) : [])]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
