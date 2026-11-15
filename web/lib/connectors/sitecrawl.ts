@@ -12,7 +12,7 @@ import { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN } from './domain-unreso
 export { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN, domainUnresolvedWords } from './domain-unresolved.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { personalAddresses, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -1096,6 +1096,22 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
+      }
+      // #1036: a buyer the crawl named on this site whose OWN personal address the site prints (the published tier recordEmailGuesses
+      // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
+      // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
+      // lead's confirmed site only; the label names the person and says where it was printed.
+      if (r.reason === 'ok' || r.reason === 'none_published') {
+        const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
+        for (const f of r.found) {
+          if (f.kind !== 'person') continue
+          const pub = publishedCandidateFor(db, tenantId, l.id, f.value.split(',')[0] ?? '')
+          if (!pub || !sameSite(pub.address.split('@')[1] ?? '', site) || have.has(pub.address.toLowerCase())) continue
+          have.add(pub.address.toLowerCase())
+          const excerpt = `${f.value}: their own address, printed on the company website`
+          const label = `${contextLabel({ excerpt, source_url: pub.url })}${guessed ? '; site found by name search and location match, not linked from the source' : ''}`
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: pub.address.toLowerCase().slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: pub.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++
+        }
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
     }
