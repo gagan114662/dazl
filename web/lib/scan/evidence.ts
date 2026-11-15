@@ -280,7 +280,7 @@ function parseDay(s: string | null): Date | null {
 }
 
 // #1248: the quote and the page are compared as the words a reader sees. A search result can carry a quote in markdown ("Das Berliner FinTech
-// [mika](https://www.startbase.de/organization/mika-f5ff77dc/) hat ...", "unit in [Bengaluru](/tag/bengaluru)"): the page shows "mika" and
+// [mika](<the news site's organisation page>) hat ...", "unit in [Bengaluru](/tag/bengaluru)"): the page shows "mika" and
 // "Bengaluru", so the link syntax is reduced to its visible text (and **bold** / __bold__ markers dropped) before matching. A page's text can
 // put a space before a full stop at a tag boundary ("real estate practice ."): a space before a word-ending full stop is ignored on both sides
 // (norm has already turned , ; : ! ? into spaces). The company-name check reads the quote WITHOUT that joining, so "... to \u201cAcme\u201d." still names Acme. The words
