@@ -979,8 +979,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
-      const onPage = (raw: string, url: string, status: number) => {
-        const html = revealEmails(raw) // #1036: decode Cloudflare-protected / bracketed addresses in place, so `at` and contexts line up
+      const onPage = (html: string, url: string, status: number) => {
+        html = revealEmails(html) // #1036: decode Cloudflare-protected / bracketed addresses in place, so `at` and contexts line up
         recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
         // #1036: printed personal addresses are always collected (the published tier is a fact, not a guess); only guessing is flagged.
         for (const a of personalAddresses(html, cand)) {
