@@ -871,3 +871,39 @@ test('#1095 review: the real NinjaOne / AlertMedia account-executive titles are 
   for (const t of ['Account Executive, Federal (Intelligence Community)', 'Mid Market Account Executive', 'Mid-Market Account Executive', 'Commercial Account Executive (CAE)', 'Account Executive (SMB) - West']) assert.ok(titleIsRole(t, roles), t)
   for (const t of ['Senior Account Executive', 'Account Executive II', 'Account Executive (Austin)', 'Account Executive - Mid-Market', 'Sr. Account Executive, Enterprise', 'Founding Account Executive', 'Account Executives']) assert.ok(titleIsRole(t, roles), t)
 })
+
+// #1121 (dogfood on prod 03f0e8eb): the lead's own verified quote is its job ad naming the requested vacancy ("As a Sales Development Representative at
+// Mercury ..."). No company domain was found, so no board could be looked up, and no hiring verb is in the quote: all such leads were held. The ad heading
+// is the role evidence when the lead's own date is inside the hiring clock; outside it, or for another company's ad, the lead is still held.
+function seedJobAd(o: { excerpt: string; company?: string; date?: string | null }) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'B2B SaaS founders in the US and Canada hiring their first SDR or salesperson'
+  const icp = JSON.stringify({ signals: ['hiring their first SDR or salesperson'], where: ['United States', 'Canada'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES ('L1', ?, '', ?, NULL, 'hiring an SDR', 'https://jobs.example.com/view/123', ?, 80, 80, '', ?, 'verified')")
+    .run(jobId, o.company ?? 'Mercury', o.excerpt, o.date === undefined ? d(9).slice(0, 10) : o.date)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+test('#1121 PASS: the lead\'s own dated job-ad quote naming the requested SDR vacancy keeps the lead, and its card says so', async () => {
+  const { db, job } = seedJobAd({ excerpt: "As a Sales Development Representative at Mercury, you'll be the first point of contact for founders" })
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
+  assert.equal(lead(db).review_reason, null)
+  assert.match(lead(db).why, /^Hiring for SDR: named in its own job ad, dated /)
+  db.close()
+})
+test('#1121 HELD: an undated or out-of-clock job ad, another company\'s ad, or a quote with no vacancy title is still no_sales_hiring_evidence', async () => {
+  for (const [why, o] of [
+    ['no date', { excerpt: 'Founding Sales Development Representative (SDR) Mercury United States', date: null }],
+    ['outside the hiring clock', { excerpt: 'Founding Sales Development Representative (SDR) Mercury United States', date: d(400).slice(0, 10) }],
+    ['another company\'s ad', { excerpt: 'As a Sales Development Representative at Othercorp, you will book meetings' }],
+    ['no vacancy title', { excerpt: 'This role focuses on driving sales growth by generating qualified meetings for AEs', company: 'beehiiv' }],
+  ] as const) {
+    const { db, job } = seedJobAd(o)
+    await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
+    db.close()
+  }
+})
