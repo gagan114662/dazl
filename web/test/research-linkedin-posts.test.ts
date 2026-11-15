@@ -272,3 +272,14 @@ test('review round 6 (haiku): a strong-signal name still gets looked up after th
   for (const n of ['Chris Head', 'Jane Lead']) assert.equal(nameShaped(n), true, n)
   assert.equal(authorOf({ url: liPost('five-tips', '2026-10-01'), title: 'Five Growth Tips, AI on LinkedIn: hi' })?.name, 'Five Growth Tips', 'known: an acronym after a comma is stripped; the lookup still needs the profile title to match')
 })
+
+test('known limits, pinned (council round 7): topic titles can take a handle\'s weak slots; a trailing role word passes the name shape', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const topics = ['Cold Email Tips on LinkedIn: x', 'Cold Email Tricks on LinkedIn: x', 'Outbound Tactics on LinkedIn: x'].map((t, i) => mk(liPost('busy', `2026-10-0${i + 1}`, `p${i}`), t))
+  const prof = (q: string) => q.includes('Dana Okoye') ? [mk('https://www.linkedin.com/in/busy', 'Dana Okoye - Founder at Okoye')] : []
+  const plain = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [...topics, mk(liPost('busy', '2026-10-09', 'd'), 'Dana Okoye on LinkedIn: hi')] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 20 })
+  assert.equal(plain.authors[liPost('busy', '2026-10-09', 'd')].kind, 'unresolved', 'known: a 4th plainly titled author after 3 topic titles is not looked up (fails closed)')
+  const strongPost = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [...topics, mk(liPost('busy', '2026-10-09', 'd'), "Dana Okoye's Post")] : q.startsWith('site:') ? [] : prof(q), maxQueries: 2, maxResolve: 20 })
+  assert.equal(strongPost.authors[liPost('busy', '2026-10-09', 'd')].kind, 'person', 'a strong signal is still looked up')
+  for (const n of ['Growth Director', 'Sales Consultant']) assert.equal(nameShaped(n), true, `known: ${n} passes the shape (a lookup may be spent; a Person still needs the profile title to match)`)
+})

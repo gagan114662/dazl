@@ -155,8 +155,9 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     let r = byHandle.get(key)
     if (!r) { r = { kind: 'unresolved', headline: null, profileUrl: p.author.profileUrl, name: null, tried: new Set() }; byHandle.set(key, r) }
     // only an author the post title names can become a Person, so the resolve budget goes to those
-    // one lookup per (handle, name): a Title Case non-name ("Cold Email Tips") or another person's name earlier in the results does
-    // not use up the lookup a later real name needs; maxResolve still caps the total
+    // one lookup per (handle, name), at most 3 names per handle (+1 for a strong "<Name>'s Post" signal); maxResolve caps the total.
+    // Known cost (fails closed): Title Case topic titles that pass nameShaped ("Cold Email Tips") take weak slots, so a 4th plainly
+    // titled real author on the same handle is not looked up; a strong-signal post still is.
     if (r.kind === 'unresolved' && p.author.platform === 'linkedin' && p.author.name && !r.tried.has(p.author.name.toLowerCase()) && r.tried.size < (strong(p.hit.title ?? '') ? 4 : 3) && resolved < (deps.maxResolve ?? 20)) {   // at most 3 names per handle, plus one for a strong signal
       r.tried.add(p.author.name.toLowerCase()); resolved++; sent++
       const hits = await safeSearch(deps.search, `${p.author.name} linkedin ${p.author.handle}`, {})
