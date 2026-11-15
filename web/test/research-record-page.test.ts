@@ -88,12 +88,12 @@ test('through the real page fetcher: the cited record is a readable page with it
   restore = fakeHttps(json(['not', 'a', 'licence']))
   try { assert.ok(isFail(await fetchPageDetailed(FX.vancouver_url, async () => null))) } finally { restore() }
   // a portal that refuses (429, 403) is a failed read, never sent to the paid rendering service
-  for (const status of [429, 403]) {
+  for (const url of [FX.austin_url, FX.vancouver_url]) for (const status of [429, 403]) {
     let renders = 0
     restore = fakeHttps(() => ({ status, type: 'text/html', body: '<html>rate limited</html>' }))
     try {
-      const p = await fetchPageDetailed(FX.austin_url, async () => { renders++; return '<html><body>' + 'x '.repeat(300) + '</body></html>' })
-      assert.ok(isFail(p), `${status}`); assert.equal(renders, 0, `${status}: no render`)
+      const p = await fetchPageDetailed(url, async () => { renders++; return '<html><body>' + 'x '.repeat(300) + '</body></html>' })
+      assert.ok(isFail(p), `${url} ${status}`); assert.equal(renders, 0, `${url} ${status}: no render`)
     } finally { restore() }
   }
   // a body over the size cap is not read; rows of two permits are not this permit's record
