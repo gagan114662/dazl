@@ -1,5 +1,6 @@
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
+import zlib from 'node:zlib'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -60,11 +61,20 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      // Some servers send a compressed body although the request asks for 'identity' (seen on law-firm sites, #1102: ogletree.com,
+      // honigman.com). Unread, the page looked like binary noise, the homepage never "named the company" and the whole site was skipped
+      // as name_mismatch. The body is decoded here; MAX_BYTES caps the DECODED bytes, so a small compressed body cannot expand without
+      // limit (a decompression bomb). An encoding this reader does not know reads as an empty page, never as noise.
+      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
+      const decoder = enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip() : enc === 'deflate' ? zlib.createInflate() : enc === 'br' ? zlib.createBrotliDecompress() : null
+      if (enc && enc !== 'identity' && !decoder) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      const body = decoder ? res.pipe(decoder) : res
       const chunks: Buffer[] = []; let n = 0
-      res.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }) } else chunks.push(c) })
-      res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
+      body.on('data', (c: Buffer) => { n += c.length; if (n > MAX_BYTES) { res.destroy(); decoder?.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }) } else chunks.push(c) })
+      body.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), finalUrl: u.toString() }))
+      body.on('error', () => resolve(null))   // a corrupt compressed body is no page
       res.on('error', () => resolve(null))
-      res.on('close', () => resolve(null)) // no-op once already settled
+      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder the decoder's 'end' settles it
     })
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
