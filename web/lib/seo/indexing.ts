@@ -143,14 +143,14 @@ async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?:
   const batchEnv = { ...env, TINYFISH_SEARCHES_PER_SCAN: String(WEEKLY_ALLOWANCE) }
   const spent = { searches: 0 } // searches actually sent (tfSearch counts one before each request, failed or not)
   const out: IndexCheck[] = []
-  let refusedBySpend = false
+  let refused: SpendRefused | null = null
   try {
     for (const keyword of keywords.slice(0, claimed)) {
       // #1167: an account at its day or month spend cap is refused before anything is sent (SpendRefused): the batch stops like a cap
       const r = await tfSearch(db, tenantId, `site:${cfg.domain} ${keyword}`.slice(0, 300), {}, spent, { env: batchEnv, fetchImpl: deps.fetchImpl, now }).catch((e: unknown) => {
-        if (e instanceof SpendRefused) spent.searches-- // counted before the reserve; never sent: the slot goes back (finally)
-        if (e instanceof SpendRefused && e.reason === OWNER_POOL_LIMIT_REASON) { refusedBySpend = true; return null }
-        throw e // any other refusal is a fault, reported as one
+        if (!(e instanceof SpendRefused)) throw e
+        spent.searches-- // counted before the reserve; never sent: the slot goes back (finally)
+        refused = e; return null
       })
       if (!r || !r.ok) break // cap/rate/auth/quota/spend cap: stop the batch, keep what we have
       const own = r.hits.find(h => hostMatches(h.url, cfg.domain))
@@ -161,11 +161,13 @@ async function runIndexChecksCounted(db: DbLike, tenantId: string, deps: { env?:
     const unsent = claimed - spent.searches
     if (unsent > 0) await asDb(db).run('INSERT INTO seo_index_runs (tenant_id, ran_at, searches) VALUES (?, ?, ?)', [tenantId, now, -unsent])
   }
-  if (out.length === 0 && refusedBySpend) {
-    // the account's spend cap: nothing was sent and this week's searches are given back; the cron retries in an hour, not every tick
-    // never pulls a later scheduled run forward (a manual run refused days before it is due keeps that schedule)
+  if (out.length === 0 && refused) {
+    // nothing was sent and this week's searches are given back; the cron retries in an hour, not every tick, and a later
+    // scheduled run is never pulled forward (a manual run refused days before it is due keeps that schedule)
     await asDb(db).run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ? AND domain = ? AND (next_run_at IS NULL OR next_run_at < ?)', [now + 3600, tenantId, cfg.domain, now + 3600])
-    return 'spend_cap'
+    // the account's cap is an answer ('spend_cap'); any other refusal (a price or store fault) is reported as the fault it is
+    if ((refused as SpendRefused).reason === OWNER_POOL_LIMIT_REASON) return 'spend_cap'
+    throw refused
   }
   if (out.length > 0) {
     const stamp = deps.id ?? `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`

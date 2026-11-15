@@ -252,6 +252,11 @@ bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron o
     // B is at its day cap: the check sends nothing
     const now = Math.floor(Date.now() / 1000)
     await db.tx(function* (t) { assert.equal(yield* reservePoolWindows(t, B, accountLimits(B), 0.5, now), true) })
+    // a manual run refused days before the weekly run is due keeps that schedule (never pulled forward); then the due run back-offs
+    await db.run('UPDATE seo_index_configs SET next_run_at = ? WHERE tenant_id = ?', [now + 5 * 86400, B])
+    assert.equal(await runIndexChecks(db, B, { env, fetchImpl: f }), 'spend_cap')
+    assert.equal(Number((await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [B]))?.next_run_at), now + 5 * 86400)
+    await db.run('UPDATE seo_index_configs SET next_run_at = NULL WHERE tenant_id = ?', [B])
     const outB = await runIndexChecks(db, B, { env, fetchImpl: f })
     assert.equal(sent, 2, 'no search sent for an account at its cap')
     assert.equal(outB, 'spend_cap')
@@ -266,6 +271,8 @@ bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron o
     assert.equal(sent, 2)
     const runsC = await db.get<{ n: unknown }>('SELECT coalesce(sum(searches), 0) AS n FROM seo_index_runs WHERE tenant_id = ?', [C])
     assert.equal(Number(runsC?.n), 0)
+    const cfgC = await db.get<{ next_run_at: unknown }>('SELECT next_run_at FROM seo_index_configs WHERE tenant_id = ?', [C])
+    assert.ok(Number(cfgC?.next_run_at) >= now + 3500, 'a fault backs off an hour too, not every tick')
   })
 })
 
