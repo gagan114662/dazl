@@ -1,11 +1,12 @@
 // #878 / #1107: a request for companies that POSTED about something is dated by the company's own post.
 // REAL: test/fixtures/own-post-pages-20261114.json holds the nine pages behind undated-held leads of the prod matrix of 2026-11-14 (deployed 3fb162e5, mxprod3):
 // each page fetched once from this PC and passed through the repo's own htmlToText (title, published, JSON-LD blocks, text), with the lead's stored company and
-// quote and the prod job / hold reason. Four are the Sydney agencies' own posts; five are the negatives this rule must never date.
+// quote and its prod hold reason. Email addresses and phone numbers in the page text are replaced by <email> / <phone>; no prod id is kept. Four are the Sydney agencies' own posts; five are the negatives this rule must never date.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { asksForPost, domainLabel, earlierStamp, isArticleAddress, isOwnSite, ownPostDate, statesDay } from '../lib/scan/own-post-date.ts'
+import { asksForPost, domainLabel, earlierStamp, isArticleAddress, isOwnSite, looksLikePost, ownPostDate, statesDay } from '../lib/scan/own-post-date.ts'
+import { evidenceRecheck } from '../lib/scan/evidence-recheck.ts'
 import { finishUndatedLeads } from '../lib/scan/structured-date.ts'
 
 interface Real { company: string; url: string; excerpt: string; prod: { job: string; review_reason: string; published_at: string | null }; page: { title: string; published: string | null; structured: string[]; text: string } }
@@ -107,4 +108,48 @@ test('#878 runner: the own post of a "posting about" request is stored dated and
   const c = await runFixture(postFx('Marketing agencies in Sydney, Australia that published a new service page in the last 90 days'))
   const crow = c.db.prepare("SELECT event_date, event_date_proof, review_reason FROM leads WHERE company = 'Outbounda'").get() as Record<string, string | null>
   assert.equal(crow.review_reason, 'outside_window_undated', JSON.stringify(crow)); assert.equal(crow.event_date_proof, null)
+})
+
+// Independent review (fresh reviewer, 4/10 CHANGES): each case below dated on the first version of the rule and is held now.
+const ACME = (over: Partial<{ request: string; url: string; excerpt: string; text: string; published: string; structured: string[] }> = {}) => {
+  const excerpt = over.excerpt ?? 'Cold email still books meetings for B2B agencies when the list is small and the offer is specific.'
+  const text = over.text ?? `Acmegrowth Blog. Cold email in 2026. Published 1 October 2026 by the Acmegrowth team. ${excerpt} More on outbound below. ${'Outbound paragraph. '.repeat(20)}`
+  return { request: over.request ?? SYDNEY, company: 'Acmegrowth', url: over.url ?? 'https://acmegrowth.com.au/blog/cold-email-in-2026', excerpt, page: { text, published: over.published ?? '2026-10-01', structured: over.structured ?? [] } }
+}
+test('#878 (review) the post must be the request\'s only event, asked for and not excluded; a quote that dates its own story is held', () => {
+  assert.equal(ownPostDate(ACME()).date, '2026-10-01', 'control: a plain own post under the Sydney request dates')
+  for (const request of [
+    'Agencies in Sydney that opened a new office or are posting about outbound in the last 90 days',   // another event before the post
+    'Agencies in Sydney posting about outbound or that opened a new office in the last 90 days',       // another event after it
+    'Marketing agencies in Sydney that are not posting about outbound in the last 90 days',
+    'SaaS companies hiring SDRs in the last 30 days, excluding companies posting about AI',
+  ]) assert.equal(ownPostDate(ACME({ request })).date, null, request)
+  const melbourne = 'Back in March 2023 we opened our Melbourne office, and it has grown to twelve people since then.'
+  assert.match(ownPostDate(ACME({ excerpt: melbourne })).why, /quote dates its own event/)
+  for (const q of ['We opened in 2024 and have run cold email for every client since day one.', 'Last month our team booked forty meetings for a single client with cold email.', 'In Q3 our outbound programme for clients booked 140 meetings across Sydney.']) assert.equal(ownPostDate(ACME({ excerpt: q })).date, null, q)
+  assert.equal(asksForPost('Agencies in the U.S. posting about cold email in the last 90 days'), true, 'an abbreviation does not end the sentence')
+})
+test('#878 (review) a slug is not a post: service, careers and landing pages need an article node or a blog / news address', () => {
+  for (const url of ['https://acmegrowth.com.au/services/cold-email-outreach', 'https://acmegrowth.com.au/careers/senior-sales-development-rep', 'https://acmegrowth.com.au/contact-us-today']) assert.match(ownPostDate(ACME({ url })).why, /not a single article/, url)
+  const article = JSON.stringify({ '@context': 'https://schema.org', '@type': 'BlogPosting', datePublished: '2026-10-01' })
+  assert.equal(ownPostDate(ACME({ url: 'https://acmegrowth.com.au/cold-email-in-2026-what-works', structured: [article] })).date, '2026-10-01', 'an article node on a root slug')
+  assert.equal(looksLikePost('https://acmegrowth.com.au/cold-email-in-2026-what-works', []), false)
+})
+test('#878 (review) the day must be the byline (top of the page or next to the quote), not a "recent posts" list; platforms are not anyone\'s own site', () => {
+  const excerpt = 'Cold email still books meetings for B2B agencies when the list is small and the offer is specific.'
+  const text = `Acmegrowth Blog. Cold email in 2026. By the Acmegrowth team. ${'Intro paragraph about outbound. '.repeat(60)}${excerpt} ${'Body paragraph about outbound. '.repeat(80)} Related posts: 1 October 2026 - Ten subject lines that work.`
+  assert.match(ownPostDate(ACME({ text })).why, /does not state 2026-10-01 as the post's byline/)
+  assert.equal(isOwnSite('https://medium.com/@someone/how-to-do-cold-email-well', 'Medium'), false)
+  assert.equal(isOwnSite('https://www.linkedin.com/pulse/how-cold-email-works-jane-doe', 'LinkedIn'), false)
+})
+// (review R3) the evidence recheck re-derives the proof from the page. It must agree with the scan for a day this rule gave (it called it "not tied" before).
+test('#878 (review) the evidence recheck agrees: the stored own-post day is bound and inside the window (the recheck called it not tied before)', async () => {
+  const x = await runFixture(postFx(SYDNEY))
+  const id = (x.db.prepare("SELECT id FROM leads WHERE company = 'Outbounda'").get() as { id: string }).id
+  x.db.prepare('UPDATE scan_jobs SET offer = ?, seller = ?').run('Outbound appointment setting for agencies', 'Outbound appointment setting for agencies')
+  const f = postFx(SYDNEY), url = Object.keys(f.own)[0], o = f.own[url] as { title: string; text: string; published: string; structured: string[] }
+  const page = async () => ({ text: o.text, title: o.title, retrievedAt: Math.floor(Date.now() / 1000), published: o.published, structured: o.structured })
+  const r = await evidenceRecheck(x.db, 'A', id, page)
+  assert.equal(r?.status, 'checked', JSON.stringify(r))
+  assert.equal(r?.checks?.event_date_bound, true, JSON.stringify(r?.checks)); assert.equal(r?.checks?.window, 'inside')
 })
