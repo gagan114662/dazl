@@ -4,18 +4,19 @@
 import { writeFileSync } from 'node:fs'
 import { safeGet } from '../lib/sources/http.ts'
 import { socrataPermitsSource } from '../lib/research/sources/socrata-permits.ts'
+import { opendatasoftLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
 
 const [city, region, country, category, daysArg] = process.argv.slice(2)
 if (!city || !region || !country || !category) { console.error('usage: research-sources.mts <city> <region> <country> <category> [days]'); process.exit(2) }
 const days = Number(daysArg && !daysArg.startsWith('--') ? daysArg : 90)
 const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
 const market = { city, region, country, category }
-const sources = [socrataPermitsSource()]
+const sources = [socrataPermitsSource(), opendatasoftLicencesSource()]
 const all = []
 for (const s of sources.filter(x => x.covers(market))) {
-  const t0 = Date.now()
+  const t0 = performance.now()
   const r = await s.collect(market, since, safeGet)
-  console.log(`${s.id}: ${r.signals.length} companies in ${((Date.now() - t0) / 1000).toFixed(1)} s${r.notes.length ? ` (notes: ${r.notes.join(', ')})` : ''}`)
+  console.log(`${s.id}: ${r.signals.length} companies in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.notes.length ? ` (notes: ${r.notes.join(', ')})` : ''}`)
   all.push(...r.signals)
 }
 const named = all.filter(x => x.personName).length, dated = all.filter(x => x.eventDate >= since).length
