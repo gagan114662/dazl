@@ -30,6 +30,7 @@ import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
+import { paidVendorOn, paidVendorOffNote } from '../paid-vendors.ts'
 import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
@@ -308,9 +309,14 @@ async function lookupWorkEmail(
     try { const k = getEnabledCredential(db, tenantId, c, deps.master); if (typeof k === 'string' && k) return k } catch { /* recorded below */ }
     notes.push(`${P} key could not be read`); incomplete = true; return null
   }
-  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed ? loadKey('enrich:pdl', 'People Data Labs') : null }
+  // Refs #1099 (lib/paid-vendors.ts): Apollo and PDL are paid per call, so a saved key is used only when the operator named the vendor in
+  // DAZL_PAID_VENDORS. The staging fixture's fake PDL costs nothing and stays as it was.
+  const env = deps.env ?? process.env
+  const apolloOn = paidVendorOn('apollo', env), pdlOn = fixture || paidVendorOn('pdl', env)
+  const keys: Record<CreditProvider, string | null> = { apollo: allowed.apollo && !fixture && apolloOn ? loadKey('enrich:apollo', 'Apollo') : null, pdl: pdlAllowed && pdlOn ? loadKey('enrich:pdl', 'People Data Labs') : null }
   if (!keys.apollo && !keys.pdl) {
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
+    if ((allowed.apollo && !fixture && !apolloOn) || (pdlAllowed && !pdlOn)) return { status: 'no_key', detail: `${paidVendorOffNote(!apolloOn ? 'apollo' : 'pdl')}; only an address printed on the company's own website is used` }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
   }
   const foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].filter(c => c !== 'US')

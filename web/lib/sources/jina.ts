@@ -1,4 +1,6 @@
 import { looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
+import { paidVendorOn } from '../paid-vendors.ts'
+import { htmlToText } from '../scan/fetch-page.ts'
 
 // Jina Reader (https://r.jina.ai) reads a public page and returns it as markdown. It is a third-party
 // service: the page URL is sent to it. Without a key it rate limits (about 20 requests/minute when this
@@ -35,12 +37,29 @@ export const isReaderEnvelope = (body: string): boolean => !looksLikeHtml(body) 
 
 export const jinaAdapter: SourceAdapter = {
   id: 'web',
-  label: 'Web pages (read via Jina Reader)',
+  // Refs #1099 (lib/paid-vendors.ts): Jina Reader is a third-party service, used only when the operator named 'jina' in DAZL_PAID_VENDORS;
+  // by default the page is read directly by dazl (the adapter's own guarded http, the same HTML-to-text as the verifier's fetch).
+  get label() { return paidVendorOn('jina') ? 'Web pages (read via Jina Reader)' : 'Web pages (read directly by dazl)' },
   async collect({ keywords, pages = [], http, note }) {
     const out: Evidence[] = []
+    const viaJina = paidVendorOn('jina')
     for (const page of pages.slice(0, PER_SCAN)) {
       const hit = cache.get(page)
       if (hit && Date.now() - hit.at < 15 * 60 * 1000) { out.push(...hit.items); continue }
+      if (!viaJina) {
+        const r = await http(page)
+        if (!r) { note?.('unreachable'); continue }
+        if (r.status !== 200) { note?.(statusNote(r.status)); continue }
+        if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
+        if (!looksLikeHtml(r.body)) { note?.('malformed'); continue }
+        const { text, title, published } = htmlToText(r.body)
+        const quote = pickQuote(text, keywords)
+        if (quote.length < 20) { note?.('no_readable_text'); continue }
+        const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
+        cache.set(page, { at: Date.now(), items })
+        out.push(...items)
+        continue
+      }
       const now = Date.now()
       while (calls.length && now - calls[0] > WINDOW_MS) calls.shift()
       if (calls.length >= MAX_CALLS) { note?.('budget'); break }

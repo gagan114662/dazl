@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
 import { decryptSecret, encryptSecret } from '../secrets.ts'
 import type { Vendor } from './vendors.ts'
+import { usableVendor } from '../paid-vendors.ts'
 
 export function migrateKeys(db: Database.Database): void {
   db.exec(`
@@ -59,10 +60,11 @@ export async function removeKey(db: Db, tenantId: string, vendor: Vendor): Promi
   return (await db.run(DELETE_KEY_SQL, [tenantId, vendor])).changes === 1
 }
 
-// The tenant's most recently added vendor. Server-side only.
-export function defaultVendor(db: Database.Database, tenantId: string): Vendor | null {
-  const r = db.prepare('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(tenantId) as { vendor: Vendor } | undefined
-  return r?.vendor ?? null
+// The tenant's most recently added vendor dazl may call. Server-side only. Refs #1099 (lib/paid-vendors.ts): an OpenAI key counts only when
+// the operator named 'openai' in DAZL_PAID_VENDORS; otherwise the newest Anthropic key, as in lib/scan/runner.ts pickVendor.
+export function defaultVendor(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): Vendor | null {
+  const rows = db.prepare('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC').all(tenantId) as { vendor: Vendor }[]
+  return usableVendor(rows, env)?.vendor ?? null
 }
 
 // Server-side only (the scan runner). Never return this from an API route. Sync on the raw handle (the runner today);

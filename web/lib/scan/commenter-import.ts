@@ -14,6 +14,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { addEnrichment, audit, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
+import { paidVendorOn, paidVendorOffNote, PAID_VENDOR_OFF } from '../paid-vendors.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from '../enrich/apollo.ts'
 import { CreditRefused, refundCredits, refusalLookup, reserveCredits, settleCredits, type CreditHold } from '../enrich/credit-pool.ts'
 import { pdlPeopleSearch } from '../enrich/pdl.ts'
@@ -214,9 +215,14 @@ async function enrichCommentersInner(db: Database.Database, tenantId: string, ba
   if (leads.length === 0) return
   const fetchImpl = deps.fetchImpl ?? fetch
   const master = deps.master ?? getMasterKey()
-  const apolloKey = getEnabledCredential(db, tenantId, 'enrich:apollo', master)
-  const pdlKey = apolloKey ? null : getEnabledCredential(db, tenantId, 'enrich:pdl', master)
-  if (!apolloKey && !pdlKey) return
+  // Refs #1099 (lib/paid-vendors.ts): Apollo and PDL are paid per call; neither key is read unless the operator named it in DAZL_PAID_VENDORS
+  const env = deps.env ?? process.env
+  const apolloKey = paidVendorOn('apollo', env) ? getEnabledCredential(db, tenantId, 'enrich:apollo', master) : null
+  const pdlKey = apolloKey || !paidVendorOn('pdl', env) ? null : getEnabledCredential(db, tenantId, 'enrich:pdl', master)
+  if (!apolloKey && !pdlKey) {
+    if (!paidVendorOn('apollo', env) && !paidVendorOn('pdl', env)) { try { audit(db, { tenantId, connector: 'enrich', jobId: batch.job_id, lookup: paidVendorOffNote('apollo').slice(0, 200), status: PAID_VENDOR_OFF, results: 0 }) } catch { /* a note only */ } }
+    return
+  }
   const now = Math.floor(Date.now() / 1000)
   const today = new Date().toISOString().slice(0, 10)
 

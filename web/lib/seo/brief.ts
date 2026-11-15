@@ -4,6 +4,7 @@ import type { Db } from '../db/client.ts'
 import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
+import { usableVendor } from '../paid-vendors.ts'
 
 // Content briefs on the tenant's OWN AI key (BYOK only - never the operator key, never a trial
 // scan). One call, plain text brief, stored for history. The UI labels every step "uses your AI key".
@@ -39,7 +40,7 @@ export type BriefResult = { id: string; topic: string; brief: string; created_at
 export async function generateBrief(db: Db, tenantId: string, rawTopic: string, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<BriefResult | { error: 'no_key' | 'invalid' | 'upstream' | 'spend_limit' }> {
   const topic = rawTopic.trim().replace(/\s+/g, ' ').slice(0, 300)
   if (topic.length < 3) return { error: 'invalid' }
-  const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
+  const vendor = (usableVendor(await readKeyStatus(db, tenantId))?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
   const key = await fetchKey(db, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }

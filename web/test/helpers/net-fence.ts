@@ -16,6 +16,10 @@ for (const name of Object.keys(process.env)) {
 // with DAZL_PG_ADMIN set explicitly - outside this harness, still loopback-only
 // and marker-guarded by scripts/pg-migrate/guard.ts.
 for (const name of ['DAZL_PG_ADMIN', 'DATABASE_URL']) delete process.env[name]
+// Refs #1099 (lib/paid-vendors.ts): the app calls no paid third-party service unless DAZL_PAID_VENDORS names it. The suite's many tests
+// of the Apollo / PDL / ZeroBounce / OpenAI / Jina code paths (all against fakes; no request leaves this fence) run with every vendor
+// named, as an operator who opted in would; test/paid-vendors-default-1099.test.ts clears the variable and proves the default is off.
+process.env.DAZL_PAID_VENDORS ??= 'apollo,pdl,zerobounce,openai,jina'
 // 1b) Store fence: code under test that reaches the app's own store (getAuthDb / getDb, e.g. the shared rate limiter in
 //     a route) must never open the default production path. A test that did not choose a DB_PATH gets a throwaway
 //     SQLite file for this process, removed on exit.

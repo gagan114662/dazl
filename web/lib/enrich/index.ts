@@ -20,6 +20,7 @@ import { roleContradicted } from '../people/rank.ts'
 import { providerContactLabel } from '../people/currency.ts'
 import { siteKey, RECALL_LIMIT } from '../scan/intelligence.ts'
 import { NO_KEY_STATUS, SPEND_REFUSAL_PREFIX } from '../scan/provider-issue-text.ts'
+import { paidVendorOn, paidVendorOffNote, PAID_VENDOR_OFF } from '../paid-vendors.ts'
 import { norm } from '../scan/evidence.ts'
 import { selectOffer, rebindOfferId } from '../scan/offer-identity.ts'
 
@@ -137,6 +138,18 @@ export async function enrichLeadContacts(
     console.error('[enrich]', why)
     return summary
   }
+  // Gagan's rule (Refs #1099, lib/paid-vendors.ts): Apollo and PDL are paid per call, so neither is asked unless the operator named it in
+  // DAZL_PAID_VENDORS. Both off: no key is read and the scan says why once (connector 'enrich', status paid_vendor_off), never "no key".
+  const env = deps.env ?? process.env
+  const allowed: Record<Prov, boolean> = { apollo: paidVendorOn('apollo', env), pdl: paidVendorOn('pdl', env) }
+  if (!allowed.apollo && !allowed.pdl) {
+    if (leads.length > 0) {
+      try {
+        if (!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, 'enrich', PAID_VENDOR_OFF)) audit(db, { tenantId, connector: 'enrich', jobId, lookup: paidVendorOffNote('apollo').slice(0, 200), status: PAID_VENDOR_OFF, results: 0 })
+      } catch (e) { console.error('[enrich] paid_vendor_off note not recorded:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+    }
+    return summary
+  }
   let master: Buffer
   try { master = deps.master ?? getMasterKey() } catch (e) { return setupFailed(e) }
   // Independent per-provider loads: one provider's unreadable key refuses THAT provider (audited), never the other.
@@ -154,7 +167,7 @@ export async function enrichLeadContacts(
       return null
     }
   }
-  const keys: Record<Prov, string | null> = { apollo: loadKey('apollo'), pdl: loadKey('pdl') }
+  const keys: Record<Prov, string | null> = { apollo: allowed.apollo ? loadKey('apollo') : null, pdl: allowed.pdl ? loadKey('pdl') : null }
   let where: string[]
   // A saved PDL key the fallback opt-in does not cover: never called, but a lead Apollo leaves without a contact
   // records a visible 'fallback_off' notice instead of a silent zero result.

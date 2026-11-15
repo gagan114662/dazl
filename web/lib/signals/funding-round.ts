@@ -7,6 +7,10 @@
 import { parseFeed } from '../sources/rss.ts'
 import { nameTokens } from './index.ts'
 import { scrapePage } from '../scrape/jina.ts'
+import { paidVendorOn } from '../paid-vendors.ts'
+import { fetchPageDetailed, isFail } from '../scan/fetch-page.ts'
+// the page's text through dazl's own guarded fetch (public hosts only, size and time capped); a failed read throws, as Jina's did
+const readOwn = async (url: string): Promise<string> => { const p = await fetchPageDetailed(url); if (isFail(p)) throw new Error(p.fail); return p.text }
 
 const TIMEOUT = 8000
 const WINDOW_DAYS = 60
@@ -98,7 +102,8 @@ export async function fundingRoundFor(
     if (budget.n > 0) {
       budget.n--
       try {
-        const md = await (deps.jina ?? scrapePage)(hit.url)
+        // Refs #1099 (lib/paid-vendors.ts): Jina Reader only when the operator named 'jina'; by default dazl's own fetch reads the page
+        const md = await (deps.jina ?? (paidVendorOn('jina') ? scrapePage : readOwn))(hit.url)
         const body = extractRaise(md.replace(/\s+/g, ' ').slice(0, 4000))
         amount = amount ?? body?.amount ?? null
         stage = stage ?? body?.stage ?? null
