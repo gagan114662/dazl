@@ -171,7 +171,10 @@ test('#409 port: the worst-case bound is enforced, not arithmetic - only a price
   const { TRIAL_SITE_READ_RESERVE_USD } = await import('../lib/billing/trial-budget.ts')
   // Exactly one model carries a price; the guard refuses every other (unpriced) model before any call, so an operator
   // override of DAZL_ANTHROPIC_MODEL can never run an unbounded or mis-priced trial read.
-  assert.deepEqual(Object.keys(PRICES_USD_PER_M), ['claude-sonnet-4-5'], 'one priced model: the only one a trial read can ever run on')
+  // MISSION v2 adds Claude Haiku for the research engine (Hermes 15 Nov 02:15). The trial read's bound below is computed on Sonnet, so it must cover
+  // every priced model: the same bounded read on any other priced model may never cost more.
+  assert.deepEqual(Object.keys(PRICES_USD_PER_M).sort(), ['claude-haiku-4-5', 'claude-sonnet-4-5'], 'the priced models: Sonnet, and Haiku for the research engine')
+  for (const m of Object.keys(PRICES_USD_PER_M)) assert.ok(callCostUsd(m, TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS) <= callCostUsd('claude-sonnet-4-5', TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS), `${m} never costs more than the Sonnet bound`)
   // The guard's own pricing of the largest possible call (prompt priced in BYTES, never fewer than tokens; output
   // capped by the API at max_tokens) is under the read's reserve - and the SpendGuard would refuse anything over.
   const worst = callCostUsd('claude-sonnet-4-5', TRIAL_SITE_READ_PROMPT_MAX_BYTES, TRIAL_SITE_READ_MAX_OUTPUT_TOKENS)
