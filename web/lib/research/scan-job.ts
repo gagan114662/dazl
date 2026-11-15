@@ -8,7 +8,7 @@ import type { TfDeps } from '../search/tinyfish.ts'
 import type { SafeGet } from '../sources/types.ts'
 import type { Icp } from '../scan/icp.ts'
 import { planResearch } from './triggers.ts'
-import { hunt, registryCandidates, tinyfishSearch } from './hunt.ts'
+import { huntWithRegistry, tinyfishSearch } from './hunt.ts'
 import { safeGet } from '../sources/http.ts'
 import { researchReady, researchEngineOn, runResearch, type ResearchRun, type ResearchStages } from './engine.ts'
 import type { ResearchCase, VerifiedLead } from './types.ts'
@@ -47,8 +47,8 @@ export function researchStagesFor(ctx: ResearchScanContext): ResearchStages {
   const spent = ctx.spent ?? { searches: 0 }
   const base: ResearchStages = {
     plan: c => planResearch(c, (p, max) => sonnet.complete!(ctx.key, p, undefined, max), ctx.isRefusal),
-    // E's registry sources (free open-data records, dated by construction) join the search hits as `extra`
-    hunt: async (c, plan) => hunt(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), { extra: (await registryCandidates(c, ctx.http ?? safeGet)).candidates }),
+    // E's registry sources (free public records, dated by construction) join the search hits (lib/research/hunt.ts huntWithRegistry)
+    hunt: (c, plan) => huntWithRegistry(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.http ?? safeGet),
   }
   return extensions.reduce((s, x) => x({ ...ctx, spent }, s), base)
 }

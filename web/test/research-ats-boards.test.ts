@@ -1,0 +1,70 @@
+// MISSION v2 part E: public ATS job boards (lib/research/sources/ats-boards.ts) and the hunt hook that reads the boards the search found
+// (lib/research/hunt.ts huntWithRegistry), on REAL recorded board answers (test/fixtures/research-ats-boards.json, 15 Nov 2026). No network.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { boardApi, boardCandidate, boardCandidates, boardOf, boardRoles, type Board } from '../lib/research/sources/ats-boards.ts'
+import { huntWithRegistry } from '../lib/research/hunt.ts'
+import type { SafeGet } from '../lib/sources/types.ts'
+import type { Candidate, ResearchCase } from '../lib/research/types.ts'
+
+const FX = JSON.parse(readFileSync(new URL('./fixtures/research-ats-boards.json', import.meta.url), 'utf8')) as Record<'greenhouse' | 'ashby' | 'lever', { token: string; body: unknown }> & { lever_city: string }
+const SINCE = '2026-08-17'
+const AUSTIN: ResearchCase = { tenant: 't', jobId: 'j', query: 'chip startups in Austin', offer: 'x', where: 'Austin, Texas', category: 'semiconductor companies', windowDays: 90, today: '2026-11-15' }
+const GH: Board = { ats: 'greenhouse', token: 'tenstorrent' }, AB: Board = { ats: 'ashby', token: 'expressable' }, LV: Board = { ats: 'lever', token: 'palantir' }
+
+test('a search result names a board only on a board host; anything else (the company site, an aggregator, http) is not a board', () => {
+  assert.deepEqual(boardOf('https://job-boards.greenhouse.io/tenstorrent/jobs/4651190007'), GH)
+  assert.deepEqual(boardOf('https://boards.greenhouse.io/embed/job_board?for=Tenstorrent'), GH)
+  assert.deepEqual(boardOf('https://jobs.lever.co/palantir/6ed76ce8-4156-4b60-b120-403538bd66cd'), LV)
+  assert.deepEqual(boardOf('https://jobs.eu.lever.co/acme'), { ats: 'lever', token: 'acme', host: 'eu' })
+  assert.deepEqual(boardOf('https://jobs.ashbyhq.com/expressable/34413f8d'), AB)
+  for (const u of ['https://www.linkedin.com/jobs/view/1', 'https://tenstorrent.com/careers', 'http://jobs.lever.co/palantir', 'https://greenhouse.io/tenstorrent', 'not a url']) assert.equal(boardOf(u), null, u)
+  assert.equal(boardApi(GH), 'https://boards-api.greenhouse.io/v1/boards/tenstorrent/jobs')
+  assert.equal(boardApi({ ats: 'lever', token: 'acme', host: 'eu' }), 'https://api.eu.lever.co/v0/postings/acme?mode=json')
+})
+
+test("each board's own posting day and location, on real boards: only roles in the case's city and inside the window count", () => {
+  const gh = boardRoles(GH, FX.greenhouse.body), ab = boardRoles(AB, FX.ashby.body), lv = boardRoles(LV, FX.lever.body)
+  assert.ok(gh.length === 11 && ab.length > 0 && lv.length > 0)
+  assert.ok([...gh, ...ab, ...lv].every(r => /^\d{4}-\d{2}-\d{2}$/.test(r.posted) && /^https:\/\//.test(r.url)))
+  const t = boardCandidate(GH, gh, AUSTIN, SINCE)!
+  // the recorded board holds 8 Austin roles, of which 3 were first posted inside the window (2026-11-12, 2026-11-06, 2026-10-08)
+  assert.match(t.title, /^Tenstorrent: 3 open roles in Austin posted since 2026-08-17 \(Greenhouse job board\)$/)
+  assert.equal(t.date, '2026-11-12'); assert.equal(t.via, 'registry'); assert.equal(t.dated, 'registry'); assert.equal(t.triggerId, 'registry:ats_open_roles')
+  assert.match(t.url, /^https:\/\/job-boards\.greenhouse\.io\/tenstorrent\/jobs\/\d+$/)
+  assert.match(t.snippet, /latest: Accounting Manager \(Austin, Texas/)
+  assert.ok(boardCandidate(AB, ab, AUSTIN, SINCE)!.title.startsWith('Expressable: '), 'Ashby: the role\'s structured address locality')
+  assert.equal(boardCandidate(GH, gh, { where: 'Denver, Colorado' }, SINCE), null, 'no role in the city: nothing')
+  assert.equal(boardCandidate(GH, gh, AUSTIN, '2026-11-13'), null, 'no role inside the window: nothing')
+  const city = FX.lever_city.split(',')[0]
+  assert.ok(boardCandidate(LV, lv, { where: FX.lever_city }, '2026-01-01')?.title.startsWith(`Palantir: `), `Lever: ${city}`)
+})
+
+test('the hook reads the boards the hunt found (one request per board), and a board record wins over the search hit for the same URL', async () => {
+  const found: Candidate[] = [
+    { url: 'https://job-boards.greenhouse.io/tenstorrent/jobs/1', title: 'a job', snippet: '', date: null, triggerId: 't1', query: 'q1', via: 'tinyfish' },
+    { url: 'https://jobs.ashbyhq.com/expressable/abc', title: 'a job', snippet: '', date: null, triggerId: 't1', query: 'q2', via: 'tinyfish' },
+    { url: 'https://jobs.ashbyhq.com/gone', title: 'x', snippet: '', date: null, triggerId: 't1', query: 'q3', via: 'tinyfish' },
+    { url: 'https://news.example/austin-chips', title: 'news', snippet: '', date: '2026-10-01', triggerId: 't2', query: 'q4', via: 'tinyfish' },
+  ]
+  const asked: string[] = []
+  const http: SafeGet = async u => {
+    asked.push(u)
+    if (u.includes('greenhouse')) return { status: 200, body: JSON.stringify(FX.greenhouse.body) }
+    if (u.endsWith('/expressable')) return { status: 200, body: JSON.stringify(FX.ashby.body) }
+    return { status: 404, body: '{}' }
+  }
+  const r = await boardCandidates(AUSTIN, found, SINCE, http)
+  assert.equal(asked.length, 3); assert.deepEqual(r.notes, ['no_board_1'])
+  assert.deepEqual(r.candidates.map(x => x.title.split(':')[0]).sort(), ['Expressable', 'Tenstorrent'])
+  // through the hunt hook: the search's own hits are kept, the boards' records join them
+  const plan = { persona: 'p', decisionMakerTitles: [], triggers: [{ id: 't1', name: 'n', why: '', footprint: '', queries: ['q'] }], askingQueries: [], source: 'fallback' as const }
+  const search = async () => ({ ok: true as const, hits: found.map(f => ({ url: f.url, title: f.title, snippet: f.snippet, date: f.date })) })
+  const h = await huntWithRegistry(AUSTIN, plan, search, http, { env: { LEAD_ENGINE: 'research' }, sources: [] })
+  assert.equal(h.candidates.filter(x => x.via === 'tinyfish').length, 4)
+  assert.equal(h.candidates.filter(x => x.dated === 'registry').length, 2); assert.equal(h.funnel.out, 6)
+  assert.deepEqual(h.registry, { 'ats-boards': ['no_board_1'] })
+  const off = await huntWithRegistry(AUSTIN, plan, search, async () => { throw new Error('no request when off') }, { env: {} })
+  assert.equal(off.candidates.length, 4)
+})

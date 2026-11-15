@@ -9,9 +9,10 @@ import type { RegistrySource } from './registry.ts'
 import type { SafeGet } from '../../sources/types.ts'
 import { austinPermitsSource } from './socrata-permits.ts'
 import { vancouverLicencesSource } from './opendatasoft-licences.ts'
+import { secFormD } from './sec-form-d.ts'
 export type { RegistrySource } from './registry.ts'
 
-export const REGISTRY_SOURCES: RegistrySource[] = [austinPermitsSource, vancouverLicencesSource]
+export const REGISTRY_SOURCES: RegistrySource[] = [austinPermitsSource, vancouverLicencesSource, secFormD]
 
 export async function collectRegistry(c: ResearchCase, since: string, http: SafeGet, sources: RegistrySource[] = REGISTRY_SOURCES): Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }> {
   const candidates: Candidate[] = [], notes: Record<string, string[]> = {}

@@ -17,7 +17,7 @@ for (const s of REGISTRY_SOURCES.filter(x => x.covers(c))) {
   console.log(`${s.id}: ${r.candidates.length} candidates in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.notes.length ? ` (notes: ${r.notes.join(', ')})` : ''}`)
   all.push(...r.candidates)
 }
-const named = all.filter(x => /Contractor of record: /.test(x.snippet)).length, dated = all.filter(x => x.date && x.date >= since).length
+const named = all.filter(x => /(?:Contractor of record|Named on the filing): /.test(x.snippet)).length, dated = all.filter(x => x.date && x.date >= since).length
 console.log(`${all.length} candidates | person named in the record ${named} (${Math.round(100 * named / Math.max(all.length, 1))}%) | dated inside ${c.windowDays} days ${dated} (${Math.round(100 * dated / Math.max(all.length, 1))}%)`)
 for (const x of all.slice(0, 15)) console.log(`  ${x.date} | ${x.triggerId.padEnd(36)} | ${x.title.slice(0, 60).padEnd(60)} | ${x.url.slice(0, 70)}`)
 const out = process.argv.indexOf('--json'); if (out > 0) writeFileSync(process.argv[out + 1], JSON.stringify({ case: c, since, candidates: all }, null, 1))

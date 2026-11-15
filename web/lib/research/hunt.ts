@@ -9,6 +9,7 @@ import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { collectRegistry, type RegistrySource } from './sources/index.ts'
+import { boardCandidates } from './sources/ats-boards.ts'
 
 export const RESULTS_PER_QUERY = 10
 export type SearchFn = (query: string, afterDate: string) => Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail | string }>
@@ -94,12 +95,25 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
     funnel: { stage: 'hunt', in: qs.length, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
 }
 
-// E's hook: the registry sources (lib/research/sources: city permits, city licences) that cover this case's place and category, as
-// dated-by-construction Candidates for hunt's `extra`. Only under LEAD_ENGINE=research (the same switch as engine.ts researchEngineOn); free
-// public open-data APIs through the guarded getter (https, public IPs, 1 MB cap); a source that fails returns nothing plus a note, never throws.
-export async function registryCandidates(c: ResearchCase, http: SafeGet, o: { env?: Record<string, string | undefined>; sources?: RegistrySource[] } = {}): Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }> {
-  if ((o.env ?? process.env).LEAD_ENGINE !== 'research') return { candidates: [], notes: {} }
-  return collectRegistry(c, afterDate(c), http, o.sources)
+// E's hook (one function, behind the same switch as engine.ts researchEngineOn): A's hunt plus the registry sources (lib/research/sources).
+// Before the search: the sources that cover this case's place and category (city permits, city licences, SEC Form D) join as `extra`. After
+// it: the job boards the search itself found (Greenhouse / Lever / Ashby) are read for their roles' own posting days. Every source is a free
+// public API through the guarded getter (https, public IPs, 1 MB cap); one that fails adds a note, never throws. Without LEAD_ENGINE=research
+// this is exactly hunt().
+export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, search: SearchFn, http: SafeGet, o: Parameters<typeof hunt>[3] & { env?: Record<string, string | undefined>; sources?: RegistrySource[] } = {}): Promise<HuntResult & { registry: Record<string, string[]> }> {
+  const { env, sources, ...ho } = o
+  if ((env ?? process.env).LEAD_ENGINE !== 'research') return { ...await hunt(c, plan, search, ho), registry: {} }
+  const since = afterDate(c)
+  const reg = await collectRegistry(c, since, http, sources)
+  const h = await hunt(c, plan, search, { ...ho, extra: [...(ho.extra ?? []), ...reg.candidates] })
+  const boards = await boardCandidates(c, h.candidates, since, http)
+  const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
+  if (!boards.candidates.length) return { ...h, registry }
+  // a board's dated record wins over the search hit for the same URL (hunt's own rule)
+  const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
+  for (const x of boards.candidates) { const k = urlKey(x.url), had = byUrl.get(k); if (!had || had.dated !== 'registry') byUrl.set(k, x) }
+  const candidates = [...byUrl.values()]
+  return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length }, registry }
 }
 
 // The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws

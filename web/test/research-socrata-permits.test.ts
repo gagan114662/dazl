@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { AUSTIN_PERMITS, austinPermitsSource, permitMatches, permitQuery, permitSignals } from '../lib/research/sources/socrata-permits.ts'
-import { registryCandidates, hunt } from '../lib/research/hunt.ts'
+import { huntWithRegistry } from '../lib/research/hunt.ts'
 import type { ResearchCase } from '../lib/research/types.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
@@ -46,15 +46,15 @@ test("A's Candidate: via registry, dated by the record, the readable record URL,
   assert.match(k.date!, /^2026-\d\d-\d\d$/); assert.ok(k.date! >= SINCE)
   assert.match(k.url, /^https:\/\/data\.austintexas\.gov\/resource\/3syk-w9eu\.json\?permit_number=/)
   assert.match(k.snippet, /^Kanga Roof LLC - \d+ roofing permits? issued in Austin since 2026-08-17; latest .* Contractor of record: Stacie Feller\. Public permit page: https:\/\/abc\.austintexas\.gov\//)
-  // hunt merges them as `extra`, and the hook is off unless LEAD_ENGINE=research
+  // hunt merges them as `extra`, and the hook is exactly hunt() unless LEAD_ENGINE=research
   const serve: SafeGet = async () => ({ status: 200, body: JSON.stringify(FX.rows) })
-  assert.deepEqual(await registryCandidates(AUSTIN, serve, { env: {} }), { candidates: [], notes: {} })
-  const on = await registryCandidates(AUSTIN, serve, { env: { LEAD_ENGINE: 'research' } })
-  assert.deepEqual(on.candidates, candidates)
-  assert.equal((await registryCandidates({ ...AUSTIN, where: 'Dallas, Texas' }, serve, { env: { LEAD_ENGINE: 'research' } })).candidates.length, 0)
   const plan = { persona: 'p', decisionMakerTitles: [], triggers: [], askingQueries: [], source: 'fallback' as const }
-  const h = await hunt(AUSTIN, plan, async () => ({ ok: true, hits: [] }), { extra: on.candidates })
-  assert.equal(h.candidates.length, candidates.length)
+  const none = async () => ({ ok: true as const, hits: [] })
+  const off = await huntWithRegistry(AUSTIN, plan, none, serve, { env: {} })
+  assert.equal(off.candidates.length, 0); assert.deepEqual(off.registry, {})
+  const on = await huntWithRegistry(AUSTIN, plan, none, serve, { env: { LEAD_ENGINE: 'research' } })
+  assert.deepEqual(on.candidates, candidates); assert.equal(on.funnel.out, candidates.length)
+  assert.equal((await huntWithRegistry({ ...AUSTIN, where: 'Dallas, Texas' }, plan, none, serve, { env: { LEAD_ENGINE: 'research' } })).candidates.length, 0)
 })
 
 test('the source: covers only its city and category, builds a bounded server query, and reports a failed read instead of an empty market', async () => {
