@@ -13,6 +13,7 @@ import { gateStage } from './gate.ts'
 import { readPage, type ReadablePage } from './read-page.ts'
 import { verifyLead, type Decide, type EventToVerify, type PersonToVerify, type Verdict } from './verify.ts'
 import { writeResearchProof, researchProofGap } from './proof.ts'
+import { asDb } from '../db/client.ts'
 import { researchCompany } from './company.ts'
 import { fetchPageDetailed, isFail, type Page } from '../scan/fetch-page.ts'
 import { defaultGet } from '../connectors/sitecrawl.ts'
@@ -103,14 +104,16 @@ export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: {
 
 // After the runner saved the rows: D's proof on every ready lead (the currentness gate reads it, so Leads/Home show it ready). One lead's failure
 // never stops the others; each outcome is counted and logged (no lead data, only counts and gap codes).
-export function writeProofs(db: Database.Database, jobId: string): Record<string, number> {
+export async function writeProofs(db: Database.Database, jobId: string): Promise<Record<string, number>> {
   const out: Record<string, number> = {}
   const count = (k: string) => { out[k] = (out[k] ?? 0) + 1 }
   const mine = verdicts.get(jobId)
   verdicts.delete(jobId)
-  const job = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string } | undefined
+  // the reads are on the Db layer (lib/db/client.ts); D's proof write is its own module's (lib/db/pg-port-status.ts lists it)
+  const d = asDb(db)
+  const job = await d.get<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE id = ?', [jobId])
   if (!mine || !job) return out
-  for (const l of db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as { id: string; company: string; source_url: string }[]) {
+  for (const l of await d.all<{ id: string; company: string; source_url: string }>('SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL', [jobId])) {
     const x = mine.get(key(l.source_url, l.company))
     if (!x) { count('no_verdict'); continue }
     if (!x.person) { count('no_person'); continue }
@@ -125,4 +128,4 @@ export function writeProofs(db: Database.Database, jobId: string): Record<string
 }
 
 extendResearchStages((ctx, base) => wiredStages(ctx, base))
-extendResearchAfterSave((db, jobId) => { writeProofs(db, jobId) })
+extendResearchAfterSave(async (db, jobId) => { await writeProofs(db, jobId) })
