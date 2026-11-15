@@ -27,12 +27,13 @@ for (const [t, m, role] of [['A', 'A', 'owner'], ['B', 'B', 'owner']]) db.prepar
 // The worker's /linkedin/me, stubbed: a fixed invented member; every other outbound call fails the test.
 const workerCalls: { url: string; body: string }[] = []
 let duringWorkerCall: (() => Promise<void>) | null = null   // runs INSIDE the worker call: a race window
+let workerAnswer: { status: number; body: unknown } = { status: 200, body: { name: 'Dana Okoye', public_id: 'dana-okoye-test', upstream_requests: 1 } }
 globalThis.fetch = (async (u: string, init?: RequestInit) => {
   const url = String(u)
   if (url !== 'https://worker.invalid/linkedin/me') throw new Error(`unexpected outbound call ${url}`)
   workerCalls.push({ url, body: String(init?.body) })
   if (duringWorkerCall) { const f = duringWorkerCall; duringWorkerCall = null; await f() }
-  return new Response(JSON.stringify({ name: 'Dana Okoye', public_id: 'dana-okoye-test', upstream_requests: 1 }), { status: 200 })
+  return new Response(JSON.stringify(workerAnswer.body), { status: workerAnswer.status })
 }) as typeof fetch
 
 const asUser = (id: string, role: 'owner' | 'viewer' = 'owner') => setUser({ id, business_name: `Co ${id}`, role })
@@ -184,4 +185,54 @@ test('Connect LinkedIn review fixes: a Disconnect during a sync is not undone; a
   for (let i = 0; i < 3; i++) await reserveRequest(adb, 'E', 'adv:linkedin', 3, 'people')
   const r2 = await (await extPost(tokE, { action: 'session', li_at: LI_AT, jsessionid: JSID, check: true })).json() as { check: string | null }
   assert.equal(r2.check, 'budget'); assert.equal(workerCalls.length, b2)
+})
+
+test('Connect LinkedIn review round 2: a same-device concurrent write is not a revocation; the account check needs the notice, stops on a challenge, and never re-runs on a rotation', async () => {
+  db.prepare('DELETE FROM rate_limits').run()
+  const pairNew = async (id: string) => { await consent(id); asUser(id); const c = (await (await settingsPost({ action: 'pair', platform: 'linkedin' })).json() as { code: string }).code; return (await (await extPost(c, { action: 'pair' })).json() as { device_token: string }).device_token }
+  for (const t of ['F', 'G', 'H', 'I']) db.prepare('INSERT INTO memberships (tenant_id, member_id, role, created_at) VALUES (?, ?, ?, 0)').run(t, t, 'owner')
+
+  // (R7) a rotation sync by the SAME device lands during its own first sync's account check, and a Settings "Test connection" during a
+  // check:true sync: every request answers 200 and the browser stays paired.
+  const tokF = await pairNew('F')
+  let inner = 0
+  duringWorkerCall = async () => { inner = (await extPost(tokF, { action: 'session', li_at: `${LI_AT}r`, jsessionid: JSID })).status }
+  assert.equal((await extPost(tokF, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 200)
+  assert.equal(inner, 200)
+  let fromSettings: unknown = null
+  duringWorkerCall = async () => { duringWorkerCall = null; asUser('F'); fromSettings = await (await settingsPost({ action: 'test', platform: 'linkedin' })).json() }
+  assert.equal((await extPost(tokF, { action: 'session', li_at: LI_AT, jsessionid: JSID, check: true })).status, 200)
+  assert.deepEqual(fromSettings, { ok: true, name: 'Dana Okoye' })
+  assert.equal((await extPost(tokF, { action: 'status' })).status, 200, 'still paired')
+
+  // (R8) the notice withdrawn, the connector switched back on by hand: "Test connection" makes no LinkedIn read.
+  const tokG = await pairNew('G')
+  assert.equal((await extPost(tokG, { action: 'session', li_at: LI_AT, jsessionid: JSID })).status, 200)
+  asUser('G')
+  assert.equal((await settingsPost({ action: 'revoke', platform: 'linkedin' })).status, 200)
+  assert.equal((await settingsPost({ action: 'toggle', platform: 'linkedin', enabled: true })).status, 200)
+  const nG = workerCalls.length
+  assert.deepEqual(await (await settingsPost({ action: 'test', platform: 'linkedin' })).json(), { ok: false, outcome: 'no_consent' })
+  assert.equal(workerCalls.length, nG)
+
+  // (R9) LinkedIn answers the account check with a challenge: the session goes off and a cooldown starts, visibly; the next check reads nothing.
+  const tokH = await pairNew('H')
+  workerAnswer = { status: 502, body: { error: 'fetch_failed', outcome: 'challenge' } }
+  const first = await (await extPost(tokH, { action: 'session', li_at: LI_AT, jsessionid: JSID })).json() as { check: string | null }
+  assert.equal(first.check, 'challenge')
+  assert.equal((db.prepare("SELECT enabled FROM tenant_connectors WHERE tenant_id = 'H' AND connector = 'adv:linkedin'").get() as { enabled: number }).enabled, 0)
+  assert.deepEqual((db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'H' AND connector = 'adv:linkedin' ORDER BY created_at, rowid").all() as { status: string }[]).map(r => r.status), ['stopped_challenge', 'session_disabled'])
+  const nH = workerCalls.length
+  asUser('H')
+  assert.deepEqual(await (await settingsPost({ action: 'test', platform: 'linkedin' })).json(), { ok: false, outcome: 'connector_off' })
+  assert.equal(workerCalls.length, nH)
+
+  // (R10) the first check failed (a worker error, name still unknown): a later background rotation makes NO account read.
+  const tokI = await pairNew('I')
+  workerAnswer = { status: 502, body: { error: 'fetch_failed', outcome: 'upstream_error' } }
+  assert.equal(((await (await extPost(tokI, { action: 'session', li_at: LI_AT, jsessionid: JSID })).json()) as { check: string }).check, 'upstream_error')
+  const nI = workerCalls.length
+  assert.equal((await extPost(tokI, { action: 'session', li_at: `${LI_AT}x`, jsessionid: JSID })).status, 200)
+  assert.equal(workerCalls.length, nI, 'a rotation never re-runs the check')
+  workerAnswer = { status: 200, body: { name: 'Dana Okoye', public_id: 'dana-okoye-test', upstream_requests: 1 } }
 })

@@ -21,6 +21,21 @@ function ask(msg: unknown, timeoutMs = 30_000): Promise<Record<string, unknown> 
   })
 }
 
+// What each refused or failed check means, in plain words.
+const OUTCOME: Record<string, string> = {
+  auth_failed: 'LinkedIn signed this session out, so dazl switched it off. Sign in to LinkedIn in this browser, then click Turn on.',
+  challenge: 'LinkedIn asked this account for a security check, so dazl switched it off. Clear the check on linkedin.com, then click Turn on.',
+  throttled: 'LinkedIn asked dazl to slow down. dazl waits a day before the next LinkedIn request.',
+  cooldown: 'dazl is waiting a day after LinkedIn last stopped it, before any LinkedIn request.',
+  budget: 'The LinkedIn requests for this hour are used up. Try again in an hour.',
+  daily_cap: 'The LinkedIn requests for today are used up. Try again tomorrow.',
+  connector_off: 'LinkedIn is switched off for this workspace. Click Turn on first.',
+  no_consent: 'Accept the LinkedIn risk notice first.',
+  not_connected: 'No LinkedIn session is saved yet.',
+  worker_unreachable: 'dazl cannot reach its LinkedIn reader right now. Try again later.',
+  no_worker: 'The LinkedIn reader is not set up on this server.',
+}
+
 export default function LinkedinConnect({ state, enabled, onToggle, onChange, pasteForm }: { state: ConnectState | null; enabled: boolean; onToggle: () => void; onChange: () => void; pasteForm: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -44,7 +59,7 @@ export default function LinkedinConnect({ state, enabled, onToggle, onChange, pa
     setBusy(true); setMsg('')
     const r = await fetch('/api/settings/advanced', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'test', platform: 'linkedin' }) })
     const j = await r.json() as { ok?: boolean; name?: string; outcome?: string; error?: string }
-    setMsg(j.ok ? `Working: signed in as ${j.name}` : j.error || (j.outcome === 'auth_failed' ? 'LinkedIn signed this session out. Sign in to LinkedIn in this browser; the extension reconnects by itself.' : `The check did not pass (${j.outcome ?? 'error'})`))
+    setMsg(j.ok ? `Working: signed in as ${j.name}` : j.error || OUTCOME[j.outcome ?? ''] || `The check did not pass (${j.outcome ?? 'error'})`)
     setBusy(false); onChange()
   }
   async function disconnect() {
