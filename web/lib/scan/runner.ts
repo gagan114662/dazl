@@ -1369,7 +1369,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       }
       const r = await runResearchScan({ db, job, icp: icpForSources, key, model: modelFor, isRefusal: e => e instanceof SpendRefused, tf: { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), charge: trialCharges.get(job) } })
       if (r) {
-        const owned = finish(db, job, 'done', null, { leads: r.leads as unknown as VerifiedLead[], review: r.review as unknown as ReviewLead[], dropped: Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).map(([k, n]) => [`research_${s.stage}_${k}`, n]))) }, r.candidates, ledger)
+        // a scan its own spend cap stopped keeps what it had verified and says so (budget_stopped), as the old engine does
+        const owned = finish(db, job, 'done', r.run.budgetStopped ? 'budget_stopped' : null, { leads: r.leads as unknown as VerifiedLead[], review: r.review as unknown as ReviewLead[], dropped: Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).map(([k, n]) => [`research_${s.stage}_${k}`, n]))) }, r.candidates, ledger)
         if (owned) await r.afterSave?.(db, job.id)
         return 'done'
       }
