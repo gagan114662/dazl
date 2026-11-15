@@ -1,5 +1,7 @@
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
+import zlib from 'node:zlib'
+import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -74,6 +76,24 @@ const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+// 'deflate' is zlib-wrapped by the spec, but some servers send raw deflate under that name (review): the first two bytes tell them apart (a zlib header is a
+// multiple of 31 with method 8). Decided on the first chunk; either way the same limits and handlers apply.
+function inflateEitherWay(): Transform {
+  let inner: zlib.Inflate | zlib.InflateRaw | null = null
+  const t: Transform = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      if (!inner) {
+        const wrapped = chunk.length >= 2 && (chunk[0] & 0x0f) === 8 && ((chunk[0] << 8) | chunk[1]) % 31 === 0
+        inner = wrapped ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH })
+        inner.on('data', (d: Buffer) => t.push(d)); inner.on('error', (e: Error) => t.destroy(e))
+      }
+      inner.write(chunk, () => cb())
+    },
+    flush(cb) { if (!inner) return cb(); inner.once('end', () => cb()); inner.end() },
+    destroy(err, cb) { inner?.destroy(); cb(err) },
+  })
+  return t
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -95,10 +115,19 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
       readSoFar = () => (n >= MAX_BYTES ? done() : null)
-      res.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); resolve(done()) } else chunks.push(c) })
-      res.on('end', () => resolve(done()))
-      res.on('error', () => resolve(null))
-      res.on('close', () => resolve(null)) // no-op once already settled
+      // Some servers compress the body even though this request asks for 'identity' (prod mxprod5: ogletree.com answers gzip). Read raw, those bytes reached the
+      // company-name check as binary, the company's own site was refused (name_mismatch) and a lead with a proven day was held at no_domain. The body is decoded
+      // here, and the same limits count DECODED bytes, so a small compressed body cannot expand past them. An unknown encoding is not read.
+      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
+      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? inflateEitherWay() : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
+      if (decoder === undefined) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      const src: Readable = decoder ? res.pipe(decoder) : res
+      const stop = () => { res.destroy(); decoder?.destroy() }
+      src.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { stop(); resolve(done()) } else chunks.push(c) })
+      src.on('end', () => resolve(done()))
+      src.on('error', () => { const kept = chunks.length ? done() : null; stop(); resolve(kept) })   // a truncated compressed tail keeps what was decoded; the socket is closed (review)
+      res.on('error', () => { stop(); resolve(null) })
+      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder, its own end/error settles
     })
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(readSoFar()) }, timeoutMs)   // past the stored-body cap, a slow tail never costs the page (council)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
@@ -158,7 +187,7 @@ const registrable = (host: string) => { const h = host.toLowerCase().replace(/^w
 const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).join('')
 // A host that can be a company's website: a DNS name with at least two labels. Never an IP literal (the resolver guard that refuses private
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
-export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) }
+export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) && !/(^|\.)0x[0-9a-f]*(\.|$)/i.test(h) && !h.split('.').every(p => /^(0x[0-9a-f]+|0[0-7]*|\d+)$/i.test(p)) }   // also no hex / octal / numeric label forms of an address, whatever the caller normalised
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
@@ -187,7 +216,9 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // refusal never stops the name guesses or the web search (crawlJob).
   const anchors = out.length
   for (const h of jsonLdCompanySites(company, evidenceHtml, own)) push(h, labelMatches(nameLabel(h), want) ? 'evidence_link_domain_label' : 'evidence_link_text')
-  return out.slice(0, 2).map((o, i) => (i >= anchors ? { ...o, structured: true } : o))
+  // main's cap of 2 applies to the page's own links; a structured-data site keeps its own slot after them (review of #1219: with 2 anchored
+  // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
+  return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
 }
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
@@ -846,7 +877,7 @@ export function redirectTargetIsCompanys(target: string, company: string, places
 // contact, never a domain row. A lead that already has a confirmed domain keeps it: one failed re-read is not "no website".
 function recordDomainUnresolved(db: Database.Database, tenantId: string, l: { id: string; source_url: string }, code: string, today: string, now: number): void {
   try {
-    if ((db.prepare('SELECT company_domain FROM leads WHERE id = ?').get(l.id) as { company_domain: string | null } | undefined)?.company_domain) return
+    if ((db.prepare('SELECT l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(l.id, tenantId) as { company_domain: string | null } | undefined)?.company_domain) return
     db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)
     addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: DOMAIN_UNRESOLVED_KIND, value: 'No company website confirmed', label: `${DOMAIN_UNRESOLVED_TOKEN}${code}`.slice(0, 200), confidence: null, source_url: /^https?:\/\//.test(l.source_url) ? l.source_url.slice(0, 500) : 'https://invalid.example/', source_date: today, retrieved_at: now })
   } catch { /* the reason is a note beside the lead; never fails the crawl */ }
