@@ -58,12 +58,13 @@ test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a
   const icp = (...signals: string[]) => JSON.stringify({ signals: ['Opened new office in last 90 days', 'Expanded practice group in last 90 days', ...signals] })
   for (const extra of [['Hired lateral partners recently', 'Press release about practice area growth'], ['Hiring multiple attorneys recently', 'Revenue growth announced'], ['Hired lateral partners recently', 'Announced a new partnership'], ['Hired new practice group head', 'Press release about practice area growth']])
     assert.equal(salesHiringRequired(Q, icp(...extra)), false, extra.join(' | '))
-  // a real sales-hiring request still needs it: hiring and the sales role in one signal, in the request's own sentence, or an explicit sales title
+  // a real sales-hiring request still needs it: hiring and the sales role in one signal, or ANYWHERE in the user's own request (however it is punctuated)
+  const seed = JSON.stringify({ signals: ['raised seed funding'] })
   assert.equal(salesHiringRequired('Law firms in Chicago that opened a new office.', icp('Hiring a business development manager')), true, 'one signal')
-  assert.equal(salesHiringRequired('Startups that raised seed funding. They are hiring sales reps.', JSON.stringify({ signals: ['raised seed funding'] })), true, 'one sentence of the request')
-  assert.equal(salesHiringRequired('Startups that raised seed funding and are hiring a head of sales.', JSON.stringify({ signals: ['raised seed funding'] })), true)
-  // a hiring sentence and a GTM sentence of the request itself, apart, is not "sales hiring"
-  assert.equal(salesHiringRequired('Law firms that are hiring attorneys. Growth firms only.', JSON.stringify({ signals: ['hiring attorneys'] })), false)
+  for (const r of ['Startups that raised seed funding and are hiring a head of sales.', 'Startups that raised seed funding. They are hiring sales reps.', 'Startups that raised seed funding and are hiring a Sr. Account Executive', 'Startups that raised seed funding and are hiring a Jr. SDR', 'Seed-funded startups that are hiring! Sales roles only.', 'Startups that raised seed and are hiring; sales, BD, AEs', 'Startups that raised seed funding and are hiring. Focus on sales roles.'])
+    assert.equal(salesHiringRequired(r, seed), true, r)
+  // the model's own signals, split apart, are not the user's request: hiring and "sales team growth" as two inferred signals under a request that never says hiring
+  assert.equal(salesHiringRequired('Seed-funded startups growing their sales team', JSON.stringify({ signals: ['Raised seed round', 'Actively hiring', 'Growing sales team'] })), false, 'known trade-off: the user did not ask for hiring')
 })
 
 test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {

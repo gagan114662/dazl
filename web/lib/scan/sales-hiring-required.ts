@@ -10,10 +10,11 @@ const HIRING_WORDS = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*|\b(?:new|open|several|
 export function salesHiringRequired(query: string | null | undefined, icp: string | null | undefined): boolean {
   let signals: string[] = []
   try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) signals = j!.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  // The hiring word and the sales / GTM role must sit in the SAME part: one profile signal, or one sentence of the request. Joined across parts, "Hired lateral
+  // The hiring word and the sales / GTM role must sit in the SAME part: the user's request as a whole (their own words are one intent, however they punctuate
+  // "...hiring a Sr. Account Executive" or "hiring; sales, BD, AEs"), or ONE signal of the model-inferred profile. Joined across the signals, "Hired lateral
   // partners recently" and an unrelated "Press release about practice area growth" (the word "growth") made a law-firm request that never mentions sales hiring
   // "need the sales-hiring proof": every verified lead of a model-inferred profile was default-denied (lib/scan/held-state.ts) and the matrix read 0 ready.
-  const parts = [...signals, ...(query ?? '').split(/[.;!?]+/)].filter(p => p.trim() !== '')
+  const parts = [...signals, query ?? ''].filter(p => p.trim() !== '')
   const sameClause = parts.some(p => HIRING_WORDS.test(p) && isGtmRole(p.replace(/\b(?:hir(?:e|es|ed|ing)|recruit\w*)\b/gi, ' ')))
   return requestedHiringRoles(query, icp).some(roleNeedsSourceProof) || needsEventBeyondHiring(signals, query ?? '') && sameClause
 }
