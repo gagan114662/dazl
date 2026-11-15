@@ -4,7 +4,7 @@
 import http from 'node:http'
 import { CAPABILITY, FETCHERS, isPlatform } from './fetchers.ts'
 import { FetchFailure } from './util.ts'
-import { fetchEngagers, fetchPosts, isEngagerKind } from './linkedin-engagers.ts'
+import { fetchEngagers, fetchMe, fetchPosts, isEngagerKind } from './linkedin-engagers.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
@@ -18,7 +18,7 @@ const server = http.createServer((req, res) => {
     res.end(b)
   }
   if (req.method === 'GET' && req.url === '/health') return reply(200, { ok: true })
-  if (req.method !== 'POST' || (req.url !== '/fetch' && req.url !== '/linkedin/engagers' && req.url !== '/linkedin/posts')) return reply(404, { error: 'not found' })
+  if (req.method !== 'POST' || (req.url !== '/fetch' && req.url !== '/linkedin/engagers' && req.url !== '/linkedin/posts' && req.url !== '/linkedin/me')) return reply(404, { error: 'not found' })
   const route = req.url
   if (!TOKEN || req.headers.authorization !== `Bearer ${TOKEN}`) return reply(401, { error: 'unauthorized' })
   let body = ''
@@ -48,6 +48,15 @@ const server = http.createServer((req, res) => {
       } catch (err) { return reply(502, { error: 'fetch_failed', outcome: err instanceof FetchFailure ? err.kind : 'upstream_error' }) }
     }
     // #192: the session post search, with the same login-wall / checkpoint / 999 / 429 classification as the engager reads.
+    // Connect LinkedIn: one GET that names the session's account ("Connected as <name>"). One request = one upstream GET.
+    if (route === '/linkedin/me') {
+      const m = raw as { session?: unknown }
+      if (typeof m.session !== 'string' || !m.session) return reply(400, { error: 'session is required' })
+      try {
+        const me = await Promise.race([fetchMe(m.session.slice(0, 8000)), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 20_000))])
+        return reply(200, { ...me, upstream_requests: 1 })
+      } catch (err) { return reply(502, { error: 'fetch_failed', outcome: err instanceof FetchFailure ? err.kind : 'upstream_error' }) }
+    }
     if (route === '/linkedin/posts') {
       const p = raw as { query?: unknown; session?: unknown }
       if (typeof p.query !== 'string' || typeof p.session !== 'string' || !p.query.trim() || !p.session) return reply(400, { error: 'query and session are required' })

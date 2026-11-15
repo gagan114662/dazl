@@ -1,0 +1,348 @@
+{
+ "fetched": "2026-11-15",
+ "note": "real EDGAR answers (efts search-index page trimmed to these hits; primary_doc.xml of four filings); phone numbers removed, nothing else edited. Names kept: the related persons are the executive officers and directors each company names on its public SEC filing, not private parties.",
+ "page": {
+  "hits": {
+   "total": {
+    "value": 7,
+    "relation": "eq"
+   },
+   "hits": [
+    {
+     "_index": "edgar_file",
+     "_id": "0000884144-26-000002:primary_doc.xml",
+     "_score": 8.1096325,
+     "_source": {
+      "ciks": [
+       "0000884144"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-601625"
+      ],
+      "display_names": [
+       "ASURE SOFTWARE INC  (ASUR)  (CIK 0000884144)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-10-16",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [
+       "7373"
+      ],
+      "form": "D",
+      "adsh": "0000884144-26-000002",
+      "film_num": [
+       "261466311"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "DE"
+      ],
+      "items": [
+       "06B"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0001857689-26-000001:primary_doc.xml",
+     "_score": 8.0570545,
+     "_source": {
+      "ciks": [
+       "0001857689"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-601476"
+      ],
+      "display_names": [
+       "Expressable, Inc.  (CIK 0001857689)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-10-15",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D",
+      "adsh": "0001857689-26-000001",
+      "film_num": [
+       "261463431"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "DE"
+      ],
+      "items": [
+       "06B"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0001888693-26-000003:primary_doc.xml",
+     "_score": 7.973636,
+     "_source": {
+      "ciks": [
+       "0001888693"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-604126"
+      ],
+      "display_names": [
+       "DegreeSight Inc  (CIK 0001888693)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-11-09",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D",
+      "adsh": "0001888693-26-000003",
+      "film_num": [
+       "261535678"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "TX"
+      ],
+      "items": [
+       "06B"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0002093839-26-000003:primary_doc.xml",
+     "_score": 7.9678082,
+     "_source": {
+      "ciks": [
+       "0002093839"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-599071"
+      ],
+      "display_names": [
+       "Escalate Capital V, LP  (CIK 0002093839)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-09-28",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D",
+      "adsh": "0002093839-26-000003",
+      "film_num": [
+       "261418027"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "DE"
+      ],
+      "items": [
+       "06B",
+       "3C",
+       "3C.1"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0001787352-26-000005:primary_doc.xml",
+     "_score": 8.068911,
+     "_source": {
+      "ciks": [
+       "0001787352"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-588046"
+      ],
+      "display_names": [
+       "Nuclein, LLC  (CIK 0001787352)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-10-27",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D/A",
+      "adsh": "0001787352-26-000005",
+      "film_num": [
+       "261489029"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D/A",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "TX"
+      ],
+      "items": [
+       "06B"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0001754334-26-000001:primary_doc.xml",
+     "_score": 8.1671095,
+     "_source": {
+      "ciks": [
+       "0001754334"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-599549"
+      ],
+      "display_names": [
+       "Austin Housing Conservancy Fund LP  (CIK 0001754334)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-10-01",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D",
+      "adsh": "0001754334-26-000001",
+      "film_num": [
+       "261429210"
+      ],
+      "biz_locations": [
+       "Austin, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "DE"
+      ],
+      "items": [
+       "06C",
+       "3C",
+       "3C.1",
+       "3C.5"
+      ]
+     }
+    },
+    {
+     "_index": "edgar_file",
+     "_id": "0002164761-26-000001:primary_doc.xml",
+     "_score": null,
+     "_source": {
+      "ciks": [
+       "0002164761"
+      ],
+      "period_ending": null,
+      "file_num": [
+       "021-604682"
+      ],
+      "display_names": [
+       "CL Seguin Land LLC  (CIK 0002164761)"
+      ],
+      "xsl": "xslFormDX01",
+      "schema_version": "X0708",
+      "sequence": 1,
+      "root_forms": [
+       "D"
+      ],
+      "file_date": "2026-11-13",
+      "biz_states": [
+       "TX"
+      ],
+      "sics": [],
+      "form": "D",
+      "adsh": "0002164761-26-000001",
+      "film_num": [
+       "261550523"
+      ],
+      "biz_locations": [
+       "Dallas, TX"
+      ],
+      "file_type": "D",
+      "ma_i_individual": null,
+      "file_description": null,
+      "inc_states": [
+       "TX"
+      ],
+      "items": [
+       "06C",
+       "3C",
+       "3C.5"
+      ]
+     },
+     "sort": [
+      1794528000000,
+      "0002164761-26-000001:primary_doc.xml"
+     ]
+    }
+   ]
+  }
+ },
+ "docs": {
+  "0002093839-26-000003": "<?xml version=\"1.0\"?>\n<edgarSubmission>\n\n    <schemaVersion>X0708</schemaVersion>\n\n    <submissionType>D</submissionType>\n\n    <testOrLive>LIVE</testOrLive>\n\n    <primaryIssuer>\n        <cik>0002093839</cik>\n        <entityName>Escalate Capital V, LP</entityName>\n        <issuerAddress>\n            <street1>6300 BRIDGE POINT PKWY BUILDING 1</street1>\n            <street2>SUITE 480</street2>\n            <city>AUSTIN</city>\n            <stateOrCountry>TX</stateOrCountry>\n            <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n            <zipCode>78730</zipCode>\n        </issuerAddress>\n        <issuerPhoneNumber>512-651-2100</issuerPhoneNumber>\n        <jurisdictionOfInc>DELAWARE</jurisdictionOfInc>\n        <edgarPreviousNameList>\n            <previousName>Escalate Capital GP V, LLC</previousName>\n        </edgarPreviousNameList>\n        <entityType>Limited Partnership</entityType>\n        <yearOfInc>\n            <withinFiveYears>true</withinFiveYears>\n            <value>2023</value>\n        </yearOfInc>\n    </primaryIssuer>\n\n    <relatedPersonsList>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>William</firstName>\n                <middleName>A.</middleName>\n                <lastName>Schell</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>6300 Bridgepoint Parkway Building 1</street1>\n                <street2>Suite 480</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78731</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification>Principal</relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Lawrence</firstName>\n                <lastName>Bradshaw</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>6300 Bridgepoint Parkway Building 1</street1>\n                <street2>Suite 480</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78731</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification>Principal</relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Christopher</firstName>\n                <lastName>Julich</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>6300 Bridgepoint Parkway Building 1</street1>\n                <street2>Suite 480</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78731</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification>Principal</relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>J Ross</firstName>\n                <lastName>Cockrell</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>6300 Bridgepoint Parkway Building 1</street1>\n                <street2>Suite 480</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78731</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification>Principal</relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Travis</firstName>\n                <lastName>Wood</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>6300 Bridgepoint Parkway Building 1</street1>\n                <street2>Suite 480</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78731</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification>Principal</relationshipClarification>\n        </relatedPersonInfo>\n    </relatedPersonsList>\n\n    <offeringData>\n        <industryGroup>\n            <industryGroupType>Pooled Investment Fund</industryGroupType>\n            <investmentFundInfo>\n                <investmentFundType>Private Equity Fund</investmentFundType>\n                <is40Act>false</is40Act>\n            </investmentFundInfo>\n        </industryGroup>\n        <issuerSize>\n            <revenueRange>Decline to Disclose</revenueRange>\n        </issuerSize>\n        <federalExemptionsExclusions>\n            <item>06b</item>\n            <item>3C</item>\n            <item>3C.1</item>\n        </federalExemptionsExclusions>\n        <typeOfFiling>\n            <newOrAmendment>\n                <isAmendment>false</isAmendment>\n            </newOrAmendment>\n            <dateOfFirstSale>\n                <value>2024-10-25</value>\n            </dateOfFirstSale>\n        </typeOfFiling>\n        <durationOfOffering>\n            <moreThanOneYear>true</moreThanOneYear>\n        </durationOfOffering>\n        <typesOfSecuritiesOffered>\n            <isPooledInvestmentFundType>true</isPooledInvestmentFundType>\n        </typesOfSecuritiesOffered>\n        <businessCombinationTransaction>\n            <isBusinessCombinationTransaction>false</isBusinessCombinationTransaction>\n            <clarificationOfResponse></clarificationOfResponse>\n        </businessCombinationTransaction>\n        <minimumInvestmentAccepted>0</minimumInvestmentAccepted>\n        <salesCompensationList></salesCompensationList>\n        <offeringSalesAmounts>\n            <totalOfferingAmount>Indefinite</totalOfferingAmount>\n            <totalAmountSold>137342857</totalAmountSold>\n            <totalRemaining>Indefinite</totalRemaining>\n            <clarificationOfResponse></clarificationOfResponse>\n        </offeringSalesAmounts>\n        <investors>\n            <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>\n            <totalNumberAlreadyInvested>14</totalNumberAlreadyInvested>\n        </investors>\n        <salesCommissionsFindersFees>\n            <salesCommissions>\n                <dollarAmount>0</dollarAmount>\n            </salesCommissions>\n            <findersFees>\n                <dollarAmount>0</dollarAmount>\n            </findersFees>\n            <clarificationOfResponse></clarificationOfResponse>\n        </salesCommissionsFindersFees>\n        <useOfProceeds>\n            <grossProceedsUsed>\n                <dollarAmount>0</dollarAmount>\n            </grossProceedsUsed>\n            <clarificationOfResponse></clarificationOfResponse>\n        </useOfProceeds>\n        <signatureBlock>\n            <authorizedRepresentative>false</authorizedRepresentative>\n            <signature>\n                <issuerName>Escalate Capital V, LP</issuerName>\n                <signatureName>William A. Schell</signatureName>\n                <nameOfSigner>William A. Schell</nameOfSigner>\n                <signatureTitle>Principal of the Issuer</signatureTitle>\n                <signatureDate>2026-09-28</signatureDate>\n            </signature>\n        </signatureBlock>\n    </offeringData>\n</edgarSubmission>\n",
+  "0000884144-26-000002": "<?xml version=\"1.0\"?>\n<edgarSubmission>\n\n    <schemaVersion>X0708</schemaVersion>\n\n    <submissionType>D</submissionType>\n\n    <testOrLive>LIVE</testOrLive>\n\n    <primaryIssuer>\n        <cik>0000884144</cik>\n        <entityName>ASURE SOFTWARE INC</entityName>\n        <issuerAddress>\n            <street1>405 COLORADO ST</street1>\n            <street2>#1800</street2>\n            <city>AUSTIN</city>\n            <stateOrCountry>TX</stateOrCountry>\n            <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n            <zipCode>78701</zipCode>\n        </issuerAddress>\n        <issuerPhoneNumber>5124372700</issuerPhoneNumber>\n        <jurisdictionOfInc>DELAWARE</jurisdictionOfInc>\n        <issuerPreviousNameList>\n            <previousName>FORGENT NETWORKS INC</previousName>\n        </issuerPreviousNameList>\n        <edgarPreviousNameList>\n            <previousName>FORGENT NETWORKS  INC</previousName>\n            <previousName>VTEL CORP</previousName>\n            <previousName>VIDEO TELECOM CORP</previousName>\n        </edgarPreviousNameList>\n        <entityType>Corporation</entityType>\n        <yearOfInc>\n            <overFiveYears>true</overFiveYears>\n        </yearOfInc>\n    </primaryIssuer>\n\n    <relatedPersonsList>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Patrick</firstName>\n                <lastName>Goepel</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>John</firstName>\n                <lastName>Pence</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Eyal</firstName>\n                <lastName>Goldstein</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Daniel</firstName>\n                <lastName>Gill</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>William</firstName>\n                <middleName>Carl</middleName>\n                <lastName>Drew</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Bjorn</firstName>\n                <lastName>Reynolds</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Benjamin</firstName>\n                <lastName>Allen</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Grace</firstName>\n                <lastName>Lee</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Bradford</firstName>\n                <lastName>Oberwager</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Grace</firstName>\n                <lastName>Lee</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>405 Colorado Street</street1>\n                <street2>Suite 1800</street2>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n    </relatedPersonsList>\n\n    <offeringData>\n        <industryGroup>\n            <industryGroupType>Business Services</industryGroupType>\n        </industryGroup>\n        <issuerSize>\n            <revenueRange>Decline to Disclose</revenueRange>\n        </issuerSize>\n        <federalExemptionsExclusions>\n            <item>06b</item>\n        </federalExemptionsExclusions>\n        <typeOfFiling>\n            <newOrAmendment>\n                <isAmendment>false</isAmendment>\n            </newOrAmendment>\n            <dateOfFirstSale>\n                <value>2026-10-15</value>\n            </dateOfFirstSale>\n        </typeOfFiling>\n        <durationOfOffering>\n            <moreThanOneYear>false</moreThanOneYear>\n        </durationOfOffering>\n        <typesOfSecuritiesOffered>\n            <isEquityType>true</isEquityType>\n        </typesOfSecuritiesOffered>\n        <businessCombinationTransaction>\n            <isBusinessCombinationTransaction>true</isBusinessCombinationTransaction>\n            <clarificationOfResponse>Securities issued in connection with acquisitions.</clarificationOfResponse>\n        </businessCombinationTransaction>\n        <minimumInvestmentAccepted>0</minimumInvestmentAccepted>\n        <salesCompensationList></salesCompensationList>\n        <offeringSalesAmounts>\n            <totalOfferingAmount>15000000</totalOfferingAmount>\n            <totalAmountSold>15000000</totalAmountSold>\n            <totalRemaining>0</totalRemaining>\n            <clarificationOfResponse></clarificationOfResponse>\n        </offeringSalesAmounts>\n        <investors>\n            <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>\n            <totalNumberAlreadyInvested>1</totalNumberAlreadyInvested>\n        </investors>\n        <salesCommissionsFindersFees>\n            <salesCommissions>\n                <dollarAmount>0</dollarAmount>\n            </salesCommissions>\n            <findersFees>\n                <dollarAmount>0</dollarAmount>\n            </findersFees>\n            <clarificationOfResponse></clarificationOfResponse>\n        </salesCommissionsFindersFees>\n        <useOfProceeds>\n            <grossProceedsUsed>\n                <dollarAmount>0</dollarAmount>\n            </grossProceedsUsed>\n            <clarificationOfResponse></clarificationOfResponse>\n        </useOfProceeds>\n        <signatureBlock>\n            <authorizedRepresentative>false</authorizedRepresentative>\n            <signature>\n                <issuerName>ASURE SOFTWARE INC</issuerName>\n                <signatureName>/s/ JOHN PENCE</signatureName>\n                <nameOfSigner>John Pence</nameOfSigner>\n                <signatureTitle>Chief Financial Officer</signatureTitle>\n                <signatureDate>2026-10-16</signatureDate>\n            </signature>\n        </signatureBlock>\n    </offeringData>\n</edgarSubmission>\n",
+  "0001888693-26-000003": "<?xml version=\"1.0\"?>\n<edgarSubmission>\n\n    <schemaVersion>X0708</schemaVersion>\n\n    <submissionType>D</submissionType>\n\n    <testOrLive>LIVE</testOrLive>\n\n    <primaryIssuer>\n        <cik>0001888693</cik>\n        <entityName>DegreeSight Inc</entityName>\n        <issuerAddress>\n            <street1>1401 LAVACA ST., UNIT 41477</street1>\n            <city>AUSTIN</city>\n            <stateOrCountry>TX</stateOrCountry>\n            <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n            <zipCode>78701</zipCode>\n        </issuerAddress>\n        <issuerPhoneNumber>833-696-4733</issuerPhoneNumber>\n        <jurisdictionOfInc>TEXAS</jurisdictionOfInc>\n        <issuerPreviousNameList>\n            <value>None</value>\n        </issuerPreviousNameList>\n        <edgarPreviousNameList>\n            <value>None</value>\n        </edgarPreviousNameList>\n        <entityType>Corporation</entityType>\n        <yearOfInc>\n            <overFiveYears>true</overFiveYears>\n        </yearOfInc>\n    </primaryIssuer>\n\n    <relatedPersonsList>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>David</firstName>\n                <lastName>Cook</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Drew</firstName>\n                <lastName>Melendres</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Woody</firstName>\n                <lastName>Robertson</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Scott</firstName>\n                <lastName>Chamberlain</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Daniel</firstName>\n                <lastName>Skaggs</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Jeremy</firstName>\n                <lastName>Skaggs</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>1401 Lavaca St., Unit 41477</street1>\n                <city>Austin</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78701</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n    </relatedPersonsList>\n\n    <offeringData>\n        <industryGroup>\n            <industryGroupType>Other Technology</industryGroupType>\n        </industryGroup>\n        <issuerSize>\n            <revenueRange>Decline to Disclose</revenueRange>\n        </issuerSize>\n        <federalExemptionsExclusions>\n            <item>06b</item>\n        </federalExemptionsExclusions>\n        <typeOfFiling>\n            <newOrAmendment>\n                <isAmendment>false</isAmendment>\n            </newOrAmendment>\n            <dateOfFirstSale>\n                <value>2026-08-24</value>\n            </dateOfFirstSale>\n        </typeOfFiling>\n        <durationOfOffering>\n            <moreThanOneYear>false</moreThanOneYear>\n        </durationOfOffering>\n        <typesOfSecuritiesOffered>\n            <isEquityType>true</isEquityType>\n            <isOptionToAcquireType>true</isOptionToAcquireType>\n            <isSecurityToBeAcquiredType>true</isSecurityToBeAcquiredType>\n        </typesOfSecuritiesOffered>\n        <businessCombinationTransaction>\n            <isBusinessCombinationTransaction>false</isBusinessCombinationTransaction>\n            <clarificationOfResponse></clarificationOfResponse>\n        </businessCombinationTransaction>\n        <minimumInvestmentAccepted>0</minimumInvestmentAccepted>\n        <salesCompensationList></salesCompensationList>\n        <offeringSalesAmounts>\n            <totalOfferingAmount>3000000</totalOfferingAmount>\n            <totalAmountSold>1000000</totalAmountSold>\n            <totalRemaining>2000000</totalRemaining>\n            <clarificationOfResponse></clarificationOfResponse>\n        </offeringSalesAmounts>\n        <investors>\n            <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>\n            <totalNumberAlreadyInvested>1</totalNumberAlreadyInvested>\n        </investors>\n        <salesCommissionsFindersFees>\n            <salesCommissions>\n                <dollarAmount>0</dollarAmount>\n            </salesCommissions>\n            <findersFees>\n                <dollarAmount>0</dollarAmount>\n            </findersFees>\n            <clarificationOfResponse></clarificationOfResponse>\n        </salesCommissionsFindersFees>\n        <useOfProceeds>\n            <grossProceedsUsed>\n                <dollarAmount>0</dollarAmount>\n            </grossProceedsUsed>\n            <clarificationOfResponse></clarificationOfResponse>\n        </useOfProceeds>\n        <signatureBlock>\n            <authorizedRepresentative>false</authorizedRepresentative>\n            <signature>\n                <issuerName>DegreeSight Inc</issuerName>\n                <signatureName>David Cook</signatureName>\n                <nameOfSigner>David Cook</nameOfSigner>\n                <signatureTitle>Chief Executive Officer</signatureTitle>\n                <signatureDate>2026-11-09</signatureDate>\n            </signature>\n        </signatureBlock>\n    </offeringData>\n</edgarSubmission>\n",
+  "0001857689-26-000001": "<?xml version=\"1.0\"?>\n<edgarSubmission>\n\n    <schemaVersion>X0708</schemaVersion>\n\n    <submissionType>D</submissionType>\n\n    <testOrLive>LIVE</testOrLive>\n\n    <primaryIssuer>\n        <cik>0001857689</cik>\n        <entityName>Expressable, Inc.</entityName>\n        <issuerAddress>\n            <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n            <street2>SUITE 300</street2>\n            <city>AUSTIN</city>\n            <stateOrCountry>TX</stateOrCountry>\n            <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n            <zipCode>78752</zipCode>\n        </issuerAddress>\n        <issuerPhoneNumber>(512) 768-0319</issuerPhoneNumber>\n        <jurisdictionOfInc>DELAWARE</jurisdictionOfInc>\n        <issuerPreviousNameList>\n            <value>None</value>\n        </issuerPreviousNameList>\n        <edgarPreviousNameList>\n            <value>None</value>\n        </edgarPreviousNameList>\n        <entityType>Corporation</entityType>\n        <yearOfInc>\n            <overFiveYears>true</overFiveYears>\n        </yearOfInc>\n    </primaryIssuer>\n\n    <relatedPersonsList>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Nicholas</firstName>\n                <lastName>Barbara</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Leanne</firstName>\n                <lastName>Sherred</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Brett</firstName>\n                <lastName>Cook</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Michael</firstName>\n                <lastName>Guiness</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Director</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Spencer</firstName>\n                <lastName>Magloff</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Ryan</firstName>\n                <lastName>Hinojosa</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n        <relatedPersonInfo>\n            <relatedPersonName>\n                <firstName>Zach</firstName>\n                <lastName>Topper</lastName>\n            </relatedPersonName>\n            <relatedPersonAddress>\n                <street1>7600 CHEVY CHASE DRIVE BLDG. 2</street1>\n                <street2>SUITE 300</street2>\n                <city>AUSTIN</city>\n                <stateOrCountry>TX</stateOrCountry>\n                <stateOrCountryDescription>TEXAS</stateOrCountryDescription>\n                <zipCode>78752</zipCode>\n            </relatedPersonAddress>\n            <relatedPersonRelationshipList>\n                <relationship>Executive Officer</relationship>\n            </relatedPersonRelationshipList>\n            <relationshipClarification></relationshipClarification>\n        </relatedPersonInfo>\n    </relatedPersonsList>\n\n    <offeringData>\n        <industryGroup>\n            <industryGroupType>Other Technology</industryGroupType>\n        </industryGroup>\n        <issuerSize>\n            <revenueRange>Decline to Disclose</revenueRange>\n        </issuerSize>\n        <federalExemptionsExclusions>\n            <item>06b</item>\n        </federalExemptionsExclusions>\n        <typeOfFiling>\n            <newOrAmendment>\n                <isAmendment>false</isAmendment>\n            </newOrAmendment>\n            <dateOfFirstSale>\n                <value>2026-09-30</value>\n            </dateOfFirstSale>\n        </typeOfFiling>\n        <durationOfOffering>\n            <moreThanOneYear>false</moreThanOneYear>\n        </durationOfOffering>\n        <typesOfSecuritiesOffered>\n            <isEquityType>true</isEquityType>\n        </typesOfSecuritiesOffered>\n        <businessCombinationTransaction>\n            <isBusinessCombinationTransaction>false</isBusinessCombinationTransaction>\n            <clarificationOfResponse></clarificationOfResponse>\n        </businessCombinationTransaction>\n        <minimumInvestmentAccepted>0</minimumInvestmentAccepted>\n        <salesCompensationList></salesCompensationList>\n        <offeringSalesAmounts>\n            <totalOfferingAmount>35500001</totalOfferingAmount>\n            <totalAmountSold>25499994</totalAmountSold>\n            <totalRemaining>10000007</totalRemaining>\n            <clarificationOfResponse></clarificationOfResponse>\n        </offeringSalesAmounts>\n        <investors>\n            <hasNonAccreditedInvestors>false</hasNonAccreditedInvestors>\n            <totalNumberAlreadyInvested>9</totalNumberAlreadyInvested>\n        </investors>\n        <salesCommissionsFindersFees>\n            <salesCommissions>\n                <dollarAmount>0</dollarAmount>\n            </salesCommissions>\n            <findersFees>\n                <dollarAmount>0</dollarAmount>\n            </findersFees>\n            <clarificationOfResponse></clarificationOfResponse>\n        </salesCommissionsFindersFees>\n        <useOfProceeds>\n            <grossProceedsUsed>\n                <dollarAmount>0</dollarAmount>\n            </grossProceedsUsed>\n            <clarificationOfResponse></clarificationOfResponse>\n        </useOfProceeds>\n        <signatureBlock>\n            <authorizedRepresentative>false</authorizedRepresentative>\n            <signature>\n                <issuerName>Expressable, Inc.</issuerName>\n                <signatureName>Nicholas Barbara</signatureName>\n                <nameOfSigner>Nicholas Barbara</nameOfSigner>\n                <signatureTitle>Chief Executive Officer</signatureTitle>\n                <signatureDate>2026-10-15</signatureDate>\n            </signature>\n        </signatureBlock>\n    </offeringData>\n</edgarSubmission>\n"
+ }
+}

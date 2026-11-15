@@ -173,6 +173,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'seo/indexing', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'seo/newsjack', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'read' },
   { path: 'seo/newsjack', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
+  { path: 'extension/linkedin', method: 'POST', auth: 'public', note: 'the dazl Connect extension: a bearer pairing code (one-time, 10 min, tenant-bound) or device token (tenant-bound, revoked by Disconnect, re-checked against the pairing member\'s current role on every call); no CORS; rate limited per IP and per workspace' },
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
