@@ -90,6 +90,12 @@ test('#1080 pull: a bad copy and a future-dated copy go to .bad and alert; with 
   assert.ok(existsSync(path.join(here, '.bad', bad)) && existsSync(path.join(here, '.bad', future)))
   assert.equal(r.json.retired, 0); assert.equal(copies(here).length, 49, 'nothing retired while a copy is in doubt')
   assert.match(alerts()[0].problems.join('\n'), /2 copy\(ies\) failed the manifest check/)
+  // the next run does not pull them again: retention and the ack go on, and the set-aside copies still alert
+  if (existsSync(ackLog)) unlinkSync(ackLog)
+  const r2 = run(box, here, ['--ack', 'dazl-offhost-ack'])
+  assert.equal(r2.json.pulled, 0, r2.out); assert.equal(r2.json.retired, 1); assert.equal(r2.json.acked, true)
+  assert.match(alerts()[0].problems.join('\n'), /2 copy\(ies\) set aside in \.bad\/ earlier/)
+  assert.ok(!existsSync(path.join(here, bad)))
 })
 
 test('#1080 pull: a box that writes BACKDATED copies (to push real ones out of retention) is caught: alert, nothing retired', { skip }, () => {

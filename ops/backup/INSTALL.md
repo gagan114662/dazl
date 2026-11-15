@@ -109,6 +109,7 @@ sudo install -d -m 700 -o ubuntu -g ubuntu /var/backups/dazl-offhost
 sudo install -d -m 750 -g ubuntu /etc/dazl-backup && echo 'age1...' | sudo tee /etc/dazl-backup/recipients.txt
 command -v rrsync || ls /usr/share/doc/rsync/scripts/                # rrsync: /usr/bin/rrsync (rsync >= 3.2.4)
 # the pull key may only READ the outbox; the ack key may only touch the marker (no shell, no forwarding for either)
+tail -c1 /home/ubuntu/.ssh/authorized_keys | od -c | grep -q '\\n' || echo | sudo tee -a /home/ubuntu/.ssh/authorized_keys   # end on a newline first
 echo 'command="/usr/bin/rrsync -ro /var/backups/dazl-offhost",restrict <contents of dazl_offhost_pull.pub>' | sudo tee -a /home/ubuntu/.ssh/authorized_keys
 echo 'command="touch /var/backups/dazl-offhost/.pulled",restrict <contents of dazl_offhost_ack.pub>' | sudo tee -a /home/ubuntu/.ssh/authorized_keys
 ```
@@ -123,7 +124,8 @@ echo 'OFFHOST_PULL_MARKER=/var/backups/dazl-offhost/.pulled' | sudo tee -a /etc/
 grep -E '^(RETAIN_OFFHOST_HOURLY|OFFHOST_PULL_MARKER|OFFHOST_DEST)=' /etc/dazl-backup/env
 ```
 
-The env file now differs from the installer's defaults: a later re-install (a new release) needs `--keep-env`, or the
+From the installer's first run until the operator machine's first good pull, the box's check alerts "no off-host pull
+recorded yet": expected until the last step below. The env file now differs from the installer's defaults: a later re-install (a new release) needs `--keep-env`, or the
 installer stops and names `RETAIN_OFFHOST_HOURLY` and `OFFHOST_PULL_MARKER`.
 
 **Back on the operator machine** (host key first, then the timer, then one pull by hand):
@@ -138,6 +140,10 @@ sudo loginctl enable-linger "$USER"                               # runs while n
 systemctl --user start dazl-offhost-pull.service; journalctl --user -u dazl-offhost-pull -n 5 --no-pager
 # one JSON line: {"type":"offhost_pull",...,"backups":N,"ledgers":N,"newest":"dazl-backup-....db.age","newest_age_s":...,"acked":true,"ok":true}
 ```
+
+The `~/.ssh/config` and `authorized_keys` steps append: run them once. When the box already holds more copies than the
+retention policy (the first pull, or after a long outage), the operator machine retires 3 per kind per run and says so
+in an alert each hour until it has caught up; that is the flood guard, not a fault.
 
 ## 1. Install (root, on the box)
 

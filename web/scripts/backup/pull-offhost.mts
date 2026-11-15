@@ -10,7 +10,8 @@
 //      a retired copy is never pulled again. Nothing here is overwritten or removed by the box's side; half-written
 //      files (.partial on the box, rsync's own temp files) never land under a copy's name.
 //   2. every copy here with a manifest is checked: the ciphertext must have the manifest's bytes and sha256. A copy that
-//      fails, or whose times lie in the future, is moved to .bad/ (never restored from) and is a problem.
+//      fails, or whose times lie in the future, is moved to .bad/ (never restored from, never pulled again) and is a
+//      problem; while .bad/ holds a copy every run alerts (without holding retention or the ack).
 //   3. problems (each alerts, and none of them lets retention run): the pull failed; a copy failed its check; a copy
 //      new this run is named OLDER than the newest copy already held (a box never backdates a copy: this is how a box
 //      that writes fake old copies to push real ones out of retention is caught); a ciphertext still has no manifest
@@ -70,7 +71,10 @@ for (const f of heldBefore) { const m = COPY.exec(f); if (m && !m[2] && existsSy
 
 // ---- 1. pull: copy names only, never a name already retired here
 const exclude = path.join(retiredDir, 'rsync-exclude')
-writeFileSync(exclude, readFileSync(retiredNames, 'utf8').split('\n').filter(n => COPY.test(n)).map(n => `/${n}\n`).join(''), { mode: 0o600 })
+// never again: a name retired here, or set aside in .bad/ (it alerts below for as long as it is there)
+const badDir = path.join(dir, '.bad')
+const badNames = existsSync(badDir) ? readdirSync(badDir).filter(n => COPY.test(n)) : []
+writeFileSync(exclude, [...readFileSync(retiredNames, 'utf8').split('\n'), ...badNames].filter(n => COPY.test(n)).map(n => `/${n}\n`).join(''), { mode: 0o600 })
 const rsync = spawnSync('rsync', [
   '-rt', '--ignore-existing', '--chmod=F600', '--partial-dir=.rsync-partial', `--exclude-from=${exclude}`,
   '--include=dazl-backup-*.db.age', '--include=dazl-backup-*.db.age.json',
@@ -154,6 +158,9 @@ if (!problems.length && ack) {
   if (r.error || r.status !== 0) warnings.push(`could not record the pull on the box (ssh ${ack} exit ${r.status ?? 'error'}): the box will alert that pulls stopped`)
   else out.acked = true
 }
+// copies set aside earlier: not pulled again (excluded above), but an alert every run until someone inspects and removes them
+const stillBad = existsSync(badDir) ? readdirSync(badDir).filter(n => COPY.test(n) && !n.endsWith('.json')) : []
+if (stillBad.length && !bad.length) warnings.push(`${stillBad.length} copy(ies) set aside in .bad/ earlier: inspect, then remove them`)
 out.retired = retired.length; out.purged = purged
 problems.push(...warnings)
 out.problems = problems
