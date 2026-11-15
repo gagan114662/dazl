@@ -647,9 +647,11 @@ export function citySlugs(places: string[]): string[] {
 // The requested city's office segment: the slug itself or the slug plus a two-letter state ("chicago", "chicago-il").
 // The suffix must be the REQUESTED region's code: "portland-or" is not Portland, Maine; "paris-fr" is not Paris, Texas.
 // "Chicago, IL", "Chicago, Illinois", "Chicago, IL, USA", "Chicago, IL 60601": the first region after the city.
-const regionCodes = (places: string[]) => new Set(places.flatMap(p => String(p).split(',').slice(1).map(x => x.trim().toLowerCase().replace(/\s+\d[\d-]*$/, '')).flatMap(r => { if (/^[a-z]{2}$/.test(r) && r !== 'us') return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] })))
-// No region in the request ("Chicago"): any two-letter suffix is accepted, as the request cannot tell them apart.
-const cityMatch = (slugs: string[], x: string, places: string[]) => { const codes = regionCodes(places); return slugs.some(c => x === c || (x.startsWith(c + '-') && /^[a-z]{2}$/.test(x.slice(c.length + 1)) && (codes.size === 0 || codes.has(x.slice(c.length + 1))))) }
+const regionCodes = (places: string[]) => new Set(places.flatMap(p => String(p).split(',').slice(1).map(x => x.toLowerCase().replace(/\d[\d-]*/g, ' ').replace(/\b(?:usa|u\.s\.a?\.?|us|united states(?: of america)?|america)\b/g, ' ').replace(/\s+/g, ' ').trim()).flatMap(r => { if (/^[a-z]{2}$/.test(r)) return [r]; const st = Object.entries(US_STATES).find(([, name]) => name === r); return st ? [st[0].toLowerCase()] : [] })))
+// No region in the request at all ("Chicago"): any two-letter suffix is accepted, as the request cannot tell them apart. A region this
+// reader does not know ("Paris, France") is NOT "no region": only the exact slug matches.
+const bareCity = (places: string[]) => places.every(p => !String(p).includes(','))
+const cityMatch = (slugs: string[], x: string, places: string[]) => { const codes = regionCodes(places); return slugs.some(c => x === c || (x.startsWith(c + '-') && /^[a-z]{2}$/.test(x.slice(c.length + 1)) && ((codes.size === 0 && bareCity(places)) || codes.has(x.slice(c.length + 1))))) }
 // Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
 // last segment that is the slug itself under a locations / offices path ("/locations/chicago", "/locations/offices/chicago.html").
 export function officeLinks(html: string, base: URL, places: string[]): string[] {
@@ -666,22 +668,23 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
   return out.slice(0, 2)
 }
 // A path under a locations / offices segment ("/locations/denver") is the page of ONE office: read only when that office is the requested city.
-export function otherOffice(pathname: string, places: string[]): boolean {
+// Which office a path is about, from the segments after its LAST locations / offices segment: "none" (the index, or a people page such as
+// "/offices/leadership"), "requested" (the requested city's slug anywhere after it: "/locations/chicago", "/offices/team/chicago",
+// "/locations/us/chicago"), or "other" (any other office: "/locations/denver", "/offices/team/dallas", "/locations/texas/paris" for Paris, France).
+// A "requested" page still has to agree with the requested place before its people count (crawlSite), so "/offices/new-york/dallas" for Dallas is
+// judged by what the page says.
+function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'other' {
   const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
   const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
-  if (i < 0 || i === seg.length - 1) return false
-  if (i === seg.length - 2 && PEOPLE_SEGMENT.test(seg[i + 1])) return false   // "/offices/leadership" is a people page; "/offices/team/dallas" is Dallas's
-  if (seg.slice(i + 1).some(x => cityMatch(citySlugs(places), x, places))) return false
-  return true   // "/locations/chicago/team" is the Chicago office; "/locations/us/chicago" fails closed
+  if (i < 0 || i === seg.length - 1) return 'none'
+  if (i === seg.length - 2 && PEOPLE_SEGMENT.test(seg[i + 1])) return 'none'
+  const slugs = citySlugs(places)
+  return slugs.length > 0 && seg.slice(i + 1).some(x => cityMatch(slugs, x, places)) ? 'requested' : 'other'
 }
-// The requested city's own office page ("/locations/chicago", "/offices/chicago-il/team"): its people count only when the page agrees with the
-// requested place. A generic "/about-us/our-office" is not a city office page and is judged like any people page.
-function cityOffice(pathname: string, places: string[]): boolean {
-  const slugs = citySlugs(places); if (slugs.length === 0) return false
-  const seg = segmentsOf(pathname).map(x => x.replace(/\.[a-z]{2,5}$/, ''))
-  const i = seg.findLastIndex(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))
-  return i >= 0 && i < seg.length - 1 && cityMatch(slugs, seg[i + 1], places)
-}
+// A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.
+export function otherOffice(pathname: string, places: string[]): boolean { return officeOf(pathname, places) === 'other' }
+// The requested city's own office page: its people count only when the page agrees with the requested place.
+function cityOffice(pathname: string, places: string[]): boolean { return officeOf(pathname, places) === 'requested' }
 export function contactPaths(homeHtml: string, home: URL, places: string[] = []): string[] {
   const offices = officeLinks(homeHtml, home, places)
   const set = new Set<string>([...offices, '/contact', '/contact-us', '/about', '/team', '/leadership'])
