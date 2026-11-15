@@ -271,6 +271,16 @@ export function jsonLdCompanySites(company: string, html: string, pageHost = '')
   }
   return out.slice(0, 2)
 }
+// #1122: the registrable host of a site a STRUCTURED public record gives for a business (OpenStreetMap's website tag for a place named like the
+// company in the request's place), or null for a platform, social, directory, government or address-literal host. Unlike a web-search hit,
+// the record names the business itself, so the host label need not carry the name ("qsdc.ca" for Queen Street Dental Centre); the crawl's
+// homepage name check and place check still decide, as for any name_probe site.
+export function ownSiteHost(url: string): string | null {
+  let host: string
+  try { const u = new URL(url); if (u.protocol !== 'https:' && u.protocol !== 'http:') return null; host = registrable(u.hostname.toLowerCase().replace(/\.$/, '')) } catch { return null }
+  if (!host || !siteHostOk(host) || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host)) return null
+  return host
+}
 // Stable machine token stored in the label. Trust decisions read only this token (never display text).
 export const DOMAIN_BASIS_TOKEN = 'domain-basis-v1:'
 export const DOMAIN_BASES: DomainBasis[] = ['name_probe', 'evidence_link_text', 'evidence_link_domain_label', 'evidence_own_domain']
