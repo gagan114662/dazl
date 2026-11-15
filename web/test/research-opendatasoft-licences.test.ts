@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { CHUNK, VANCOUVER_LICENCES, licenceQueries, licenceSignals, licenceYears, vancouverLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
+import { CHUNK, licenceDay, VANCOUVER_LICENCES, licenceQueries, licenceSignals, licenceYears, vancouverLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
 import type { ResearchCase } from '../lib/research/types.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 
@@ -92,4 +92,10 @@ test('a renewal is found under either of its names: last year under the legal na
   const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, [...FX.prior, lastYear], FX.same, FX.since)
   assert.ok(!s.some(x => x.company === 'Hunger Street'), 'a renewal under the legal name is still a renewal')
   assert.ok(String(hunger.businessname ?? '').length > 0, 'the fixture row has a legal name')
+})
+
+test("a licence's day is Vancouver's day, not UTC's: an evening licence is not dated tomorrow", () => {
+  assert.equal(licenceDay('2026-09-29T01:30:00+00:00'), '2026-09-28')
+  assert.equal(licenceDay('2026-09-28T15:38:00+00:00'), '2026-09-28')
+  assert.equal(licenceDay('2026-09-28'), '2026-09-28'); assert.equal(licenceDay('soon'), null); assert.equal(licenceDay(null), null)
 })

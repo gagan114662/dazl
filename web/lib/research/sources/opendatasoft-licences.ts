@@ -42,7 +42,15 @@ const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
 const who = (r: Row) => key(str(r.businesstradename) || str(r.businessname))
 const where = (r: Row) => key(`${str(r.unit)} ${str(r.house)} ${str(r.street)}`)
 const addressText = (r: Row) => [str(r.unit) && `${str(r.unit)}-`, str(r.house), str(r.street)].filter(Boolean).join(' ').replace('- ', '-')
-const day = (v: unknown): string | null => { const d = str(v).slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) ? d : null }
+// the licence's day where it was issued: the dataset stamps issueddate in UTC ("2026-09-29T01:30:00+00:00" is the 28th in Vancouver)
+const LOCAL = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit' })
+export const licenceDay = (v: unknown): string | null => {
+  const s = str(v)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return Number.isNaN(Date.parse(`${s}T00:00:00Z`)) ? null : s
+  const ms = /^\d{4}-\d{2}-\d{2}T/.test(s) ? Date.parse(s) : NaN
+  return Number.isNaN(ms) ? null : LOCAL.format(new Date(ms))
+}
+const day = licenceDay
 // an Opendatasoft (ODSQL) string literal: double quotes, a quote inside doubled
 const lit = (s: string) => `"${s.replace(/"/g, '""')}"`
 const typeClause = (types: string[]) => `(${types.map(t => `businesstype=${lit(t)}`).join(' or ')})`
