@@ -48,6 +48,7 @@ export function claudeDecide(complete: Complete): Decide {
     const out: Record<string, number | null> = {}
     for (const k of Object.keys(questions)) {
       // a key given twice ({"claim": 0.1, "claim": 0.9}) is not an answer: JSON.parse would keep the last one, so the reply is read as no answer for that key
+      // (counted over the whole reply, so a preamble that quotes the key also reads as no answer: that fails closed, and memoDecide asks again)
       const twice = reply.split(`${JSON.stringify(k)}`).length - 1 > 1
       const v = obj[k]
       out[k] = !twice && typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null
