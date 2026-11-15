@@ -62,6 +62,12 @@ test('#763 verifier: a stated place NEVER overrules a page that places the compa
   const bound = 'Lucy & Yak is headquartered in Berlin, Germany.'
   assert.deepEqual(fate(await run(bound, ['United Kingdom'])), MISMATCH)
   assert.deepEqual(fate(await run(bound, ['United Kingdom'], [URL_, UK])), MISMATCH, 'the store saying "United Kingdom" about itself does not rescue a page that says the company is in Berlin')
+  // a page that mismatches on its own stays a mismatch, whatever the store states (the independent re-review found these passed)
+  for (const page of ['Based in Berlin.', 'Based in Lisbon, Portugal', 'Our factory in Berlin', 'Our warehouse is in Berlin, Germany.', 'We ship from Paris, France.', 'Our founder lives in Paris.']) {
+    const alone = fate(await run(page, ['United Kingdom']))
+    if (alone.review.includes('location_mismatch')) assert.deepEqual(fate(await run(page, ['United Kingdom'], [URL_, UK])), alone, `a page-only mismatch is final: ${page}`)
+  }
+  assert.deepEqual(fate(await run('Based in Berlin.', ['United Kingdom'], [URL_, UK])), MISMATCH, 'pinned: this page mismatches on its own')
 })
 
 test('#763 verifier: a page that names no place passes as before; the stated place is evidence AGAINST a store outside a city-level request', async () => {

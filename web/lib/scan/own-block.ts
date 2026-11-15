@@ -48,13 +48,17 @@ export function ownBlock(text: string, company: string, title = '', excerpt = ''
 
 // Place agreement on the candidate's own block only. `no_geography` when the request names no place.
 // stated (#763): a place a structured source states for the company ITSELF (a Shopify store's own meta.json: "Barnsley, England,
-// United Kingdom"). It is read as one more sentence of the company's own block, by the same rules. So it can answer a page that merely
-// MENTIONS another place (where an item is made or ships from), and it cannot overrule a page that places the company itself elsewhere
-// ("X is headquartered in Berlin"): placeAgreement checks that binding first, and it outranks any mention of the requested place.
+// United Kingdom"). The page is judged ALONE first, and a page verdict of 'mismatch' is final: the stated place can never turn it into a
+// pass (a page saying "Based in Berlin" stays a mismatch whatever the store states). The stated place may only confirm a page that is
+// 'unconfirmed', or tighten: a stated place outside the request makes the verdict 'mismatch' (a store stating Nottingham is not a London
+// store). So it can lower nothing, by construction.
 export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = '', stated: string | null = null): PlaceVerdict {
   const probe = placeAgreement('', where, company)
   if (probe === 'no_geography') return probe
   const block = ownBlock(page.text, company, page.title, excerpt, page.board)
-  if (block === null) return 'unconfirmed'
-  return placeAgreement(stated ? `${page.title} ${block} ${stated}.` : `${page.title} ${block}`, where, company)
+  const onPage: PlaceVerdict = block === null ? 'unconfirmed' : placeAgreement(`${page.title} ${block}`, where, company)
+  if (!stated || onPage === 'mismatch') return onPage
+  const said = placeAgreement(stated, where, company)
+  if (said === 'mismatch') return 'mismatch'
+  return onPage === 'agrees' ? 'agrees' : said
 }
