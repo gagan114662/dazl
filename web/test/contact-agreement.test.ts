@@ -29,7 +29,8 @@ async function run(homeBySite: Record<string, Record<string, string>>, icpWhere:
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-26T12:00:00Z') })
   return {
     domain: (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain,
-    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind NOT IN ('domain', 'contact_rejected') ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
+    enr: db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE kind NOT IN ('domain', 'contact_rejected', 'domain_unresolved') ORDER BY kind, value").all() as { kind: string; value: string; label: string }[],
+    unresolved: (db.prepare("SELECT label FROM lead_enrichments WHERE kind = 'domain_unresolved'").all() as { label: string }[]).map(r => r.label),   // #1122: the named reason when no domain is kept
     audit: (db.prepare("SELECT lookup, status FROM connector_audit WHERE connector = 'sitecrawl'").all() as { lookup: string; status: string }[]),
   }
 }
@@ -92,7 +93,7 @@ test('the crawl refusal is recorded on the lead too (card reason), and the lead 
   const get: Get = async url => { const u = new URL(url); if (u.hostname === 'qns.example') return { status: 200, body: ARTICLE, finalUrl: url }; if (u.hostname.replace(/^www\./, '') !== 'smileavenuedental.com') return null; if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }; return u.pathname === '/' ? { status: 200, body: home, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-10-26T12:00:00Z') })
   const rows = db.prepare("SELECT kind, value FROM lead_enrichments WHERE lead_id = 'L1'").all() as { kind: string; value: string }[]
-  assert.deepEqual(rows, [{ kind: 'contact_rejected', value: 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY' }])
+  assert.deepEqual(rows, [{ kind: 'contact_rejected', value: 'contact rejected: location mismatch Pico Rivera, CA vs New York, NY' }, { kind: 'domain_unresolved', value: 'No company website confirmed' }])   // #1122: and the lead says no website was confirmed
   assert.equal(regradeFromKeptContacts(db, 'A', job), 1)
   const l = db.prepare("SELECT action, why FROM leads WHERE id = 'L1'").get() as { action: number; why: string }
   assert.equal(l.action, 2); assert.match(l.why, /^Contact unconfirmed: location mismatch Pico Rivera, CA vs New York, NY\./)

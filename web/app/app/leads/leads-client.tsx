@@ -25,6 +25,7 @@ import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
 import PlayResearch from './play-research'
@@ -65,6 +66,7 @@ import { compileTargeting, planView } from '@/lib/scan/targeting'
 // A preset is also a structured reason (#385, lib/scan/feedback.ts): later runs do not bring that account, person or
 // event back, and Undo resets it. Free text alone only quarantines: nothing is learned from it. Wrong person needs a
 // person on the lead, wrong timing a dated event, so they are offered only then.
+const NO_GUESSES: unknown[] = [] // a stable empty list: the work-email panel resyncs its guesses when this identity changes
 const REJECT_PRESETS: { label: string; code: string; needs?: 'person' | 'date' }[] = [
   { label: 'Wrong industry', code: 'wrong_industry' }, { label: 'Wrong location', code: 'wrong_location' },
   { label: 'Wrong person', code: 'wrong_person', needs: 'person' }, { label: 'Wrong timing', code: 'wrong_timing', needs: 'date' },
@@ -351,8 +353,8 @@ export default function LeadsClient() {
 
   const [hiddenCount, setHiddenCount] = useState(0)
   // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
-  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']> } | null>(null)
-  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [] } : undefined
+  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown> } | null>(null)
+  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [], guesses: workEmailPage.guesses?.[leadId] ?? NO_GUESSES } : undefined
   const [siteUrl, setSiteUrl] = useState('')
   const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
@@ -1270,6 +1272,7 @@ export default function LeadsClient() {
             {l.enrichments && l.enrichments.some(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review') && (
               <div className="text-xs mt-1 space-y-0.5">
                 {l.enrichments.filter(e => e.kind !== 'contact' && e.kind !== 'person' && e.kind !== 'domain_review' && e.kind !== 'domain_check' && e.kind !== 'timing_proof' && e.kind !== 'tech_scan').map(e => (
+                  e.kind === 'domain_unresolved' ? <div key={e.kind + e.value} className="text-gray-500">No company website confirmed: {domainUnresolvedText(e.label)}.</div> :
                   <div key={e.kind + e.value} className="text-gray-400">
                     {e.kind === 'hiring' && <div className="text-[#555]">{e.label?.startsWith('Requested role:') ? `Hiring for ${(e.value.includes(' - posted ') ? e.value.slice(0, e.value.lastIndexOf(' - posted ')) : e.value).replace(/^Open role on its careers page: /, '')}. This may relate to your offer; buying need isn't verified.` : 'Hiring activity only. A requested-role match and buying need are not verified.'}</div>}
                     <span className="text-[#111]">{e.kind === 'domain' ? e.value.split('|')[0] : e.connector === 'first_party' ? fpTypeLabel(e.value) : e.value}</span>{e.kind === 'domain' ? ` (${domainBasisText(e)})` : e.label && !e.label.startsWith('contact-context-v1:') ? ` (${dedupeLabel(e.label)})` : ''} <span className="text-gray-500">{e.kind === 'tech' ? 'seen on the company website' : e.kind === 'tech_change' ? 'a change between dated checks of the same company web page' : e.connector === 'sitecrawl' ? 'from a company website page' : e.connector === 'hunter' ? 'via Hunter (earlier)' : e.connector === 'first_party' ? `${fpTypeLabel(e.value)} recorded by your own site, consent recorded (account-level unless submitted by the person)` : e.connector === 'scan:targeting' ? 'a condition from your request, checked only on this lead\'s verified sources (unknown is not false)' : `via ${e.connector}`}{e.confidence !== null && !e.connector.startsWith('signals:') ? `, ${e.confidence}% confidence` : ''}{e.entity_status === 'unconfirmed' ? ' - entity unconfirmed (name match only), check the source before relying on this' : e.entity_status === 'heuristic' ? ' - entity matched by name only (heuristic, not independently confirmed)' : ''}, {e.kind === 'hiring' && !e.value.includes(' - posted ') && !e.value.includes('sales/GTM role') ? `checked ${e.source_date}; original posting date unknown` : e.kind === 'hiring' ? `posting date ${e.source_date}` : e.kind === 'hiring-role' ? (e.value.includes(' - posted ') ? `posting date ${e.source_date}` : `checked ${e.source_date}; ${/older than the last/.test(e.label ?? '') ? 'posting date outside the window, not stored' : 'posting date unknown'}`) : e.connector === 'scan:targeting' ? (/, evidence dated \d{4}-\d{2}-\d{2}$/.test(e.value) ? 'dated by its own source' : /, no evidence date$/.test(e.value) ? `checked ${e.source_date}` : `recorded ${e.source_date} (an older check: evidence date not stated)`) : `seen ${e.source_date}`}</span>{' '}
