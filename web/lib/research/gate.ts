@@ -26,19 +26,19 @@ export function parseGate(text: string, n: number): (GateVerdict | null)[] | nul
   return Array.from({ length: n }, (_, i) => { const v = String(j[String(i)] ?? '').trim().toLowerCase(); return /^no(?:$|[\s.,!;:-]+(?!info|idea|data|information))/.test(v) ? 'no' : /^yes\b/.test(v) ? 'yes' : /^unknown\b/.test(v) ? 'unknown' : null })
 }
 
-export async function gateEvents<T extends GateEvent>(events: T[], target: GateTarget, complete: Complete): Promise<GateResult<T>> {
+export async function gateEvents<T extends GateEvent>(events: T[], target: GateTarget, complete: Complete, isRefusal?: (e: unknown) => boolean): Promise<GateResult<T>> {
   if (events.length === 0) return { all: [], kept: [], counts: { in: 0, out: 0, dropped: [] }, ran: false }
   let verdicts: (GateVerdict | null)[] | null = null
-  try { verdicts = parseGate(await complete(gatePrompt(target, events), Math.min(4000, 200 + 12 * events.length)), events.length) } catch { verdicts = null }
+  try { verdicts = parseGate(await complete(gatePrompt(target, events), Math.min(4000, 200 + 12 * events.length)), events.length) } catch (e) { if (isRefusal?.(e)) throw e; verdicts = null }   // the scan's own spend refusal is rethrown (the engine stops cleanly); any other failure drops nothing
   const all = events.map((event, i) => { const verdict = verdicts?.[i] ?? null; return { event, verdict, kept: verdict !== 'no' } })
   const kept = all.filter(g => g.kept).map(g => g.event)
   return { all, kept, counts: { in: events.length, out: kept.length, dropped: all.filter(g => !g.kept).map(g => g.event.company) }, ran: verdicts !== null }
 }
 
 // The engine's stage (engine.ts ResearchStages.gate): every event gets its verdict in `gate` (null when the call failed: kept, unknown); the "no"s are dropped.
-export function gateStage(complete: Complete): (c: ResearchCase, events: ResearchEvent[]) => Promise<ResearchEvent[]> {
+export function gateStage(complete: Complete, isRefusal?: (e: unknown) => boolean): (c: ResearchCase, events: ResearchEvent[]) => Promise<ResearchEvent[]> {
   return async (c, events) => {
-    const r = await gateEvents(events, { location: c.where, category: c.category }, complete)
+    const r = await gateEvents(events, { location: c.where, category: c.category }, complete, isRefusal)
     for (const g of r.all) if (g.verdict) g.event.gate = g.verdict
     return r.kept
   }

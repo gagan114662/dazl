@@ -161,3 +161,14 @@ test('(review) walled hosts by domain label only: glassdoor.ca and uk.glassdoor.
   for (const u of ['https://glassdoor.ca/x', 'https://uk.glassdoor.com/x', 'https://www.yelp.com/biz/x']) assert.equal(unopenable(u), true, u)
   for (const u of ['https://helpyelp.com/x', 'https://myglassdoor-repair.example/x']) assert.equal(unopenable(u), false, u)
 })
+test('a spend refusal is rethrown by the filter and the gate when the caller can recognise it, and swallowed otherwise (a refused scan is not an empty scan)', async () => {
+  class Refused extends Error {}
+  const refuse = async (): Promise<string> => { throw new Refused('spend refused') }
+  const isRefusal = (e: unknown) => e instanceof Refused
+  const sample = RESULTS.filter(r => !unopenable(r.url)).slice(0, 25)
+  await assert.rejects(() => filterResults(sample, TARGET, { ask: refuse, isRefusal }), Refused)
+  const swallowed = await filterResults(sample, TARGET, { ask: refuse }); assert.equal(swallowed.counts.decided, 0)
+  const evs = [{ company: 'Roof Royale', quote: 'q', sourceUrl: 'https://a.example/' }]
+  await assert.rejects(() => gateEvents(evs, { location: 'Austin', category: 'roofing' }, refuse, isRefusal), Refused)
+  assert.equal((await gateEvents(evs, { location: 'Austin', category: 'roofing' }, refuse)).kept.length, 1)
+})

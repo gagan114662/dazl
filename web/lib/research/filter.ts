@@ -80,7 +80,9 @@ export function filterStage(deps: FilterDeps): (c: ResearchCase, plan: ResearchP
     return { all: cands, keep: r.pages as Candidate[] }
   }
 }
-export interface FilterDeps { ask: Complete; concurrency?: number; maxPages?: number }
+// isRefusal: recognises the scan's own spend refusal (the runner's ctx.isRefusal). It is rethrown, never swallowed, so the engine and the runner report a spending-limit stop
+// as that and not as a scan with no results; any other failed call just leaves its results without a decision.
+export interface FilterDeps { ask: Complete; concurrency?: number; maxPages?: number; isRefusal?: (e: unknown) => boolean }
 export interface FilterResult { all: Filtered[]; pages: FilterCandidate[]; counts: { results: number; decided: number; kept: number; pages: number } }
 
 export async function filterResults<T extends FilterCandidate>(cands: T[], target: FilterTarget, deps: FilterDeps): Promise<FilterResult & { pages: T[] }> {
@@ -90,7 +92,7 @@ export async function filterResults<T extends FilterCandidate>(cands: T[], targe
   for (let i = 0; i < open.length; i += 20) chunks.push(open.slice(i, i + 20))
   await pmap(chunks, deps.concurrency ?? 3, async chunk => {
     let text = ''
-    try { text = await deps.ask(filterPrompt(target, chunk.map(f => f.candidate)), 900) } catch { return }   // a refused or failed call: those results keep no decision
+    try { text = await deps.ask(filterPrompt(target, chunk.map(f => f.candidate)), 900) } catch (e) { if (deps.isRefusal?.(e)) throw e; return }   // a failed call: those results keep no decision
     parseFilterReply(text, chunk.length).forEach((d, i) => { if (d) { chunk[i].decision = d; chunk[i].model = 'claude' } })
   })
   for (const f of open) Object.assign(f, judge(f.decision))
