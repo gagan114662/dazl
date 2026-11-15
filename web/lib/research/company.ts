@@ -9,10 +9,15 @@
 //   4. ONE model call picks the decision-maker with a VERBATIM quote naming the person AND their role, from a cited source; a second
 //      look (a person the trigger article itself names, else the question asked plainly) only for the misses;
 //   5. the quote must be literally in the cited source's text, or there is no person: the model is never trusted to have copied it;
-//   6. emails: addresses printed on the company's OWN pages (its domain), with the page; never a guess.
+//   6. emails: addresses printed on the company's OWN pages (its domain), with the page; never a guess. The named person's own address
+//      first, then the company's inboxes; recruiting and no-reply inboxes are not contacts. Cloudflare-protected addresses are decoded.
+// The found site must be THIS business (#1122, Hermes 02:15: the Vancouver restaurant Fable resolved to a books app's site): its own pages
+// must show the case's place (a place word, or a country domain) AND its category (a business-type word). No match -> no site and no
+// person: a person found for the wrong company is worse than none. The next candidate site is tried before giving up.
 // Every network call and the model are injected (CompanyDeps), so tests run on recorded pages and the scan wires the real ones
 // (TinyFish search through lib/search/tinyfish.ts, the guarded direct fetch of lib/connectors/sitecrawl.ts, the job's provider).
 import type { CompanyResearch, Person, ResearchCase, ResearchEvent, ResearchPlan, Source } from './types.ts'
+import type { SearchFn } from './hunt.ts'
 
 export interface SearchResult { url: string; title: string; snippet: string }
 export interface Fetched { status: number; body: string; finalUrl: string }
@@ -53,13 +58,27 @@ export function nameTokens(company: string): string[] {
   return t.length ? t : all
 }
 
+// Cloudflare's email protection prints no address: data-cfemail="<hex>" (or /cdn-cgi/l/email-protection#<hex>); byte 0 is the key, every
+// next byte XOR the key is one character. Bounded: 40 per page.
+export function cfEmails(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.matchAll(/(?:data-cfemail=["']|\/cdn-cgi\/l\/email-protection#)([0-9a-f]{6,510})/gi)) {
+    if (out.length >= 40) break
+    const h = m[1]; if (h.length % 2) continue
+    const key = parseInt(h.slice(0, 2), 16); let e = ''
+    for (let i = 2; i < h.length; i += 2) e += String.fromCharCode(parseInt(h.slice(i, i + 2), 16) ^ key)
+    if (/^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,251}\.[a-z]{2,24}$/i.test(e)) out.push(e)
+  }
+  return out
+}
+
 // The page as the research step reads it: visible text (scripts, styles, svg dropped; blocks become lines), its links with their text,
 // and its mailto addresses. Pure.
 export interface ReadPage { url: string; finalUrl: string; text: string; links: { url: string; text: string }[]; mailtos: string[] }
 const decode = (s: string) => s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#0?39;|&apos;|&#8217;|&rsquo;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#(\d{1,6});/g, (_m, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
 export function readHtml(html: string, url: string, finalUrl = url): ReadPage {
   const body = html.slice(0, 1_500_000).replace(/<(script|style|noscript|svg|template)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
-  const links: { url: string; text: string }[] = [], mailtos: string[] = []
+  const links: { url: string; text: string }[] = [], mailtos: string[] = [...cfEmails(body)]
   for (const m of body.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,400}?)<\/a>/gi)) {
     const href = decode(m[1].trim())
     if (/^mailto:/i.test(href)) { mailtos.push(href.slice(7).split('?')[0]); continue }
@@ -80,11 +99,19 @@ async function open(deps: CompanyDeps, url: string): Promise<ReadPage | null> {
   return p.text.length > 400 ? p : null   // the prototype's floor: a near-empty page (a block page, a JS shell) is not a source
 }
 
-// 1. the company's own site
-export async function findSite(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string | null> {
-  if (ev.pageIsCompanySite && host(ev.sourceUrl) && !blocked(ev.sourceUrl) && !directory(host(ev.sourceUrl))) return `https://${host(ev.sourceUrl)}`
+// 1. the company's own site: the candidates in order (at most 3); researchCompany keeps the first whose pages match the case
+export async function findSite(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string | null> { return (await siteCandidates(ev, city, deps))[0] ?? null }
+export async function siteCandidates(ev: ResearchEvent, city: string, deps: CompanyDeps): Promise<string[]> {
+  const out: string[] = []
+  const push = (u: string | null) => { if (u && !out.some(o => host(o) === host(u)) && out.length < 3) out.push(u) }
+  push(await firstSite(ev, city, deps, out))
+  return out
+}
+async function firstSite(ev: ResearchEvent, city: string, deps: CompanyDeps, also: string[]): Promise<string | null> {
+  const own = ev.pageIsCompanySite && host(ev.sourceUrl) && !blocked(ev.sourceUrl) && !directory(host(ev.sourceUrl)) ? `https://${host(ev.sourceUrl)}` : null
   const w = (ev.website ?? '').trim()
-  if (w && w.includes('.') && !/\s/.test(w)) { const u = /^https?:\/\//i.test(w) ? w : `https://${w}`; if (host(u) && !blocked(u) && !directory(host(u))) return u }
+  const shown = w && w.includes('.') && !/\s/.test(w) ? (/^https?:\/\//i.test(w) ? w : `https://${w}`) : null
+  for (const u of [own, shown && host(shown) && !blocked(shown) && !directory(host(shown)) ? shown : null]) if (u && !also.some(o => host(o) === host(u))) also.push(u)
   const toks = nameTokens(ev.company)
   let rs: SearchResult[] = []
   try { rs = await deps.search(`${ev.company} ${city} official website`) } catch { rs = [] }
@@ -93,10 +120,25 @@ export async function findSite(ev: ResearchEvent, city: string, deps: CompanyDep
     const h = host(r.url)
     if (!h || blocked(r.url) || directory(h)) continue
     const hn = (h.split('.').length === 2 ? h.split('.')[0] : h).replace(/[^a-z0-9]/g, '')
-    if (toks.some(t => hn.includes(t))) return `https://${h}`
-    if (best === null && toks.slice(0, 2).every(t => norm(r.title).includes(t))) best = `https://${h}`
+    const u = `https://${h}`
+    if (also.some(o => host(o) === h) || also.length >= 3) continue
+    if (toks.some(t => hn.includes(t))) also.push(u)
+    else if (best === null && toks.slice(0, 2).every(t => norm(r.title).includes(t))) best = u
   }
-  return best
+  if (best && also.length < 3 && !also.some(o => host(o) === host(best!))) also.push(best)
+  return also[0] ?? null
+}
+
+// #1122: is this site THIS business? Its own pages show the case's place (a place keyword, or a country domain like ".com.au") AND its
+// category (a business-type keyword). The case's keyword lists when given (the matrix's), else the words of `where` / `category`.
+const words = (s: string, min: number) => s.toLowerCase().split(/[^a-z0-9\u00c0-\u024f]+/).filter(w => w.length >= min)
+export function siteMatchesCase(c: ResearchCase, siteHost: string, pageTexts: string[]): { place: boolean; category: boolean } {
+  const text = ` ${pageTexts.join(' \n ').toLowerCase().replace(/\s+/g, ' ')} `
+  const placeKw = c.whereKeywords?.length ? c.whereKeywords : words(c.where, 3)
+  const catKw = c.categoryKeywords?.length ? c.categoryKeywords : words(c.category, 4).map(w => w.replace(/(?:ies|es|s)$/, ''))
+  const place = placeKw.some(k => { const kw = k.toLowerCase(); return kw.startsWith('.') ? siteHost.endsWith(kw) || text.includes(kw) : text.includes(kw) })
+  const category = catKw.some(k => text.includes(k.toLowerCase()))
+  return { place, category }
 }
 
 const parseJson = (s: string | null): Record<string, unknown> | null => {
@@ -110,33 +152,39 @@ const str = (v: unknown): string | null => typeof v === 'string' && v.trim() ? v
 // 2-6. the research of one company
 export async function researchCompany(c: ResearchCase, plan: ResearchPlan, ev: ResearchEvent, deps: CompanyDeps): Promise<CompanyResearch> {
   const city = c.where.split(',')[0].trim()
-  const site = await findSite(ev, city, deps)
+  const cands = await siteCandidates(ev, city, deps)
   const sources: Source[] = []
   const emails = new Map<string, string>()
   const add = (url: string, text: string, kind: Source['kind']) => { sources.push({ id: `S${sources.length + 1}`, url, text, kind }) }
   const ev0 = await open(deps, ev.sourceUrl)
   if (ev0) add(ev.sourceUrl, ev0.text.slice(0, PAGE_TEXT), 'page')
-  const siteHost = site ? host(site) : ''
-  if (site) {
-    const home = await open(deps, site)
-    if (home) {
-      add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
-      const sh = host(home.finalUrl), picks: string[] = [], seen = new Set<string>()
-      for (const l of home.links) {
-        const u = l.url.split('#')[0]
-        if (host(u) !== sh || seen.has(u) || u.replace(/\/$/, '') === home.finalUrl.replace(/\/$/, '')) continue
-        const path = u.split(sh)[1] ?? ''
-        if (LINK_RX.test(path) || LINK_RX.test(l.text)) { seen.add(u); picks.push(u) }
-      }
-      picks.sort((a, b) => (FIRST_RX.test(a) ? 0 : 1) - (FIRST_RX.test(b) ? 0 : 1) || a.length - b.length)
-      const pages = [home, ...(await Promise.all(picks.slice(0, MAX_OWN_PAGES).map(u => open(deps, u)))).filter((p): p is ReadPage => !!p)]
-      for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
-      for (const p of pages) for (const m of [...p.mailtos, ...(p.text.match(EMAIL_RX) ?? [])]) {
-        const e = m.replace(/^\.+|\.+$/g, '').toLowerCase()
-        if (!NOT_EMAIL.test(e) && !emails.has(e)) emails.set(e, p.finalUrl)
-      }
+  let site: string | null = null, wrongSite = false
+  for (const cand of cands) {
+    const home = await open(deps, cand)
+    if (!home) continue
+    const sh = host(home.finalUrl), picks: string[] = [], seen = new Set<string>()
+    for (const l of home.links) {
+      const u = l.url.split('#')[0]
+      if (host(u) !== sh || seen.has(u) || u.replace(/\/$/, '') === home.finalUrl.replace(/\/$/, '')) continue
+      const path = u.split(sh)[1] ?? ''
+      if (LINK_RX.test(path) || LINK_RX.test(l.text)) { seen.add(u); picks.push(u) }
     }
+    picks.sort((a, b) => (FIRST_RX.test(a) ? 0 : 1) - (FIRST_RX.test(b) ? 0 : 1) || a.length - b.length)
+    const pages = [home, ...(await Promise.all(picks.slice(0, MAX_OWN_PAGES).map(u => open(deps, u)))).filter((p): p is ReadPage => !!p)]
+    const m = siteMatchesCase(c, sh, pages.map(p => p.text))
+    if (!m.place || !m.category) { wrongSite = true; continue }
+    site = `https://${sh}`
+    add(home.finalUrl, home.text.slice(0, PAGE_TEXT), 'page')
+    for (const p of pages.slice(1)) add(p.finalUrl, p.text.slice(0, TEAM_TEXT), 'page')
+    for (const p of pages) for (const mm of [...p.mailtos, ...(p.text.match(EMAIL_RX) ?? [])]) {
+      const e = mm.replace(/^\.+|\.+$/g, '').toLowerCase()
+      if (!NOT_EMAIL.test(e) && !emails.has(e)) emails.set(e, p.finalUrl)
+    }
+    break
   }
+  // #1122: a site was found but none of its candidates is this business: no site, no person (a name from the wrong company is worse than none)
+  if (!site && wrongSite) return { site: null, sources, person: null, location: null, whatTheyDo: null, emails: [] }
+  const siteHost = site ? host(site) : ''
   // 3. person searches; snippets are sources, and at most two result pages that name the company are opened
   const t2 = plan.decisionMakerTitles.slice(0, 3)
   const pq = [`"${ev.company}" ${city} owner OR founder OR CEO OR president OR "managing partner"`,
@@ -184,8 +232,7 @@ Rules: never invent a name; the quote must be copied character for character fro
   const locSrc = loc ? sources.find(s => s.id === str(loc.source_id)) : undefined
   const location = loc && locSrc && quoteIn(str(loc.quote), locSrc.text) ? { sourceId: locSrc.id, quote: str(loc.quote)! } : null
   // 6. emails printed on the company's own pages only (its domain or a subdomain of it)
-  const own = siteHost ? [...emails].filter(([e]) => { const d = e.split('@')[1] ?? ''; return d === siteHost || d.endsWith(`.${siteHost}`) || siteHost.endsWith(`.${d}`) }) : []
-  return { site, sources, person, location, whatTheyDo: str(j.what_they_do)?.slice(0, 300) ?? null, emails: own.slice(0, 5).map(([email, url]) => ({ email, url })) }
+  return { site, sources, person, location, whatTheyDo: str(j.what_they_do)?.slice(0, 300) ?? null, emails: ownEmails(emails, siteHost, person) }
 }
 
 // The model's person, kept only when its quote is literally in the source it cites and names the person: never trusted to have copied it.
@@ -200,4 +247,30 @@ function acceptPerson(j: Record<string, unknown>, sources: Source[], from: Perso
   const profile = str(j.profile_url)
   const profileUrl = profile && /^https?:\/\//i.test(profile) && sources.some(s => s.url === profile || s.text.includes(profile)) ? profile : null
   return { name, title: str(dm.title), sourceId: src.id, quote, profileUrl, from }
+}
+
+// The addresses printed on the company's own pages: its domain (or a subdomain), never a recruiting or no-reply inbox; the named person's own
+// address first (its local part carries their first or last name), then the company's inboxes, in page order. At most 5.
+const NOT_A_CONTACT = /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|webmaster|careers?|jobs?|recruit\w*|talent|hr|hiring|applications?|resumes?|privacy|gdpr|dpo|abuse|unsubscribe|wordpress)$/i
+export function ownEmails(found: Map<string, string>, siteHost: string, person: Person | null): { email: string; url: string }[] {
+  if (!siteHost) return []
+  const own = [...found].filter(([e]) => { const [local, d = ''] = e.split('@'); return (d === siteHost || d.endsWith(`.${siteHost}`) || siteHost.endsWith(`.${d}`)) && !NOT_A_CONTACT.test(local.replace(/[._-]/g, '')) })
+  const parts = person ? norm(person.name).split(' ').filter(w => w.length >= 3 && !/^(?:dr|mr|mrs|ms)$/.test(w)) : []
+  const mine = (e: string) => parts.some(p => e.split('@')[0].replace(/[^a-z]/g, '').includes(p))
+  return [...own.filter(([e]) => mine(e)), ...own.filter(([e]) => !mine(e))].slice(0, 5).map(([email, url]) => ({ email, url }))
+}
+
+// A's paced search (hunt.ts SearchFn: TinyFish inside the scan's caps) as this module's search: a 'rate' answer (the per-minute limit, refused
+// before anything is sent) is waited out and retried, like hunt(); any other failure is no results. `wait` is injected for tests.
+export function companySearch(search: SearchFn, after: string, o: { retries?: number; waitMs?: number; wait?: (ms: number) => Promise<void> } = {}): CompanyDeps['search'] {
+  const wait = o.wait ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+  return async q => {
+    for (let i = 0; i <= (o.retries ?? 18); i++) {
+      const r = await search(q, after)
+      if (r.ok) return r.hits.map(h => ({ url: h.url, title: h.title ?? '', snippet: h.snippet ?? '' }))
+      if (r.reason !== 'rate') return []
+      await wait(o.waitMs ?? 5000)
+    }
+    return []
+  }
 }

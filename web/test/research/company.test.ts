@@ -3,7 +3,7 @@
 // page shapes taken from real pages the prototype read (names replaced).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { findSite, nameTokens, quoteIn, readHtml, researchCompany, type CompanyDeps, type SearchResult } from '../../lib/research/company.ts'
+import { cfEmails, companySearch, findSite, nameTokens, ownEmails, quoteIn, readHtml, researchCompany, siteMatchesCase, type CompanyDeps, type SearchResult } from '../../lib/research/company.ts'
 import type { ResearchCase, ResearchEvent, ResearchPlan } from '../../lib/research/types.ts'
 
 const C: ResearchCase = { tenant: 'T', jobId: 'J', query: 'Roofing companies in Austin hiring estimators', offer: 'estimating software', where: 'Austin, Texas', category: 'roofing contractors', windowDays: 90, today: '2026-11-15' }
@@ -55,7 +55,7 @@ test('research: event page + homepage + its own team/about/contact pages; the de
   assert.deepEqual(r.sources.map(s => [s.id, s.url, s.kind]), [['S1', 'https://roofingnews.example/tarrytown-hires', 'page'], ['S2', 'https://tarrytownroofing.com', 'page'], ['S3', 'https://tarrytownroofing.com/about-us', 'page'], ['S4', 'https://tarrytownroofing.com/our-team', 'page'], ['S5', 'https://tarrytownroofing.com/contact', 'page']])
   assert.deepEqual(r.person, { name: 'Dana Whitlock', title: 'Owner and President', sourceId: 'S4', quote: 'Dana Whitlock, Owner and President, founded Tarrytown Roofing in 2009', profileUrl: null, from: 'research' })
   assert.deepEqual(r.location, { sourceId: 'S3', quote: '400 Example Rd, Austin, TX 78704' })
-  assert.deepEqual(r.emails, [{ email: 'office@tarrytownroofing.com', url: 'https://tarrytownroofing.com' }, { email: 'dana@tarrytownroofing.com', url: 'https://tarrytownroofing.com/our-team' }], 'own domain only: the news page\'s hello@ is not on the company\'s pages; sales@othercompany.com and logo@2x are not addresses of this company')
+  assert.deepEqual(r.emails, [{ email: 'dana@tarrytownroofing.com', url: 'https://tarrytownroofing.com/our-team' }, { email: 'office@tarrytownroofing.com', url: 'https://tarrytownroofing.com' }], 'the named person\'s own address first;' + 'own domain only: the news page\'s hello@ is not on the company\'s pages; sales@othercompany.com and logo@2x are not addresses of this company')
   assert.equal(prompts.length, 1, 'one model call when it names someone')
   assert.ok(asked.some(q => q.startsWith('site:tarrytownroofing.com')) && asked.some(q => q.startsWith('who owns Tarrytown Roofing Austin')))
 })
@@ -99,4 +99,52 @@ test('nothing found: no site, no pages, no sources -> no model call, an empty re
   const { d, prompts } = deps()
   const r = await researchCompany(C, PLAN, ev({ sourceUrl: 'https://gone.example/x' }), d)
   assert.deepEqual([r.site, r.sources.length, r.person, r.emails.length, prompts.length], [null, 0, null, 0, 0])
+})
+
+// #1122 (Hermes 02:15): the prototype named a books app's CEO for the Vancouver restaurant Fable, because the site search took us.fable.com.
+const VAN: ResearchCase = { ...C, where: 'Vancouver, British Columbia, Canada', category: 'Restaurants / food service', whereKeywords: ['vancouver', 'british columbia', ', bc', 'canada', '.ca'], categoryKeywords: ['restaurant', 'cafe', 'dining', 'kitchen', 'menu', 'chef'] }
+const FABLE = (o: Partial<ResearchEvent> = {}) => ev({ company: 'Fable', sourceUrl: 'https://vancouverfoodnews.example/fable-closing', quote: 'Fable is closing its Kitsilano location', ...o })
+const BOOKS = `<html><body><p>${'Fable is the social app for readers and book clubs. Discover books, join clubs and track your reading on iOS and Android. '.repeat(5)}</p><a href="/about">About</a><p>Joe Parenteau, CEO &amp; Co-founder of Fable.</p></body></html>`
+const DINER = `<html><body><p>${'Fable Kitchen is a farm to table restaurant in Kitsilano, Vancouver. Our menu changes with the seasons and our chef works with local farms. '.repeat(5)}</p><a href="/our-team">Team</a><p>1944 W 4th Ave, Vancouver, BC</p></body></html>`
+const DINER_TEAM = `<html><body><p>${'Fable Kitchen is a farm to table restaurant in Kitsilano, Vancouver. '.repeat(8)}</p><p>Ron MacGillvary, Owner of Fable Kitchen, opened the restaurant in 2012.</p></body></html>`
+test('#1122 a found site must be this business: place AND category on its own pages; a books app is not a Vancouver restaurant', async () => {
+  assert.deepEqual(siteMatchesCase(VAN, 'fable.co', [BOOKS]), { place: false, category: false })
+  assert.deepEqual(siteMatchesCase(VAN, 'fablekitchen.ca', [DINER]), { place: true, category: true })
+  assert.deepEqual(siteMatchesCase(VAN, 'fablekitchen.ca', ['A farm to table place.']), { place: true, category: false }, 'a country domain shows the place; the category still has to show')
+  assert.deepEqual(siteMatchesCase(C, 'tarrytownroofing.com', ['Roofing in Austin']), { place: true, category: true }, 'no keyword lists: the words of where / category')
+  PAGES['https://fable.co'] = BOOKS; PAGES['https://fablekitchen.ca'] = DINER; PAGES['https://fablekitchen.ca/our-team'] = DINER_TEAM
+  PAGES['https://vancouverfoodnews.example/fable-closing'] = `<html><body><p>${'Fable is closing its Kitsilano location after twelve years on West 4th Avenue in Vancouver. '.repeat(6)}</p></body></html>`
+  const onlyBooks = { 'official website': [{ url: 'https://fable.co/', title: 'Fable - the app for readers', snippet: '' }] }
+  const answers = [JSON.stringify({ decision_maker: { name: 'Joe Parenteau', title: 'CEO & Co-founder', source_id: 'S2', quote: 'Joe Parenteau, CEO & Co-founder of Fable.' }, location: null, what_they_do: null })]
+  const wrong = deps({ search: onlyBooks, answers: [...answers] })
+  const r = await researchCompany(VAN, PLAN, FABLE(), wrong.d)
+  assert.deepEqual([r.site, r.person, r.emails, wrong.prompts.length], [null, null, [], 0], 'no site, no person, no model call')
+  // the next candidate that IS the restaurant is taken
+  const both = { 'official website': [{ url: 'https://fable.co/', title: 'Fable - the app for readers', snippet: '' }, { url: 'https://fablekitchen.ca/', title: 'Fable Kitchen', snippet: '' }] }
+  const right = deps({ search: both, answers: [JSON.stringify({ decision_maker: { name: 'Ron MacGillvary', title: 'Owner', source_id: 'S3', quote: 'Ron MacGillvary, Owner of Fable Kitchen, opened the restaurant in 2012.' }, location: null, what_they_do: null })] })
+  const r2 = await researchCompany(VAN, PLAN, FABLE(), right.d)
+  assert.deepEqual([r2.site, r2.person?.name, r2.sources.map(s => s.url)], ['https://fablekitchen.ca', 'Ron MacGillvary', ['https://vancouverfoodnews.example/fable-closing', 'https://fablekitchen.ca', 'https://fablekitchen.ca/our-team']])
+  assert.ok(!r2.sources.some(s => s.url.includes('fable.co/')), 'the wrong site\'s pages are never sources')
+})
+
+test('emails: the named person\'s own address first, then inboxes; recruiting and no-reply are not contacts; Cloudflare addresses decoded', () => {
+  const found = new Map([['info@acme.com', 'https://acme.com/'], ['careers@acme.com', 'https://acme.com/jobs'], ['dana.whitlock@acme.com', 'https://acme.com/team'], ['no-reply@acme.com', 'https://acme.com/'], ['sales@mail.acme.com', 'https://acme.com/contact'], ['x@other.com', 'https://acme.com/']])
+  const person = { name: 'Dana Whitlock', title: 'Owner', sourceId: 'S1', quote: 'q', profileUrl: null, from: 'research' as const }
+  assert.deepEqual(ownEmails(found, 'acme.com', person).map(e => e.email), ['dana.whitlock@acme.com', 'info@acme.com', 'sales@mail.acme.com'])
+  assert.deepEqual(ownEmails(found, 'acme.com', null).map(e => e.email), ['info@acme.com', 'dana.whitlock@acme.com', 'sales@mail.acme.com'])
+  assert.deepEqual(ownEmails(found, '', person), [], 'no site, no email')
+  const enc = (e: string, k = 0x42) => k.toString(16).padStart(2, '0') + [...e].map(ch => (ch.charCodeAt(0) ^ k).toString(16).padStart(2, '0')).join('')
+  const html = `<a href="/cdn-cgi/l/email-protection" data-cfemail="${enc('reception@d-7roofing.com')}">[email protected]</a><a href="/cdn-cgi/l/email-protection#${enc('owner@d-7roofing.com', 0x31)}">x</a>`
+  assert.deepEqual(cfEmails(html), ['reception@d-7roofing.com', 'owner@d-7roofing.com'])
+  assert.deepEqual(readHtml(html, 'https://d-7roofing.com/').mailtos, ['reception@d-7roofing.com', 'owner@d-7roofing.com'])
+})
+
+test('companySearch waits out A\'s per-minute "rate" answers and retries; any other failure is no results', async () => {
+  const waits: number[] = []
+  let n = 0
+  const s = companySearch(async () => (++n < 3 ? { ok: false, reason: 'rate' } : { ok: true, hits: [{ url: 'https://a.example/', title: 'A', snippet: 's', date: null }] }), '2026-08-17', { wait: async ms => { waits.push(ms) } })
+  assert.deepEqual(await s('q'), [{ url: 'https://a.example/', title: 'A', snippet: 's' }]); assert.deepEqual(waits, [5000, 5000])
+  assert.deepEqual(await companySearch(async () => ({ ok: false, reason: 'cap' }), 'x', { wait: async () => {} })('q'), [])
+  let k = 0
+  assert.deepEqual(await companySearch(async () => { k++; return { ok: false, reason: 'rate' } }, 'x', { retries: 3, wait: async () => {} })('q'), []); assert.equal(k, 4)
 })
