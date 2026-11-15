@@ -497,3 +497,15 @@ test('unchanged: the scan-time people search still never reads an email (the ori
   const people = await apolloPeopleSearch('k', { domain: SITE, name: 'Harbor Dental' }, (async () => json({ people: [{ name: 'Dana Lee', title: 'Practice Manager', email: 'dana.lee@harbordental.example', email_status: 'verified' }] })) as typeof fetch)
   assert.equal(JSON.stringify(people).includes('@'), false)
 })
+
+test('Refs #1099: with both keys saved and no paid vendor named, Find work email calls neither and says why (published addresses only)', async () => {
+  const s = seed({ keys: 'both' }); const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+  const r = await run(s, DANA, stub(never, never, calls), { env: { DAZL_PAID_VENDORS: '' } })
+  assert.equal(r.status, 'no_key')
+  assert.match(String((r as { detail?: string }).detail), /not called: dazl uses no paid third-party service by default.*only an address printed on the company's own website is used/)
+  assert.deepEqual([calls.apollo, calls.pdl], [0, 0])
+  // control: named, Apollo is asked as before
+  const c = seed({ keys: 'both' }); const cc: Calls = { apollo: 0, pdl: 0, urls: [] }
+  await run(c, DANA, stub(() => apolloPerson(), never, cc), { env: { DAZL_PAID_VENDORS: 'apollo,pdl' } })
+  assert.equal(cc.apollo, 1)
+})

@@ -8,12 +8,14 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { paidVendorsAllowed, paidVendorOn, usableVendor, PAID_VENDOR_OFF } from '../lib/paid-vendors.ts'
 import { enrichLeadContacts } from '../lib/enrich/index.ts'
+import { enrichCommenters, migrateCommenterImport } from '../lib/scan/commenter-import.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateKeys, saveKey, defaultVendor } from '../lib/llm/key-store.ts'
 import { pickVendor } from '../lib/scan/runner.ts'
 import { verifierFromEnv } from '../lib/people/email-pattern.ts'
 import { jinaAdapter, resetJinaState } from '../lib/sources/jina.ts'
+import { fundingRoundFor } from '../lib/signals/funding-round.ts'
 
 const OFF = { DAZL_PAID_VENDORS: '' }
 const master = randomBytes(32)
@@ -59,6 +61,33 @@ test('scan enrichment: with saved Apollo and PDL keys and no paid vendor named, 
   const c = enrichSeed()
   await enrichLeadContacts(c.db, 'u1', c.jobId, [c.lead], { fetchImpl, master, env: { DAZL_PAID_VENDORS: 'apollo' } })
   assert.ok((calls as string[]).some(u => u.includes('apollo')), JSON.stringify(calls))
+  // only PDL named: the saved Apollo key is never read or called
+  const p = enrichSeed(); calls.length = 0
+  await enrichLeadContacts(p.db, 'u1', p.jobId, [p.lead], { fetchImpl, master, env: { DAZL_PAID_VENDORS: 'pdl' } })
+  assert.ok(!(calls as string[]).some(u => u.includes('apollo')), JSON.stringify(calls))
+  assert.ok((calls as string[]).some(u => u.includes('peopledatalabs')), JSON.stringify(calls))
+})
+
+test('commenter import: saved Apollo and PDL keys are not used unless named; the import says why', async () => {
+  const seed = () => {
+    const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateCommenterImport(db)
+    const job = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
+    db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('l1', ?, 'Jane Doe - VP Sales', 'Kestrel Dental', 'kestreldental.example', 'commented', 'https://www.linkedin.com/in/jane-doe')").run(job)
+    db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
+    db.prepare("INSERT INTO commenter_batches (id, user_id, job_id, context, total) VALUES ('b1', 'A', ?, 'commented on my post', 1)").run(job)
+    saveCredential(db, 'A', 'enrich:apollo', 'test-apollo-key-1234', master); saveCredential(db, 'A', 'enrich:pdl', 'test-pdl-key-1234', master)
+    return { db, job }
+  }
+  const calls: string[] = []
+  const fetchImpl = (async (u: RequestInfo | URL) => { calls.push(String(u)); return new Response('{}', { status: 200 }) }) as typeof fetch
+  const { db, job } = seed()
+  await enrichCommenters(db, 'A', 'b1', { fetchImpl, master, env: OFF })
+  assert.deepEqual(calls, [])
+  assert.equal((db.prepare('SELECT count(*) AS n FROM connector_audit WHERE scan_job_id = ? AND status = ?').get(job, PAID_VENDOR_OFF) as { n: number }).n, 1)
+  const c = seed()
+  await enrichCommenters(c.db, 'A', 'b1', { fetchImpl, master, env: { DAZL_PAID_VENDORS: 'apollo' } })
+  assert.ok((calls as string[]).some(u => u.includes('api.apollo.io')), 'control: named, Apollo is asked')
 })
 
 test('model vendor: a saved OpenAI key is not used unless named; the Anthropic key is used even when it is older', () => {
@@ -96,4 +125,17 @@ test('web pages source: read directly by dazl, never through r.jina.ai, unless J
     await jinaAdapter.collect({ query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http })
     assert.deepEqual(asked, [`https://r.jina.ai/${PAGE}`])
   })
+})
+
+test('funding round: the article is read by dazl itself, never sent to r.jina.ai, unless Jina is named', async () => {
+  const item = { company: 'Kestrel Pay', title: 'Kestrel Pay raises funding', url: 'https://news.example/kestrel-pay-raise', date: '2026-11-04', amount: null, stage: null }
+  const realFetch = globalThis.fetch
+  const asked: string[] = []
+  globalThis.fetch = (async (u: RequestInfo | URL) => { asked.push(String(u)); return new Response('Title: x\n\nMarkdown Content:\nKestrel Pay raised a $5M seed round.', { status: 200 }) }) as typeof fetch
+  try {
+    await withProcessEnv('', async () => { await fundingRoundFor('Kestrel Pay', [item as never]) })
+    assert.ok(!asked.some(u => u.includes('r.jina.ai')), JSON.stringify(asked))
+    await withProcessEnv('jina', async () => { await fundingRoundFor('Kestrel Pay', [item as never]) })
+    assert.ok(asked.some(u => u.includes('r.jina.ai')), 'control: named, Jina Reader is asked')
+  } finally { globalThis.fetch = realFetch }
 })
