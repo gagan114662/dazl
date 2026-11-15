@@ -102,3 +102,9 @@ test("a licence's day is Vancouver's day, not UTC's: an evening licence is not d
   assert.equal(licenceDay('2026-09-28T01:00:00'), null, 'no offset: the day would depend on the server')
   for (const bad of ['2026-09-28T25:00:00Z', '2026-09-28T01:00:60Z', '2026-09-28T01:00:00+99:00']) assert.equal(licenceDay(bad), null, `${bad}: no day, not a throw`)
 })
+
+test('one malformed issue timestamp is that row skipped, never the whole licence source', () => {
+  const bad = { ...FX.window[0], licencenumber: '26-999998', issueddate: '2026-09-28T25:00:00Z', house: '9999' }
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [...FX.window, bad], FX.prior, FX.same, FX.since)
+  assert.equal(s.length, licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, FX.same, FX.since).length)
+})
