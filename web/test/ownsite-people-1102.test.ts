@@ -441,3 +441,28 @@ test('round 9 (haiku): a leading state code is not a locale; "new-york-ny/buffal
   const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
   assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), JSON.stringify(r.found))
 })
+
+test('round 10 (haiku): "us-" prefixed codes are states even when language-like; a state code after a locale is read', async () => {
+  for (const path of ['/us-ca/locations/paris', '/us-de/locations/paris', '/us/tx/locations/paris', '/en/tx/locations/paris']) assert.equal(otherOffice(path, ['Paris, France']), true, path)
+  assert.equal(otherOffice('/en/tx/locations/chicago', ['Chicago, IL']), true)
+  assert.equal(otherOffice('/us-ca/locations/chicago', ['Chicago, IL']), true)
+  assert.equal(otherOffice('/us-il/locations/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/de/locations/paris', ['Paris, France']), false)
+  assert.equal(otherOffice('/en/il/locations/chicago', ['Chicago, IL']), false)
+  const texas = `<html><body>${prose('Our Paris office.')}<a href="tel:+19035550100">903 555 0100</a><div>Rae Mendel</div><div>Managing Partner</div></body></html>`
+  for (const path of ['/us-ca/locations/paris', '/us/tx/locations/paris']) {
+    const s = site({ '/robots.txt': '', '/': `<html><body><h1>Acme Law</h1>${prose('Acme Law.')}<a href="${path}">Paris</a></body></html>`, [path]: texas })
+    const r = await crawlSite('acme-law.example', s.get, 0, 'Acme Law', false, undefined, undefined, 'Managing Partner', 30_000, ['Paris, France'])
+    assert.ok(!r.found.some(f => /9035550100|903 555 0100|Mendel/.test(f.value)), path + JSON.stringify(r.found))
+  }
+})
+
+test('round 10 (opus): a state-named city after another place is that place\'s state; a state in the office segment is read', () => {
+  assert.equal(otherOffice('/locations/spokane/washington', ['Washington, DC']), true)
+  assert.equal(otherOffice('/locations/albany/new-york', ['New York, NY']), true)
+  assert.equal(otherOffice('/locations/us/new-york', ['New York, NY']), false)
+  assert.equal(otherOffice('/locations/team/new-york', ['New York, NY']), false)
+  for (const path of ['/en-us/tx/locations/paris', '/states/tx/locations/paris', '/texas-offices/paris', '/texas-locations/paris']) assert.equal(otherOffice(path, ['Paris, France']), true, path)
+  assert.equal(otherOffice('/firm-offices/chicago', ['Chicago, IL']), false)
+  assert.equal(otherOffice('/illinois-offices/chicago', ['Chicago, IL']), false)
+})
