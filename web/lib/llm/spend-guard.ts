@@ -241,6 +241,9 @@ export const anthropicCountTokens: TokenCounter = async (apiKey, model, prompt, 
 // counts) counts the rest of the limit as spent (for a pool: its shortest window). complete() then goes through completeDetailed so its usage is seen too.
 // If that accounting cannot be saved (retried once), the call's result is withheld and SpendAccountingFailed is thrown.
 // Without it, completions keep their worst-case reservation (the scan runner today).
+// Where a failed release of an unsent call's reservation is reported. This module is also bundled for the browser (the estimate
+// panel prices with it), so it cannot import the server's error recorder: the server side (lib/scan/spend-cap.ts) sets it on load.
+export const releaseFailure: { report: (e: unknown) => void } = { report: () => {} }
 export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?: TokenCounter, research?: { reserveUsd: number }, settle = false): Provider {
   const g = Array.isArray(gs) ? gs : [gs]
   const inputTokens = async (k: string, prompt: string, f?: typeof fetch) => {
@@ -253,6 +256,7 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
   const out: Provider = {
     research: research
       ? async (k, prompt, f) => {
+        // a research call the layer below refuses keeps this reservation (an over-count only; the raw providers refuse research before sending)
         const held = await reserveAllUsd(g, research.reserveUsd)
         const r = await p.research(k, prompt, f)
         const actual = researchCostUsd(r.usage, model())
@@ -266,9 +270,19 @@ export function guardProvider(p: Provider, gs: SpendGuard | SpendGuard[], count?
   // cleared, and if even that cannot be saved the marker stays and refuses later reservations (fail closed).
   const run = async <T>(k: string, prompt: string, f: typeof fetch | undefined, max: number, call: () => Promise<T>, detail: (r: T) => DetailedCompletion): Promise<T> => {
     const held = await reserveAll(g, model(), await inputTokens(k, prompt, f), max)
-    if (!settle) return call()
+    // #1168: a call the layer below refused BEFORE sending (SpendRefused: a cap, a missing context) was never made, so its
+    // reservation is given back. Without this a trial scan stopped by the account cap was charged for calls never sent.
+    const unsent = (e: unknown) => e instanceof SpendRefused
+    // The release is tried twice; if it still cannot be saved the reservation stays (an over-count, the safe side) and the
+    // failure is recorded: a charge kept for a call never sent must not be silent (review at b8eef37e).
+    const giveBack = async () => {
+      try { await settleAll(g, -held.usd, 0, held) } catch {
+        try { await settleAll(g, -held.usd, 0, held) } catch (e) { releaseFailure.report(e) }
+      }
+    }
+    if (!settle) { try { return await call() } catch (e) { if (unsent(e)) await giveBack(); throw e } }
     let r: T
-    try { r = await call() } catch (e) { await settleAll(g, 0, null, held).catch(() => {}); throw e }
+    try { r = await call() } catch (e) { if (unsent(e)) await giveBack(); else await settleAll(g, 0, null, held).catch(() => {}); throw e }
     await settleCompletion(g, held, detail(r))
     return r
   }

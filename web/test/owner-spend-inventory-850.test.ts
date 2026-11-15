@@ -37,9 +37,10 @@ const GUARDED_BY_CALLER: [string, string, string, RegExp][] = [
 const SCAN = ['lib/scan/runner.ts', 'lib/scan/buyer-fit.ts', 'lib/scan/score.ts']
 // Provider wrappers (decorate a provider, add no call of their own) and the guard itself.
 const WRAPPERS = ['lib/evals/trace.ts', 'lib/outreach/launch-policy.ts', 'lib/scan/model-usage.ts']
-// lib/llm itself: the providers (each delegates complete to its own completeDetailed) and the spend guard that wraps
-// them. Any other lib/llm module that calls a model is unclassified and fails like anywhere else.
-const LLM = ['lib/llm/provider.ts', 'lib/llm/spend-guard.ts']
+// lib/llm itself: the providers (each delegates complete to its own completeDetailed), the spend guard that wraps
+// them, and the owner guard (#846/#847: for an account without its own operator entry it delegates each call inside
+// the account spend context, adding no call of its own). Any other lib/llm module that calls a model is unclassified.
+const LLM = ['lib/llm/provider.ts', 'lib/llm/spend-guard.ts', 'lib/llm/owner-guard.ts']
 // `.complete(token)` on a job queue, not a model.
 const NOT_MODEL = ['lib/queue/scan-claimer.ts', 'lib/scan/queue-runner.ts']
 

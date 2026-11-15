@@ -44,6 +44,9 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
   const jobs = db.prepare(`SELECT id, query, status, error, created_at, candidates FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
     ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
+  // One read for the whole call, not one per scan: the tenant's drafted lead ids do not depend on the scan (#1136 review: it was a
+  // full-tenant read repeated per job, so the cost grew with the tenant's whole history times the number of scans listed).
+  const drafted = new Set((db.prepare('SELECT lead_id FROM outreach_messages WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]).map(r => r.lead_id))
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
@@ -100,7 +103,6 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const leadIds = (db.prepare(`SELECT l.id ${L}`).all(tenantId, j.id) as { id: string }[]).map(r => r.id)
     const an = sequenceAnalytics(db, tenantId, leadIds)
     const interested = leadIds.length ? n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IN (${leadIds.map(() => '?').join(',')})`, tenantId, ...leadIds) : 0
-    const drafted = new Set((db.prepare('SELECT lead_id FROM outreach_messages WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]).map(r => r.lead_id))
     const undrafted = liveRows.filter(r => !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,

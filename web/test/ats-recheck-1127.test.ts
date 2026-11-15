@@ -51,7 +51,7 @@ function fakeHttps(serve: (url: string) => Answer, delay = 0) {
   return { seen, stats, restore: () => { (https as { request: unknown }).request = real } }
 }
 const json = (b: unknown) => ({ status: 200, type: 'application/json', body: JSON.stringify(b) })
-const scan = <T>(fn: () => Promise<T>) => runWithScanSpend({ db: null as never, jobId: 'j', tenantId: 'u', attempt: 1, cap: scanCapConfig() }, fn)
+const scan = <T>(fn: () => Promise<T>) => runWithScanSpend({ db: null as never, jobId: 'j', tenantId: 'u', attempt: 1, cap: scanCapConfig(), accountLimits: null }, fn)
 
 // ---- (1) the recheck
 const NOW = new Date('2026-11-13T12:00:00Z')

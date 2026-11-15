@@ -9,7 +9,7 @@ import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { emailGuessEnabled, personalAddresses, recordEmailGuesses } from '../people/email-pattern.ts'
+import { personalAddresses, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -158,6 +158,66 @@ export const findCompanySite = (company: string, html: string, url: string) => f
 // obvious domains built from the company name. A probed domain is never trusted on its own: the
 // crawl still fetches the homepage and rejects it unless the company is named there (name_mismatch),
 // and robots.txt stays a hard rule. Key-free; no search API involved.
+// #1036 4b: a lead whose evidence page links no company site (an Instagram post, a LinkedIn job, a jobleads listing, a news article) used
+// to get only name-guessed domains ("moss.com" is not the Berlin fintech). Web-search results for "<company> <place>" name the real host.
+// Pure: which hosts in the results can be the company's OWN site. Hosts of directories, social networks, job boards and news are never
+// a company's own site; the host label must carry the company's name (norm(company) inside the label, or the label inside it) so a
+// result that merely mentions the company is dropped. The homepage name check and the place check in crawlJob still decide, exactly as
+// for a name-guessed domain (basis 'name_probe').
+// Registrable names that are never a company's OWN site: social networks, job boards and applicant-tracking hosts, directories, review
+// and booking sites, news and press wires, blog / site-builder / code hosts (a page there may name the company, but the host belongs
+// to the platform, and a platform host must never become a company's domain or the base of a guessed address).
+const NOT_OWN_SITE = new Set(['linkedin', 'instagram', 'facebook', 'twitter', 'x', 'youtube', 'tiktok', 'pinterest', 'yelp', 'indeed', 'glassdoor', 'jobleads', 'ziprecruiter', 'crunchbase', 'wikipedia', 'bloomberg', 'reuters', 'forbes', 'medium', 'reddit', 'google', 'bing', 'yellowpages', 'bbb', 'mapquest', 'tripadvisor', 'clutch', 'capterra', 'zoominfo', 'owler', 'pitchbook', 'builtin', 'wellfound', 'sesamers', 'finovate', 'businesswire', 'prnewswire', 'globenewswire', 'substack', 'wordpress', 'blogspot', 'github', 'trustpilot', 'doordash', 'ubereats', 'opentable', 'booking', 'expedia', 'healthgrades', 'zocdoc', 'ratemds', 'canpages', 'manta', 'sortlist', 'upwork', 'fiverr', 'goodfirms', 'designrush',
+  'bamboohr', 'personio', 'greenhouse', 'lever', 'workable', 'ashbyhq', 'recruitee', 'teamtailor', 'smartrecruiters', 'breezy', 'jobvite', 'icims', 'myworkdayjobs', 'wixsite', 'wix', 'squarespace', 'myshopify', 'webflow', 'weebly', 'godaddysites', 'carrd', 'notion', 'linktr', 'site', 'page'])
+const SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'ac', 'gov', 'edu'])
+// German-style transliteration: "Mueller Baeckerei" for "Müller Bäckerei" (norm() folds the umlaut to its base letter instead).
+const translit = (s: string) => s.toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+// Words a company's own domain commonly adds around its name, none of which is another business's name.
+const HOST_AFFIX = new Set(['get', 'try', 'use', 'go', 'my', 'the', 'we', 'hello', 'join', 'meet', 'visit', 'team', 'hq', 'app', 'inc', 'llc', 'ltd', 'co', 'group', 'online', 'official', 'global', 'usa', 'us', 'uk', 'ca', 'au', 'de', 'nz', 'eu'])
+// Trailing words of a company's name its domain often leaves out ("Queen Street Dental Centre" at queenstreetdental.ca).
+const NAME_TAIL = /\s+(centre|center|clinic|office|offices|practice|studio|studios|agency|group|partners|associates|company|co|inc|llc|llp|ltd|limited|gmbh|pty|plc)\.?$/i
+// The names a searched host may carry for this company: its normalised name, the transliterated form, and each with one or two
+// trailing type words dropped. Empty when the name is too short to tell one company's host from another's (under 4 letters).
+export function hostNamesFor(company: string): string[] {
+  const out = new Set<string>()
+  for (const form of [company, translit(company)]) {
+    let name = form.trim()
+    for (let i = 0; i < 3; i++) { const n = norm(name); if (n.length >= 4) out.add(n); const cut = name.replace(NAME_TAIL, ''); if (cut === name) break; name = cut }
+  }
+  return [...out]
+}
+// Which hosts in a web search's results can be THIS company's own site. Strict on purpose (council review): the homepage name check
+// that follows only looks for the company's name as a substring, so "lakeharbordental" must never be offered for "Harbor Dental" - a
+// different business with the name inside its own would pass that check. The REGISTRABLE label (letters and digits only) must be the
+// company's name exactly, or the name with one generic affix ("getmoss", "harbordentalgroup") or with one of the lead's place words
+// ("harbordentalaustin"). Never a label that adds another word, never a fragment of the name, never a platform or subdomain host.
+// The registrable host is returned ("group.integral.de" -> "integral.de"). `places`: the lead's place words (scan geography).
+export function companyHostsFromSearch(company: string, hits: { url: string }[], max = 3, places: string[] = []): string[] {
+  const wants = hostNamesFor(company)
+  if (wants.length === 0) return []
+  const affixes = new Set([...HOST_AFFIX, ...places.flatMap(pl => pl.toLowerCase().split(/[^a-z0-9]+/)).filter(w => w.length >= 3)])
+  const carries = (label: string) => wants.some(want => {
+    if (label === want) return true
+    if (label.startsWith(want) && affixes.has(label.slice(want.length))) return true
+    return label.endsWith(want) && affixes.has(label.slice(0, label.length - want.length))
+  })
+  const out: string[] = []
+  for (const h of hits) {
+    let host: string; try { const u = new URL(h.url); if (u.protocol !== 'https:' && u.protocol !== 'http:') continue; host = u.hostname.toLowerCase().replace(/\.$/, '').replace(/^www\./, '') } catch { continue }
+    const parts = host.split('.')
+    if (parts.length < 2 || /^\d+$/.test(parts[parts.length - 1])) continue // not a host name (an IP address)
+    // the public suffix: the last label, plus a second-level one before a country code ("co.uk", "com.au")
+    const suffix = parts.length >= 3 && parts[parts.length - 1].length === 2 && SECOND_LEVEL.has(parts[parts.length - 2]) ? 2 : 1
+    if (parts.slice(-suffix).some(l => l === 'gov' || l === 'edu')) continue
+    const registrable = parts[parts.length - suffix - 1]
+    if (!registrable || NOT_OWN_SITE.has(registrable)) continue
+    if (!carries(registrable.replace(/[^a-z0-9]/g, ''))) continue
+    const own = parts.slice(-(suffix + 1)).join('.')
+    if (!out.includes(own)) out.push(own)
+    if (out.length >= max) break
+  }
+  return out
+}
 export function probeDomains(company: string): string[] {
   const want = norm(company)
   if (want.length < 4 || want.length > 30) return []
@@ -622,7 +682,47 @@ function locationRefusal(probe: boolean, havePlaces: boolean, home: string | und
 }
 export const placeConsistent = (homeNorm: string | undefined, places: string[]) => !!homeNorm && places.some(p => homeNorm.includes(p))
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+// #1036: where a printed address sits on the page, for single-name addresses (email-pattern.ts singleNamePairing). Up to 12 places per
+// page (#1173). tight: the attribute value holding the address, or its own text node; wide: the text around it (markup characters turned into
+// spaces, attribute values kept; a mailto href is never a pairing). `at`: the places personalAddresses recorded in its single pass; the page is never searched again here.
+export function addressContexts(html: string, at: { i: number; len: number }[]): AddressContext[] {
+  const out: AddressContext[] = []
+  for (const { i, len } of at.slice(0, 12)) {
+    const end = i + len
+    const back = html.slice(Math.max(0, i - 300), i), fwd = html.slice(end, end + 300)
+    let tight = '', attrName = ''
+    const q = Math.max(back.lastIndexOf('"'), back.lastIndexOf("'"))
+    const quote = q >= 0 ? back[q] : ''
+    const inAttr = q >= 0 && !/[<>]/.test(back.slice(q)) && /=\s*$/.test(back.slice(0, q)) && fwd.includes(quote) && !/[<>]/.test(fwd.slice(0, fwd.indexOf(quote)))
+    if (inAttr) { tight = back.slice(q + 1) + html.slice(i, end) + fwd.slice(0, fwd.indexOf(quote)); attrName = (/([A-Za-z_:][-\w:.]*)\s*=\s*$/.exec(back.slice(0, q))?.[1] ?? '').toLowerCase() }
+    else {
+      const gt = back.lastIndexOf('>'), lt = fwd.indexOf('<')
+      if (gt >= 0 && lt >= 0 && !back.slice(gt).includes('<')) tight = back.slice(gt + 1) + html.slice(i, end) + fwd.slice(0, lt)
+    }
+    // #1173. `tight` is never cut (it is bounded by the two 300-character windows): a cut could hide a second person named later in
+    // the same attribute. Whitespace is treated as the page shows it: inside an attribute value or a <pre>, a tab or newline is kept
+    // (it separates records: "Ana Maya<tab>Thornton Lee" is two people); in ordinary text it is a space, as a browser renders it.
+    let pre = false
+    if (!inAttr) { const b2 = html.slice(Math.max(0, i - 2000), i); pre = Math.max(b2.lastIndexOf('<pre'), b2.lastIndexOf('<PRE')) > Math.max(b2.lastIndexOf('</pre'), b2.lastIndexOf('</PRE')) }
+    tight = inAttr || pre ? tight.replace(/ {2,}/g, ' ') : tight.replace(/\s+/g, ' ')
+    // Only a data-* attribute can pair an address with a person on its own (a team card's own record). Any other attribute - a
+    // mailto href whose subject names someone, a title, a share link - is judged with the text around it; a mailto is never a pairing.
+    const mailto = inAttr && /^\s*mailto:/i.test(tight)
+    // `wide`: the text around the place as a reader meets it. Tags become spaces; of a tag's attributes only the name-bearing ones
+    // (alt, title, aria-label, data-*) are kept, so another person named only in an img alt is seen while URL slugs, file names and
+    // class names ("/agent/nora-wall", "nora.jpg") are not mistaken for a second person.
+    let win = html.slice(Math.max(0, i - 400), end + 400)
+    const firstGt = win.indexOf('>'), firstLt = win.indexOf('<')
+    if (firstGt >= 0 && (firstLt < 0 || firstGt < firstLt)) win = win.slice(firstGt + 1)   // a tag cut in half at the window's start
+    const lastLt = win.lastIndexOf('<'); if (lastLt > win.lastIndexOf('>')) win = win.slice(0, lastLt) // ... and at its end
+    const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
+      .replace(/\s+/g, ' ').slice(0, 900)
+    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-') })
+  }
+  return out
+}
+
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -650,9 +750,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     type Crawled = Awaited<ReturnType<typeof crawlSite>>
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
-    const guessing = emailGuessEnabled(deps.env ?? process.env)
     const localsBySite = new Map<string, Set<string>>()
-    const seenBySite = new Map<string, Map<string, { address: string; url: string }>>() // email finder: printed addresses + page
+    const seenBySite = new Map<string, Map<string, { address: string; url: string; ctx?: AddressContext[] }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
@@ -664,13 +763,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (c.reason !== 'name_mismatch') return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
-      const seen = new Map<string, { address: string; url: string }>(); seenBySite.set(cand, seen)
+      const seen = new Map<string, { address: string; url: string; ctx?: AddressContext[] }>(); seenBySite.set(cand, seen)
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
       const onPage = (html: string, url: string, status: number) => {
         recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
-        if (guessing) for (const a of personalAddresses(html, cand)) { locals.add(a.local); if (!seen.has(a.address) && seen.size < 200) seen.set(a.address, { address: a.address, url }) }
+        // #1036: printed personal addresses are always collected (the published tier is a fact, not a guess); only guessing is flagged.
+        for (const a of personalAddresses(html, cand)) {
+          locals.add(a.local)
+          const had = seen.get(a.address)
+          if (!had && seen.size >= 200) continue // full: no context is built for an address that will not be kept
+          // Every page's places are kept (12 per page, 72 per site): a later page printing the address beside someone
+          // else must be able to refuse it.
+          if (had && (had.ctx?.length ?? 0) >= 72) continue
+          const ctx = addressContexts(html, a.at)
+          if (had) had.ctx = [...(had.ctx ?? []), ...ctx].slice(0, 72)
+          else seen.set(a.address, { address: a.address, url, ctx })
+        }
       }
       const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
       siteRead.set(cand, r)
@@ -696,7 +806,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
         probed++
-        sites = probeDomains(l.company)
+        // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
+        let found: string[] = []
+        if (deps.findSites && !deps.signal?.aborted) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
+        sites = [...found, ...probeDomains(l.company).filter(d => !found.includes(d))]
         for (const d of sites) basisOf.set(d, 'name_probe')
         if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
         if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); continue }
@@ -749,7 +862,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
-      if (guessing && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
+      if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the

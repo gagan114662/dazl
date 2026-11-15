@@ -631,6 +631,19 @@ CREATE TABLE outreach_signal_context (
     captured_at INTEGER NOT NULL
   );
 
+CREATE TABLE play_alerts (
+    tenant_id   TEXT NOT NULL,
+    entity_key  TEXT NOT NULL,
+    play_kind   TEXT NOT NULL CHECK (play_kind IN ('watch','monitor')),
+    play_id     TEXT NOT NULL,
+    job_id      TEXT NOT NULL,
+    event_date  TEXT,
+    signal_kind TEXT,
+    domain_key  TEXT,
+    at          INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, entity_key)
+  );
+
 CREATE TABLE play_research_sources (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
  input_json TEXT NOT NULL, query_snapshot TEXT NOT NULL, offer_snapshot TEXT NOT NULL,
@@ -1142,7 +1155,9 @@ CREATE TABLE work_queue (
         lease_expires_at INTEGER,
         claim_token INTEGER,
         last_error TEXT,
-        dedupe_key TEXT
+        dedupe_key TEXT,
+        claimed_by TEXT,
+        claim_log TEXT
       );
 
 CREATE TABLE work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
@@ -1261,6 +1276,10 @@ CREATE INDEX hiring_feed_crawl_job ON hiring_feed_crawl(tenant_id, job_id);
 
 CREATE INDEX idx_evidence_copies_tenant ON lead_evidence_copies(tenant_id, expires_at);
 
+CREATE INDEX inbound_messages_outreach ON inbound_messages (tenant_id, outreach_message_id);
+
+CREATE INDEX inbound_messages_tenant_received ON inbound_messages (tenant_id, received_at);
+
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 
 CREATE INDEX invitations_tenant ON invitations (tenant_id, created_at);
@@ -1283,6 +1302,8 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
+CREATE INDEX leads_job_created ON leads (scan_job_id, created_at);
+
 CREATE INDEX lifecycle_events_email ON lifecycle_events (email);
 
 CREATE INDEX memberships_member ON memberships (member_id);
@@ -1302,6 +1323,8 @@ CREATE INDEX newsjacks_tenant ON newsjacks (tenant_id, created_at);
 CREATE INDEX onboarding_audit_tenant ON onboarding_audit (tenant_id, created_at);
 
 CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
+
+CREATE INDEX outreach_messages_tenant_sent ON outreach_messages (tenant_id, sent_at);
 
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
 
@@ -1575,6 +1598,8 @@ CREATE TRIGGER tomb_outreach_settings BEFORE INSERT ON outreach_settings BEGIN S
 
 CREATE TRIGGER tomb_outreach_signal_context BEFORE INSERT ON outreach_signal_context BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_play_alerts BEFORE INSERT ON play_alerts BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_play_research_sources BEFORE INSERT ON play_research_sources BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_reopen_messages BEFORE INSERT ON reopen_messages BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1774,6 +1799,8 @@ CREATE TRIGGER tomb_upd_outreach_messages BEFORE UPDATE OF tenant_id ON outreach
 CREATE TRIGGER tomb_upd_outreach_settings BEFORE UPDATE OF tenant_id ON outreach_settings BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_outreach_signal_context BEFORE UPDATE OF tenant_id ON outreach_signal_context BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_play_alerts BEFORE UPDATE OF tenant_id ON play_alerts BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_play_research_sources BEFORE UPDATE OF tenant_id ON play_research_sources BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

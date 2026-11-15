@@ -17,7 +17,7 @@ async function job(db: Db, id: string, tenant: string, o: { attempts?: number; s
   await db.run('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts, run_budget) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [id, tenant, 'Biz', 'software', 'Toronto', o.status ?? 'running', o.attempts ?? 1, o.runBudget ?? null])
 }
-const ctx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: OK_CAP, clock: () => T0, ...o })
+const ctx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: OK_CAP, accountLimits: null, clock: () => T0, ...o })
 const refusedWith = (reason: string) => (e: unknown) => e instanceof SpendRefused && e.reason === reason
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9
 

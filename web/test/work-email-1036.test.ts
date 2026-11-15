@@ -145,7 +145,8 @@ test('PDL only (no Apollo key): PDL is the provider; no keys at all: no_key, not
   const n = seed({ keys: 'none' })
   const r = await run(n, DANA, stub(never, never))
   assert.equal(r.status, 'no_key'); assert.equal(workEmailsFor(n.db, 'A', n.lead, NOW).length, 0)
-  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key is set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /^Free: checks whether the company website prints this person's own address/, '#1036: the free website step runs with no key')
 })
 
 // ---- identity, role and US gates: fail closed, address not kept ----
@@ -412,6 +413,15 @@ test('deleting a commenter batch deletes the work-email lookups of its leads (te
   assert.equal(deleteCommenterBatch(db, 'B', r.batchId), false)
   assert.equal(deleteCommenterBatch(db, 'A', r.batchId), true)
   assert.deepEqual(db.prepare('SELECT tenant_id FROM work_email_lookups').all(), [{ tenant_id: 'B' }], "only the deleted lead's row went")
+  // #1036 review: the addresses the crawl recorded (published tier, now recorded in prod) go with the leads too.
+  const cand = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, 'Jane Doe, CTO', 'jane@acme.example', 'published', NULL, 'published', 'https://acme.example/team')")
+  const r2 = importCommenters(db, 'A', parseImport('https://www.linkedin.com/in/jane-doe').valid, 'ctx')
+  const lead2 = (db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').get(r2.jobId) as { id: string }).id
+  cand.run('A', lead2); cand.run('B', 'other-tenant-lead')
+  db.prepare("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES ('A', ?, 'acme.example', 'first', 2, 'high', 1, 0, '[]')").run(lead2)
+  assert.equal(deleteCommenterBatch(db, 'A', r2.batchId), true)
+  assert.deepEqual(db.prepare('SELECT tenant_id FROM email_candidates').all(), [{ tenant_id: 'B' }], "only the deleted lead's address went")
+  assert.equal((db.prepare('SELECT count(*) AS n FROM email_patterns').get() as { n: number }).n, 0)
 })
 
 bothEngines('first-party erase deletes the work-email lookups of the erased leads', async ({ db }) => {
@@ -424,9 +434,13 @@ bothEngines('first-party erase deletes the work-email lookups of the erased lead
   assert.ok(lead, 'the visit made a first-party lead')
   await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('A', ?, 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)", [lead.id])
   await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('B', 'b-lead', 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)")
+  await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Jane Doe, CEO', 'jane@acme.io', 'published', NULL, 'published', 'https://acme.io/team')", [lead.id])
+  await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('B', 'b-lead', 'Jane Doe, CEO', 'jane@acme.io', 'published', NULL, 'published', 'https://acme.io/team')")
   assert.equal(await eraseFirstParty(db, 'A'), 1)
   assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'A'")).length, 0)
   assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'B'")).length, 1)
+  assert.equal((await db.all("SELECT 1 FROM email_candidates WHERE tenant_id = 'A'")).length, 0, '#1036 review: the recorded address goes with its lead')
+  assert.equal((await db.all("SELECT 1 FROM email_candidates WHERE tenant_id = 'B'")).length, 1)
 })
 
 // ---- storage invariants: the table itself refuses an unchecked "verified" ----

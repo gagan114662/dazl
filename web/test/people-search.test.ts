@@ -4,7 +4,8 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateTinyfish, resetTinyfishState } from '../lib/search/tinyfish.ts'
-import { findPeople, parseProfileHit, peopleQuery, LABEL } from '../lib/people/people-search.ts'
+import { confirmDomain } from './helpers/people-held-fixture.ts'
+import { findPeople, newPeopleStats, parseProfileHit, peopleQuery, LABEL } from '../lib/people/people-search.ts'
 
 // Person-first people search from public profile SEARCH RESULTS only. TEST-ONLY fixtures, TinyFish stubbed, no network.
 const hit = (url: string, title: string, snippet = '') => ({ url, title, snippet, date: null })
@@ -28,25 +29,26 @@ function setup(icp: unknown) {
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(icp), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('L1', job, 'Acme Logistics', null, 'Acme Logistics is hiring', 'https://news.example.test/a', 'Acme Logistics is hiring', 90, 80)
+  confirmDomain(db, 'L1', 'acmelogistics.example')   // the crawl confirmed Acme's website: a result naming it is tied to this company
   return { db, job }
 }
-const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Ohio'], signals: [], exclude: [], country: 'US', language: 'en' }
+const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Chicago, Illinois'], signals: [], exclude: [], country: 'US', language: 'en' }
 const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
 
 test('stores matching people as labelled person enrichments with the profile URL; sends the buyer market', async () => {
   const { db, job } = setup(ICP)
   const urls: string[] = []
   const f = (async (u: string) => { urls.push(u); return new Response(JSON.stringify({ results: [
-    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio, United States - Head of HR - Acme Logistics' },
-    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: 'Columbus, Ohio' },
-    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: 'Columbus, Ohio' },
+    { url: 'https://www.linkedin.com/in/jane-doe-1', title: 'Jane Doe - Head of HR - Acme Logistics | LinkedIn', snippet: 'Chicago, Illinois, United States - Head of HR - Acme Logistics · acmelogistics.example' },
+    { url: 'https://www.linkedin.com/in/bob-ray', title: 'Bob Ray - Truck Driver - Acme Logistics | LinkedIn', snippet: 'Chicago, Illinois' },
+    { url: 'https://www.linkedin.com/in/ann-lee', title: 'Ann Lee - HR Manager - Rival Corp | LinkedIn', snippet: 'Chicago, Illinois' },
     { url: 'https://www.linkedin.com/in/cal-same', title: 'Cal Same - Head of HR - Acme Logistics | LinkedIn', snippet: 'Pico Rivera, California, United States' },
     { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
   ] })) }) as unknown as typeof fetch
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f })
   assert.equal(n, 1)
-  const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind <> 'contact_rejected'").all()
-  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: LABEL, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
+  const rows = db.prepare("SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE kind = 'person'").all()
+  assert.deepEqual(rows, [{ connector: 'search:people', kind: 'person', value: 'Jane Doe, Head of HR', label: `${LABEL}; company confirmed beyond its name: the result names its website`, source_url: 'https://www.linkedin.com/in/jane-doe-1' }])
   const q = new URL(urls[0]).searchParams
   assert.ok(q.get('query')!.startsWith('site:linkedin.com/in "Acme Logistics"')); assert.equal(q.get('location'), 'US')
 })
@@ -58,13 +60,17 @@ test('a same-name company in another place is not attached: a result naming anot
     { url: 'https://www.linkedin.com/in/nowhere-nell', title: 'Nell Nowhere - HR Manager - Acme Logistics | LinkedIn', snippet: 'Head of HR at Acme Logistics' },
   ] }))) as unknown as typeof fetch
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 0)
-  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind <> 'contact_rejected'").get() as { n: number }).n, 0, 'nothing is attached')
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind = 'person'").get() as { n: number }).n, 0, 'nothing is attached')
   // ... but each refusal is recorded on the lead with its marker, and the search went on to the other results
   const refused = db.prepare("SELECT value, label, source_url FROM lead_enrichments WHERE kind = 'contact_rejected' ORDER BY value").all() as { value: string; label: string; source_url: string }[]
   assert.deepEqual(refused.map(r => r.label).sort(), ['contact_location_mismatch', 'contact_location_unconfirmed'])
-  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Ohio' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
-  // no place in the request: no demand (global requests are unchanged)
-  const g = setup({ ...ICP, where: [] }); assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f }), 2)
+  assert.ok(refused.some(r => r.value === 'contact rejected: location mismatch Pico Rivera, California vs Chicago, Illinois' && r.source_url === 'https://www.linkedin.com/in/cal-same'), JSON.stringify(refused))
+  // No place in the request: the employer's NAME is then the only tie, and a name is not a company (5 of 9 stored people on staging
+  // were at a same-name business). Nothing is stored, and the refusals are counted (lib/people/company-tie.ts).
+  const g = setup({ ...ICP, where: [] }); const stats = newPeopleStats()
+  assert.equal(await findPeople(g.db, 'A', g.job, { env, fetchImpl: f, stats }), 0)
+  assert.equal(stats.refused.company_unconfirmed, 2)
+  assert.equal((g.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind = 'person'").get() as { n: number }).n, 0)
 })
 
 test('off without TinyFish, with the kill switch, or with no buyer roles: no search at all', async () => {
@@ -94,7 +100,7 @@ test('tenant: another tenant job id stores nothing and searches nothing', async 
   let calls = 0
   const f = (async () => { calls++; return okFetch('' as never) }) as unknown as typeof fetch
   assert.equal(await findPeople(db, 'B', job, { env, fetchImpl: f }), 0)
-  assert.equal(calls, 0); assert.equal((db.prepare('SELECT COUNT(*) n FROM lead_enrichments').get() as { n: number }).n, 0)
+  assert.equal(calls, 0); assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind <> 'domain'").get() as { n: number }).n, 0)
 })
 
 test('quarantined leads are never researched', async () => {
@@ -148,7 +154,7 @@ test('New York City request: a profile result in Rome, NY is not attached; the N
   const { db, job } = setup(icp)
   const f = (async () => new Response(JSON.stringify({ results: [
     { url: 'https://www.linkedin.com/in/rome-rita', title: 'Rita Rome - Head of HR - Acme Logistics | LinkedIn', snippet: 'Rome, New York, United States' },
-    { url: 'https://www.linkedin.com/in/nyc-nick', title: 'Nick Nyc - Head of HR - Acme Logistics | LinkedIn', snippet: 'New York, New York, United States' },
+    { url: 'https://www.linkedin.com/in/nyc-nick', title: 'Nick Nyc - Head of HR - Acme Logistics | LinkedIn', snippet: 'New York, New York, United States · acmelogistics.example' },
   ] }))) as unknown as typeof fetch
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: f }), 1)
   assert.deepEqual((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'person'").all() as { value: string }[]).map(r => r.value), ['Nick Nyc, Head of HR'])
@@ -163,7 +169,7 @@ test('review: ownership is re-checked immediately before a location-refusal note
   // 1 = before the search, 2 = after it, 3 = right before the refusal write: lost exactly there
   const n = await findPeople(db, 'A', job, { env, fetchImpl: f, alive: () => ++calls < 3, onStop: w => why.push(w) })
   assert.equal(n, 0)
-  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lead_enrichments').get() as { n: number }).n, 0, 'no refusal note and no person written by a lost attempt')
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind <> 'domain'").get() as { n: number }).n, 0, 'no refusal note and no person written by a lost attempt')
   // control: still alive -> the note is written
   const c = setup(ICP); await findPeople(c.db, 'A', c.job, { env, fetchImpl: f, alive: () => true })
   assert.equal((c.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE kind = 'contact_rejected'").get() as { n: number }).n, 1)

@@ -84,3 +84,27 @@ test('#1136: one pill colour rule', () => {
   assert.deepEqual([r('results', 'Leads found'), r('results', 'Leads found (counts not recorded)'), r('results', 'Needs your review'), r('results', 'Research only'), r('results', 'Not verified yet'), r('running', 'Running'), r('technical', 'Stopped'), r('no_match', 'None passed')],
     ['mint', 'mint', 'lav', 'grey', 'grey', 'peach', 'pink', 'grey'])
 })
+
+// Review of 3eb33576, finding 3: scans created in the same second must still list newest-inserted first (insert_seq DESC), or the
+// 20-scan cut-off drops the wrong ones and a history card that IS in the newest 20 gets "as recorded" instead of current.
+test('#1136: more than 20 scans sharing one created_at - the newest 20 inserted are the ones listed', () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  for (let i = 0; i < 25; i++) {
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', ?, 'done', 0, 5000)")
+      .run(`s${String(i).padStart(2, '0')}`, `q ${i}`)
+  }
+  const ids = listCampaigns(db, 'A', 20).map(c => c.id)
+  assert.equal(ids.length, 20)
+  assert.deepEqual(ids, Array.from({ length: 20 }, (_, k) => `s${String(24 - k).padStart(2, '0')}`), 'newest insert first; s00-s04 are the ones cut')
+})
+
+// Review finding 2 (partial): the full-tenant outreach_messages read ran once per scan listed. It must run once per call.
+test('#1136: the tenant-wide drafted-lead read happens once per call, not once per scan', () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  for (let i = 0; i < 6; i++) { db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', ?, 'running', 0, ?)").run(`p${i}`, `q ${i}`, 100 + i); lead(db, `p${i}`, `pl${i}`, { review: 'outside_window_undated' }); db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(`p${i}`) }
+  const seen: string[] = []
+  const orig = db.prepare.bind(db)
+  ;(db as unknown as { prepare: (s: string) => unknown }).prepare = (sql: string) => { seen.push(sql); return orig(sql) }
+  listCampaigns(db, 'A', 20)
+  assert.equal(seen.filter(q => /^SELECT lead_id FROM outreach_messages WHERE tenant_id = \?$/.test(q.trim())).length, 1)
+})

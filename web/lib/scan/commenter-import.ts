@@ -339,6 +339,13 @@ export function deleteCommenterBatch(db: Database.Database, userId: string, batc
       try { dropLookups = db.prepare('DELETE FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)') }
       catch (e) { if (!(e instanceof Error && /no such table: work_email_lookups/.test(e.message))) throw e }
       dropLookups?.run(userId, batch.job_id)
+      // #1036: the addresses the crawl recorded for these leads' people (published, now recorded in prod too) go with the leads.
+      for (const table of ['email_candidates', 'email_patterns']) {
+        let st: Database.Statement | null = null
+        try { st = db.prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND lead_id IN (SELECT id FROM leads WHERE scan_job_id = ?)`) }
+        catch (e) { if (!(e instanceof Error && new RegExp(`no such table: ${table}`).test(e.message))) throw e }
+        st?.run(userId, batch.job_id)
+      }
       db.prepare('DELETE FROM leads WHERE scan_job_id = ?').run(batch.job_id)
     }
     db.prepare('DELETE FROM commenter_rows WHERE batch_id = ?').run(batchId)

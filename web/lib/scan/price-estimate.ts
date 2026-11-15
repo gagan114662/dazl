@@ -8,8 +8,8 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
-import { FIRST_PLAY_MAX } from '../people/first-play-cap.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } from './run-budget.ts'
+import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
@@ -65,6 +65,11 @@ export interface EstimateInput {
   firstPlayPeopleSearches?: number
   // A free-trial scan pays each people search from its trial reserve at this price (DAZL_TRIAL_TINYFISH_SEARCH_USD, trialCaps()).
   trialTinyfishSearchUsd?: number | null
+  // #1037 item 1: a trial pays the first-play lead fallback's page reads from its reserve at this price (runner.ts trialCharges).
+  trialTinyfishFetchUsd?: number | null
+  // #1037 item 1: the first-play lead fallback's caps as the server runs them (estimate-request passes effectiveFirstPlayLeadCaps);
+  // omitted (a browser preview): firstPlayLeadCaps(env), the code maximum, never understated.
+  firstPlayLead?: { searches: number; fetches: number }
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
@@ -133,11 +138,20 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
   if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
-    rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'No TinyFish lead search or page fetch in this mode' })
+    rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
+    // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):
+    // at most this many searches and page reads, paid from the free-trial reserve at the trial price for a trial.
+    const lead = i.firstPlayLead ?? firstPlayLeadCaps(env)
+    if (lead.searches > 0) {
+      const trialS = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
+      const trialF = trialS !== null && typeof i.trialTinyfishFetchUsd === 'number' && Number.isFinite(i.trialTinyfishFetchUsd) && i.trialTinyfishFetchUsd >= 0 ? i.trialTinyfishFetchUsd : null
+      const su = trialS ?? tfSearch, fu = trialF ?? tfFetch
+      rows.push({ id: 'first_play_lead_search', label: 'Lead search fallback (only when free news cannot serve the play)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialS !== null ? `${money(trialS)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: lead.searches }, usd: { min: 0, max: (su ?? 0) * lead.searches + (fu ?? 0) * lead.fetches }, capped: false, note: `Only when free news cannot serve the play: at most ${lead.searches} TinyFish searches and ${lead.fetches} page reads (a count cap, not a dollar cap)${trialS !== null ? '; paid from the free-trial reserve and never from its last 25%, so fewer may run' : ''}` })
+    }
     // A trial pays these from its own reserve at the trial price (runner.ts trialPeoplePrepaid), never into the reserve's last 25%.
     const trialPrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
     const unit = trialPrice ?? tfSearch
-    if (firstPlayPeople > 0) rows.push({ id: 'people_search', label: 'People search (who to contact)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialPrice !== null ? `${money(trialPrice)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: firstPlayPeople }, usd: { min: 0, max: unit === null ? 0 : unit * firstPlayPeople }, capped: false, note: `After the scan, at most ${firstPlayPeople} searches, one per ready lead that names nobody yet (a count cap, not a dollar cap)${trialPrice !== null ? '; paid from the free-trial reserve and never from its last 25%, so fewer may run' : ''}` })
+    if (firstPlayPeople > 0) rows.push({ id: 'people_search', label: 'People search (who to contact)', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: trialPrice !== null ? `${money(trialPrice)} from the free-trial reserve` : tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 0, max: firstPlayPeople }, usd: { min: 0, max: unit === null ? 0 : unit * firstPlayPeople }, capped: false, note: `After the scan, at most ${firstPlayPeople} searches, one per lead that names nobody yet, ready leads first (a count cap, not a dollar cap)${trialPrice !== null ? '; paid from the free-trial reserve and never from its last 25%, so fewer may run' : ''}` })
   } else {
     // A free-trial scan's people step runs at the first-play cap, not the ordinary scan's (runner.ts firstPlay), and is paid from the
     // trial reserve at the trial price (runner.ts trialPeoplePrepaid); the lead searches keep the operator's price.
@@ -145,9 +159,13 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const trialPeoplePrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
     const searches = DEFAULT_TINYFISH.searchesPerScan + (adaptive ? ADAPTIVE_SEARCHES : 0), fetches = DEFAULT_TINYFISH.fetchesPerScan + (adaptive ? ADAPTIVE_FETCHES : 0)
     const extra = adaptive ? `; plus at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages in one more round, only when the first round verifies no lead` : ''
-    const searchMax = (tfSearch ?? 0) * searches + (trialPeoplePrice ?? tfSearch ?? 0) * people
+    // #1036 4b: the company-website searches after the scan (runner.ts siteFinderFor). A MAXIMUM: this branch is never a first play,
+    // and a trial or a run with paid steps off gets none; a scheduled play run and a deployment without TinyFish also make none,
+    // which the estimate cannot see, so there it overstates (never understates).
+    const site = i.payer !== 'trial' && b?.paid_fallback !== false && env.SITECRAWL_ENABLED !== '0' ? SITE_SEARCHES_PER_SCAN : 0
+    const searchMax = (tfSearch ?? 0) * (searches + site) + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
-    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
+    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
     rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
@@ -267,7 +285,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
 export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
   // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
@@ -299,6 +317,8 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  // #1168: nothing was sent, so nothing was charged: say so, never "unknown" and never "recorded"
+  else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null

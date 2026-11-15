@@ -14,7 +14,7 @@ async function setup() {
   const db = new Database(':memory:'); migrateScan(db); migrateTinyfish(db)
   const id = createQueryJob(db, 'A', { query: 'free tinyfish failure' })
   db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(id)
-  return { db, id, ctx: () => ({ db, jobId: id, tenantId: 'A', attempt: 1, cap: scanCapConfig({}), clock: () => T0 }) }
+  return { db, id, ctx: () => ({ db, jobId: id, tenantId: 'A', attempt: 1, cap: scanCapConfig({}), accountLimits: null, clock: () => T0 }) }
 }
 const FAILS: [string, () => Response][] = [
   ['5xx', () => new Response('{}', { status: 503 })],

@@ -47,6 +47,7 @@ export const DEGRADED: Record<string, Degraded> = {
   'audit-denied': 'local',    // only spaces out the audit trail's own refusal events; the refusal itself never waits on it
   send: 'local', draft: 'local', reopen: 'local', sequences: 'local', 'ranking-fixture': 'local', 'verification-fixture': 'local',
   'inbox-fixture': 'local',   // test-only inbox fixture (#369): the designated test tenant's own rows; no provider or send
+  'tech-fixture': 'local',    // test-only staging technology fixture (#769): a local page and the caller's own fixture rows; no provider
 }
 // The kind of a key is the longest listed prefix followed by ':' (keys may hold IPv6 addresses or emails after it).
 export function degradedPolicy(key: string): Degraded {

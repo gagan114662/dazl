@@ -1,4 +1,5 @@
-"""Production deploys from a prebuilt build (ops/prod/pull-release.sh, ops/prod/deploy-prod.sh), #907.
+"""Production deploys from a prebuilt build (ops/prod/pull-release.sh), #907, driven by the LEGACY v1 deploy script
+(ops/prod/legacy-v1/deploy-prod.sh). The script that runs on the box is v2 (ops/prod/deploy-prod.sh): see test_prod_v2.py.
 
 The production box must never run `npm ci`, tsc or `next build` (2026-11-12: a deploy that built on the 1.8 GB box was
 OOM-killed and dazl.ai answered 502). These tests run the REAL scripts end to end against stand-ins: curl (the release
@@ -131,8 +132,10 @@ class ProdPrebuiltTest(unittest.TestCase):
         for d in ('bin', 'assets', 'rel', 'ops', 'health', 'listen', 'data', 'src/web', 'lib', 'stall', 'df-credit', 'flaky'): (T / d).mkdir(parents=True)
         # the scripts as installed: root-owned in a root-only-writable directory (the test user stands in for root)
         (T / 'lib').chmod(0o755)
-        for f in ('pull-release.sh', 'deploy-prod.sh'):
-            (T / 'lib' / f).write_bytes((HERE / f).read_bytes()); (T / 'lib' / f).chmod(0o755)
+        # pull-release.sh is the real one that runs on the box; the driver is the LEGACY v1 deploy script, a test driver only
+        # (the v2 script that runs on the box is covered by test_prod_v2.py)
+        for f, src in (('pull-release.sh', HERE / 'pull-release.sh'), ('deploy-prod.sh', HERE / 'legacy-v1' / 'deploy-prod.sh')):
+            (T / 'lib' / f).write_bytes(src.read_bytes()); (T / 'lib' / f).chmod(0o755)
         self.PULL, self.DEPLOY = str(T / 'lib/pull-release.sh'), str(T / 'lib/deploy-prod.sh')
         for name, body in STUBS.items():
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
@@ -180,7 +183,7 @@ class ProdPrebuiltTest(unittest.TestCase):
              'PROD_PREBUILT_BASE_URL': 'https://example.test/rel', 'PROD_PREBUILT_DIR': str(T / 'dl'),
              'PROD_NODE_ARCH': 'arm64', 'PROD_NODE_ABI': '127', 'PROD_MIN_FREE_BYTES': '0',
              'PROD_HEALTH_TRIES': '3', 'PROD_HEALTH_SLEEP': '0', 'PROD_SWITCH_SLEEP': '0', 'PROD_STOP_SLEEP': '0',
-             'PROD_TRUSTED_UID': str(os.getuid())}
+             'PROD_TRUSTED_UID': str(os.getuid()), 'PROD_LEGACY_V1_TEST': '1'}
         e.update({k: str(v) for k, v in over.items()})
         return e
 

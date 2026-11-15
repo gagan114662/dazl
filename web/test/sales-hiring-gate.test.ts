@@ -5,7 +5,7 @@ import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring, postingKey } from '../lib/scan/sales-hiring-gate.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { domainReviewFor } from '../lib/outreach/domain-review.ts'
@@ -771,4 +771,76 @@ test('#533 AC4 dedupe: a careers link to an ATS posting already stored from the 
   assert.doesNotMatch(ev[0].label, /same posting unknown/, 'a proven identity is never reported as unknown')
   assert.equal((s.db.prepare("SELECT value FROM lead_enrichments WHERE id = 'G1'").get() as { value: string }).value, `CRM Administrator - posted ${posted}`, 'the stored board row is never rewritten')
   s.db.close()
+})
+
+// #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board, with no website domain to find the board.
+// The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the board record's own title must be the requested role (the quote does not decide).
+function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | null; proof?: string | null }) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
+  const icp = JSON.stringify({ signals: ['hiring their first account executive'], where: ['Austin, TX'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', 'Justworks', NULL, 'hiring an Account Executive', ?, ?, 80, 80, '', ?, ?, 'verified')")
+    .run(jobId, o.url ?? 'https://job-boards.greenhouse.io/justworks/jobs/7301001', o.excerpt ?? 'Justworks is hiring an Account Executive to own new business for small companies across Austin and Central Texas', o.date === undefined ? d(9).slice(0, 10) : o.date, o.proof === undefined ? 'ats_structured' : o.proof)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+// the title the verifier read from the board's API record for the lead's posting, by posting (lib/scan/runner.ts hands it to the gate)
+const TITLES = (title: string, url = 'https://job-boards.greenhouse.io/justworks/jobs/7301001') => new Map([[postingKey(url)!, title]])
+test('#1095 PASS: the lead\'s own board-dated Greenhouse posting TITLED the requested role is the role evidence (no website domain needed), whatever its quote says; evidence row written', async () => {
+  // the quote is company boilerplate, as on the real postings read (review at 54953a0a: NinjaOne, AlertMedia)
+  const { db, job } = seedOwnPosting({ excerpt: 'NinjaOne unifies IT to simplify work for nearly 40,000 customers in 140+' })
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: TITLES('Account Executive, MSP') })
+  assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
+  assert.equal(lead(db).review_reason, null)
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring')
+  assert.equal(e.length, 1); assert.equal(e[0].source_date, d(9).slice(0, 10)); assert.match(e[0].value, /^Open role on its Greenhouse job board: Account Executive, MSP - posted /)
+})
+test('#1095 HELD: the own-posting path needs the board\'s date inside the clock, the board proof kind, a public job-board posting and the requested role as the record\'s TITLE', async () => {
+  for (const [why, o, title] of [
+    ['a differently titled posting whose body mentions the requested role (XHawk: the wrong vacancy)', { excerpt: 'We are hiring Account Executives to grow the team, and this Sales Engineer will support them' }, 'Sales Engineer'],
+    ['another role', {}, 'Senior Software Engineer'],
+    ['a different role that starts with the requested title', {}, 'Account Executive Manager'],
+    ['the role only mentioned in another role\'s title', {}, 'Sales Engineer for Account Executives'],
+    ['a director of the role\'s operations', {}, 'Director of Account Executive Operations'],
+    ['a team lead of the role', {}, 'Team Lead, Account Executive'],
+    ['an enablement role', {}, 'Account Executive Enablement'],
+    ['no title read for this posting (the quote alone never proves the vacancy)', {}, null],
+    ['posted outside the 30-day clock', { date: d(60).slice(0, 10) }, 'Account Executive'],
+    ['no board date (proof kind missing)', { proof: null }, 'Account Executive'],
+    ['a page-bound date, not the board\'s own', { proof: 'page_bound' }, 'Account Executive'],
+    ['not a public job-board posting', { url: 'https://www.linkedin.com/jobs/view/account-executive-in-territory-austin-tx-at-justworks-4485363528' }, 'Account Executive'],
+  ] as const) {
+    const { db, job } = seedOwnPosting(o)
+    await applySalesHiringGate(db, job, serve({}), { now: NOW, ...(title ? { postingTitles: TITLES(title) } : {}) })
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
+    db.close()
+  }
+})
+
+test('#1095 XHawk: a posting already stored as hiring evidence for the lead is not written again by the own-posting path, under ANY of its URLs (one posting, one row)', async () => {
+  for (const stored of ['https://job-boards.greenhouse.io/justworks/jobs/7301001', 'https://boards.greenhouse.io/justworks/jobs/7301001', 'https://boards.greenhouse.io/justworks/jobs/7301001?gh_src=x']) {
+    const { db, job } = seedOwnPosting({})
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E0', 'L1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - In-Territory - posted x', 'x', 70, ?, ?, 1)").run(stored, d(9).slice(0, 10))
+    await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: TITLES('Account Executive - In-Territory') })
+    assert.equal(lead(db).review_reason, null, stored)
+    assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1, stored)
+    db.close()
+  }
+})
+
+test('#1095 review: the real NinjaOne / AlertMedia account-executive titles are the role; segment and level words around it do not change that', async () => {
+  const { titleIsRole } = await import('../lib/scan/sales-hiring-gate.ts'); const { requestedHiringRoles } = await import('../lib/scan/hiring-role-match.ts')
+  const roles = requestedHiringRoles('Austin B2B SaaS companies hiring their first account executive in the last 30 days', JSON.stringify({ signals: ['hiring their first account executive'] }))
+  for (const t of ['Account Executive, MSP', 'Account Executive, SMB', 'SLED Senior Account Executive, Mid Market', 'Account Executive', 'Account Executive, Mid-Market', 'Enterprise Account Executive- TX', 'Enterprise Account Executive, Federal']) assert.ok(titleIsRole(t, roles), t)
+  for (const t of ['Team Lead Account Executive - Italy & Spain', 'Technical Recruiter, Account Executive Team', 'Manager, Account Executive', 'Account Executive Support Specialist']) assert.equal(titleIsRole(t, roles), null, t)
+  // review at 910ebe60: decided by the title's shape, so titles no word list anticipated are held too
+  for (const t of ['Chief of Staff to the Account Executive org', 'Sales Development Representative to Account Executive Program', 'Account Executive Talent Community', 'Future Opportunities - Account Executive', 'Account Executive Internship', 'Sales Engineer for Account Executives', 'Director of Account Executive Operations', 'Account Executive Manager', 'Account Executive - Manager, West', 'Account Executive Enablement']) assert.equal(titleIsRole(t, roles), null, t)
+  // review at b86f2172, live titles copied verbatim: a standing pool (bitwarden job 7930504003) and a manager role behind a
+  // bracketed abbreviation (sigmacomputing job 7767734003) are held; the same shapes written out are held too
+  for (const t of ['Account Executive – Sales Talent Pool: Register Your Interest', 'Commercial Account Executive (CAE) Manager - EMEA', 'Account Executive (Talent Community)', 'Account Executive - Future Opportunities', 'Account Executive: General Interest', 'Account Executive, Internship']) assert.equal(titleIsRole(t, roles), null, t)
+  // live titles that ARE the opening: purestorage ("Community" is not a talent community), Datadog ("Mid Market" as two words), an abbreviation alone
+  for (const t of ['Account Executive, Federal (Intelligence Community)', 'Mid Market Account Executive', 'Mid-Market Account Executive', 'Commercial Account Executive (CAE)', 'Account Executive (SMB) - West']) assert.ok(titleIsRole(t, roles), t)
+  for (const t of ['Senior Account Executive', 'Account Executive II', 'Account Executive (Austin)', 'Account Executive - Mid-Market', 'Sr. Account Executive, Enterprise', 'Founding Account Executive', 'Account Executives']) assert.ok(titleIsRole(t, roles), t)
 })
