@@ -286,7 +286,8 @@ export async function finishUndatedLeads<T extends { company: string; signal: st
         if (got?.day) {
           l.event_date = got.day; l.event_date_proof = 'page_bound'; l.event_date_proof_note = got.why.slice(0, 200)
           if (!rel.day) l.date_basis = DATE_BASIS_DATELINE
-          l.timing_note = `event date ${got.day}: ${got.why}`.slice(0, 300)
+          // the dateline's own why already reads "announced <day>: ..."; it never says "event date"
+          l.timing_note = (rel.day ? `event date ${got.day}: ${got.why}` : got.why).slice(0, 300)
           done.push({ company: l.company, date: got.day, kind: rel.day ? 'RelativeDay' : 'AnnouncementDateline', url: l.source_url })
         }
       }

@@ -114,7 +114,7 @@ Rules:
 Reply with one line per lead, exactly this format, no preamble:
 LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | match <4 letters like yy?n> | signals <comma list or none> | why <sentence>[ | mism <words>]
 
-${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${l.date_status ?? "unknown"}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
+${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${(l as { date_basis?: string | null }).date_basis === 'announcement_dateline' && l.event_date ? `announced ${l.event_date} (the event happened on or before that day)` : l.event_date ?? "unknown"}; event association: ${l.date_status ?? "unknown"}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
 }
 
 const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))

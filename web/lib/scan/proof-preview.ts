@@ -21,12 +21,14 @@ export interface ProofLeadRow {
   event_date_proof?: string | null; signal_kind?: string | null   // how the scan proved event_date (#460); the proof, not date_status, makes the day verified (#1176)
   window_held?: boolean | null                                   // outside the run's own recency window (lib/outreach/currentness.ts windowHeld), as on Home
   human_confirmed_from?: string | null
+  date_basis?: string | null                                     // 'announcement_dateline' (#1099): the day is the announcement's, labelled "announced"
   gate_held?: boolean | number | null                            // a REQUIRED check did not pass (lib/scan/held-state.ts requiredGateHeldForJob): never in a prospect-facing preview
 }
 export interface ProofRun { jobId: string; tenantId: string; status: string; finishedAt: number | null; spendUsd: number | null }
 export interface ProofInput { run: ProofRun; inferredOffer: { text: string; sourceUrl: string } | null; leads: ProofLeadRow[] }
 
-export interface ProofCompany { company: string; event: string; quote: string; eventDate: string; sourceUrl: string }
+// dateBasis 'announcement_dateline' (#1099): eventDate is the day the event was ANNOUNCED, shown as "announced <date>"
+export interface ProofCompany { company: string; event: string; quote: string; eventDate: string; sourceUrl: string; dateBasis?: 'announcement_dateline' }
 export type ProofPreview =
   | { status: 'ready'; runId: string; builtAt: number; expiresAt: number; spendUsd: number | null
       offer: { inferred: true; text: string; sourceUrl: string }; companies: ProofCompany[]; disclaimer: string }
@@ -84,7 +86,7 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
     const key = company.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    companies.push({ company, event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url })
+    companies.push({ company, event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url, ...(l.date_basis === 'announcement_dateline' ? { dateBasis: 'announcement_dateline' as const } : {}) })
     if (companies.length === PROOF_MAX_COMPANIES) break
   }
   if (companies.length === 0) return { status: 'hold', runId: run.jobId, reason: 'no_usable_results' }
@@ -97,7 +99,7 @@ export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPre
 }
 
 const RUN_SQL = 'SELECT id, user_id, status, finished_at, icp, query FROM scan_jobs WHERE id = ? AND user_id = ?'
-const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_status, l.event_date_proof, l.signal_kind, l.review_reason, l.human_confirmed_from, l.quarantined_at,
+const LEADS_SQL = `SELECT l.id, l.company, l.signal, l.source_url, l.evidence_excerpt, l.event_date, l.date_basis, l.date_status, l.event_date_proof, l.signal_kind, l.review_reason, l.human_confirmed_from, l.quarantined_at,
   l.evidence_purged_at, l.confidence, l.score
   FROM leads l WHERE l.scan_job_id = ?`
 

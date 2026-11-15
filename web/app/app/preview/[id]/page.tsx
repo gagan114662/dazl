@@ -36,7 +36,7 @@ async function ClaimedPreviewBody({ params }: Props) {
       <ul style={{ paddingLeft: 18 }}>
         {c.snapshot.companies.map((co) => (
           <li key={co.company} style={{ marginBottom: 16 }}>
-            <strong>{co.company}</strong> - {co.event} ({co.eventDate})<br />
+            <strong>{co.company}</strong> - {co.event} ({co.dateBasis === 'announcement_dateline' ? 'announced ' : ''}{co.eventDate})<br />
             <span style={{ color: '#444' }}>"{co.quote}"</span> <a href={co.sourceUrl}>source</a>
           </li>
         ))}

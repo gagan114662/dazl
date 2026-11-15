@@ -433,7 +433,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                           : <p className="text-sm mt-1.5 text-[var(--ink-2)]" data-testid="first-lead-person" data-empty="true">{NO_BUYER} · <a className="underline" href={`/app/leads?job_id=${first.id}`}>Find contact</a></p> })()}
                       {!f5Live && ready && !readyIds.has(l.id) && <p className="text-xs mt-1.5 text-[var(--ink-2)]" data-testid="lead-gap">To contact: {gapOf(l.id)}</p>}
                       {!f5Live && ready && readyIds.has(l.id) && l.fit_pct != null && <p className="text-xs mt-1.5 text-[var(--ink-2)]">fit {l.fit_pct}%</p>}
-                      <p className="text-xs mt-1.5 flex flex-wrap gap-x-2"><a className="underline" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">{host(l.source_url)}</a>{l.event_date ? <span>{day(l.event_date)}</span> : l.published_at ? <span>published {day(l.published_at)}</span> : null}</p>
+                      <p className="text-xs mt-1.5 flex flex-wrap gap-x-2"><a className="underline" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">{host(l.source_url)}</a>{l.event_date ? <span>{l.date_basis === 'announcement_dateline' ? `announced ${day(l.event_date)}` : day(l.event_date)}</span> : l.published_at ? <span>published {day(l.published_at)}</span> : null}</p>
                     </li>)}
                   </ul>}
                   {f5 && !f5Live && f5Found === 0 && <p className="text-sm text-[var(--ink-2)] mt-4" data-testid="f5-message">{f5.message}</p>}

@@ -11,13 +11,13 @@ export type First5State = 'finding' | 'ready' | 'partial' | 'stopped_empty'
 export type First5Reason = 'failed' | 'rejected' | 'zero_match' | 'none_extracted' | 'stopped' | 'unrecorded'
 // event_date is when the EVENT happened (as the verifier read it); published_at is when the PAGE was published. They are different facts and are never substituted for one another: a request for a funding window is
 // answered by the event date. Either may be null.
-export interface First5Lead { id: string; company: string; name: string | null; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit_pct: number | null; provisional: boolean }
+export interface First5Lead { id: string; company: string; name: string | null; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit_pct: number | null; provisional: boolean; date_basis?: string }
 export interface First5View {
   target: number; found: number; verified: number; enriching: boolean; next: { action: 'wider_search'; label: string } | null; state: First5State; finding_more: boolean; reason: First5Reason | null; message: string
   leads: First5Lead[]; sources: { source: string; state: SourceProgress['state']; status: SourceProgress['status']; note: string | null; candidates: number | null; accepted: number | null; review: number | null; rejected: number | null }[]
   failed_sources: string[]; can_continue: boolean   // can_continue: a normal full scan can be started to find the rest
 }
-export type LeadRow = { id: string; name: string; company: string; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit: number | null }
+export type LeadRow = { id: string; name: string; company: string; signal: string; source_url: string; event_date: string | null; published_at: string | null; fit: number | null; date_basis?: string | null }
 
 // A lead a REQUIRED gate failed on whose review write was rejected still reads review_reason NULL; the gate's durable marker (lead_enrichments, connector 'scan:gate', kind 'gate_failed') holds it.
 // Canonical reads (listLeads / exportLeads) overlay that marker as held, so first5 excludes the same rows (#920). A store without the enrichments table reads the row as stored, as they do.
@@ -31,12 +31,12 @@ export function verifiedLeads(db: Database.Database, userId: string, jobId: stri
 }
 // Shared SQL and mapping keep the legacy synchronous reader and the Db production reader identical.
 export function first5LeadSql(withHeld = true): string {
-  return `SELECT l.id, l.name, l.company, l.signal, l.source_url, l.event_date, l.published_at, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+  return `SELECT l.id, l.name, l.company, l.signal, l.source_url, l.event_date, l.date_basis, l.published_at, l.fit FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
     WHERE j.id = ? AND j.user_id = ? AND l.review_reason IS NULL AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) ${withHeld ? NOT_HELD : ''}
     ORDER BY (l.fit IS NULL), l.fit DESC, l.created_at DESC, l.insert_seq LIMIT ?`
 }
 export function first5LeadOf(r: LeadRow): First5Lead {
-  return { id: r.id, company: r.company || r.name, name: r.company && r.name ? r.name : null, signal: r.signal, source_url: r.source_url, event_date: r.event_date ?? null, published_at: r.published_at ?? null, provisional: false,
+  return { id: r.id, company: r.company || r.name, name: r.company && r.name ? r.name : null, signal: r.signal, source_url: r.source_url, event_date: r.event_date ?? null, published_at: r.published_at ?? null, provisional: false, ...(r.date_basis ? { date_basis: r.date_basis } : {}),
     fit_pct: typeof r.fit === 'number' && r.fit >= 0 && r.fit <= 5 ? Math.round((r.fit / 5) * 100) : null }
 }
 export function isFirst5(db: Database.Database, userId: string, jobId: string): boolean {

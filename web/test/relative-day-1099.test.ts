@@ -35,6 +35,9 @@ test('nothing is dated without a stated relative day, a publication day, the com
   // review of the branch (R5): the relative day applies the same gates as the dateline
   assert.equal(rel('Krones on Monday said it raised its Series A in March', 'Krones', '2026-10-12'), null, 'the quote also states its own period')
   assert.equal(rel('Krones on Monday reported that it had opened a plant in 2025', 'Krones', '2026-10-12'), null, 'a year of its own')
+  // re-review R5: the relative day of an ANNOUNCING verb is the announcement's, never the event's own day
+  for (const q of ['Acme today announced it raised $20M', 'Acme on Monday announced it had acquired Beta', 'Acme on Monday confirmed it closed its Series B', 'Acme yesterday disclosed it secured $5M', 'Acme rival Beta on Monday raised $5M'])
+    assert.equal(rel(q, 'Acme', '2026-10-12'), null, q)
   assert.equal(rel('Krones today is one of the leading equipment makers', 'Krones', '2026-10-12'), null, 'no completed event')
   assert.equal(rel('Today, Krones operates 20 plants', 'Krones', '2026-10-12'), null, 'no completed event')
   assert.equal(rel('Krones opens its new plant on Friday', 'Krones', '2026-10-12'), null, 'present tense for a future opening')

@@ -9,7 +9,7 @@ import { claimIntent, clearClaim } from '@/lib/invite-return'
 // proof, and a dead link is said to be dead before anyone clicks.
 type Proof = {
   business: string; expiresAt: number; offer: { text: string; sourceUrl: string }; disclaimer: string
-  companies: { company: string; event: string; eventDate: string; quote: string; sourceUrl: string }[]
+  companies: { company: string; event: string; eventDate: string; quote: string; sourceUrl: string; dateBasis?: string }[]
 }
 type Intent = { token?: string; proof: Proof }
 const wrap = { maxWidth: 640, margin: '0 auto', padding: '48px 20px', fontFamily: 'system-ui, sans-serif', color: '#1a1a1a' } as const
@@ -64,7 +64,7 @@ export default function ClaimPage() {
       <ul style={{ paddingLeft: 18 }}>
         {p.companies.map((co) => (
           <li key={co.company} style={{ marginBottom: 16 }}>
-            <strong>{co.company}</strong> - {co.event} ({co.eventDate})<br />
+            <strong>{co.company}</strong> - {co.event} ({co.dateBasis === 'announcement_dateline' ? 'announced ' : ''}{co.eventDate})<br />
             <span style={{ color: '#444' }}>&quot;{co.quote}&quot;</span> <a href={co.sourceUrl}>source</a>
           </li>
         ))}
