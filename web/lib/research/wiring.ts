@@ -12,7 +12,7 @@ import { filterStage } from './filter.ts'
 import { gateStage } from './gate.ts'
 import { readPage, type ReadablePage } from './read-page.ts'
 import { verifyLead, type Decide, type EventToVerify, type PersonToVerify, type Verdict } from './verify.ts'
-import { writeResearchProof } from './proof.ts'
+import { writeResearchProof, researchProofGap } from './proof.ts'
 import { researchCompany } from './company.ts'
 import { fetchPageDetailed, isFail, type Page } from '../scan/fetch-page.ts'
 import { defaultGet } from '../connectors/sitecrawl.ts'
@@ -75,19 +75,27 @@ export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: {
   }
 }
 
-// After the runner saved the rows: D's proof on every ready lead (the currentness gate reads it, so Leads/Home show it ready).
-export function writeProofs(db: Database.Database, jobId: string): number {
+// After the runner saved the rows: D's proof on every ready lead (the currentness gate reads it, so Leads/Home show it ready). One lead's failure
+// never stops the others; each outcome is counted and logged (no lead data, only counts and gap codes).
+export function writeProofs(db: Database.Database, jobId: string): Record<string, number> {
+  const out: Record<string, number> = {}
+  const count = (k: string) => { out[k] = (out[k] ?? 0) + 1 }
   const mine = verdicts.get(jobId)
   verdicts.delete(jobId)
-  if (!mine) return 0
   const job = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string } | undefined
-  if (!job) return 0
-  let n = 0
+  if (!mine || !job) return out
   for (const l of db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as { id: string; company: string; source_url: string }[]) {
     const x = mine.get(key(l.source_url, l.company))
-    if (x?.person && writeResearchProof(db, job.user_id, l.id, x.v, x.ev, x.person)) n++
+    if (!x) { count('no_verdict'); continue }
+    if (!x.person) { count('no_person'); continue }
+    try {
+      if (!writeResearchProof(db, job.user_id, l.id, x.v, x.ev, x.person)) { count('write_refused'); continue }
+      const gap = researchProofGap(db, job.user_id, l.id)
+      count(gap ? `gap_${gap}` : 'proven')
+    } catch (e) { count(`error_${String((e as Error)?.message ?? e).replace(/[^a-z_ ]/gi, '').slice(0, 40)}`) }
   }
-  return n
+  console.error(`[research] proofs for job ${jobId}: ${JSON.stringify(out)}`)
+  return out
 }
 
 extendResearchStages((ctx, base) => wiredStages(ctx, base))
