@@ -20,6 +20,7 @@ import { PRICES_USD_PER_M, SpendRefused } from '../llm/spend-guard.ts'
 import { scanModelPrice } from '../scan/spend-cap.ts'
 import { tfSearch, tfFetch, markdownToText, type SearchHit } from '../search/tinyfish.ts'
 import { companyKey } from '../scan/evidence.ts'
+import { isMailboxShaped } from '../enrich/person-name.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
 import { peopleQuery } from './people-search.ts'
 import { companyTie } from './company-tie.ts'
@@ -186,6 +187,8 @@ const RANGE = /(?:19|20)\d{2}\s*[-–—]\s*(present|current|now|today|(?:\p{L}{
 const TO_COMPANY = /^[\s,.\-–—|·:(]*(?:(?:at|of|@)\s+)?(?:the\s+)?$/i
 function profilePosition(answer: Answer, src: Source, input: ResearchInput): { title: string } | { refused: string } {
   if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
+  // A people page lists roles where names go ("Litigation Specialist, Managing Partner", "Front Desk, Owner"): two capitalised words are not a person.
+  if (isMailboxShaped(answer.name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, ''))) return { refused: 'name_is_a_role' }
   const owner = (src.title.replace(/\s*[|·]\s*LinkedIn.*$/i, '').split(/\s+[-–—|]\s+/)[0] ?? '').replace(CREDENTIAL, '')
   if (norm(owner) !== norm(answer.name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, ''))) return { refused: 'profile_names_someone_else' }
   // A company name the model kept at the end of the title ("CEO, Wavee AI") is not part of the title.
@@ -241,6 +244,8 @@ function groundAt(answer: Answer, sources: Source[], input: ResearchInput, nth: 
   const t0 = norm(src.title), q0 = norm(answer.quote)
   const quote = !hay.includes(q0) && q0.startsWith(`${t0} `) && hay.includes(`${t0}. ${q0.slice(t0.length + 1)}`) ? `${t0}. ${q0.slice(t0.length + 1)}` : q0
   if (!NAME.test(answer.name)) return { refused: 'not_a_full_name' }
+  // A people page lists roles where names go ("Litigation Specialist, Managing Partner", "Front Desk, Owner"): two capitalised words are not a person.
+  if (isMailboxShaped(answer.name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, ''))) return { refused: 'name_is_a_role' }
   if (answer.title.length < 2 || answer.title.length > 80) return { refused: 'title_unusable' }
   let at = -1; for (let k = 0; k <= nth; k++) { at = hay.indexOf(quote, at + 1); if (at === -1) break }
   if (at === -1) return { refused: 'quote_not_in_source' }

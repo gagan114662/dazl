@@ -210,3 +210,22 @@ test('the price estimate states the lookups in its maxima, at the step\'s own li
   for (const e of [estimateRun({ budget: { paid_fallback: false }, payer: 'you', env: priced }), estimateRun({ budget: { first5: true }, payer: 'you', env: priced }), estimateRun({ budget: null, payer: 'trial', env: priced })]) assert.equal(rows(e).named_person_lookup, undefined)
   assert.ok(rb.BUDGET_EXCLUDED_PATHS.some(p => /Named-person lookup after the scan/.test(p)))
 })
+
+test('Hermes review at a7680ea3 (#1183 class): a role in the name position is not a person - refused by the lookup, never a work-email target', async () => {
+  const OWN: ResearchInput = { company: 'Acme Law', domain: 'acmelaw.example', roles: ['Managing Partner', 'Owner'], where: [] }
+  const peoplePage = (text: string, kind: 'page' | 'search' = 'page'): Source[] => [{ id: 'S1', kind, url: 'https://www.acmelaw.example/people/', title: 'Our people | Acme Law', text }]
+  const cases: [string, Source[], ReturnType<typeof ans>][] = [
+    ['A: a people page lists a practice role where a name goes', peoplePage('Our people. Litigation Specialist, Managing Partner. Corporate Counsel, Partner.'), ans('Litigation Specialist', 'Managing Partner', 'Litigation Specialist, Managing Partner')],
+    ['B: the same as a search result on the firm\'s site', peoplePage('Litigation Specialist, Managing Partner, Acme Law. Meet the team.', 'search'), ans('Litigation Specialist', 'Managing Partner', 'Litigation Specialist, Managing Partner, Acme Law')],
+    ['D: a clinic team page', [{ id: 'S1', kind: 'page', url: 'https://www.acmelaw.example/team', title: 'Team | Acme Law', text: 'Meet the team. Front Desk, Owner. Dental Hygienist, Partner.' }], ans('Front Desk', 'Owner', 'Front Desk, Owner')],
+  ]
+  for (const [what, sources, a] of cases) assert.equal(why(groundPerson(a, sources, OWN)), 'name_is_a_role', what)
+  // C: a real person on the same page is still kept
+  assert.equal(why(groundPerson(ans('Jane Roe', 'Managing Partner', 'Jane Roe, Managing Partner'), peoplePage('Our people. Jane Roe, Managing Partner. Litigation Specialist, Partner.'), OWN)), 'kept:Jane Roe')
+  // A row of that shape already stored (by the crawl, #1183) is never offered for the paid work-email lookup; a real name is.
+  const { isWorkEmailTarget } = await import('../lib/people/work-email-eligible.ts')
+  const base = { title: 'Managing Partner', tier: 'buyer', historical: false, nameOnly: false } as Record<string, unknown>
+  assert.equal(isWorkEmailTarget({ ...base, name: 'Litigation Specialist' } as never, 'Managing Partner'), false)
+  assert.equal(isWorkEmailTarget({ ...base, name: 'Front Desk', title: 'Owner' } as never, 'Owner'), false)
+  assert.equal(isWorkEmailTarget({ ...base, name: 'Jane Roe' } as never, 'Managing Partner'), true)
+})

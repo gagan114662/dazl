@@ -10,6 +10,7 @@
 //   - has a first AND a last name (a provider match needs both; a single word is never looked up).
 // The lead itself must sit on a settled company website (identityOf state 'fact' = the cited page is on that domain, or
 // 'user_confirmed'): the address a provider returns must be on that domain, so an unsettled site means no lookup.
+import { isMailboxShaped } from '../enrich/person-name.ts'
 import { contactsFromEnrichments, roleContradicted, type ContactEnrichment, type RankedPerson } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
@@ -60,6 +61,7 @@ export function linkedinHandle(u: string | null | undefined): string | null {
 export function isWorkEmailTarget(p: RankedPerson, icpText: string): boolean {
   if (p.historical || p.nameOnly || !p.title || roleContradicted(p.title, icpText)) return false // name-only: possibly another business's person, never looked up
   if (!queryName(p.name)) return false
+  if (isMailboxShaped(p.name.replace(/^(?:dr|mr|ms|mrs|prof)\.?\s+/i, ''))) return false   // a role or team label in the name position is not a person (#1183)
   if (targetKey(p).length > TARGET_KEY_MAX) return false
   return icpText.trim() ? p.tier !== 'none' : DECISION_MAKER.test(p.title)
 }

@@ -33,10 +33,13 @@ const TITLE = /^(leads?|representatives?|head|chief|executive|officers?|ceo|cfo|
 // Neutral filler that never turns words into a person ("Contact Us", "Head of Sales", "Sales & Marketing"). It
 // only counts alongside at least one real role/department/title word, so filler alone is not a verdict either way.
 const FILLER = /^(us|the|at|do|not|of|and|&|our|co)$/i
+// Practice-area, service-line and front-office words a firm's or clinic's people page shows in the name position (#1183, #1202 review):
+// "Litigation Specialist", "Corporate Counsel", "Front Desk", "Patient Coordinator", "Dental Hygienist", "Office Manager".
+const PRACTICE = /^(litigation|litigators?|corporate|tax|transactional|appellate|regulatory|antitrust|bankruptcy|restructuring|insolvency|employment|labou?r|immigration|criminal|family|probate|trusts?|estates?|intellectual|ip|patents?|trademarks?|counsel|attorneys?|lawyers?|solicitors?|barristers?|paralegals?|clerks?|dental|dentists?|hygienists?|hygiene|orthodontists?|clinical|clinicians?|nurses?|nursing|patients?|office|clinic|practice|front|reception|scheduling|estimators?|roofing|sales|marketing|support|admin|administrators?|administrative|general|team|group)$/i
 
 export function isMailboxShaped(name: string): boolean {
   if (name.includes('@')) return true
   const words = name.trim().split(/[\s._\-,/]+/).filter(Boolean)
-  const strong = (w: string) => ROLE.test(w) || DEPT.test(w) || TITLE.test(w)
+  const strong = (w: string) => ROLE.test(w) || DEPT.test(w) || TITLE.test(w) || PRACTICE.test(w)
   return words.length > 0 && words.every(w => strong(w) || FILLER.test(w)) && words.some(strong)
 }
