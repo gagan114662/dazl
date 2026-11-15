@@ -701,7 +701,7 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   // state's other office ("/offices/new-york/buffalo"; "/offices/washington/dc" and "/offices/new-york/new-york-city" are the city itself)
   // ... and preceded by another place ("/locations/spokane/washington" for Washington, DC: the trailing "washington" is Spokane's state)
   // (country / region words are not a place: "/offices/usa/new-york"; a slug carrying the requested state is the city: "/locations/usa/new-york-ny")
-  const ownSuffix = /-([a-z]{2})$/.exec(seg[j]); const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|[a-z]+-coast)$/
+  const ownSuffix = /-([a-z]{2})$/.exec(seg[j]); const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|[a-z]+-coast|downtown|midtown|uptown|metro|nyc|dc|city|main)$/
   if (!(ownSuffix && codes.has(ownSuffix[1])) && pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(i + 1, j).some(x => !PEOPLE_SEGMENT.test(x) && !pathState(x, true) && !REGION_WORD.test(x))) return 'other'
   if (pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== `${seg[j].replace(/-[a-z]{2}$/, '')}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
   // a US state anywhere in the path (before or after the city) that is not the requested region: "/locations/texas/paris",

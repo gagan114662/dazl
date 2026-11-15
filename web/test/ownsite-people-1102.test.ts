@@ -473,3 +473,8 @@ test('round 11 (opus): country and region words before a state-named city are no
   assert.equal(otherOffice('/locations/spokane/washington', ['Washington, DC']), true)
   assert.equal(otherOffice('/locations/albany/new-york', ['New York, NY']), true)
 })
+
+test('round 11 (haiku): descriptor words before a state-named city keep the requested office', () => {
+  for (const path of ['/locations/usa/new-york', '/locations/midtown/new-york', '/offices/nyc/new-york', '/offices/east-coast/new-york', '/offices/north-america/new-york']) assert.equal(otherOffice(path, ['New York, NY']), false, path)
+  for (const path of ['/offices/united-states/washington', '/offices/downtown/washington']) assert.equal(otherOffice(path, ['Washington, DC']), false, path)
+})
