@@ -318,9 +318,9 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
 // here: they come from each scan's own ICP roles (buyerTitle), so this works for any business and any language.
 const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|director) of [a-z]+(?: [a-z]+)?(?: (?:&|and) [a-z]+)?|(?:vp|svp|evp|vice president) [a-z]+`
 export const PAGE_PEOPLE = 8
-const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
+const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|(?:office )?managing (?:partner|shareholder|principal)|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
-const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist|locations?|offices?)/i
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -388,13 +388,36 @@ export function buyerTitle(title: string, buyerRoles?: string): boolean {
 const HEAD_MARK = '\u0001H'
 const FORMER_SECTION = /\b(?:alumni|alumnae|former\s+(?:team|staff|members?|employees?|leadership|colleagues)|past\s+(?:team|staff|members?|employees?|leadership)|previous\s+(?:team|staff|members?)|in\s+memoriam|emeriti)\b/i
 const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'this', 'your', 'team'])
-export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
+// company: the site's own company. A title the page writes as "Founder & CEO, <company>" (or "at" / "of" / "@ <company>") is the title
+// "Founder & CEO": the trailing words are dropped ONLY when they name this company exactly (normalised), never another business.
+export function extractPeople(html: string, pageUrl: string, buyerRoles?: string, company?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
   const clean = cutBlocks(html)
   if (clean === null) return [] // a quoted/testimonial region that never closes cannot be separated from the page: fail closed
   const visible = clean.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
-  const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
+  // Link labels and where they point. A name that is a link label is a menu or card label (refused), EXCEPT when the link is that
+  // person's own page on this site: its path ends with a slug made of the person's name ("/people/jane-l-roe"), as a firm's people and
+  // office pages link every listed lawyer to their bio. That link confirms the name rather than casting doubt on it.
+  const linkTargets = new Map<string, string[]>()
+  for (const m of visible.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const label = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+    const href = /\bhref\s*=\s*["']([^"'#]+)["']/i.exec(m[1])?.[1] ?? ''
+    linkTargets.set(label, [...(linkTargets.get(label) ?? []), href])
+  }
+  const linkText = { has: (label: string) => linkTargets.has(label) }
+  const slugOf = (n: string) => n.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/^(?:dr|mr|ms|mrs)\.?\s+/, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  const ownBioLink = (name: string) => {
+    let base: URL; try { base = new URL(pageUrl) } catch { return false }
+    const slug = slugOf(name), host = base.hostname.replace(/^www\./, '')
+    return (linkTargets.get(name.toLowerCase()) ?? []).some(h => { try { const u = new URL(h.replace(/&amp;/g, '&'), base); return u.hostname.replace(/^www\./, '') === host && (u.pathname.replace(/\/+$/, '').split('/').pop() ?? '').replace(/\.html?$/, '') === slug } catch { return false } })
+  }
+  const companyNorm = company ? norm(company) : ''
+  const ownCompanyTail = (title: string) => {
+    if (!companyNorm) return title
+    const m = /^(.*?)\s*(?:,|\bat\b|\bof\b|@|\u2013|\u2014|-)\s*([^,]{2,80})$/i.exec(title)
+    return m && norm(m[2]) === companyNorm ? m[1] : title
+  }
   // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
   const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
   const text = marked.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
@@ -424,13 +447,13 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
   const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
   const add = (name: string, title: string, viaJson = false) => {
-    name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
+    name = name.replace(/\s+/g, ' ').trim(); title = ownCompanyTail(title.replace(/\s+/g, ' ').trim())
     if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
     if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return
       if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
-      if (linkText.has(name.toLowerCase())) return
+      if (linkText.has(name.toLowerCase()) && !ownBioLink(name)) return
       if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
     }
     if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
@@ -452,7 +475,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
 // extractPeople already accepted; it never adds or invents a person. Ties keep page order (stable sort).
 export function seniority(title: string): number {
   const t = title.toLowerCase()
-  if (/\b(founder|owner|proprietor|ceo|president|principal|managing (?:director|partner)|chief executive)\b/.test(t)) return 4
+  if (/\b(founder|owner|proprietor|ceo|president|principal|managing (?:director|partner|shareholder|principal)|chief executive)\b/.test(t)) return 4
   if (/\b(c[a-z]o|chief|vp|svp|evp|vice president|head|general manager)\b/.test(t)) return 3
   if (/\b(director|partner|broker)\b/.test(t)) return 2
   return 1
@@ -461,16 +484,45 @@ const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
-const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
-export function contactPaths(homeHtml: string, home: URL): string[] {
-  const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
+const PAGE_HINT = /^(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|our-people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
+// A path is a candidate page only when its first segment (after a locale) STARTS with a hint word and it is at most three segments deep: a blog
+// post such as "/insights/blog-posts/contact-tracing-in-the-uk" or "/blog/about-stats-gaps" is not the company's contact or about page.
+const hinted = (pathname: string) => { const seg = pathname.split('/').filter(Boolean); const at = /^[a-z]{2}(?:-[a-z]{2})?$/i.test(seg[0] ?? '') ? 1 : 0; return seg.length > at && seg.length <= at + 3 && PAGE_HINT.test(seg[at]) }   // the first segment (after a locale such as "en-us")
+// A firm's index of its offices ("/locations", "/offices", "/firm-offices", "/locations.html").
+const LOCATIONS_INDEX = /^\/(?:[a-z-]*-)?(?:locations?|offices?)(?:\.html?)?\/?$/i
+// The city slugs a request names ("Chicago, Illinois" -> "chicago"; "Kansas City" -> "kansas-city").
+export function citySlugs(places: string[]): string[] {
+  return [...new Set(places.map(p => String(p).split(',')[0].trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')).filter(x => x.length >= 3))]
+}
+// Same-site links to the office page for a requested city: a path whose segments include the city's slug next to an office segment, or a
+// last segment that is the slug itself under a locations / offices path ("/locations/chicago", "/locations/offices/chicago.html").
+export function officeLinks(html: string, base: URL, places: string[]): string[] {
+  const slugs = citySlugs(places); if (slugs.length === 0) return []
+  const out: string[] = []
+  for (const m of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
+    let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), base) } catch { continue }
+    if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== base.hostname.replace(/^www\./, '') || u.search) continue
+    const seg = u.pathname.toLowerCase().replace(/\.html?$/, '').split('/').filter(Boolean)
+    if (seg.length < 2 || seg.length > 4) continue
+    const last = seg[seg.length - 1]
+    if (slugs.includes(last) && seg.slice(0, -1).some(x => /^(?:[a-z-]*-)?(?:locations?|offices?)$/.test(x))) { if (!out.includes(u.pathname)) out.push(u.pathname) }
+  }
+  return out.slice(0, 2)
+}
+export function contactPaths(homeHtml: string, home: URL, places: string[] = []): string[] {
+  const offices = officeLinks(homeHtml, home, places)
+  const set = new Set<string>([...offices, '/contact', '/contact-us', '/about', '/team', '/leadership'])
+  const indexes: string[] = []
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
-    if (PAGE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|png|zip)$/i.test(u.pathname) && !u.search) set.add(u.pathname)
+    if (u.search || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || !hinted(u.pathname)) continue
+    // with a city requested and no direct office link, the locations index goes first: it leads to the office page
+    if (offices.length === 0 && citySlugs(places).length > 0 && LOCATIONS_INDEX.test(u.pathname)) indexes.push(u.pathname)
+    set.add(u.pathname)
   }
   for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
-  return [...set].slice(0, 8)
+  return [...new Set([...indexes.slice(0, 1), ...set])].slice(0, 8)
 }
 
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
@@ -491,7 +543,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, places: string[] = []): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -556,17 +608,30 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
     onPage?.(home.body, home.finalUrl, home.status)
-    for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
-    for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+    for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles, expectName)]) found.set(f.kind + f.value, f)
+    // The pages to read, in order. A page that lands where an earlier one did ("/contact" and "/contact/") is read once. When the request names a
+    // city, a firm's page for THAT office comes first (its office leader is the decision-maker for the request): a homepage link to it, or one
+    // found on the firm's locations index (read for that purpose only, two hops at most).
+    const queue = contactPaths(home.body, new URL(home.finalUrl), places)
+    const seenUrls = new Set<string>([home.finalUrl.replace(/\/+$/, '')])
+    for (let qi = 0; qi < queue.length; qi++) {
+      const p = queue[qi]
       if (stopped()) { stoppedBy = 'aborted'; break }
       if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
       if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
       if (!robots.allows(p)) continue
+      if (seenUrls.has((origin + p).replace(/\/+$/, ''))) continue
       const r = await polite(origin + p, robots.delayMs)
       if (!r || r.status >= 400) continue
+      const landed = r.finalUrl.replace(/\/+$/, '')
+      seenUrls.add((origin + p).replace(/\/+$/, ''))
+      if (seenUrls.has(landed) && landed !== (origin + p).replace(/\/+$/, '')) continue
+      seenUrls.add(landed)
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      // a locations index: the office page for the requested city, read next
+      if (LOCATIONS_INDEX.test(p)) for (const o of officeLinks(r.body, new URL(r.finalUrl), places).reverse()) if (!queue.includes(o)) queue.splice(qi + 1, 0, o)
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles, expectName)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
@@ -803,7 +868,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs, where)
       siteRead.set(cand, r)
       return r
     }
