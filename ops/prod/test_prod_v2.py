@@ -1,6 +1,6 @@
-"""The production deploy scripts that RUN ON THE BOX (ops/prod/deploy-prod.sh v2, run-release.sh, pull-release.sh), #1140.
+"""The production deploy scripts that RUN ON THE BOX (ops/prod/deploy-prod.sh v2, run-release.sh, pull-release.sh, check-pages.py), #1140 / #1116.
 
-These three files are copies of what is installed in /usr/local/lib/dazl-prod/ on the box, taken byte for byte, so that the
+These files are copies of what is installed in /usr/local/lib/dazl-prod/ on the box, taken byte for byte, so that the
 installed code is a reviewed file in this repository and a future install is a reviewed diff. This file checks:
 - the repo copies are the pinned box copies (change one on purpose: review it, then update the pin here);
 - none of them builds or installs anything (NEVER-AGAIN #1);
@@ -28,7 +28,10 @@ from test_prod_prebuilt import STUBS as V1_STUBS  # noqa: E402  (curl, git and s
 
 # sha256 of the files installed on the box, copied 2026-11-13 (~/work/verify/guard/box-*.sh)
 PINNED = {
-    'deploy-prod.sh': 'be319e308ab53797d9e8ebdf3e94ff9e9e129c2a9f34a10a2f404a00b3482713',
+    # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
+    # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
+    'deploy-prod.sh': '5d78463fc770a1b4297cd8cb5ea4bf5af470603a85235964dcff655652921ba1',
+    'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
 }
@@ -50,7 +53,26 @@ class RepoCopiesAreTheBoxCopies(unittest.TestCase):
     def test_the_scripts_are_executable_and_parse(self):
         for name in PINNED:
             self.assertTrue(os.access(HERE / name, os.X_OK), name)
-            self.assertEqual(subprocess.run(['bash', '-n', str(HERE / name)], capture_output=True, text=True).returncode, 0, name)
+            parse = [sys.executable, '-m', 'py_compile'] if name.endswith('.py') else ['bash', '-n']   # check-pages.py is Python
+            self.assertEqual(subprocess.run([*parse, str(HERE / name)], capture_output=True, text=True).returncode, 0, name)
+
+    def test_both_smoke_steps_run_the_sign_up_pages_check(self):
+        # #1116 acceptance 2. The happy path cannot run in this sandbox (see the module docstring), so this pins the wiring statically: the local smoke
+        # on the spare port refuses to switch, and the public smoke (whose failure triggers the auto-rollback) fails, when check-pages.py fails.
+        src = (HERE / 'deploy-prod.sh').read_text()
+        local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
+        self.assertIn('python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
+        self.assertIn('NOT switching', local[local.index('python3 -I "$PAGES"'):])
+        public = src[src.index('public_smoke() {'):src.index('[ ! -L "$OPS" ]')]
+        self.assertIn('[ $ok = 1 ] && [ "$pages" = pages ] && { python3 -I "$PAGES" "$PUBLIC_URL" || { ok=0;', public)
+        self.assertIn('PAGES=$HERE/check-pages.py', src)
+        # the NEW release's two public smokes ask for it ...
+        self.assertEqual(src.count('public_smoke "$SHA" "$NEW_INST" pages || fail_back'), 2)
+        # ... and no rollback does: a rollback target may predate #1218 (no form action), and an emergency rollback must never be refused for that
+        for line in [l for l in src.splitlines() if 'public_smoke "' in l]:
+            if 'PREV_SHA' in line or 'OLD_SHA' in line:
+                self.assertNotIn(' pages', line, line)
+        self.assertEqual(len([l for l in src.splitlines() if 'public_smoke "' in l and ('PREV_SHA' in l or 'OLD_SHA' in l)]), 2, 'the manual and the automatic rollback')
 
     def test_no_script_builds_or_installs_anything(self):
         bad = []
@@ -195,6 +217,17 @@ class V2Refusals(unittest.TestCase):
         (self.t / 'lib' / 'run-release.sh').chmod(0o775)
         r = self.run_deploy(A)
         self.assertEqual(r.returncode, 1); self.assertIn('run-release.sh is not root-owned', r.stdout + r.stderr)
+        self.assert_nothing_changed()
+
+    def test_a_missing_or_untrusted_pages_check_is_refused(self):
+        # #1116: the deploy never runs without its sign-up pages check, and never runs one anybody but root could have written
+        (self.t / 'lib' / 'check-pages.py').chmod(0o775)
+        r = self.run_deploy(A)
+        self.assertEqual(r.returncode, 1); self.assertIn('check-pages.py is not root-owned', r.stdout + r.stderr)
+        self.assert_nothing_changed()
+        (self.t / 'lib' / 'check-pages.py').unlink()
+        r = self.run_deploy(A)
+        self.assertEqual(r.returncode, 1); self.assertIn('check-pages.py is not root-owned', r.stdout + r.stderr)
         self.assert_nothing_changed()
 
     def test_a_missing_run_release_script_is_refused(self):
