@@ -50,7 +50,7 @@ const compact = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ
 const LEGAL = new Set(['pty', 'proprietary', 'gmbh', 'ag', 'sa', 'sas', 'sarl', 'bv', 'nv', 'srl', 'spa', 'oy', 'ab', 'as', 'aps', 'kg', 'ug', 'pte', 'pvt', 'private', 'sdn', 'bhd', 'kk'])
 export function isOwnSite(url: string, company: string): boolean {
   const label = domainLabel(url), key = compact(companyKey(company).split(' ').filter(w => !LEGAL.has(w)).join(' '))
-  return !!label && key.length >= 4 && label === key && !PLATFORMS.has(label)
+  return !!label && key.length >= 4 && compact(label) === key && !PLATFORMS.has(label)   // surf-digital.com is Surf Digital's
 }
 
 const LISTING = /\/(?:tags?|categor(?:y|ies)|authors?|archives?|search|page|feed|topics?)(?:\/|$)/i

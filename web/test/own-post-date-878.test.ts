@@ -1,7 +1,7 @@
 // #878 / #1107: a request for companies that POSTED about something is dated by the company's own post.
-// REAL: test/fixtures/own-post-pages-20261114.json holds the nine pages behind undated-held leads of the prod matrix of 2026-11-14 (deployed 3fb162e5, mxprod3):
+// REAL: test/fixtures/own-post-pages-20261114.json holds ten pages behind undated-held leads: nine from the prod matrix of 2026-11-14 (deployed 3fb162e5, mxprod3):
 // each page fetched once from this PC and passed through the repo's own htmlToText (title, published, JSON-LD blocks, text), with the lead's stored company and
-// quote and its prod hold reason. Email addresses and phone numbers in the page text are replaced by <email> / <phone>; no prod id is kept. Four are the Sydney agencies' own posts; five are the negatives this rule must never date.
+// quote and its hold reason (nine from prod; Surf Digital from a local matrix:local run on main 02dd2e55, 2026-11-15). Email addresses and phone numbers in the page text are replaced by <email> / <phone>; no prod id is kept. Four are the Sydney agencies' own posts; five are the negatives this rule must never date.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -9,21 +9,22 @@ import { asksForPost, domainLabel, earlierStamp, isArticleAddress, isOwnSite, lo
 import { evidenceRecheck } from '../lib/scan/evidence-recheck.ts'
 import { finishUndatedLeads } from '../lib/scan/structured-date.ts'
 
-interface Real { company: string; url: string; excerpt: string; prod: { job: string; review_reason: string; published_at: string | null }; page: { title: string; published: string | null; structured: string[]; text: string } }
+interface Real { company: string; url: string; excerpt: string; prod: { review_reason: string; published_at: string | null; source?: string }; page: { title: string; published: string | null; structured: string[]; text: string } }
 const REAL = JSON.parse(readFileSync(new URL('./fixtures/own-post-pages-20261114.json', import.meta.url), 'utf8')) as Real[]
 const SYDNEY = 'Marketing agencies in Sydney, Australia posting about outbound, cold email or lead generation in the last 90 days'   // the matrix request, verbatim
 const of = (c: string) => REAL.find(r => r.company === c)!
 
-test('#878 the data: all nine leads were held outside_window_undated on prod, every page had a publication day in its markup, and dazl kept it as a label only', () => {
-  assert.equal(REAL.length, 9)
+test('#878 the data: all ten leads were held outside_window_undated (nine on prod, Surf Digital on a local main run), every page had a publication day in its markup, and dazl kept it as a label only', () => {
+  assert.equal(REAL.length, 10)
   for (const r of REAL) { assert.equal(r.prod.review_reason, 'outside_window_undated', r.company); assert.ok(r.page.published, r.company) }
 })
 
-test('#878 real pages: the agencies\' own posts are dated by their own day (3 of 4); the fourth\'s byline shows another day and it stays held', () => {
-  const got = Object.fromEntries(['Digital Symantec', 'Outbounda', 'David Eid', 'Sagar Sethi'].map(c => { const r = of(c); return [c, ownPostDate({ request: SYDNEY, company: c, url: r.url, excerpt: r.excerpt, page: r.page })] }))
+test('#878 real pages: the agencies\' own posts are dated by their own day (4 of 5); the fifth\'s byline shows another day and it stays held', () => {
+  const got = Object.fromEntries(['Digital Symantec', 'Outbounda', 'David Eid', 'Surf Digital', 'Sagar Sethi'].map(c => { const r = of(c); return [c, ownPostDate({ request: SYDNEY, company: c, url: r.url, excerpt: r.excerpt, page: r.page })] }))
   assert.equal(got['Digital Symantec'].date, '2026-10-17')
   assert.equal(got['Outbounda'].date, '2026-09-22')
   assert.equal(got['David Eid'].date, '2026-08-23')
+  assert.equal(got['Surf Digital'].date, '2026-10-20', 'surf-digital.com: a hyphen in the domain is not part of the name')
   // markup 2026-10-03T15:43Z (UTC), byline "October 4, 2026" (Australian time): held, never guessed
   assert.equal(got['Sagar Sethi'].date, null); assert.match(got['Sagar Sethi'].why, /visible text does not state 2026-10-03/)
 })
@@ -62,7 +63,7 @@ test('#878 guards: each condition holds the lead on its own (synthetic variation
 })
 
 test('#878 helpers: registrable labels, article addresses, bylines', () => {
-  assert.equal(domainLabel('https://sagarsethi.com.au/x'), 'sagarsethi'); assert.equal(domainLabel('https://www.digitalsymantec.com/x'), 'digitalsymantec'); assert.equal(domainLabel('https://blog.outbounda.io/x'), 'outbounda'); assert.equal(domainLabel('https://acme.co.uk/x'), 'acme')
+  assert.equal(domainLabel('https://sagarsethi.com.au/x'), 'sagarsethi'); assert.equal(isOwnSite('https://surf-digital.com/x', 'Surf Digital'), true); assert.equal(domainLabel('https://www.digitalsymantec.com/x'), 'digitalsymantec'); assert.equal(domainLabel('https://blog.outbounda.io/x'), 'outbounda'); assert.equal(domainLabel('https://acme.co.uk/x'), 'acme')
   assert.equal(isOwnSite('https://outbounda.io/blog/x', 'Outbounda'), true); assert.equal(isOwnSite('https://www.digitalsymantec.com/x', 'Digital Symantec Pty Ltd'), true)
   assert.equal(isArticleAddress('https://outbounda.io/blog/b2b-saas-outbound-playbook'), true); assert.equal(isArticleAddress('https://garnercollective.com.au/projects/updapt'), false)
   for (const t of ['Posted 2026-08-23 by', '23 August 2026 3 min read', 'August 23, 2026', 'Aug 23 2026', '23rd of August, 2026']) assert.equal(statesDay(t, '2026-08-23'), true, t)
