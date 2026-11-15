@@ -1792,14 +1792,18 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let recurring = !!job.watch_id
       if (!recurring && targets.length > 0) recurring = isMonitorRun(db, job)
       const left = jobDeadlines.get(job)
+      // every held lead says why the pass did or did not run (blocked-fallback.ts recordRecovery): "searched" only when a search was really sent
+      const skip = (status: string, why: string) => { stop(status); recoveryTargets = targets; recoveryRan = { searched: false, why } }
       if (targets.length === 0) { /* nothing held for a reason another source can fix */ }
-      else if (recurring) stop('skipped:recurring_run')
-      else if (deps.paidFallback === false) stop('skipped:paid_steps_off')
-      else if (budgetRefused) stop('budget_stopped')
-      else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) stop('skipped:time_budget')
+      else if (recurring) skip('skipped:recurring_run', 'a scheduled play run keeps the caps it was confirmed with')
+      else if (deps.paidFallback === false) skip('skipped:paid_steps_off', 'the run disabled the paid fallback')
+      else if (budgetRefused) skip('budget_stopped', "the scan's budget was already used")
+      else if (left && left.at - left.now() < ADAPTIVE_MIN_REMAINING_MS) skip('skipped:time_budget', 'too little time was left in the scan')
       else {
         const diag3 = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: diag.recordFetch }
         recoveryTargets = targets
+        const sent = () => summarizeTrace(diag3.trace).searches_attempted > 0
+        const notRun = (why: string) => { if (!sent()) recoveryRan = { searched: false, why } }
         recoveryRan = { searched: true }
         try {
           stop('started')
@@ -1814,13 +1818,25 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           const wanted = new Set(targets.map(t => companyKey(t.company)))
           // only candidates for the held companies: anything else this search turns up is not this pass's business
           const fresh = (more ?? []).filter(l => wanted.has(companyKey(l.company)))
-          if (fresh.length === 0) stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : (st.searches_not_attempted.cap || st.searches_not_attempted.capacity) ? 'search_cap' : 'empty')
+          if (fresh.length === 0) {
+            stop(st.searches_not_attempted.spend_refused ? 'budget_stopped' : (st.searches_not_attempted.cap || st.searches_not_attempted.capacity) ? 'search_cap' : 'empty')
+            notRun(st.searches_not_attempted.spend_refused ? "the scan's budget did not fit the search" : 'the search limit was reached')
+          }
           else {
             ledger.candidates('fallback:tinyfish', fresh)
             assertOwned(db, job)
             verifiedUrls.push(...fresh.map(l => l.source_url))
             const held = HeldText.merge(diag.held, diag3.held)
-            const o3 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+            // the same pre-verify gates as the adaptive round (D2): feedback memory (forget), then the memory exclusions
+            let gated = await forget(fresh)
+            try {
+              const mem = deps.memory === undefined ? getMemory(db, job.user_id) : deps.memory
+              if (mem && mem.exclusions.length > 0) {
+                const excl = gated.filter(l => isExcluded(mem, l))
+                if (excl.length > 0) { outcome.dropped['excluded'] = (outcome.dropped['excluded'] ?? 0) + excl.length; auditDrop(audit)(excl, 'excluded'); gated = gated.filter(l => !isExcluded(mem, l)) }
+              }
+            } catch { /* memory table may predate this deploy: the post-verify gate still applies */ }
+            const o3 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
             const notes = mergeFallback(outcome, o3, targets)
             fallbackNotes.push(...notes.filter(n => !fallbackNotes.some(f => f.key === n.key)))
             stop(notes.length > 0 ? 'ok' : 'empty')
@@ -1829,8 +1845,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
           if (e instanceof ProviderError && e.kind === 'auth') throw e
           // an optional pass the scan's budget cannot fit is skipped, not sent; it does not mark the scan itself as budget-stopped
-          if (e instanceof SpendRefused) stop('budget_stopped')
-          else stop('error')
+          if (e instanceof SpendRefused) { stop('budget_stopped'); notRun("the scan's budget did not fit the search") }
+          else { stop('error'); notRun('the search failed') }
         }
       }
     }

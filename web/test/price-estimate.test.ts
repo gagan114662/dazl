@@ -268,7 +268,7 @@ test('#381 the estimate states the adaptive round in its maxima wherever the rou
   assert.equal(on.tinyfish_search.units.max, DEFAULT_TINYFISH.searchesPerScan + ADAPTIVE_SEARCHES + PEOPLE_SEARCHES_MAX + SITE_SEARCHES_PER_SCAN)
   assert.equal(on.tinyfish_fetch.units.max, DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)
   assert.equal(on.extraction.units.max, 4)
-  assert.match(on.tinyfish_search.note, /one more round, only when the first round verifies no lead/)
+  assert.match(on.tinyfish_search.note, /one more round, only when the first round verifies no lead or to re-check a held lead on another source/)
   assert.ok(Math.abs(on.tinyfish_fetch.usd!.max - 0.002 * (DEFAULT_TINYFISH.fetchesPerScan + ADAPTIVE_FETCHES)) < 1e-9, 'the dollar maximum includes the extra pages')
   for (const [why, e, site] of [
     ['turned off', estimateRun({ budget: null, payer: 'you', env: { ...priced, DAZL_ADAPTIVE_DISCOVERY_ENABLED: '0' } }), SITE_SEARCHES_PER_SCAN],

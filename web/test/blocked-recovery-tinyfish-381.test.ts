@@ -17,14 +17,15 @@ const NOVA = `NOVA Kitchen & Bar opened its new location in Vancouver, British C
 const GRILL = `Harbour Grill opened a new location in Vancouver, British Columbia on ${daysAgo(9)}`
 const hit = (url: string, title: string, snippet: string): Hit => ({ url, title, snippet, date: daysAgo(10) })
 
-interface Opt { pressSays?: string; recoveryHits?: Hit[]; paid?: boolean; runBudget?: string }
+interface Opt { pressSays?: string; recoveryHits?: Hit[]; paid?: boolean; runBudget?: string; roundOne?: Hit[]; beforeRun?: Fixture['beforeRun']; signals?: string[] }
 async function run(o: Opt = {}) {
   const pressText = o.pressSays ?? NOVA
   const f: Fixture = {
-    request: REQUEST, modelIcp: ICP, modelQueries: ['vancouver restaurant opens new location'],
+    request: REQUEST, modelIcp: o.signals ? { ...ICP, signals: o.signals } : ICP, modelQueries: ['vancouver restaurant opens new location'],
     hits: [],
     // round one finds the blocked social post and the readable second lead; every later search (the recovery pass) finds the news page
-    hitsFor: n => n === 0 ? [hit(SOCIAL, 'NOVA Kitchen & Bar opened', NOVA), hit(OTHER, 'Harbour Grill opens', GRILL)] : (o.recoveryHits ?? [hit(PRESS, 'NOVA Kitchen & Bar opens in Vancouver', pressText)]),
+    // the recovery search also returns the blocked post again: the pass must not read it twice
+    hitsFor: n => n === 0 ? (o.roundOne ?? [hit(SOCIAL, 'NOVA Kitchen & Bar opened', NOVA), hit(OTHER, 'Harbour Grill opens', GRILL)]) : (o.recoveryHits ?? [hit(SOCIAL, 'NOVA Kitchen & Bar opened', NOVA), hit(PRESS, 'NOVA Kitchen & Bar opens in Vancouver', pressText)]),
     tfPages: {
       // the social post is readable to nobody: TinyFish gets no text for it either (the search snippet is all there is)
       [OTHER]: { title: 'Harbour Grill opens', text: `${GRILL}.${filler}` },
@@ -46,6 +47,7 @@ async function run(o: Opt = {}) {
     },
     deps: { ...(o.paid === false ? { paidFallback: false } : {}) },
     ...(o.runBudget ? { runBudget: o.runBudget } : {}),
+    ...(o.beforeRun ? { beforeRun: o.beforeRun } : {}),
   }
   const x = await runFixture(f)
   const nova = x.db.prepare("SELECT id, review_reason, source_url, event_date FROM leads WHERE company = 'NOVA Kitchen & Bar'").get() as { id: string; review_reason: string | null; source_url: string; event_date: string | null } | undefined
@@ -61,7 +63,7 @@ test('news off: a lead whose own page is blocked is recovered from the same even
   assert.ok(notes.some(n => n.connector === 'scan:fallback' && /Own site blocked \(blocked_by_site\): verified from other sources instead \(citynews\.example\)/.test(n.value)), JSON.stringify(notes))
   // the recovery query is the targeted one ("<company>" <signal> <place>), and the blocked page is not fetched again by TinyFish
   assert.ok(x.calls.searches.some(q => q.includes('"NOVA Kitchen & Bar"')), JSON.stringify(x.calls.searches))
-  assert.ok(!x.calls.tfFetchBatches.slice(1).flat().includes(SOCIAL), 'the blocked page is skipped')
+  assert.ok(!x.calls.tfFetchBatches.slice(1).flat().includes(SOCIAL), 'the blocked page is skipped, though the recovery search returned it')
   assert.equal((x.db.prepare("SELECT count(*) AS n FROM leads WHERE company = 'Harbour Grill' AND review_reason IS NULL").get() as { n: number }).n, 1, 'the other lead is untouched')
 })
 
@@ -80,4 +82,45 @@ test('never on a run with paid steps off (a free trial): the lead stays held and
   assert.equal(nova?.review_reason, 'blocked_by_site')
   assert.ok(!x.calls.searches.some(q => q.includes('"NOVA Kitchen & Bar"')), 'no recovery search')
   assert.ok(notes.some(n => n.connector === 'scan:recovery' && /^Recovery pass did not run/.test(n.value)), JSON.stringify(notes))
+})
+
+async function withEnv<T>(e: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const had = Object.fromEntries(Object.keys(e).map(k => [k, process.env[k]]))
+  Object.assign(process.env, e)
+  try { return await fn() } finally { for (const [k, v] of Object.entries(had)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
+}
+const recoverySearches = (x: Awaited<ReturnType<typeof run>>['x']) => x.calls.searches.filter(q => q.includes('"NOVA Kitchen & Bar"'))
+
+test('never on a scheduled play run (a monitor\'s run): no recovery search, and the lead says why', async () => {
+  // the job is a monitor's run, recorded the way lib/monitors.ts queues one (its monitor_runs row exists before the scan runs)
+  const { migrateMonitors } = await import('../lib/monitors.ts')
+  const { x, nova, notes } = await run({ beforeRun: db => {
+    migrateMonitors(db)
+    const job = (db.prepare('SELECT id, user_id FROM scan_jobs').get() as { id: string; user_id: string })
+    db.prepare("INSERT INTO monitors (id, user_id, query, interval_hours) VALUES ('m1', ?, 'vancouver restaurants opening', 168)").run(job.user_id)
+    db.prepare("INSERT INTO monitor_runs (id, monitor_id, job_id, ran_at, missed_runs) VALUES ('r1', 'm1', ?, 1, 0)").run(job.id)
+  } })
+  assert.equal(nova?.review_reason, 'blocked_by_site')
+  assert.deepEqual(recoverySearches(x), [])
+  assert.ok(notes.some(n => /^Recovery pass did not run \(a scheduled play run keeps the caps it was confirmed with\)/.test(n.value)), JSON.stringify(notes))
+})
+
+test('a recovery search the scan budget cannot fit is never sent, and the lead says the pass did not run - not "searched, nothing there"', async () => {
+  // a search priced at USD 3.20 against the scan cap of USD 3.33: round one's search fits, the recovery search does not
+  const { x, nova, notes } = await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '3.2' }, () => run())
+  assert.equal(nova?.review_reason, 'blocked_by_site')
+  assert.deepEqual(recoverySearches(x), [], 'nothing was sent')
+  assert.ok(notes.some(n => /^Recovery pass did not run \(the scan's budget did not fit the search\)/.test(n.value)), JSON.stringify(notes))
+  assert.ok(!notes.some(n => /searched other press/.test(n.value)))
+})
+
+test('when the adaptive round runs (round one verified no lead), the recovery pass does not: the price estimate counts one of them', async () => {
+  // round one verifies NO lead (only the blocked post) and the profile has a signal round one never asked about: the adaptive round runs
+  const { x, nova } = await run({ roundOne: [hit(SOCIAL, 'NOVA Kitchen & Bar opened', NOVA)], signals: ['opened a new location', 'expanded seating with a heated patio terrace'], recoveryHits: [] })
+  const { ADAPTIVE_SEARCHES } = await import('../lib/scan/run-budget.ts')
+  const adaptive = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'search:adaptive'").get() as { status: string } | undefined
+  assert.ok(adaptive && x.calls.searches.length > 1, `the adaptive round searched: ${JSON.stringify([adaptive, x.calls.searches])}`)
+  assert.deepEqual(recoverySearches(x), [], 'no recovery search on top of it')
+  assert.ok(x.calls.searches.length - 1 <= ADAPTIVE_SEARCHES, JSON.stringify(x.calls.searches))
+  assert.ok(nova, 'the held lead is still reported')
 })
