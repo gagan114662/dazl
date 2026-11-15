@@ -38,11 +38,19 @@ const X_POST = /^https:\/\/(?:www\.|mobile\.)?(?:x|twitter)\.com\/([A-Za-z0-9_]{
 const X_EPOCH_MS = 1288834974657
 
 // A role names a job (founder, partner, head, director, ...); a bare company, a place, prose or the site's own name is not.
-const ROLE_WORD = /\b(?:founder|co-?founder|ceo|cto|coo|cfo|cmo|cro|cpo|chief|president|owner|co-?owner|partner|principal|director|head|vp|vice president|manager|lead|consultant|sdr|bdr|ae|account executive|analyst|engineer|associate|attorney|lawyer|counsel|solicitor|dentist|doctor|officer|executive|advisor|adviser|specialist|strategist|marketer|recruiter|investor|chair(?:man|woman|person)?|board member|managing|operator|entrepreneur)\b/i
+const ROLE_WORD = /\b(?:founder|co-?founder|ceo|cto|coo|cfo|cmo|cro|cpo|chief|president|owner|co-?owner|partner|principal|director|head|vp|vice president|manager|lead|consultant|sdr|bdr|ae|account executive|analyst|engineer|associate|attorney|lawyer|counsel|solicitor|dentist|doctor|officer|executive|advisor|adviser|specialist|strategist|marketer|recruiter|investor|designer|copywriter|writer|representative|developer|producer|editor|coach|architect|accountant|broker|chair(?:man|woman|person)?|board member|managing|operator|entrepreneur)\b/i
 export const readsAsRole = (role: string): boolean => {
   const r = role.replace(/\s*\|\s*linkedin\s*$/i, '').trim()
   if (!r || /^(?:linkedin|x|twitter|profile|about|experience|location|greater .+|.+ (?:area|region|metropolitan area))$/i.test(r)) return false
   return ROLE_WORD.test(r)   // a job word is required: "<anything> at Acme" alone is prose ("Eat at Joe"), not a role
+}
+// A person's display name: 2-5 words, each capitalised, with the usual particles ("de", "van", "al"). Prose before " on LinkedIn -"
+// ("Cold email tips") or a platform word is not one; an all-lowercase real name is lost (fail closed).
+const NAME_PARTICLE = /^(?:de|da|del|della|di|du|van|von|der|den|la|le|bin|binti|al|el|y|e)$/
+export const nameShaped = (n: string): boolean => {
+  const w = n.trim().split(/\s+/)
+  if (w.length < 2 || w.length > 5 || /^(?:linkedin|x|twitter)$/i.test(n.trim())) return false
+  return w.every((x, i) => /^\p{Lu}[\p{L}'’.\-]*$/u.test(x) || (i > 0 && i < w.length - 1 && NAME_PARTICLE.test(x)))
 }
 const isoDay = (ms: number): string | null => { if (!Number.isFinite(ms) || ms < Date.UTC(2006, 0, 1) || ms > Date.UTC(2100, 0, 1)) return null; return new Date(ms).toISOString().slice(0, 10) }
 // LinkedIn: the first 41 bits of the 64-bit activity ID are the creation time in ms. X: a snowflake (ms since the Twitter epoch).
@@ -63,7 +71,7 @@ export function authorOf(hit: { url: string; title: string }): Pick<Author, 'pla
     const t = (hit.title ?? '').trim().replace(/(?:\s*\|\s*(?:\d[\d,.]*\s*(?:comments?|reactions?|likes?)|linkedin))+\s*$/i, '')
     const m = /^(.{2,80}?)(?:'s|’s) Post\b/.exec(t) ?? /^(.{2,80}?) on LinkedIn\s*[:\-–]/.exec(t) ?? /^(.{2,80}?) posted on the topic\b/.exec(t) ?? /\|\s*([^|#@\s][^|#@]{0,58}\s[^|#@]{1,58}?)\s*$/.exec(t)
     const name = m ? m[1].trim() : null
-    return { platform: 'linkedin', handle, name: name && !/^(?:linkedin|\d.*)$/i.test(name) ? name : null, profileUrl: null }
+    return { platform: 'linkedin', handle, name: name && nameShaped(name) ? name : null, profileUrl: null }
   }
   const x = X_POST.exec(hit.url)
   if (x && !/^(?:i|home|search|intent|share)$/i.test(x[1])) {
@@ -121,7 +129,8 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
     }
   }
   // Resolve each LinkedIn author once: person (with the indexed headline), company page (dropped) or unresolved (kept, marked).
-  // The lookup is keyed on the handle but made on the first post that NAMES the author (an earlier unnamed post does not use it up).
+  // First pass: the lookup is keyed on the handle but made on the first post that NAMES the author (an earlier unnamed post does not
+  // use it up). Second pass: every post gets its handle's final answer.
   const authors: Record<string, Author> = {}
   const byHandle = new Map<string, { kind: Author['kind']; headline: string | null; profileUrl: string | null; name: string | null; tried: boolean }>()
   let resolved = 0
@@ -142,10 +151,14 @@ export async function linkedinPostCandidates(rc: ResearchCase, plan: ResearchPla
       const nameEsc = p.author.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       if ((hits ?? []).some(h => new RegExp(`linkedin\\.com/company/${esc}/?$`).test(urlOf(h)))) r.kind = 'company'
       else {
-        const h = (hits ?? []).find(h => new RegExp(`linkedin\\.com/in/${esc}/?$`).test(urlOf(h)) && new RegExp(`^\\s*${nameEsc}(?:\\s*$|\\s+[-–|,(])`, 'i').test(h.title ?? ''))
+        const h = (hits ?? []).find(h => new RegExp(`linkedin\\.com/in/${esc}/?$`).test(urlOf(h)) && new RegExp(`^\\s*${nameEsc}(?:\\s*$|\\s*[,(]|\\s+[-–|])`, 'i').test(h.title ?? ''))
         if (h) { r.kind = 'person'; r.name = p.author.name; r.headline = `${h.title ?? ''} | ${h.snippet ?? ''}`.slice(0, 500); r.profileUrl = `https://www.linkedin.com/in/${encodeURIComponent(p.author.handle)}` }
       }
     }   // an X handle is an account (a person, a firm or a newsroom): left 'unresolved' for the filter to judge
+  }
+  // Second pass: every post of a handle gets the handle's final resolution, whatever order the index returned the posts in.
+  for (const p of posts.values()) {
+    const r = byHandle.get(`${p.author.platform}:${p.author.handle.toLowerCase()}`)!
     if (r.kind === 'company') { drop('company page, not a person'); continue }
     // each post keeps the name its own title gives; a resolved person's profile is shared only with posts naming the same person
     const same = r.kind === 'person' && (!p.author.name || p.author.name.toLowerCase() === r.name?.toLowerCase())

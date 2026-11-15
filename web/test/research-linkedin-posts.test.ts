@@ -2,7 +2,7 @@
 // TEST-ONLY: invented people and handles; no network (the search is a fake).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { postDate, authorOf, postQueries, linkedinPostCandidates, authorPerson, authorSource, postKey, readsAsRole, type IndexHit } from '../lib/research/sources/linkedin-engagers.ts'
+import { postDate, authorOf, postQueries, linkedinPostCandidates, authorPerson, authorSource, postKey, readsAsRole, nameShaped, type IndexHit } from '../lib/research/sources/linkedin-engagers.ts'
 import type { ResearchCase, ResearchPlan } from '../lib/research/types.ts'
 
 // A LinkedIn activity ID / X status ID for a UTC day (the creation time sits in the top bits).
@@ -128,8 +128,11 @@ test('review (opus): a company handle that is also a member vanity is the compan
   // an unnamed post is not resolved (it can never be a Person): kept as 'unresolved', with no /in/ URL, never credited to the member
   assert.equal(r.authors[post].kind, 'unresolved'); assert.equal(r.authors[post].profileUrl, null); assert.equal(authorPerson(r.authors[post]), null)
   // a NAMED author whose handle is also a company page is the company (dropped), even when a member owns the same /in/ vanity
-  const named = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [{ url: post, title: 'Stripe on LinkedIn: new payments API', snippet: 'x', date: null }] : q.includes('stripe') ? [{ url: 'https://www.linkedin.com/in/stripe', title: 'John Smith - Founder at Smith Co', snippet: '', date: null }, { url: 'https://www.linkedin.com/company/stripe', title: 'Stripe', snippet: '', date: null }] : [], maxQueries: 2, maxResolve: 5 })
+  const named = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [{ url: post, title: 'Stripe Payments on LinkedIn: new payments API', snippet: 'x', date: null }] : q.includes('stripe') ? [{ url: 'https://www.linkedin.com/in/stripe', title: 'John Smith - Founder at Smith Co', snippet: '', date: null }, { url: 'https://www.linkedin.com/company/stripe', title: 'Stripe', snippet: '', date: null }] : [], maxQueries: 2, maxResolve: 5 })
   assert.equal(named.candidates.length, 0); assert.equal(named.funnel.dropped['company page, not a person'], 1)
+  // a one-word title name ("Stripe") is not a person's name: no lookup is spent; the post stays 'unresolved' and can never be a Person
+  const one = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [{ url: post, title: 'Stripe on LinkedIn: new payments API', snippet: 'x', date: null }] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(one.authors[post].kind, 'unresolved'); assert.equal(one.authors[post].name, null); assert.equal(one.searches.sent, 2)
   const dana = r.authors[liPost('dana-okoye', '2026-10-13')]
   assert.equal(dana.name, 'Dana Okoye'); assert.equal(dana.kind, 'person'); assert.equal(dana.profileUrl, 'https://www.linkedin.com/in/dana-okoye')
   // a post with no name in its title is never a Person, even when an /in/ profile with that handle exists
@@ -185,4 +188,35 @@ test('review round 2 (haiku): an all-failed run is an outage, not "no posts"; ti
   const u = liPost('dana-okoye', '2026-10-01')
   assert.equal(authorOf({ url: u, title: 'Top 5 tips | Sales' })?.name, null, 'a one-word tail is not a name')
   assert.equal(authorOf({ url: u, title: 'Dana Okoye on LinkedIn - hi' })?.name, 'Dana Okoye')
+})
+
+test('review round 3 (sonnet): a handle\'s resolution applies to all its posts, whatever order the index returned them in', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const co = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('acme', '2026-10-10', 'a'), 'Great news | LinkedIn'), mk(liPost('acme', '2026-10-11', 'b'), 'Acme Growth on LinkedIn: hiring')] : q.includes('acme') ? [mk('https://www.linkedin.com/company/acme', 'Acme Growth')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(co.candidates.length, 0, 'the earlier unnamed post of a company handle is dropped too'); assert.equal(co.funnel.dropped['company page, not a person'], 2)
+  const pe = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), 'Big launch'), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(pe.authors[liPost('dana-okoye', '2026-10-10', 'a')].kind, 'person', 'the earlier unnamed post gets the resolved person too')
+  assert.equal(pe.authors[liPost('dana-okoye', '2026-10-10', 'a')].name, 'Dana Okoye')
+})
+
+test('review round 3 (opus): a profile title with a credential after a comma still names the author', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  const r = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-11'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye, CPA - Partner at Okoye LLP')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(r.authors[liPost('dana-okoye', '2026-10-11')].kind, 'person')
+  const r2 = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-11'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoyeson - Partner')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(r2.authors[liPost('dana-okoye', '2026-10-11')].kind, 'unresolved', 'a longer name is another person')
+})
+
+test('review round 3 (haiku): prose is not a name and does not use up the lookup; a second name on a handle is not that person', async () => {
+  const mk = (url: string, title: string): IndexHit => ({ url, title, snippet: 's', date: null })
+  assert.equal(authorOf({ url: liPost('dana-okoye', '2026-10-01'), title: 'Cold email tips on LinkedIn - part 2' })?.name, null)
+  for (const n of ['Dana Okoye', 'Ludwig van Beethoven', 'Anne-Marie O\u2019Neil', 'José García']) assert.equal(nameShaped(n), true, n)
+  for (const n of ['Cold email tips', 'Hiring now', 'LinkedIn', 'Sales', 'anand krishnakumar']) assert.equal(nameShaped(n), false, n)
+  const r = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-10', 'a'), 'Cold email tips on LinkedIn - part 2'), mk(liPost('dana-okoye', '2026-10-11', 'b'), "Dana Okoye's Post"), mk(liPost('dana-okoye', '2026-10-12', 'c'), 'Random Other on LinkedIn: hello')] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye - Founder at Okoye')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(r.authors[liPost('dana-okoye', '2026-10-11', 'b')].kind, 'person', 'the prose-titled post did not use up the lookup')
+  const other = r.authors[liPost('dana-okoye', '2026-10-12', 'c')]
+  assert.equal(other.kind, 'unresolved'); assert.equal(other.profileUrl, null); assert.equal(other.name, 'Random Other')
+  const longer = await linkedinPostCandidates(rc, plan(), { search: async q => q.startsWith('site:linkedin.com/posts cold email agency') ? [mk(liPost('dana-okoye', '2026-10-11'), "Dana Okoye's Post")] : q.includes('dana-okoye') ? [mk('https://www.linkedin.com/in/dana-okoye', 'Dana Okoye Smith - Founder at Smith')] : [], maxQueries: 2, maxResolve: 5 })
+  assert.equal(longer.authors[liPost('dana-okoye', '2026-10-11')].kind, 'unresolved')
+  for (const role of ['Designer at Acme', 'Copywriter at Acme', 'Sales Development Representative at Acme']) assert.equal(readsAsRole(role), true, role)
 })
