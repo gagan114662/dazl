@@ -45,12 +45,75 @@ sudo install -d -m 750 -g ubuntu /etc/dazl-backup && echo 'age1...' | sudo tee /
 `DAZL_MASTER_KEY` escrow (acceptance 3) is the owner's: two places other than the box, apart from the age identity.
 Record on the issue **where**, never the value. A restored database opens without it; the secrets stored inside it do not.
 
+## 0b. Or: off-host with no bucket, pulled to an operator machine (free, no cloud account)
+
+When there is no bucket yet (creating one needs the owner's IAM permission), use storage we already have: an operator
+machine that can already `ssh` to the box (Linux or WSL with systemd). The box writes its encrypted copies to a local
+outbox directory; the operator machine **pulls** them every hour with `rsync` over `ssh` (`scripts/backup/pull-offhost.mts`).
+Only ciphertext leaves the box. The box holds no credential for the operator machine, and the pull key can only READ
+the outbox (`rrsync -ro`), so a compromised box can neither reach nor delete the copies kept there. The copies there
+are checked against their manifests every run, kept with the same retention as the box (48 hourly + 14 daily +
+8 weekly) and an alert goes out when the newest is older than 2 h.
+
+What it does NOT give: copies while the operator machine is off (the box keeps writing to the outbox, and the next
+pull catches up; the RPO is then the time since the last pull). The box's own 15-minute check proves the copies are
+made (the outbox is fresh); the operator machine's pull is what proves they left the box. A bucket (section 0) can
+replace this later by re-running the installer with `--offhost rclone:...`.
+
+**On the operator machine** (the identity and the copies stay here; nothing of this goes to the box):
+
+```bash
+sudo apt-get install -y rsync age sqlite3 nodejs                  # node >= 22.6 (--experimental-strip-types)
+age-keygen -o ~/dazl-data-identity.txt && chmod 600 ~/dazl-data-identity.txt   # PRIVATE: then keep it offline as in
+grep -o 'age1[0-9a-z]*' ~/dazl-data-identity.txt                 # section 0 (never on the box); PUBLIC key -> the box
+ssh-keygen -t ed25519 -N '' -C dazl-offhost-pull -f ~/.ssh/dazl_offhost_pull   # a key used for this pull only
+cat ~/.ssh/dazl_offhost_pull.pub                                 # -> the box's authorized_keys, restricted (below)
+cat >> ~/.ssh/config <<'CFG'
+Host dazl-offhost-pull
+  HostName <the box's address>
+  User ubuntu
+  IdentityFile ~/.ssh/dazl_offhost_pull
+  IdentitiesOnly yes
+CFG
+git clone --depth 1 --branch main <this repository's clone URL> ~/dazl-offhost/tools   # a reviewed commit; no npm install
+install -d -m 700 ~/dazl-offhost/copies ~/.config/dazl-offhost
+printf 'PULL_FROM=dazl-offhost-pull:\nPULL_TO=%s/dazl-offhost/copies\nOPS_ALERT_WEBHOOK_URL=<https webhook>\n' "$HOME" > ~/.config/dazl-offhost/env
+chmod 600 ~/.config/dazl-offhost/env
+```
+
+**On the box** (root, before the installer of section 1):
+
+```bash
+sudo apt-get install -y age rsync                                  # no rclone in this mode
+sudo install -d -m 700 -o ubuntu -g ubuntu /var/backups/dazl-offhost
+sudo install -d -m 750 -g ubuntu /etc/dazl-backup && echo 'age1...' | sudo tee /etc/dazl-backup/recipients.txt
+command -v rrsync || ls /usr/share/doc/rsync/scripts/                # rrsync: /usr/bin/rrsync (rsync >= 3.2.4)
+# the pull key may only READ the outbox: rsync's read-only restricted mode, no shell, no forwarding
+echo 'command="/usr/bin/rrsync -ro /var/backups/dazl-offhost",restrict <contents of dazl_offhost_pull.pub>' | sudo tee -a /home/ubuntu/.ssh/authorized_keys
+```
+
+Then section 1 with `--offhost /var/backups/dazl-offhost` instead of the bucket.
+
+**Back on the operator machine** (the timer, then one pull by hand):
+
+```bash
+install -D -m 644 ~/dazl-offhost/tools/ops/backup/dazl-offhost-pull.service ~/.config/systemd/user/dazl-offhost-pull.service
+install -D -m 644 ~/dazl-offhost/tools/ops/backup/dazl-offhost-pull.timer ~/.config/systemd/user/dazl-offhost-pull.timer
+systemctl --user daemon-reload && systemctl --user enable --now dazl-offhost-pull.timer
+sudo loginctl enable-linger "$USER"                               # runs while nobody is logged in
+systemctl --user start dazl-offhost-pull.service; journalctl --user -u dazl-offhost-pull -n 5 --no-pager
+# one JSON line: {"type":"offhost_pull",...,"backups":N,"ledgers":N,"newest":"dazl-backup-....db.age","newest_age_s":...,"ok":true}
+ssh dazl-offhost-pull 'ls'                                        # refused: the key cannot run a shell (expected)
+```
+
 ## 1. Install (root, on the box)
 
 ```bash
 cd "$(bash ops/backup/live-release.sh)"        # the live release's checkout
 sudo bash ops/backup/install-prod.sh --offhost rclone:dazl-s3:<bucket>/prod --alert-url <https webhook>
 ```
+
+Pull mode (section 0b): `--offhost /var/backups/dazl-offhost` instead of the bucket (no rclone needed).
 
 It checks first (user, database, node on the app user's default PATH, age, rclone, public keys only), writes
 `/etc/dazl-backup/env` only when there is none, installs the four units, enables both timers and runs the first backup
@@ -85,6 +148,7 @@ sudo bash ops/backup/install-prod.sh --status          # installed = this checko
 systemctl list-timers | grep dazl-backup
 journalctl -u dazl-backup -n 5 --no-pager              # {"type":"backup","ok":true,...,"offhost":true}
 rclone lsl dazl-s3:<bucket>/prod | tail -4             # an object less than 1 h old
+# pull mode: on the operator machine, journalctl --user -u dazl-offhost-pull -n 3 shows "ok":true and newest_age_s < 3600
 sudo -u ubuntu bash -c 'set -a; . /etc/dazl-backup/env; bash /usr/local/lib/dazl-backup/prod-run.sh check'   # "ok":true
 ```
 
@@ -97,6 +161,9 @@ box's role is not there, so give the scratch host its own read-only credentials 
 ```bash
 bash ops/backup/restore-offhost.sh --offhost rclone:dazl-s3:<bucket>/prod --identity dazl-data-identity.txt --out /var/tmp/dazl-restore-$(date -u +%Y%m%dT%H%M%SZ)
 ```
+
+Pull mode: on the operator machine, from its own copies (no bucket access needed):
+`bash ~/dazl-offhost/tools/ops/backup/restore-offhost.sh --offhost ~/dazl-offhost/copies --identity ~/dazl-data-identity.txt --out /var/tmp/dazl-restore-$(date -u +%Y%m%dT%H%M%SZ)`.
 
 One JSON line: the restored file, `rpo_s` (what losing the box at that moment would have lost), `restore_ms`,
 `integrity: ok` and the row counts of `users`, `scan_jobs` and `leads`. A damaged or foreign manifest at the destination
