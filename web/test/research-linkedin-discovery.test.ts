@@ -55,13 +55,13 @@ const fakeSearch = (log: string[]): SearchFn => async (q) => {
 
 test('hunt with the linkedin-posts source: posts become one search each; openable results are Candidates with the post\'s trigger; stats and budget are counted', async () => {
   const log: string[] = []
-  const r = await hunt(CASE, PLAN, fakeSearch(log), { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 })
+  const r = await hunt(CASE, PLAN, fakeSearch(log), { extraSources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 })
   const eng = r.candidates.filter(c => c.via === 'engager')
   assert.deepEqual(eng.map(c => c.url).sort(), ['https://news.example/uplift', 'https://sendtech.example/launch', 'https://upliftsales.example/about'].sort())
   assert.ok(eng.every(c => c.triggerId === 't1' && c.dated === undefined), 'the post\'s trigger; never a registry record')
   assert.equal(eng.find(c => c.url.endsWith('/launch'))!.date, '2026-09-28')
   assert.ok(!r.candidates.some(c => /linkedin\.com|x\.com/.test(c.url)), 'no LinkedIn or X URL becomes a Candidate')
-  const s = r.sources![0]
+  const s = r.extraSources![0]
   assert.equal(s.id, 'linkedin-posts'); assert.equal(s.in, 3); assert.equal(s.out, 3)
   assert.equal(s.dropped['unopenable host'], 1); assert.equal(s.dropped['too little text to search'], 1); assert.equal(s.dropped['same url'], 1)
   // the budget is the hunt's own search: hunt queries + post queries (2 queries x 2 platforms, capped at 6) + one derived search per usable post
@@ -72,28 +72,28 @@ test('hunt with the linkedin-posts source: posts become one search each; openabl
 
 test('the hunt without sources is unchanged: no `sources` field, no extra search', async () => {
   const log: string[] = []
-  const r = await hunt(CASE, PLAN, fakeSearch(log), { sources: [], wait: async () => {} })
-  assert.equal(r.sources, undefined); assert.equal(log.length, r.queries)
+  const r = await hunt(CASE, PLAN, fakeSearch(log), { extraSources: [], wait: async () => {} })
+  assert.equal(r.extraSources, undefined); assert.equal(log.length, r.queries)
   assert.deepEqual(huntSourcesFromEnv({}), []); assert.deepEqual(huntSourcesFromEnv({ RESEARCH_SOURCES: 'nope' }), [])
   assert.deepEqual(huntSourcesFromEnv({ RESEARCH_SOURCES: 'linkedin-posts' }).map(s => s.id), ['linkedin-posts'])
 })
 
-test('repeat calls with one sourceState add only new work: no post query, derived search or Candidate twice', async () => {
+test('repeat calls with one extraSourceState add only new work: no post query, derived search or Candidate twice', async () => {
   const log: string[] = []
-  const sourceState = new Map<string, unknown>()
-  const first = await hunt(CASE, PLAN, fakeSearch(log), { sources: [linkedinPostsSource()], sourceState, wait: async () => {}, concurrency: 1 })
+  const extraSourceState = new Map<string, unknown>()
+  const first = await hunt(CASE, PLAN, fakeSearch(log), { extraSources: [linkedinPostsSource()], extraSourceState, wait: async () => {}, concurrency: 1 })
   const n1 = log.length
-  const second = await hunt(CASE, PLAN, fakeSearch(log), { sources: [linkedinPostsSource()], sourceState, wait: async () => {}, concurrency: 1 })
+  const second = await hunt(CASE, PLAN, fakeSearch(log), { extraSources: [linkedinPostsSource()], extraSourceState, wait: async () => {}, concurrency: 1 })
   const sent2 = log.slice(n1 + second.queries)
   const sent1 = log.slice(first.queries, n1)
   assert.ok(sent2.every(q => !sent1.includes(q)), 'no source query is sent twice')
   assert.equal(second.candidates.filter(c => c.via === 'engager').length, 0, 'the posts were returned by the first call')
-  assert.ok(sourceState.get('linkedin-posts') && (sourceState.get('linkedin-posts') as ReturnType<typeof newDiscoveryState>).derived.size >= 2)
+  assert.ok(extraSourceState.get('linkedin-posts') && (extraSourceState.get('linkedin-posts') as ReturnType<typeof newDiscoveryState>).derived.size >= 2)
   // a NEW post that says the same thing (another handle, another day) yields the same derived search: it is not sent again
   const log3: string[] = []
   const same: SearchFn = async q => { log3.push(q); return q.startsWith('site:linkedin.com/posts') ? { ok: true, hits: [hit(liPost('uplift-sales-2', '2026-11-12'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] } : { ok: true, hits: [] } }
-  const third = await hunt(CASE, { ...PLAN, triggers: [{ ...PLAN.triggers[0], queries: ['another trigger query Sydney'] }] }, same, { sources: [linkedinPostsSource()], sourceState, wait: async () => {}, concurrency: 1 })
-  assert.equal(third.sources![0].in, 1); assert.equal(third.sources![0].dropped['same search'], 1)
+  const third = await hunt(CASE, { ...PLAN, triggers: [{ ...PLAN.triggers[0], queries: ['another trigger query Sydney'] }] }, same, { extraSources: [linkedinPostsSource()], extraSourceState, wait: async () => {}, concurrency: 1 })
+  assert.equal(third.extraSources![0].in, 1); assert.equal(third.extraSources![0].dropped['same search'], 1)
   assert.ok(!log3.some(q => /^Uplift Sales/.test(q)), 'the same derived search is not sent twice')
 })
 
@@ -101,14 +101,14 @@ test('a spend refusal inside the source stops it and is rethrown by the hunt; a 
   class Refused extends Error {}
   const log: string[] = []
   const refuse: SearchFn = async q => { log.push(q); if (q.startsWith('site:linkedin.com/posts')) throw new Refused('spend'); return { ok: true, hits: [] } }
-  await assert.rejects(hunt(CASE, PLAN, refuse, { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 }), Refused)
+  await assert.rejects(hunt(CASE, PLAN, refuse, { extraSources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 }), Refused)
   assert.equal(log.filter(q => q.startsWith('site:')).length, 1, 'nothing more is sent after the refusal')
   const log2: string[] = []
   const capped: SearchFn = async q => { log2.push(q); return { ok: false, reason: 'cap' } }
-  const r = await hunt(CASE, PLAN, capped, { sources: [linkedinPostsSource()], wait: async () => {} })
-  assert.equal(r.stopped, 'cap'); assert.equal(r.sources, undefined); assert.ok(!log2.some(q => q.startsWith('site:')))
+  const r = await hunt(CASE, PLAN, capped, { extraSources: [linkedinPostsSource()], wait: async () => {} })
+  assert.equal(r.stopped, 'cap'); assert.equal(r.extraSources, undefined); assert.ok(!log2.some(q => q.startsWith('site:')))
   const log3: string[] = []
-  const r3 = await hunt(CASE, PLAN, fakeSearch(log3), { sources: [linkedinPostsSource()], wait: async () => {}, deadline: 5, now: (() => { let t = 0; return () => (t += 3) })() })
+  const r3 = await hunt(CASE, PLAN, fakeSearch(log3), { extraSources: [linkedinPostsSource()], wait: async () => {}, deadline: 5, now: (() => { let t = 0; return () => (t += 3) })() })
   assert.ok(r3.stopped === 'deadline')
 })
 
@@ -122,10 +122,10 @@ test('review (opus): a STOP answer in the post-query phase stops the source at o
       if (++postQueries === 1) return { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] }
       return { ok: false, reason }
     }
-    const r = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 })
+    const r = await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1 })
     const afterStop = log.slice(log.findIndex((q, i) => q.startsWith('site:') && i > log.findIndex(x => x.startsWith('site:'))) + 1)
     assert.deepEqual(afterStop, [], `${reason}: no search is sent after the stop answer`)
-    assert.equal(r.stopped, reason); assert.equal(r.sources![0].dropped[`stopped: ${reason}`], 1, 'the unsearched post is counted as stopped, not lost')
+    assert.equal(r.stopped, reason); assert.equal(r.extraSources![0].dropped[`stopped: ${reason}`], 1, 'the unsearched post is counted as stopped, not lost')
     assert.equal(postQueries, 2, 'the third and fourth post queries were not sent')
   }
 })
@@ -133,24 +133,24 @@ test('review (opus): a STOP answer in the post-query phase stops the source at o
 test('review (opus): a post whose derived search was capped or failed is searched on the next call, not lost; a query is remembered only once it succeeded', async () => {
   const posts = [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.'),
     hit(liPost('sendtech', '2026-10-20'), 'SendTech Launches Email Infrastructure for Deliverability', 'Excited to launch our newest platform for agencies running cold email at scale.')]
-  const sourceState = new Map<string, unknown>()
+  const extraSourceState = new Map<string, unknown>()
   const log: string[] = []
   let failSendTech = true
   const search: SearchFn = async q => { log.push(q); if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: posts }; if (q.startsWith('site:')) return { ok: true, hits: [] }
     if (/^SendTech/.test(q) && failSendTech) return { ok: false, reason: 'error' }
     return { ok: true, hits: [hit(`https://found.example/${q.split(' ')[0].toLowerCase()}`, 'x', 'x')] } }
   // call 1: a cap of ONE derived search: the newer post (Uplift) is searched, SendTech waits
-  const first = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  const first = await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource({ maxDerived: 1 })], extraSourceState, wait: async () => {}, concurrency: 1 })
   assert.deepEqual(first.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://found.example/uplift'])
-  assert.equal(first.sources![0].dropped['deferred: derived search cap'], 1)
+  assert.equal(first.extraSources![0].dropped['deferred: derived search cap'], 1)
   // call 2: SendTech's search is made first and FAILS: it is retried on call 3
   const n2 = log.length
-  const second = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  const second = await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource({ maxDerived: 1 })], extraSourceState, wait: async () => {}, concurrency: 1 })
   assert.ok(log.slice(n2).some(q => /^SendTech/.test(q)), 'the deferred post is searched on the next call')
   assert.equal(second.candidates.filter(c => c.via === 'engager').length, 0)
   failSendTech = false
   const n3 = log.length
-  const third = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 1 })], sourceState, wait: async () => {}, concurrency: 1 })
+  const third = await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource({ maxDerived: 1 })], extraSourceState, wait: async () => {}, concurrency: 1 })
   assert.ok(log.slice(n3).some(q => /^SendTech/.test(q)), 'a failed search is retried')
   assert.deepEqual(third.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://found.example/sendtech'])
 })
@@ -158,8 +158,8 @@ test('review (opus): a post whose derived search was capped or failed is searche
 test('review (opus): only http(s) pages are Candidates', async () => {
   const search: SearchFn = async q => q.startsWith('site:linkedin.com/posts') ? { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] }
     : q.startsWith('site:') ? { ok: true, hits: [] } : /^Uplift/.test(q) ? { ok: true, hits: [hit('mailto:info@upliftsales.example', 'x', 'x'), hit('data:text/html,hi', 'x', 'x'), hit('ftp://files.example/brochure.pdf', 'x', 'x'), hit('https://upliftsales.example/', 'ok', 'x')] } : { ok: true, hits: [] }
-  const r = await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], wait: async () => {} })
-  assert.deepEqual(r.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://upliftsales.example/']); assert.equal(r.sources![0].dropped['unopenable host'], 3)
+  const r = await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource()], wait: async () => {} })
+  assert.deepEqual(r.candidates.filter(c => c.via === 'engager').map(c => c.url), ['https://upliftsales.example/']); assert.equal(r.extraSources![0].dropped['unopenable host'], 3)
 })
 
 test('review (haiku): persistently failing posts cannot starve unsearched ones; an unanswered post query is retried; a deadline inside the source is `stopped`', async () => {
@@ -169,22 +169,22 @@ test('review (haiku): persistently failing posts cannot starve unsearched ones; 
   const posts = words.map((w, i) => mk(liPost(`h${i}`, `2026-10-${String(20 - i).padStart(2, '0')}`, `p${i}`), `${w} Agency Launches New Outbound Platform`, `${w} Agency announces a new outbound platform for agencies in Sydney this season`))
   const searched: string[] = []
   const search: SearchFn = async q => { if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: posts }; if (q.startsWith('site:')) return { ok: true, hits: [] }; searched.push(q.split(' ')[0]); return /^(Alpha|Bravo|Charlie|Delta|Echo|Foxtrot)/.test(q) ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
-  const sourceState = new Map<string, unknown>()
-  for (let call = 0; call < 3; call++) await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource({ maxDerived: 6 })], sourceState, wait: async () => {}, concurrency: 1 })
+  const extraSourceState = new Map<string, unknown>()
+  for (let call = 0; call < 3; call++) await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource({ maxDerived: 6 })], extraSourceState, wait: async () => {}, concurrency: 1 })
   assert.deepEqual(words.filter(w => !searched.includes(w)), [], 'every post was searched at least once (the 6 that always fail do not starve the 6 behind them)')
   // 2. a post query that was never answered is sent again on the next call
   const sent: string[] = []
   let calls = 0
   const flaky: SearchFn = async q => { if (q.startsWith('site:')) { sent.push(q); return ++calls === 1 ? { ok: true, hits: [] } : { ok: false, reason: 'error' } } return { ok: true, hits: [] } }
   const st2 = new Map<string, unknown>()
-  await hunt(CASE, PLAN, flaky, { sources: [linkedinPostsSource()], sourceState: st2, wait: async () => {} })
+  await hunt(CASE, PLAN, flaky, { extraSources: [linkedinPostsSource()], extraSourceState: st2, wait: async () => {} })
   const first = sent.length; calls = -100
-  await hunt(CASE, PLAN, flaky, { sources: [linkedinPostsSource()], sourceState: st2, wait: async () => {} })
+  await hunt(CASE, PLAN, flaky, { extraSources: [linkedinPostsSource()], extraSourceState: st2, wait: async () => {} })
   assert.ok(sent.length - first >= 3, 'the post queries that failed were sent again')
   // 3. a deadline that passes INSIDE the source (the clock runs out after the first post query is answered) stops the hunt
   let siteCalls = 0
   const dl = await hunt(CASE, PLAN, async q => { if (q.startsWith('site:')) siteCalls++; return q.startsWith('site:') ? { ok: true, hits: [hit(liPost('uplift-sales', '2026-11-10'), "Uplift Sales's Post", 'Uplift Sales is a phone-only agency calling from Sydney, so these rules shape every campaign we set up.')] } : { ok: true, hits: [] } },
-    { sources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1, deadline: 1000, now: () => (siteCalls >= 1 ? 2000 : 0) })
+    { extraSources: [linkedinPostsSource()], wait: async () => {}, concurrency: 1, deadline: 1000, now: () => (siteCalls >= 1 ? 2000 : 0) })
   assert.equal(dl.stopped, 'deadline'); assert.equal(siteCalls, 1, 'nothing more is sent once the deadline has passed')
 })
 
@@ -195,16 +195,16 @@ test('review (opus round 2): one failing follow-up search is sent once per call 
   const search: SearchFn = async q => { log.push(q); if (q.startsWith('site:linkedin.com/posts')) return { ok: true, hits: [same('2026-11-10', 'one'), same('2026-11-09', 'two')] }; if (q.startsWith('site:')) return { ok: true, hits: [] }; return /^Acme/.test(q) ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
   const state = new Map<string, unknown>()
   const perCall: number[] = []
-  for (let i = 0; i < 5; i++) { const n = log.length; await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], sourceState: state, wait: async () => {}, concurrency: 1 }); perCall.push(log.slice(n).filter(q => /^Acme/.test(q)).length) }
+  for (let i = 0; i < 5; i++) { const n = log.length; await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource()], extraSourceState: state, wait: async () => {}, concurrency: 1 }); perCall.push(log.slice(n).filter(q => /^Acme/.test(q)).length) }
   assert.deepEqual(perCall, [1, 1, 0, 0, 0], 'once per call, then given up after the second failed try (a failed search may have been billed)')
   // R7: 4 post queries x 2 platforms, only 2 per call; every site:x.com query always fails
   const PLAN4: ResearchPlan = { ...PLAN, triggers: [{ ...PLAN.triggers[0], queries: ['q one sydney', 'q two sydney', 'q three sydney', 'q four sydney'] }] }
   const sent: string[] = []
   const flaky: SearchFn = async q => { if (q.startsWith('site:')) sent.push(q); return q.startsWith('site:x.com') ? { ok: false, reason: 'unavailable' } : { ok: true, hits: [] } }
   const st2 = new Map<string, unknown>()
-  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { sources: [{ ...linkedinPostsSource({ maxPostQueries: 2 }) }], sourceState: st2, wait: async () => {}, concurrency: 1 })
+  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { extraSources: [{ ...linkedinPostsSource({ maxPostQueries: 2 }) }], extraSourceState: st2, wait: async () => {}, concurrency: 1 })
   for (const n of ['one', 'two', 'three', 'four']) assert.ok(sent.includes(`site:linkedin.com/posts q ${n} sydney`), `the ${n} query was reached`)
-  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { sources: [linkedinPostsSource({ maxPostQueries: 2 })], sourceState: st2, wait: async () => {}, concurrency: 1 })
+  for (let i = 0; i < 4; i++) await hunt(CASE, PLAN4, flaky, { extraSources: [linkedinPostsSource({ maxPostQueries: 2 })], extraSourceState: st2, wait: async () => {}, concurrency: 1 })
   for (const n of ['one', 'two', 'three', 'four']) assert.ok(sent.filter(q => q === `site:x.com q ${n} sydney`).length <= 2, `the failing ${n} x.com query is tried at most twice`)
 })
 
@@ -215,7 +215,7 @@ test('review (opus follow-up): a quota (402) answer may have been billed, so it 
     const search: SearchFn = async q => { log.push(q); return q.startsWith('site:linkedin.com/posts') ? { ok: true, hits: [post] } : q.startsWith('site:') ? { ok: true, hits: [] } : /^Uplift/.test(q) ? { ok: false, reason } : { ok: true, hits: [] } }
     const state = new Map<string, unknown>()
     const per: number[] = []
-    for (let i = 0; i < 3; i++) { const n = log.length; await hunt(CASE, PLAN, search, { sources: [linkedinPostsSource()], sourceState: state, wait: async () => {}, concurrency: 1 }); per.push(log.slice(n).filter(q => /^Uplift/.test(q)).length) }
+    for (let i = 0; i < 3; i++) { const n = log.length; await hunt(CASE, PLAN, search, { extraSources: [linkedinPostsSource()], extraSourceState: state, wait: async () => {}, concurrency: 1 }); per.push(log.slice(n).filter(q => /^Uplift/.test(q)).length) }
     assert.deepEqual(per, sentPerCall as unknown as number[], reason)
   }
 })

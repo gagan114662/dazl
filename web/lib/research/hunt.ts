@@ -7,6 +7,9 @@ import type { Candidate, FunnelStage, ResearchCase, ResearchPlan } from './types
 import type { SearchHit, Fail, TfDeps } from '../search/tinyfish.ts'
 import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
+import type { SafeGet } from '../sources/types.ts'
+import { collectRegistry, type RegistrySource } from './sources/index.ts'
+import { boardCandidates, BOARDS_BUDGET_MS } from './sources/ats-boards.ts'
 import { huntSourcesFromEnv, type HuntSource, type HuntSourceStat } from './sources/linkedin-discovery.ts'
 
 export const RESULTS_PER_QUERY = 10
@@ -37,13 +40,13 @@ export function urlKey(raw: string): string {
 // Stops the hunt (no further query is sent): the scan's or the day's allowance is used up, the key is refused, or search is off.
 const STOPS = new Set(['cap', 'auth', 'quota', 'disabled'])
 
-// `sources`: what each extra hunt source (F's linkedin-posts) read, searched and produced; absent when none ran.
-export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; queries: number; failed: Record<string, number>; stopped: string | null; sources?: HuntSourceStat[] }
+// `extraSources`: what each extra hunt source (F's linkedin-posts) read, searched and produced; absent when none ran.
+export interface HuntResult { candidates: Candidate[]; funnel: FunnelStage; queries: number; failed: Record<string, number>; stopped: string | null; extraSources?: HuntSourceStat[] }
 
 // `wait` is injected so tests do not sleep. A 'rate' answer (TinyFish's per-minute limit, enforced before anything is sent, so it costs nothing)
 // is retried after a pause (5 s plus up to 5 s of jitter, at most 18 times, so 1.5 to 3 minutes per query) (measured 15 Nov: 8 tries x 2.5 s with 6 workers lost 12 of 46 queries per case,
 // three whole triggers); any other failure skips that query.
-export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { sources?: HuntSource[]; sourceState?: Map<string, unknown>; extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; jitter?: () => number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
+export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn, o: { extraSources?: HuntSource[]; extraSourceState?: Map<string, unknown>; extra?: Candidate[]; concurrency?: number; rateRetries?: number; waitMs?: number; jitter?: () => number; wait?: (ms: number) => Promise<void>; deadline?: number; now?: () => number } = {}): Promise<HuntResult> {
   const t0 = Date.now()
   const qs = huntQueries(plan), after = afterDate(c)
   const wait = o.wait ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
@@ -84,12 +87,12 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
     }
   }
   // Extra hunt sources (MISSION v2: F's public posts -> openable pages) run after the queries, on the same search (so the scan's search budget
-  // counts them), and only while the hunt has not been stopped. A source keeps its own state in `o.sourceState` across repeated calls (the
+  // counts them), and only while the hunt has not been stopped. A source keeps its own state in `o.extraSourceState` across repeated calls (the
   // goal loop), so a repeat call adds only new work. A spend refusal inside a source is rethrown by the source itself.
   const sourceStats: HuntSourceStat[] = [], fromSources: Candidate[] = []
-  if (!stopped) for (const src of o.sources ?? huntSourcesFromEnv()) {
+  if (!stopped) for (const src of o.extraSources ?? huntSourcesFromEnv()) {
     if (o.deadline && now() > o.deadline) { stopped = 'deadline'; break }
-    const states = o.sourceState ?? (o.sourceState = new Map())
+    const states = o.extraSourceState ?? (o.extraSourceState = new Map())
     if (!states.has(src.id)) states.set(src.id, src.newState?.())
     const run = await src.run(c, plan, search, { rateRetries: o.rateRetries, waitMs: o.waitMs, jitter: o.jitter, wait: o.wait, deadline: o.deadline, now: o.now }, states.get(src.id))
     fromSources.push(...run.candidates); sourceStats.push(run.stat)
@@ -104,8 +107,49 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
   const candidates = [...byUrl.values()]
   const dropped: Record<string, number> = { duplicate_url: hits + extraIn - candidates.length }
   for (const [k, n] of Object.entries(failed)) dropped[`query_${k}`] = n
-  return { candidates, queries: qs.length, failed, stopped, ...(sourceStats.length ? { sources: sourceStats } : {}),
+  return { candidates, queries: qs.length, failed, stopped, ...(sourceStats.length ? { extraSources: sourceStats } : {}),
     funnel: { stage: 'hunt', in: qs.length, out: candidates.length, dropped, seconds: Math.round((Date.now() - t0) / 1000) } }
+}
+
+// E's hook (one function, behind the same switch as engine.ts researchEngineOn): A's hunt plus the registry sources (lib/research/sources).
+// Alongside the search: the sources that cover this case's place and category (city permits, city licences, SEC Form D). After it: the job
+// boards the search itself found (Greenhouse / Lever / Ashby), read for their roles' own posting days. Both merge into hunt's candidates by
+// hunt's own rule (a registry's dated record wins over a search hit for the same URL). Every source is a free
+// public API through the guarded getter (https, public IPs, 1 MB cap); one that fails adds a note, never throws. Without LEAD_ENGINE=research
+// this is exactly hunt().
+export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, search: SearchFn, http: SafeGet, o: Parameters<typeof hunt>[3] & { env?: Record<string, string | undefined>; sources?: RegistrySource[] } = {}): Promise<HuntResult & { registry: Record<string, string[]> }> {
+  const { env, sources, ...ho } = o
+  if ((env ?? process.env).LEAD_ENGINE !== 'research') return { ...await hunt(c, plan, search, ho), registry: {} }
+  const since = afterDate(c)
+  // the registry sources run alongside the search (never before it: a slow public API never delays the paid search), then merge by hunt's rule
+  // a registry failure can never reject the hunt (and so lose the paid search): it becomes a note
+  const registryRun = collectRegistry(c, since, http, sources).catch(() => ({ candidates: [] as Candidate[], notes: { registry: ['error'] } as Record<string, string[]> }))
+  // the scan's deadline bounds the registry half too: past it, the hunt stops waiting (a note says so) and no board is read
+  const now = ho.now ?? Date.now, left = () => (ho.deadline === undefined ? Infinity : ho.deadline - now())
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const registryInTime = ho.deadline === undefined ? registryRun : Promise.race([registryRun, new Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }>(r => {
+    timer = setTimeout(() => r({ candidates: [], notes: { registry: ['deadline'] } }), Math.max(0, left()))
+  })])
+  const [reg, h] = await Promise.all([registryInTime, hunt(c, plan, search, ho)]).finally(() => clearTimeout(timer))
+  const boards = left() <= 0 ? { candidates: [] as Candidate[], notes: ['deadline'] }
+    : await boardCandidates(c, h.candidates, since, http, undefined, { budgetMs: Math.min(BOARDS_BUDGET_MS, left()), now }).catch(() => ({ candidates: [] as Candidate[], notes: ['error'] }))
+  const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
+  // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept
+  const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
+  let replaced = 0, duplicate = 0
+  for (const x of [...reg.candidates, ...boards.candidates]) {
+    const k = urlKey(x.url), had = byUrl.get(k)
+    if (had?.dated === 'registry') { duplicate++; continue }
+    if (had) replaced++
+    byUrl.set(k, x)
+  }
+  const candidates = [...byUrl.values()]
+  // every source's note reaches the scan's funnel: a source that could not be read is never shown as a market with nothing in it
+  const dropped = { ...h.funnel.dropped }
+  for (const [id, ns] of Object.entries(registry)) for (const n of ns) dropped[`registry_${id}_${n}`] = (dropped[`registry_${id}_${n}`] ?? 0) + 1
+  if (replaced) dropped.registry_record_over_hit = replaced
+  if (duplicate) dropped.duplicate_url = (dropped.duplicate_url ?? 0) + duplicate
+  return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length, dropped }, registry }
 }
 
 // The real search: the research engine's queued TinyFish search (search-queue.ts), inside the scan's caps and spend ledger (a refusal throws
