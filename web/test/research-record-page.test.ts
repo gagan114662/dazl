@@ -60,7 +60,7 @@ test('a permit and a licence render as one dated sentence naming the business; a
   assert.equal(renderRegistryRecord(FX.austin, { kind: 'austin-permit', id: '2026-999999 BP' }), null, 'another permit')
   assert.equal(renderRegistryRecord(FX.vancouver, { kind: 'vancouver-licence', id: '26-000000' }), null, 'another licence')
   assert.equal(renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], status: 'Pending' }] }, registryRecordRef(FX.vancouver_url)!), null, 'not an issued licence')
-  assert.equal(renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], issueddate: null }] }, registryRecordRef(FX.vancouver_url)!), null, 'no day: no page')
+  for (const issueddate of [null, '2026-09-28T25:00:00Z', '2026-09-28T01:00:60Z', '2026-02-30T05:00:00+00:00']) assert.equal(renderRegistryRecord({ results: [{ ...FX.vancouver.results[0], issueddate }] }, registryRecordRef(FX.vancouver_url)!), null, `no valid day (${issueddate}): no page`)
 })
 
 test('through the real page fetcher: the cited record is a readable page with its own day; other JSON and a redirect to another record are not', async () => {
