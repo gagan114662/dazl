@@ -33,3 +33,16 @@ test('#878 the grade: a model that reads the proven day keeps its intent (inside
   const unproven = await scoreLeads(provider, 'k', 'ICP', [{ ...ZAYED, event_date_proof: null }], undefined, { windowDays: 90, now: NOW })
   assert.equal(unproven?.[0].intent, 0, 'unchanged: the deterministic hold for a day without proof (#377)')
 })
+
+// Independent review (sonnet, APPROVE 8/10) nits, pinned:
+test('#878 (review) a proven day OUTSIDE the window: the model may read it as verified, but the stored grade is still held at intent 0 with the timing note', async () => {
+  const stale = { ...ZAYED, event_date: '2026-04-01' }   // proven, 228 days before NOW, window 90
+  assert.match(eventAssociation(stale, NOW), /^verified/, 'the day itself is proven')
+  const provider = { research: async () => ({ text: '', citedUrls: [] }), complete: async () => 'LEAD 1 | fit 4 | intent 4 | action 3 | match yy?y | signals none | why Expanded its Chicago office.' } as never
+  const g = await scoreLeads(provider, 'k', 'ICP', [stale], undefined, { windowDays: 90, now: NOW })
+  assert.equal(g?.[0].intent, 0); assert.match(g?.[0].why ?? '', /Event timing is unconfirmed/)
+})
+test('#878 (review) an impossible calendar day or an unknown proof value is never shown as verified', () => {
+  assert.equal(eventAssociation({ ...ZAYED, event_date: '2026-02-30' }, NOW), 'unverified')
+  assert.equal(eventAssociation({ ...ZAYED, event_date_proof: 'model_said_so' }, NOW), 'unverified')
+})
