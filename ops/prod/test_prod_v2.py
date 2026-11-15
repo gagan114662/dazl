@@ -31,7 +31,7 @@ PINNED = {
     # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
     # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
     # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
-    'deploy-prod.sh': '9931810ae01b1003ba651a823ba9d1bf036aac7e6ad81f17b724c92fa49e8977',
+    'deploy-prod.sh': '66f5391fb8e87f0147d3109bf96118fbdfdcc243f0b32c186ab9bcae629deb9b',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
@@ -176,7 +176,9 @@ class V2Refusals(unittest.TestCase):
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
         (T / 'Caddyfile').write_text('dazl.ai, www.dazl.ai {\n\treverse_proxy localhost:3104\n}\n')
         self.live = T / 'rel' / f'dazl-{A[:8]}-prod' / 'web'; self.live.mkdir(parents=True)
-        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live)   # the live release: a real process running from its web/
+        # the live release: a real process running from its web/, with a fixed env (the deploy copies /proc/<pid>/environ into the release env,
+        # so nothing from the test runner's own env may reach it)
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live, env={'PATH': os.environ['PATH']})
         (T / 'listen' / '3104').write_text(str(self.proc.pid)); (T / 'health' / '3104').write_text(A)
         (T / 'run.env').write_text('DAZL_MAIL=on\n')
 
@@ -275,7 +277,8 @@ class V2Refusals(unittest.TestCase):
     def test_a_release_env_without_mail_settings_is_refused_before_anything_is_deployed(self):
         # #1089: without SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM every verification, reset and play email stays in the host's outbox
         for lines in ([], ['SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'], ['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465'],
-                      ['SYSTEM_MAIL_SMTP_URL=', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"']):
+                      ['SYSTEM_MAIL_SMTP_URL=', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'],
+                      ['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM="   "']):
             self._db(lines)
             r = self.run_deploy('b' * 40)
             self.assertEqual(r.returncode, 1, lines)
@@ -283,6 +286,21 @@ class V2Refusals(unittest.TestCase):
             self.assertFalse((self.t / 'dl').exists(), 'nothing was downloaded')
             self.assertNotRegex(self.log('systemctl.log'), r'\b(start|stop|enable|disable|reload)\b')
             self.assertIn('reverse_proxy localhost:3104', (self.t / 'Caddyfile').read_text())
+
+    def _live_env(self, extra):
+        # restart the fake live release with these variables in its process env (prod's mail settings come from there AND the run env)
+        self.proc.kill(); self.proc.wait()
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live, env={'PATH': os.environ['PATH'], **extra})
+        (self.t / 'listen' / '3104').write_text(str(self.proc.pid))
+
+    def test_mail_settings_from_the_live_process_count_and_the_run_env_overrides_them(self):
+        self._live_env({'SYSTEM_MAIL_SMTP_URL': 'smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM': 'dazl <leads@notify.example>'})
+        self._db([])
+        r = self.run_deploy('b' * 40)
+        self.assertNotIn('SYSTEM_MAIL', r.stdout + r.stderr); self.assertIn('prebuilt fetch/verify failed', r.stdout + r.stderr)
+        self._db(['SYSTEM_MAIL_SMTP_URL='])   # the run env's empty value wins over the live one: refused
+        r = self.run_deploy('b' * 40)
+        self.assertEqual(r.returncode, 1); self.assertIn('has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty)', r.stdout + r.stderr)
 
     def test_a_release_env_with_both_mail_settings_goes_past_the_mail_check(self):
         self._db(['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'])
