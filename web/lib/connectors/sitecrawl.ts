@@ -1,5 +1,7 @@
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
+import zlib from 'node:zlib'
+import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
@@ -12,7 +14,7 @@ import { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN } from './domain-unreso
 export { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN, domainUnresolvedWords } from './domain-unresolved.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
-import { personalAddresses, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -74,6 +76,24 @@ const TEXT_BYTES = 4_000_000
 
 // timeoutMs/lookup are injectable for tests only; production callers use the
 // defaults. Lookup defaults to the SSRF-guarded resolver (private IPs refused).
+// 'deflate' is zlib-wrapped by the spec, but some servers send raw deflate under that name (review): the first two bytes tell them apart (a zlib header is a
+// multiple of 31 with method 8). Decided on the first chunk; either way the same limits and handlers apply.
+function inflateEitherWay(): Transform {
+  let inner: zlib.Inflate | zlib.InflateRaw | null = null
+  const t: Transform = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      if (!inner) {
+        const wrapped = chunk.length >= 2 && (chunk[0] & 0x0f) === 8 && ((chunk[0] << 8) | chunk[1]) % 31 === 0
+        inner = wrapped ? zlib.createInflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH })
+        inner.on('data', (d: Buffer) => t.push(d)); inner.on('error', (e: Error) => t.destroy(e))
+      }
+      inner.write(chunk, () => cb())
+    },
+    flush(cb) { if (!inner) return cb(); inner.once('end', () => cb()); inner.end() },
+    destroy(err, cb) { inner?.destroy(); cb(err) },
+  })
+  return t
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -95,10 +115,19 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
       const done = () => { const all = Buffer.concat(chunks); const body = all.subarray(0, MAX_BYTES).toString('utf8'); return all.length > MAX_BYTES ? { status, body, finalUrl: u.toString(), text: plainText(all.toString('utf8')) } : { status, body, finalUrl: u.toString() } }
       readSoFar = () => (n >= MAX_BYTES ? done() : null)
-      res.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { res.destroy(); resolve(done()) } else chunks.push(c) })
-      res.on('end', () => resolve(done()))
-      res.on('error', () => resolve(null))
-      res.on('close', () => resolve(null)) // no-op once already settled
+      // Some servers compress the body even though this request asks for 'identity' (prod mxprod5: ogletree.com answers gzip). Read raw, those bytes reached the
+      // company-name check as binary, the company's own site was refused (name_mismatch) and a lead with a proven day was held at no_domain. The body is decoded
+      // here, and the same limits count DECODED bytes, so a small compressed body cannot expand past them. An unknown encoding is not read.
+      const enc = String(res.headers['content-encoding'] ?? '').trim().toLowerCase()
+      const decoder = !enc || enc === 'identity' ? null : enc === 'gzip' || enc === 'x-gzip' ? zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH }) : enc === 'deflate' ? inflateEitherWay() : enc === 'br' ? zlib.createBrotliDecompress({ finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH }) : undefined
+      if (decoder === undefined) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
+      const src: Readable = decoder ? res.pipe(decoder) : res
+      const stop = () => { res.destroy(); decoder?.destroy() }
+      src.on('data', (c: Buffer) => { n += c.length; if (n > TEXT_BYTES) { stop(); resolve(done()) } else chunks.push(c) })
+      src.on('end', () => resolve(done()))
+      src.on('error', () => { const kept = chunks.length ? done() : null; stop(); resolve(kept) })   // a truncated compressed tail keeps what was decoded; the socket is closed (review)
+      res.on('error', () => { stop(); resolve(null) })
+      res.on('close', () => { if (!decoder) resolve(null) }) // no-op once already settled; with a decoder, its own end/error settles
     })
     hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(readSoFar()) }, timeoutMs)   // past the stored-body cap, a slow tail never costs the page (council)
     // Destroy WITH an error: relying on plain destroy() to surface an 'error'
@@ -1098,6 +1127,22 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
+      }
+      // #1036: a buyer the crawl named on this site whose OWN personal address the site prints (the published tier recordEmailGuesses
+      // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
+      // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
+      // lead's confirmed site only; the label names the person and says where it was printed.
+      if (r.reason === 'ok' || r.reason === 'none_published') {
+        const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
+        for (const f of r.found) {
+          if (f.kind !== 'person') continue
+          const pub = publishedCandidateFor(db, tenantId, l.id, f.value.split(',')[0] ?? '')
+          if (!pub || !sameSite(pub.address.split('@')[1] ?? '', site) || have.has(pub.address.toLowerCase())) continue
+          have.add(pub.address.toLowerCase())
+          const excerpt = `${f.value}: their own address, printed on the company website`
+          const label = `${contextLabel({ excerpt, source_url: pub.url })}${guessed ? '; site found by name search and location match, not linked from the source' : ''}`
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: pub.address.toLowerCase().slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: pub.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++
+        }
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
     }
