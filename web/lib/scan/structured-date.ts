@@ -9,6 +9,8 @@
 //   - a real calendar day. datePublished / dateModified / dateCreated are publication or update stamps and are never read here (page-timing.ts keeps them as labels only).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
 import { ownPostDate } from './own-post-date.ts'
+import { announcementDatelineDay, relativeEventDay, DATE_BASIS_DATELINE } from './announcement-date.ts'
+import { isHiringTrigger } from './scoreboard.ts'
 import { isCountryOrRegion, countryFromField, countriesIn, regionOf, regionsIn, countryOfRegion } from './countries.ts'
 
 export type DateKind = 'Event' | 'JobPosting'
@@ -252,10 +254,10 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
 
 // Bounded finishing pass for undated candidates: at most `max` of them, one fetch each (the verifier's cached page, so normally none). Mutates the candidate: event_date and a timing_note
 // that says where the date came from. It decides nothing about the window - the caller's window gate judges the new date like any other.
-export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null }>(
-  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; text?: string; published?: string | null } | { fail: string } | null>, max = 6, where: string[] = [], request?: string | null,
-): Promise<{ company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[]> {
-  const done: { company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[] = []
+export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null; date_basis?: 'announcement_dateline' | null; signal_kind?: string | null }>(
+  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; text?: string; title?: string; published?: string | null } | { fail: string } | null>, max = 6, where: string[] = [], request?: string | null,
+): Promise<{ company: string; date: string; kind: DateKind | 'OwnPost' | 'RelativeDay' | 'AnnouncementDateline'; url: string }[]> {
+  const done: { company: string; date: string; kind: DateKind | 'OwnPost' | 'RelativeDay' | 'AnnouncementDateline'; url: string }[] = []
   let tried = 0
   for (const l of leads) {
     if (l.event_date || tried >= max) continue
@@ -271,6 +273,22 @@ export async function finishUndatedLeads<T extends { company: string; signal: st
         l.event_date = own.date; l.event_date_proof = 'page_bound'; l.event_date_proof_note = own.why.slice(0, 200)
         l.timing_note = `event date ${own.date}: ${own.why}`
         done.push({ company: l.company, date: own.date, kind: 'OwnPost', url: l.source_url })
+        continue
+      }
+      // #1099, only when nothing above dated it, and never for a hiring lead (a posting is dated by its board): the quote's own relative day ("on
+      // Wednesday") counted from the page's machine-readable publication day, else the page that announces this completed event dates the ANNOUNCEMENT
+      // (labelled date_basis 'announcement_dateline', shown as "announced <date>"; Hermes decision 15 Nov, reversing #460 only in this form). announcement-date.ts.
+      if (typeof page.text === 'string' && !isHiringTrigger(l.signal, l.signal_kind ?? null)) {
+        const input = { quote: l.excerpt, company: l.company, title: page.title, pageText: page.text, published: page.published, structured: page.structured }
+        const rel = relativeEventDay(input)
+        const ann = rel.day ? null : announcementDatelineDay(input)
+        const got = rel.day ? rel : ann
+        if (got?.day) {
+          l.event_date = got.day; l.event_date_proof = 'page_bound'; l.event_date_proof_note = got.why.slice(0, 200)
+          if (!rel.day) l.date_basis = DATE_BASIS_DATELINE
+          l.timing_note = `event date ${got.day}: ${got.why}`.slice(0, 300)
+          done.push({ company: l.company, date: got.day, kind: rel.day ? 'RelativeDay' : 'AnnouncementDateline', url: l.source_url })
+        }
       }
       continue
     }

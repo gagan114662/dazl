@@ -26,7 +26,7 @@ test('export read preserves raw event date status with tenant isolation and no i
 })
 test('lead UI and CSV both expose date context alongside raw date fields', () => {
   const read = (p:string) => readFileSync(new URL(`../${p}`,import.meta.url),'utf8')
-  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
+  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ basis: \(l as \{ date_basis\?: string \| null \}\)\.date_basis \?\? null, dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
   const route = read('app/api/leads/export/route.ts')
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
   assert.match(route, /date_context: \(\(\) => .*eventDateCopy\(lead\.event_date/); assert.match(route, /windowMissed: timingUnconfirmedReason\(lead, o\) === 'out_of_window'/)

@@ -51,30 +51,3 @@ export function resolveTiming(pageText: string, quote: string, published: string
   return { published: pub, olderYear, note: [pubNote, season].filter(Boolean).join('; ') || null }
 }
 
-// #1099 (matrix holds): a news report usually gives the event's day RELATIVE to its own publication ("Krones on Wednesday inaugurated its new
-// facility", published Wednesday Aug 19). The publication day stays a label (above); here it only resolves which Wednesday the EVIDENCE means,
-// and only when the quote itself (the sentence the verifier checks on the page) names the company and says the day: "today", "yesterday" or
-// "on <weekday>". The day is the latest such day on or before publication (a report never dates its event after it was published). Refused,
-// and left undated, when the quote speaks of the future or a plan ("will", "plans", "set to", "next", "upcoming", "scheduled"...), when it
-// says "last <weekday>" (which week is not settled) or when no single publication day is known. Pure; no model, no network.
-const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
-const FUTURE = /\b(?:will|would|shall|plans?|planned|planning|intends?|set to|to (?:open|launch|hold|host|start|begin|unveil|break ground)|expected|expects|scheduled|upcoming|next|soon|preparing|prepares)\b/i
-const RELATIVE = /\b(today|yesterday|on (monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i
-export interface RelativeDay { day: string; why: string }
-export function relativeEventDay(quote: string, company: string, published: string | null | undefined): RelativeDay | null {
-  if (!published || !/^\d{4}-\d{2}-\d{2}$/.test(published)) return null
-  const q = quote.replace(/\s+/g, ' ').trim()
-  const co = company.replace(/\s+/g, ' ').trim()
-  if (co.length < 2 || !q.toLowerCase().includes(co.toLowerCase())) return null     // the quote must name this company
-  if (FUTURE.test(q) || /\blast (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\b/i.test(q)) return null
-  const m = RELATIVE.exec(q)
-  if (!m) return null
-  const pub = new Date(`${published}T00:00:00Z`)
-  if (Number.isNaN(pub.getTime())) return null
-  let back: number
-  if (m[1].toLowerCase() === 'today') back = 0
-  else if (m[1].toLowerCase() === 'yesterday') back = 1
-  else back = (pub.getUTCDay() - WEEKDAYS.indexOf(m[2].toLowerCase()) + 7) % 7
-  const day = new Date(pub.getTime() - back * 86_400_000).toISOString().slice(0, 10)
-  return { day, why: `"${m[1]}" in the evidence sentence naming this company, counted from the page's own publication day ${published}` }
-}

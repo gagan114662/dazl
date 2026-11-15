@@ -138,6 +138,8 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
+  // #1099: the announcement's day, labelled: the page announcing it was published then; the event happened on or before it
+  else if ((l as { date_basis?: string | null }).date_basis === 'announcement_dateline') facts.push(`The page announcing it was published ${l.event_date}; the event happened on or before that day${l.window_missed ? ', outside the requested recency window' : ''}.`)
   else if (l.timing === 'proof_backed') facts.push(`The cited source dates the event to ${l.event_date}.`)
   else if (l.day_verified && l.window_missed) facts.push(`The cited source dates the event to ${l.event_date}, outside the requested recency window.`)
   else if (l.day_verified) facts.push(`The cited source dates the event to ${l.event_date}; whether it sits inside the requested recency window is unresolved.`)

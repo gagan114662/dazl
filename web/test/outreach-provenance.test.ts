@@ -15,7 +15,7 @@ function setup(){
 }
 test('provenance exposes exact current claims and contact match, never upgrades human/quote/date verification',()=>{
  const db=setup();const before=db.serialize();const p=messageProvenance(db,'A','lead',' HELLO@acme.example ')
- assert.deepEqual(p,{company:'Acme',signal:'Hiring SDRs',excerpt:'Acme is hiring an SDR.',source_url:'https://acme.example/jobs',event_date:'2026-10-01',date_status:'unverified',contact_origin:'lead_record',contact_source_url:null})
+ assert.deepEqual(p,{company:'Acme',signal:'Hiring SDRs',excerpt:'Acme is hiring an SDR.',source_url:'https://acme.example/jobs',event_date:'2026-10-01',date_status:'unverified',date_basis:null,contact_origin:'lead_record',contact_source_url:null})
  assert.deepEqual(db.serialize(),before)
  db.prepare("UPDATE leads SET human_confirmed_at=123 WHERE id='lead'").run()
  assert.deepEqual(messageProvenance(db,'A','lead','hello@acme.example'),p)

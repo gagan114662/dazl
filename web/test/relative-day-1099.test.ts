@@ -6,7 +6,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { relativeEventDay } from '../lib/scan/page-timing.ts'
+import { relativeEventDay } from '../lib/scan/announcement-date.ts'
+const rel = (quote: string, company: string, published: string | null) => relativeEventDay({ quote, company, published }).day
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
@@ -14,23 +15,30 @@ import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 const KRONES = 'German packaging and bottling equipment major Krones on Wednesday inaugurated its new manufacturing facility at Vemagal Industrial Area'
 
 test('a weekday, "today" or "yesterday" in the quote is counted back from the page\'s own publication day', () => {
-  assert.equal(relativeEventDay(KRONES, 'Krones', '2026-08-19')?.day, '2026-08-19', 'published on the Wednesday itself')
-  assert.equal(relativeEventDay(KRONES, 'Krones', '2026-08-21')?.day, '2026-08-19', 'published the Friday after: that same week\'s Wednesday')
-  assert.equal(relativeEventDay(KRONES, 'Krones', '2026-08-18')?.day, '2026-08-12', 'published on a Tuesday: the Wednesday before, never after publication')
-  assert.equal(relativeEventDay('Acme Dental today opened its second clinic in Toronto', 'Acme Dental', '2026-10-05')?.day, '2026-10-05')
-  assert.equal(relativeEventDay('Acme Dental yesterday opened its second clinic in Toronto', 'Acme Dental', '2026-10-01')?.day, '2026-09-30', 'across a month boundary')
-  assert.match(relativeEventDay(KRONES, 'Krones', '2026-08-19')!.why, /"on Wednesday" in the evidence sentence naming this company, counted from the page's own publication day 2026-08-19/)
+  assert.equal(rel(KRONES, 'Krones', '2026-08-19'), '2026-08-19', 'published on the Wednesday itself')
+  assert.equal(rel(KRONES, 'Krones', '2026-08-21'), '2026-08-19', 'published the Friday after: that same week\'s Wednesday')
+  assert.equal(rel(KRONES, 'Krones', '2026-08-18'), '2026-08-12', 'published on a Tuesday: the Wednesday before, never after publication')
+  assert.equal(rel('Acme Dental today opened its second clinic in Toronto', 'Acme Dental', '2026-10-05'), '2026-10-05')
+  assert.equal(rel('Acme Dental yesterday opened its second clinic in Toronto', 'Acme Dental', '2026-10-01'), '2026-09-30', 'across a month boundary')
+  assert.match(relativeEventDay({ quote: KRONES, company: 'Krones', published: '2026-08-19' }).why, /"on Wednesday" in the evidence sentence naming this company, counted from the page's own publication day 2026-08-19/)
 })
 
 test('nothing is dated without a stated relative day, a publication day, the company in the quote, or a past event', () => {
-  assert.equal(relativeEventDay('Integral, a Berlin-based startup, has closed an €18 million Series A round', 'Integral', '2026-09-16'), null, 'a byline alone dates nothing (#460 stands)')
-  assert.equal(relativeEventDay(KRONES, 'Krones', null), null, 'no publication day')
-  assert.equal(relativeEventDay(KRONES, 'Krones', 'Aug 19'), null, 'a malformed publication day')
-  assert.equal(relativeEventDay('The minister on Wednesday inaugurated a new facility', 'Krones', '2026-08-19'), null, 'the quote does not name the company')
+  assert.equal(rel('Integral, a Berlin-based startup, has closed an €18 million Series A round', 'Integral', '2026-09-16'), null, 'a byline alone dates nothing (#460 stands)')
+  assert.equal(rel(KRONES, 'Krones', null), null, 'no publication day')
+  assert.equal(rel(KRONES, 'Krones', 'Aug 19'), null, 'a malformed publication day')
+  assert.equal(rel('The minister on Wednesday inaugurated a new facility', 'Krones', '2026-08-19'), null, 'the quote does not name the company')
   for (const q of ['Krones will on Wednesday open its new facility', 'Krones plans to open on Friday', 'Krones is set to open on Friday', 'Krones is preparing to open on Friday', 'Krones opens next week, on Friday', 'Krones is expected to open on Friday'])
-    assert.equal(relativeEventDay(q, 'Krones', '2026-08-19'), null, `a future or planned event: ${q}`)
-  assert.equal(relativeEventDay('Krones last Wednesday inaugurated its facility', 'Krones', '2026-08-19'), null, '"last Wednesday" does not settle the week')
-  assert.equal(relativeEventDay('Krones inaugurated its facility this week', 'Krones', '2026-08-19'), null, '"this week" is not a day')
+    assert.equal(rel(q, 'Krones', '2026-08-19'), null, `a future or planned event: ${q}`)
+  assert.equal(rel('Krones last Wednesday inaugurated its facility', 'Krones', '2026-08-19'), null, '"last Wednesday" does not settle the week')
+  assert.equal(rel('Krones inaugurated its facility this week', 'Krones', '2026-08-19'), null, '"this week" is not a day')
+  // review of the branch (R5): the relative day applies the same gates as the dateline
+  assert.equal(rel('Krones on Monday said it raised its Series A in March', 'Krones', '2026-10-12'), null, 'the quote also states its own period')
+  assert.equal(rel('Krones on Monday reported that it had opened a plant in 2025', 'Krones', '2026-10-12'), null, 'a year of its own')
+  assert.equal(rel('Krones today is one of the leading equipment makers', 'Krones', '2026-10-12'), null, 'no completed event')
+  assert.equal(rel('Today, Krones operates 20 plants', 'Krones', '2026-10-12'), null, 'no completed event')
+  assert.equal(rel('Krones opens its new plant on Friday', 'Krones', '2026-10-12'), null, 'present tense for a future opening')
+  assert.equal(rel('Krones on Wednesday opened a plant with 2,026 employees', 'Krones', '2026-08-19'), '2026-08-19', '"plant" and "2,026" are not a plan or a year')
 })
 
 // Through the real runner (stubbed model and page, the careers-runner-dates pattern): the claimed byline day is refused by the binding as before,

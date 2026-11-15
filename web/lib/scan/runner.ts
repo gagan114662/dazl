@@ -31,8 +31,7 @@ import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
-import { relativeEventDay, resolveTiming } from './page-timing.ts'
-import { announcementDatelineDay, DATE_BASIS_DATELINE } from './announcement-date.ts'
+import { resolveTiming } from './page-timing.ts'
 import { eventDateBound } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
@@ -403,15 +402,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         else drop('duplicate')
         note(c0, 'review', why); continue
       }
-      // #1099: "Krones on Wednesday inaugurated ..." on a page published Wednesday Aug 19 dates the event Aug 19 (page-timing.ts relativeEventDay):
-      // the publication day only resolves the weekday the quote itself states. Everything after (the window, the verifier's quote check) judges it as any date.
-      const rel = relativeEventDay(c0.excerpt ?? '', c0.company, t.published)
-      // #1099 (Hermes decision, reversing #460 only in this labelled form): a page that IS the announcement of a completed event dates the ANNOUNCEMENT by its
-      // own publication day (announcement-date.ts). Never a hiring candidate (a posting is dated by its board), never when the quote states its own day or period.
-      const ann = rel || hiringCand ? null : announcementDatelineDay({ quote: c0.excerpt ?? '', company: c0.company, title: page.title, pageText: page.text, published: t.published, structured: (page as { structured?: string[] }).structured })
-      if (rel) c = { ...c0, event_date: rel.day, event_date_proof: 'page_bound', event_date_proof_note: rel.why.slice(0, 200), published_at: t.published }
-      else if (ann?.day) c = { ...c0, event_date: ann.day, event_date_proof: 'page_bound', event_date_proof_note: ann.why.slice(0, 200), date_basis: DATE_BASIS_DATELINE, published_at: t.published }
-      else if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
+      if (t.published || t.note || undatedWhy) c = { ...c0, published_at: t.published, timing_note: [undatedWhy, t.note].filter(Boolean).join('; ').slice(0, 300) || null }
     }
     if (!page) { drop('page_unreachable'); note(c, 'dropped', 'page_unreachable'); continue }
     if (isFail(page)) {
