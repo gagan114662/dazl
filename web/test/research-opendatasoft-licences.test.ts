@@ -42,6 +42,7 @@ test('the source: narrow chunked queries over every licence year the window touc
   const span = licenceQueries(VANCOUVER_LICENCES, 'restaurants', '2025-11-12', ['25', '26'])
   assert.match(w(span.window), /\(folderyear="25" or folderyear="26"\)/)
   assert.match(w(span.renewals(FX.window)[0]), /\(folderyear="24" or folderyear="25"\)/)
+  assert.match(w(span.locations(FX.window)[0]), /and \(folderyear="26"\) and/, '"locations this year": the current licence year only')
   // a busy window: the OR list is cut into requests of CHUNK clauses, each URL a few KB
   const many = Array.from({ length: 200 }, (_, i) => ({ house: String(1000 + i), street: 'W BROADWAY', businessname: `Business Number ${i} Ltd`, businesstradename: `Trade ${i}` }))
   const ru = q.renewals(many), lu = q.locations(many)

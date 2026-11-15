@@ -56,11 +56,24 @@ test("the case's place, city AND region: another state's Austin, Port Austin and
   assert.equal(placeTest({ where: 'London, Ontario' })!('London, UK (on-site)'), false)
   assert.equal(placeTest({ where: 'Columbus, Indiana' })!('Columbus, OH (in office)'), false)
   assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, OR'), true)
+  assert.equal(placeTest({ where: 'Austin, Indiana' })!('Austin, In-Office'), false, 'a code is a token, never a word'); assert.equal(placeTest({ where: 'London, Ontario' })!('London, On-site'), false)
+  assert.equal(placeTest({ where: 'Austin, Indiana' })!('Austin, IN (Hybrid)'), true); assert.equal(tx('Austin, TX 78701'), true)
   assert.equal(placeTest({ where: 'Austin' }), null, 'a case without a region: which Austin is not known, nothing is provably there')
-  assert.equal(placeTest({ where: 'Austin, USA' }), null, 'a country is not a region')
+  assert.equal(placeTest({ where: 'Austin, USA' }), null, 'a country is not a region'); assert.equal(placeTest({ where: 'Toronto, Canada' }), null)
+  assert.equal(placeTest({ where: 'San Francisco, CA' })!('San Francisco, CA'), true, 'CA is California, not Canada'); assert.equal(placeTest({ where: 'San Jose, CA' })!('San Jose, California, United States'), true)
   assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, OR (Hybrid)'), true)
   const roles = [{ title: 'Roofer', location: 'Austin, MN', posted: '2026-11-01', url: 'https://jobs.lever.co/acme/1', company: null }]
   assert.equal(boardCandidate(LV, roles, AUSTIN, SINCE), null)
+})
+
+test('a case with no testable place asks no board at all and says so', async () => {
+  let asked = 0
+  const r = await boardCandidates({ ...AUSTIN, where: 'Austin' }, [{ url: 'https://jobs.lever.co/acme/1', title: '', snippet: '', date: null, triggerId: 't', query: 'q', via: 'tinyfish' }], SINCE, async () => { asked++; return { status: 200, body: '[]' } })
+  assert.deepEqual(r, { candidates: [], notes: ['place_unknown'] }); assert.equal(asked, 0)
+  let t = 0
+  const slow = await boardCandidates(AUSTIN, [{ url: 'https://jobs.lever.co/a/1', title: '', snippet: '', date: null, triggerId: 't', query: 'q', via: 'tinyfish' }, { url: 'https://jobs.lever.co/b/1', title: '', snippet: '', date: null, triggerId: 't', query: 'q', via: 'tinyfish' }], SINCE,
+    async () => { t += 20_000; return { status: 200, body: '[]' } }, undefined, { budgetMs: 15_000, now: () => t })
+  assert.deepEqual(slow.notes, ['time_budget_reached'], 'board reads stop at their time budget')
 })
 
 test('the hook reads the boards the hunt found (one request per board), and a board record wins over the search hit for the same URL', async () => {

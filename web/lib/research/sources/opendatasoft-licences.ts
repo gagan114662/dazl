@@ -63,8 +63,8 @@ export function licenceQueries(d: LicenceDataset, category: string, since: strin
     // the year before each window year, at the window's addresses (any name: the name test runs here, on both of a licence's names)
     renewals: (rows: Row[]) => chunks([...new Set(rows.map(r => `(house=${lit(str(r.house))} and street=${lit(str(r.street))})`))]).map(ch =>
       url(`${typeClause(c.types)} and ${yearsClause([...new Set(years.map(prev))])} and (${ch.join(' or ')})`)),
-    // this window's years, under the window's business names (trade or legal): how many locations each name holds
-    locations: (rows: Row[]) => chunks(names(rows)).map(ch => url(`${typeClause(c.types)} and ${yearsClause(years)} and status="Issued" and (${ch.join(' or ')})`)),
+    // the current licence year only ("N locations this year"), under the window's business names (trade or legal)
+    locations: (rows: Row[]) => chunks(names(rows)).map(ch => url(`${typeClause(c.types)} and ${yearsClause(years.slice(-1))} and status="Issued" and (${ch.join(' or ')})`)),
   }
 }
 

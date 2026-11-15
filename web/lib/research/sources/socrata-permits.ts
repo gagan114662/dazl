@@ -20,7 +20,7 @@ export interface PermitDataset {
   city: string; region: string; country: string
   where: RegExp                    // the case's whole place, city AND region, anchored (tested on ' austin texas '; a bare ' austin ' is not it)
   url: string                      // the SODA resource, e.g. https://data.austintexas.gov/resource/3syk-w9eu.json
-  fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string; phone: string }
+  fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string }
   generalTrade: string             // the trade value of a general contractor in this dataset
   categories: Record<string, PermitCategory>
 }
@@ -38,7 +38,7 @@ export interface PermitCategory {
 export const AUSTIN_PERMITS: PermitDataset = {
   id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:tx|texas)(?: usa?| united states)? $/,
   url: 'https://data.austintexas.gov/resource/3syk-w9eu.json',
-  fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link', phone: 'contractor_phone' },
+  fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link' },
   generalTrade: 'General Contractor',
   categories: {
     roofing: {
@@ -65,7 +65,7 @@ const titleCase = (s: string) => s.toLowerCase().replace(/\b([a-z])/g, m => m.to
 
 export function permitQuery(d: PermitDataset, c: PermitCategory, since: string, page = 0): string {
   const f = d.fields
-  const select = [f.date, f.company, f.person, f.trade, f.description, f.number, f.location, f.link, f.phone].join(',')
+  const select = [f.date, f.company, f.person, f.trade, f.description, f.number, f.location, f.link].join(',')
   const where = `${f.date} >= '${since}T00:00:00' AND ${f.company} IS NOT NULL AND upper(${f.description}) like '%${c.serverLike}%'`
   return `${d.url}?${new URLSearchParams({ $select: select, $where: where, $order: `${f.date} DESC, ${f.number}`, $limit: String(PAGE_ROWS), $offset: String(page * PAGE_ROWS) })}`
 }

@@ -83,6 +83,13 @@ test('fair access and time: a throttled document stops every further SEC request
   assert.equal(later.length, 0)
   const after = await secFormDSource({ pace: async () => {}, cooldown, now: () => Date.now() + SEC_COOLDOWN_MS + 1 }).collect(SW, '2026-08-17', async () => ({ status: 503, body: '' }))
   assert.deepEqual(after.notes, ['http_503'], 'after the cooldown it asks again')
+  // a collect already running when another scan is throttled stops at its next request
+  const shared = { until: 0 }, docs: string[] = []
+  const running = await secFormDSource({ pace: async () => {}, cooldown: shared }).collect(SW, '2026-08-17', async u => {
+    if (u.startsWith('https://efts')) { shared.until = Date.now() + SEC_COOLDOWN_MS; return { status: 200, body: JSON.stringify(FX.page) } }   // the other scan's throttle lands now
+    docs.push(u); return { status: 200, body: '' }
+  })
+  assert.deepEqual(running, { candidates: [], notes: ['throttled_cooldown'] }); assert.equal(docs.length, 0)
   let t = 0
   const slow = await secFormDSource({ pace: async () => {}, budgetMs: 1000, now: () => t, cooldown: { until: 0 } }).collect(SW, '2026-08-17', async u => {
     t += 600

@@ -123,14 +123,16 @@ export function formDCandidate(h: FormDHit, f: FormDFiling, category: string): C
 let nextSlot = 0
 // after SEC throttles (429/403) no source asks again for 10 minutes, in any scan of this process
 export const SEC_COOLDOWN_MS = 10 * 60_000
+const COOLING = -1   // a request refused here during the cooldown (never sent): stops the collect without re-arming the cooldown
 const sharedCooldown = { until: 0 }
 const secPace = async () => { const now = Date.now(), at = Math.max(now, nextSlot); nextSlot = at + SEC_MIN_GAP_MS; if (at > now) await new Promise(r => setTimeout(r, at - now)) }
 
 export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: number; budgetMs?: number; now?: () => number; cooldown?: { until: number } } = {}): RegistrySource {
   const cool = o.cooldown ?? sharedCooldown
   const pace = o.pace ?? secPace, maxFilings = o.maxFilings ?? MAX_FILINGS, now = o.now ?? Date.now
-  const get = async (http: SafeGet, url: string, accept: string) => { await pace(); return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
-  const failure = (res: Awaited<ReturnType<SafeGet>>) => !res ? 'unreachable' : res.status === 429 || res.status === 403 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : null
+  // the cooldown is checked before EVERY request, so a collect already running in another scan stops too (answered as a 429)
+  const get = async (http: SafeGet, url: string, accept: string) => { await pace(); if (now() < cool.until) return { status: COOLING, body: '' }; return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
+  const failure = (res: Awaited<ReturnType<SafeGet>>) => !res ? 'unreachable' : res.status === COOLING ? 'throttled_cooldown' : res.status === 429 || res.status === 403 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : null
   return {
     id: 'sec-form-d',
     covers: c => !!usCity(c.where) && formDGroups(c).length > 0,
@@ -151,7 +153,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
         if ((p + 1) * PAGE >= page.total) break
       }
       if (notes.includes('throttled')) cool.until = now() + SEC_COOLDOWN_MS
-      if (notes.includes('throttled') || (notes.length && !hits.size)) return { candidates: [], notes }
+      if (notes.includes('throttled') || notes.includes('throttled_cooldown') || (notes.length && !hits.size)) return { candidates: [], notes }
       const newest = [...hits.values()].sort((a, b) => (a.fileDate < b.fileDate ? 1 : -1))
       if (newest.length > maxFilings) notes.push('filing_cap_reached')
       const out: Candidate[] = []
@@ -160,6 +162,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
         if (now() > deadline) { notes.push('time_budget_reached'); break }
         const res = await get(http, formDDocUrl(h.cik, h.adsh), 'application/xml')
         const why = failure(res)
+        if (why === 'throttled_cooldown') { notes.push(why); break }
         if (why === 'throttled') { notes.push('throttled'); cool.until = now() + SEC_COOLDOWN_MS; break }   // SEC asked us to slow down: stop asking
         if (why || !res!.body.includes('<edgarSubmission')) { unread++; continue }
         const f = parseFormD(res!.body)

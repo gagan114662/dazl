@@ -106,7 +106,9 @@ export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, sear
   if ((env ?? process.env).LEAD_ENGINE !== 'research') return { ...await hunt(c, plan, search, ho), registry: {} }
   const since = afterDate(c)
   // the registry sources run alongside the search (never before it: a slow public API never delays the paid search), then merge by hunt's rule
-  const [reg, h] = await Promise.all([collectRegistry(c, since, http, sources), hunt(c, plan, search, ho)])
+  // a registry failure can never reject the hunt (and so lose the paid search): it becomes a note
+  const registryRun = collectRegistry(c, since, http, sources).catch(() => ({ candidates: [] as Candidate[], notes: { registry: ['error'] } as Record<string, string[]> }))
+  const [reg, h] = await Promise.all([registryRun, hunt(c, plan, search, ho)])
   const boards = await boardCandidates(c, h.candidates, since, http)
   const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
   // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept

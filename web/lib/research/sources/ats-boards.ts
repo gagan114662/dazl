@@ -12,7 +12,7 @@ import { isRecord, looksLikeHtml } from '../../sources/types.ts'
 
 export type Ats = 'greenhouse' | 'lever' | 'ashby'
 export interface Board { ats: Ats; token: string; host?: 'eu' }
-export const MAX_BOARDS = 15
+export const MAX_BOARDS = 15, BOARDS_BUDGET_MS = 30_000   // at most 30 s of board reads after the search
 
 // a search result's URL -> the board it belongs to (null for anything else)
 export function boardOf(raw: string): Board | null {
@@ -85,10 +85,11 @@ export function placeTest(c: Pick<ResearchCase, 'where'>): ((location: string) =
   const [city, region] = c.where.split(',').map(s => s.trim().toLowerCase())
   // no region (or only a country: "Austin", "Austin, USA"): which Austin is not known, so no role is provably there (fails closed)
   const r = (region ?? '').replace(/\./g, '')
-  if (!city || !r || /^(?:usa?|united states(?: of america)?|canada|ca)$/.test(r)) return null
+  if (!city || !r || /^(?:usa?|united states(?: of america)?|canada)$/.test(r)) return null
   const code = STATE[r] ?? (Object.values(STATE).includes(r) ? r : null), full = Object.keys(STATE).find(k => STATE[k] === code) ?? r
   const at = new RegExp(`(?:^|[-:(]\\s*)${esc(city)}(?=$|[^a-z])`)
-  const regionAfter = new RegExp(`^\\s*,\\s*(?:${[full, code].filter(Boolean).map(x => esc(x!)).join('|')})(?=$|[^a-z])`)
+  // the full name as a word; a code only as a whole token ("Austin, IN (Hybrid)", "Austin, TX 78701"), never a word ("Austin, In-Office")
+  const regionAfter = new RegExp(`^\\s*,\\s*(?:${esc(full)}(?=$|[^a-z])${code ? `|${esc(code)}(?=\\s*(?:$|[,();/|]|\\d))` : ''})`)
   return loc => loc.toLowerCase().split(/\s*(?:;|\||\/)\s*|(?<!,)\s+(?:or|and)\s+/).some(place => {
     const m = at.exec(place.trim())
     return !!m && regionAfter.test(place.trim().slice(m.index + m[0].length))
@@ -110,13 +111,17 @@ export function boardCandidate(b: Board, roles: Role[], c: Pick<ResearchCase, 'w
 }
 
 // The boards named by the hunt's own results -> one dated candidate per board with roles in the city in the window.
-export async function boardCandidates(c: ResearchCase, found: Candidate[], since: string, http: SafeGet, max = MAX_BOARDS): Promise<{ candidates: Candidate[]; notes: string[] }> {
+export async function boardCandidates(c: ResearchCase, found: Candidate[], since: string, http: SafeGet, max = MAX_BOARDS, o: { budgetMs?: number; now?: () => number } = {}): Promise<{ candidates: Candidate[]; notes: string[] }> {
+  const now = o.now ?? Date.now, deadline = now() + (o.budgetMs ?? BOARDS_BUDGET_MS)
+  // no testable place (no region, or only a country): no board can be shown to be there, so none is asked for
+  if (!placeTest(c)) return { candidates: [], notes: ['place_unknown'] }
   const boards = new Map<string, Board>()
   for (const x of found) { const b = boardOf(x.url); if (b) boards.set(`${b.ats}:${b.token}`, b) }
   const notes: string[] = [], out: Candidate[] = []
   if (boards.size > max) notes.push('board_cap_reached')
   const fail: Record<string, number> = {}
   for (const b of [...boards.values()].slice(0, max)) {
+    if (now() > deadline) { notes.push('time_budget_reached'); break }
     const res = await http(boardApi(b), { accept: 'application/json' }).catch(() => null)
     const why = !res ? 'unreachable' : res.status === 404 ? 'no_board' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : looksLikeHtml(res.body) ? 'not_json' : null
     let body: unknown = null
