@@ -57,7 +57,7 @@ export interface PermitRecord { company: string; eventSummary: string; eventDate
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '')
 const day = (v: unknown): string | null => { const d = str(v).slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) ? d : null }
 // "Empire Roofing Companies LLC **MAIN**" -> "Empire Roofing Companies LLC"
-const cleanCompany = (s: string) => s.replace(/\*+\s*MAIN\s*\*+/gi, '').replace(/[\s,]+$/, '').trim()
+export const cleanCompany = (s: string) => s.replace(/\*+\s*MAIN\s*\*+/gi, '').replace(/[\s,]+$/, '').trim()
 const companyKey = (s: string) => cleanCompany(s).toLowerCase().replace(/\b(?:llc|inc|ltd|co|corp|company|l\.l\.c\.?|lp)\b\.?/g, ' ').replace(/[^a-z0-9]+/g, '')
 // a contractor of record is a person's name: two to four words, letters only (the dataset sometimes holds a company or "N/A")
 export const looksLikePerson = (s: string) => /^[A-Za-z][A-Za-z'.-]+(?:\s+[A-Za-z][A-Za-z'.-]+){1,3}$/.test(s) && !/\b(?:llc|inc|ltd|roofing|construction|company|n\/?a|none)\b/i.test(s)
