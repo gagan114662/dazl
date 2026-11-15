@@ -5,9 +5,11 @@
 import type { Provider } from '../llm/provider.ts'
 import type { DbLike } from '../db/client.ts'
 import type { TfDeps } from '../search/tinyfish.ts'
+import type { SafeGet } from '../sources/types.ts'
 import type { Icp } from '../scan/icp.ts'
 import { planResearch } from './triggers.ts'
-import { hunt, tinyfishSearch } from './hunt.ts'
+import { huntWithRegistry, tinyfishSearch } from './hunt.ts'
+import { safeGet } from '../sources/http.ts'
 import { researchReady, researchEngineOn, runResearch, type ResearchRun, type ResearchStages } from './engine.ts'
 import type { ResearchCase, VerifiedLead } from './types.ts'
 
@@ -22,6 +24,7 @@ export interface ResearchScanContext {
   model: (name: string) => Provider                   // a provider for one model, wrapped in the job's spend guards and meter by the runner
   isRefusal: (e: unknown) => boolean                  // a spend refusal (SpendRefused): it stops the scan, never swallowed
   tf?: TfDeps
+  http?: SafeGet                                      // the registry sources' getter (default: the guarded safeGet); tests stub it
   now?: Date
   spent?: { searches: number }
   checkpoint?: () => void                             // the runner's ownership + deadline check, between stages
@@ -41,12 +44,13 @@ export function researchCaseFor(ctx: ResearchScanContext): ResearchCase | null {
 export type StageExtension = (ctx: ResearchScanContext, base: ResearchStages) => ResearchStages
 const extensions: StageExtension[] = []
 export const extendResearchStages = (x: StageExtension) => { extensions.push(x) }
-export function researchStagesFor(ctx: ResearchScanContext): ResearchStages {
+export function researchStagesFor(ctx: ResearchScanContext, env: Record<string, string | undefined> = process.env): ResearchStages {
   const sonnet = ctx.model(SONNET)
   const spent = ctx.spent ?? { searches: 0 }
   const base: ResearchStages = {
     plan: c => planResearch(c, (p, max) => sonnet.complete!(ctx.key, p, undefined, max), ctx.isRefusal),
-    hunt: (c, plan) => hunt(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.deadline ? { deadline: ctx.deadline.at, now: ctx.deadline.now } : {}),
+    // E's registry sources (free public records, dated by construction) join the search hits (lib/research/hunt.ts huntWithRegistry), inside the scan's deadline
+    hunt: (c, plan) => huntWithRegistry(c, plan, tinyfishSearch(ctx.db, c.tenant, spent, ctx.tf), ctx.http ?? safeGet, { env, ...(ctx.deadline ? { deadline: ctx.deadline.at, now: ctx.deadline.now } : {}) }),
   }
   return extensions.reduce((s, x) => x({ ...ctx, spent }, s), base)
 }
@@ -100,7 +104,7 @@ export async function runResearchScan(ctx: ResearchScanContext, env: Record<stri
   if (!researchEngineOn(env)) return null
   const c = researchCaseFor(ctx)
   if (!c) return null
-  const stages = researchStagesFor(ctx)
+  const stages = researchStagesFor(ctx, env)
   if (!researchReady(stages)) return null
   const run = await runResearch(c, stages, { isRefusal: ctx.isRefusal, checkpoint: ctx.checkpoint })
   const rows = run.leads.map(l => toScanRow(l, ctx.now))

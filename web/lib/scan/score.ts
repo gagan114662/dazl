@@ -3,7 +3,7 @@
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
 import type { Provider } from '../llm/provider.ts'
 import type { Icp } from './icp.ts'
-import { proofBackedTiming } from './scoreboard.ts'
+import { eventDayVerified, proofBackedTiming } from './scoreboard.ts'
 
 // Key-free signal taxonomy. Each signal is observable on public pages (news, jobs boards,
 // company sites, changelogs, community posts) and must be backed by the lead's cited evidence.
@@ -87,7 +87,16 @@ export function holdUngraded(leads: { fit?: number; why?: string }[], reason: st
   for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }
 }
 
-export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[], now: Date = new Date()): string {
+// What the grader is told about the event day. #878 / #1176: it used to print the retired date_status, which no scan sets to 'verified' any more, so every lead
+// whose day IS proven on its cited source (event_date_proof, the proof its own card shows) was graded as unverified timing: intent 0 and a "why" saying no
+// timing was verified, beside a card saying "verified on the cited source". The proof decides now (eventDayVerified, the card's own check); a stored
+// 'verified' without a proof is never shown as verified.
+export function eventAssociation(l: { event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, now: Date): string {
+  if (l.event_date && eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof ?? null, signal: l.signal ?? null, signal_kind: l.signal_kind ?? null }, { now })) return 'verified (the cited source states this day for this company and event)'
+  const s = l.date_status ?? 'unknown'
+  return s === 'verified' ? 'unverified' : s
+}
+export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], now: Date = new Date()): string {
   return `You are grading sales leads for one seller. Their target profile (ICP):
 ${icpText}
 
@@ -114,7 +123,7 @@ Rules:
 Reply with one line per lead, exactly this format, no preamble:
 LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | match <4 letters like yy?n> | signals <comma list or none> | why <sentence>[ | mism <words>]
 
-${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${l.date_status ?? "unknown"}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
+${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${eventAssociation(l, now)}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
 }
 
 const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))

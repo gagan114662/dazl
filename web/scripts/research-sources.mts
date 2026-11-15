@@ -1,25 +1,23 @@
-// MISSION v2 part E: run the research engine's signal sources live for one market and print what they return (no key, no model, no DB).
-//   node --experimental-strip-types --no-warnings scripts/research-sources.mts <city> <region> <country> <category> [days=90] [--json out.json]
-// e.g. scripts/research-sources.mts Austin TX US roofing
+// MISSION v2 part E: run the research engine's registry sources live for one case and print the Candidates hunt.ts would get (no key, no
+// model, no DB).  node --experimental-strip-types --no-warnings scripts/research-sources.mts "<where>" "<category>" [days=90] [--json out.json]
+// e.g. scripts/research-sources.mts "Austin, Texas" "roofing contractors"
 import { writeFileSync } from 'node:fs'
 import { safeGet } from '../lib/sources/http.ts'
-import { socrataPermitsSource } from '../lib/research/sources/socrata-permits.ts'
-import { opendatasoftLicencesSource } from '../lib/research/sources/opendatasoft-licences.ts'
+import { REGISTRY_SOURCES } from '../lib/research/sources/index.ts'
+import { afterDate } from '../lib/research/hunt.ts'
+import type { Candidate, ResearchCase } from '../lib/research/types.ts'
 
-const [city, region, country, category, daysArg] = process.argv.slice(2)
-if (!city || !region || !country || !category) { console.error('usage: research-sources.mts <city> <region> <country> <category> [days]'); process.exit(2) }
-const days = Number(daysArg && !daysArg.startsWith('--') ? daysArg : 90)
-const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
-const market = { city, region, country, category }
-const sources = [socrataPermitsSource(), opendatasoftLicencesSource()]
-const all = []
-for (const s of sources.filter(x => x.covers(market))) {
+const [where, category, daysArg] = process.argv.slice(2)
+if (!where || !category) { console.error('usage: research-sources.mts "<where>" "<category>" [days]'); process.exit(2) }
+const c: ResearchCase = { tenant: '-', jobId: '-', query: `${category} in ${where}`, offer: '-', where, category, windowDays: Number(daysArg && !daysArg.startsWith('--') ? daysArg : 90), today: new Date().toISOString().slice(0, 10) }
+const since = afterDate(c), all: Candidate[] = []
+for (const s of REGISTRY_SOURCES.filter(x => x.covers(c))) {
   const t0 = performance.now()
-  const r = await s.collect(market, since, safeGet)
-  console.log(`${s.id}: ${r.signals.length} companies in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.notes.length ? ` (notes: ${r.notes.join(', ')})` : ''}`)
-  all.push(...r.signals)
+  const r = await s.collect(c, since, safeGet)
+  console.log(`${s.id}: ${r.candidates.length} candidates in ${((performance.now() - t0) / 1000).toFixed(1)} s${r.notes.length ? ` (notes: ${r.notes.join(', ')})` : ''}`)
+  all.push(...r.candidates)
 }
-const named = all.filter(x => x.personName).length, dated = all.filter(x => x.eventDate >= since).length
-console.log(`${all.length} companies | named ${named} (${Math.round(100 * named / Math.max(all.length, 1))}%) | dated inside ${days} days ${dated} (${Math.round(100 * dated / Math.max(all.length, 1))}%) | with a source URL ${all.filter(x => x.sourceUrl).length}`)
-for (const x of all.slice(0, 15)) console.log(`  ${x.eventDate} | ${x.company.slice(0, 34).padEnd(34)} | ${(x.personName ?? '-').padEnd(20)} | ${x.eventCount} | ${x.eventSummary.slice(0, 70)}`)
-const out = process.argv.indexOf('--json'); if (out > 0) writeFileSync(process.argv[out + 1], JSON.stringify({ market, since, signals: all }, null, 1))
+const named = all.filter(x => /(?:Contractor of record|Named on the filing): /.test(x.snippet)).length, dated = all.filter(x => x.date && x.date >= since).length
+console.log(`${all.length} candidates | person named in the record ${named} (${Math.round(100 * named / Math.max(all.length, 1))}%) | dated inside ${c.windowDays} days ${dated} (${Math.round(100 * dated / Math.max(all.length, 1))}%)`)
+for (const x of all.slice(0, 15)) console.log(`  ${x.date} | ${x.triggerId.padEnd(36)} | ${x.title.slice(0, 60).padEnd(60)} | ${x.url.slice(0, 70)}`)
+const out = process.argv.indexOf('--json'); if (out > 0) writeFileSync(process.argv[out + 1], JSON.stringify({ case: c, since, candidates: all }, null, 1))

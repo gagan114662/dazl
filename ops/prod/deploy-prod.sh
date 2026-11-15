@@ -32,6 +32,7 @@ SELF=$HERE/$(basename "${BASH_SOURCE[0]}")
 PULL=$HERE/pull-release.sh
 RUNNER=$HERE/run-release.sh
 PAGES=$HERE/check-pages.py   # #1116: can a stranger use /sign-up (the page, its form, every bundle it names)
+HYD=$HERE/check-hydration.mjs   # #1116: did React attach to the sign-up / sign-in forms (a real headless browser, as the app user)
 CADDY=${PROD_CADDYFILE:-/etc/caddy/Caddyfile}
 CADDY_SITE=${PROD_CADDY_SITE:-dazl.ai, www.dazl.ai}          # the site block whose reverse_proxy port is switched
 CADDY_RELOAD=${PROD_CADDY_RELOAD:-systemctl reload caddy}
@@ -60,6 +61,20 @@ log() { echo "$(date -Is) $*"; }
 die() { log "FAIL: $*"; exit 1; }
 as_user() { local u=$1; shift; if [ "$(id -un)" = "$u" ]; then "$@"; else sudo -u "$u" -- "$@"; fi; }
 as_app() { as_user "$APP_USER" "$@"; }
+# #1116: the headless-browser hydration check (check-hydration.mjs), as the app user (its ~/.cache/ms-playwright has the browser). Fatal by
+# default; PROD_HYDRATION_CHECK=warn only logs a failure. Its proof-only HYDRATION_CHECK_BLOCK is never passed on.
+[[ ${PROD_HYDRATION_CHECK:-fatal} =~ ^(fatal|warn)$ ]] || { echo "PROD_HYDRATION_CHECK must be fatal or warn" >&2; exit 1; }
+# Bounded twice (the script's own 90 s watchdog, then timeout 120 s), never handed the deploy lock (fd 8). $2 = tries (the public check after the
+# switch tries twice, 5 s apart, before the rollback: a cold first load must not roll back a good release).
+hydration_check() {
+  local t tries=${2:-1}
+  for t in $(seq 1 "$tries"); do
+    as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK HYDRATION_CHECK_DEADLINE_S=90 node "$HYD" "$1" 8>&- && return 0
+    [ "$t" -lt "$tries" ] && { log "hydration check try $t on $1 failed; trying again"; sleep 5; }
+  done
+  [ "${PROD_HYDRATION_CHECK:-fatal}" = warn ] && { log "WARNING: the hydration check failed on $1 (PROD_HYDRATION_CHECK=warn: not fatal)"; return 0; }
+  return 1
+}
 [[ ${PROD_HEALTH_MAX_TIME:-10} =~ ^[1-9][0-9]?$ ]] || { echo "PROD_HEALTH_MAX_TIME must be 1-99 seconds" >&2; exit 1; }
 # prints "<commit> <instance>" (empty fields when there is no answer). Every read is bounded.
 health() { { curl -s --connect-timeout 5 --max-time "${PROD_HEALTH_MAX_TIME:-10}" "$1/api/health" 2>/dev/null || true; } | python3 -c 'import sys,json
@@ -93,7 +108,7 @@ trusted_path() {
     dir=$(dirname -- "$dir")
   done
 }
-for f in "$SELF" "$PULL" "$RUNNER" "$PAGES"; do
+for f in "$SELF" "$PULL" "$RUNNER" "$PAGES" "$HYD"; do
   trusted_path "$f" || die "$f is not root-owned / root-writable only; nothing done"
 done
 
@@ -390,7 +405,8 @@ for pth in $SMOKE_PATHS; do
   [ "$code" = 200 ] || { stop_port "$NEW" "failed local smoke" || true; die "local smoke $pth on :$NEW -> $code; NOT switching (dazl.ai still on :$LIVE)"; }
 done
 python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the sign-up pages check" || true; die "the sign-up pages check failed on :$NEW; NOT switching (dazl.ai still on :$LIVE)"; }
-log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS] + sign-up pages"
+hydration_check "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the hydration check" || true; die "the hydration check failed on :$NEW (the sign-up / sign-in form did not hydrate); NOT switching (dazl.ai still on :$LIVE)"; }
+log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS] + sign-up pages + hydration"
 
 # --- 8+9. switch, public smoke, stability window; auto-rollback on any failure
 fail_back() {
@@ -407,6 +423,7 @@ switch_caddy "$NEW" || { stop_port "$NEW" "caddy switch failed" || true; die "ca
 TSW=$(date +%s)
 log "8/10 switched Caddy to :$NEW"
 public_smoke "$SHA" "$NEW_INST" pages || fail_back "public smoke failed"
+hydration_check "$PUBLIC_URL" 2 || fail_back "the hydration check failed on $PUBLIC_URL (the sign-up / sign-in form did not hydrate)"
 NR0=$(systemctl show -p NRestarts --value "dazl-prod@$NEW.service")
 # stability window: checked every second, so a crash of the new release switches back within ~1-2 s, not at the end
 for _ in $(seq 1 "$STABLE_S"); do

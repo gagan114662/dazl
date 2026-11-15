@@ -13,17 +13,11 @@ import { gateStage } from './gate.ts'
 import { readPage, type ReadablePage } from './read-page.ts'
 import { verifyLead, type Decide, type EventToVerify, type PersonToVerify, type Verdict } from './verify.ts'
 import { writeResearchProof, researchProofGap } from './proof.ts'
+import { asDb } from '../db/client.ts'
 import { researchCompany } from './company.ts'
 import { saveResearchContacts } from './contacts.ts'
 import { fetchPageDetailed, isFail, type Page } from '../scan/fetch-page.ts'
 import { defaultGet } from '../connectors/sitecrawl.ts'
-import { hunt as runHunt, tinyfishSearch, afterDate } from './hunt.ts'
-import { safeGet } from '../sources/http.ts'
-import type { SafeGet } from '../sources/types.ts'
-import { socrataPermitsSource, AUSTIN_PERMITS } from './sources/socrata-permits.ts'
-import { opendatasoftLicencesSource, VANCOUVER_LICENCES } from './sources/opendatasoft-licences.ts'
-import type { Market, SignalSource, SourceSignal } from './sources/types.ts'
-import type { ResearchCase } from './types.ts'
 
 const key = (sourceUrl: string, company: string) => `${sourceUrl}|${company.toLowerCase().trim()}`
 // what verify decided per event, so the proof rows can be written once the runner has saved the leads (per job)
@@ -38,35 +32,13 @@ class Slots {
 export const RESEARCH_MODEL_CONCURRENCY = Number(process.env.RESEARCH_MODEL_CONCURRENCY) || 3
 const modelSlots = new Slots(RESEARCH_MODEL_CONCURRENCY)
 
-// E (#1263): the free registries (city permits, business licences), dated by construction. A market is asked only when the case's place names the
-// dataset's city and its category names the dataset's category. Each record becomes a Candidate pointing at the record's own public page; it
-// skips the web filter (in the place and category by construction) and is READ and VERIFIED like any page: the event and its day must be on that
-// page, so a registry lead is never ready on the record's word alone.
-const REGISTRIES: { source: SignalSource; datasets: { city: string; region: string; country: string; categories: Record<string, unknown> }[] }[] = [
-  { source: socrataPermitsSource(), datasets: [AUSTIN_PERMITS] },
-  { source: opendatasoftLicencesSource(), datasets: [VANCOUVER_LICENCES] },
-]
+// E (#1263): the free registries (city permits, business licences, SEC Form D, the ATS boards the search found) join the hunt in the base stage
+// (scan-job.ts -> hunt.ts huntWithRegistry): dated by construction, each record a Candidate on its own readable public record. They skip the web
+// filter (in the place and category by construction) and are READ and VERIFIED like any page: the event and its day must be on that page, so a
+// registry lead is never ready on the record's word alone.
 export const MAX_REGISTRY_PAGES = 20
-export function registryMarkets(c: ResearchCase): { source: SignalSource; market: Market }[] {
-  const where = c.where.toLowerCase(), cat = c.category.toLowerCase()
-  const out: { source: SignalSource; market: Market }[] = []
-  for (const r of REGISTRIES) for (const d of r.datasets) for (const k of Object.keys(d.categories)) {
-    const market = { city: d.city, region: d.region, country: d.country, category: k }
-    if (new RegExp(`\\b${d.city.toLowerCase()}\\b`).test(where) && new RegExp(`\\b${k.toLowerCase().replace(/s$/, '')}`).test(cat) && r.source.covers(market)) out.push({ source: r.source, market })
-  }
-  return out
-}
-export const registryCandidate = (x: SourceSignal): Candidate => ({ url: x.sourceUrl, title: `${x.company}: ${x.eventKind}`, snippet: x.eventSummary.slice(0, 400), date: x.eventDate,
-  triggerId: x.source, query: x.source, via: 'registry', dated: 'registry' })
-export async function registryCandidates(c: ResearchCase, http: SafeGet = safeGet): Promise<{ candidates: Candidate[]; notes: string[] }> {
-  const since = afterDate(c), candidates: Candidate[] = [], notes: string[] = []
-  for (const { source, market } of registryMarkets(c)) {
-    try { const r = await source.collect(market, since, http); candidates.push(...r.signals.map(registryCandidate)); notes.push(...r.notes.map(n => `${source.id}: ${n}`)) } catch (e) { notes.push(`${source.id}: ${String((e as Error)?.message ?? e).slice(0, 80)}`) }
-  }
-  return { candidates, notes }
-}
 
-export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: { fetch?: (url: string) => Promise<Page | { fail: string }>; get?: ReturnType<typeof defaultGet>; decider?: Decider; http?: SafeGet } = {}): ResearchStages {
+export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: { fetch?: (url: string) => Promise<Page | { fail: string }>; get?: ReturnType<typeof defaultGet>; decider?: Decider } = {}): ResearchStages {
   const haiku = ctx.model(HAIKU)
   // At most RESEARCH_MODEL_CONCURRENCY (3) model calls in flight per scan: a vendor 429 ends the whole scan (provider_rate_limited, never retried
   // automatically, #363), and the key is shared, so the engine keeps its burst small rather than racing the vendor's limit.
@@ -87,18 +59,14 @@ export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: {
   verdicts.set(ctx.job.id, mine)
   return {
     ...base,
-    hunt: async (c, plan) => {
-      const reg = await registryCandidates(c, o.http)
-      if (reg.notes.length) console.error(`[research] registries: ${reg.candidates.length} records; ${reg.notes.join('; ').slice(0, 300)}`)
-      return runHunt(c, plan, tinyfishSearch(ctx.db, c.tenant, ctx.spent ?? { searches: 0 }, ctx.tf), { extra: reg.candidates })
-    },
     // registry records skip the web filter (dated, in the place and category by construction), up to MAX_REGISTRY_PAGES; the rest share the page budget
     filter: async (c, plan, cands) => {
-      const reg = cands.filter(x => x.dated === 'registry').slice(0, MAX_REGISTRY_PAGES)
+      const regAll = cands.filter(x => x.dated === 'registry'), reg = regAll.slice(0, MAX_REGISTRY_PAGES)
+      for (const x of regAll.slice(MAX_REGISTRY_PAGES)) { x.keep = false; x.dropped = 'registry page budget' }   // counted, never silently gone
       const web = cands.filter(x => x.dated !== 'registry')
       const f = await filterStage({ decider, fallback: ask, maxPages: Math.max(10, MAX_PAGES - reg.length) })(c, plan, web)
       for (const x of reg) { x.keep = true; x.dropped = null }
-      return { all: [...reg, ...f.all], keep: [...reg, ...f.keep] }
+      return { all: [...regAll, ...f.all], keep: [...reg, ...f.keep] }
     },
     gate: gateStage(ask),
     read: async (c, plan, cand: Candidate) => {
@@ -137,14 +105,16 @@ export function wiredStages(ctx: ResearchScanContext, base: ResearchStages, o: {
 
 // After the runner saved the rows: D's proof on every ready lead (the currentness gate reads it, so Leads/Home show it ready). One lead's failure
 // never stops the others; each outcome is counted and logged (no lead data, only counts and gap codes).
-export function writeProofs(db: Database.Database, jobId: string): Record<string, number> {
+export async function writeProofs(db: Database.Database, jobId: string): Promise<Record<string, number>> {
   const out: Record<string, number> = {}
   const count = (k: string) => { out[k] = (out[k] ?? 0) + 1 }
   const mine = verdicts.get(jobId)
   verdicts.delete(jobId)
-  const job = db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string } | undefined
+  // the reads are on the Db layer (lib/db/client.ts); D's proof write is its own module's (lib/db/pg-port-status.ts lists it)
+  const d = asDb(db)
+  const job = await d.get<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE id = ?', [jobId])
   if (!mine || !job) return out
-  for (const l of db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as { id: string; company: string; source_url: string }[]) {
+  for (const l of await d.all<{ id: string; company: string; source_url: string }>('SELECT id, company, source_url FROM leads WHERE scan_job_id = ? AND review_reason IS NULL', [jobId])) {
     const x = mine.get(key(l.source_url, l.company))
     if (!x) { count('no_verdict'); continue }
     if (!x.person) { count('no_person'); continue }
@@ -159,7 +129,7 @@ export function writeProofs(db: Database.Database, jobId: string): Record<string
 }
 
 extendResearchStages((ctx, base) => wiredStages(ctx, base))
-extendResearchAfterSave((db, jobId) => { writeProofs(db, jobId) })
+extendResearchAfterSave(async (db, jobId) => { await writeProofs(db, jobId) })
 // Refs #1099: the addresses company research found printed on the company's own pages, and one unverified guess per named person
 extendResearchAfterSave(async (db, jobId, run) => {
   try { console.error(`[research] contacts for job ${jobId}: ${JSON.stringify(await saveResearchContacts(db, jobId, run.leads))}`) }
