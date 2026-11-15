@@ -521,26 +521,34 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   for (const r of (buyerRoles ?? '').split(';')) addWords(r)
   for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
   const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
-  const add = (name: string, title: string, viaJson = false) => {
+  const add = (name: string, title: string, viaJson = false): boolean => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
-    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return // an explicit past end date or a past-tense title: not current staff
-    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return // #1183: "Litigation Specialist" is a title, not a person
+    if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return false // an explicit past end date or a past-tense title: not current staff
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
-      if (!PEOPLE_PAGE.test(path)) return
-      if (lowerWords.size < 15) return // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
-      if (linkText.has(name.toLowerCase())) return
-      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return
+      if (!PEOPLE_PAGE.test(path)) return false
+      if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
+      if (linkText.has(name.toLowerCase())) return false
+      if (name.replace(/^(Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).some(w => lowerWords.has(w.toLowerCase().replace(/\.$/, '')))) return false
     }
     if (!found.has(name.toLowerCase())) found.set(name.toLowerCase(), { kind: 'person', value: `${name}, ${title}`.slice(0, 120), label: 'listed with this title on this company page, not verified as current staff', url: pageUrl })
+    return true
   }
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
+  const isTitleLine = (l: string) => l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))
+  const paired: boolean[] = [] // paired[j]: line j was accepted as the title of the person on line j-1
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
-    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i])) add(lines[i], lines[i + 1])
+    // #1183 (multilingual): "Diretor Comercial" beside a buyer role "Gerente de Vendas" shares no word with any collected title, so the check above
+    // cannot see it. Structure does: a title line that no accepted person precedes is an orphan, and a "name" straight after an orphan title is the next
+    // item of a title list, not a person (on a real team page every title follows an accepted name). Fail closed: if the person before was dropped for
+    // another reason, the next one is dropped too (recall cost, never a fabricated person).
+    const afterOrphan = i >= 1 && isTitleLine(lines[i - 1]) && !paired[i - 1] && !inFormer[i - 1]
+    if (i + 1 < lines.length && lines[i].length < 45 && lines[i + 1].length < 45 && !inFormer[i + 1] && !reusesTitleWord(lines[i]) && !afterOrphan && add(lines[i], lines[i + 1])) paired[i + 1] = true
   }
   // Up to PAGE_PEOPLE per page, most senior first; crawlSite makes the final choice of 3 (buyer roles first when known).
   return [...found.values()].sort(bySeniority).slice(0, PAGE_PEOPLE)
