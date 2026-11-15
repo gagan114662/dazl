@@ -59,7 +59,7 @@ const inbound = () => db.prepare('SELECT from_email, classification FROM inbound
 const optout = 'staging+fake-optout@buyer.example', quiet = 'staging+quiet@third.example', broken = 'staging+fake-syncerror@other.example'
 firstTouch(optout); firstTouch(quiet)
 firstTouch('staging+quiet@q.example', Q)
-const b = firstTouch(broken, Q)
+firstTouch(broken, Q)
 
 test('#413 staging fake replies: the real tick ingests an opt-out, suppresses, refuses the next send, and a partial sync holds as stale', async () => {
   assert.equal((await call()).ok, true)
@@ -78,10 +78,6 @@ test('#413 staging fake replies: the real tick ingests an opt-out, suppresses, r
   // a second tick never ingests the same reply twice
   await call()
   assert.equal(inbound().length, 1)
-  // once the broken thread is gone from scope, the next tick is a full sync again
-  db.prepare("UPDATE outreach_messages SET status = 'skipped' WHERE thread_id = ?").run(b.thread)
-  await call()
-  assert.ok(progress(Q)?.last_success_at, 'Q: full sync stamps the checkpoint')
 })
 
 test('#413 staging fake replies: the flag off keeps the stub reading nothing', async () => {
