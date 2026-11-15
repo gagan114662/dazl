@@ -279,11 +279,18 @@ function parseDay(s: string | null): Date | null {
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s ? null : d
 }
 
+// #1248: the quote and the page are compared as the words a reader sees. A search result can carry a quote in markdown ("Das Berliner FinTech
+// [mika](https://www.startbase.de/organization/mika-f5ff77dc/) hat ...", "unit in [Bengaluru](/tag/bengaluru)"): the page shows "mika" and
+// "Bengaluru", so the link syntax is reduced to its visible text (and **bold** / __bold__ markers dropped) before matching. A page's text can
+// put a space before a full stop at a tag boundary ("real estate practice ."): a space before . , ; : ! ? is ignored on both sides. The words
+// themselves must still appear contiguously on the page; nothing else is relaxed, and the saved quote is never rewritten.
+export const visibleQuote = (s: string) => s.replace(/!?\[([^\]\n]{0,300})\]\([^)\s]{0,600}\)/g, '$1').replace(/(\*\*|__)(?=\S)([^*_\n]{1,300}?\S)\1/g, '$2')
+const tightPunct = (s: string) => s.replace(/ +([.,;:!?])/g, '$1')
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
-  const text = norm(page.text)
+  const text = tightPunct(norm(page.text))
   // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
   // appear contiguously on the page. An ellipsis inside the quote (words skipped) still fails, and the saved quote is never rewritten.
-  const excerpt = norm(c.excerpt.replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, ''))
+  const excerpt = tightPunct(norm(visibleQuote(c.excerpt).replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, '')))
   if (excerpt.length < 20 || c.excerpt.length > 400) return { ok: false, reason: 'no_excerpt' }
   const at = text.indexOf(excerpt)
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
