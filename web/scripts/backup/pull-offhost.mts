@@ -80,7 +80,9 @@ const exclude = path.join(retiredDir, 'rsync-exclude')
 const badDir = path.join(dir, '.bad')
 // .bad/names lists every name ever set aside, so removing the files after inspection does not bring them back
 const badList = path.join(badDir, 'names')
-const badNames = existsSync(badList) ? readFileSync(badList, 'utf8').split('\n') : []
+let badNames: string[] = []
+try { badNames = existsSync(badList) ? readFileSync(badList, 'utf8').split('\n') : [] } catch (e) { problems.push(`.bad/names unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
+if (existsSync(badDir)) badNames.push(...readdirSync(badDir)) // and whatever is in .bad/ now
 writeFileSync(exclude, [...readFileSync(retiredNames, 'utf8').split('\n'), ...badNames].filter(n => COPY.test(n)).map(n => `/${n}\n`).join(''), { mode: 0o600 })
 const rsync = spawnSync('rsync', [
   '-rt', '--ignore-existing', '--chmod=F600', '--partial-dir=.rsync-partial', `--exclude-from=${exclude}`,
@@ -103,7 +105,7 @@ const pending: Record<string, number> = (() => {
   let raw: string
   try { raw = readFileSync(pendingFile, 'utf8') } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}; problems.push(`.retired/pending.json unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`); return {} }
   try { const j = JSON.parse(raw); if (j && typeof j === 'object' && !Array.isArray(j) && Object.values(j).every(v => typeof v === 'number')) return j as Record<string, number> } catch { /* below */ }
-  problems.push('.retired/pending.json is not valid: inspect it, then remove it (retention is held until then)')
+  problems.push('.retired/pending.json is not valid: inspect it, then remove it (retention is held until then; a copy still waiting for its manifest is then judged against the newest copy held, which may set a real late copy aside)')
   return {}
 })()
 const good: { backup: Copy[]; ledger: Copy[] } = { backup: [], ledger: [] }
@@ -111,7 +113,7 @@ const bad: string[] = [], backdated: string[] = [], orphans: string[] = []
 const setAside = (f: string) => {
   mkdirSync(path.join(dir, '.bad'), { recursive: true, mode: 0o700 })
   for (const x of [f, `${f}.json`]) { try { renameSync(path.join(dir, x), path.join(dir, '.bad', x)) } catch { /* already gone */ } }
-  appendFileSync(badList, `${f}\n${f}.json\n`)
+  try { appendFileSync(badList, `${f}\n${f}.json\n`) } catch (e) { problems.push(`.bad/names could not be updated (${(e as NodeJS.ErrnoException).code ?? 'error'}): ${f} may be pulled again`) }
 }
 for (const f of readdirSync(dir)) {
   const m = COPY.exec(f)
@@ -132,7 +134,9 @@ for (const f of readdirSync(dir)) {
   if (t - now > SKEW_MS || copiedAt - now > SKEW_MS) { bad.push(`${f} (future time)`); setAside(f); continue }
   // named older than the newest copy held when its ciphertext arrived (this run, or an earlier one if its manifest came later):
   // a backdated copy is set aside like a bad one, so it never counts for retention and is never pulled again
-  const ref = pulled.includes(f) ? newestHeld[kind] : pending[f]
+  // a manifest new this run whose remembered reference is gone (pending.json lost or invalid) is judged against the newest
+  // copy held now: stricter, so the worst case is a false 'named older' alert (fails closed)
+  const ref = pulled.includes(f) ? newestHeld[kind] : (pending[f] ?? (pulled.includes(`${f}.json`) ? newestHeld[kind] : undefined))
   delete pending[f]
   if (ref !== undefined && t < ref) { backdated.push(f); setAside(f); continue }
   good[kind].push({ base, t, copiedAt, held: heldBefore.has(f) }) // held = its ciphertext was here before this run

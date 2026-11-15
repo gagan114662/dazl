@@ -215,20 +215,50 @@ test('#1080 pull: stale newest copy, no ledger copy, an unreachable box, nothing
 test('#1080 pull: a LATE manifest for a copy older than what was held when its ciphertext came is set aside; a corrupt pending record holds retention', { skip }, () => {
   const { box, here } = dirs()
   copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
+  for (let i = 0; i < 49; i++) copy(box, now - 90 * 60_000 - i * HOUR, 10 + i) // 50 hourly copies: past the 48 policy
   assert.equal(run(box, here).code, 0)
   const x = copy(box, now - 4 * HOUR, 2, { noManifest: true }) // ciphertext only, named older than the copy held
   assert.equal(run(box, here).code, 1) // older than 2 h without its manifest: alerts, nothing else
   const body = readFileSync(path.join(box, x), 'utf8')
   writeFileSync(path.join(box, `${x}.json`), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: x, ciphertext_sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body), copied_at: new Date(now - 4 * HOUR + 30_000).toISOString() }))
   const r = run(box, here)
-  assert.equal(r.code, 1, r.out); assert.equal(r.json.retired, 0); assert.equal(r.json.backups, 1)
+  assert.equal(r.code, 1, r.out); assert.equal(r.json.retired, 0)
   assert.ok(existsSync(path.join(here, '.bad', x)))
   assert.match(alerts()[0].problems.join('\n'), new RegExp(`named older than the newest copy already here.*${x.replace(/\./g, '\\.')}`))
   // a corrupt pending record: a problem that holds retention (never read as "nothing pending")
-  writeFileSync(path.join(here, '.retired', 'pending.json'), '{"truncat')
-  const c = run(box, here)
-  assert.equal(c.code, 1); assert.equal(c.json.retired, 0)
-  assert.match(alerts()[0].problems.join('\n'), /pending\.json is not valid/)
+  // a corrupt pending record: a problem that holds retention (never read as "nothing pending")
+  for (const bad of ['{"truncat', '[]', 'null', '{"x":"1"}']) {
+    writeFileSync(path.join(here, '.retired', 'pending.json'), bad)
+    copy(box, now - 2 * 60_000, 900 + bad.length) // a new copy: one held copy is now past the policy
+    const c = run(box, here)
+    assert.equal(c.code, 1, bad); assert.equal(c.json.retired, 0, bad)
+    assert.match(alerts()[0].problems.join('\n'), /pending\.json is not valid/, bad)
+  }
+  // removed after inspection: retention runs again
+  unlinkSync(path.join(here, '.retired', 'pending.json'))
+  for (const f of readdirSync(path.join(here, '.bad'))) if (f !== 'names') unlinkSync(path.join(here, '.bad', f))
+  const ok = run(box, here)
+  assert.ok((ok.json.retired as number) > 0, ok.out)
+})
+
+test('#1080 pull: a split fake whose pending record was LOST (removed) is still judged, against the newest copy held now', { skip }, () => {
+  const { box, here } = dirs()
+  copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
+  assert.equal(run(box, here).code, 0)
+  const x = copy(box, now - 4 * HOUR, 2, { noManifest: true })
+  run(box, here)
+  const pend = JSON.parse(readFileSync(path.join(here, '.retired', 'pending.json'), 'utf8'))
+  assert.ok(x in pend, 'remembered while it waits')
+  unlinkSync(path.join(here, '.retired', 'pending.json'))
+  const body = readFileSync(path.join(box, x), 'utf8')
+  writeFileSync(path.join(box, `${x}.json`), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: x, ciphertext_sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body), copied_at: new Date(now - 4 * HOUR + 30_000).toISOString() }))
+  const r = run(box, here)
+  assert.equal(r.code, 1, r.out); assert.equal(r.json.backups, 1)
+  assert.ok(existsSync(path.join(here, '.bad', x)))
+  // and a stale entry (its ciphertext gone) is dropped from the record
+  writeFileSync(path.join(here, '.retired', 'pending.json'), JSON.stringify({ 'dazl-backup-20200101T000000Z-00000000.db.age': 1 }))
+  run(box, here)
+  assert.deepEqual(JSON.parse(readFileSync(path.join(here, '.retired', 'pending.json'), 'utf8')), {})
 })
 
 test('#1080 pull: usage errors exit 2 and touch nothing', () => {
