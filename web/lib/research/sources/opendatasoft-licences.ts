@@ -72,6 +72,9 @@ export function licenceLife(rows: Row[]): { current: Row; first: string; revisio
 const lit = (s: string) => `"${s.replace(/"/g, '""')}"`
 const typeClause = (types: string[]) => `(${types.map(t => `businesstype=${lit(t)}`).join(' or ')})`
 
+// the most revision rows of one licence a record read can return (the records endpoint's own maximum page): a licence with more is unknown on both
+// sides, the adapter and the re-read
+export const MAX_HISTORY = 100
 export const CHUNK = 25   // OR clauses per request: every URL stays a few KB
 const chunks = <T,>(xs: T[]) => Array.from({ length: Math.ceil(xs.length / CHUNK) }, (_, i) => xs.slice(i * CHUNK, (i + 1) * CHUNK))
 const yearsClause = (ys: string[]) => `(${ys.map(y => `folderyear=${lit(y)}`).join(' or ')})`
@@ -121,7 +124,8 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   for (const r of revisionRows ?? []) { const n = str(r.licencenumber); history.set(n, [...(history.get(n) ?? []), r]) }
   const seen = new Set<string>(), out: LicenceRecord[] = []
   for (const r of windowRows) {
-    const date = licenceLife(revisionRows ? history.get(str(r.licencenumber)) ?? [] : [r])?.first ?? null, k = who(r), a = where(r)
+    const rows = revisionRows ? history.get(str(r.licencenumber)) ?? [] : [r]
+    const date = rows.length > MAX_HISTORY ? null : licenceLife(rows)?.first ?? null, k = who(r), a = where(r)
     if (!date || date < since || !k || !a || namesOf(r).some(n => renewed.has(`${n}|${a}`)) || seen.has(`${k}|${a}`)) continue
     seen.add(`${k}|${a}`)
     const n = Math.max(1, ...namesOf(r).map(x => locations.get(x)?.size ?? 1)), name = str(r.businesstradename) || str(r.businessname), number = str(r.licencenumber)
@@ -134,7 +138,7 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
         : `${name} newly licensed as a ${c.noun} at ${at}, ${d.city} (licence ${number}, issued ${date}; no licence under this name at this address last year)`,
       eventDate: date,
       // the readable record: this one licence as JSON on the open-data API; the human table for the person reading
-      recordUrl: `${d.api}/records?${new URLSearchParams({ where: `licencenumber=${lit(number)}`, limit: '20' })}`,   // every revision of one licence is a row
+      recordUrl: `${d.api}/records?${new URLSearchParams({ where: `licencenumber=${lit(number)}`, limit: String(MAX_HISTORY) })}`,   // every revision of one licence is a row
       pageUrl: `${d.explore}?${new URLSearchParams({ q: number })}`,
       personName: null,
     })
@@ -179,6 +183,7 @@ export function licencesSourceFor(d: LicenceDataset): RegistrySource {
       // a revised licence's first issue is on an older row: unreadable -> no records (the first issue day is never guessed)
       const revs = await getRows(http, q.revisions(win), notes)
       if (!revs) return { candidates: [], notes: [...notes, 'revisions_unknown'] }
+      if (!revs.length) return { candidates: [], notes: [...notes, 'revisions_empty'] }   // the window had licences and no history came back: said, not silent
       return { candidates: licenceSignals(d, cat, win, prior, same, since, revs).map(r => licenceCandidate(d, cat, r)), notes }
     },
   }
