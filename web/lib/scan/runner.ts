@@ -1109,7 +1109,7 @@ export function fetchRankFor(hitByUrl: Map<string, { date: string | null }>, win
 // The ledger status of the news fallback, from its OWN request outcomes. 'empty' needs a completed search with every request answered and zero hits; request failures are
 // kept apart from the hits array: all failed = 'error' (a failed source), some failed with no hits = 'error_partial:<failed>_of_<attempted>' (failed and named), and hits with no
 // usable page evidence or no query to run stay 'unavailable' (unknown).
-export interface NewsNote { searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number; classes?: NewsFailureClasses; http_statuses?: Record<string, number>; query_classes?: NewsQueryClasses }
+export interface NewsNote { retried?: number; gave_up?: boolean; searched: boolean; hits: number; attempted: number; failed: number; limited?: number; malformed?: number; classes?: NewsFailureClasses; http_statuses?: Record<string, number>; query_classes?: NewsQueryClasses }
 // A full outage names its failure class when the requests recorded one (network/http/empty_body/parse, 'mixed' for more
 // than one): a persisted News ERROR must distinguish an outage from a timeout, an HTTP refusal and a parse failure.
 const newsErrorName = (note: NewsNote): string => {
@@ -1140,7 +1140,7 @@ async function newsLeads(job: Job, icp: Icp, provider: Provider, key: string, ht
   const q = (queries ? plan.queries : withGeography(sanitizeQueries(plan.queries, job.query!), icp.where)).filter(x => !/site:/i.test(x)) // news search has no site: operator
   if (q.length === 0) return null
   const found = await newsSearch(http, q, icp.language), hits = found.hits
-  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited; note.classes = found.failure_classes; note.http_statuses = found.http_statuses; note.query_classes = found.query_classes }
+  if (note) { note.searched = true; note.hits = hits.length; note.attempted = found.attempted; note.failed = found.failed; note.malformed = found.malformed; note.limited = found.limited; note.classes = found.failure_classes; note.http_statuses = found.http_statuses; note.query_classes = found.query_classes; note.retried = found.retried ?? 0; note.gave_up = found.gave_up === true }
   if (hits.length === 0) return null
   const pages = (await Promise.all(hits.slice(0, NEWS_PAGES).map(async h => {
     const p = await fetchPage(h.url).catch(() => null)
@@ -1453,7 +1453,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // refusal, accounting failure, auth error or stop): per-class failure counts, the non-200 statuses seen and the
         // per-query outcome classes - counts and status codes only, never payloads. A persisted News ERROR stays
         // distinguishable, and a refusal after a searched query never erases the query's recorded truth.
-        ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) } } })
+        ledger.report({ news: { attempted: note.attempted, failed: note.failed, limited: note.limited ?? 0, malformed: note.malformed ?? 0, failure_classes: { ...(note.classes ?? {}) }, http_statuses: { ...(note.http_statuses ?? {}) }, query_classes: { ...(note.query_classes ?? {}) }, ...(note.retried ? { retried: note.retried, gave_up: note.gave_up === true } : {}) } })
       }
       if (leads && leads.length === 0) leads = null
     }
