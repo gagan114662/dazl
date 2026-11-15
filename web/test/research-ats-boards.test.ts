@@ -111,6 +111,14 @@ test('the hook reads the boards the hunt found (one request per board), and a bo
   const h2 = await huntWithRegistry(AUSTIN, plan, sameUrl, http, { env: { LEAD_ENGINE: 'research' }, sources: [] })
   const at = h2.candidates.filter(x => x.url === tenstorrentLatest)
   assert.equal(at.length, 1); assert.equal(at[0].dated, 'registry'); assert.equal(h2.funnel.dropped.registry_record_over_hit, 1)
+  // the scan's deadline bounds the registry half: a source that stalls past it is not waited for, and no board is read after it
+  const stall = { id: 'stall', covers: () => true, collect: () => new Promise<never>(() => {}) }
+  let boardAsked = 0
+  const t0 = Date.now()
+  const late = await huntWithRegistry(AUSTIN, plan, search, async () => { boardAsked++; return { status: 200, body: '[]' } }, { env: { LEAD_ENGINE: 'research' }, sources: [stall], deadline: Date.now() + 150 })
+  assert.ok(Date.now() - t0 < 2000, 'returned at the deadline, not when the stalled source would'); assert.equal(late.funnel.dropped.registry_registry_deadline, 1)
+  assert.equal(late.candidates.filter(x => x.via === 'tinyfish').length, 4, 'the search\'s candidates are kept')
+  assert.equal(boardAsked, 0, 'no board read past the deadline'); assert.equal(late.funnel.dropped['registry_ats-boards_deadline'], 1)
   const off = await huntWithRegistry(AUSTIN, plan, search, async () => { throw new Error('no request when off') }, { env: {} })
   assert.equal(off.candidates.length, 4)
 })

@@ -9,7 +9,7 @@ import { researchSearch, type SearchQueue } from './search-queue.ts'
 import type { DbLike } from '../db/client.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { collectRegistry, type RegistrySource } from './sources/index.ts'
-import { boardCandidates } from './sources/ats-boards.ts'
+import { boardCandidates, BOARDS_BUDGET_MS } from './sources/ats-boards.ts'
 
 export const RESULTS_PER_QUERY = 10
 export type SearchFn = (query: string, afterDate: string) => Promise<{ ok: true; hits: SearchHit[] } | { ok: false; reason: Fail | string }>
@@ -110,8 +110,15 @@ export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, sear
   // the registry sources run alongside the search (never before it: a slow public API never delays the paid search), then merge by hunt's rule
   // a registry failure can never reject the hunt (and so lose the paid search): it becomes a note
   const registryRun = collectRegistry(c, since, http, sources).catch(() => ({ candidates: [] as Candidate[], notes: { registry: ['error'] } as Record<string, string[]> }))
-  const [reg, h] = await Promise.all([registryRun, hunt(c, plan, search, ho)])
-  const boards = await boardCandidates(c, h.candidates, since, http).catch(() => ({ candidates: [] as Candidate[], notes: ['error'] }))
+  // the scan's deadline bounds the registry half too: past it, the hunt stops waiting (a note says so) and no board is read
+  const now = ho.now ?? Date.now, left = () => (ho.deadline === undefined ? Infinity : ho.deadline - now())
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const registryInTime = ho.deadline === undefined ? registryRun : Promise.race([registryRun, new Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }>(r => {
+    timer = setTimeout(() => r({ candidates: [], notes: { registry: ['deadline'] } }), Math.max(0, left()))
+  })])
+  const [reg, h] = await Promise.all([registryInTime, hunt(c, plan, search, ho)]).finally(() => clearTimeout(timer))
+  const boards = left() <= 0 ? { candidates: [] as Candidate[], notes: ['deadline'] }
+    : await boardCandidates(c, h.candidates, since, http, undefined, { budgetMs: Math.min(BOARDS_BUDGET_MS, left()), now }).catch(() => ({ candidates: [] as Candidate[], notes: ['error'] }))
   const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
   // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept
   const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
