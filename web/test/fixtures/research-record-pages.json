@@ -1,5 +1,5 @@
 {
- "_note": "Real record answers of the two open-data APIs E cites (15 Nov 2026), trimmed to the fields rendered; the Austin permit_location replaced by a synthetic address, phones and applicant fields dropped, nothing else edited. Name kept: contractor_full_name is the contractor of record on a public city permit (the business contact the record cites), not a private party.",
+ "_note": "Real record answers of the two open-data APIs E cites (15 Nov 2026), trimmed to the fields rendered; the Austin permit_location replaced by a synthetic address, phones and applicant fields dropped, nothing else edited. Name kept: contractor_full_name is the contractor of record on a public city permit (the business contact the record cites), not a private party. The Vancouver row also carries licencerevisionnumber 00 (an unrevised licence).",
  "austin_url": "https://data.austintexas.gov/resource/3syk-w9eu.json?permit_number=2026-121002+BP",
  "austin": [
   {
@@ -31,7 +31,8 @@
     "street": "COMMERCIAL DRIVE",
     "city": "Vancouver",
     "province": "BC",
-    "localarea": "Grandview-Woodland"
+    "localarea": "Grandview-Woodland",
+    "licencerevisionnumber": "00"
    }
   ]
  }

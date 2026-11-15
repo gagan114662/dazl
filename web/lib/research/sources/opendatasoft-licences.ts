@@ -36,7 +36,7 @@ export const VANCOUVER_LICENCES: LicenceDataset = {
 type Row = Record<string, unknown>
 // one new licence, before it becomes a Candidate (internal)
 export interface LicenceRecord { company: string; eventKind: 'new_business_licence' | 'additional_location_licence'; eventSummary: string; eventDate: string; licence: string; recordUrl: string; pageUrl: string; personName: null }
-const FIELDS = 'folderyear,licencenumber,businessname,businesstradename,status,issueddate,unit,house,street,localarea,businesssubtype'
+const FIELDS = 'folderyear,licencenumber,licencerevisionnumber,businessname,businesstradename,status,issueddate,unit,house,street,localarea,businesssubtype'
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : typeof v === 'number' ? String(v) : '')
 const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
 const who = (r: Row) => key(str(r.businesstradename) || str(r.businessname))
@@ -54,6 +54,19 @@ export const licenceDay = (v: unknown): string | null => {
   return Number.isNaN(ms) ? null : LOCAL.format(new Date(ms))   // a malformed instant (hour 25, second 60) is no day, never a thrown row
 }
 const day = licenceDay
+
+// All the rows the dataset holds for ONE licence number. Every revision is its own row: revision 00 is the first issue, a later revision amends it
+// (a rename, an owner, a fee) and the one before goes Inactive, so the licence's current state is its single Issued row and the day it was first
+// issued is revision 00's. A licence whose first issue cannot be read (no revision 00 row, no day, two Issued rows) is unknown, never guessed.
+export function licenceLife(rows: Row[]): { current: Row; first: string; revision: string; revisions: number } | null {
+  const issued = rows.filter(r => str(r.status) === 'Issued')
+  if (issued.length !== 1 || (rows.length > 1 && new Set(rows.map(r => str(r.licencerevisionnumber))).size !== rows.length)) return null   // none or several Issued, or one revision twice
+  const current = issued[0], revision = str(current.licencerevisionnumber), now = day(current.issueddate)
+  const firsts = rows.filter(r => str(r.licencerevisionnumber) === '00')
+  // several rows and no revision number on the current one: they cannot be ordered, so the first issue is unknown (real rows always carry the number)
+  const first = rows.length > 1 && !revision ? null : !revision || revision === '00' ? now : firsts.length === 1 ? day(firsts[0].issueddate) : null
+  return first && now ? { current, first, revision: revision || '00', revisions: rows.length } : null
+}
 // an Opendatasoft (ODSQL) string literal: double quotes, a quote inside doubled
 const lit = (s: string) => `"${s.replace(/"/g, '""')}"`
 const typeClause = (types: string[]) => `(${types.map(t => `businesstype=${lit(t)}`).join(' or ')})`
@@ -74,13 +87,17 @@ export function licenceQueries(d: LicenceDataset, category: string, since: strin
     // the year before each window year, at the window's addresses (any name: the name test runs here, on both of a licence's names)
     renewals: (rows: Row[]) => chunks([...new Set(rows.map(r => `(house=${lit(str(r.house))} and street=${lit(str(r.street))})`))]).map(ch =>
       url(`${typeClause(c.types)} and ${yearsClause([...new Set(years.map(prev))])} and (${ch.join(' or ')})`)),
+    // every revision row of the window's REVISED licences (revision other than 00): the dataset keeps each revision of a licence number as its own
+    // row, revision 00 (the first issue) goes Inactive when a later one is issued, so the day a licence was first issued is on that older row
+    revisions: (rows: Row[]) => chunks([...new Set(rows.filter(r => str(r.licencerevisionnumber) && str(r.licencerevisionnumber) !== '00').map(r => str(r.licencenumber)).filter(Boolean))]).map(ch =>
+      url(`${typeClause(c.types)} and (${ch.map(n => `licencenumber=${lit(n)}`).join(' or ')})`)),
     // the current licence year only ("N locations this year"), under the window's business names (trade or legal)
     locations: (rows: Row[]) => chunks(names(rows)).map(ch => url(`${typeClause(c.types)} and ${yearsClause(years.slice(-1))} and status="Issued" and (${ch.join(' or ')})`)),
   }
 }
 
 // Pure: the window's licences, minus renewals, each with how many licensed locations its business holds this year.
-export function licenceSignals(d: LicenceDataset, category: string, windowRows: Row[], priorYearRows: Row[], sameNameRows: Row[], since: string): LicenceRecord[] {
+export function licenceSignals(d: LicenceDataset, category: string, windowRows: Row[], priorYearRows: Row[], sameNameRows: Row[], since: string, revisionRows: Row[] = []): LicenceRecord[] {
   const c = d.categories[category]
   if (!c) return []
   // a renewal: last year's licence at the same address under either of this licence's names (trade or legal), so a business that added or
@@ -94,9 +111,16 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   // every issued licence this year counts as a location, dated or not (the query already asks for status Issued in this licence year);
   // a licence without a valid issue day is only never a candidate itself (below)
   for (const r of [...sameNameRows, ...windowRows]) for (const k of namesOf(r)) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)]))
+  // a licence is NEW when its FIRST issue is inside the window: a licence first issued earlier whose later revision (a rename, an owner) fell inside it is
+  // the same business as before, not a new one (measured live 15 Nov: 5 of 40 Vancouver restaurants "new in 90 days" were such revisions)
+  const byNumber = new Map<string, Row[]>()
+  for (const r of [...windowRows, ...revisionRows]) {
+    const n = str(r.licencenumber), had = byNumber.get(n) ?? []
+    if (!had.some(x => str(x.licencerevisionnumber) === str(r.licencerevisionnumber) && str(x.status) === str(r.status))) byNumber.set(n, [...had, r])
+  }
   const seen = new Set<string>(), out: LicenceRecord[] = []
   for (const r of windowRows) {
-    const date = day(r.issueddate), k = who(r), a = where(r)
+    const date = licenceLife(byNumber.get(str(r.licencenumber)) ?? [r])?.first ?? null, k = who(r), a = where(r)
     if (!date || date < since || !k || !a || namesOf(r).some(n => renewed.has(`${n}|${a}`)) || seen.has(`${k}|${a}`)) continue
     seen.add(`${k}|${a}`)
     const n = Math.max(1, ...namesOf(r).map(x => locations.get(x)?.size ?? 1)), name = str(r.businesstradename) || str(r.businessname), number = str(r.licencenumber)
@@ -151,7 +175,10 @@ export function licencesSourceFor(d: LicenceDataset): RegistrySource {
       if (!prior) return { candidates: [], notes: [...notes, 'renewals_unknown'] }
       const same = await getRows(http, q.locations(win), notes)
       if (!same) return { candidates: [], notes: [...notes, 'locations_unknown'] }
-      return { candidates: licenceSignals(d, cat, win, prior, same, since).map(r => licenceCandidate(d, cat, r)), notes }
+      // a revised licence's first issue is on an older row: unreadable -> no records (the first issue day is never guessed)
+      const revs = await getRows(http, q.revisions(win), notes)
+      if (!revs) return { candidates: [], notes: [...notes, 'revisions_unknown'] }
+      return { candidates: licenceSignals(d, cat, win, prior, same, since, revs).map(r => licenceCandidate(d, cat, r)), notes }
     },
   }
 }

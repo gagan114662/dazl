@@ -113,3 +113,46 @@ test('a licence with a malformed issue timestamp is never a candidate itself, bu
   assert.equal(s.length, base.length)
   assert.equal(s.find(x => x.company === 'Hunger Street')!.eventKind, 'additional_location_licence', 'its other issued licence still makes Hunger Street an additional location')
 })
+
+// REAL revised licences (test/fixtures/research-vancouver-revisions.json): the dataset keeps every revision of a licence number as its own row;
+// revision 00 (the first issue) goes Inactive when a later revision is issued.
+const REV = JSON.parse(readFileSync(new URL('./fixtures/research-vancouver-revisions.json', import.meta.url), 'utf8')) as { since: string; licences: Record<string, Row[]> }
+const currentRows = Object.values(REV.licences).map(rs => rs.find(r => r.status === 'Issued')!)
+const allRows = Object.values(REV.licences).flat()
+const firstDay = (no: string) => licenceDay(REV.licences[no].find(r => r.licencerevisionnumber === '00')!.issueddate)
+
+test('a revised licence is new only when its FIRST issue is inside the window: a rename or an owner change of an older licence is not a new business', () => {
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', currentRows, [], [], REV.since, allRows)
+  const bySource = (n: string) => s.find(x => x.licence === n)
+  // first issued before 2026-08-17 (a rename of an April licence, a December 2025 licence, ...): not a candidate, whatever its latest revision's day
+  for (const n of ['26-238221', '26-307971', '26-221108', '26-181918', '26-247640']) assert.equal(bySource(n), undefined, `${n} first issued ${firstDay(n)}`)
+  // first issued inside it: a candidate dated by the FIRST issue, not by the later revision
+  const linh = bySource('26-217772')!, avero = bySource('26-258849')!
+  assert.equal(linh.eventDate, firstDay('26-217772')); assert.equal(avero.eventDate, firstDay('26-258849'))
+  assert.ok(linh.eventDate >= REV.since && linh.eventDate < String(currentRows.find(r => r.licencenumber === '26-217772')!.issueddate).slice(0, 10), 'dated before its revision day')
+  assert.equal(avero.company, 'AVERO', "the business's current name")
+  assert.equal(s.length, 2)
+  // without the older revision rows the first issue is unknown: never guessed, so nothing is a candidate
+  assert.deepEqual(licenceSignals(VANCOUVER_LICENCES, 'restaurants', currentRows, [], [], REV.since), [])
+})
+
+test('the source asks for the revision rows of the revised licences only, and without them returns nothing (fails closed)', async () => {
+  const w = (u: string) => new URL(u).searchParams.get('where') ?? ''
+  const q = licenceQueries(VANCOUVER_LICENCES, 'restaurants', REV.since, ['26'])
+  const urls = q.revisions(currentRows)
+  assert.equal(urls.length, 1); assert.match(w(urls[0]), /^\(businesstype="Restaurant"\) and \(licencenumber="26-\d{6}" or /)
+  for (const n of Object.keys(REV.licences)) assert.ok(w(urls[0]).includes(`licencenumber="${n}"`), n)
+  assert.deepEqual(q.revisions(currentRows.map(r => ({ ...r, licencerevisionnumber: '00' }))), [], 'unrevised licences need no revision query')
+  assert.deepEqual(q.revisions(FX.window), [], 'rows without a revision number need none')
+  const answer = (revisions: 'ok' | 'down'): SafeGet => async (u: string) => {
+    const where = w(u)
+    if (where.includes('issueddate >=')) return { status: 200, body: JSON.stringify(currentRows) }
+    if (where.includes('folderyear="25"')) return { status: 200, body: '[]' }
+    if (where.startsWith('(businesstype="Restaurant") and (licencenumber=')) return revisions === 'ok' ? { status: 200, body: JSON.stringify(allRows) } : { status: 503, body: '' }
+    return { status: 200, body: JSON.stringify(currentRows) }
+  }
+  const src = vancouverLicencesSource
+  const ok = await src.collect(VAN, REV.since, answer('ok'))
+  assert.deepEqual(ok.candidates.map(x => x.title.split(':')[0]).sort(), ['AVERO', 'Linh Noodle Bar'], JSON.stringify(ok.notes))
+  assert.deepEqual(await src.collect(VAN, REV.since, answer('down')), { candidates: [], notes: ['http_503', 'revisions_unknown'] })
+})
