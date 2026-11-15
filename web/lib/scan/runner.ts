@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
-import { ProviderError, providers, type Provider } from '../llm/provider.ts'
+import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
+import { runResearchScan } from '../research/scan-job.ts'
+import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
@@ -1372,6 +1374,45 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       }
       icpForSources = icp
       prompt = buildIcpPrompt(job.query, icp)
+    }
+    // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
+    // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
+    // this job's own spend guards, meter and accounting flags; its searches through the queued research search inside this scan's caps.
+    if (icpForSources && vendor === 'anthropic' && researchEngineOn()) {
+      const modelFor = (m: string): Provider => {
+        const p = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(m), c => ledger.model(c))
+        return spendLimit === null ? flagAccounting(db, job, p, vendor) : flagAccounting(db, job, guardProvider(p, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      }
+      const deadline = jobDeadlines.get(job)
+      const r = await runResearchScan({ db, job, icp: icpForSources, key, model: modelFor, isRefusal: e => e instanceof SpendRefused, checkpoint: () => assertOwned(db, job), ...(deadline ? { deadline } : {}),
+        tf: { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), charge: trialCharges.get(job) } })
+      if (r) {
+        const leads = r.leads as unknown as VerifiedLead[], review = r.review as unknown as ReviewLead[]
+        // the funnel's drops ('held' leads are kept in review, not dropped)
+        const dropped = Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).filter(([k]) => k !== 'held').map(([k, n]) => [`research_${s.stage}_${k}`, n])))
+        const refusal = r.run.refusal
+        // A refusal is read exactly as the old engine reads it: the trial's budget holds every lead in review (finishTrialBudget); only a NUMERIC
+        // budget is a budget stop that keeps what was verified; any other refusal (count_failed, model_unpriced, ...) fails the run, since no
+        // budget can fix it.
+        if (refusal instanceof SpendRefused) {
+          if (trialGuard && (refusal.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, { candidates: null, outcome: { leads, review, dropped } }, ledger)
+          if (refusalCode(refusal, ledger) !== 'budget_stopped') throw refusal
+        }
+        const owned = finish(db, job, 'done', refusal ? 'budget_stopped' : null, { leads, review, dropped }, r.candidates, ledger)
+        // D's proof rows and G's people: a failure there is reported, never turns a finished scan into a retry
+        if (owned) { try { await r.afterSave?.(db, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:after-save', tenantId: job.user_id, ref: job.id }) } }
+        // The old engine's post-finish steps that apply to research leads as they are (#1267 review blocker 3). The rest are not run for a research
+        // scan, by design, and named in the PR: buyer-fit scoring, the sales-hiring gate, the #377 timing-proof record and completeLeads (D's research
+        // proof is the ready rule instead), the old people pass (G's company research names the person), enrichment and autopilot (a new engine
+        // never sends on its own).
+        if (owned) {
+          if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+          try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
+          try { enforceContactSource(db, job.user_id, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:contact-source', tenantId: job.user_id, ref: job.id }) }
+        }
+        if (trialGuard?.refused) holdTrialBudget(db, job)
+        return 'done'
+      }
     }
     const complete = providers_[vendor].complete
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
