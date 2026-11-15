@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { progressOf, outcomeInputs } from '../lib/scan/progress.ts'
-import { scanOutcome } from '../lib/scan/scan-outcome.ts'
+import { outcomeOwnCopy, scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
 import { first5Of, isFirst5, verifiedLeads, FIRST5_TARGET, type First5Lead } from '../lib/scan/first5.ts'
@@ -65,7 +65,9 @@ test('CONTROL: the same job WITHOUT first5 still searches TinyFish first', async
 // #1157: one failed source does not fail the run when the other searched clean. Here every news request fails and the web search
 // ran and found nothing: the run stopped with nothing found, and the message names the source that could not be searched.
 test('every news request fails while the web search finds nothing -> stopped_empty, search:news named as not searched, can continue: not a failure, not a bare empty screen', async () => {
-  const { v } = await view(fx({ extraction: [], deps: { newsHttp: async () => ({ status: 503, body: '' }) } }))
+  const { v, outcome } = await view(fx({ extraction: [], deps: { newsHttp: async () => ({ status: 503, body: '' }) } }))
+  // the same recorded job on the current-job view (leads-client.tsx reads outcomeOwnCopy of the status payload's outcome): the failed source is named there too
+  assert.match(outcomeOwnCopy(outcome) ?? '', /^Nothing found - search:news could not be searched\. /)
   assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'stopped', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news'])
   assert.match(v.message, /^Nothing found - search:news could not be searched: /); assert.match(v.message, /the skipped source may have had results/)
   assert.deepEqual(v.sources.map(s => [s.source, s.status]), [['search:news', 'failed'], ['search:tinyfish', 'empty']], 'the source rows still say which one failed')

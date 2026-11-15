@@ -67,3 +67,22 @@ test('a first play shows the same words: the allowance stop is not replaced by "
   const held = view('unbounded_fallback_hold')
   assert.equal(held.message, 'Failed - search:news had an error. You can search wider.'); assert.equal(held.reason, 'failed')
 })
+
+// review at 7723d55f: the current-job view (leads-client.tsx) showed a fixed paragraph per error code, so the degraded stop read
+// "The sources this run was allowed to use searched and found nothing" with the failed source unnamed. It now shows the outcome's own words.
+test('the current-job view shows the outcome\'s own words when they name the failed source; otherwise its fixed copy', async () => {
+  const { outcomeOwnCopy } = await import('../lib/scan/scan-outcome.ts')
+  const rec = { status: 'failed', candidates: 0, verified: 0, needs_review: 0, failed_sources: ['search:news (network)'] }
+  const degraded = outcomeOwnCopy(scanOutcome({ ...rec, error: 'no_discovery' } as never))
+  assert.match(degraded ?? '', /^Nothing found - search:news \(network\) could not be searched\. One source had an error and was skipped/)
+  const allowance = outcomeOwnCopy(scanOutcome({ ...rec, error: 'search_allowance_reached' } as never))
+  assert.match(allowance ?? '', /^Stopped - the web search allowance for today was used up\. .*Also, search:news \(network\) had an error and gave nothing either\.$/)
+  for (const error of ['source_error', 'unbounded_fallback_hold', 'scan_timeout']) assert.equal(outcomeOwnCopy(scanOutcome({ ...rec, error } as never)), null, error)
+  assert.equal(outcomeOwnCopy(scanOutcome({ ...rec, failed_sources: [], error: 'no_discovery' } as never)), null, 'nothing failed: the fixed copy stays')
+  for (const junk of [null, undefined, 'x', { accounts_for_failed_source: true }, { accounts_for_failed_source: 'yes', label: 'x' }]) assert.equal(outcomeOwnCopy(junk), null)
+  // the view reads it from the status payload's outcome for a failed job, and shows it ahead of every fixed error copy
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.ok(src.includes("setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null)"), 'set from the status payload')
+  assert.match(src, /data-testid="scan-failed-copy">\{failedOwnCopy \? failedOwnCopy : jobError === 'accounting_uncertain'/)
+})
