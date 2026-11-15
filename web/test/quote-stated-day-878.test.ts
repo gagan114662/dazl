@@ -75,6 +75,12 @@ test('fail closed: a quote whose only day is background, another event, a plan o
   assert.equal(day(`Kestrel Pay opened a London office celebrating its Series C on ${written(EVENT)}`), null)
   assert.equal(day(`Kestrel Pay opened a London office, the Series C on ${written(EVENT)}`), null)
   assert.equal(day(`Kestrel Pay opened a London office - its Series C on ${written(EVENT)}`), null)
+  // a report's day is not the event's; the company inside another subject's phrase (council round 3)
+  assert.equal(day(`Kestrel Pay raised a Series C first reported by Reuters on ${written(EVENT)}`), null)
+  assert.equal(day(`Kestrel Pay raised a Series C in a deal disclosed by Reuters on ${written(EVENT)}`), null)
+  assert.equal(day(`The lead investor in Kestrel Pay closed a new fund on ${written(EVENT)}`), null)
+  assert.equal(day(`Investors backing Kestrel Pay raised a fund on ${written(EVENT)}`), null)
+  assert.equal(day(`The bank advising Kestrel Pay closed a deal on ${written(EVENT)}`), null)
   // a lone numeric day the quote does not settle (April 11 or November 4)
   assert.equal(day(`Kestrel Pay closed its Series C on 04/11/${Y}`), null)
   // a day named before the statement, or a statement that goes on after its day, or a second clause about the company (council round 2)
@@ -113,6 +119,11 @@ test('two different days in the quote, both bound: neither is chosen', () => {
   assert.equal(dayStatedForEvent(seed, seed, 'Kestrel Pay')?.day, EVENT)
   const lead_in = `In Berlin, Kestrel Pay opened its second office on ${written(EVENT)}.`
   assert.equal(dayStatedForEvent(lead_in, lead_in, 'Kestrel Pay')?.day, EVENT)
+  // common -ing nouns of a funding quote, and the company's name in capitals, are not refused
+  const funding = `Kestrel Pay raised $80 million in Series C funding on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(funding, funding, 'Kestrel Pay')?.day, EVENT)
+  const caps = `APPLY DIGITAL announced an $80 million Series C on ${written(EVENT)}.`
+  assert.equal(dayStatedForEvent(caps, caps, 'Apply Digital')?.day, EVENT)
   const named = `Apply Digital announced an $80 million Series C on ${written(EVENT)}.`
   assert.equal(dayStatedForEvent(named, named, 'Apply Digital')?.day, EVENT)
 })

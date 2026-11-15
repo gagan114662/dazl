@@ -217,10 +217,16 @@ const NOT_THIS_EVENT = /\b(?:founded|incorporated|established|since|previous(?:l
 // "... announced on <day> that it had raised ...", "... filed to raise a round on <day>", "... the company confirmed on <day>" do not (council review).
 const PAST_VERB = /^(?:(?:has|have)\s+)?(?:[a-z]+[^e\W]ed|won|made|held|began|broke|took|ran|built|cut|set|led|got|struck|sold|went|bought|grew|hit|rose|spent|paid)$/
 const CLAUSE_WORD = /^(?:and|or|but|nor|that|which|who|whose|whom|it|they|as|when|while|once|amid|having|had|was|were|is|are|be|been|being|to|so|if|because|though|although|whereas|per|via|said|says|confirmed|according|off|heels)$/
+const BACKER = /^(?:led|co-led|backed|funded|financed|underwritten|joined)$/
+const ING_NOUN = /^(?:funding|financing|offering|opening|listing|building|lending|banking|clearing|accounting|consulting|engineering|manufacturing|catering|marketing|training)$/
+const OBJECT_OF = /^(?:in|of|for|at|from|with|to|by|and|or|like|than|via|behind|into|on|about|against|over|under|toward|towards|including|backing|beside|besides|among)$/
 function oneEventOnDay(q: string, company: string): string | null {
   const t = q.replace(/[.!]\s*$/, '')
   const at = t.toLowerCase().indexOf(normalise(company).toLowerCase())
   if (at < 0) return null   // the quote must name the company (precondition for reading what follows the name)
+  // the company must be the statement's subject, not inside another subject ("The lead investor in <Company> closed a fund", "Investors backing <Company> raised")
+  const before = /([A-Za-z'’-]+)\s*$/.exec(t.slice(0, at))?.[1].toLowerCase() ?? ''
+  if (OBJECT_OF.test(before) || /ing$/.test(before)) return null
   // the first stated day ends the statement, so it is the only one (an ambiguous numeric day is then refused by eventDateBound)
   const pos = datePositions(t)
   if (pos.length === 0 || t.slice(pos[0].end).trim() !== '') return null
@@ -230,13 +236,14 @@ function oneEventOnDay(q: string, company: string): string | null {
   const toks = m[1].toLowerCase().split(/\s+/)
   const verbAt = toks[0] === 'has' || toks[0] === 'have' ? 1 : 0
   if (!PAST_VERB.test(toks.slice(0, verbAt + 1).join(' '))) return null
-  // a participle before "by" describes the object ("a round led by Acme", "backed by"), it is not a second event
+  // a backer's participle before "by" describes the object ("a round led by Acme", "backed by"), it is not a second event; "reported by" / "disclosed by"
+  // date a report, so they are refused like any second verb. A few -ing nouns of the target class ("funding", "financing") are not a participle clause.
   const rest = toks.slice(verbAt + 1)
-  return rest.every((w, i) => !CLAUSE_WORD.test(w) && !(PAST_VERB.test(w) && rest[i + 1] !== 'by') && !/ing$/.test(w)) ? pos[0].day : null
+  return rest.every((w, i) => !CLAUSE_WORD.test(w) && !(PAST_VERB.test(w) && !(rest[i + 1] === 'by' && BACKER.test(w))) && !(/ing$/.test(w) && !ING_NOUN.test(w))) ? pos[0].day : null
 }
 export function dayStatedForEvent(pageText: string, quote: string, company: string): { day: string; why: string } | null {
   const q = normalise(quote)
-  if (NOT_THIS_EVENT.test(q.split(normalise(company)).join(' '))) return null   // the company's own name ("Apply Digital") is no cue
+  if (NOT_THIS_EVENT.test(q.replace(new RegExp(normalise(company).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' '))) return null   // the company's own name ("Apply Digital") is no cue
   const day = oneEventOnDay(q, company)
   if (!day) return null
   if ([...q.matchAll(/\b(?:19|20)\d\d\b/g)].some(m => m[0] !== day.slice(0, 4))) return null   // another year named: the day may not be this event's
