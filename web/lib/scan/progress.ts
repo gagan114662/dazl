@@ -111,3 +111,15 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
   const stop_refusal_reason = rep.stop?.spend_refusal_reason ?? null
   return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, stop_refusal_reason, ...sourceFindings(rows, jobStatus, searchEmptyOk) }
 }
+
+// #1157 line 2: what the running page says about when the scan last made progress. A scan that has been quiet for 90 s
+// says so plainly (and that a stuck scan is retried), instead of an open-ended "Still running". null = nothing recorded.
+export const QUIET_AFTER_S = 90
+export function lastActivityNote(nowS: number, lastAt: number | null | undefined): { text: string; quiet: boolean } | null {
+  if (lastAt == null || !Number.isFinite(lastAt)) return null
+  const ago = Math.max(0, Math.floor(nowS - lastAt))
+  const when = ago < 60 ? `${ago} s ago` : `${Math.floor(ago / 60)} min ago`
+  return ago >= QUIET_AFTER_S
+    ? { text: `No new activity for ${Math.floor(ago / 60) >= 1 ? `${Math.floor(ago / 60)} min` : `${ago} s`}. If it stays stuck, it is stopped and retried automatically within a few minutes.`, quiet: true }
+    : { text: `Last activity ${when}`, quiet: false }
+}

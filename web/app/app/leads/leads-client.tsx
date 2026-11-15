@@ -55,6 +55,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
+import { lastActivityNote } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
@@ -203,6 +204,7 @@ export default function LeadsClient() {
   // Live per-source progress from the status poll; null when the response had none (older server or a failed read).
   const [progress, setProgress] = useState<SourceProgress[] | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null)
   const [createdAt, setCreatedAt] = useState<number | null>(null)
   const [attempt, setAttempt] = useState<[number, number] | null>(null)
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
@@ -577,7 +579,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
@@ -981,11 +983,12 @@ export default function LeadsClient() {
               + fit checks), done. Below it, each source that has started reports live (progress from the status poll). */}
           <Stepper steps={[
             { label: 'Read your profile and play', state: status === 'pending' ? 'live' : 'done', note: status === 'pending' ? `Queued${createdAt ? ` ${Math.max(0, Math.floor((now - createdAt) / 60))} min` : ''}` : undefined },
-            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}` : undefined },
+            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}${lastActivityNote(now, lastProgressAt) && !lastActivityNote(now, lastProgressAt)!.quiet ? ` - ${lastActivityNote(now, lastProgressAt)!.text.toLowerCase()}` : ''}` : undefined },
             { label: 'Check fit and find contacts', state: 'todo' },
             { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo', note: leadsSoFar > 0 ? 'so far' : undefined },
           ]} />
           <SourceProgressList progress={progress} />
+          {status === 'running' && lastActivityNote(now, lastProgressAt)?.quiet && <div className="text-sm text-[var(--ink-2)]" role="status" data-testid="scan-quiet">{lastActivityNote(now, lastProgressAt)!.text}</div>}
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm border-t border-[var(--line)] pt-3">
             <div>
               <span className="font-semibold">{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</span>
