@@ -680,6 +680,7 @@ export function officeLinks(html: string, base: URL, places: string[]): string[]
 // "/locations/us/chicago"), or "other" (any other office: "/locations/denver", "/offices/team/dallas", "/locations/texas/paris" for Paris, France).
 // A "requested" page still has to agree with the requested place before its people count (crawlSite), so "/offices/new-york/dallas" for Dallas is
 // judged by what the page says.
+const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|east-coast|downtown|midtown|uptown|metro|nyc|dc|city|main)$/
 const US_CODES = new Set(Object.keys(US_STATES).map(k => k.toLowerCase()))
 // A path segment read as a US state: "texas", "tx", "tex", "us-texas", "new-york"; null otherwise. `codes`: also two-letter codes.
 const pathState = (x: string, codes: boolean): string | null => { const r = x.replace(/^(?:usa?|united-states)-/, '').replace(/-/g, ' '); if (!codes && /^[a-z]{2}$/.test(r)) return null; const st = stateCode(r); return st && US_CODES.has(st) ? st : null }
@@ -700,10 +701,9 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   // a city named like a state ("new-york", "washington") followed by anything but a people word, the requested region or "<city>-city" is that
   // state's other office ("/offices/new-york/buffalo"; "/offices/washington/dc" and "/offices/new-york/new-york-city" are the city itself)
   // ... and preceded by another place ("/locations/spokane/washington" for Washington, DC: the trailing "washington" is Spokane's state)
-  // (country / region words are not a place: "/offices/usa/new-york"; a slug carrying the requested state is the city: "/locations/usa/new-york-ny")
-  const ownSuffix = /-([a-z]{2})$/.exec(seg[j]); const REGION_WORD = /^(?:us|usa|united-states(?:-of-america)?|americas?|north-america|global|domestic|[a-z]+-coast|downtown|midtown|uptown|metro|nyc|dc|city|main)$/
-  if (!(ownSuffix && codes.has(ownSuffix[1])) && pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(i + 1, j).some(x => !PEOPLE_SEGMENT.test(x) && !pathState(x, true) && !REGION_WORD.test(x))) return 'other'
-  if (pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== `${seg[j].replace(/-[a-z]{2}$/, '')}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
+  // (country / region words are not a place: "/offices/usa/new-york", "/locations/usa/new-york-ny"; "/offices/seattle/washington-dc" is Seattle's)
+  if (pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(i + 1, j).some(x => !PEOPLE_SEGMENT.test(x) && !pathState(x, true) && !REGION_WORD.test(x))) return 'other'
+  if (pathState(seg[j].replace(/-[a-z]{2}$/, ''), false) && seg.slice(j + 1).some(x => !PEOPLE_SEGMENT.test(x) && x !== 'partners' && !REGION_WORD.test(x) && x !== `${seg[j].replace(/-[a-z]{2}$/, '')}-city` && !codes.has(pathState(x, true) ?? x))) return 'other'
   // a US state anywhere in the path (before or after the city) that is not the requested region: "/locations/texas/paris",
   // "/texas/locations/paris", "/locations/paris/texas" are not Paris, France; "/locations/springfield/mo" is not Springfield, IL.
   // Before the office segment a two-letter code counts unless it is also a language code ("/us/tx/locations/" is Texas; "/de/" is a locale).
@@ -711,7 +711,7 @@ function officeOf(pathname: string, places: string[]): 'none' | 'requested' | 'o
   // (with a "us-" prefix it is a state even when it is also a language code: "/us-ca/")
   const rawLead = pathname.toLowerCase().split('/').filter(Boolean)[0] ?? '', prefixed = /^(?:usa?|united-states)-/.test(rawLead), lead = rawLead.replace(/^(?:usa?|united-states)-/, '')
   if (!bareCity(places) && /^[a-z]{2}$/.test(lead) && US_CODES.has(lead) && (prefixed || !LOCALE_LIKE.has(lead)) && !codes.has(lead)) return 'other'
-  if (!bareCity(places) && seg.some((x, k) => { if (k === j) return false; const st = k === i ? pathState(x.replace(/-?(?:locations?|offices?)$/, ''), false) : pathState(x, k > i || !LOCALE_LIKE.has(x)) /* "/texas-offices/" names Texas */; return !!st && !codes.has(st) })) return 'other'
+  if (!bareCity(places) && seg.some((x, k) => { if (k === j) return false; const st = k === i ? ((r: string) => pathState(r, !LOCALE_LIKE.has(r)))(x.replace(/-?(?:locations?|offices?)$/, '')) : pathState(x, k > i || !LOCALE_LIKE.has(x)) /* "/texas-offices/" names Texas */; return !!st && !codes.has(st) })) return 'other'
   return 'requested'
 }
 // A path under a locations / offices segment that is ANOTHER office (or any office, when no single city is requested): never read.

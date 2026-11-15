@@ -478,3 +478,21 @@ test('round 11 (haiku): descriptor words before a state-named city keep the requ
   for (const path of ['/locations/usa/new-york', '/locations/midtown/new-york', '/offices/nyc/new-york', '/offices/east-coast/new-york', '/offices/north-america/new-york']) assert.equal(otherOffice(path, ['New York, NY']), false, path)
   for (const path of ['/offices/united-states/washington', '/offices/downtown/washington']) assert.equal(otherOffice(path, ['Washington, DC']), false, path)
 })
+
+test('round 12: another place before a suffixed state-named city is still another office; "/tx-offices/" is Texas; "/partners" under the city is its page', () => {
+  assert.equal(otherOffice('/offices/seattle/washington-dc', ['Washington, DC']), true)
+  assert.equal(otherOffice('/locations/spokane/washington-dc', ['Washington, DC']), true)
+  assert.equal(otherOffice('/locations/albany/new-york-ny', ['New York, NY']), true)
+  assert.equal(otherOffice('/locations/usa/new-york-ny', ['New York, NY']), false)
+  assert.equal(otherOffice('/tx-offices/paris', ['Paris, France']), true)
+  assert.equal(otherOffice('/ca-offices/toronto', ['Toronto, ON']), false)
+  assert.equal(otherOffice('/offices/washington-dc/partners', ['Washington, DC']), false)
+  assert.equal(otherOffice('/offices/new-york-ny/partners', ['New York, NY']), false)
+})
+
+test('round 12 (opus): descriptor words after a state-named city keep it; "west-coast" before Washington is not neutral', () => {
+  assert.equal(otherOffice('/offices/new-york/midtown', ['New York, NY']), false)
+  assert.equal(otherOffice('/offices/washington/downtown', ['Washington, DC']), false)
+  assert.equal(otherOffice('/offices/west-coast/washington', ['Washington, DC']), true)
+  assert.equal(otherOffice('/offices/east-coast/new-york', ['New York, NY']), false)
+})
