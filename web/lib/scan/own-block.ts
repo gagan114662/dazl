@@ -47,10 +47,19 @@ export function ownBlock(text: string, company: string, title = '', excerpt = ''
 }
 
 // Place agreement on the candidate's own block only. `no_geography` when the request names no place.
-export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = ''): PlaceVerdict {
+// stated (#763): a place a structured source states for the company ITSELF (a Shopify store's own meta.json: "Barnsley, England,
+// United Kingdom"). The page is judged ALONE first, and a page verdict of 'mismatch' is final: the stated place can never turn it into a
+// pass (a page saying "Based in Berlin" stays a mismatch whatever the store states). A page verdict of 'agrees' is final too. The stated place
+// only decides an 'unconfirmed' page: it confirms it, or a stated place outside the request makes it 'mismatch' (a store stating Nottingham with a
+// silent page is not a London store). So it can lower nothing a page itself proved, by construction.
+export function ownPlaceAgreement(page: { title: string; text: string; board?: BoardIdentity }, where: string[], company: string, excerpt = '', stated: string | null = null): PlaceVerdict {
   const probe = placeAgreement('', where, company)
   if (probe === 'no_geography') return probe
   const block = ownBlock(page.text, company, page.title, excerpt, page.board)
-  if (block === null) return 'unconfirmed'
-  return placeAgreement(`${page.title} ${block}`, where, company)
+  const onPage: PlaceVerdict = block === null ? 'unconfirmed' : placeAgreement(`${page.title} ${block}`, where, company)
+  // 'agrees' is as final as 'mismatch' (review of 29c151f3): a page that itself confirms the requested place is not overruled by a registered office
+  // elsewhere (a London showroom page on a store whose meta.json says Barnsley). Only an 'unconfirmed' page is ever decided by the stated place.
+  if (!stated || onPage !== 'unconfirmed') return onPage
+  const said = placeAgreement(stated, where, company)
+  return said
 }

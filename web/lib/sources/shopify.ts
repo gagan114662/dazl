@@ -8,20 +8,22 @@
 //   /meta.json      -> { name, city, province, country, myshopify_domain, ... }     the shop's own stated place
 //   /products.json  -> { products: [{ title, handle, body_html, published_at, ... }] } its products with their publish times
 // So: store domains come from the scan's own search hits (a hit's host, and the links on a hit that is a store list); a store is kept
-// when its meta.json says it is a Shopify store in the country the request names; and its newest product published inside the
-// request's window is the evidence, cited by that product's own page.
+// when its meta.json says it is a Shopify store in the country the request names; and its newest product whose record was created AND
+// published inside the request's window is the evidence, cited by that product's own page.
 //
 // What this is NOT: a store directory (it only reads stores this scan's searches surfaced), a crawler (two requests per store, a
 // fixed budget), or proof by itself (each item is a candidate; the normal verifier still reads the cited product page). Large
-// headless brands answer neither endpoint and are simply not found here. published_at is the store's own structured publish time
-// for that product; it is carried as the item's date and labelled as such.
+// headless brands answer neither endpoint and are simply not found here. created_at and published_at are the store's own structured
+// times for that product; they are stated in the candidate's signal and are not a proven event date.
 import type { AdapterInput, SafeGet } from './types.ts'
 import { isRecord, looksLikeHtml } from './types.ts'
 import { isCalendarDay } from '../scan/scoreboard.ts' // a real calendar day: "2026-10-45" is not one
 
 export interface ShopifyStore {
   host: string; name: string; city: string | null; province: string | null; country: string
-  productUrl: string; productTitle: string; publishedAt: string // YYYY-MM-DD, the store's own publish day for the product
+  productUrl: string; productTitle: string
+  publishedAt: string // YYYY-MM-DD, the store's own publish day for the product
+  createdAt: string   // YYYY-MM-DD, the day the store created the product's record; both are inside the window
   quote: string // text from the product's own description (or its title), expected on the product page
 }
 
@@ -90,16 +92,20 @@ export async function readStore(host: string, http: SafeGet, o: { countries: str
   const products = isRecord(body) && Array.isArray(body.products) ? body.products.filter(isRecord) : null
   if (!products) { note?.('products_unreadable'); return null }
   const today = o.now.toISOString().slice(0, 10), floor = new Date(o.now.getTime() - o.windowDays * 86_400_000).toISOString().slice(0, 10)
-  let best: { day: string; title: string; handle: string; quote: string } | null = null
+  // A NEW listing: the product's record was CREATED inside the window and it is published inside the window. published_at alone is not
+  // that: measured on 12 real UK stores (2026-11-14), 10 had ALL of their listed products "published" inside 90 days, with records
+  // created 300 to 800 days earlier (stores re-publish their catalogue). created_at is when the product record was first made.
+  const inWindow = (v: unknown): string | null => { const d = (str(v) ?? '').slice(0, 10); return isCalendarDay(d) && d >= floor && d <= today ? d : null } // a real calendar day: "2026-10-45" is not one
+  let best: { day: string; created: string; title: string; handle: string; quote: string } | null = null
   for (const p of products) {
-    const day = (str(p.published_at) ?? '').slice(0, 10), title = str(p.title), handle = str(p.handle)
-    if (!isCalendarDay(day) || day < floor || day > today || !title || !handle || !/^[a-z0-9][a-z0-9-]*$/i.test(handle)) continue
+    const day = inWindow(p.published_at), created = inWindow(p.created_at), title = str(p.title), handle = str(p.handle)
+    if (!day || !created || created > day || !title || !handle || !/^[a-z0-9][a-z0-9-]*$/i.test(handle)) continue // created after published is not a sane record
     const text = plain(str(p.body_html) ?? ''), quote = (text.length >= 20 ? text : title).slice(0, 300)
     if (quote.length < 20) continue
-    if (!best || day > best.day) best = { day, title, handle, quote }
+    if (!best || day > best.day) best = { day, created, title, handle, quote }
   }
-  if (!best) return null // a readable store with nothing published inside the window: not a lead for this request
-  return { host, name: plain(str(meta.name) ?? host).slice(0, 80) || host, city: str(meta.city), province: str(meta.province), country, productUrl: `https://${host}/products/${best.handle}`, productTitle: best.title.slice(0, 160), publishedAt: best.day, quote: best.quote }
+  if (!best) { note?.('no_new_listing'); return null } // a readable store in the right country with no product created AND published inside the window: reported, not a lead
+  return { host, name: plain(str(meta.name) ?? host).slice(0, 80) || host, city: str(meta.city), province: str(meta.province), country, productUrl: `https://${host}/products/${best.handle}`, productTitle: best.title.slice(0, 160), publishedAt: best.day, createdAt: best.created, quote: best.quote }
 }
 
 // countries: the ISO codes a kept store must be in (the request's own words, else the profile's country). EMPTY reads nothing: a
@@ -127,10 +133,14 @@ export async function collectShopifyStores(input: Pick<AdapterInput, 'query' | '
   return out.sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : a.host.localeCompare(b.host)))
 }
 
-export const placeOf = (s: ShopifyStore): string => [s.city, s.province, s.country].filter(Boolean).join(', ')
-// The candidate a store becomes: the shop as the company, its newest in-window product as the dated signal, the product page as the source.
+// The store's own stated place, with the country as a NAME ("Barnsley, England, United Kingdom"): the place check reads names, not ISO codes.
+const COUNTRY_NAMES: Record<string, string> = { GB: 'United Kingdom', US: 'United States', CA: 'Canada', AU: 'Australia', NZ: 'New Zealand', IE: 'Ireland', DE: 'Germany', FR: 'France', NL: 'Netherlands', IN: 'India', SG: 'Singapore' }
+export const placeOf = (s: ShopifyStore): string => [s.city, s.province, COUNTRY_NAMES[s.country] ?? s.country].filter(Boolean).join(', ')
+// The candidate a store becomes: the shop as the company, its newest product created and published inside the window as the signal, the product
+// page as the source. The days are the store's own structured data; they are stated in the signal and are NOT a proven event date (a new
+// listing can be a new colour of an old product).
 export const storeLead = (s: ShopifyStore): { name: string; company: string; contact: null; signal: string; source_url: string; excerpt: string } => ({
   name: '', company: s.name, contact: null, source_url: s.productUrl, excerpt: s.quote,
-  signal: `${s.name} (${placeOf(s)}), a Shopify store at ${s.host}, published a new product "${s.productTitle}" on ${s.publishedAt}.`,
+  signal: `${s.name} (${placeOf(s)}), a Shopify store at ${s.host}, added a new product listing "${s.productTitle}" (record created ${s.createdAt}, published ${s.publishedAt}).`,
 })
 

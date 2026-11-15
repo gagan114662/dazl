@@ -8,7 +8,7 @@ import { ProviderError, providers, type Provider } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
-import { collectShopifyStores, countriesIn, mentionsShopify, STORE_LIST_QUERY, storeLead } from '../sources/shopify.ts'
+import { collectShopifyStores, countriesIn, mentionsShopify, placeOf, STORE_LIST_QUERY, storeLead } from '../sources/shopify.ts'
 import { KEEP_MODEL_CALLS_JOB_SQL, SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
@@ -334,11 +334,16 @@ export function feedbackGate(db: Database.Database, tenantId: string) {
 }
 const auditDrop = (audit: CandidateAudit[]) => (rows: LeadDraft[], reason: string) => { for (const l of rows) audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome: 'dropped', reason }) }
 
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>, statedPlaces?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
   const drop = (r: string) => { dropped[r] = (dropped[r] ?? 0) + 1 }
+  // #763: where the candidate's company is. statedPlaces carries a place a structured source states for the company ITSELF, keyed by the
+  // candidate's source URL (a Shopify store's own meta.json). It is handed to the place check as one more sentence of the company's own
+  // block (lib/scan/own-block.ts): it answers a page that merely mentions another place, and never overrules a page that places the
+  // company itself elsewhere. No stated place for this candidate: the page is judged exactly as before.
+  const placeFor = (page: Parameters<typeof ownPlaceAgreement>[0], c: LeadDraft) => ownPlaceAgreement(page, geo, c.company, c.excerpt, statedPlaces?.get(canonUrl(c.source_url)) ?? null)
   // Instrumentation only (scan/run-report.ts): the fate of each candidate and why. Never read by a decision.
   const noted = new Map<LeadDraft, CandidateAudit>()
   const note = (c: LeadDraft, outcome: CandidateAudit['outcome'], reason: string | null, origin?: string | null) => {
@@ -431,7 +436,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         // ...and the quote naming an old year keeps it held too, as on a fetched page (resolveTiming): an undated copy is not a fresh one
         const oldYear = resolveTiming(cp.text, cc.excerpt, null, now.getFullYear()).olderYear
         const v2 = !closedJobEvidence(cc, cp) && !(!claimed.ok && DATE_REJECTS.has(claimed.reason)) && oldYear === null ? verifyEvidence(cc, cp, now) : null
-        if (v2?.ok && !counterpartySignal(cc, cp, '') && ownPlaceAgreement(cp, geo, cc.company, cc.excerpt) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
+        if (v2?.ok && !counterpartySignal(cc, cp, '') && placeFor(cp, cc) !== 'mismatch') { passed.push({ c: cc, v: v2, copy: { failure: why, sha256: copy.page.sha256, page: copy.page } }); note(c, 'passed', null, COPY_ORIGIN); continue }
       }
       if (why) toReview(c, why)
       else { const r = page.fail === 'not_found' ? 'page_not_found' : page.fail === 'refused' ? 'url_refused' : 'page_unreachable'; drop(r); note(c, 'dropped', r) }
@@ -462,7 +467,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // Location agreement: when the request names a place, a cited page that names a DIFFERENT place (and not ours) is a mismatch and stays
     // in review (kept, labelled, never qualified or drafted). A page that names no place at all is not rejected here (small-business pages
     // often name only a street or neighbourhood); contacts are stricter: profile results and linked domains must name the place.
-    const where = ownPlaceAgreement(page, geo, c.company, c.excerpt)
+    const where = placeFor(page, c)
     if (where === 'mismatch') {
       const k = dedupKey(c); const why = `location_${where}`
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
@@ -1489,6 +1494,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // published inside the request's window. Free, no key, no model call. It runs BEFORE the no-candidates stop below: the searches
     // for such a request return pages about Shopify and store lists, which name no dated launch, so the search stage alone found
     // nothing (staging job 6cb4b14f: no_discovery). Its stores are ordinary candidates: the same verifier reads each cited product page.
+    const statedPlaces = new Map<string, string>() // candidate source URL -> the place a structured source states for the company itself (the verifier's place check reads it)
     if (!budgetRefused && job.query && icpForSources && !job.sources && mentionsShopify(job.query, icpForSources.summary, ...(icpForSources.signals ?? []))) {
       const notes: Record<string, number> = {}
       try {
@@ -1500,6 +1506,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job) // the collection can take up to its time limit: the attempt must still own the scan before its stores are added
         const drafts = parseLeads(JSON.stringify(stores.map(storeLead)), stores.map(st => st.productUrl)) ?? []
         ledger.record('adapter:shopify', drafts.length > 0 ? 'ok' : Object.keys(notes).length > 0 ? 'partial' : 'empty', drafts.length)
+        for (const st of stores) statedPlaces.set(canonUrl(st.productUrl), placeOf(st)) // the store's own stated place (its meta.json)
         if (drafts.length > 0) { ledger.candidates('adapter:shopify', drafts); leads = [...(leads ?? []), ...drafts]; partial.candidates = leads }
       } catch (e) {
         if (e instanceof ScanStopped || e instanceof ScanTimedOut) throw e
@@ -1686,7 +1693,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates, statedPlaces)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -1776,7 +1783,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
               // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
               // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
               const held = HeldText.merge(diag.held, diag2.held)
-              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates, statedPlaces)
               const seenKeys = new Set(outcome.leads.map(dedupKey))
               for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
               const seenReview = new Set(outcome.review.map(dedupKey))

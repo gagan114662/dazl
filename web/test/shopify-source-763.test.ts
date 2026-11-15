@@ -70,7 +70,7 @@ test('#763 one store: kept only if meta.json says a Shopify store in the request
     'huge.example': { meta: META({ name: 'Huge', myshopify_domain: 'h.myshopify.com' }), products: { truncated: true } },
   })
   const snag = await readStore('snagtights.com', http, o)
-  assert.deepEqual(snag, { host: 'snagtights.com', name: 'Snag', city: 'Livingston', province: 'Scotland', country: 'GB', productUrl: 'https://snagtights.com/products/emmerson-card-holder-in-tulip', productTitle: 'Emmerson - Card Holder Organic Cotton in Tulip', publishedAt: '2026-11-10', quote: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print.' })
+  assert.deepEqual(snag, { host: 'snagtights.com', name: 'Snag', city: 'Livingston', province: 'Scotland', country: 'GB', productUrl: 'https://snagtights.com/products/emmerson-card-holder-in-tulip', productTitle: 'Emmerson - Card Holder Organic Cotton in Tulip', publishedAt: '2026-11-10', createdAt: '2026-11-10', quote: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print.' })
   assert.equal(await readStore('usbrand.com', http, o), null, 'a store in another country is not a lead for a UK request')
   // the window is the scan's own: a 14-day window drops the product published 4 days ago? no - it keeps it, and drops a 20-day-old one
   const win = net({ 'w.example': { meta: META({ name: 'W', myshopify_domain: 'w.myshopify.com' }), products: PRODUCTS(PRODUCT('Twenty Days Old', 'twenty', '2026-10-25T09:00:00+00:00')) } }).http
@@ -86,7 +86,7 @@ test('#763 one store: kept only if meta.json says a Shopify store in the request
   assert.equal(await readStore('throttled.example', http, o, c => notes.push(c)), null); assert.equal(await readStore('huge.example', http, o, c => notes.push(c)), null)
   assert.deepEqual(notes, ['throttled', 'oversize'], 'a store that answered but could not be read is reported')
   // the candidate it becomes
-  assert.deepEqual(storeLead(snag!), { name: '', company: 'Snag', contact: null, source_url: 'https://snagtights.com/products/emmerson-card-holder-in-tulip', excerpt: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print.', signal: 'Snag (Livingston, Scotland, GB), a Shopify store at snagtights.com, published a new product "Emmerson - Card Holder Organic Cotton in Tulip" on 2026-11-10.' })
+  assert.deepEqual(storeLead(snag!), { name: '', company: 'Snag', contact: null, source_url: 'https://snagtights.com/products/emmerson-card-holder-in-tulip', excerpt: 'Emmerson is our new card holder, made from organic cotton twill in a bright tulip print.', signal: 'Snag (Livingston, Scotland, United Kingdom), a Shopify store at snagtights.com, added a new product listing "Emmerson - Card Holder Organic Cotton in Tulip" (record created 2026-11-10, published 2026-11-10).' })
 })
 
 test('#763 the whole source: stores from a list hit, country and window applied, one candidate per store, newest first; a store that throws does not stop the others', async () => {
