@@ -14,6 +14,7 @@ import { readPage, type ReadablePage } from './read-page.ts'
 import { verifyLead, type Decide, type EventToVerify, type PersonToVerify, type Verdict } from './verify.ts'
 import { writeResearchProof, researchProofGap } from './proof.ts'
 import { researchCompany } from './company.ts'
+import { saveResearchContacts } from './contacts.ts'
 import { fetchPageDetailed, isFail, type Page } from '../scan/fetch-page.ts'
 import { defaultGet } from '../connectors/sitecrawl.ts'
 
@@ -112,3 +113,8 @@ export function writeProofs(db: Database.Database, jobId: string): Record<string
 
 extendResearchStages((ctx, base) => wiredStages(ctx, base))
 extendResearchAfterSave((db, jobId) => { writeProofs(db, jobId) })
+// Refs #1099: the addresses company research found printed on the company's own pages, and one unverified guess per named person
+extendResearchAfterSave(async (db, jobId, run) => {
+  try { console.error(`[research] contacts for job ${jobId}: ${JSON.stringify(await saveResearchContacts(db, jobId, run.leads))}`) }
+  catch (e) { console.error(`[research] contacts for job ${jobId} failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`) }
+})

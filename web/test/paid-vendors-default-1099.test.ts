@@ -58,7 +58,7 @@ test('scan enrichment: with saved Apollo and PDL keys and no paid vendor named, 
   // control: the operator names Apollo, and the same pass asks Apollo
   const c = enrichSeed()
   await enrichLeadContacts(c.db, 'u1', c.jobId, [c.lead], { fetchImpl, master, env: { DAZL_PAID_VENDORS: 'apollo' } })
-  assert.ok(calls.some(u => u.includes('apollo')), JSON.stringify(calls))
+  assert.ok((calls as string[]).some(u => u.includes('apollo')), JSON.stringify(calls))
 })
 
 test('model vendor: a saved OpenAI key is not used unless named; the Anthropic key is used even when it is older', () => {
