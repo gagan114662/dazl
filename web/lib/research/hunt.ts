@@ -96,27 +96,34 @@ export async function hunt(c: ResearchCase, plan: ResearchPlan, search: SearchFn
 }
 
 // E's hook (one function, behind the same switch as engine.ts researchEngineOn): A's hunt plus the registry sources (lib/research/sources).
-// Before the search: the sources that cover this case's place and category (city permits, city licences, SEC Form D) join as `extra`. After
-// it: the job boards the search itself found (Greenhouse / Lever / Ashby) are read for their roles' own posting days. Every source is a free
+// Alongside the search: the sources that cover this case's place and category (city permits, city licences, SEC Form D). After it: the job
+// boards the search itself found (Greenhouse / Lever / Ashby), read for their roles' own posting days. Both merge into hunt's candidates by
+// hunt's own rule (a registry's dated record wins over a search hit for the same URL). Every source is a free
 // public API through the guarded getter (https, public IPs, 1 MB cap); one that fails adds a note, never throws. Without LEAD_ENGINE=research
 // this is exactly hunt().
 export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, search: SearchFn, http: SafeGet, o: Parameters<typeof hunt>[3] & { env?: Record<string, string | undefined>; sources?: RegistrySource[] } = {}): Promise<HuntResult & { registry: Record<string, string[]> }> {
   const { env, sources, ...ho } = o
   if ((env ?? process.env).LEAD_ENGINE !== 'research') return { ...await hunt(c, plan, search, ho), registry: {} }
   const since = afterDate(c)
-  const reg = await collectRegistry(c, since, http, sources)
-  const h = await hunt(c, plan, search, { ...ho, extra: [...(ho.extra ?? []), ...reg.candidates] })
+  // the registry sources run alongside the search (never before it: a slow public API never delays the paid search), then merge by hunt's rule
+  const [reg, h] = await Promise.all([collectRegistry(c, since, http, sources), hunt(c, plan, search, ho)])
   const boards = await boardCandidates(c, h.candidates, since, http)
   const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
-  // a board's dated record wins over the search hit for the same URL (hunt's own rule)
+  // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept
   const byUrl = new Map(h.candidates.map(x => [urlKey(x.url), x]))
-  let replaced = 0
-  for (const x of boards.candidates) { const k = urlKey(x.url), had = byUrl.get(k); if (had && had.dated === 'registry') continue; if (had) replaced++; byUrl.set(k, x) }
+  let replaced = 0, duplicate = 0
+  for (const x of [...reg.candidates, ...boards.candidates]) {
+    const k = urlKey(x.url), had = byUrl.get(k)
+    if (had?.dated === 'registry') { duplicate++; continue }
+    if (had) replaced++
+    byUrl.set(k, x)
+  }
   const candidates = [...byUrl.values()]
   // every source's note reaches the scan's funnel: a source that could not be read is never shown as a market with nothing in it
   const dropped = { ...h.funnel.dropped }
   for (const [id, ns] of Object.entries(registry)) for (const n of ns) dropped[`registry_${id}_${n}`] = (dropped[`registry_${id}_${n}`] ?? 0) + 1
-  if (boards.candidates.length) dropped.board_record_over_hit = replaced
+  if (replaced) dropped.registry_record_over_hit = replaced
+  if (duplicate) dropped.duplicate_url = (dropped.duplicate_url ?? 0) + duplicate
   return { ...h, candidates, funnel: { ...h.funnel, out: candidates.length, dropped }, registry }
 }
 

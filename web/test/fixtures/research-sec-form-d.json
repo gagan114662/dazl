@@ -1,6 +1,6 @@
 {
  "fetched": "2026-11-15",
- "note": "real EDGAR answers (efts search-index page trimmed to these hits; primary_doc.xml of four filings); phone numbers removed, nothing else edited",
+ "note": "real EDGAR answers (efts search-index page trimmed to these hits; primary_doc.xml of four filings); phone numbers removed, nothing else edited. Names kept: the related persons are the executive officers and directors each company names on its public SEC filing, not private parties.",
  "page": {
   "hits": {
    "total": {

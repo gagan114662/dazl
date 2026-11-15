@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { formDGroups, formDHits, formDSearchUrl, parseFormD, secFormDSource, usCity, SEC_MIN_GAP_MS } from '../lib/research/sources/sec-form-d.ts'
+import { formDGroups, formDHits, formDSearchUrl, parseFormD, secFormDSource, usCity, SEC_COOLDOWN_MS, SEC_MIN_GAP_MS } from '../lib/research/sources/sec-form-d.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import type { ResearchCase } from '../lib/research/types.ts'
 
@@ -45,7 +45,7 @@ test('the filing document: industry, amounts, the executive officer it names; a 
 
 test("the source end to end: A's Candidate, dated by the filing day, the filing's own page, the facts and the named officer in the snippet; paced; failures are notes", async () => {
   let paced = 0
-  const src = secFormDSource({ pace: async () => { paced++ } })
+  const src = secFormDSource({ pace: async () => { paced++ }, cooldown: { until: 0 } })
   const seen: string[] = []
   const http: SafeGet = async (u, o) => {
     seen.push(o?.headers?.['user-agent'] ?? '')
@@ -63,22 +63,28 @@ test("the source end to end: A's Candidate, dated by the filing day, the filing'
   assert.doesNotMatch(x.snippet, /series [a-z]|raised a/i, 'the form proves an offering and its amounts, not a named round')
   assert.equal(paced, seen.length, 'every SEC request waits for the pace'); assert.ok(seen.every(ua => /^dazl-sources\/1\.0 /.test(ua)), 'a User-Agent that names us')
   assert.ok(SEC_MIN_GAP_MS >= 100, 'fair access: under 10 requests a second')
-  assert.deepEqual((await src.collect(SW, '2026-08-17', async () => ({ status: 429, body: '' }))), { candidates: [], notes: ['throttled'] })
   const docsDown = await src.collect(SW, '2026-08-17', async u => (u.startsWith('https://efts') ? { status: 200, body: JSON.stringify(FX.page) } : { status: 503, body: '' }))
   assert.deepEqual(docsDown, { candidates: [], notes: ['unread_3'] })
   assert.deepEqual(await src.collect(SW, '2026-08-17', async () => ({ status: 200, body: '{"error":"quota exceeded"}' })), { candidates: [], notes: ['not_json'] })
+  assert.deepEqual((await src.collect(SW, '2026-08-17', async () => ({ status: 429, body: '' }))), { candidates: [], notes: ['throttled'] })
 })
 
 test('fair access and time: a throttled document stops every further SEC request; a slow EDGAR stops at the time budget', async () => {
-  const asked: string[] = []
-  const throttled = await secFormDSource({ pace: async () => {} }).collect(SW, '2026-08-17', async u => {
+  const asked: string[] = [], cooldown = { until: 0 }
+  const throttled = await secFormDSource({ pace: async () => {}, cooldown }).collect(SW, '2026-08-17', async u => {
     asked.push(u)
     return u.startsWith('https://efts') ? { status: 200, body: JSON.stringify(FX.page) } : { status: 429, body: '' }
   })
   assert.deepEqual(throttled, { candidates: [], notes: ['throttled'] })
   assert.equal(asked.filter(u => u.endsWith('primary_doc.xml')).length, 1, 'one document request, then stop')
+  // the process-wide cooldown: the next scan does not ask SEC at all
+  const later: string[] = []
+  assert.deepEqual(await secFormDSource({ pace: async () => {}, cooldown }).collect(SW, '2026-08-17', async u => { later.push(u); return { status: 200, body: JSON.stringify(FX.page) } }), { candidates: [], notes: ['throttled_cooldown'] })
+  assert.equal(later.length, 0)
+  const after = await secFormDSource({ pace: async () => {}, cooldown, now: () => Date.now() + SEC_COOLDOWN_MS + 1 }).collect(SW, '2026-08-17', async () => ({ status: 503, body: '' }))
+  assert.deepEqual(after.notes, ['http_503'], 'after the cooldown it asks again')
   let t = 0
-  const slow = await secFormDSource({ pace: async () => {}, budgetMs: 1000, now: () => t }).collect(SW, '2026-08-17', async u => {
+  const slow = await secFormDSource({ pace: async () => {}, budgetMs: 1000, now: () => t, cooldown: { until: 0 } }).collect(SW, '2026-08-17', async u => {
     t += 600
     if (u.startsWith('https://efts')) return { status: 200, body: JSON.stringify(FX.page) }
     const adsh = Object.keys(FX.docs).find(k => u.includes(`/${k.replace(/-/g, '')}/`))
@@ -89,7 +95,7 @@ test('fair access and time: a throttled document stops every further SEC request
 
 test('the filing document decides: an amended filing or an investment fund is never a candidate, even when the index says new', async () => {
   const exp = Object.keys(FX.docs).find(k => FX.docs[k].includes('Expressable'))!
-  const run = async (edit: (xml: string) => string) => (await secFormDSource({ pace: async () => {} }).collect(SW, '2026-08-17', async u => {
+  const run = async (edit: (xml: string) => string) => (await secFormDSource({ pace: async () => {}, cooldown: { until: 0 } }).collect(SW, '2026-08-17', async u => {
     if (u.startsWith('https://efts')) return { status: 200, body: JSON.stringify(FX.page) }
     const adsh = Object.keys(FX.docs).find(k => u.includes(`/${k.replace(/-/g, '')}/`))!
     return { status: 200, body: adsh === exp ? edit(FX.docs[adsh]) : FX.docs[adsh] }

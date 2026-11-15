@@ -49,7 +49,7 @@ test('the source: narrow chunked queries over every licence year the window touc
   assert.ok([...ru, ...lu].every(u => u.length < 4096), `longest ${Math.max(...[...ru, ...lu].map(u => u.length))}`)
   const src = vancouverLicencesSource
   assert.equal(src.covers(VAN), true); assert.equal(src.covers({ ...VAN, category: 'dentists' }), false); assert.equal(src.covers({ ...VAN, where: 'Victoria, BC' }), false)
-  for (const where of ['Vancouver, Washington', 'Vancouver, WA', 'North Vancouver, BC', 'West Vancouver, British Columbia']) assert.equal(src.covers({ ...VAN, where }), false, where)
+  for (const where of ['Vancouver, Washington', 'Vancouver, WA', 'North Vancouver, BC', 'West Vancouver, British Columbia', 'Vancouver']) assert.equal(src.covers({ ...VAN, where }), false, where)
   assert.equal(src.covers({ ...VAN, where: 'Vancouver, BC, Canada' }), true)
   assert.equal(src.covers({ ...VAN, category: 'software companies', query: 'software companies near restaurants' }), false, 'the category decides, not words in the query')
   const answer = (renewals: 'ok' | 'down', locations: 'ok' | 'down' = 'ok'): SafeGet => async (u: string) => {
@@ -69,9 +69,25 @@ test('the source: narrow chunked queries over every licence year the window touc
   assert.deepEqual((await src.collect(VAN, FX.since, async () => ({ status: 200, body: '{"error":"quota"}' }))).notes, ['not_json'], 'a 200 without rows is unreadable, not empty')
 })
 
+test('a window across New Year: a December licence comes back in last year\'s folder too, and is never its own renewal', () => {
+  const hunger = FX.window.find(r => r.businesstradename === 'Hunger Street')!
+  const december = { ...hunger, folderyear: '25', issueddate: '2025-12-04T18:00:00+00:00' }   // the real row moved to December (labelled)
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', [december], [december], [december], '2025-11-12')
+  assert.deepEqual(s.map(x => x.company), ['Hunger Street'])
+  const before = { ...december, issueddate: '2025-03-01T18:00:00+00:00', licencenumber: '25-000001' }
+  assert.equal(licenceSignals(VANCOUVER_LICENCES, 'restaurants', [december], [before], [december], '2025-11-12').length, 0, 'a licence from before the window is a renewal')
+})
+
+test('locations are counted under both names: a second location filed under the legal name only still makes this an additional location', () => {
+  const hunger = FX.window.find(r => r.businesstradename === 'Hunger Street')!
+  const other = { ...hunger, businesstradename: null, house: '999', street: 'MAIN ST', licencenumber: '26-999999' }   // derived from the real row (labelled)
+  const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, FX.prior, [...FX.same, other], FX.since)
+  assert.equal(s.find(x => x.company === 'Hunger Street')!.eventKind, 'additional_location_licence')
+})
+
 test('a renewal is found under either of its names: last year under the legal name only, this year with a trade name added, is not "new"', () => {
   const hunger = FX.window.find(r => r.businesstradename === 'Hunger Street')!
-  const lastYear = { ...hunger, folderyear: '25', businesstradename: null, licencenumber: '25-000000' }   // derived from the real row: the same legal name and address, no trade name
+  const lastYear = { ...hunger, folderyear: '25', businesstradename: null, licencenumber: '25-000000', issueddate: '2025-04-01T18:00:00+00:00' }   // derived from the real row: the same legal name and address last April, no trade name
   const s = licenceSignals(VANCOUVER_LICENCES, 'restaurants', FX.window, [...FX.prior, lastYear], FX.same, FX.since)
   assert.ok(!s.some(x => x.company === 'Hunger Street'), 'a renewal under the legal name is still a renewal')
   assert.ok(String(hunger.businessname ?? '').length > 0, 'the fixture row has a legal name')

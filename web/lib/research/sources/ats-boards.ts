@@ -62,7 +62,7 @@ export function boardRoles(b: Board, body: unknown): Role[] | null {
   } else {
     for (const j of isRecord(body) && Array.isArray(body.jobs) ? body.jobs : []) {
       if (!isRecord(j) || j.isListed === false) continue
-      const addr = (a: unknown) => (isRecord(a) && isRecord(a.postalAddress) ? str(a.postalAddress.addressLocality) : '')
+      const addr = (a: unknown) => (isRecord(a) && isRecord(a.postalAddress) ? [str(a.postalAddress.addressLocality), str(a.postalAddress.addressRegion)].filter(Boolean).join(', ') : '')
       const locs = [str(j.location), addr(j.address), ...(Array.isArray(j.secondaryLocations) ? j.secondaryLocations.flatMap(s => (isRecord(s) ? [str(s.location), addr(s.address)] : [])) : [])].filter(Boolean)
       const posted = isoDay(j.publishedAt), url = str(j.jobUrl)
       if (posted && /^https:\/\/jobs\.ashbyhq\.com\//.test(url)) out.push({ title: str(j.title), location: [...new Set(locs)].join('; '), posted, url, company: null })
@@ -76,17 +76,23 @@ const pretty = (token: string) => token.replace(/[-_.]+/g, ' ').replace(/\b([a-z
 const STATE: Record<string, string> = { alabama: 'al', alaska: 'ak', arizona: 'az', arkansas: 'ar', california: 'ca', colorado: 'co', connecticut: 'ct', delaware: 'de', florida: 'fl', georgia: 'ga', hawaii: 'hi', idaho: 'id', illinois: 'il', indiana: 'in', iowa: 'ia', kansas: 'ks', kentucky: 'ky', louisiana: 'la', maine: 'me', maryland: 'md', massachusetts: 'ma', michigan: 'mi', minnesota: 'mn', mississippi: 'ms', missouri: 'mo', montana: 'mt', nebraska: 'ne', nevada: 'nv', 'new hampshire': 'nh', 'new jersey': 'nj', 'new mexico': 'nm', 'new york': 'ny', 'north carolina': 'nc', 'north dakota': 'nd', ohio: 'oh', oklahoma: 'ok', oregon: 'or', pennsylvania: 'pa', 'rhode island': 'ri', 'south carolina': 'sc', 'south dakota': 'sd', tennessee: 'tn', texas: 'tx', utah: 'ut', vermont: 'vt', virginia: 'va', washington: 'wa', 'west virginia': 'wv', wisconsin: 'wi', wyoming: 'wy', 'district of columbia': 'dc',
   'british columbia': 'bc', alberta: 'ab', ontario: 'on', quebec: 'qc', manitoba: 'mb', saskatchewan: 'sk', 'nova scotia': 'ns', 'new brunswick': 'nb' }
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// The case's place ("Austin, Texas") as a test on a role's location: the city as a whole word, not inside another place ("Port Austin",
-// "North Vancouver"), and, when the case names a region, that region too ("Austin, MN" is not Austin, Texas).
+// The case's place ("Austin, Texas") as a test on a role's location. A location can list several places ("Austin, MN; Dallas, TX",
+// "Portland, ME or Remote"): each place is tested on its own, and one place must be the city (at its start, or after "Remote - ") with the
+// case's region right after it ("Austin, Texas", "Austin, TX (Hybrid)"). Never "Port Austin", "North Vancouver", "Austin, MN", and a region
+// code is never matched as a word elsewhere ("London, UK (on-site)" is not London, Ontario).
 export const cityOf = (c: Pick<ResearchCase, 'where'>) => c.where.split(',')[0].trim()
 export function placeTest(c: Pick<ResearchCase, 'where'>): ((location: string) => boolean) | null {
   const [city, region] = c.where.split(',').map(s => s.trim().toLowerCase())
-  if (!city) return null
-  const cityRe = new RegExp(`(?:^|[;,(/|]\\s*)${esc(city)}(?=$|[^a-z])`)
+  // no region (or only a country: "Austin", "Austin, USA"): which Austin is not known, so no role is provably there (fails closed)
   const r = (region ?? '').replace(/\./g, '')
+  if (!city || !r || /^(?:usa?|united states(?: of america)?|canada|ca)$/.test(r)) return null
   const code = STATE[r] ?? (Object.values(STATE).includes(r) ? r : null), full = Object.keys(STATE).find(k => STATE[k] === code) ?? r
-  const regionRe = r ? new RegExp(`(?:^|[^a-z])(?:${[full, code].filter(Boolean).map(x => esc(x!)).join('|')})(?=$|[^a-z])`) : null
-  return loc => { const l = loc.toLowerCase(); return cityRe.test(l) && (!regionRe || regionRe.test(l)) }
+  const at = new RegExp(`(?:^|[-:(]\\s*)${esc(city)}(?=$|[^a-z])`)
+  const regionAfter = new RegExp(`^\\s*,\\s*(?:${[full, code].filter(Boolean).map(x => esc(x!)).join('|')})(?=$|[^a-z])`)
+  return loc => loc.toLowerCase().split(/\s*(?:;|\||\/)\s*|(?<!,)\s+(?:or|and)\s+/).some(place => {
+    const m = at.exec(place.trim())
+    return !!m && regionAfter.test(place.trim().slice(m.index + m[0].length))
+  })
 }
 export function boardCandidate(b: Board, roles: Role[], c: Pick<ResearchCase, 'where'>, since: string): Candidate | null {
   const city = cityOf(c), at = placeTest(c)

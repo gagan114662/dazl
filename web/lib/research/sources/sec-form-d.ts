@@ -118,11 +118,16 @@ export function formDCandidate(h: FormDHit, f: FormDFiling, category: string): C
 }
 
 // One pace for the whole process: every SEC request waits its turn (fair access: < 10 a second). Per PROCESS: two app processes on one
-// host would each keep their own pace; dazl runs one web process per host today, and a 429/403 stops this source's requests at once.
+// host would each keep their own pace; dazl runs one web process per host today. A 429/403 stops this collect at once and every SEC request
+// of this process for SEC_COOLDOWN_MS.
 let nextSlot = 0
+// after SEC throttles (429/403) no source asks again for 10 minutes, in any scan of this process
+export const SEC_COOLDOWN_MS = 10 * 60_000
+const sharedCooldown = { until: 0 }
 const secPace = async () => { const now = Date.now(), at = Math.max(now, nextSlot); nextSlot = at + SEC_MIN_GAP_MS; if (at > now) await new Promise(r => setTimeout(r, at - now)) }
 
-export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: number; budgetMs?: number; now?: () => number } = {}): RegistrySource {
+export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: number; budgetMs?: number; now?: () => number; cooldown?: { until: number } } = {}): RegistrySource {
+  const cool = o.cooldown ?? sharedCooldown
   const pace = o.pace ?? secPace, maxFilings = o.maxFilings ?? MAX_FILINGS, now = o.now ?? Date.now
   const get = async (http: SafeGet, url: string, accept: string) => { await pace(); return http(url, { accept, headers: { 'user-agent': UA } }).catch(() => null) }
   const failure = (res: Awaited<ReturnType<SafeGet>>) => !res ? 'unreachable' : res.status === 429 || res.status === 403 ? 'throttled' : res.status !== 200 ? `http_${res.status}` : res.truncated ? 'oversize' : null
@@ -132,6 +137,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
     async collect(c, since, http) {
       const at = usCity(c.where), groups = formDGroups(c)
       if (!at || !groups.length) return { candidates: [], notes: ['not_covered'] }
+      if (now() < cool.until) return { candidates: [], notes: ['throttled_cooldown'] }
       const deadline = now() + (o.budgetMs ?? BUDGET_MS)
       const notes: string[] = [], hits = new Map<string, FormDHit>()
       for (let p = 0; ; p++) {
@@ -144,6 +150,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
         for (const h of page.hits) { const had = hits.get(h.cik); if (!had || had.fileDate < h.fileDate) hits.set(h.cik, h) }
         if ((p + 1) * PAGE >= page.total) break
       }
+      if (notes.includes('throttled')) cool.until = now() + SEC_COOLDOWN_MS
       if (notes.includes('throttled') || (notes.length && !hits.size)) return { candidates: [], notes }
       const newest = [...hits.values()].sort((a, b) => (a.fileDate < b.fileDate ? 1 : -1))
       if (newest.length > maxFilings) notes.push('filing_cap_reached')
@@ -153,7 +160,7 @@ export function secFormDSource(o: { pace?: () => Promise<void>; maxFilings?: num
         if (now() > deadline) { notes.push('time_budget_reached'); break }
         const res = await get(http, formDDocUrl(h.cik, h.adsh), 'application/xml')
         const why = failure(res)
-        if (why === 'throttled') { notes.push('throttled'); break }   // SEC asked us to slow down: stop asking
+        if (why === 'throttled') { notes.push('throttled'); cool.until = now() + SEC_COOLDOWN_MS; break }   // SEC asked us to slow down: stop asking
         if (why || !res!.body.includes('<edgarSubmission')) { unread++; continue }
         const f = parseFormD(res!.body)
         // the document decides: amended, a fund, or an industry the case does not mean -> not a candidate

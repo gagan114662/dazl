@@ -18,7 +18,7 @@ import { caseMentions } from './registry.ts'
 export interface PermitDataset {
   id: string                       // adapter id suffix, e.g. 'austin'
   city: string; region: string; country: string
-  where: RegExp                    // the case's whole place that means this city, anchored (tested on ' austin texas ')
+  where: RegExp                    // the case's whole place, city AND region, anchored (tested on ' austin texas '; a bare ' austin ' is not it)
   url: string                      // the SODA resource, e.g. https://data.austintexas.gov/resource/3syk-w9eu.json
   fields: { date: string; company: string; person: string; trade: string; description: string; number: string; location: string; link: string; phone: string }
   generalTrade: string             // the trade value of a general contractor in this dataset
@@ -36,7 +36,7 @@ export interface PermitCategory {
 }
 
 export const AUSTIN_PERMITS: PermitDataset = {
-  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:(?:tx|texas)(?: usa?| united states)? )?$/,
+  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:tx|texas)(?: usa?| united states)? $/,
   url: 'https://data.austintexas.gov/resource/3syk-w9eu.json',
   fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link', phone: 'contractor_phone' },
   generalTrade: 'General Contractor',

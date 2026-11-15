@@ -46,12 +46,19 @@ test("each board's own posting day and location, on real boards: only roles in t
 
 test("the case's place, city AND region: another state's Austin, Port Austin and North Vancouver are other places", () => {
   const tx = placeTest({ where: 'Austin, Texas' })!
-  assert.equal(tx('Austin, Texas, United States'), true); assert.equal(tx('Austin, TX'), true); assert.equal(tx('Texas; Austin'), true)
+  assert.equal(tx('Austin, Texas, United States'), true); assert.equal(tx('Austin, TX'), true); assert.equal(tx('Remote - Austin, TX (Hybrid)'), true)
+  assert.equal(tx('Texas; Austin'), false, 'the city and the region must be the same place'); assert.equal(tx('Austin, MN; Dallas, TX'), false)
   assert.equal(tx('Austin, MN'), false); assert.equal(tx('Port Austin, Texas'), false); assert.equal(tx('Remote'), false); assert.equal(tx('Austin'), false, 'no region on the role: not provably this Austin')
   const bc = placeTest({ where: 'Vancouver, British Columbia' })!
   assert.equal(bc('Vancouver, BC'), true); assert.equal(bc('Vancouver, WA'), false); assert.equal(bc('North Vancouver, BC'), false)
   assert.equal(placeTest({ where: 'Portland, Maine' })!('Portland, OR'), false)
-  assert.equal(placeTest({ where: 'Austin' })!('Austin, MN'), true, 'a case without a region: the city alone')
+  assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, ME or Remote'), false)
+  assert.equal(placeTest({ where: 'London, Ontario' })!('London, UK (on-site)'), false)
+  assert.equal(placeTest({ where: 'Columbus, Indiana' })!('Columbus, OH (in office)'), false)
+  assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, OR'), true)
+  assert.equal(placeTest({ where: 'Austin' }), null, 'a case without a region: which Austin is not known, nothing is provably there')
+  assert.equal(placeTest({ where: 'Austin, USA' }), null, 'a country is not a region')
+  assert.equal(placeTest({ where: 'Portland, Oregon' })!('Portland, OR (Hybrid)'), true)
   const roles = [{ title: 'Roofer', location: 'Austin, MN', posted: '2026-11-01', url: 'https://jobs.lever.co/acme/1', company: null }]
   assert.equal(boardCandidate(LV, roles, AUSTIN, SINCE), null)
 })
@@ -86,7 +93,7 @@ test('the hook reads the boards the hunt found (one request per board), and a bo
   const sameUrl = async () => ({ ok: true as const, hits: [...found, { url: tenstorrentLatest, title: 'search hit', snippet: '', date: null }].map(f => ({ url: f.url, title: f.title, snippet: f.snippet, date: f.date })) })
   const h2 = await huntWithRegistry(AUSTIN, plan, sameUrl, http, { env: { LEAD_ENGINE: 'research' }, sources: [] })
   const at = h2.candidates.filter(x => x.url === tenstorrentLatest)
-  assert.equal(at.length, 1); assert.equal(at[0].dated, 'registry'); assert.equal(h2.funnel.dropped.board_record_over_hit, 1)
+  assert.equal(at.length, 1); assert.equal(at[0].dated, 'registry'); assert.equal(h2.funnel.dropped.registry_record_over_hit, 1)
   const off = await huntWithRegistry(AUSTIN, plan, search, async () => { throw new Error('no request when off') }, { env: {} })
   assert.equal(off.candidates.length, 4)
 })

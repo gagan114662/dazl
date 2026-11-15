@@ -1,5 +1,5 @@
 {
- "_note": "Real rows of the City of Austin issued construction permits dataset (data.austintexas.gov 3syk-w9eu), fetched 2026-11-15 with upper(description) like %ROOF% over 90 days; a sample including the false matches (solar installer, electrician and plumber on remodels with a roof) and roofing contractors. Phone numbers removed; permit_location replaced by a synthetic address (homeowners are third parties), nothing else edited.",
+ "_note": "Real rows of the City of Austin issued construction permits dataset (data.austintexas.gov 3syk-w9eu), fetched 2026-11-15 with upper(description) like %ROOF% over 90 days; a sample including the false matches (solar installer, electrician and plumber on remodels with a roof) and roofing contractors. Phone numbers removed; permit_location replaced by a synthetic address (homeowners are third parties), nothing else edited. Names kept: contractor_full_name is the contractor of record on a public city permit (the business contact the source cites), not a private party.",
  "rows": [
   {
    "issue_date": "2026-11-13T00:00:00.000",

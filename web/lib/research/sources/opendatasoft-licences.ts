@@ -27,7 +27,7 @@ export interface LicenceDataset {
 }
 
 export const VANCOUVER_LICENCES: LicenceDataset = {
-  id: 'vancouver', city: 'Vancouver', region: 'BC', country: 'CA', where: /^ vancouver (?:(?:bc|british columbia)(?: canada)? |canada )?$/,
+  id: 'vancouver', city: 'Vancouver', region: 'BC', country: 'CA', where: /^ vancouver (?:bc|british columbia)(?: canada)? $/,
   api: 'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences',
   explore: 'https://opendata.vancouver.ca/explore/dataset/business-licences/table/',
   categories: { restaurants: { words: / restaurants? /, types: ['Restaurant'], noun: 'restaurant', label: 'Restaurants / food service' } },
@@ -75,15 +75,18 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   // a renewal: last year's licence at the same address under either of this licence's names (trade or legal), so a business that added or
   // changed its trade name is still a renewal, never "new"
   const namesOf = (r: Row) => [key(str(r.businesstradename)), key(str(r.businessname))].filter(Boolean)
-  const renewed = new Set(priorYearRows.flatMap(r => namesOf(r).map(n => `${n}|${where(r)}`)))
+  // a witness is a licence from BEFORE the window: when the window spans New Year, last year's folder also holds the window's own December
+  // licences, and a licence is never its own renewal (no issue day, e.g. pending: still a licence that existed before)
+  const renewed = new Set(priorYearRows.filter(r => !((day(r.issueddate) ?? '') >= since)).flatMap(r => namesOf(r).map(n => `${n}|${where(r)}`)))
+  // locations per name (a licence counts under both its trade and its legal name); a window licence's count is its busiest name's
   const locations = new Map<string, Set<string>>()
-  for (const r of [...sameNameRows, ...windowRows]) { const k = who(r); if (k) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)])) }
+  for (const r of [...sameNameRows, ...windowRows]) for (const k of namesOf(r)) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)]))
   const seen = new Set<string>(), out: LicenceRecord[] = []
   for (const r of windowRows) {
     const date = day(r.issueddate), k = who(r), a = where(r)
     if (!date || date < since || !k || !a || namesOf(r).some(n => renewed.has(`${n}|${a}`)) || seen.has(`${k}|${a}`)) continue
     seen.add(`${k}|${a}`)
-    const n = locations.get(k)?.size ?? 1, name = str(r.businesstradename) || str(r.businessname), number = str(r.licencenumber)
+    const n = Math.max(1, ...namesOf(r).map(x => locations.get(x)?.size ?? 1)), name = str(r.businesstradename) || str(r.businessname), number = str(r.licencenumber)
     const at = `${addressText(r)}${str(r.localarea) ? ` (${str(r.localarea)})` : ''}`
     out.push({
       company: name, licence: number,

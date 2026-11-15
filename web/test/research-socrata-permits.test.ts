@@ -68,7 +68,7 @@ test('the source: covers only its city and category, builds a bounded server que
   const src = austinPermitsSource
   assert.equal(src.covers(AUSTIN), true); assert.equal(src.covers({ ...AUSTIN, where: 'Dallas, Texas' }), false); assert.equal(src.covers({ ...AUSTIN, category: 'dentists', query: 'dentists in Austin' }), false)
   assert.equal(src.covers({ ...AUSTIN, where: 'Austin, TX', category: 'roofers' }), true); assert.equal(src.covers({ ...AUSTIN, where: 'Austin, Texas, USA' }), true)
-  for (const where of ['Austin, Minnesota', 'Austin, MN', 'Port Austin, Michigan', 'Lake Austin, Texas']) assert.equal(src.covers({ ...AUSTIN, where }), false, where)
+  for (const where of ['Austin, Minnesota', 'Austin, MN', 'Port Austin, Michigan', 'Lake Austin, Texas', 'Austin', 'Austin, USA']) assert.equal(src.covers({ ...AUSTIN, where }), false, where)
   assert.equal(src.covers({ ...AUSTIN, category: 'solar installers', query: 'solar roofing installers in Austin' }), false, 'the category decides, not words in the query')
   const q = new URL(permitQuery(AUSTIN_PERMITS, ROOF, SINCE))
   assert.equal(q.origin + q.pathname, 'https://data.austintexas.gov/resource/3syk-w9eu.json')
