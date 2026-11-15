@@ -35,7 +35,7 @@ export function writeResearchProof(db: Database.Database, tenant: string, leadId
     db.prepare("UPDATE leads SET event_date = ?, event_date_proof = 'page_bound', event_date_proof_note = ? WHERE id = ?").run(v.day.date, 'the day is stated on the cited page (research verify)', leadId)
     addEnrichment(db, tenant, leadId, { connector: RESEARCH_CONNECTOR, kind: 'person', value: person.name.slice(0, 254), label: (person.title ?? 'named on the cited page').slice(0, 200), confidence: null, source_url: person.sourceUrl.slice(0, 500), source_date: day, retrieved_at: at })
     db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(leadId, tenant, RESEARCH_CONNECTOR, INTERNAL_ENRICHMENT_KIND)
-    const b: Binding = { v: RESEARCH_PROOF_VERSION, date: v.day.date!, quote: sha(ev.quote), source: sha(ev.sourceUrl), person: person.name, personUrl: person.sourceUrl }
+    const b: Binding = { v: RESEARCH_PROOF_VERSION, date: v.day.date!, quote: sha(ev.quote), source: sha(ev.sourceUrl), person: person.name.slice(0, 80), personUrl: sha(person.sourceUrl.slice(0, 500)) }   // hashed: the binding must fit lead_enrichments.value (<= 254)
     addEnrichment(db, tenant, leadId, { connector: RESEARCH_CONNECTOR, kind: INTERNAL_ENRICHMENT_KIND, value: JSON.stringify(b), label: RESEARCH_PROOF_LABEL, confidence: null, source_url: ev.sourceUrl.slice(0, 500), source_date: day, retrieved_at: at })
   })()
   return true
@@ -54,7 +54,8 @@ export function researchProofGap(db: Database.Database, tenant: string, leadId: 
   try { b = JSON.parse(recs[0].value) as Partial<Binding> } catch { return 'binding_changed' }
   if (b.v !== RESEARCH_PROOF_VERSION) return 'version_mismatch'
   if (lead.event_date !== b.date || lead.event_date_proof !== 'page_bound' || sha(lead.evidence_excerpt ?? '') !== b.quote || sha(lead.source_url) !== b.source) return 'binding_changed'
-  const p = db.prepare('SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ? AND value = ? AND source_url = ?').get(leadId, tenant, RESEARCH_CONNECTOR, 'person', b.person ?? '', b.personUrl ?? '')
+  const p = (db.prepare('SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ? AND substr(value, 1, 80) = ?').all(leadId, tenant, RESEARCH_CONNECTOR, 'person', b.person ?? '') as { source_url: string | null }[])
+    .some(r => !!b.person && sha((r.source_url ?? '').slice(0, 500)) === b.personUrl)
   if (!p) return 'person_missing'
   if (!inWindow(lead.event_date, now.getTime(), windowDays)) return 'out_of_window'
   return null
