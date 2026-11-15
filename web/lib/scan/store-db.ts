@@ -194,6 +194,8 @@ export interface ReviewRow {
   name: string; company: string; signal: string; source_url: string; score: number; evidence_excerpt: string | null
   event_date: string | null; dedup_key: string; review_reason: string; source_kind?: string | null
   timing_note?: string | null; published_at?: string | null
+  // #381: set only when the verifier passed this lead and a later gate moved it to review; never for an unverified row
+  confidence?: number | null; retrieved_at?: number | null; date_status?: 'verified' | 'unverified' | 'undated' | null
 }
 export interface FinishInput {
   status: 'done' | 'failed' | 'pending'
@@ -224,8 +226,8 @@ export function finishJob(db: Db, job: { id: string; attempts: number }, input: 
     for (const l of review) {
       const r = yield* t.run(
         `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, created_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', l.dedup_key, l.review_reason, l.source_kind ?? null, l.timing_note ?? null, l.published_at ?? null, now])
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, typeof l.confidence === 'number' && l.date_status ? l.date_status : l.event_date ? 'unverified' : 'undated', typeof l.confidence === 'number' ? (l.retrieved_at ?? null) : null, typeof l.confidence === 'number' ? l.confidence : null, l.dedup_key, l.review_reason, l.source_kind ?? null, l.timing_note ?? null, l.published_at ?? null, now])
       if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
     }
     const dropped = input.dropped ? Object.values(input.dropped).reduce((a, b) => a + b, 0) : null
