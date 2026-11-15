@@ -29,3 +29,10 @@ jobs:
       # ops/prod (the production deploy from a prebuilt build, #907) has no __init__.py either: its own step.
       - name: Ops prod tests (ops/prod/test_*.py)
         run: python3 -m unittest discover -s ops/prod -p 'test_*.py'
+      # ops/inbound-mail (the AWS-only inbound mail receiver, #1111) is not a package either: its own step. aiosmtpd is
+      # the one dependency, installed from the same Ubuntu package the box runs, so the SMTP-level tests are not skipped.
+      - name: Inbound mail receiver tests (ops/inbound-mail/test_*.py)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends python3-aiosmtpd
+          /usr/bin/python3 -c 'import aiosmtpd'
+          /usr/bin/python3 -m unittest discover -s ops/inbound-mail -p 'test_*.py' -v
