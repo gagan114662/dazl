@@ -60,6 +60,7 @@ const FREE: Record<string, string> = {
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
+  'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
   'https://r.jina.ai/': 'Jina Reader without a key: free (lib/sources/jina.ts)',

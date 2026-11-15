@@ -1,0 +1,141 @@
+{
+ "_note": "Real rows of the City of Vancouver business-licences dataset (opendata.vancouver.ca), restaurants, fetched 2026-11-15: window = 2026 licences issued since 2026-08-17; prior = the 2025 licence of the renewal; same = 2026 licences under the same trade names.",
+ "since": "2026-08-17",
+ "window": [
+  {
+   "folderyear": "26",
+   "licencenumber": "26-210140",
+   "businessname": "Andre Skewers Souvlaki Pita Bar Ltd",
+   "businesstradename": "Skewers Souvlaki Pita Bar",
+   "status": "Issued",
+   "issueddate": "2026-09-28T15:38:00+00:00",
+   "unit": null,
+   "house": "1851",
+   "street": "COMMERCIAL DRIVE",
+   "localarea": "Grandview-Woodland",
+   "businesssubtype": "Class 1 with liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-211896",
+   "businessname": "SUPER SMASH BURGERS INC.",
+   "businesstradename": "Smashed",
+   "status": "Issued",
+   "issueddate": "2026-09-15T15:39:46+00:00",
+   "unit": null,
+   "house": "212",
+   "street": "CARRALL ST",
+   "localarea": "Downtown",
+   "businesssubtype": "Class 1 no liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-291030",
+   "businessname": "HARISON CATERING AND EVENTS LTD",
+   "businesstradename": "Hunger Street",
+   "status": "Issued",
+   "issueddate": "2026-11-10T22:56:50+00:00",
+   "unit": null,
+   "house": "1284",
+   "street": "KINGSWAY",
+   "localarea": "Kensington-Cedar Cottage",
+   "businesssubtype": "Class 1 with liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-110158",
+   "businessname": "Blaze Gourmet Burgers Ltd",
+   "businesstradename": null,
+   "status": "Issued",
+   "issueddate": "2026-10-30T23:36:33+00:00",
+   "unit": null,
+   "house": "43",
+   "street": "E 5TH AV",
+   "localarea": "Mount Pleasant",
+   "businesssubtype": "Class 1 with liquor service"
+  }
+ ],
+ "prior": [
+  {
+   "folderyear": "25",
+   "licencenumber": "25-109489",
+   "businessname": "Blaze Gourmet Burgers Ltd",
+   "businesstradename": null,
+   "status": "Issued",
+   "issueddate": "2024-11-18T22:10:27+00:00",
+   "unit": null,
+   "house": "43",
+   "street": "E 5TH AV",
+   "localarea": "Mount Pleasant",
+   "businesssubtype": "Class 1 no liquor service"
+  }
+ ],
+ "same": [
+  {
+   "folderyear": "26",
+   "licencenumber": "26-110579",
+   "businessname": "SUPER SMASH BURGERS INC.",
+   "businesstradename": "Smashed",
+   "status": "Issued",
+   "issueddate": "2026-01-26T16:16:46+00:00",
+   "unit": null,
+   "house": "1082",
+   "street": "GRANVILLE ST",
+   "localarea": "Downtown",
+   "businesssubtype": "Class 1 no liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-110449",
+   "businessname": "Kul Skewers Souvlaki Pita Bar Ltd",
+   "businesstradename": "Skewers Souvlaki Pita Bar",
+   "status": "Issued",
+   "issueddate": "2025-12-08T21:37:14+00:00",
+   "unit": null,
+   "house": "26",
+   "street": "POWELL ST",
+   "localarea": "Downtown",
+   "businesssubtype": "Class 1 with liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-210140",
+   "businessname": "Andre Skewers Souvlaki Pita Bar Ltd",
+   "businesstradename": "Skewers Souvlaki Pita Bar",
+   "status": "Issued",
+   "issueddate": "2026-09-28T15:38:00+00:00",
+   "unit": null,
+   "house": "1851",
+   "street": "COMMERCIAL DRIVE",
+   "localarea": "Grandview-Woodland",
+   "businesssubtype": "Class 1 with liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-211896",
+   "businessname": "SUPER SMASH BURGERS INC.",
+   "businesstradename": "Smashed",
+   "status": "Issued",
+   "issueddate": "2026-09-15T15:39:46+00:00",
+   "unit": null,
+   "house": "212",
+   "street": "CARRALL ST",
+   "localarea": "Downtown",
+   "businesssubtype": "Class 1 no liquor service"
+  },
+  {
+   "folderyear": "26",
+   "licencenumber": "26-291030",
+   "businessname": "HARISON CATERING AND EVENTS LTD",
+   "businesstradename": "Hunger Street",
+   "status": "Issued",
+   "issueddate": "2026-11-10T22:56:50+00:00",
+   "unit": null,
+   "house": "1284",
+   "street": "KINGSWAY",
+   "localarea": "Kensington-Cedar Cottage",
+   "businesssubtype": "Class 1 with liquor service"
+  }
+ ],
+ "renewal_name": "Blaze Gourmet Burgers Ltd"
+}
