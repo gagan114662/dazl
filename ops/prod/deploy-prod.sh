@@ -31,6 +31,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SELF=$HERE/$(basename "${BASH_SOURCE[0]}")
 PULL=$HERE/pull-release.sh
 RUNNER=$HERE/run-release.sh
+PAGES=$HERE/check-pages.py   # #1116: can a stranger use /sign-up (the page, its form, every bundle it names)
 CADDY=${PROD_CADDYFILE:-/etc/caddy/Caddyfile}
 CADDY_SITE=${PROD_CADDY_SITE:-dazl.ai, www.dazl.ai}          # the site block whose reverse_proxy port is switched
 CADDY_RELOAD=${PROD_CADDY_RELOAD:-systemctl reload caddy}
@@ -92,7 +93,7 @@ trusted_path() {
     dir=$(dirname -- "$dir")
   done
 }
-for f in "$SELF" "$PULL" "$RUNNER"; do
+for f in "$SELF" "$PULL" "$RUNNER" "$PAGES"; do
   trusted_path "$f" || die "$f is not root-owned / root-writable only; nothing done"
 done
 
@@ -191,7 +192,8 @@ public_smoke() {
     [ "$c" = "$want" ] || ok=0
     [ -z "$inst" ] || [ "$i" = "$inst" ] || ok=0
     for pth in $SMOKE_PATHS; do code=$(http_code "$PUBLIC_URL$pth"); [ "$code" = 200 ] || { ok=0; log "smoke try $t: $PUBLIC_URL$pth -> $code"; }; done
-    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200"; return 0; fi
+    [ $ok = 1 ] && { python3 "$PAGES" "$PUBLIC_URL" || { ok=0; log "smoke try $t: the sign-up pages check failed"; }; }
+    if [ $ok = 1 ]; then log "public smoke ok: $PUBLIC_URL commit $c instance $i; paths [$SMOKE_PATHS] all 200; sign-up pages ok"; return 0; fi
     log "smoke try $t: health commit=${c} instance=${i} (want $want${inst:+ / $inst})"; sleep 2
   done
   return 1
@@ -373,7 +375,8 @@ for pth in $SMOKE_PATHS; do
   code=$(http_code "http://127.0.0.1:$NEW$pth")
   [ "$code" = 200 ] || { stop_port "$NEW" "failed local smoke" || true; die "local smoke $pth on :$NEW -> $code; NOT switching (dazl.ai still on :$LIVE)"; }
 done
-log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS]"
+python3 "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW" "failed the sign-up pages check" || true; die "the sign-up pages check failed on :$NEW; NOT switching (dazl.ai still on :$LIVE)"; }
+log "7/10 local smoke on :$NEW ok [$SMOKE_PATHS] + sign-up pages"
 
 # --- 8+9. switch, public smoke, stability window; auto-rollback on any failure
 fail_back() {
