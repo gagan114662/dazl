@@ -12,7 +12,7 @@ import * as sc from '../lib/connectors/sitecrawl.ts'
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We have cared for families in our neighbourhood for many years and we welcome every new patient who walks through our doors.</p>'
 const HOME = (name: string) => html(`<h1>${name}</h1><p>Visit us at 200 Bloor Street West, Toronto, ON M5S 1T8.</p>${PROSE}<a href="/contact">Contact</a><a href="/team">Our team</a>`)
-const TEAM = html('<h2>Our team</h2><ul><li><strong>Priya Shah</strong><br>Owner and Principal Dentist</li></ul>')
+const TEAM = html(`${PROSE}<h2>Our team</h2><h3>Priya Shah</h3><p>Owner</p>`)
 const BOARD = 'board.example'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
