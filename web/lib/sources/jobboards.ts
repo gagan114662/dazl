@@ -3,7 +3,7 @@ import { STATES } from './us-states.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
-import { countriesIn, resolveSegment } from '../scan/countries.ts'
+import { countriesIn, resolveSegment, regionOf, regionsIn, countryOfRegion } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -48,8 +48,12 @@ const NY_ITEM = `(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:
 const parens = (item: string) => `(?:\\s*\\(\\s*${item}(?:${SEP}${item})*\\s*\\))?`
 const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?${parens(UK_ITEM)}(?:${SEP}${UK_ITEM})*${parens(UK_ITEM)}\\s*$`, 'i')
 const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)${parens(NY_ITEM)}(?:${SEP}${NY_ITEM})*${parens(NY_ITEM)}\\s*$`, 'i')
-const CITY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
-  { ask: /\blondon\b/i, name: 'London', ok: l => LONDON_OK.test(l) },
+// #1205: "London, Ontario" / "London, ON" / "London, Kentucky" are NOT the UK's London (they were answered with UK postings). A London
+// qualified by a non-UK province / state / country is left to the other resolvers (London, KY is a US city; London, Ontario a Canadian one).
+const NON_UK_LONDON = /\blondon\s*,?\s*(?:ontario|canada|kentucky|ohio|arkansas|texas)\b/i
+const NON_UK_LONDON_CODE = /\b[Ll]ondon\s*,\s*(?:ON|ONT|KY|OH|AR|TX|CA)\b/
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !NON_UK_LONDON.test(q) && !NON_UK_LONDON_CODE.test(q) }, name: 'London', ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
   { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
 ]
@@ -68,6 +72,13 @@ export function genericPlace(query: string): Place | null {
   for (let i = 0; i < toks.length; i++) {
     let country: string | null = null
     for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) { if (toks.slice(i, i + n).includes(',')) continue; const c = resolveSegment(toks.slice(i, i + n).join(' '), true); if (c) country = c }
+    // #1205: a Canadian province after a comma ("Toronto, Ontario", "London, ON") names the city's country (Canada). Only after a comma, and a code only in capitals,
+    // so the word "on" in "startups on the hunt" is never a province.
+    if (!country && toks[i - 1] === ',') for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) {
+      const seg = toks.slice(i, i + n); if (seg.includes(',')) continue
+      const text = seg.join(' '), r = regionOf(text)
+      if (r?.startsWith('CA-') && (text.length > 2 ? /^\p{Lu}/u.test(text) : /^[A-Z]{2}$/.test(text))) country = 'CA'
+    }
     if (!country) continue
     let j = i - 1; const comma = toks[j] === ','; if (comma) j--
     const words: string[] = []
@@ -81,7 +92,9 @@ export function genericPlace(query: string): Place | null {
     const ok = (...locs: (string | undefined)[]) => locs.some(l => {
       if (!l) return false
       if (!re.test(norm(l))) return false
-      const named = countriesIn(l); return named.length === 0 || named.every(c => c === country)
+      const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
+      // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK)
+      return regionsIn(l).every(r => countryOfRegion(r) === country)
     })
     return { name: city, ok }
   }
@@ -119,7 +132,9 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
   const cityRe = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
   const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
   const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
-  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l)) }
+  // #1205: a Canadian province is another country too ("London, ON" is not London, KY)
+  const otherRegion = (l: string) => regionsIn(l).some(r => countryOfRegion(r) !== 'US')
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l) && !otherRegion(l)) }
 }
 // #1095 (live staging check of the merged #1155, 2026-11-13): a brand-new trial account's dazl-inferred profile stores its place WITHOUT a state
 // (job 64a0f578: where ["Austin"], country "US"), and placeIn("in Austin") names no place, so the board source never ran for exactly the
@@ -144,9 +159,16 @@ export function bareUsCity(name: string): { city: string; abbr: string } | null 
 // a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
 // `text` is what is appended to the request (an entry placeIn already reads is appended AS WRITTEN: a Place's name is not always readable back, "Toronto, Canada" names
 // the place "Toronto", which placeIn does not resolve alone: review at ca63ac3a, 8 non-US shapes lost the board source); `name` is the place's identity, the de-dupe key.
+// #1205 review (F1): a bare listed world city ('Vancouver') is read in the PROFILE's country when one is set: a US profile's 'Vancouver' is Vancouver, WA
+// (the US-city fallback below), never Vancouver, Canada; a profile in a third country gets no place (the run names the city as unplaceable).
+const countryCode = (c: string): string | null => /^ca$/i.test(c.trim()) ? 'CA' : resolveSegment(c, true)
 export function profilePlace(where: string, country?: string | null): { text: string; name: string } | null {
-  const direct = placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
-  if (!/^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
+  const isUs = /^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())
+  const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, where.trim()) ? WORLD_CITIES[where.trim()] : null
+  const own = country && country.trim() ? countryCode(country) : null
+  const foreign = !!listed && !!own && countryCode(listed) !== own
+  const direct = foreign ? null : placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
+  if (!isUs) return null
   const b = bareUsCity(where); if (!b) return null
   const text = `${b.city}, ${b.abbr}`, p = placeIn(`in ${text}`)
   return p ? { text, name: p.name } : null
@@ -163,8 +185,58 @@ export function placeIn(query: string): Place | null {
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
   // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.
   const g = genericPlace(query); if (g) return g
+  const w = worldCityPlace(query); if (w) return w
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
+}
+// #1205: a bounded list of large non-US cities that name one place on their own ("in Toronto", a profile place "Mumbai"): each resolves as "<City>, <Country>"
+// would. A data list, no network call. Cities sharing their name with a sizeable US / UK place (Paris, Dublin, Melbourne, Manchester, Birmingham,
+// Cambridge, London) are deliberately absent: they need their country written.
+export const WORLD_CITIES: Record<string, string> = {
+  Toronto: 'Canada', Vancouver: 'Canada', Montreal: 'Canada', 'Montréal': 'Canada', Calgary: 'Canada', Ottawa: 'Canada', Edmonton: 'Canada', Mississauga: 'Canada', Oakville: 'Canada', Winnipeg: 'Canada',
+  Berlin: 'Germany', Munich: 'Germany', Hamburg: 'Germany', Frankfurt: 'Germany', Amsterdam: 'Netherlands', Madrid: 'Spain', Barcelona: 'Spain', Stockholm: 'Sweden', Lisbon: 'Portugal', Copenhagen: 'Denmark', Zurich: 'Switzerland', Warsaw: 'Poland',
+  Mumbai: 'India', Bangalore: 'India', Bengaluru: 'India', Delhi: 'India', 'New Delhi': 'India', Gurugram: 'India', Gurgaon: 'India', Noida: 'India', Pune: 'India', Hyderabad: 'India', Chennai: 'India', Kolkata: 'India', Ahmedabad: 'India',
+  Dubai: 'United Arab Emirates', 'Abu Dhabi': 'United Arab Emirates', Riyadh: 'Saudi Arabia', Doha: 'Qatar', 'Tel Aviv': 'Israel',
+  Lagos: 'Nigeria', Nairobi: 'Kenya', Johannesburg: 'South Africa', 'Cape Town': 'South Africa', Cairo: 'Egypt',
+  Sydney: 'Australia', Brisbane: 'Australia', Auckland: 'New Zealand', Singapore: 'Singapore', Tokyo: 'Japan', Seoul: 'South Korea', Jakarta: 'Indonesia', Manila: 'Philippines',
+  'São Paulo': 'Brazil', 'Sao Paulo': 'Brazil', 'Mexico City': 'Mexico', 'Buenos Aires': 'Argentina', 'Bogotá': 'Colombia', Bogota: 'Colombia', Santiago: 'Chile',
+}
+const WORLD_RE = new RegExp(`\\b(?:in|near|around|across|from)\\s+(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}'-])(?!\\s*,\\s*\\p{L})`, 'gu')
+const WORLD_ANY = new RegExp(`(?<![\\p{L}'-])(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}'-])`, 'gu')
+// the distinct listed cities a text names anywhere ("Dubai or Lagos" names two)
+export const worldCitiesIn = (text: string): string[] => [...new Set([...text.matchAll(WORLD_ANY)].map(m => WORLD_CITIES[m[1]] + '|' + m[1]))].map(x => x.split('|')[1])
+export function worldCityPlace(query: string): Place | null {
+  if (worldCitiesIn(query).length > 1) return null   // two cities are never narrowed to the first one
+  const found = new Map<string, Place>()
+  for (const m of query.matchAll(WORLD_RE)) { const p = genericPlace(`in ${m[1]}, ${WORLD_CITIES[m[1]]}`); if (p) found.set(p.name, p) }
+  return found.size === 1 ? [...found.values()][0] : null   // two cities are never narrowed to the first one
+}
+
+// #1205: WHY the job-board source could not use a place, as a status suffix the progress row and the run report read ("skipped_no_place:<kind>:<text>"),
+// never only "Not used for this search". <text> is the place as the user wrote it (letters, spaces and , . ' - only; at most 40 characters).
+const REGION_WORDS = /\b(europe|emea|apac|asia(?:[-\s]pacific)?|latam|latin america|africa|middle east|mena|north america|south america|nordics|dach|benelux|scandinavia|bay area|silicon valley|greater toronto area|gta|tri-state area)\b/i
+const AMBIGUOUS = /\b(springfield|portland|cambridge|columbus|richmond|birmingham|manchester|paris|dublin|melbourne|perth|hamilton|london|kingston|victoria)\b(?!\s*,)/i
+const clean = (t: string) => t.replace(/[^\p{L}\p{M} ,.'-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40)
+export function placeSkipReason(query: string, where: readonly unknown[] = []): string {
+  const places = where.filter((w): w is string => typeof w === 'string' && !!w.trim())
+  if (places.length > 1 && !placeIn(query)) return `skipped_no_place:several:${clean(places.slice(0, 3).join(', '))}`
+  for (const t of [query, ...places]) {
+    const many = worldCitiesIn(t); if (many.length > 1) return `skipped_no_place:several:${clean(many.slice(0, 3).join(', '))}`
+    const r = REGION_WORDS.exec(t); if (r) return `skipped_no_place:region:${clean(r[1])}`
+    const a = AMBIGUOUS.exec(t); if (a) return `skipped_no_place:ambiguous:${clean(a[1])}`
+    const us = /\b(?:the\s+)?(?:US|USA|U\.S\.(?:A\.)?|United States(?: of America)?)\b/.exec(t); if (us) return `skipped_no_place:country:${clean(us[0].replace(/^the\s+/i, ''))}`
+    // a country or a Canadian province written on its own (capitalised words: "Canada", "United Arab Emirates", "Ontario")
+    const toks = t.match(/[\p{L}\p{M}.'-]+/gu) ?? []
+    for (let i = 0; i < toks.length; i++) for (let n = Math.min(3, toks.length - i); n >= 1; n--) {
+      const w = toks.slice(i, i + n); if (!w.every(x => /^\p{Lu}/u.test(x))) continue
+      const text = w.join(' ')
+      if (text.length > 2 && resolveSegment(text, true)) return `skipped_no_place:country:${clean(text)}`
+      if (text.length > 2 && (regionOf(text) ?? '').startsWith('CA-')) return `skipped_no_place:province:${clean(text)}`
+    }
+    const city = /\b(?:in|near|around|based in)\s+((?:\p{Lu}[\p{L}'-]+)(?:\s+\p{Lu}[\p{L}'-]+){0,2})/u.exec(t); if (city) return `skipped_no_place:city:${clean(city[1])}`
+    if (t !== query && /^\p{Lu}/u.test(t.trim())) return `skipped_no_place:city:${clean(t)}`
+  }
+  return 'skipped_no_place'
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {
   const abbr = Object.keys(STATES).find(k => STATES[k] === state)!
