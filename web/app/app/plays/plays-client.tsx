@@ -8,6 +8,7 @@ import { newLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS,
 import { runNewLabel } from '@/lib/run-new-label'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
+import { showsAction, useRole } from '../use-role'
 
 // Plays: the searches you saved to repeat, with who each looks for, the signal, schedule, last and next run (to the
 // minute), status and pause/resume/delete. Results stay in Leads: each play links to its last run there and lists all its
@@ -22,6 +23,8 @@ const keyOf = (p: { kind: string; id: string }) => `${p.kind}-${p.id}`
 type Fresh = PlayNew & { checked: boolean }
 
 export default function PlaysClient() {
+  // #833: a viewer is not shown "Find leads now" (the run route refuses viewers with 403)
+  const role = useRole()
   const [watches, setWatches] = useState<Read<WatchRow>>(null)
   const [monitors, setMonitors] = useState<Read<MonitorRow>>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -164,7 +167,7 @@ export default function PlaysClient() {
                   {p.note && <p className="text-xs text-[var(--ink-2)] mt-3" data-testid="play-note">{p.note}</p>}
                   <div className="flex flex-wrap gap-2 mt-4">
                     {/* a paused play never runs: Resume first (the route refuses it too) */}
-                    {p.active && <button type="button" className="btn-primary btn-sm" disabled={busy === p.id} onClick={() => void runNow(p)} data-testid="play-run-now">{busy === p.id ? 'Starting...' : 'Find leads now'}</button>}
+                    {p.active && showsAction(role, 'operate') && <button type="button" className="btn-primary btn-sm" disabled={busy === p.id} onClick={() => void runNow(p)} data-testid="play-run-now">{busy === p.id ? 'Starting...' : 'Find leads now'}</button>}
                     {hasNew && <button type="button" className="btn-ghost btn-sm" onClick={() => setOpenNew(o => ({ ...o, [k]: !o[k] }))} aria-expanded={!!openNew[k]} data-testid="play-new-toggle">{openNew[k] ? "Hide what's new" : "What's new"}</button>}
                     {p.lastHref && <Link href={p.lastHref} className="btn-ghost btn-sm" data-testid="play-results">See the last run&apos;s leads</Link>}
                     <button type="button" className="btn-ghost btn-sm" onClick={() => void toggleRuns(p)} aria-expanded={k in runs} data-testid="play-runs-toggle">{k in runs ? 'Hide runs' : 'Show runs'}</button>
