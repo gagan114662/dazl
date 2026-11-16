@@ -8,6 +8,7 @@ import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
 import Caveat from '@/app/app/caveat'
+import { showsAction, useRole } from '../use-role'
 
 interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
@@ -29,6 +30,8 @@ const ERR: Record<string, string> = {
 }
 
 export default function OutreachClient() {
+  // #833: a viewer is not shown "Send now" (the send action refuses viewers with 403)
+  const role = useRole()
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [edit, setEdit] = useState<Record<string, { subject: string; body: string }>>({})
   const [sequenceMessages,setSequenceMessages] = useState<string[]>([])
@@ -132,7 +135,7 @@ export default function OutreachClient() {
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
                     {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
-                    {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
+                    {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && showsAction(role, 'send') && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}
                   </div>
