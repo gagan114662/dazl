@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
+import { crawlJob, placeTerms, type Get } from '../lib/connectors/sitecrawl.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
@@ -366,4 +366,10 @@ test('1289-F3 r4 a P856 claim whose value snak is malformed is failed, not empty
   const mixed = { entities: { Q1: { claims: { P856: [{ rank: 'normal', mainsnak: { snaktype: 'value' } }, { rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { value: 'https://mercury.com/', type: 'string' } } }] } }, Q2: { claims: [] } } }
   const m = await ask(mixed)
   assert.equal(m.outcome, 'ok'); assert.deepEqual(m.hits.map(h => h.url), ['https://mercury.com/'])
+})
+
+test('1289-P1 r2 placeTerms: a place capture stops at a sentence end, so "at Mercury. Apply now." is no place; real places (Austin, St. Louis) are kept', () => {
+  assert.deepEqual(placeTerms([], 'Sales Development Representative at Mercury. Apply now.', 'Mercury'), [])
+  assert.deepEqual(placeTerms([], 'Mercury in Austin, TX is hiring a Sales Development Representative.', 'Mercury'), ['austin'])
+  assert.ok(placeTerms([], 'Open at our office in St. Louis today.', 'Acme').includes('stlouis'))
 })
