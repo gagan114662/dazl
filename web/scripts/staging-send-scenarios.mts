@@ -166,7 +166,8 @@ async function scenarios(out: string, master: Buffer): Promise<Scenario[]> {
     check('footer unsubscribe link equals the List-Unsubscribe header', !!link && inBody === link, inBody.slice(0, 50))
     let tok: string | null = null; try { tok = new URL(link).searchParams.get('t') } catch { /* checked below */ }
     check('the link resolves to this message', !!tok && readUnsubToken(tok, master) === m.mid)
-    const edited = draft(db, T, 'owner-inbox@staging.dazl.test'); approve(db, T, edited.mid)
+    // #855: its own allowlisted address; owner-inbox was just emailed from another play, so it is in the recipient cooldown.
+    const edited = draft(db, T, 'second-lead@staging.dazl.test'); approve(db, T, edited.mid)
     editDraft(db, T, edited.mid, { subject: 'A quick question', body: 'Words changed after approval. (synthetic)' })
     const why = await rejects(sendMessage(db, T, edited.mid, deps(T)))
     check('edited after approval: refused', !!why && sentTo(log, T).length === 1, why ?? 'sent')
