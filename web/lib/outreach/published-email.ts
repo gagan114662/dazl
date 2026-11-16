@@ -94,10 +94,18 @@ export function classifyPurpose(email: string, context?: ContactContext | null):
 // The page a draft cites as the place the recipient address is published (createDraft's addressUrl): the cited
 // page for a direct contact, the company's own contact page for a crawled one - and the crawl's record of even a
 // direct contact when it has one (equality with the contact does not prove the cited page printed it).
+// The site-crawl row that recorded the lead's OWN contact address on a page, if any. Shared by the draft citation
+// (addressCitationUrl) and the card's provenance line (contact-route.ts), so contact equality never overwrites the
+// page that actually printed the address (#384).
+export function sameAddressCrawlRow<R extends { connector: string; kind: string; value: string; source_url?: string | null }>(contact: string | null | undefined, rows: R[] | null | undefined): R | null {
+  const primary = address(contact ?? null)
+  if (!PUBLISHED_EMAIL_RE.test(primary)) return null
+  return (rows ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && address(x.value) === primary && x.source_url) ?? null
+}
 export function addressCitationUrl(lead: PublishedEmailLead): string | null {
   const primary = address(lead.contact)
   if (PUBLISHED_EMAIL_RE.test(primary)) {
-    const same = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && address(x.value) === primary && x.source_url)
+    const same = sameAddressCrawlRow(lead.contact, lead.enrichments)
     return same?.source_url ?? lead.source_url ?? null
   }
   const e = pickCrawledEmail(lead.enrichments)
