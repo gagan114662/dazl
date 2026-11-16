@@ -98,6 +98,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/scan/jobs',
   '/api/scan/latest',
   '/api/scan/lookalike',
+  '/api/scan/rejected',
   '/api/scan/sources',
   '/api/scan/status',
   '/api/seo/audit',
