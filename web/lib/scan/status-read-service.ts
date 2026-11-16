@@ -59,9 +59,12 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
     }
   } catch { cost = null }
   const provider_issues = await readProviderIssues(db, tenantId, job.id)
-  // #1157 line 2: the last recorded activity (a provider call sent or settled), or the claim time before any call; null when neither exists.
+  // #1157 line 2: the newest recorded activity: a provider call sent or settled, or the current claim. A retry's fresh
+  // claim is newer than the previous attempt's calls, so it never reads as quiet (1157-F1). null when neither exists.
   const lastCall = await readLastActivity(db, tenantId, job.id)
-  const last_progress_at = lastCall ?? job.claimed_at ?? null
+  const claim = job.claimed_at == null ? null : Number(job.claimed_at)
+  const lastVals = [lastCall, claim].filter((v): v is number => v != null && Number.isFinite(v))
+  const last_progress_at = lastVals.length ? Math.max(...lastVals) : null
   // The recorded stop provenance for the failure copy (typed report only); null = no reason kept (legacy row), so a
   // legacy budget_stopped must render neutrally - never a claim that a specific limit refused.
   const stop_refusal_reason = (run_report as { stop?: { spend_refusal_reason?: string | null } | null }[] | null)?.at(-1)?.stop?.spend_refusal_reason ?? null
