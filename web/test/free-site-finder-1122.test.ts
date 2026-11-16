@@ -8,7 +8,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { freeSiteFinderFor, siteFinderFor, FREE_SITE_LOOKUPS_PER_SCAN } from '../lib/scan/runner.ts'
-import { freeCompanySites, freeCompanySitesDetailed, osmSites, resetFreeSiteFinderPacing, sameCompanyName, wikidataSites, FREE_SITE_UA } from '../lib/connectors/free-site-finder.ts'
+import { freeCompanySites, freeCompanySitesDetailed, siteCompanyKey, wikidataAnswer, osmAnswer, osmSites, resetFreeSiteFinderPacing, sameCompanyName, wikidataSites, FREE_SITE_UA } from '../lib/connectors/free-site-finder.ts'
 
 const json = (x: unknown) => new Response(JSON.stringify(x), { status: 200, headers: { 'content-type': 'application/json' } })
 type Item = { id: string; label: string; site?: string }
@@ -264,4 +264,60 @@ test('1289-F3 freeSiteFinderFor audits a failed or cancelled lookup as such, nev
     'site_free_ok_openstreetmap wikidata=failed',
     'site_free_cancelled wikidata=cancelled osm=cancelled',
   ])
+})
+
+test('1289-F2 r3 one shared company key: accents fold to their letter, never deleted; "Group" kept; Müller Dental and Mller Dental stay apart (Harbor control alongside)', async () => {
+  assert.equal(siteCompanyKey('Müller Dental'), siteCompanyKey('Muller Dental'), 'an accent folds to its base letter')
+  assert.notEqual(siteCompanyKey('Müller Dental'), siteCompanyKey('Mller Dental'), 'a non-ASCII letter is never deleted')
+  assert.notEqual(siteCompanyKey('Harbor Dental'), siteCompanyKey('Harbor Dental Group'), '"Group" is kept')
+  assert.notEqual(siteCompanyKey('Мир Dental'), siteCompanyKey('Dental'), 'a non-Latin name keeps its letters')
+  assert.equal(sameCompanyName('Müller Dental', 'Mller Dental'), false, 'the source-name matcher agrees with the key')
+  resetFreeSiteFinderPacing(); const { db, job } = scan()
+  const f = publicData({ wikidata: { 'Müller Dental': [{ id: 'Q8', label: 'Müller Dental', site: 'https://muellerdental.de/' }], 'Harbor Dental': [{ id: 'Q7', label: 'Harbor Dental', site: 'https://harbordental.com/' }] } })
+  const find = freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: f, freeSiteClock: fast })!
+  assert.deepEqual(await find('Müller Dental', []), ['muellerdental.de'])
+  assert.deepEqual(await find('Mller Dental', []), [], 'the second company does not inherit the first company\'s cached answer')
+  assert.equal(find.recordSite?.('muellerdental.de', 'Müller Dental'), true)
+  assert.equal(find.recordSite?.('muellerdental.de', 'Mller Dental'), false, 'nor its public-record exemption')
+  assert.deepEqual(await find('Harbor Dental', []), ['harbordental.com'])
+  assert.deepEqual(await find('Harbor Dental Group', []), [])
+  assert.equal(find.recordSite?.('harbordental.com', 'Harbor Dental Group'), false)
+})
+
+test('1289-F3 r3 a 200 response is checked before it can be "empty": error objects, wrong-shaped JSON and malformed entities are failed; real empties stay empty; valid partial results survive', async () => {
+  resetFreeSiteFinderPacing()
+  const reply = (wd: (action: string, u: URL) => unknown, osm: unknown) => (async (input: string | URL) => {
+    const u = new URL(String(input))
+    return json(u.hostname === 'nominatim.openstreetmap.org' ? osm : wd(u.searchParams.get('action') ?? '', u))
+  }) as typeof fetch
+  const hit = { search: [{ id: 'Q1', label: 'Mercury', match: { text: 'Mercury' } }] }
+  const site = { claims: { P856: [{ rank: 'normal', mainsnak: { datavalue: { value: 'https://mercury.com/' } } }] } }
+  // HTTP-200 error objects
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(() => ({ error: { code: 'maxlag', info: 'lagged' } }), []), ...fast })).outcome, 'failed')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { error: { code: 'internal_api_error' } }, []), ...fast })).outcome, 'failed')
+  assert.equal((await osmAnswer('Mercury', [], { fetchImpl: reply(() => hit, { error: { code: 503, message: 'busy' } }), ...fast })).outcome, 'failed')
+  // wrong-shaped JSON
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(() => ({ results: [] }), []), ...fast })).outcome, 'failed', 'no search array')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(() => [], []), ...fast })).outcome, 'failed', 'an array instead of an object')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(() => ({ search: 'x' }), []), ...fast })).outcome, 'failed')
+  assert.equal((await osmAnswer('Mercury', [], { fetchImpl: reply(() => hit, { rows: [] }), ...fast })).outcome, 'failed', 'an object instead of an array')
+  assert.equal((await osmAnswer('Mercury', [], { fetchImpl: reply(() => hit, ['x', 3]), ...fast })).outcome, 'failed', 'rows that are not records')
+  // malformed entity responses
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { success: 1 }, []), ...fast })).outcome, 'failed', 'no entities envelope')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { entities: {} }, []), ...fast })).outcome, 'failed', 'the asked item is missing')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { entities: { Q1: 'x' } }, []), ...fast })).outcome, 'failed', 'the item is not a record')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { entities: { Q1: { claims: { P856: 'x' } } } }, []), ...fast })).outcome, 'failed', 'P856 is not a list')
+  // genuine empties stay empty
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(() => ({ search: [] }), []), ...fast })).outcome, 'empty')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { entities: { Q1: { claims: [] } } }, []), ...fast })).outcome, 'empty', 'Wikidata writes no claims as []')
+  assert.equal((await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? hit : { entities: { Q1: { id: 'Q1', missing: '' } } }, []), ...fast })).outcome, 'empty')
+  assert.equal((await osmAnswer('Mercury', [], { fetchImpl: reply(() => hit, []), ...fast })).outcome, 'empty')
+  // valid partial results survive a malformed neighbour
+  const two = { search: [{ id: 'Q1', label: 'Mercury' }, { id: 'Q2', label: 'Mercury' }] }
+  const p = await wikidataAnswer('Mercury', { fetchImpl: reply(a => a === 'wbsearchentities' ? two : { entities: { Q1: site, Q2: 'x' } }, []), ...fast })
+  assert.equal(p.outcome, 'ok'); assert.deepEqual(p.hits.map(h => h.url), ['https://mercury.com/'])
+  const o = await osmAnswer('Mercury', [], { fetchImpl: reply(() => hit, ['x', { name: 'Mercury', osm_type: 'node', osm_id: 1, extratags: { website: 'https://mercury.com/' } }]), ...fast })
+  assert.equal(o.outcome, 'ok'); assert.deepEqual(o.hits.map(h => h.url), ['https://mercury.com/'])
+  const d = await freeCompanySitesDetailed('Mercury', [], { fetchImpl: reply(() => ({ error: { code: 'x' } }), [{ name: 'Mercury', osm_type: 'node', osm_id: 1, extratags: { website: 'https://mercury.com/' } }]), ...fast })
+  assert.deepEqual(d.outcomes, { wikidata: 'failed', openstreetmap: 'ok' }); assert.deepEqual(d.hits.map(h => h.url), ['https://mercury.com/'])
 })
