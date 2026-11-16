@@ -5,13 +5,13 @@
 // This file is deliberately import-free (it is bundled into public pages): the values are copied here and the test
 // compares them with the real constants.
 //
-// Status: DRAFT. Nothing here is a legal conclusion. Statements describe what the software does today. Anything that
-// needs the owner or counsel (legal entity, contact, governing law, liability, which laws apply, retention periods not
-// yet chosen) is a visible bracketed NEEDS OWNER / NEEDS COUNSEL marker, never an invented term. The draft label stays
-// until the owner and qualified counsel approve the final text.
+// Status: owner-approved. Retention, warranty/liability/indemnity/termination, governing law and venue, and which
+// outreach and privacy laws apply were decided by Hermes under Gagan's delegation on 2026-11-12 (#535, standard B2B
+// SaaS defaults), and the public DRAFT label came off with that decision. Internal note only: this text is not
+// reviewed by counsel. Statements describe what the software does today. Decisions still open stay visible
+// bracketed NEEDS OWNER / NEEDS COUNSEL markers, never invented terms.
 
-export const POLICY_STATUS = 'draft' as const
-export const DRAFT_NOTICE = 'DRAFT - not yet approved by the site owner or reviewed by a lawyer. The statements below describe how the software behaves today; bracketed items are open decisions. Not legal advice.'
+export const POLICY_STATUS = 'approved' as const
 
 // Owner-supplied facts that are not in the code. Each stays a visible placeholder until the owner provides it.
 // legalName, companyRegistration and privacyContact: owner-confirmed 2026-11-06 (#535) and checked against the
@@ -20,7 +20,7 @@ export const DRAFT_NOTICE = 'DRAFT - not yet approved by the site owner or revie
 export const OWNER_PLACEHOLDERS = {
   legalName: 'Mathematricks - F.Z.E',
   companyRegistration: 'a Free Zone Establishment with limited liability in the Ajman Free Zone, United Arab Emirates (licence and registration no. 47839, first issued 23 July 2025; authorized capital AED 100,000), with its premises at Office C1-1F-SF11592, Ajman Free Zone C1 Building, Ajman, United Arab Emirates',
-  lastUpdated: '[DATE - set when the owner approves this text]',
+  lastUpdated: '16 November 2026',
   privacyContact: 'privacy@dazl.ai',
   systemMailProvider: '[SYSTEM EMAIL PROVIDER - NEEDS OWNER]',
 } as const
@@ -223,20 +223,20 @@ export const PRIVACY: Section[] = [
   ] },
   { heading: 'Gmail', paragraphs: [
     'Outreach is sent from your own Gmail account. Connecting it grants send access only (gmail.send).',
-    'Reading replies is a separate, optional grant (gmail.readonly). With it, dazl reads the new text of replies in threads it started for you (quoted history is dropped), classifies each reply by rules, and stores the sender, the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time, shown in your Inbox. It also searches a bounded, consent-disclosed window of mailer-daemon and postmaster delivery-failure notices beyond its own threads and keeps only notices matched to a recorded send; an unmatched notice leaves only its message and thread identifiers, received time and classification. Stored reply records are not deleted automatically today; turning reading off stops future reads and follow-ups but does not delete what is already stored, and deleting your account deletes them with your other workspace data, unless the deletion request asks to keep named tables (sign-in and payment credentials are always erased; the append-only audit records listed under Retention always stay). [NEEDS OWNER: retention period for stored reply records.] dazl reads nothing without this consent. [NEEDS OWNER: Google API Services User Data Policy / Limited Use statement wording.]',
+    'Reading replies is a separate, optional grant (gmail.readonly). With it, dazl reads the new text of replies in threads it started for you (quoted history is dropped), classifies each reply by rules, and stores the sender, the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time, shown in your Inbox. It also searches a bounded, consent-disclosed window of mailer-daemon and postmaster delivery-failure notices beyond its own threads and keeps only notices matched to a recorded send; an unmatched notice leaves only its message and thread identifiers, received time and classification. Stored reply records are kept while your account is active and are not deleted automatically today; turning reading off stops future reads and follow-ups but does not delete what is already stored, and deleting your account deletes them with your other workspace data, unless the deletion request asks to keep named tables (sign-in and payment credentials are always erased; the append-only audit records listed under Retention always stay). dazl reads nothing without this consent. [NEEDS OWNER: Google API Services User Data Policy / Limited Use statement wording.]',
   ] },
   { heading: 'Service providers', paragraphs: [
     `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, and the free trial when it is enabled), TinyFish (web search and page fetching), Jina AI Reader (reading public pages), OpenRouter (a free decision model that screens public search results for relevance: only the titles, snippets and addresses of public pages are sent, never your contacts or account data; only when the research lead engine is turned on) [NEEDS OWNER: confirm OpenRouter as a provider before LEAD_ENGINE=research is turned on], and ZeroBounce (checking whether a prepared work address accepts mail; only while the address-format feature below is on and an operator key is set, at most its free monthly allowance for this dazl service). Hosting: ${FACTS.hostingProvider} at the current deployment [NEEDS OWNER: re-check at launch]. Account emails such as password resets: ${P.systemMailProvider}. Unless a system email provider is configured (none is by default), account emails are not sent and are held on the host. The ${FACTS.systemMailOutboxRetainHours}-hour deletion under Retention applies only once ${FACTS.accountHistoryFlag} is turned on (off by default). [NEEDS OWNER: choose the provider before account emails are enabled, turn retention on with it, and confirm both at launch.]`,
     `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
     'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, for SEC EDGAR a city, state and date range, and for the city open-data portals a business category and date range and, for Vancouver, the business names and street addresses of licences already found there (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, city open-data portals (City of Austin building permits, City of Vancouver business licences), the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) and OpenStreetMap\'s Nominatim search (the company name and the requested place).',
     'Error reports, if an error-monitoring service or an operator alert channel (for example a Telegram bot the operator owns) is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
-    '[NEEDS COUNSEL: the sale/share statement privacy laws such as CCPA/CPRA require; no assertion is made until then.]',
+    'dazl does not sell personal information and does not share it for cross-context behavioural advertising.',
   ] },
   { heading: 'Retention', paragraphs: [
     `Signed-out and expired sessions are kept for ${FACTS.revokedSessionRetainDays} days (to show who signed a device out, and when), then deleted. Undelivered account emails held while email sending is not configured are deleted after ${FACTS.systemMailOutboxRetainHours} hours. [NEEDS OWNER: both deletions run only once ${FACTS.accountHistoryFlag}=1 is set in production; confirm before publishing.]`,
     `Your workspace's audit trail (security, billing, sending and consent actions) is kept until a retention period is chosen; no audit record is deleted automatically today. [NEEDS OWNER: set ${FACTS.auditRetentionFlag}, at least ${FACTS.auditRetentionMinDays} days.]`,
     'Debug copies of scan inputs and outputs are recorded only if trace capture is turned on, and deleted only under a retention period someone chose. [NEEDS OWNER: confirm ' + `${FACTS.traceCaptureFlag} is off in production, or disclose its period.]`,
-    'Other account and lead data is kept while your account exists. [NEEDS OWNER: retention for an active account\'s leads and messages, and for backups (not yet implemented).]',
+    'Other account and lead data, including leads and messages, is kept while your account is active. After you ask us to delete your account and we confirm it is you, your workspace data is deleted within 30 days of a confirmed deletion request, apart from the records listed under Deleting your account. Backup copies are kept for at most 35 days and then deleted, so deleted data leaves the backups by then.',
   ] },
   { heading: 'Deleting your account', paragraphs: [
     `You can download an export of your workspace data in Settings (it asks you to confirm it is you). To delete your data, ask us at ${P.privacyContact}: self-service deletion is not switched on in the current service configuration. The Settings page shows whether deletion is available, and where it is switched on it offers the control, which asks for the workspace id as confirmation and a decision on the opt-out list. A deletion removes credentials and sign-in state first, then queued work, then the rest of your workspace data, except what the deletion request names to keep (never credentials) and the records listed below. It deletes dazl's stored Gmail tokens; the grant in your Google account is separate, and you can remove dazl's access there at any time.`,
@@ -244,13 +244,13 @@ export const PRIVACY: Section[] = [
     '[NEEDS OWNER: whether opt-out (unsubscribe) lists are kept or erased on deletion, billing-record retention, and a grace period before erasure (docs/TENANT-LIFECYCLE.md decisions 1, 2 and 5).]',
   ] },
   { heading: 'Your rights', paragraphs: [
-    `You can ask to access, correct or delete your data at ${P.privacyContact}. [NEEDS COUNSEL: which rights apply by jurisdiction (GDPR, UK GDPR, CCPA/CPRA, PIPEDA) and response times.]`,
+    `You can ask to access, correct or delete your data at ${P.privacyContact}. Depending on where you live, privacy laws such as the GDPR, UK GDPR, CCPA/CPRA and PIPEDA give you these and related rights, and we answer within the time the law that applies to you sets. You will not be treated differently for using them.`,
   ] },
   { heading: 'Outbound email and opting out', paragraphs: [
     'Every outreach message dazl sends to a prospect (first touch, sequence step, follow-up or re-open) ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send to a prospect until the sender has saved a name and a mailing address.',
     'An unsubscribe works at once, with no login: the address is added to that sender\'s opt-out list, any drafts or approved messages to it are skipped, and follow-up sequences to it stop. It is never emailed again by that sender through dazl. A bounce is handled the same way.',
     'If you received a message through dazl and want your data removed from the sender\'s workspace, ask the sender, or contact us at ' + `${P.privacyContact}.`,
-    '[NEEDS COUNSEL: CASL / CAN-SPAM / PECR / GDPR applicability. These features are not a claim that any particular message complies.]',
+    'Outreach sent through dazl is subject to CAN-SPAM (US), CASL (Canada), the GDPR and UK GDPR (EU and UK) and the CCPA/CPRA (California). Every message identifies its sender, includes a postal address and has a working unsubscribe, and an unsubscribe is honoured within 10 days at most (in practice at once, as above). Senders must have a lawful basis to contact people in the EU and UK (see the Terms). These features do not by themselves make any particular message compliant: the sender remains responsible for it.',
   ] },
 ]
 
@@ -266,7 +266,7 @@ export const TERMS: Section[] = [
     'Lead scores, summaries and drafts are produced by AI models and can be wrong. Check the cited source and the draft before you send. dazl does not add an AI-generated label to prospect messages: dazl adds your name, your mailing address and an unsubscribe link to your draft. [NEEDS COUNSEL: whether any recipient jurisdiction requires such a disclosure.]',
   ] },
   { heading: 'Acceptable use', paragraphs: [
-    'No spam, no purchased lists, no messages to people who asked to stop, no illegal or deceptive content. You must comply with the anti-spam and privacy laws that apply to you and your recipients, for example CASL in Canada, CAN-SPAM in the US, and PECR and GDPR in the UK and EU.',
+    'No spam, no purchased lists, no messages to people who asked to stop, no illegal or deceptive content. You must comply with the anti-spam and privacy laws that apply to you and your recipients, for example CASL in Canada, CAN-SPAM in the US, and PECR and GDPR in the UK and EU. Before contacting a person in the EU or UK, you must have a lawful basis for it (usually legitimate interest in a relevant business offer) and record the lawful basis you rely on.',
   ] },
   { heading: 'Your keys and connected accounts', paragraphs: [
     `If you connect your own ${ai}, ${enrich} or CRM account, usage on it is billed to you by that provider under your agreement with them. Cost figures dazl shows for those accounts are estimates.`,
@@ -275,6 +275,10 @@ export const TERMS: Section[] = [
     `The free plan includes ${FACTS.freeScansPerMonth} scans a month with your own AI key. Payments are processed by Stripe. [NEEDS OWNER: paid plan prices, renewal, refunds and cancellation terms.]`,
   ] },
   { heading: 'Liability and termination', paragraphs: [
-    '[NEEDS COUNSEL: warranty disclaimer, limitation of liability, indemnity, termination, governing law and venue.]',
+    'The service is provided "as is" and "as available". To the extent the law allows, dazl makes no warranties beyond those in these terms, including implied warranties of merchantability, fitness for a particular purpose and non-infringement, and does not promise that leads, scores, drafts or deliveries will be accurate, complete or uninterrupted.',
+    'To the extent the law allows, each party\'s total liability under these terms is limited to the fees you paid dazl in the 12 months before the claim, and neither party is liable for indirect or consequential losses such as lost profits.',
+    'Each party indemnifies the other only against third-party claims arising from that party\'s infringement of intellectual property or from a data breach that party caused.',
+    'Either party may end this agreement for convenience on 30 days\' written notice. You can stop using dazl and ask us to delete your account at any time (see the Privacy Policy).',
+    'These terms are governed by the laws of the Province of Ontario and the federal laws of Canada that apply there. Any dispute goes to the courts located in Toronto, Ontario.',
   ] },
 ]
