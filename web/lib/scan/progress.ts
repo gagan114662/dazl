@@ -128,13 +128,14 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
 }
 
 // #1157 line 2: what the running page says about when the scan last made progress. A scan that has been quiet for 90 s
-// says so plainly (and that a stuck scan is retried), instead of an open-ended "Still running". null = nothing recorded.
+// says so plainly instead of an open-ended "Still running". It promises no retry or timing: a stuck scan may be retried
+// or ended with a clear result, depending on attempts and the spend state (1157-F2). null = nothing recorded.
 export const QUIET_AFTER_S = 90
 export function lastActivityNote(nowS: number, lastAt: number | null | undefined): { text: string; quiet: boolean } | null {
   if (lastAt == null || !Number.isFinite(lastAt)) return null
   const ago = Math.max(0, Math.floor(nowS - lastAt))
   const when = ago < 60 ? `${ago} s ago` : `${Math.floor(ago / 60)} min ago`
   return ago >= QUIET_AFTER_S
-    ? { text: `No new activity for ${Math.floor(ago / 60) >= 1 ? `${Math.floor(ago / 60)} min` : `${ago} s`}. If it stays stuck, it is stopped and retried automatically within a few minutes.`, quiet: true }
+    ? { text: `No new activity for ${Math.floor(ago / 60) >= 1 ? `${Math.floor(ago / 60)} min` : `${ago} s`}. If it stays stuck, dazl will retry it or stop it and tell you what happened.`, quiet: true }
     : { text: `Last activity ${when}`, quiet: false }
 }
