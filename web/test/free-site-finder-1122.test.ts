@@ -260,8 +260,8 @@ test('1289-F3 freeSiteFinderFor audits a failed or cancelled lookup as such, nev
   const aborting = (async () => { stop.abort(); throw new DOMException('aborted', 'AbortError') }) as typeof fetch
   assert.deepEqual(await freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: aborting, freeSiteClock: fast }, stop.signal)!('Beehiiv', []), [])
   assert.deepEqual(audits(db).map(a => a.status), [
-    'site_free_failed wikidata=failed openstreetmap=failed',
+    'site_free_failed wikidata=failed osm=failed',
     'site_free_ok_openstreetmap wikidata=failed',
-    'site_free_cancelled wikidata=cancelled openstreetmap=cancelled',
+    'site_free_cancelled wikidata=cancelled osm=cancelled',
   ])
 })
