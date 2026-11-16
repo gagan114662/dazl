@@ -24,6 +24,14 @@ export function needsEventBeyondHiring(_signals: string[] | undefined, query: st
   return EVENT_SIGNAL.test((query ?? '').replace(HIRING_ONLY, ' '))
 }
 
+// #1201 decision rule 3: the model's profile signals that name an event the user's own words do not. They were used for matching and
+// ranking only; the lead card names them so the user sees they were not imposed as a requirement.
+export function signalsNotRequired(signals: string[] | undefined, query: string): string[] {
+  if (needsEventBeyondHiring(undefined, query)) return []   // the user asked for an event: nothing is matching-only
+  return (signals ?? []).filter(sg => typeof sg === 'string' && EVENT_SIGNAL.test(sg.replace(HIRING_ONLY, ' ')))
+}
+export const notRequiredLine = (sg: string): string => `Your profile signal "${sg.slice(0, 80)}" was used for matching only, not required: your request didn't ask for that event. `
+
 // The text shows an event beyond hiring (funding, an opening, an expansion, a launch ...), ignoring the hiring words themselves.
 export const showsEventBeyondHiring = (text: string): boolean => EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
 

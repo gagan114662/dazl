@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
@@ -66,9 +66,11 @@ interface JobLike { id: string; user_id: string; query?: string | null; icp?: st
 // Event half. The sentence must be about THIS company (case-insensitive subject check), must affirm the event (not "did not raise", "plans to raise", "in talks"),
 // and, when the request names a funding STAGE, must be that stage ("Series A" never answers a seed request, "seed" never a Series A request).
 export type Stage = 'seed' | `series ${string}` | null
-export function requestedStage(query: string | null | undefined, icp: string | null | undefined): Stage {
-  let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ }
-  const t = `${sig} . ${query ?? ''}`
+// #1201 (Refs #1095): the stage and the funding ask are REQUIREMENTS, so they are read from the user's own words only. The model's profile
+// signals are matching / scoring vocabulary: a model "Series A" never overrides a user "Series B", and a seed signal the user never asked for
+// adds no funding gate. `icp` stays in the signature so callers keep compiling; it is deliberately not read here.
+export function requestedStage(query: string | null | undefined, _icp?: string | null): Stage {
+  const t = query ?? ''
   const series = /\bseries\s+([a-e])\b/i.exec(t)
   if (/\bseed\b/i.test(t) && !series) return 'seed'
   return series ? `series ${series[1].toLowerCase()}` : /\bseed\b/i.test(t) ? 'seed' : null
@@ -90,7 +92,7 @@ export const quoteShowsEvent = (excerpt: string | null, signal: string | null, f
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
   }) }
-export const requestAsksFunding = (query: string | null | undefined, icp: string | null | undefined): boolean => { let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ } return mentionsFunding(`${sig} . ${query ?? ''}`) }
+export const requestAsksFunding = (query: string | null | undefined, _icp?: string | null): boolean => mentionsFunding(query ?? '') // #1201: the user's words only (see requestedStage)
 // Affirmative hiring proof, not keyword co-occurrence. A CLAUSE (split on sentence ends and but / however / while / although / yet) must say the lead's OWN
 // company is hiring, now, for a sales / GTM role:
 //   - not negated or denied ("not hiring", "no plans to hire", "hiring freeze", "denies hiring", "rules out", "rejects reports of");
@@ -437,6 +439,12 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   if (stopped) return { required: true, checked: passed + demoted, passed, demoted, demotions } // stale attempt: the new owner re-runs the whole gate; nothing more is written
   // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
   releaseHeld(db, job.user_id, job.id, passedIds)
+  // #1201 rule 3: a passed lead's card names each model signal that was used for matching but not imposed (the user's words never asked for it).
+  { const note = signalsNotRequired(signalTerms, job.query ?? '').slice(0, 2).map(notRequiredLine).join('')
+    if (note) for (const id of passedIds) {
+      const cur = (db.prepare('SELECT why FROM leads WHERE id = ?').get(id) as { why: string | null } | undefined)?.why ?? ''
+      if (!cur.includes(note.trim())) setWhy.run(`${cur.trim().slice(0, Math.max(0, WHY_MAX - note.length - 1))} ${note}`.trim(), id)
+    } }
   // The DURABLE pass record. A lead the gate passed but whose record could not be written is held by default (held-state.ts), never assumed passed.
   for (const id of passedIds) {
     try { addEnrichment(db, job.user_id, id, { connector: 'scan:gate', kind: 'gate_passed', value: roles.length ? 'requested_role_v1' : 'sales_hiring', label: 'The required sales-hiring check passed', confidence: null, source_url: 'https://invalid.example/', source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) }) } catch { /* no record: the lead stays held */ }
