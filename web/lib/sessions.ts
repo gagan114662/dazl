@@ -91,8 +91,8 @@ const noFence: Fence = function* () { /* not fenced */ }
 
 // Deletes at most `limit` rows that expired or were revoked more than SESSION_RETAIN_S ago. A working session (not
 // revoked, not expired) never matches. Run from the scheduled tick (fenced by its lease); a backlog drains over ticks.
-export async function reapSessions(db: Db, o: { now?: number; limit?: number; fence?: Fence } = {}): Promise<number> {
-  const cutoff = (o.now ?? nowS()) - SESSION_RETAIN_S, limit = Math.max(1, Math.min(o.limit ?? 500, 5000)), fence = o.fence ?? noFence
+export async function reapSessions(db: Db, o: { now?: number; limit?: number; fence?: Fence; retainS?: number } = {}): Promise<number> {
+  const cutoff = (o.now ?? nowS()) - Math.max(o.retainS ?? SESSION_RETAIN_S, 24 * 60 * 60), limit = Math.max(1, Math.min(o.limit ?? 500, 5000)), fence = o.fence ?? noFence
   return db.tx(function* (t) {
     yield* fence(t)
     const r = yield* t.run(`DELETE FROM sessions WHERE id IN (
