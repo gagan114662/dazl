@@ -1089,7 +1089,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // #1122: a scan with NO geography has nothing to place a company that is not local (a SaaS company hiring an SDR); a site a public
         // record gives as THIS company's official website (Wikidata P856, the item named exactly like the company, its host carrying the
         // name) is not asked for a place there. Every other check (homepage names the company, address, robots) still applies.
-        const recordNoGeo = where.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
+        // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
+        // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
+        const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
         if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
