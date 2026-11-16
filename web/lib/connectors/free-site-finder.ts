@@ -94,7 +94,13 @@ export async function wikidataAnswer(company: string, deps: FreeSiteDeps = {}): 
     for (const c of claims.P856) {
       if (!isRec(c)) { malformed = true; continue }
       if (str(c.rank) === 'deprecated') continue
-      const url = str(rec(rec(c.mainsnak).datavalue).value)
+      // 1289-F3 (round 4): check the snak's shape before reading its URL. "novalue"/"somevalue" are real statements with no URL.
+      const snak = c.mainsnak
+      if (!isRec(snak)) { malformed = true; continue }
+      if (snak.snaktype === 'novalue' || snak.snaktype === 'somevalue') continue
+      const dv = snak.datavalue
+      if (!isRec(dv) || typeof dv.value !== 'string') { malformed = true; continue }
+      const url = dv.value
       if (/^https?:\/\//i.test(url)) out.push({ url, source: 'wikidata', ref: `https://www.wikidata.org/wiki/${id}` })
     }
   }
