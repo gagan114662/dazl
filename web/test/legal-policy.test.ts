@@ -8,7 +8,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
-import { API_HOSTS, DRAFT_NOTICE, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
+import { API_HOSTS, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
 import { MATRIX } from '../lib/sources/capability-matrix.ts'
 import { PLAN_LIMITS } from '../lib/plans.ts'
 import { SESSION_RETAIN_S } from '../lib/sessions.ts'
@@ -51,20 +51,47 @@ const MASTER = randomBytes(32)
 const OAUTH_ENV = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
 
-test('the policies stay labelled DRAFT and keep their open decisions visible until the owner and counsel approve them', () => {
-  assert.equal(POLICY_STATUS, 'draft')
-  assert.match(DRAFT_NOTICE, /^DRAFT\b/)
-  assert.match(DRAFT_NOTICE, /not yet approved by the site owner or reviewed by a lawyer/)
-  // every owner fact not in the code is still a placeholder somewhere in the text
+test('AC-1: the public pages carry no DRAFT label; the owner-approved text (#535, 2026-11-12) has a date and no open liability marker', () => {
+  assert.equal(POLICY_STATUS, 'approved')
+  assert.match(OWNER_PLACEHOLDERS.lastUpdated, /^\d{1,2} [A-Z][a-z]+ 20\d\d$/)
   for (const v of Object.values(OWNER_PLACEHOLDERS)) assert.ok(privacy.includes(v) || terms.includes(v), `${v} is not shown`)
-  assert.match(terms, /\[NEEDS COUNSEL: warranty disclaimer, limitation of liability/)
+  assert.doesNotMatch(privacy + terms, /\bDRAFT\b/)
+  assert.doesNotMatch(terms, /NEEDS COUNSEL: warranty disclaimer, limitation of liability/)
   for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) {
     const src = read(page)
-    assert.ok(src.includes('{DRAFT_NOTICE}'), `${page} must render the draft notice`)
+    assert.ok(!src.includes('DRAFT_NOTICE'), `${page} must not render a draft notice`)
     assert.ok(src.includes("from '@/lib/legal/policy'"), `${page} must render the checked policy text, not its own copy`)
   }
   assert.ok(read('app/privacy/page.tsx').includes('PRIVACY.map'))
   assert.ok(read('app/terms/page.tsx').includes('TERMS.map'))
+  // the "not reviewed by counsel" note stays internal (source comment), never public text
+  assert.match(read('lib/legal/policy.ts'), /not reviewed by counsel/)
+  assert.doesNotMatch(privacy + terms, /not reviewed by counsel/i)
+})
+
+test('AC-2: Terms state the decided warranty, liability cap, indemnity, termination, law and venue', () => {
+  assert.match(terms, /provided "as is"/)
+  assert.match(terms, /limited to the fees you paid dazl in the 12 months before the claim/)
+  assert.match(terms, /Each party indemnifies the other only against third-party claims arising from that party's infringement of intellectual property or from a data breach that party caused\./)
+  assert.match(terms, /Either party may end this agreement for convenience on 30 days' written notice/)
+  assert.match(terms, /governed by the laws of the Province of Ontario and the federal laws of Canada that apply there/)
+  assert.match(terms, /courts located in Toronto, Ontario/)
+})
+
+test('AC-3: Privacy states the decided retention: active accounts while active, deleted accounts within 30 days, backups 35 days', () => {
+  assert.match(privacy, /kept while your account is active/)
+  assert.match(privacy, /deleted within 30 days of a confirmed deletion request/)
+  assert.match(privacy, /Backup copies are kept for at most 35 days/)
+  assert.doesNotMatch(privacy, /NEEDS OWNER: retention for an active account/)
+})
+
+test('AC-4: outreach law applicability is stated: CAN-SPAM, CASL, GDPR/UK GDPR, CCPA; identity, address, unsubscribe within 10 days, EU lawful basis', () => {
+  assert.doesNotMatch(privacy, /NEEDS COUNSEL: CASL \/ CAN-SPAM/)
+  assert.match(privacy, /CAN-SPAM \(US\), CASL \(Canada\), the GDPR and UK GDPR \(EU and UK\) and the CCPA\/CPRA \(California\)/)
+  assert.match(privacy, /honoured within 10 days at most/)
+  assert.match(terms, /record the lawful basis/)
+  assert.match(privacy, /GDPR, UK GDPR, CCPA\/CPRA and PIPEDA/)
+  assert.doesNotMatch(privacy, /NEEDS COUNSEL: which rights apply by jurisdiction/)
 })
 
 test('the policies are public and linked from the home footer and sign-up', () => {
@@ -247,13 +274,13 @@ test('the Gmail reading description matches the reply sync: what is read, classi
   assert.match(privacy, /turning reading off stops future reads and follow-ups but does not delete what is already stored/)
   assert.match(privacy, /deleting your account deletes them with your other workspace data/)
   assert.match(privacy, /unless the deletion request asks to keep named tables/)
-  assert.match(privacy, /NEEDS OWNER: retention period for stored reply records/)
+  assert.match(privacy, /Stored reply records are kept while your account is active/)
   assert.match(privacy, /reads nothing without this consent/)
 })
 
-test('no categorical sale/share assertion is published: it stays a visible counsel marker', () => {
-  assert.doesNotMatch(privacy, /We do not sell personal information\./)
-  assert.match(privacy, /\[NEEDS COUNSEL: the sale\/share statement/)
+test('the CCPA/CPRA sale/share statement is published (CCPA applies, #535 decision)', () => {
+  assert.match(privacy, /dazl does not sell personal information and does not share it for cross-context behavioural advertising\./)
+  assert.doesNotMatch(privacy, /NEEDS COUNSEL: the sale\/share statement/)
 })
 
 test('prospect rows are tenant-scoped; the only global address-based processing is what the policy names', () => {
