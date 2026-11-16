@@ -39,7 +39,7 @@ function runHelper(f: Fake) {
     if (p.startsWith('/')) spawnSync('ln', ['-s', p, join(sys, t)])
   }
   const r = spawnSync('/bin/bash', ['-c', `source '${helper}' && ensure_ledger_append_only '${target}'`],
-    { env: { PATH: `${bin}:${sys}` }, encoding: 'utf8' })
+    { env: { ...process.env, PATH: `${bin}:${sys}` }, encoding: 'utf8' })
   rmSync(dir, { recursive: true, force: true })
   return { code: r.status, out: `${r.stdout}${r.stderr}` }
 }
