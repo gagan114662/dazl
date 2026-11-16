@@ -19,7 +19,11 @@ export type SourceAnswer = { hits: FreeSiteHit[]; outcome: SourceOutcome }
 export type FreeSiteHit = { url: string; source: 'wikidata' | 'openstreetmap'; ref: string }
 export type FreeSiteDeps = { fetchImpl?: typeof fetch; signal?: AbortSignal; sleep?: (ms: number) => Promise<void>; now?: () => number }
 
-const fold = (s: string): string => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '')
+// 1289-F2 (round 3): accents fold to their base letter (NFKD, combining marks removed); any other letter or digit, in any script, is KEPT,
+// never deleted, so "Müller Dental" is "Muller Dental" but never "Mller Dental".
+const fold = (s: string): string => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/&/g, ' and ').replace(/[^\p{L}\p{N}]+/gu, '')
+// The ONE company key for the finder's answer cache and its public-record mark: the folded name with every word kept ("Group" included).
+export const siteCompanyKey = (company: string): string => fold(company.trim())
 // Legal and generic tails that do not change which company a name is ("Mercury Technologies, Inc." is "Mercury Technologies").
 const TAIL = /[\s,]+(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|gmbh|ag|sa|plc|pty|bv|srl|oy|ab)\.?$/i
 const core = (s: string): string => { let n = s.trim(); for (let i = 0; i < 2; i++) { const c = n.replace(TAIL, ''); if (c === n) break; n = c } return fold(n) }
@@ -53,8 +57,9 @@ async function getJson(url: string, deps: FreeSiteDeps): Promise<Got> {
   }
 }
 
+// 1289-F3 (round 3): a parsed 200 answer is checked against the source's envelope before anything can be "empty".
+const isRec = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
 const rec = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' && !Array.isArray(x) ? x as Record<string, unknown> : {})
-const arr = (x: unknown): unknown[] => (Array.isArray(x) ? x : [])
 const str = (x: unknown): string => (typeof x === 'string' ? x : '')
 
 // Wikidata: search items by name (English), keep the ones whose label or alias is the company's name, read their official website.
@@ -66,23 +71,34 @@ export async function wikidataAnswer(company: string, deps: FreeSiteDeps = {}): 
   if (core(q).length < 3) return { hits: [], outcome: 'empty' }
   const got = await getJson(`https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&language=en&uselang=en&type=item&limit=7&search=${encodeURIComponent(q)}`, deps)
   if (!got.ok) return { hits: [], outcome: got.outcome }
-  const search = rec(got.value)
-  const ids = arr(search.search).map(rec).filter(h => sameCompanyName(company, str(h.label)) || sameCompanyName(company, str(rec(h.match).text))).map(h => str(h.id)).filter(id => /^Q\d+$/.test(id)).slice(0, 5)
-  if (ids.length === 0) return { hits: [], outcome: 'empty' }
+  const search = got.value
+  if (!isRec(search) || 'error' in search || !Array.isArray(search.search)) return { hits: [], outcome: 'failed' }   // an error object or the wrong shape
+  const ids = search.search.filter(isRec).filter(h => sameCompanyName(company, str(h.label)) || sameCompanyName(company, str(rec(h.match).text))).map(h => str(h.id)).filter(id => /^Q\d+$/.test(id)).slice(0, 5)
+  if (ids.length === 0) return { hits: [], outcome: search.search.length > 0 && !search.search.some(isRec) ? 'failed' : 'empty' }
   const gotEnts = await getJson(`https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&props=claims&ids=${ids.join('|')}`, deps)
   if (!gotEnts.ok) return { hits: [], outcome: gotEnts.outcome }
-  const ents = rec(rec(gotEnts.value).entities)
+  const body = gotEnts.value
+  if (!isRec(body) || 'error' in body || !isRec(body.entities)) return { hits: [], outcome: 'failed' }
+  const ents = body.entities
   const out: FreeSiteHit[] = []
+  let malformed = false
   for (const id of ids) {
-    const claims = arr(rec(rec(ents[id]).claims).P856)
-    for (const c of claims) {
-      const c1 = rec(c)
-      if (str(c1.rank) === 'deprecated') continue
-      const url = str(rec(rec(c1.mainsnak).datavalue).value)
+    const ent = ents[id]
+    if (!isRec(ent)) { malformed = true; continue }                  // the asked item is missing or not a record
+    if ('missing' in ent) continue                                    // Wikidata says the item does not exist: a real "nothing"
+    const claims = ent.claims
+    if (Array.isArray(claims) && claims.length === 0) continue        // Wikidata writes "no claims" as []
+    if (!isRec(claims)) { malformed = true; continue }
+    if (claims.P856 === undefined) continue                          // no official website: a real "nothing"
+    if (!Array.isArray(claims.P856)) { malformed = true; continue }
+    for (const c of claims.P856) {
+      if (!isRec(c)) { malformed = true; continue }
+      if (str(c.rank) === 'deprecated') continue
+      const url = str(rec(rec(c.mainsnak).datavalue).value)
       if (/^https?:\/\//i.test(url)) out.push({ url, source: 'wikidata', ref: `https://www.wikidata.org/wiki/${id}` })
     }
   }
-  return { hits: out, outcome: out.length > 0 ? 'ok' : 'empty' }
+  return { hits: out, outcome: out.length > 0 ? 'ok' : malformed ? 'failed' : 'empty' }   // valid partial results survive a malformed neighbour
 }
 
 let lastNominatim = 0
@@ -117,10 +133,12 @@ export async function osmAnswer(company: string, where: string[], deps: FreeSite
   const q = place ? `${name}, ${place}` : name
   const got = await getJson(`https://nominatim.openstreetmap.org/search?format=jsonv2&extratags=1&namedetails=1&limit=5&q=${encodeURIComponent(q)}`, deps)
   if (!got.ok) return { hits: [], outcome: got.outcome }
-  const rows = arr(got.value)
+  const rows = got.value
+  if (!Array.isArray(rows)) return { hits: [], outcome: 'failed' }   // Nominatim answers a list; an error object or any other shape is a failure
   const out: FreeSiteHit[] = []
-  for (const r0 of rows) {
-    const r = rec(r0)
+  let malformed = false
+  for (const r of rows) {
+    if (!isRec(r)) { malformed = true; continue }
     const names = [str(r.name), ...Object.values(rec(r.namedetails)).map(str)].filter(Boolean)
     if (!names.some(n => sameCompanyName(company, n))) continue
     const tags = rec(r.extratags)
@@ -128,7 +146,7 @@ export async function osmAnswer(company: string, where: string[], deps: FreeSite
     const full = /^https?:\/\//i.test(url) ? url : url && /^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(url) ? `https://${url}` : ''
     if (full) out.push({ url: full, source: 'openstreetmap', ref: `https://www.openstreetmap.org/${str(r.osm_type)}/${String(r.osm_id ?? '')}` })
   }
-  return { hits: out, outcome: out.length > 0 ? 'ok' : 'empty' }
+  return { hits: out, outcome: out.length > 0 ? 'ok' : malformed ? 'failed' : 'empty' }
 }
 
 // Both sources, Wikidata first; each answer keeps the page it came from (ref) so the caller can audit where a site came from.
