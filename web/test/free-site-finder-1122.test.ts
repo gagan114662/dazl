@@ -8,7 +8,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { freeSiteFinderFor, siteFinderFor, FREE_SITE_LOOKUPS_PER_SCAN } from '../lib/scan/runner.ts'
-import { freeCompanySites, osmSites, resetFreeSiteFinderPacing, sameCompanyName, wikidataSites, FREE_SITE_UA } from '../lib/connectors/free-site-finder.ts'
+import { freeCompanySites, freeCompanySitesDetailed, osmSites, resetFreeSiteFinderPacing, sameCompanyName, wikidataSites, FREE_SITE_UA } from '../lib/connectors/free-site-finder.ts'
 
 const json = (x: unknown) => new Response(JSON.stringify(x), { status: 200, headers: { 'content-type': 'application/json' } })
 type Item = { id: string; label: string; site?: string }
@@ -176,4 +176,92 @@ test('crawlJob + the free finder: a site the free data names but whose homepage 
   const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { Mercury: [{ id: 'Q1', label: 'Mercury', site: 'https://mercury.com/' }] } }) })!
   await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Domain for sale</body></html>' }), gapMs: 0, env: {}, findSites })
   assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, null)
+})
+
+// ---- review fixes: 1289-F1 (concurrent Nominatim pacing), 1289-F2 (exemption bound to its company), 1289-F3 (failed lookup is not "no match") ----
+
+test('1289-F1 concurrent osmSites calls (separate scans) are admitted one at a time, at least 1.1 s apart; an abort while queued sends nothing', async () => {
+  resetFreeSiteFinderPacing(); let t = 10_000; const sent: number[] = []
+  const base = publicData({})
+  const f = (async (input: string | URL, init?: RequestInit) => { if (new URL(String(input)).hostname === 'nominatim.openstreetmap.org') sent.push(t); return base(input, init) }) as typeof fetch
+  // a fake clock shared by every caller: each sleep resumes on a later tick, then moves time forward to its own wake-up point
+  const clock = { sleep: async (ms: number) => { const until = t + ms; await new Promise(r => setImmediate(r)); t = Math.max(t, until) }, now: () => t }
+  const queued = new AbortController()
+  const runs = [
+    osmSites('Harbor Dental', ['Austin'], { fetchImpl: f, ...clock }),
+    osmSites('Bay Dental', ['Austin'], { fetchImpl: f, ...clock }),
+    osmSites('Lake Dental', ['Austin'], { fetchImpl: f, ...clock, signal: queued.signal }),
+    osmSites('Hill Dental', ['Austin'], { fetchImpl: f, ...clock }),
+  ]
+  queued.abort()
+  await Promise.all(runs)
+  assert.equal(sent.length, 3, `the call aborted while waiting its turn sends nothing (sent at ${sent.join(', ')})`)
+  for (let i = 1; i < sent.length; i++) assert.ok(sent[i] - sent[i - 1] >= 1_100, `requests ${i} and ${i + 1} were ${sent[i] - sent[i - 1]} ms apart`)
+})
+
+test('1289-F2 the public-record mark belongs to the company whose own lookup returned it, never to a similarly named company', async () => {
+  resetFreeSiteFinderPacing(); const { db, job } = scan()
+  const f = publicData({ wikidata: { 'Harbor Dental': [{ id: 'Q7', label: 'Harbor Dental', site: 'https://harbordental.com/' }] } })
+  const find = freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: f, freeSiteClock: fast })!
+  assert.deepEqual(await find('Harbor Dental', []), ['harbordental.com'])
+  assert.deepEqual(await find('Harbor Dental Group', []), [])
+  assert.equal(find.recordSite?.('harbordental.com', 'Harbor Dental'), true, 'the marked company may pass')
+  assert.equal(find.recordSite?.('harbordental.com', 'Harbor Dental Group'), false, 'another company reaching the same host by name probing is not marked')
+})
+
+test('1289-F2 crawlJob: the marked company passes; the unmarked "Group" company on the same host still needs the place check', async () => {
+  resetFreeSiteFinderPacing()
+  const db = new Database(':memory:'); migrateConnectors(db)
+  db.exec('CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)')
+  const add = db.prepare("INSERT INTO leads VALUES (?,'j1',?,?,NULL,90,80,NULL,?,?)")
+  add.run('l1', 'Harbor Dental', 'https://job-boards.greenhouse.io/harbordental/jobs/1', 'Harbor Dental is hiring a Sales Development Representative', 'Harbor Dental is hiring a Sales Development Representative')
+  add.run('l2', 'Harbor Dental Group', 'https://job-boards.greenhouse.io/harbordentalgroup/jobs/2', 'Harbor Dental Group is hiring a Sales Development Representative', 'Harbor Dental Group is hiring a Sales Development Representative')
+  db.exec('CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, icp TEXT)')
+  db.prepare('INSERT INTO scan_jobs (id, icp) VALUES (?, ?)').run('j1', JSON.stringify({ who: ['Head of Sales'] }))
+  const { db: jdb, job } = scan()
+  const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { 'Harbor Dental': [{ id: 'Q7', label: 'Harbor Dental', site: 'https://harbordental.com/' }] } }) })!
+  const get: Get = async url => {
+    const u = new URL(url)
+    if (u.hostname === 'job-boards.greenhouse.io') return { status: 200, body: '<html><body>Sales Development Representative. Apply now.</body></html>', finalUrl: url }
+    if (u.hostname !== 'harbordental.com') return { status: 404, body: '', finalUrl: url }
+    if (u.pathname === '/') return { status: 200, body: '<html><body>Harbor Dental Group - Harbor Dental, your dentist</body></html>', finalUrl: url }
+    return { status: u.pathname === '/robots.txt' ? 200 : 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 't1', 'j1', { get, gapMs: 0, env: {}, findSites })
+  const dom = (id: string) => (db.prepare('SELECT company_domain AS d FROM leads WHERE id = ?').get(id) as { d: string | null }).d
+  assert.equal(dom('l1'), 'harbordental.com', 'the company the public record names')
+  assert.equal(dom('l2'), null, 'no public record for this company: the no-place refusal still applies')
+})
+
+test('1289-F3 freeCompanySitesDetailed: each source says ok, empty, failed or cancelled; valid partial results are kept', async () => {
+  resetFreeSiteFinderPacing()
+  const boom = (async () => { throw new Error('offline') }) as typeof fetch
+  assert.deepEqual((await freeCompanySitesDetailed('Mercury', [], { fetchImpl: boom, ...fast })).outcomes, { wikidata: 'failed', openstreetmap: 'failed' })
+  const junk = (async () => new Response('<html>', { status: 200 })) as typeof fetch
+  assert.deepEqual((await freeCompanySitesDetailed('Mercury', [], { fetchImpl: junk, ...fast })).outcomes, { wikidata: 'failed', openstreetmap: 'failed' })
+  assert.deepEqual((await freeCompanySitesDetailed('Mercury', [], { fetchImpl: publicData({}), ...fast })).outcomes, { wikidata: 'empty', openstreetmap: 'empty' })
+  const half = publicData({ osm: { 'Queen Street Dental Centre, Toronto': [{ name: 'Queen Street Dental Centre', osm_type: 'node', osm_id: 42, extratags: { website: 'https://qsdc.ca/' } }] } })
+  const wdDown = (async (input: string | URL, init?: RequestInit) => new URL(String(input)).hostname === 'www.wikidata.org' ? new Response('err', { status: 503 }) : half(input, init)) as typeof fetch
+  const r = await freeCompanySitesDetailed('Queen Street Dental Centre', ['Toronto'], { fetchImpl: wdDown, ...fast })
+  assert.deepEqual(r.outcomes, { wikidata: 'failed', openstreetmap: 'ok' }); assert.deepEqual(r.hits.map(h => h.url), ['https://qsdc.ca/'])
+  const stop = new AbortController()
+  const aborting = (async () => { stop.abort(); throw new DOMException('aborted', 'AbortError') }) as typeof fetch
+  assert.deepEqual((await freeCompanySitesDetailed('Mercury', [], { fetchImpl: aborting, signal: stop.signal, ...fast })).outcomes, { wikidata: 'cancelled', openstreetmap: 'cancelled' })
+})
+
+test('1289-F3 freeSiteFinderFor audits a failed or cancelled lookup as such, never as no_match; a partial answer names the source that failed', async () => {
+  resetFreeSiteFinderPacing(); const { db, job } = scan()
+  const boom = (async () => { throw new Error('offline') }) as typeof fetch
+  assert.deepEqual(await freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: boom, freeSiteClock: fast })!('Mercury', []), [])
+  const half = publicData({ osm: { 'Queen Street Dental Centre, Toronto': [{ name: 'Queen Street Dental Centre', osm_type: 'node', osm_id: 42, extratags: { website: 'https://qsdc.ca/' } }] } })
+  const wdDown = (async (input: string | URL, init?: RequestInit) => new URL(String(input)).hostname === 'www.wikidata.org' ? new Response('err', { status: 503 }) : half(input, init)) as typeof fetch
+  assert.deepEqual(await freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: wdDown, freeSiteClock: fast })!('Queen Street Dental Centre', ['Toronto']), ['qsdc.ca'])
+  const stop = new AbortController()
+  const aborting = (async () => { stop.abort(); throw new DOMException('aborted', 'AbortError') }) as typeof fetch
+  assert.deepEqual(await freeSiteFinderFor(db, job, { env: {}, freeSiteFetch: aborting, freeSiteClock: fast }, stop.signal)!('Beehiiv', []), [])
+  assert.deepEqual(audits(db).map(a => a.status), [
+    'site_free_failed wikidata=failed openstreetmap=failed',
+    'site_free_ok_openstreetmap wikidata=failed',
+    'site_free_cancelled wikidata=cancelled openstreetmap=cancelled',
+  ])
 })
