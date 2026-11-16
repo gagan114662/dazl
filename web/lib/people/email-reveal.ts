@@ -25,7 +25,11 @@ export function decodeCfEmail(hex: string): string | null {
   return ADDRESS.test(addr) ? addr.toLowerCase() : null
 }
 
-const CF_ELEMENT = /<([a-z][a-z0-9]*)\b[^>]*\bdata-cfemail\s*=\s*["']([0-9a-f]+)["'][^>]*>[\s\S]*?<\/\1\s*>/gi
+const CF_ELEMENT = /(<([a-z][a-z0-9]*)\b[^>]*\bdata-cfemail\s*=\s*["']([0-9a-f]+)["'][^>]*>)([\s\S]*?)(<\/\2\s*>)/gi
+const PLACEHOLDER = /\[\s*email(?:&#160;|&nbsp;|&#xa0;|\u00a0|\s)+protected\s*\]/i
+// Cloudflare's OWN wrapper and nothing else: class "__cf_email__" plus data-cfemail, no other attribute, the placeholder as its only content.
+// That wrapper was cut out of the author's text node by Cloudflare, so unwrapping it gives back exactly the text the author wrote.
+const BARE_WRAPPER = /^<span\s+(?:class\s*=\s*["']__cf_email__["']\s+data-cfemail\s*=\s*["'][0-9a-f]+["']|data-cfemail\s*=\s*["'][0-9a-f]+["']\s+class\s*=\s*["']__cf_email__["'])\s*>$/i
 const CF_HREF = /(["'])(?:https?:\/\/[^"'\s]*?)?\/cdn-cgi\/l\/email-protection#([0-9a-f]+)\1/gi
 const BRACKETED = /\b([a-z0-9][a-z0-9._%+-]{0,63})\s*(?:\[\s*at\s*\]|\(\s*at\s*\)|\{\s*at\s*\})\s*([a-z0-9][a-z0-9-]{0,62}(?:(?:\.|\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\})\s*)[a-z0-9-]{1,63})*?)(?:\.|\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\})\s*)([a-z]{2,24})\b(?![.-]?[a-z0-9])/gi
 const DOT = /\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\})\s*/gi
@@ -34,7 +38,15 @@ export function revealEmails(html: string): string {
   if (!html) return html
   let out = html
   if (/data-cfemail|email-protection#/i.test(out)) {
-    out = out.replace(CF_ELEMENT, (whole, _tag: string, hex: string) => decodeCfEmail(hex) ?? whole)
+    // Ziggy review 1288-F1: only the placeholder is replaced. Any element that carries anything beyond Cloudflare's bare wrapper keeps its
+    // tags and every attribute (aria-label / title / data-* may name a DIFFERENT person), so the text on either side is never joined into one
+    // text node and addressContexts still sees that evidence. Content that is not the placeholder (nested markup) is left untouched.
+    out = out.replace(CF_ELEMENT, (whole, open: string, _tag: string, hex: string, inner: string, close: string) => {
+      const addr = decodeCfEmail(hex)
+      if (!addr || !PLACEHOLDER.test(inner)) return whole
+      if (BARE_WRAPPER.test(open) && PLACEHOLDER.test(inner) && inner.replace(PLACEHOLDER, '').trim() === '') return addr
+      return open + inner.replace(PLACEHOLDER, addr) + close
+    })
     out = out.replace(CF_HREF, (whole, q: string, hex: string) => { const a = decodeCfEmail(hex); return a ? `${q}mailto:${a}${q}` : whole })
   }
   if (/[[({]\s*at\s*[\])}]/i.test(out)) {
