@@ -33,7 +33,15 @@ const TOKENS = ['dazl-contact-check', 'dazl']
 const MAX_PAGES = 5
 const MAX_BYTES = 800_000
 const TIMEOUT_MS = 10_000
-export const MAX_SITES_PER_SCAN = Number(process.env.SITECRAWL_MAX_SITES || 8)
+// #1037: 20 (was 8). With the leads read a few at a time (crawlConcurrency), 20 sites fit the same post-finish window that 8 used to fill
+// one after another; the 9th-and-later leads of a scan used to get no website check, so no named person, at all.
+export const MAX_SITES_PER_SCAN = Number(process.env.SITECRAWL_MAX_SITES || 20)
+// #1037: how many leads' sites are read at once. Bounded 1..6; an unparseable value is the default. 1 is the old one-after-another order.
+export const CRAWL_CONCURRENCY_DEFAULT = 4
+export function crawlConcurrency(explicit?: number, fallback?: number, env: Record<string, string | undefined> = process.env): number {
+  const raw = explicit ?? fallback ?? Number(env.SITECRAWL_CONCURRENCY ?? CRAWL_CONCURRENCY_DEFAULT)
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(6, Math.floor(raw)) : CRAWL_CONCURRENCY_DEFAULT
+}
 const GAP_MS = Number(process.env.SITECRAWL_GAP_MS ?? 2000)
 // Intrinsic per-site crawl bound (#871): robots + home + up to MAX_PAGES pages under the polite gap must fit.
 const CRAWL_BUDGET_MS = (() => { const n = Number(process.env.SITECRAWL_CRAWL_BUDGET_MS ?? 45_000); return Number.isFinite(n) && n > 0 ? n : 45_000 })()
@@ -374,7 +382,7 @@ export function probeDomains(company: string, where: string[] = []): string[] {
 }
 
 // Most leads per scan that get domain probes, so a big scan cannot turn into hundreds of fetches.
-export const MAX_PROBES_PER_SCAN = 8
+export const MAX_PROBES_PER_SCAN = 20   // #1037: matches MAX_SITES_PER_SCAN, so every lead the crawl picks may have its site found by name
 
 // ---- extraction ----
 export const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
@@ -934,7 +942,7 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
   })
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -967,7 +975,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const who = j?.icp ? (JSON.parse(j.icp) as { who?: unknown }).who : null; if (Array.isArray(who) && who.length) buyerRoles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { /* no ICP: seniority only */ }
+    // #1037: with leads read concurrently, two leads on the same site never crawl it twice at once: the second waits for the first read and
+    // then takes the cached path below (same per-lead name check), so per-host politeness and the one-crawl-per-site rule both hold.
+    const inflight = new Map<string, Promise<unknown>>()
     const readSite = async (cand: string, company: string): Promise<Crawled> => {
+      while (inflight.has(cand)) await inflight.get(cand)!.catch(() => undefined)
       const c = siteRead.get(cand)
       if (c) {
         if (c.homeNorm === undefined) return c
@@ -995,20 +1007,47 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           else seen.set(a.address, { address: a.address, url, ctx })
         }
       }
-      const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
-      siteRead.set(cand, r)
-      return r
+      const reading = (async () => {
+        const r = await crawlSite(cand, hostGet, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+        siteRead.set(cand, r)
+        return r
+      })()
+      inflight.set(cand, reading)
+      try { return await reading } finally { inflight.delete(cand) }
     }
     // An injected fetch (tests, the crawl4ai backend's callers) never reaches the network for a redirect unless one is injected too.
     const redirectOf = deps.redirectOf ?? (deps.get ? async () => null : (host: string) => rawRedirectTarget(host, TIMEOUT_MS, guardedLookup, deps.signal))
     const redirectSeen = new Map<string, string | null>()   // host -> where it forwards (or null), for the whole scan
     let probed = 0
-    for (const l of leads) {
+    // Ziggy review 1290-F2: ONE per-host schedule for every request the crawl makes, evidence reads and site crawls alike. Requests to a host
+    // run one at a time, each starts at least the polite gap after the previous start on that host, and the abort (the crawl's deadline or
+    // the site read's own budget) is re-checked when a request reaches the FRONT of its host queue (1290-F1), so nothing queued starts late.
+    const hostGap = deps.gapMs ?? GAP_MS
+    const hostQueue = new Map<string, Promise<unknown>>()
+    const hostStart = new Map<string, number>()
+    const hostGet: Get = (url, opts) => {
+      let host = ''; try { host = new URL(url).hostname.toLowerCase() } catch { /* unparseable: its own queue */ }
+      const sig = opts?.signal ?? deps.signal
+      const stop = () => !!(deps.signal?.aborted || sig?.aborted)
+      const run = (hostQueue.get(host) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+        if (stop()) return null
+        const wait = (hostStart.get(host) ?? 0) + hostGap - Date.now()
+        if (wait > 0 && !(await sleepAbort(wait, sig))) return null
+        if (stop()) return null
+        hostStart.set(host, Date.now())
+        return get(url, sig ? { signal: sig } : undefined)
+      })
+      hostQueue.set(host, run)
+      return run
+    }
+    const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
+    const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       // A lead held because its evidence page blocked us (or needs JavaScript) never has that page fetched again here:
       // the block is known, re-hitting it is pressure on a refusing site, and the answer would be the same. Identity is
       // probed from the company name + place instead (strict agreement checks below apply unchanged).
-      const ev = (deps.skipEvidenceFetch || l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? null : await get(l.source_url)
+      const ev = (deps.skipEvidenceFetch || l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? null : await evidenceGet(l.source_url)
+      if (deps.signal?.aborted) return // the deadline passed while this lead waited for its evidence page: start nothing more for it
       // The blocked-host guard covers EVERY path to a site, not just the evidence URL: when the company name resolves to
       // the very host that refused this lead's fetch (its own blog/docs were the evidence), probing it would re-hit a
       // refusing site by another path. Such candidates are excluded and the skip is audited.
@@ -1030,7 +1069,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) {
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 })
-          if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); continue }
+          if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
           sites = [...structured]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
         } else {
           probed++
@@ -1046,7 +1085,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
           const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
           if (ownBlocked) unresolved = ownCode
-          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); continue }
+          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); return }
         }
       }
       let redirects = 0, asks = 0, robotsStopped = false, answered = false
@@ -1112,10 +1151,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // A deadline that fired during this crawl leaves a partial read: record nothing (no domain, tech, contacts or audit row) rather than a result that looks complete.
       if (deps.signal?.aborted) return
-      if (unread(r)) { recordDomainUnresolved(db, tenantId, l, r.reason === 'time_budget' ? 'time_budget' : robotsStopped && !answered && unresolved === 'not_confirmed' ? 'site_not_readable' : unresolved, today, nowSec); continue }
+      if (unread(r)) { recordDomainUnresolved(db, tenantId, l, r.reason === 'time_budget' ? 'time_budget' : robotsStopped && !answered && unresolved === 'not_confirmed' ? 'site_not_readable' : unresolved, today, nowSec); return }
       // The crawl's own time budget stopping it mid-read is the same class of partial read (#871): the pages actually
       // fetched stay recorded in crawl_pages (facts with their own times), but NO derived domain/tech/contact rows.
-      if (r.stoppedBy === 'time') continue
+      if (r.stoppedBy === 'time') return
       // The site answered but its robots rules could not be read, or forbid reading it: nothing is read, no domain is kept, and the lead says so (#1122).
       if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason === 'robots_disallow' ? 'site_not_readable' : 'site_not_read', today, nowSec)   // only rules that FORBID reading are a refusal; rules that could not be fetched are just an unread site
       // The homepage named the company: the domain is confirmed as the company's own site, whether
@@ -1168,6 +1207,20 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: r.reason, results: n })
     }
+    // #1037: leads are read CONCURRENTLY (a few at a time) instead of one after another, so more of the scan's leads get their own site checked
+    // for named people inside the same post-finish window. Each lead's checks are unchanged; per-host politeness still holds (one crawl per site,
+    // the crawl's own per-host gap, and evidence pages on the same host fetched one at a time). A deadline stops new leads from starting.
+    const width = crawlConcurrency(deps.concurrency, deps.get ? 1 : undefined, deps.env)
+    let next = 0, failed: unknown = null
+    await Promise.all(Array.from({ length: Math.min(width, leads.length) }, async () => {
+      while (next < leads.length && failed === null) {
+        if (deps.signal?.aborted) return
+        const l = leads[next++]
+        try { await readLead(l) } catch (e) { failed ??= e }
+      }
+    }))
+    if (failed !== null) throw failed
+    if (deps.signal?.aborted) return
     // #1122 (review at 01140156): a lead this crawl never picks (its hold is about the event itself: a closed opening, someone else's customer,
     // no event evidence) has no website attempt at all. It says so, instead of showing nothing. Whole-job crawls only; never beside a domain.
     if (!deps.leads && !deps.signal?.aborted) {
