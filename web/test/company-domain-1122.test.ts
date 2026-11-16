@@ -236,8 +236,8 @@ test('#1122 council (reasons true in every path): a JavaScript-only own site is 
   const js = await run({ company: 'HD Roofing & Repairs', where: ['Austin, Texas'], evidenceUrl: 'https://hdroofingandrepairs.com/careers', evidence: 'never read', reviewReason: 'needs_javascript', findSites: async () => [], sites: {} })
   assert.deepEqual(why(js), ['own_site_needs_javascript']); assert.deepEqual(js.searched, [])
   assert.equal(domainUnresolvedText(js.unresolved[0].label), 'the company\'s own website can only be read with JavaScript, which this check does not run')
-  // nine checkable leads: the crawl reads the scan's top eight; the ninth is told that, never that it is held
-  const many = Array.from({ length: 8 }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + i)}` }))
+  // checkable leads past the cap: the crawl reads the scan's top MAX_SITES_PER_SCAN (20 since #1037); the one after is told that, never that it is held
+  const many = Array.from({ length: sc.MAX_SITES_PER_SCAN }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + (i % 10))}` }))
   const capped = await run({ company: 'Zed Dental Studio', evidenceUrl: BOARD, evidence: plain('x'), sites: {}, more: many })
   const codes = ['L1', ...many.map(m => m.id)].map(id => why(capped.lead(id))[0])
   assert.equal(codes.filter(c => c === 'probe_limit_reached').length, 1, JSON.stringify(codes)); assert.ok(!codes.includes('not_checked'))

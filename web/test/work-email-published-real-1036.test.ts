@@ -99,7 +99,7 @@ test('#1036 address contexts on a 760 KB directory page with 1,500 addresses sta
   // exactly the cost this test is about (seen: a per-address lower-casing costs 1,800 ms on a fresh page and next to nothing on a reused one)
   const page = () => `<html><body>${Array.from({ length: 1500 }, (_, i) => `<div class="card"><span>Person${i} Name${i}</span><a href="mailto:p${i}.name${i}@firm.com">p${i}.name${i}@firm.com</a>${'<p>bio text here</p>'.repeat(20)}</div>`).join('')}</body></html>`
   const src = (await import('node:fs')).readFileSync(new URL('../lib/connectors/sitecrawl.ts', import.meta.url), 'utf8')
-  const loop = src.slice(src.indexOf('const onPage = (html: string, url: string, status: number) => {'), src.indexOf('const r = await crawlSite(cand, get'))
+  const loop = src.slice(src.indexOf('const onPage = (html: string, url: string, status: number) => {'), src.indexOf('const r = await crawlSite(cand, '))
   assert.doesNotMatch(loop, /toLowerCase\(\)|indexOf\(/, 'the crawl loop never lower-cases or searches the page per address')
   assert.match(loop, /seen\.size >= 200\) continue/)
   // Relative to the existing address scan on the same machine at the same moment (robust under a loaded test run): the old
