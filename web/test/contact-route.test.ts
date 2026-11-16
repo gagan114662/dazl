@@ -8,6 +8,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { createDraft } from '../lib/outreach/service.ts'
+import { addressCitationUrl } from '../lib/outreach/published-email.ts'
 import { contactRoute, deliverabilityBlocked, emailDomainInvalid, type RouteLead, type RouteRow } from '../lib/outreach/contact-route.ts'
 import { approveState, leadCardSummary } from '../lib/scan/lead-card.ts'
 import { contactIdentity, type CardLead } from '../lib/scan/opportunity.ts'
@@ -161,4 +162,41 @@ test('createDraft refuses an undeliverable address; catch-all still drafts', () 
   assert.throws(() => createDraft(db, 'A', rejected, 'Acme'), /undeliverable/)
   const catchAll = add('sales@northside.example'); rec(catchAll, '@northside.example|catch_all')
   assert.doesNotThrow(() => createDraft(db, 'A', catchAll, 'Acme'))
+})
+
+// #384 (2026-11-06 finding, re-raised by the 2026-11-12 live check): when the lead's own contact is the SAME address a
+// site crawl recorded, contact equality must not overwrite the page that printed it. The route names the crawled page
+// and keeps its recorded age, the same page addressCitationUrl cites for drafts.
+test('a lead contact that a site crawl also recorded keeps the crawled page and its age', () => {
+  const crawlRow = { connector: 'sitecrawl', kind: 'email', value: 'hello@company.example', label: 'contact page', source_url: 'https://company.example/contact', retrieved_at: 1609459200 }
+  const dom = (token: string) => ({ connector: 'sitecrawl', kind: 'domain', value: `company.example|${token}`, label: `domain-basis-v1:${token}`, source_url: 'https://company.example/' })
+  const base = { contact: 'hello@company.example', source_url: 'https://news.example/story' }
+
+  // Weak domain evidence (name probe): the crawled page, named as not confirmed, with its old read date and stale flag.
+  const weakLead = lead({ id: 'l-weak-same', ...base, enrichments: [crawlRow, dom('name_probe')] })
+  const weak = contactRoute(weakLead, null, NOW_MS)
+  assert.equal(weak.email, 'hello@company.example')
+  assert.equal(weak.provenance.url, 'https://company.example/contact')
+  assert.equal(weak.provenance.url, addressCitationUrl(weakLead))
+  assert.equal(weak.provenance.state, 'unconfirmed_site')
+  assert.equal(weak.provenance.lastReadAt, 1609459200)
+  assert.equal(weak.provenance.stale, true)
+  assert.doesNotMatch(weak.provenance.text, /cited page|read when the scan ran/)
+  assert.match(weak.provenance.text, /a page at company\.example, a website not confirmed as the company's own, last read 1 Jan 2021/)
+
+  // Strong domain evidence (own domain): the company website, still with the crawl's age.
+  const strong = contactRoute(lead({ id: 'l-strong-same', ...base, enrichments: [crawlRow, dom('evidence_own_domain')] }), null, NOW_MS)
+  assert.equal(strong.provenance.state, 'company_site')
+  assert.equal(strong.provenance.url, 'https://company.example/contact')
+  assert.equal(strong.provenance.lastReadAt, 1609459200)
+  assert.equal(strong.provenance.stale, true)
+  assert.match(strong.provenance.text, /printed on the company website \(company\.example\), last read 1 Jan 2021/)
+
+  // Control: the lead's address has no matching crawl row (a different crawled address exists): still the cited page.
+  const other = { ...crawlRow, value: 'sales@company.example' }
+  const control = contactRoute(lead({ id: 'l-control', ...base, enrichments: [other, dom('name_probe')] }), null, NOW_MS)
+  assert.equal(control.provenance.state, 'cited_page')
+  assert.equal(control.provenance.url, 'https://news.example/story')
+  assert.equal(control.provenance.lastReadAt, null)
+  assert.match(control.provenance.text, /the cited page \(news\.example\), read when the scan ran/)
 })
