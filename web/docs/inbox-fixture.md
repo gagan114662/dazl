@@ -52,13 +52,18 @@ let q = `/api/outreach/inbox?job_id=<play>&limit=50`, seen = []
 for (;;) { const p = await (await fetch(q)).json(); seen.push(...p.threads.map(t => t.thread_id)); console.log(p.threads.length, p.counts); if (!p.next_cursor) break; q = `/api/outreach/inbox?job_id=<play>&limit=50&cursor=${encodeURIComponent(p.next_cursor)}` }
 seen.length, new Set(seen).size   // 121, 121
 
+// 2b. #735, one row per thread with its deciding reply: thread 001 holds a reply and a newer auto-reply, thread 003 an
+//     earlier reply and a later 'no'. Each shows once, replies: 2; 001 shows its 'other' reply, 003 its 'negative'.
+await (await fetch('/api/outreach/inbox?thread=dazl-inbox-fixture-thread-001')).json()
+await (await fetch('/api/outreach/inbox?thread=dazl-inbox-fixture-thread-003')).json()
+
 // 3. bounce_review: one row, needs the owner
 await (await fetch('/api/outreach/inbox?job_id=<play>&class=bounce_review')).json()
 // the Outcomes "Conversations need you" tile of /app/outcomes?job_id=<play> uses the same needs-owner rule (lib/outreach/needs-owner.ts): 61
 
 // 4. cleanup: removes exactly the fixture's rows; a second call deletes nothing
 await (await fetch('/api/outreach/inbox/fixture', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: '{}' })).json()
-// -> { deleted: { threads: 121, sends: 1, leads: 121, plays: 1, reads: <opened threads> } }
+// -> { deleted: { threads: 121, extra_messages: 2, sends: 1, leads: 121, plays: 1, reads: <opened threads> } }
 ```
 
 Cleanup deletes only rows of the session's tenant under the fixture's derived ids, each pinned to its marker (play

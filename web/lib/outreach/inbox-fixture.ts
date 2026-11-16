@@ -4,6 +4,9 @@
 // editing the database by hand is not allowed, so this writes a clearly labelled synthetic set instead:
 //   - INBOX_FIXTURE_THREADS reply threads in one labelled play, more than the Inbox's largest page (PAGE_MAX), with a
 //     mix of classes so the Needs-you filter has fewer rows than the full list;
+//   - two of those threads hold a second message (#735), so the live list also shows the per-thread deciding reply:
+//     thread 001 a person's reply then a newer auto-reply (the person's reply decides), thread 003 an earlier reply then
+//     a later 'no' (the later 'no' decides);
 //   - one bounce_review thread, made by passing a synthetic delivery-status notice through judgeDeliveryNotice, the
 //     same judgement the reply sync stores real notices with (lib/outreach/replies.ts).
 // Nothing is fetched, sent or asked of a model: no Gmail, no provider, no network. Every address is on
@@ -63,6 +66,8 @@ export function fixtureIds(tenantId: string) {
     messageId: `inboxfixture${h.slice(0, 16)}`,
     gmailIds: n.map(k => `dazl-inbox-fixture-${k}`),
     threadIds: n.map(k => `dazl-inbox-fixture-thread-${k}`),
+    // #735: the second message of threads 001 (a newer auto-reply) and 003 (an earlier reply before its 'no')
+    extraGmailIds: ['dazl-inbox-fixture-001-auto', 'dazl-inbox-fixture-003-earlier'],
     bounceGmailId: 'dazl-inbox-fixture-bounce',
     bounceThreadId: 'dazl-inbox-fixture-thread-bounce',
     addresses: n.map(k => `fixture-${k}@${INBOX_FIXTURE_DOMAIN}`),
@@ -112,6 +117,17 @@ export async function seedInboxFixture(d: DbLike, tenantId: string, o: { env?: R
         `[test-only fixture ${pad(i)}/${INBOX_FIXTURE_THREADS}] Synthetic reply for the Inbox pagination check (#369). Nothing was sent or received.`,
         CLASSES[i % CLASSES.length], base - Math.floor(i / 2) * 60, null])
     }
+    // #735: two multi-message threads. Thread 001 (a person's 'other' reply at base) gets a newer auto-reply; thread 003
+    // (a 'negative' at base - 60) gets an earlier 'uncertain' reply an hour before it. Neither changes which message
+    // decides the row, its time or the Needs-you count; both only add a second message to the thread.
+    const extra: [number, string, string, number][] = [
+      [0, ids.extraGmailIds[0], 'auto', base + 30],
+      [2, ids.extraGmailIds[1], 'uncertain', base - 60 - 3600],
+    ]
+    for (const [i, gmailId, cls, at] of extra)
+      yield* t.run(`INSERT INTO inbound_messages ${NOTICE_INSERT}`, [gmailId, tenantId, ids.threadIds[i], ids.leadIds[i], ids.addresses[i],
+        `[test-only fixture ${pad(i)}/${INBOX_FIXTURE_THREADS}] Synthetic ${cls === 'auto' ? 'auto-reply after the reply' : 'earlier reply before the no'} (#735). Nothing was sent or received.`,
+        cls, at, null])
     yield* t.run(lead, [ids.bounceLeadId, ids.jobId, 'Fixture bounce contact', 'Inbox fixture bounce (test only)', ids.bounceAddress, SIGNAL, SOURCE_URL])
     yield* t.run("UPDATE scan_jobs SET status = 'done' WHERE id = ? AND user_id = ? AND status = 'running'", [ids.jobId, tenantId])
     // The recorded send the notice correlates to. Marked test (test = 1) and addressed to the fixture domain; no Gmail
@@ -130,7 +146,7 @@ export async function seedInboxFixture(d: DbLike, tenantId: string, o: { env?: R
   return result(created)
 }
 
-export interface CleanupResult { deleted: { threads: number; sends: number; leads: number; plays: number; reads: number } }
+export interface CleanupResult { deleted: { threads: number; extra_messages: number; sends: number; leads: number; plays: number; reads: number } }
 
 // Removes exactly the fixture's rows for this tenant, in one transaction; a second call deletes nothing. A row that is
 // not the fixture's - another tenant's, a real play, a real reply - never matches: every delete names the tenant and
@@ -144,6 +160,7 @@ export async function cleanupInboxFixture(d: DbLike, tenantId: string, o: { env?
   return db.tx(function* (t) {
     const job = yield* t.get<{ id: string }>('SELECT id FROM scan_jobs WHERE id = ? AND user_id = ? AND business_name = ?', [ids.jobId, tenantId, INBOX_FIXTURE_PLAY])
     const r = (sql: string, p: Param[]) => t.run(sql, p)
+    const extra = yield* r(`DELETE FROM inbound_messages WHERE tenant_id = ? AND gmail_id IN ${inList(ids.extraGmailIds)} AND thread_id IN ${inList(ids.threadIds)} AND lead_id IN ${inList(ids.leadIds)}`, [tenantId, ...ids.extraGmailIds, ...ids.threadIds, ...ids.leadIds])
     const inbound = yield* r(`DELETE FROM inbound_messages WHERE tenant_id = ? AND gmail_id IN ${inList(gmail)} AND (lead_id IS NULL OR lead_id IN ${inList(leads)})`, [tenantId, ...gmail, ...leads])
     const reads = yield* r(`DELETE FROM inbox_thread_reads WHERE tenant_id = ? AND thread_id IN ${inList(threads)}`, [tenantId, ...threads])
     const messages = yield* r("DELETE FROM outreach_messages WHERE tenant_id = ? AND id = ? AND lead_id = ? AND to_email = ? AND test = 1", [tenantId, ids.messageId, ids.bounceLeadId, ids.bounceAddress])
@@ -152,6 +169,6 @@ export async function cleanupInboxFixture(d: DbLike, tenantId: string, o: { env?
       leadsDeleted = (yield* r(`DELETE FROM leads WHERE scan_job_id = ? AND id IN ${inList(leads)}`, [job.id, ...leads])).changes
       plays = (yield* r('DELETE FROM scan_jobs WHERE id = ? AND user_id = ? AND business_name = ?', [job.id, tenantId, INBOX_FIXTURE_PLAY])).changes
     }
-    return { deleted: { threads: inbound.changes, sends: messages.changes, leads: leadsDeleted, plays, reads: reads.changes } }
+    return { deleted: { threads: inbound.changes, extra_messages: extra.changes, sends: messages.changes, leads: leadsDeleted, plays, reads: reads.changes } }
   })
 }
