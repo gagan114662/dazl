@@ -21,6 +21,7 @@ function build() {
   setScanDb(db)
   const seed = (t: string, co: string) => {
     const job = createJob(db, t, { business_name: t, industry: 'test', location: 'test' })
+    db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
     const lead = hex()
     db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,score) VALUES(?,?,?,'Pat','p@x.invalid','Hiring','https://x.invalid/jobs','ev',80,1,70)").run(lead, job, co)
     return { job, lead }
