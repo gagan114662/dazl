@@ -27,13 +27,30 @@ bothEngines('status carries last_progress_at: newest call sent/settled, owner-sc
   assert.equal(await readLastActivity(db, 'B', job), null)
 })
 
+bothEngines('1157-F1: a retry claimed after an older attempt\'s settled call reports the new claim, not the old call', async ({ db }) => {
+  const job = await createJob(db, 'A', { business_name: 'b', industry: 'software', location: 'Bangalore' }, '{}')
+  await db.run("UPDATE scan_jobs SET status = 'running', claimed_at = 1000, attempts = 1 WHERE id = ?", [job])
+  const ins = "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, 1, 'llm.anthropic', 0.08, 0.01, 'settled', NULL, ?, ?)"
+  await db.run(ins, ['r1', 'A', job, 1005, 1008])
+  // attempt 2 claimed later, no call yet
+  await db.run("UPDATE scan_jobs SET claimed_at = 2000, attempts = 2 WHERE id = ?", [job])
+  assert.equal((await readScanStatus(db, 'A', job))?.last_progress_at, 2000)
+  assert.equal(lastActivityNote(2010, 2000)!.quiet, false)
+  // a call in attempt 2 after the claim wins again
+  await db.run(ins, ['r2', 'A', job, 2050, 2052])
+  assert.equal((await readScanStatus(db, 'A', job))?.last_progress_at, 2052)
+})
+
 test('lastActivityNote: recent activity is named, a quiet scan says so and that a stuck one is retried', () => {
   assert.equal(lastActivityNote(1000, null), null)
   assert.equal(lastActivityNote(1000, undefined), null)
   assert.deepEqual(lastActivityNote(1012, 1000), { text: 'Last activity 12 s ago', quiet: false })
   assert.deepEqual(lastActivityNote(1075, 1000), { text: 'Last activity 1 min ago', quiet: false })
   const q = lastActivityNote(1000 + QUIET_AFTER_S, 1000)!
-  assert.equal(q.quiet, true); assert.match(q.text, /^No new activity for 1 min\./); assert.match(q.text, /retried automatically/)
+  assert.equal(q.quiet, true); assert.match(q.text, /^No new activity for 1 min\./)
+  // 1157-F2: never promise an automatic retry or a time window the server may refuse (hard-kill, MAX_ATTEMPTS, overrides)
+  assert.doesNotMatch(q.text, /retried automatically|within a few minutes/)
+  assert.match(q.text, /retry it or stop it and tell you what happened/)
   assert.equal(lastActivityNote(1000 + 600, 1000)!.text.startsWith('No new activity for 10 min.'), true)
   assert.deepEqual(lastActivityNote(990, 1000), { text: 'Last activity 0 s ago', quiet: false })   // clock skew never goes negative
 })
