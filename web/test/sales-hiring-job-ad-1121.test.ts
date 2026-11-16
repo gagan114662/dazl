@@ -63,3 +63,18 @@ test('#1121 HELD: no vacancy title, another company, a negation, the wrong title
     ['empty quote', '', 'Mercury'],
   ] as const) assert.equal(jobAdQuoteRole(quote, company, roles), null, why)
 })
+
+// review at 541c6f4e (Ziggy F1): the words after a bracketed abbreviation are part of the title. A manager, an internship or a talent community
+// behind "(SDR)" is another title and is never turned into SDR proof; the real ad headings that run on into their place still pass.
+test('#1121 F1 HELD: a title suffix after the abbreviation is kept and judged (manager, internship, talent community)', () => {
+  for (const [quote, company] of [
+    ['Sales Development Representative (SDR) Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Internship at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Talent Community at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Manager New York City Full-Time About Clark', 'Clark'],
+  ] as const) {
+    assert.equal(jobAdQuoteRole(quote, company, roles), null, quote)
+    assert.equal(jobAdQuoteRole(quote, company, []), null, `generic: ${quote}`)
+  }
+  for (const t of ['Sales Development Representative (SDR) Manager', 'Sales Development Representative (SDR) Internship', 'Sales Development Representative (SDR) Talent Community']) assert.equal(titleIsRole(t, roles), null, t)
+})

@@ -69,9 +69,9 @@ test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a
   // what changed: the model's signals joined with EACH OTHER, under a request that says neither (the user did not ask for sales hiring)
   assert.equal(salesHiringRequired('Seed-funded startups opening new offices', JSON.stringify({ signals: ['Raised seed round', 'Actively hiring', 'Growing sales team'] })), false)
   assert.equal(salesHiringRequired(Q, JSON.stringify({ signals: ['Opened new office', 'Hired lateral partners recently', 'Business development push'] })), false)
-  // KNOWN GAP, unchanged from main (an over-hold: leads are held, never shipped without the proof): a hiring word and a GTM word ("growth") in the user's OWN
-  // request still join. If this is ever fixed, flip this assertion; it is here so the gap is on record, not because it is wanted.
-  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), true, 'known gap: the same as main')
+  // Formerly a KNOWN GAP (an over-hold): the event half came only from the model's signal 'opened a new office'. Since #1201 the event requirement is read from
+  // the user's own words only, and this request names no event, so the proof is no longer required. Flipped as the old comment asked.
+  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), false, '#1201: no event in the user\'s words')
   // the borderline case of the signals-with-signals change: the user said "job postings", only the model's signals say sales
   assert.equal(salesHiringRequired('Seed-funded startups with job postings', JSON.stringify({ signals: ['Raised seed', 'Hiring', 'Sales roles'] })), false, 'defensible: the user did not ask for sales hiring')
 })
@@ -894,6 +894,27 @@ test('#1121 PASS: the lead\'s own dated job-ad quote naming the requested SDR va
   assert.match(lead(db).why, /^Hiring for SDR: named in its own job ad, dated /)
   db.close()
 })
+// review at 541c6f4e (Ziggy F1): a suffix behind the abbreviation is another title, and the job-ad quote never overrides a rejected board title
+test('#1121 F1 HELD: "(SDR) Manager / Internship / Talent Community" job-ad quotes are not requested_role_v1 passes', async () => {
+  for (const excerpt of ['Sales Development Representative (SDR) Manager at Mercury', 'Sales Development Representative (SDR) Internship at Mercury', 'Sales Development Representative (SDR) Talent Community at Mercury']) {
+    const { db, job } = seedJobAd({ excerpt })
+    const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.equal(r.passed, 0, excerpt)
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', excerpt)
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0, excerpt)
+    db.close()
+  }
+})
+test('#1121 F1 HELD: a valid-dated own ATS posting whose structured title is disallowed is not passed by its SDR job-ad quote', async () => {
+  const { db, job } = seedJobAd({ excerpt: "As a Sales Development Representative at Mercury, you'll be the first point of contact for founders" })
+  const url = 'https://job-boards.greenhouse.io/mercury/jobs/4567890'
+  db.prepare("UPDATE leads SET source_url = ?, event_date_proof = 'ats_structured' WHERE id = 'L1'").run(url)
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: new Map([[postingKey(url)!, 'Sales Development Representative (SDR) Manager']]) })
+  assert.equal(r.passed, 0)
+  assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0)
+  db.close()
+})
 test('#1121 HELD: an undated or out-of-clock job ad, another company\'s ad, or a quote with no vacancy title is still no_sales_hiring_evidence', async () => {
   for (const [why, o] of [
     ['no date', { excerpt: 'Founding Sales Development Representative (SDR) Mercury United States', date: null }],
@@ -906,4 +927,45 @@ test('#1121 HELD: an undated or out-of-clock job ad, another company\'s ad, or a
     assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
     db.close()
   }
+})
+
+// #1201 (Refs #1095), review at 9c9fb53 (Ziggy): the event TYPE and STAGE are read from the user's own words only; the model's profile signals
+// stay matching vocabulary and never set or override a requirement. Each control below conflicts the model's signal with the user's words.
+test('#1201: a model "Series A" signal never overrides the user\'s "Series B": a Series B quote passes, a Series A quote is held', async () => {
+  const query = 'London B2B SaaS startups that raised a Series B in the past 90 days and are hiring sales staff'
+  const icp = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['raised a Series A round', 'hiring sales staff'], exclude: [] })
+  // positive control: the user's stage is proven (on the base the model's "Series A" won and this lead was held no_event_evidence)
+  const p = seed({ query, icp, excerpt: 'Brightloop, a London B2B SaaS startup, raised a 20m GBP Series B round this month' })
+  const rp = await applySalesHiringGate(p.db, p.job, serve(board()), { now: NOW })
+  assert.deepEqual([rp.passed, rp.demoted, lead(p.db).review_reason], [1, 0, null])
+  // negative control: the model's stage is NOT the user's, so a Series A quote never stands in for the Series B the user asked for
+  const n = seed({ query, icp, excerpt: 'Brightloop, a London B2B SaaS startup, raised a 5m GBP Series A round this month' })
+  const rn = await applySalesHiringGate(n.db, n.job, serve(board()), { now: NOW })
+  assert.deepEqual([rn.passed, rn.demoted, lead(n.db).review_reason], [0, 1, 'no_event_evidence'])
+  assert.match(lead(n.db).why, /raised a series b round/)
+})
+
+test('#1201: a seed-funding signal the user never asked for adds no gate, and the card names it as matching-only (rule 3)', async () => {
+  const query = 'London B2B SaaS startups hiring an account executive in the past 90 days'   // a requested role, so the gate runs
+  const icp = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+  // the quote shows no funding at all: on the base the model's seed signal made funding required and the lead was held no_event_evidence
+  const { db, job } = seed({ query, icp, excerpt: 'Brightloop is a London B2B SaaS startup building workflow software' })
+  const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted, lead(db).review_reason], [1, 0, null])
+  assert.match(lead(db).why, /^Hiring for Account Executive \(requested: account executive\)/i)
+  assert.match(lead(db).why, /Your profile signal "announced seed funding" was used for matching only, not required: your request didn't ask for that event\.$/)
+  assert.ok(!/hiring sales staff" was used/.test(lead(db).why), 'a hiring signal is not an event: it is not listed')
+})
+
+test('#1201 non-vacuity: when the USER asks for seed funding the event is still required, whatever the model\'s signals say', async () => {
+  const query = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
+  for (const signals of [['hiring sales staff'], ['raised a Series B round', 'hiring sales staff'], []]) {
+    const { db, job } = seed({ query, icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals, exclude: [] }), excerpt: 'Brightloop is a London B2B SaaS startup building workflow software' })
+    const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+    assert.deepEqual([JSON.stringify(signals), r.passed, lead(db).review_reason], [JSON.stringify(signals), 0, 'no_event_evidence'])
+    assert.ok(!/used for matching only/.test(lead(db).why), 'nothing is called matching-only when the user asked for the event')
+  }
+  // and a seed quote passes even when the model wrote a Series B signal (the user said seed)
+  const ok2 = seed({ query, icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['raised a Series B round'], exclude: [] }) })
+  assert.equal((await applySalesHiringGate(ok2.db, ok2.job, serve(board()), { now: NOW })).passed, 1)
 })

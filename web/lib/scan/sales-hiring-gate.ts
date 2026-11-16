@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
@@ -60,6 +60,8 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
 // verb is in it, so the clause reading (affirmativeSalesHiring) held all of them as no_sales_hiring_evidence. Only the ad's own opening
 // title is read, by the same title shape as a board record (titleIsRole), and the quote must name the lead's company; a negated or past
 // clause, or a title that is not the role's own shape, is not proof (fail closed). The caller checks the lead's own date.
+// a word after the abbreviation that makes it another title, not the ad's place or terms
+const TITLE_SUFFIX = /^\s*(?:[,\-–—/|:]\s*)?(?:team\s+)?(?:manager|lead|leader|director|head|vp|supervisor|recruiter|engineer|trainer|coordinator|assistant|specialist|intern\w*|program\w*|apprentice\w*|trainee|co-?op|enablement|operations|talent|community|pool|pipeline|network)s?\b/i
 const GENERIC_GTM_ROLES = requestedHiringRoles('hiring SDR or BDR or account executive or salesperson or sales manager or head of sales or business development manager')
 export function jobAdQuoteRole(excerpt: string | null | undefined, company: string | null | undefined, roles: RequestedHiringRole[]): RequestedHiringRole | null {
   const first = (excerpt ?? '').split(/[.;!?\n\u2022|]/)[0].split(',')[0].trim().slice(0, 200)
@@ -68,11 +70,18 @@ export function jobAdQuoteRole(excerpt: string | null | undefined, company: stri
   if (NEGATED.test(first) || PAST.test(first)) return null
   const t = first.replace(/^\s*as\s+an?\s+/i, '')
   const at = /\s+(?:at|@)\s+/i.exec(t)
-  // a job ad's heading runs on into its place and terms ("... (SDR) New York City Full-Time"): the title ends at its bracketed abbreviation
-  const title = (at ? t.slice(0, at.index) : t).replace(/^(.*?\([A-Z]{2,6}\)).*$/, '$1')
+  // a job ad's heading runs on into its place and terms ("... (SDR) New York City Full-Time"). The words after the bracketed abbreviation stay
+  // part of the title (review at 541c6f4e): the whole heading is judged first; only when what follows the abbreviation is not another title
+  // ("Manager", "Internship", "Talent Community" ...) is the heading read as ending at the abbreviation. Fails closed on a title-like suffix.
+  const full = (at ? t.slice(0, at.index) : t).trim()
   const named = norm(at ? t.slice(at.index + at[0].length) : t)
   if (!new RegExp(`(?:^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: |$)`).test(named)) return null
-  return titleIsRole(title, roles.length ? roles : GENERIC_GTM_ROLES)
+  const rs = roles.length ? roles : GENERIC_GTM_ROLES
+  const whole = titleIsRole(full, rs)
+  if (whole) return whole
+  const ab = /^(.*?\([A-Z]{2,6}\))(.*)$/.exec(full)
+  if (!ab || STANDING_POOL.test(ab[2]) || TITLE_SUFFIX.test(ab[2])) return null
+  return titleIsRole(ab[1], rs)
 }
 // one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
 export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }
@@ -91,9 +100,12 @@ interface JobLike { id: string; user_id: string; query?: string | null; icp?: st
 // Event half. The sentence must be about THIS company (case-insensitive subject check), must affirm the event (not "did not raise", "plans to raise", "in talks"),
 // and, when the request names a funding STAGE, must be that stage ("Series A" never answers a seed request, "seed" never a Series A request).
 export type Stage = 'seed' | `series ${string}` | null
-export function requestedStage(query: string | null | undefined, icp: string | null | undefined): Stage {
-  let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ }
-  const t = `${sig} . ${query ?? ''}`
+// #1201 (Refs #1095): the stage and the funding ask are REQUIREMENTS, so they are read from the user's own words only. The model's profile
+// signals are matching / scoring vocabulary: a model "Series A" never overrides a user "Series B", and a seed signal the user never asked for
+// adds no funding gate. `icp` stays in the signature so callers keep compiling; it is deliberately not read here.
+export function requestedStage(query: string | null | undefined, _icp?: string | null): Stage {
+  void _icp
+  const t = query ?? ''
   const series = /\bseries\s+([a-e])\b/i.exec(t)
   if (/\bseed\b/i.test(t) && !series) return 'seed'
   return series ? `series ${series[1].toLowerCase()}` : /\bseed\b/i.test(t) ? 'seed' : null
@@ -115,7 +127,7 @@ export const quoteShowsEvent = (excerpt: string | null, signal: string | null, f
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
   }) }
-export const requestAsksFunding = (query: string | null | undefined, icp: string | null | undefined): boolean => { let sig = ''; try { const j = icp ? JSON.parse(icp) as { signals?: unknown } : null; if (Array.isArray(j?.signals)) sig = j!.signals.filter((x): x is string => typeof x === 'string').join(' . ') } catch { /* none */ } return mentionsFunding(`${sig} . ${query ?? ''}`) }
+export const requestAsksFunding = (query: string | null | undefined, _icp?: string | null): boolean => { void _icp; return mentionsFunding(query ?? '') } // #1201: the user's words only (see requestedStage)
 // Affirmative hiring proof, not keyword co-occurrence. A CLAUSE (split on sentence ends and but / however / while / although / yet) must say the lead's OWN
 // company is hiring, now, for a sales / GTM role:
 //   - not negated or denied ("not hiring", "no plans to hire", "hiring freeze", "denies hiring", "rules out", "rejects reports of");
@@ -315,7 +327,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
           passed++; passedIds.push(l.id); continue
         }
         // #1121: the lead's own verified quote is its job ad naming the requested role, and the lead's own date is inside the hiring clock
-        const ad = Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 ? jobAdQuoteRole(l.evidence_excerpt, l.company, roles) : null
+        // a structured posting title the verifier read and rejected is the vacancy: the quote never overrides it (review at 541c6f4e)
+        const ad = !title && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 ? jobAdQuoteRole(l.evidence_excerpt, l.company, roles) : null
         if (ad) {
           setWhy.run((`Hiring for ${ad.term}: named in its own job ad${l.event_date ? `, dated ${l.event_date.slice(0, 10)}` : ''}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
           passed++; passedIds.push(l.id); continue
@@ -469,6 +482,12 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   if (stopped) return { required: true, checked: passed + demoted, passed, demoted, demotions } // stale attempt: the new owner re-runs the whole gate; nothing more is written
   // The gate ran again and PASSED these leads: a failed-gate marker from an earlier run no longer holds them.
   releaseHeld(db, job.user_id, job.id, passedIds)
+  // #1201 rule 3: a passed lead's card names each model signal that was used for matching but not imposed (the user's words never asked for it).
+  { const note = signalsNotRequired(signalTerms, job.query ?? '').slice(0, 2).map(notRequiredLine).join('')
+    if (note) for (const id of passedIds) {
+      const cur = (db.prepare('SELECT why FROM leads WHERE id = ?').get(id) as { why: string | null } | undefined)?.why ?? ''
+      if (!cur.includes(note.trim())) setWhy.run(`${cur.trim().slice(0, Math.max(0, WHY_MAX - note.length - 1))} ${note}`.trim(), id)
+    } }
   // The DURABLE pass record. A lead the gate passed but whose record could not be written is held by default (held-state.ts), never assumed passed.
   for (const id of passedIds) {
     try { addEnrichment(db, job.user_id, id, { connector: 'scan:gate', kind: 'gate_passed', value: roles.length ? 'requested_role_v1' : 'sales_hiring', label: 'The required sales-hiring check passed', confidence: null, source_url: 'https://invalid.example/', source_date: new Date().toISOString().slice(0, 10), retrieved_at: Math.floor(Date.now() / 1000) }) } catch { /* no record: the lead stays held */ }
