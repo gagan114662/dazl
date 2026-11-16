@@ -8,7 +8,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
-import { buildProofPreview, loadProofInput, type ProofCompany, type ProofPreview } from './proof-preview.ts'
+import { buildProofPreview, loadProofInput, proofCompanyOf, type ProofCompany, type ProofPreview } from './proof-preview.ts'
 import { validateEmail } from '../validate.ts'
 
 // SQLite: migratePreviewClaim (called from getScanDb); PG: 0029_preview_claims.sql. Same shape on both engines.
@@ -154,9 +154,20 @@ function isSerializationFailure(e: unknown): boolean {
   return false
 }
 
-// A served preview stays backed by its run: every company it shows must still be a lead of that run (same source URL)
-// with no review reason, not quarantined and its evidence not purged. Evidence withdrawn after issue (a quarantine, a
-// purge, a deleted run or tenant) withdraws the preview: its content is never served from the frozen snapshot.
+// A served preview stays backed by its run: every company it shows must still be emitted, field for field, by one lead of
+// that run under the builder's own gates (proofCompanyOf: identity, claim text, event day and its proof, required check,
+// review, quarantine, purge). A matching source URL alone is not backing (#796): a lead whose company, event, quote, day or
+// day proof changed, or another company at the same URL, withdraws the preview. Withdrawn reads as expired.
+const sameCompany = (a: ProofCompany, b: ProofCompany) =>
+  a.company === b.company && a.event === b.event && a.quote === b.quote && a.eventDate === b.eventDate && a.sourceUrl === b.sourceUrl
+async function stillBacked(db: Db, runId: string, sellerTenantId: string, snap: ClaimSnapshot | null, now = Date.now()): Promise<boolean> {
+  if (!snap || snap.companies.length === 0) return false
+  const input = await loadProofInput(db, sellerTenantId, runId, { inferredOffer: null, spendUsd: null, now })
+  if (!input) return false
+  const current = input.leads.map(l => proofCompanyOf(l, now)).filter((c): c is ProofCompany => c !== null)
+  return snap.companies.every(c => current.some(x => sameCompany(c, x)))
+}
+// Inside the binding transaction: the URL-level withdrawal check (quarantine, purge, review) on the same rows.
 const BACKING_SQL = `SELECT l.source_url, l.review_reason, l.quarantined_at, l.evidence_purged_at FROM leads l
   JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?`
 type BackingRow = { source_url: string; review_reason: string | null; quarantined_at: unknown; evidence_purged_at: unknown }
@@ -164,9 +175,6 @@ function backed(rows: BackingRow[], snap: ClaimSnapshot | null): boolean {
   if (!snap || snap.companies.length === 0) return false
   const live = new Set(rows.filter(r => r.review_reason === null && r.quarantined_at === null && r.evidence_purged_at === null).map(r => r.source_url))
   return snap.companies.every(c => typeof c?.sourceUrl === 'string' && live.has(c.sourceUrl))
-}
-async function stillBacked(db: Db, runId: string, sellerTenantId: string, snap: ClaimSnapshot | null): Promise<boolean> {
-  return backed(await db.all<BackingRow>(BACKING_SQL, [runId, sellerTenantId]), snap)
 }
 
 export type PublicClaim =
@@ -185,7 +193,7 @@ export async function readPublicClaim(db: Db, master: Buffer, token: string, now
   if (Number(row.expires_at) <= now) return { status: 'expired' }
   // withdrawn evidence reads as expired: the content is gone, and the page says no more than that
   const snap = parseSnapshot(row.snapshot)
-  if (!snap || !(await stillBacked(db, row.run_id, row.seller_tenant_id, snap))) return { status: 'expired' }
+  if (!snap || !(await stillBacked(db, row.run_id, row.seller_tenant_id, snap, now))) return { status: 'expired' }
   return { status: 'ok', id: row.id, business: row.business, snapshot: snap }
 }
 
@@ -201,6 +209,12 @@ export async function claimPreview(
 ): Promise<ClaimResult> {
   const id = verifyClaimToken(master, token)
   if (!id) { await auditClaim(db, '', 'unknown', now); return { status: 'unknown' } }
+  // #796: the full identity+claim+proof backing (it reads the required-check state, so it runs before the binding tx);
+  // the tx below re-checks URL-level withdrawal on the same rows it binds.
+  const pre = await db.get<{ run_id: string; seller_tenant_id: string; snapshot: string; expires_at: number }>('SELECT run_id, seller_tenant_id, snapshot, expires_at FROM preview_claims WHERE id = ?', [id])
+  if (pre && Number(pre.expires_at) > now && !(await stillBacked(db, pre.run_id, pre.seller_tenant_id, parseSnapshot(pre.snapshot), now))) {
+    await auditClaim(db, id, 'expired', now); return { status: 'expired' }
+  }
   return await db.tx(function* (t) {
     const row = yield* t.get<{ recipient_email: string; expires_at: number; claimed_by_tenant: string | null; run_id: string; seller_tenant_id: string; snapshot: string }>(
       'SELECT recipient_email, expires_at, claimed_by_tenant, run_id, seller_tenant_id, snapshot FROM preview_claims WHERE id = ?', [id])
@@ -242,7 +256,7 @@ export async function readClaimedPreview(db: Db, tenantId: string, id: string, n
   if (!row) return null
   if (Number(row.expires_at) <= now) return { expired: true }
   const snap = parseSnapshot(row.snapshot)
-  if (!snap || !(await stillBacked(db, row.run_id, row.seller_tenant_id, snap))) return { expired: true }
+  if (!snap || !(await stillBacked(db, row.run_id, row.seller_tenant_id, snap, now))) return { expired: true }
   return { business: row.business, snapshot: snap }
 }
 
@@ -292,7 +306,7 @@ export async function proofReport(db: Db, sellerTenantId: string, now = Date.now
     const events = await db.all<{ outcome: string; n: number | string }>('SELECT outcome, count(*) AS n FROM preview_claim_events WHERE claim_id = ? GROUP BY outcome', [c.id])
     // the same order of checks as readClaimedPreview and readPublicClaim: expiry, then the evidence still backing it
     const live = Number(c.expires_at) > now
-    const isBacked = live && await stillBacked(db, c.run_id, sellerTenantId, snap)
+    const isBacked = live && await stillBacked(db, c.run_id, sellerTenantId, snap, now)
     const state: PreviewState = c.claimed_at !== null ? (live && !isBacked ? 'claimed_withdrawn' : 'claimed')
       : !live ? 'expired' : !isBacked ? 'withdrawn' : 'open'
     previews.push({

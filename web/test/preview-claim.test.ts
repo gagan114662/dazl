@@ -232,3 +232,39 @@ test('issue: a Postgres serialization conflict retries a bounded number of times
   await assert.rejects(issuePreviewClaim(flaky(1, () => new Error('disk full')), master, ISSUE(jobId, 'y@clinic.test'), NOW), /disk full/)
   assert.equal((h.prepare('SELECT count(*) AS n FROM preview_claims').get() as { n: number }).n, 1, 'no failed attempt left a row')
 })
+
+// #796: backing is the lead's own identity, claim and proof at that URL, not merely an eligible row somewhere at the URL.
+for (const [name, change] of [
+  ['company, event, quote and date replaced (reviewer reproducer)', "UPDATE leads SET company = 'Unrelated Co', signal = 'Hired a CFO', evidence_excerpt = 'Unrelated Co hired a CFO.', event_date = '2000-01-01', date_status = 'unverified' WHERE id = 'l1'"],
+  ['only the company changed', "UPDATE leads SET company = 'Unrelated Co' WHERE id = 'l1'"],
+  ['only the quote changed', "UPDATE leads SET evidence_excerpt = 'A different sentence.' WHERE id = 'l1'"],
+  ['only the event day changed', "UPDATE leads SET event_date = '2026-10-01' WHERE id = 'l1'"],
+  ['the day proof withdrawn', "UPDATE leads SET event_date_proof = NULL WHERE id = 'l1'"],
+] as const) {
+  test(`backing (#796): same source URL but ${name} withdraws the preview on every read path`, async () => {
+    const { h, db, jobId, day } = setup()
+    lead(h, jobId, 'l1', day)
+    finish(h, jobId)
+    user(h, 'u1', 'prospect@clinic.test', true)
+    const r = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+    if (!r || r.status !== 'issued') throw new Error('setup')
+    assert.equal((await readPublicClaim(db, master, r.token, NOW)).status, 'ok', 'unchanged lead still backs it')
+    h.prepare(change).run()
+    assert.equal((await readPublicClaim(db, master, r.token, NOW)).status, 'expired')
+    assert.equal((await claimPreview(db, master, r.token, { actorId: 'u1', tenantId: 't1' }, NOW)).status, 'expired')
+  })
+}
+
+test('backing (#796): another company at the same URL never backs a withdrawn company', async () => {
+  const { h, db, jobId, day } = setup()
+  lead(h, jobId, 'l1', day)
+  h.prepare('INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, confidence, score, event_date, date_status, event_date_proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run('l2', jobId, 'Eastside Physio', 'Opened a clinic', 'https://news.test/a1', 'Eastside Physio opened a clinic.', 80, 60, day, 'unverified', 'page_bound')
+  finish(h, jobId)
+  const r = await issuePreviewClaim(db, master, ISSUE(jobId), NOW)
+  if (!r || r.status !== 'issued') throw new Error('setup')
+  const ok = await readPublicClaim(db, master, r.token, NOW)
+  assert.equal(ok.status, 'ok')
+  h.prepare("UPDATE leads SET quarantined_at = ? WHERE id = 'l1'").run(NOW)
+  assert.equal((await readPublicClaim(db, master, r.token, NOW)).status, 'expired', 'l2 at the same URL does not back Northside')
+})

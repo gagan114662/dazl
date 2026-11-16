@@ -60,31 +60,39 @@ function strictDay(v: string): number | null {
   return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? t : null
 }
 
+// The one public company entry a lead may show, or null when any gate holds it. Shared by the builder and by an issued
+// preview's backing check (#796), so a served snapshot company is backed only by a lead that would emit it exactly now.
+export function proofCompanyOf(l: ProofLeadRow, now = Date.now()): ProofCompany | null {
+  const oldest = now - PROOF_EVIDENCE_DAYS * 86400_000
+  if (l.review_reason !== null || l.quarantined_at !== null || l.evidence_purged_at !== null || l.confidence === null) return null
+  // every emitted field obeys the privacy contract: text is scrubbed; a URL with contact details drops the lead
+  const company = clean(l.company).replace(/\[removed\]/g, '').replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim()
+  if (!company || !l.evidence_excerpt?.trim()) return null
+  if (!isHttps(l.source_url) || isIllustration(l.source_url) || urlCarriesContact(l.source_url)) return null
+  // #1176: the day must be PROVEN by the cited source, the rule the lead's own card uses (eventDayVerified); date_status 'verified' is
+  // never written by a scan any more. A required check that did not pass (held) never reaches a prospect-facing preview (#796).
+  if (!l.event_date || !eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: new Date(now) }) || Number(l.gate_held) === 1) return null
+  // the run's own recency window and a hold no confirmation lifts (someone else's customer, another place, a closed opening) hold it here as on Home
+  if (l.window_held || uncheckableCause(l.review_reason) || uncheckableCause(l.human_confirmed_from)) return null
+  const t = strictDay(l.event_date)
+  if (t === null || t < oldest || t > now) return null
+  return { company, event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url }
+}
+
 export function buildProofPreview(input: ProofInput, now = Date.now()): ProofPreview {
   const { run } = input
   if (run.status !== 'done') return { status: 'hold', runId: run.jobId, reason: 'run_not_finished' }
   const offer = input.inferredOffer
   if (!offer || !offer.text.trim() || !isHttps(offer.sourceUrl) || isIllustration(offer.sourceUrl) || urlCarriesContact(offer.sourceUrl)) return { status: 'hold', runId: run.jobId, reason: 'no_inferred_offer' }
-  const oldest = now - PROOF_EVIDENCE_DAYS * 86400_000
   const seen = new Set<string>()
   const companies: ProofCompany[] = []
   for (const l of [...input.leads].sort((a, b) => b.score - a.score)) {
-    if (l.review_reason !== null || l.quarantined_at !== null || l.evidence_purged_at !== null || l.confidence === null) continue
-    // every emitted field obeys the privacy contract: text is scrubbed; a URL with contact details drops the lead
-    const company = clean(l.company).replace(/\[removed\]/g, '').replace(/\(\s*\)|\[\s*\]/g, '').replace(/\s+/g, ' ').trim()
-    if (!company || !l.evidence_excerpt?.trim()) continue
-    if (!isHttps(l.source_url) || isIllustration(l.source_url) || urlCarriesContact(l.source_url)) continue
-    // #1176: the day must be PROVEN by the cited source, the rule the lead's own card uses (eventDayVerified); date_status 'verified' is
-    // never written by a scan any more. A required check that did not pass (held) never reaches a prospect-facing preview (#796).
-    if (!l.event_date || !eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: new Date(now) }) || Number(l.gate_held) === 1) continue
-    // the run's own recency window and a hold no confirmation lifts (someone else's customer, another place, a closed opening) hold it here as on Home
-    if (l.window_held || uncheckableCause(l.review_reason) || uncheckableCause(l.human_confirmed_from)) continue
-    const t = strictDay(l.event_date)
-    if (t === null || t < oldest || t > now) continue
-    const key = company.toLowerCase()
+    const c = proofCompanyOf(l, now)
+    if (!c) continue
+    const key = c.company.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    companies.push({ company, event: clean(l.signal), quote: clean(l.evidence_excerpt), eventDate: l.event_date, sourceUrl: l.source_url })
+    companies.push(c)
     if (companies.length === PROOF_MAX_COMPANIES) break
   }
   if (companies.length === 0) return { status: 'hold', runId: run.jobId, reason: 'no_usable_results' }
