@@ -809,7 +809,9 @@ export function placeTerms(where: string[], evidenceText: string, company = ''):
     add(clean); add(clean.replace(PLACE_SUFFIX, ''))
     for (const part of clean.split(',')) { add(part); add(part.trim().replace(PLACE_SUFFIX, '')) }
   }
-  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w)) || NOT_PLACE_LEAD.has(ws[0])) continue; add(m[1]) }
+  // 1289-P1: a capture stops at a sentence end ("at Mercury. Apply now" is "Mercury", not the made-up place "Mercury Apply"); a short abbreviation ("St. Louis") does not end it.
+  const toSentenceEnd = (s: string) => { const out: string[] = []; for (const w of s.split(/\s+/)) { if (w.endsWith('.') && w.replace(/\.+$/, '').length > 2) { out.push(w.replace(/\.+$/, '')); break } out.push(w) } return out.join(' ') }
+  for (const m0 of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const m = [m0[0], toSentenceEnd(m0[1])]; const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w)) || NOT_PLACE_LEAD.has(ws[0])) continue; add(m[1]) }
   return [...out]
 }
 // A domain taken from a NAME-ONLY guess (probeDomains) is not an identity: any same-name business anywhere passes the homepage name check, and its contacts sit on that same domain, so the domain and the
