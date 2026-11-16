@@ -19,6 +19,7 @@ import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './publi
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
+import { recipientInCooldown } from './recipient-cooldown.ts'
 import { recheckSendAuthority } from './send-authority.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
@@ -319,6 +320,8 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
+  // #855: a recipient another play contacted within the cooldown is not drafted to again (the owned test inbox is exempt).
+  if (!test && recipientInCooldown(db, tenantId, to, leadId)) throw new OutreachError('recipient_cooldown')
   return { lead, to, addressUrl, test }
 }
 
@@ -413,6 +416,8 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
+  // #855: another play may have contacted this recipient after this draft was made.
+  if (!testFixtureSend(db, tenantId, m) && recipientInCooldown(db, tenantId, m.to_email, m.lead_id)) throw new OutreachError('recipient_cooldown')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   return m
