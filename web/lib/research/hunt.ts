@@ -127,11 +127,14 @@ export async function huntWithRegistry(c: ResearchCase, plan: ResearchPlan, sear
   // the scan's deadline bounds the registry half too: past it, the hunt stops waiting (a note says so) and no board is read
   const now = ho.now ?? Date.now, left = () => (ho.deadline === undefined ? Infinity : ho.deadline - now())
   let timer: ReturnType<typeof setTimeout> | undefined
+  // once the deadline timer has fired the deadline has passed, whatever the wall clock reads: a timer can fire while Date.now() is still a
+  // millisecond short of it (monotonic timer vs rounded wall time), and a board read then would be a read past the deadline
+  let deadlineFired = false
   const registryInTime = ho.deadline === undefined ? registryRun : Promise.race([registryRun, new Promise<{ candidates: Candidate[]; notes: Record<string, string[]> }>(r => {
-    timer = setTimeout(() => r({ candidates: [], notes: { registry: ['deadline'] } }), Math.max(0, left()))
+    timer = setTimeout(() => { deadlineFired = true; r({ candidates: [], notes: { registry: ['deadline'] } }) }, Math.max(0, left()))
   })])
   const [reg, h] = await Promise.all([registryInTime, hunt(c, plan, search, ho)]).finally(() => clearTimeout(timer))
-  const boards = left() <= 0 ? { candidates: [] as Candidate[], notes: ['deadline'] }
+  const boards = deadlineFired || left() <= 0 ? { candidates: [] as Candidate[], notes: ['deadline'] }
     : await boardCandidates(c, h.candidates, since, http, undefined, { budgetMs: Math.min(BOARDS_BUDGET_MS, left()), now }).catch(() => ({ candidates: [] as Candidate[], notes: ['error'] }))
   const registry = { ...reg.notes, ...(boards.notes.length ? { 'ats-boards': boards.notes } : {}) }
   // a registry's dated record wins over a search hit for the same URL (hunt's own rule); the first registry record of a URL is kept
