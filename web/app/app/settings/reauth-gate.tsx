@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // Changing keys, connectors, billing or members needs a sign-in within the last hour on this device. When any request
 // on this page answers 403 reauth_required, this asks the person to confirm it is them (password, or Google again).
@@ -7,6 +7,7 @@ export default function ReauthGate() {
   const [method, setMethod] = useState<'password' | 'google' | null>(null)
   const [password, setPassword] = useState('')
   const [msg, setMsg] = useState('')
+  const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const original = window.fetch
     const ask = () => void original('/api/auth/reauth').then(x => x.ok ? x.json() : null).catch(() => null)
@@ -23,6 +24,9 @@ export default function ReauthGate() {
     return () => { window.fetch = original }
   }, [])
 
+  // #719: the dialog sits in the page flow at the top (never pinned over the form that asked) and is scrolled into view.
+  useEffect(() => { if (method) box.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, [method])
+
   async function confirm() {
     const r = await fetch('/api/auth/reauth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) })
     const j = await r.json().catch(() => ({}))
@@ -32,7 +36,7 @@ export default function ReauthGate() {
 
   if (!method) return msg ? <p className="text-sm text-[#555] mb-4">{msg}</p> : null
   return (
-    <div className="card p-6 mb-4 sticky top-2 z-10" role="alertdialog" aria-label="Confirm it is you">
+    <div ref={box} className="card p-6 mb-4 scroll-mt-2" role="alertdialog" aria-label="Confirm it is you">
       <h2 className="font-semibold mb-1">Confirm it is you</h2>
       <p className="text-[#555] text-sm mb-3">Changing keys, connectors, billing or members needs a recent sign-in on this device.</p>
       {method === 'password' ? (
