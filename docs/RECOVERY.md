@@ -42,7 +42,7 @@ It never opens the database, a backup, an env file or a secret. Attach its outpu
 
 ## Targets
 
-Decision (Hermes, under delegation, 2026-11-03; posted on #360; reversible by changing the numbers below and in `/etc/dazl-backup/env`): these are the service targets. The drill judges against them with `--rpo-target-s 3600 --rto-target-s 14400`.
+Owner-approved (delegated to Hermes, 2026-11-12; confirmed on #694, first proposed on #360 on 2026-11-03; the owner can change them by editing the numbers below and in `/etc/dazl-backup/env`): these are the service targets. Prod has no automated backup yet; #694 closes only when these targets are met live. The drill judges against them with `--rpo-target-s 3600 --rto-target-s 14400`.
 
 | target | value | why |
 |---|---|---|
@@ -258,7 +258,7 @@ Each step's time is recorded in the report to measure the RTO.
 | what | who | cost |
 |---|---|---|
 | Run `ops/backup-inventory.sh` on the host and attach the output | Instinct | free |
-| The targets and retention above are set (Hermes decision under delegation); the owner may change them | owner (optional) | none |
+| The targets and retention above are owner-approved (delegated to Hermes, 2026-11-12, #694); the owner may change them | owner (optional) | none |
 | Store `DAZL_MASTER_KEY` in two offline places, separate from backups; name who can recover it | owner | free (password manager / paper) |
 | A backup schedule on the host: install `ops/backup/dazl-backup.timer` and `dazl-backup-check.timer` | Instinct | free |
 | An off-host destination for encrypted copies, from the options below | owner chooses, Instinct sets up | see the options |
