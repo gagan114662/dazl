@@ -3,6 +3,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import GmailGate from '../gmail-gate'
 import ConversionPanel from './conversion-panel'
+import { showInboxList } from '@/lib/outreach/inbox-view'
 
 // One row per thread (its deciding reply), paginated and filtered on the server (lib/outreach/inbox.ts).
 interface Row { gmail_id: string; thread_id: string; from_email: string; excerpt: string; classification: string; received_at: number; replies: number; company: string | null; lead_name: string | null; followups_sent: number | null; stopped: string | null; unread: boolean; needs_owner: boolean }
@@ -102,6 +103,8 @@ export default function InboxClient() {
   }
   const i = current ?? list // consent, account and booking link do not depend on the query
   if (!i) return failedKey === key ? <div className="p-8 text-sm" role="alert">Could not load your inbox. <button className="underline" onClick={() => { setFailedKey(null); setRetryTick(t => t + 1) }} data-testid="inbox-retry">Try again</button></div> : <div className="p-8 text-sm text-[#555]">Loading...</div>
+  // #737: stored conversations and their totals show without consent; only reading new replies needs it
+  const listOn = showInboxList(i)
   return (
     <div className="p-8 max-w-4xl">
       <h1 className="text-2xl font-bold tracking-tight mb-1">Inbox</h1>
@@ -118,7 +121,7 @@ export default function InboxClient() {
       {(!i.consent_accepted || !i.read_granted) && (
         <GmailGate intro="Connect Gmail to unlock Inbox and Follow-ups. With your consent, dazl reads replies in its outreach threads and checks delivery-failure notices for its sends." />
       )}
-      {i.consent_accepted && i.read_granted && (
+      {listOn && (
         <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="inbox-filters">
           {FILTERS.map(([st, label, ck]) => (
             <button key={st} className={st === status ? 'btn-primary btn-sm' : 'btn-ghost btn-sm'} aria-pressed={st === status} onClick={() => { setOpen(null); setMoreErr(null); setStatus(st) }} data-testid={`inbox-filter-${st}`}>
@@ -128,10 +131,10 @@ export default function InboxClient() {
           {jobId && <span className="text-xs text-[#555]" data-testid="inbox-play-scope">This play only. <button className="underline" onClick={() => { setOpen(null); setJobId(null) }}>Show every play</button></span>}
         </div>
       )}
-      {i.consent_accepted && i.read_granted && !current && (failedKey === key
+      {listOn && !current && (failedKey === key
         ? <p className="text-sm" role="alert">Could not load these conversations. <button className="underline" onClick={() => { setFailedKey(null); setRetryTick(t => t + 1) }} data-testid="inbox-retry">Try again</button></p>
         : <p className="text-sm text-[#555]" data-testid="inbox-loading">Loading...</p>)}
-      {current && i.consent_accepted && i.read_granted && current.threads.length === 0 && (
+      {current && listOn && current.threads.length === 0 && (
         <div className="card p-6 text-sm text-[#555]">{/* "No replies yet" only when nothing narrows the list: under Home's filters (?sent_since, ?class) an empty list is the filter's, not the workspace's */}
           <span data-testid="inbox-empty">{status === 'all' && !jobId && !cls && since === null ? 'No replies yet. When someone answers an outreach email, it shows up here.' : 'No conversations match this filter.'}</span></div>
       )}
