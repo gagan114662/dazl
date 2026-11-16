@@ -44,7 +44,7 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { freeCompanySites } from '../connectors/free-site-finder.ts'
+import { freeCompanySitesDetailed } from '../connectors/free-site-finder.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -2162,14 +2162,16 @@ export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl
 // it costs nothing, so a trial, a first play and a scheduled run get it too. One lookup per company per scan, at most
 // FREE_SITE_LOOKUPS_PER_SCAN; every lookup leaves an audit row (site_free_<outcome>). DAZL_FREE_SITE_FINDER=0 turns it off.
 export const FREE_SITE_LOOKUPS_PER_SCAN = 20
-export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string) => boolean }
+export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean }
 export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
   if ((deps.env ?? process.env).DAZL_FREE_SITE_FINDER === '0') return undefined
   // a run whose crawl fetch is injected (tests, fixtures) never reaches the public internet through this finder unless its fetch is injected too
   if (deps.crawlGet && !deps.freeSiteFetch) return undefined
   let asked = 0
   const answers = new Map<string, Promise<string[]>>()
+  // 1289-F2: a public-record mark is bound to the company whose OWN lookup returned it (exact name key, "Group" kept), never to the host alone
   const records = new Set<string>()
+  const recordKey = (site: string, company: string) => `${company.toLowerCase().replace(/[^a-z0-9]+/g, '')}\u0000${site}`
   const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_free_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
   const find = (company: string, where: string[]): Promise<string[]> => {
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
@@ -2180,22 +2182,25 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
     asked++
     const answer = (async () => {
       try {
-        const hits = await freeCompanySites(company, where, { ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
+        const { hits, outcomes } = await freeCompanySitesDetailed(company, where, { ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
         // Wikidata answers by NAME alone (a same-named town or brand is possible), so its host must carry the company's name, as a web-search
         // hit must; an OpenStreetMap record is a business of that name IN the request's place, so any own-site host it gives is a candidate
         const named = companyHostsFromSearch(company, hits.filter(h => h.source === 'wikidata'), 3, where)
         const mapped = hits.filter(h => h.source === 'openstreetmap').map(h => ownSiteHost(h.url)).filter((x): x is string => !!x)
         const hosts = [...new Set([...named, ...mapped])].slice(0, 3)
-        for (const h of named) if (hosts.includes(h)) records.add(h)   // Wikidata's official website of an item named exactly like the company
+        for (const h of named) if (hosts.includes(h)) records.add(recordKey(h, company))   // Wikidata's official website of an item named exactly like the company
         const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : [])])].join('+') || 'none'
-        note(company, hosts.length > 0 ? `ok_${from}` : 'no_match', hosts.length)
+        // 1289-F3: a source that failed or was cancelled is named in the audit; with no host, the lookup is failed/cancelled, not no_match
+        const incomplete = (Object.entries(outcomes) as [string, string][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
+        const head = hosts.length > 0 ? `ok_${from}` : incomplete.some(([, o]) => o === 'failed') ? 'failed' : incomplete.length > 0 ? 'cancelled' : 'no_match'
+        note(company, `${head}${incomplete.map(([s, o]) => ` ${s}=${o}`).join('')}`, hosts.length)
         return hosts
       } catch { note(company, 'error', 0); return [] }
     })()
     answers.set(key, answer)
     return answer
   }
-  return Object.assign(find, { recordSite: (site: string) => records.has(site) })
+  return Object.assign(find, { recordSite: (site: string, company: string) => records.has(recordKey(site, company)) })
 }
 
 function paidSiteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
