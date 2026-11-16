@@ -19,7 +19,6 @@ import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './publi
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
-import { recipientInCooldown } from './recipient-cooldown.ts'
 import { recheckSendAuthority } from './send-authority.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
@@ -96,6 +95,16 @@ export function leadEvidenceEligible(db: Database.Database, tenantId: string, le
 // from the live allowlist at every action, never stored.
 export const testFixtureSend = (db: Database.Database, tenantId: string, m: { to_email: string; test: number }): boolean =>
   m.test === 1 && testRecipientApproved(db, tenantId, m.to_email)
+
+// #855 (part of #727): one recipient is not emailed again from ANOTHER play while the cooldown runs. A message counts
+// as contact once it is sent, being sent, or uncertain (it may have reached them). Leads of the same play are left to
+// the existing per-recipient rules (reply-safety freshness, #413); only a different scan job (play) is blocked here.
+export const RECIPIENT_COOLDOWN_DAYS = 30
+export function recipientInCooldown(db: Database.Database, tenantId: string, toEmail: string, leadId: string, nowS = Math.floor(Date.now() / 1000)): boolean {
+  return !!db.prepare(
+    "SELECT 1 FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.tenant_id = ? AND lower(m.to_email) = ? AND m.status IN ('sent','sending','uncertain') AND COALESCE(m.sent_at, m.claimed_at, m.created_at) >= ? AND l.scan_job_id <> (SELECT scan_job_id FROM leads WHERE id = ?) LIMIT 1",
+  ).get(tenantId, norm(toEmail), nowS - RECIPIENT_COOLDOWN_DAYS * 86400, leadId)
+}
 
 // expectSender: the Gmail address the caller authorized this send from (autopilot's held drafts); the send is refused
 // (sender_changed) unless the connected account is that address at the moment the message is handed to Gmail.
