@@ -321,3 +321,28 @@ test('1289-F3 r3 a 200 response is checked before it can be "empty": error objec
   const d = await freeCompanySitesDetailed('Mercury', [], { fetchImpl: reply(() => ({ error: { code: 'x' } }), [{ name: 'Mercury', osm_type: 'node', osm_id: 1, extratags: { website: 'https://mercury.com/' } }]), ...fast })
   assert.deepEqual(d.outcomes, { wikidata: 'failed', openstreetmap: 'ok' }); assert.deepEqual(d.hits.map(h => h.url), ['https://mercury.com/'])
 })
+
+test('1289-F3 r4 a P856 claim whose value snak is malformed is failed, not empty; a real no-value statement stays empty; a valid sibling still wins', async () => {
+  resetFreeSiteFinderPacing()
+  const reply = (ents: unknown) => (async (input: string | URL) => {
+    const u = new URL(String(input))
+    return json(u.searchParams.get('action') === 'wbsearchentities' ? { search: [{ id: 'Q1', label: 'Mercury' }, { id: 'Q2', label: 'Mercury' }] } : ents)
+  }) as typeof fetch
+  const one = (c: unknown) => ({ entities: { Q1: { claims: { P856: [c] } }, Q2: { claims: [] } } })
+  const ask = async (ents: unknown) => wikidataAnswer('Mercury', { fetchImpl: reply(ents), ...fast })
+  // malformed value snaks -> failed
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'value' } }))).outcome, 'failed', 'value snak with no datavalue')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'value', datavalue: 'https://mercury.com/' } }))).outcome, 'failed', 'datavalue is not a record')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { type: 'string' } } }))).outcome, 'failed', 'datavalue with no value')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { value: 42 } } }))).outcome, 'failed', 'value is the wrong type')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { value: { id: 'Q5' } } } }))).outcome, 'failed', 'value is an object')
+  assert.equal((await ask(one({ rank: 'normal' }))).outcome, 'failed', 'no mainsnak')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: 'x' }))).outcome, 'failed', 'mainsnak is not a record')
+  // legitimate no-value / unknown-value statements -> empty
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'novalue', property: 'P856' } }))).outcome, 'empty', 'novalue')
+  assert.equal((await ask(one({ rank: 'normal', mainsnak: { snaktype: 'somevalue', property: 'P856' } }))).outcome, 'empty', 'somevalue')
+  // a valid sibling claim keeps the answer ok
+  const mixed = { entities: { Q1: { claims: { P856: [{ rank: 'normal', mainsnak: { snaktype: 'value' } }, { rank: 'normal', mainsnak: { snaktype: 'value', datavalue: { value: 'https://mercury.com/', type: 'string' } } }] } }, Q2: { claims: [] } } }
+  const m = await ask(mixed)
+  assert.equal(m.outcome, 'ok'); assert.deepEqual(m.hits.map(h => h.url), ['https://mercury.com/'])
+})
