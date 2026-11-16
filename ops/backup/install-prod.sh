@@ -190,12 +190,12 @@ if [ ! -e "$ROOT$LEDGER" ]; then
 fi
 # append-only (#1089): the app user owns the ledger and appends to it (lib/tenant/ledger.ts opens it with 'a'); the
 # kernel's append-only flag, which only root can set or clear, refuses any rewrite, truncation, rename or delete of it,
-# even by its owner. Set on a new or an existing ledger; skipped under --root (tests) and on a filesystem without it.
+# even by its owner. Set on a new or an existing ledger and read back; FAILS CLOSED (before any unit is installed or
+# enabled) when it cannot be proved. Skipped only under --root (tests drive the helper directly).
+# shellcheck source=ops/backup/ledger-append-only.sh
+source "$HERE/ledger-append-only.sh"
 if [ -z "$ROOT" ]; then
-  if lsattr -d -- "$LEDGER" 2>/dev/null | awk '{print $1}' | grep -q a; then echo "install-prod: the deletion ledger $LEDGER is already append-only"
-  elif chattr +a -- "$LEDGER"; then echo "install-prod: set the deletion ledger $LEDGER append-only (chattr +a): the app can add lines; nobody can rewrite, truncate or delete it without root"
-  else echo "install-prod: WARNING: could not set $LEDGER append-only (chattr +a failed): the app user can still rewrite or truncate it. Put the ledger on an ext4/xfs filesystem and run this again."
-  fi
+  ensure_ledger_append_only "$LEDGER" || die "the deletion ledger $LEDGER could not be proved append-only (see above). No units were installed or enabled. Fix it and run this again."
 fi
 
 # --- the units: same schedule as the templates in this directory, pointed at the installed entry point
