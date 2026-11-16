@@ -15,6 +15,7 @@ export class EnrichError extends Error {
 
 const BASE = 'https://api.apollo.io'
 import { reserveScanSpend, unitCostUsd } from '../scan/spend-cap.ts'
+import { isStaging } from '../staging.ts'
 // The paid lookup request is given up on after this; exported for the stale-running lease floor (lib/scan/store.ts).
 export const APOLLO_TIMEOUT_MS = 15_000
 const TIMEOUT_MS = APOLLO_TIMEOUT_MS
@@ -49,10 +50,50 @@ async function call(apiKey: string, path: string, body: Record<string, unknown>,
 import { formatPlace } from '../scan/contact-agreement.ts'
 import { isMailboxShaped } from './person-name.ts'
 import { latestDay } from '../people/currency.ts'
+
+// #383 TEST-ONLY staging fixture (Hermes-PC 2026-11-13: criteria 1-2 need a test-only Apollo answer on staging, same pattern as the
+// #1131 fake PDL). Active ONLY when DAZL_ENV=staging AND DAZL_STAGING_FAKE_APOLLO=1; inert everywhere else (production never
+// reads the flag). It replaces the HTTP call with a local, deterministic answer in Apollo's own response shape, so every gate
+// after it (spend cap, credit pool, claims, company agreement, role rejection, record-date currency) runs for real. Every person
+// is named "Staging ..." on the lead's own domain, so no row can pass for real data. No domain: no match, never an invented one.
+// The roster: five non-buyers first, so the buyer is beyond the first five unfiltered employees (criterion 1); a former employee
+// and an assistant-to-buyer that share the buyer title words (criterion 2); a buyer record dated 10 days ago (verified current)
+// and one dated 200 days ago (search-result-only) (criterion 4). The role filter keeps a person whose title shares a word with a
+// requested title (live check: a reviewed buyer role "VP of Sales").
+export const stagingFakeApollo = (env: Record<string, string | undefined> = process.env) => isStaging(env) && env.DAZL_STAGING_FAKE_APOLLO === '1'
+export const STAGING_APOLLO_ROSTER: readonly { name: string; title: string; daysAgo: number }[] = [
+  { name: 'Staging Engineer', title: 'Software Engineer', daysAgo: 5 },
+  { name: 'Staging Designer', title: 'Product Designer', daysAgo: 5 },
+  { name: 'Staging Supportagent', title: 'Support Agent', daysAgo: 5 },
+  { name: 'Staging Analyst', title: 'Data Analyst', daysAgo: 5 },
+  { name: 'Staging Coordinator', title: 'Office Coordinator', daysAgo: 5 },
+  { name: 'Staging Formerbuyer', title: 'Former VP of Sales', daysAgo: 10 },
+  { name: 'Staging Assistant', title: 'Executive Assistant to the VP of Sales', daysAgo: 10 },
+  { name: 'Staging Buyer', title: 'VP of Sales', daysAgo: 10 },
+  { name: 'Staging Stalebuyer', title: 'VP of Sales, EMEA', daysAgo: 200 },
+]
+const fakeWords = (t: string) => t.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'to', 'at'].includes(w))
+function stagingApolloFetch(): typeof fetch {
+  return (async (u: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(u)
+    let body: Record<string, unknown> = {}
+    try { body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> } catch { /* empty body: no match */ }
+    const raw = typeof body.q_organization_domains === 'string' ? body.q_organization_domains : typeof body.domain === 'string' ? body.domain : null
+    const domain = raw ? raw.toLowerCase() : null
+    if (url.includes('/organizations/enrich')) return new Response(JSON.stringify(domain ? { organization: { website_url: `https://${domain}`, primary_domain: domain } } : {}), { status: 200 })
+    if (!url.includes('/mixed_people/api_search') || !domain) return new Response(JSON.stringify({ people: [] }), { status: 200 })
+    const wanted = new Set((Array.isArray(body.person_titles) ? body.person_titles : []).flatMap(t => typeof t === 'string' ? fakeWords(t) : []))
+    const perPage = typeof body.per_page === 'number' ? body.per_page : 5
+    const rows = STAGING_APOLLO_ROSTER.filter(p => wanted.size === 0 || fakeWords(p.title).some(w => wanted.has(w))).slice(0, perPage)
+    const now = Date.now()
+    return new Response(JSON.stringify({ people: rows.map(p => ({ name: p.name, title: p.title, linkedin_url: null, organization: { primary_domain: domain }, last_refreshed_at: new Date(now - p.daysAgo * 86_400_000).toISOString() })) }), { status: 200 })
+  }) as typeof fetch
+}
 const clean = (v: unknown, max = 200) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max) : null)
 
 // 1 credit per call.
-export async function apolloOrgEnrich(apiKey: string, org: { domain?: string | null; name?: string | null }, fetchImpl: typeof fetch = fetch): Promise<ApolloOrg | null> {
+export async function apolloOrgEnrich(apiKey: string, org: { domain?: string | null; name?: string | null }, fetchImpl: typeof fetch = fetch, env: Record<string, string | undefined> = process.env): Promise<ApolloOrg | null> {
+  if (stagingFakeApollo(env)) fetchImpl = stagingApolloFetch()
   const body: Record<string, unknown> = {}
   if (org.domain) body.domain = org.domain
   else if (org.name) body.name = org.name
@@ -85,7 +126,8 @@ function orgOf(p: Record<string, unknown>): { name: string | null; domain: strin
 // buyer beyond the first unfiltered page is still returned (#383). Only what the tenant reviewed goes
 // into the query: seniorities/functions are never invented from title words (a wrong derived seniority
 // would exclude the very buyer the filter exists to find).
-export async function apolloPeopleSearch(apiKey: string, org: { domain?: string | null; name: string }, fetchImpl: typeof fetch = fetch, max = 5, role?: { titles: string[] }): Promise<ApolloPerson[]> {
+export async function apolloPeopleSearch(apiKey: string, org: { domain?: string | null; name: string }, fetchImpl: typeof fetch = fetch, max = 5, role?: { titles: string[] }, env: Record<string, string | undefined> = process.env): Promise<ApolloPerson[]> {
+  if (stagingFakeApollo(env)) fetchImpl = stagingApolloFetch()
   const body: Record<string, unknown> = { per_page: max, page: 1 }
   const titles = (role?.titles ?? []).map(t => t.trim()).filter(Boolean).slice(0, 10)
   if (titles.length) body.person_titles = titles
