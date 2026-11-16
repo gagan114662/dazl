@@ -159,9 +159,16 @@ export function bareUsCity(name: string): { city: string; abbr: string } | null 
 // a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
 // `text` is what is appended to the request (an entry placeIn already reads is appended AS WRITTEN: a Place's name is not always readable back, "Toronto, Canada" names
 // the place "Toronto", which placeIn does not resolve alone: review at ca63ac3a, 8 non-US shapes lost the board source); `name` is the place's identity, the de-dupe key.
+// #1205 review (F1): a bare listed world city ('Vancouver') is read in the PROFILE's country when one is set: a US profile's 'Vancouver' is Vancouver, WA
+// (the US-city fallback below), never Vancouver, Canada; a profile in a third country gets no place (the run names the city as unplaceable).
+const countryCode = (c: string): string | null => /^ca$/i.test(c.trim()) ? 'CA' : resolveSegment(c, true)
 export function profilePlace(where: string, country?: string | null): { text: string; name: string } | null {
-  const direct = placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
-  if (!/^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())) return null
+  const isUs = /^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())
+  const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, where.trim()) ? WORLD_CITIES[where.trim()] : null
+  const own = country && country.trim() ? countryCode(country) : null
+  const foreign = !!listed && !!own && countryCode(listed) !== own
+  const direct = foreign ? null : placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
+  if (!isUs) return null
   const b = bareUsCity(where); if (!b) return null
   const text = `${b.city}, ${b.abbr}`, p = placeIn(`in ${text}`)
   return p ? { text, name: p.name } : null
