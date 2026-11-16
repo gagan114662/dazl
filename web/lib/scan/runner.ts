@@ -2190,10 +2190,10 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
         const hosts = [...new Set([...named, ...mapped])].slice(0, 3)
         for (const h of named) if (hosts.includes(h)) records.add(recordKey(h, company))   // Wikidata's official website of an item named exactly like the company
         const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : [])])].join('+') || 'none'
-        // 1289-F3: a source that failed or was cancelled is named in the audit; with no host, the lookup is failed/cancelled, not no_match
+        // 1289-F3: a source that failed or was cancelled is named in the audit ("osm" keeps the row inside the 60-character status); with no host, the lookup is failed/cancelled, not no_match
         const incomplete = (Object.entries(outcomes) as [string, string][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
         const head = hosts.length > 0 ? `ok_${from}` : incomplete.some(([, o]) => o === 'failed') ? 'failed' : incomplete.length > 0 ? 'cancelled' : 'no_match'
-        note(company, `${head}${incomplete.map(([s, o]) => ` ${s}=${o}`).join('')}`, hosts.length)
+        note(company, `${head}${incomplete.map(([s, o]) => ` ${s === 'openstreetmap' ? 'osm' : s}=${o}`).join('')}`, hosts.length)
         return hosts
       } catch { note(company, 'error', 0); return [] }
     })()
