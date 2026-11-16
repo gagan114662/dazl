@@ -1,6 +1,7 @@
 import type { Candidate } from './evidence.ts'
 import { companyKey, norm } from './evidence.ts'
 import type { Page } from './fetch-page.ts'
+import { isJobPostingClaim } from './hold-fit.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
 // Subject mismatch: the lead is named Company A, but the source is Company B's own
@@ -85,7 +86,10 @@ function writtenRelationship(company: string, brand: string, title: string, text
 }
 
 const ATS_ORG_SUFFIX = new Set(['hq', 'inc', 'labs', 'io', 'app', 'team', 'careers', 'jobs'])
-export function counterpartySignal(c: Candidate, page: Page, passage: string): string | null {
+// #684: the hold reason must apply to the saved claim. A job posting is the employer's own statement wherever it is posted (a job
+// board or ATS names itself all over the page: "Apply using DentalPost"), so a job-posting claim is never "someone else's customer".
+export function counterpartySignal(c: Candidate & { signal_kind?: unknown; source_kind?: unknown }, page: Page, passage: string): string | null {
+  if (isJobPostingClaim(c)) return null
   const src = sourceBrand(c.source_url)
   if (!src) return null
   const { brand } = src
