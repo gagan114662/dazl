@@ -86,7 +86,7 @@ bothEngines('seed and cleanup refuse every caller the gate refuses, and write or
   // the designated tenant seeds; another tenant still cannot clean it up
   await seedInboxFixture(db, T, { env: ON, now: NOW })
   await assert.rejects(cleanupInboxFixture(db, OTHER, { env: { ...ON, OUTREACH_TEST_TENANT_ID: T } }), (e: InboxFixtureError) => e.code === 'test_tenant_only')
-  assert.equal(await count(db, 'SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ? AND gmail_id LIKE ?', [T, 'dazl-inbox-fixture-%']), INBOX_FIXTURE_THREADS + 2)
+  assert.equal(await count(db, 'SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ? AND gmail_id LIKE ?', [T, 'dazl-inbox-fixture-%']), INBOX_FIXTURE_THREADS + 4)
   assert.equal(fetches, 0)
 })
 
@@ -138,7 +138,7 @@ bothEngines('seeding is idempotent, repeated and concurrent: one set, created on
   assert.equal(runs.filter(r => r.created).length, 1)
   const again = await seedInboxFixture(db, T, { env: ON, now: NOW + 999 })
   assert.equal(again.created, false)
-  assert.equal(await count(db, 'SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ?', [T]), INBOX_FIXTURE_THREADS + 1)
+  assert.equal(await count(db, 'SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ?', [T]), INBOX_FIXTURE_THREADS + 3)
   assert.equal(await count(db, 'SELECT count(*) AS n FROM leads WHERE scan_job_id = ?', [ids.jobId]), INBOX_FIXTURE_THREADS + 1)
   assert.equal(await count(db, 'SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ?', [T]), 1)
   assert.equal((await inboxPage(db, T, { limit: 1 })).counts.threads, 121)
@@ -152,9 +152,9 @@ bothEngines('cleanup removes the fixture rows of that tenant only; repeated and 
   await db.run('INSERT INTO inbox_thread_reads (tenant_id, thread_id, read_upto) VALUES (?, ?, ?)', [T, ids.threadIds[5], NOW])
   const [a, b] = await Promise.all([cleanupInboxFixture(db, T, { env: ON }), cleanupInboxFixture(db, T, { env: ON })])
   const total = (k: keyof typeof a.deleted) => a.deleted[k] + b.deleted[k]
-  assert.deepEqual({ threads: total('threads'), sends: total('sends'), leads: total('leads'), plays: total('plays'), reads: total('reads') },
-    { threads: INBOX_FIXTURE_THREADS + 1, sends: 1, leads: INBOX_FIXTURE_THREADS + 1, plays: 1, reads: 1 })
-  assert.deepEqual((await cleanupInboxFixture(db, T, { env: ON })).deleted, { threads: 0, sends: 0, leads: 0, plays: 0, reads: 0 })
+  assert.deepEqual({ threads: total('threads'), extra_messages: total('extra_messages'), sends: total('sends'), leads: total('leads'), plays: total('plays'), reads: total('reads') },
+    { threads: INBOX_FIXTURE_THREADS + 1, extra_messages: 2, sends: 1, leads: INBOX_FIXTURE_THREADS + 1, plays: 1, reads: 1 })
+  assert.deepEqual((await cleanupInboxFixture(db, T, { env: ON })).deleted, { threads: 0, extra_messages: 0, sends: 0, leads: 0, plays: 0, reads: 0 })
   assert.deepEqual(await realCounts(db), before, 'every real row, and the other tenant\'s rows under the same ids, are untouched')
   const left = await inboxPage(db, T, { limit: 50 })
   assert.deepEqual(left.threads.map(t => t.thread_id), ['real-thread'])
@@ -163,6 +163,30 @@ bothEngines('cleanup removes the fixture rows of that tenant only; repeated and 
   assert.equal((await inboxPage(db, T, { limit: 1 })).counts.threads, 122)
   assert.equal(fetches, 0)
 }, { pgMax: 4 })
+
+// #735: the live Inbox could only show one message per thread, so the per-thread deciding reply was proven by unit
+// tests alone. The fixture now holds two multi-message threads: a person's reply followed by a newer auto-reply (the
+// person's reply decides), and an earlier reply followed by a later 'no' (the later 'no' decides).
+bothEngines('#735: multi-message fixture threads page once each, showing their deciding reply', async ({ db }) => {
+  await seedInboxFixture(db, T, { env: ON, now: NOW })
+  const base = NOW - 30 * 86400
+  for (const [i, n] of [[0, 2], [2, 2]] as const)
+    assert.equal(await count(db, 'SELECT count(*) AS n FROM inbound_messages WHERE tenant_id = ? AND thread_id = ?', [T, ids.threadIds[i]]), n, `thread ${i + 1} holds ${n} messages`)
+  const extra = await db.all<{ excerpt: string; from_email: string; classification: string }>('SELECT excerpt, from_email, classification FROM inbound_messages WHERE tenant_id = ? AND gmail_id IN (?, ?)', [T, ...ids.extraGmailIds])
+  assert.equal(extra.length, 2)
+  assert.ok(extra.every(x => x.excerpt.startsWith('[test-only fixture ') && x.excerpt.length <= 200 && isInboxFixtureAddress(x.from_email) && x.classification !== 'positive'))
+  for (const limit of [1, 2, 7, 50, PAGE_MAX]) {
+    const all = await pages(db, T, { limit })
+    assert.equal(all.rows.length, 121, `size ${limit}`); assert.equal(new Set(all.rows.map(t => t.thread_id)).size, 121, `one row per thread at size ${limit}`)
+    const a = all.rows.find(t => t.thread_id === ids.threadIds[0])!, b = all.rows.find(t => t.thread_id === ids.threadIds[2])!
+    // a person's reply, then a newer auto-reply: the person's reply decides; the newer message still makes it unread
+    assert.deepEqual([a.gmail_id, a.classification, a.replies, a.received_at, a.unread], [ids.gmailIds[0], 'other', 2, base, true])
+    // an earlier reply, then a later 'no': the later 'no' decides
+    assert.deepEqual([b.gmail_id, b.classification, b.replies, b.received_at], [ids.gmailIds[2], 'negative', 2, base - 60])
+  }
+  assert.deepEqual((await inboxPage(db, T, { limit: 50 })).counts, { threads: 121, needs_owner: 61, unread: 121, unread_needs_owner: 61 })
+  assert.equal(fetches, 0)
+})
 
 test('draft, send, follow-up and sequence paths refuse fixture recipients; nothing reaches Gmail', async () => {
   const raw = new Database(':memory:')
