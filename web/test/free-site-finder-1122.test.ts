@@ -178,6 +178,27 @@ test('crawlJob + the free finder: a site the free data names but whose homepage 
   assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, null)
 })
 
+// 1289-P1 (Hermes-PC review 5924276588): a public-record mark never overrides the lead's own evidence geography.
+function seedPlaced(text: string) {
+  const db = seed()
+  db.prepare('UPDATE leads SET signal = ?, evidence_excerpt = ?').run(text, text)
+  return db
+}
+test('1289-P1 crawlJob + the free finder: no scan geography, the lead\'s evidence says Austin, the Wikidata site\'s homepage says Chicago: refused, no domain saved', async () => {
+  resetFreeSiteFinderPacing(); const db = seedPlaced('Mercury in Austin, TX is hiring a Sales Development Representative.')
+  const { db: jdb, job } = scan()
+  const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { Mercury: [{ id: 'Q1', label: 'Mercury', site: 'https://mercury.com/' }] } }) })!
+  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Mercury - banking for startups. Based in Chicago, IL.</body></html>' }), gapMs: 0, env: {}, findSites })
+  assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, null)
+})
+test('1289-P1 crawlJob + the free finder: the lead\'s evidence says Austin and the Wikidata site\'s homepage says Austin: the place check runs and passes, domain saved', async () => {
+  resetFreeSiteFinderPacing(); const db = seedPlaced('Mercury in Austin, TX is hiring a Sales Development Representative.')
+  const { db: jdb, job } = scan()
+  const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { Mercury: [{ id: 'Q1', label: 'Mercury', site: 'https://mercury.com/' }] } }) })!
+  await crawlJob(db, 't1', 'j1', { get: site({ 'mercury.com': '<html><body>Mercury - banking for startups. Based in Austin, TX.</body></html>' }), gapMs: 0, env: {}, findSites })
+  assert.equal((db.prepare('SELECT company_domain AS d FROM leads').get() as { d: string | null }).d, 'mercury.com')
+})
+
 // ---- review fixes: 1289-F1 (concurrent Nominatim pacing), 1289-F2 (exemption bound to its company), 1289-F3 (failed lookup is not "no match") ----
 
 test('1289-F1 concurrent osmSites calls (separate scans) are admitted one at a time, at least 1.1 s apart; an abort while queued sends nothing', async () => {
