@@ -1020,7 +1020,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const hostQueue = new Map<string, Promise<unknown>>()
     const evidenceGet = (url: string) => {
       let host = ''; try { host = new URL(url).hostname.toLowerCase() } catch { /* unparseable: its own queue */ }
-      const run = (hostQueue.get(host) ?? Promise.resolve()).catch(() => undefined).then(() => get(url))
+      // Ziggy review 1290-F1: the deadline is re-checked when the fetch reaches the FRONT of its host queue (several leads can queue before the
+      // deadline), and the crawl's signal goes to the transport, so no queued request starts after the abort whatever the backend.
+      const run = (hostQueue.get(host) ?? Promise.resolve()).catch(() => undefined).then(() => deps.signal?.aborted ? null : get(url, deps.signal ? { signal: deps.signal } : undefined))
       hostQueue.set(host, run)
       return run
     }
@@ -1030,6 +1032,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the block is known, re-hitting it is pressure on a refusing site, and the answer would be the same. Identity is
       // probed from the company name + place instead (strict agreement checks below apply unchanged).
       const ev = (deps.skipEvidenceFetch || l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? null : await evidenceGet(l.source_url)
+      if (deps.signal?.aborted) return // the deadline passed while this lead waited for its evidence page: start nothing more for it
       // The blocked-host guard covers EVERY path to a site, not just the evidence URL: when the company name resolves to
       // the very host that refused this lead's fetch (its own blog/docs were the evidence), probing it would re-hit a
       // refusing site by another path. Such candidates are excluded and the skip is audited.

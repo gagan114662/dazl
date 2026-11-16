@@ -90,3 +90,36 @@ test('#1037 two leads on the same site never crawl it twice at once: one read, b
   assert.equal(r.fetched.filter(f => f === 'bloordentalgroup.example/').length, 1, JSON.stringify(r.fetched))
   for (const d of r.domains) assert.equal(d.company_domain, 'bloordentalgroup.example')
 })
+
+// Ziggy review 1290-F1: a queued evidence fetch must re-check the deadline when it reaches the front of its host queue, and must carry the
+// crawl's signal to the transport. Hold the first board fetch, let more leads queue behind it, abort, release: no queued request may start.
+async function abortWhileQueued(honorsSignal: boolean) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+  const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  for (let i = 0; i < 4; i++) ins.run(`L${i}`, job, `Bloor Dental ${'ABCD'[i]}${'ABCD'[i]}`, null, 'Hiring a dental receptionist in Toronto', `https://${BOARD}/jobs/${i}`, 'Bloor Dental is hiring a dental receptionist in Toronto, Ontario', 90, 90 - i, null)
+  const ctl = new AbortController()
+  let release!: () => void; const held = new Promise<void>(r => { release = r })
+  const started: { url: string; afterAbort: boolean; signal: boolean }[] = []
+  let firstArrived!: () => void; const arrived = new Promise<void>(r => { firstArrived = r })
+  const get: Get = async (url, opts) => {
+    started.push({ url, afterAbort: ctl.signal.aborted, signal: opts?.signal === ctl.signal })
+    if (honorsSignal && opts?.signal?.aborted) return null
+    if (new URL(url).hostname === BOARD && started.length === 1) { firstArrived(); await held }
+    return { status: 404, body: '', finalUrl: url }
+  }
+  const run = crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-15T12:00:00Z'), redirectOf: async () => null, concurrency: 4, signal: ctl.signal })
+  await arrived; await sleep(20)            // the other three leads have entered readLead and queued behind the held board fetch
+  ctl.abort(); release()
+  await run
+  return started
+}
+for (const honors of [true, false]) {
+  test(`1290-F1 abort while evidence fetches are queued on one host (${honors ? 'transport honours the signal' : 'injected Get ignores options'}): no queued request starts after the deadline`, async () => {
+    const started = await abortWhileQueued(honors)
+    assert.equal(started.filter(s => new URL(s.url).hostname === BOARD).length, 1, JSON.stringify(started))
+    assert.deepEqual(started.filter(s => s.afterAbort), [], JSON.stringify(started))
+    assert.ok(started[0].signal, 'the evidence fetch carries the crawl signal to the transport')
+  })
+}
