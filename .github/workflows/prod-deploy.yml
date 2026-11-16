@@ -1,0 +1,79 @@
+name: prod-deploy
+# Gate 4 (Gagan, approved 2026-11-16): deploy one GREEN commit to dazl.ai, then one acceptance pass. docs/CI-GATES.md.
+# ops/prod/deploy-prod.sh on the box does the DB backup (step 1), the prebuilt pull, the blue/green switch, the page +
+# hydration smoke and the automatic rollback on any failure. A PASS from this run is the live check for every issue in the
+# batch; Quest closes them with "Quest live check (prod <sha>): PASS".
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-hex commit on main that carries the main-green status'
+        required: true
+      manifest:
+        description: 'Batch manifest: JSON list of {issue, check} (repo path, e.g. ops/acceptance/batches/<date>.json)'
+        required: true
+permissions:
+  contents: read
+  statuses: read
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Secrets present
+        env:
+          K: ${{ secrets.PROD_SSH_KEY }}
+          H: ${{ secrets.PROD_HOST }}
+          U: ${{ secrets.PROD_USER }}
+          KH: ${{ secrets.PROD_KNOWN_HOSTS }}
+        run: |
+          miss=""
+          [ -n "$K" ] || miss="$miss PROD_SSH_KEY"; [ -n "$H" ] || miss="$miss PROD_HOST"
+          [ -n "$U" ] || miss="$miss PROD_USER"; [ -n "$KH" ] || miss="$miss PROD_KNOWN_HOSTS"
+          [ -z "$miss" ] || { echo "::error::missing repo secrets:$miss (see docs/CI-GATES.md). Nothing deployed."; exit 1; }
+      - name: Refuse a non-green commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit: $SHA"; exit 1; }
+          st=$(gh api "repos/$REPO/commits/$SHA/statuses" --jq '[.[] | select(.context=="main-green")][0].state // "none"')
+          [ "$st" = success ] || { echo "::error::$SHA is not main-green (status: $st). Only green commits deploy."; exit 1; }
+      - name: SSH setup
+        env:
+          K: ${{ secrets.PROD_SSH_KEY }}
+          KH: ${{ secrets.PROD_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$K" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KH" > ~/.ssh/known_hosts
+      - name: Deploy (box backs up DB, smoke-tests, auto-rolls back on failure)
+        env:
+          H: ${{ secrets.PROD_HOST }}
+          U: ${{ secrets.PROD_USER }}
+          CMD: ${{ secrets.PROD_DEPLOY_CMD || 'sudo /home/ubuntu/dazl-ops/ops/prod/deploy-prod.sh' }}
+          SHA: ${{ inputs.sha }}
+        run: ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$U@$H" "$CMD $SHA"
+      - name: Deployment smoke (health sha + public pages; NOT a feature check)
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          got=$(curl -fsS --max-time 15 https://dazl.ai/api/health | python3 -c 'import sys,json;print(json.load(sys.stdin)["commit"])')
+          [ "$got" = "$SHA" ] || { echo "::error::dazl.ai serves $got, not $SHA (the box rolled back?)"; exit 1; }
+          for p in / /sign-in /sign-up; do c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://dazl.ai$p"); echo "$p $c"; [ "$c" = 200 ] || exit 1; done
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Scripted acceptance, one check per issue (PASS lines only for issues whose own check passed)
+        env:
+          SHA: ${{ inputs.sha }}
+          MANIFEST: ${{ inputs.manifest }}
+        run: node ops/acceptance/run-batch.mjs "$MANIFEST" https://dazl.ai "$SHA"
