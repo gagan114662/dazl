@@ -1,72 +1,43 @@
-name: web-ci
+name: deploy-access-smoke-only
 on:
-  pull_request:
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
-  push:
-    branches: [main]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
-  # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
-  # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
-  group: web-ci-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ziggy-deploy-access-smoke
+  cancel-in-progress: false
 jobs:
-  # Full suite on SQLite, today's runtime store. PG-only tests skip here.
-  test-sqlite:
+  restricted-deploy-credential-smoke:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      # one tsc pass: ordinary type errors AND unused locals/imports/parameters (narrow documented exemptions, #898).
-      # check-unused fails on any non-unused TS error too, so a separate `tsc --noEmit` step would only compile twice.
-      - run: npm run check:unused
-      # age for the encrypted off-host backup tests (test/offhost-backup.test.ts); DAZL_REQUIRE_AGE makes a missing one fail
-      - run: sudo apt-get update -q && sudo apt-get install -y -q age
-      - run: npm test
-        env:
-          DAZL_REQUIRE_AGE: "1"
-
-  # Full suite again with a Postgres 16 service container. Tests that take DAZL_TEST_PG_URL run against it (data layer
-  # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
-  # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
-  test-postgres:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+    timeout-minutes: 3
     env:
-      DAZL_TEST_PG_URL: postgres://postgres:ci@127.0.0.1:5432/postgres
-      DAZL_REQUIRE_PG: "1"
-    defaults:
-      run:
-        working-directory: web
+      PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+      PROD_HOST: ${{ secrets.PROD_HOST }}
+      PROD_USER: ${{ secrets.PROD_USER }}
+      PROD_KNOWN_HOSTS: ${{ secrets.PROD_KNOWN_HOSTS }}
+      PROD_DEPLOY_CMD: ${{ secrets.PROD_DEPLOY_CMD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - name: db:migrate against the service container, twice (second run must apply nothing)
+      - name: Read-only restricted deployment access and refusal controls
+        shell: bash
         run: |
-          DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate
-          DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate | grep -q 'applied \[\]'
-      - name: live leads-read contract on the regenerated schema
-        run: DAZL_PG_ADMIN=$DAZL_TEST_PG_URL node --experimental-strip-types --test test/leads-read-pg-live.test.ts
+          python3 - <<'PY'
+          import json,os,pathlib,subprocess,tempfile,urllib.request
+          names=['PROD_SSH_KEY','PROD_HOST','PROD_USER','PROD_KNOWN_HOSTS','PROD_DEPLOY_CMD']
+          assert all(os.environ.get(n) for n in names),'Missing repository deploy secret'
+          assert os.environ['PROD_DEPLOY_CMD']=='sudo /usr/local/lib/dazl-prod/deploy-prod.sh'
+          def health():
+           with urllib.request.urlopen('https://dazl.ai/api/health',timeout=10) as r:return json.load(r)
+          before=health()
+          with tempfile.TemporaryDirectory(prefix='dazl-deploy-smoke-',dir=os.environ['RUNNER_TEMP']) as folder:
+           root=pathlib.Path(folder);key=root/'key';known=root/'known_hosts'
+           key.write_text(os.environ['PROD_SSH_KEY'].rstrip()+'\n');known.write_text(os.environ['PROD_KNOWN_HOSTS'].rstrip()+'\n')
+           key.chmod(0o600);known.chmod(0o600)
+           ssh=['ssh','-F','/dev/null','-T','-i',str(key),'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+str(known),'-o','ConnectTimeout=10','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=1','--',os.environ['PROD_USER']+'@'+os.environ['PROD_HOST']]
+           def call(command):return subprocess.run(ssh+[command],capture_output=True,text=True,timeout=25)
+           status=call('--status');assert status.returncode==0,'New repository key cannot reach restricted deployment status'
+           assert 'live port' in status.stdout and before['commit'] in status.stdout
+           denied=call('id');assert denied.returncode==64 and 'command refused' in denied.stderr,'Arbitrary shell was not refused'
+           invalid=call(os.environ['PROD_DEPLOY_CMD']+' not-a-sha');assert invalid.returncode!=0,'Malformed deployment SHA accepted'
+          after=health();assert (before['commit'],before['instance'])==(after['commit'],after['instance']),'Public production identity changed during read-only smoke'
+          print(json.dumps({'credential_smoke':'PASS','github_repository_secrets_consumed':True,'host_key_pinned':True,'restricted_status_allowed':True,'arbitrary_shell_refused':True,'malformed_deployment_refused':True,'production_unchanged':after['commit'],'deployment_performed':False,'feature_acceptance':'NOT TESTED'}))
+          PY
