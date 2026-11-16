@@ -90,3 +90,19 @@ test('#1205 the progress row words the reason (names the place and what to chang
   assert.equal(row.status, 'skipped')
   assert.match(row.note ?? '', /'Europe' is a region/)
 })
+
+test('#1205 review F1: a bare listed world city is read in the profile\'s country (US Vancouver is Vancouver, WA), never overriding it', () => {
+  assert.equal(profilePlaceText('Vancouver', 'US'), 'Vancouver, WA')
+  assert.equal(profilePlaceText('Vancouver', 'USA'), 'Vancouver, WA')
+  assert.equal(profilePlaceText('Vancouver', 'CA'), 'Vancouver'); assert.equal(profilePlaceText('Vancouver', 'Canada'), 'Vancouver'); assert.equal(profilePlaceText('Vancouver', undefined), 'Vancouver')
+  assert.equal(profilePlaceText('Vancouver', 'GB'), null)
+  assert.match(placeSkipReason('B2B SaaS hiring sales', ['Vancouver']), /^skipped_no_place:city:Vancouver$/, 'a profile city that cannot be placed names itself')
+  assert.equal(placeIn(`B2B SaaS hiring sales in ${profilePlaceText('Vancouver', 'US')}`)!.ok('Vancouver, BC, Canada'), false)
+  assert.equal(placeIn(`B2B SaaS hiring sales in ${profilePlaceText('Vancouver', 'US')}`)!.ok('Vancouver, WA'), true)
+})
+
+test('#1205 review F2: the run report carries each skipped source\'s named reason', async () => {
+  const { buildRunReport } = await import('../lib/scan/run-report.ts')
+  const r = buildRunReport({ source_skips: [{ source: 'adapter:jobboards', status: 'skipped_no_place:region:Europe', reason: skipNote('skipped_no_place:region:Europe')! }] }, null, null, 1) as { source_skips?: { reason: string }[] }
+  assert.match(r.source_skips?.[0]?.reason ?? '', /'Europe' is a region\. Job postings need a city/)
+})
