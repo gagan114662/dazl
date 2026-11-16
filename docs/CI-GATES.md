@@ -10,6 +10,6 @@
    the `main-green` commit status and the `main-green` tag moves to it. Only green commits deploy. Red on main: fix forward.
 4. **Prod deploy** (`prod-deploy.yml`, manual, input `sha`): refuses a commit without `main-green`; runs
    `ops/prod/deploy-prod.sh <sha>` on the box over SSH, which backs up the DB first, smoke-tests (pages + hydration)
-   and rolls back automatically on failure; then one public acceptance pass. A PASS here is the live check: Quest closes the
+   and rolls back automatically on failure; then a separate page smoke, then `ops/acceptance/run-batch.mjs` runs each issue's own check from the `manifest` input. Only issues whose own check passed get a PASS line; Quest closes only those
    batch's issues with "Quest live check (prod <sha>): PASS". Needs repo secrets PROD_SSH_KEY, PROD_HOST, PROD_USER,
    PROD_KNOWN_HOSTS (optional PROD_DEPLOY_CMD, default `sudo /home/ubuntu/dazl-ops/ops/prod/deploy-prod.sh`).
