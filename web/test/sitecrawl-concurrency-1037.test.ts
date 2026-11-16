@@ -123,3 +123,62 @@ for (const honors of [true, false]) {
     assert.ok(started[0].signal, 'the evidence fetch carries the crawl signal to the transport')
   })
 }
+
+// Ziggy review 1290-F2: evidence reads and site crawls share ONE per-host schedule. Lead L0's crawl holds a request on acme.example while
+// lead L2 (picked up once L1 finishes) queues its evidence page on that same host: never two requests on one host at once, the polite gap
+// holds between them, and after an abort nothing queued on the host starts.
+async function mixedHost(opts: { abortAtMs?: number } = {}) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+  const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  ins.run('L0', job, 'Acme Dental', null, 'Hiring a dental receptionist in Toronto', `https://${BOARD}/jobs/0`, 'Acme Dental is hiring a dental receptionist in Toronto, Ontario', 90, 90, null)
+  ins.run('L1', job, 'Other Dental', null, 'Hiring a dental receptionist in Toronto', `https://${BOARD}/jobs/1`, 'Other Dental is hiring a dental receptionist in Toronto, Ontario', 90, 89, null)
+  ins.run('L2', job, 'Acme Dental', null, 'Hiring a dental receptionist in Toronto', 'https://acme.example/news/hiring', 'Acme Dental is hiring a dental receptionist in Toronto, Ontario', 90, 88, null)
+  const GAP = 40
+  const t0 = Date.now()
+  const acme: { start: number; end: number; path: string }[] = []
+  let inFlightAcme = 0, maxAcme = 0
+  const ctrl = new AbortController()
+  let abortedAt = Infinity
+  if (opts.abortAtMs !== undefined) setTimeout(() => { abortedAt = Date.now() - t0; ctrl.abort() }, opts.abortAtMs)
+  const get: Get = async (url, o) => {
+    const u = new URL(url)
+    if (u.hostname === BOARD) {
+      await sleep(5)
+      const [co, host] = u.pathname.endsWith('/0') ? ['Acme Dental', 'acme.example'] : ['Other Dental', 'other.example']
+      return { status: 200, body: html(`<p>${co} is hiring in Toronto.</p><a href="https://${host}/">${co}</a>`), finalUrl: url }
+    }
+    if (u.hostname !== 'acme.example') { await sleep(2); return { status: 404, body: '', finalUrl: url } }
+    const rec = { start: Date.now() - t0, end: -1, path: u.pathname }; acme.push(rec)
+    inFlightAcme++; maxAcme = Math.max(maxAcme, inFlightAcme)
+    try {
+      // the homepage is the held company-site request (150 ms, or until the abort)
+      const ms = u.pathname === '/' ? 150 : 10
+      await new Promise<void>(res => { const t = setTimeout(res, ms); o?.signal?.addEventListener('abort', () => { clearTimeout(t); res() }, { once: true }) })
+      if (o?.signal?.aborted) return null
+      if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
+      if (u.pathname === '/') return { status: 200, body: HOME('Acme Dental'), finalUrl: url }
+      if (u.pathname === '/news/hiring') return { status: 200, body: html('<p>Acme Dental is hiring in Toronto.</p>'), finalUrl: url }
+      return { status: 404, body: '', finalUrl: url }
+    } finally { inFlightAcme--; rec.end = Date.now() - t0 }
+  }
+  await crawlJob(db, 'A', job, { get, gapMs: GAP, env: {}, now: Date.parse('2026-11-15T12:00:00Z'), redirectOf: async () => null, concurrency: 2, ...(opts.abortAtMs !== undefined ? { signal: ctrl.signal } : {}) })
+  return { acme, maxAcme, GAP, abortedAt }
+}
+
+test('1290-F2 an evidence read and a site crawl on the same host never overlap, and the polite gap holds between them', async () => {
+  const { acme, maxAcme, GAP } = await mixedHost()
+  assert.ok(acme.some(r => r.path === '/news/hiring'), `the evidence page on the crawled host was read: ${JSON.stringify(acme)}`)
+  assert.ok(acme.some(r => r.path === '/'), 'the company site was crawled')
+  assert.equal(maxAcme, 1, `one request at a time on acme.example: ${JSON.stringify(acme)}`)
+  const starts = acme.map(r => r.start).sort((a, b) => a - b)
+  for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= GAP - 5, `gap ${starts[i] - starts[i - 1]}ms < ${GAP}ms: ${JSON.stringify(acme)}`)
+})
+
+test('1290-F2 after an abort no request queued on the shared host starts', async () => {
+  const { acme, abortedAt } = await mixedHost({ abortAtMs: 100 })
+  assert.ok(Number.isFinite(abortedAt), 'the abort fired')
+  const late = acme.filter(r => r.start > abortedAt)
+  assert.deepEqual(late, [], `no acme.example request started after the abort at ${abortedAt}ms: ${JSON.stringify(acme)}`)
+})
