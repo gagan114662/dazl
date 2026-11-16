@@ -70,6 +70,7 @@ export type Stage = 'seed' | `series ${string}` | null
 // signals are matching / scoring vocabulary: a model "Series A" never overrides a user "Series B", and a seed signal the user never asked for
 // adds no funding gate. `icp` stays in the signature so callers keep compiling; it is deliberately not read here.
 export function requestedStage(query: string | null | undefined, _icp?: string | null): Stage {
+  void _icp
   const t = query ?? ''
   const series = /\bseries\s+([a-e])\b/i.exec(t)
   if (/\bseed\b/i.test(t) && !series) return 'seed'
@@ -92,7 +93,7 @@ export const quoteShowsEvent = (excerpt: string | null, signal: string | null, f
     const v = RAISE_VERB.exec(c); if (!v) return false
     return stageOk(c, stage) && !subjectIsOther(c.slice(0, v.index), company)
   }) }
-export const requestAsksFunding = (query: string | null | undefined, _icp?: string | null): boolean => mentionsFunding(query ?? '') // #1201: the user's words only (see requestedStage)
+export const requestAsksFunding = (query: string | null | undefined, _icp?: string | null): boolean => { void _icp; return mentionsFunding(query ?? '') } // #1201: the user's words only (see requestedStage)
 // Affirmative hiring proof, not keyword co-occurrence. A CLAUSE (split on sentence ends and but / however / while / although / yet) must say the lead's OWN
 // company is hiring, now, for a sales / GTM role:
 //   - not negated or denied ("not hiring", "no plans to hire", "hiring freeze", "denies hiring", "rules out", "rejects reports of");

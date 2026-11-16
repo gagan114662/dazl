@@ -889,13 +889,13 @@ test('#1201: a model "Series A" signal never overrides the user\'s "Series B": a
 })
 
 test('#1201: a seed-funding signal the user never asked for adds no gate, and the card names it as matching-only (rule 3)', async () => {
-  const query = 'London B2B SaaS startups hiring sales staff in the past 90 days'
+  const query = 'London B2B SaaS startups hiring an account executive in the past 90 days'   // a requested role, so the gate runs
   const icp = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
   // the quote shows no funding at all: on the base the model's seed signal made funding required and the lead was held no_event_evidence
   const { db, job } = seed({ query, icp, excerpt: 'Brightloop is a London B2B SaaS startup building workflow software' })
   const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
   assert.deepEqual([r.passed, r.demoted, lead(db).review_reason], [1, 0, null])
-  assert.match(lead(db).why, /^Hiring sales: Account Executive posted /)
+  assert.match(lead(db).why, /^Hiring for Account Executive \(requested: account executive\)/i)
   assert.match(lead(db).why, /Your profile signal "announced seed funding" was used for matching only, not required: your request didn't ask for that event\.$/)
   assert.ok(!/hiring sales staff" was used/.test(lead(db).why), 'a hiring signal is not an event: it is not listed')
 })
