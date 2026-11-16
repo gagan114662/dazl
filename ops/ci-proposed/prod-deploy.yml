@@ -9,6 +9,9 @@ on:
       sha:
         description: 'Full 40-hex commit on main that carries the main-green status'
         required: true
+      manifest:
+        description: 'Batch manifest: JSON list of {issue, check} (repo path, e.g. ops/acceptance/batches/<date>.json)'
+        required: true
 permissions:
   contents: read
   statuses: read
@@ -55,11 +58,22 @@ jobs:
           CMD: ${{ secrets.PROD_DEPLOY_CMD || 'sudo /home/ubuntu/dazl-ops/ops/prod/deploy-prod.sh' }}
           SHA: ${{ inputs.sha }}
         run: ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$U@$H" "$CMD $SHA"
-      - name: Acceptance pass on dazl.ai
+      - name: Deployment smoke (health sha + public pages; NOT a feature check)
         env:
           SHA: ${{ inputs.sha }}
         run: |
           got=$(curl -fsS --max-time 15 https://dazl.ai/api/health | python3 -c 'import sys,json;print(json.load(sys.stdin)["commit"])')
           [ "$got" = "$SHA" ] || { echo "::error::dazl.ai serves $got, not $SHA (the box rolled back?)"; exit 1; }
           for p in / /sign-in /sign-up; do c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://dazl.ai$p"); echo "$p $c"; [ "$c" = 200 ] || exit 1; done
-          echo "Quest live check (prod $SHA): PASS"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Scripted acceptance, one check per issue (PASS lines only for issues whose own check passed)
+        env:
+          SHA: ${{ inputs.sha }}
+          MANIFEST: ${{ inputs.manifest }}
+        run: node ops/acceptance/run-batch.mjs "$MANIFEST" https://dazl.ai "$SHA"
