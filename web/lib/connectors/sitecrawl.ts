@@ -1005,7 +1005,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
       }
       const reading = (async () => {
-        const r = await crawlSite(cand, get, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+        const r = await crawlSite(cand, hostGet, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
         siteRead.set(cand, r)
         return r
       })()
@@ -1016,16 +1016,28 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const redirectOf = deps.redirectOf ?? (deps.get ? async () => null : (host: string) => rawRedirectTarget(host, TIMEOUT_MS, guardedLookup, deps.signal))
     const redirectSeen = new Map<string, string | null>()   // host -> where it forwards (or null), for the whole scan
     let probed = 0
-    // Evidence pages on the same host are fetched one at a time (concurrency must not turn into a burst against one job board).
+    // Ziggy review 1290-F2: ONE per-host schedule for every request the crawl makes, evidence reads and site crawls alike. Requests to a host
+    // run one at a time, each starts at least the polite gap after the previous start on that host, and the abort (the crawl's deadline or
+    // the site read's own budget) is re-checked when a request reaches the FRONT of its host queue (1290-F1), so nothing queued starts late.
+    const hostGap = deps.gapMs ?? GAP_MS
     const hostQueue = new Map<string, Promise<unknown>>()
-    const evidenceGet = (url: string) => {
+    const hostStart = new Map<string, number>()
+    const hostGet: Get = (url, opts) => {
       let host = ''; try { host = new URL(url).hostname.toLowerCase() } catch { /* unparseable: its own queue */ }
-      // Ziggy review 1290-F1: the deadline is re-checked when the fetch reaches the FRONT of its host queue (several leads can queue before the
-      // deadline), and the crawl's signal goes to the transport, so no queued request starts after the abort whatever the backend.
-      const run = (hostQueue.get(host) ?? Promise.resolve()).catch(() => undefined).then(() => deps.signal?.aborted ? null : get(url, deps.signal ? { signal: deps.signal } : undefined))
+      const sig = opts?.signal ?? deps.signal
+      const stop = () => !!(deps.signal?.aborted || sig?.aborted)
+      const run = (hostQueue.get(host) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+        if (stop()) return null
+        const wait = (hostStart.get(host) ?? 0) + hostGap - Date.now()
+        if (wait > 0 && !(await sleepAbort(wait, sig))) return null
+        if (stop()) return null
+        hostStart.set(host, Date.now())
+        return get(url, sig ? { signal: sig } : undefined)
+      })
       hostQueue.set(host, run)
       return run
     }
+    const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       // A lead held because its evidence page blocked us (or needs JavaScript) never has that page fetched again here:
