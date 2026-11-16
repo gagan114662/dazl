@@ -280,6 +280,16 @@ export function jsonLdCompanySites(company: string, html: string, pageHost = '')
   }
   return out.slice(0, 2)
 }
+// #1122: the registrable host of a site a STRUCTURED public record gives for a business (OpenStreetMap's website tag for a place named like the
+// company in the request's place), or null for a platform, social, directory, government or address-literal host. Unlike a web-search hit,
+// the record names the business itself, so the host label need not carry the name ("qsdc.ca" for Queen Street Dental Centre); the crawl's
+// homepage name check and place check still decide, as for any name_probe site.
+export function ownSiteHost(url: string): string | null {
+  let host: string
+  try { const u = new URL(url); if (u.protocol !== 'https:' && u.protocol !== 'http:') return null; host = registrable(u.hostname.toLowerCase().replace(/\.$/, '')) } catch { return null }
+  if (!host || !siteHostOk(host) || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host)) return null
+  return host
+}
 // Stable machine token stored in the label. Trust decisions read only this token (never display text).
 export const DOMAIN_BASIS_TOKEN = 'domain-basis-v1:'
 export const DOMAIN_BASES: DomainBasis[] = ['name_probe', 'evidence_link_text', 'evidence_link_domain_label', 'evidence_own_domain']
@@ -809,7 +819,9 @@ export function placeTerms(where: string[], evidenceText: string, company = ''):
     add(clean); add(clean.replace(PLACE_SUFFIX, ''))
     for (const part of clean.split(',')) { add(part); add(part.trim().replace(PLACE_SUFFIX, '')) }
   }
-  for (const m of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w)) || NOT_PLACE_LEAD.has(ws[0])) continue; add(m[1]) }
+  // 1289-P1: a capture stops at a sentence end ("at Mercury. Apply now" is "Mercury", not the made-up place "Mercury Apply"); a short abbreviation ("St. Louis") does not end it.
+  const toSentenceEnd = (s: string) => { const out: string[] = []; for (const w of s.split(/\s+/)) { if (w.endsWith('.') && w.replace(/\.+$/, '').length > 2) { out.push(w.replace(/\.+$/, '')); break } out.push(w) } return out.join(' ') }
+  for (const m0 of evidenceText.slice(0, 6000).matchAll(PLACE_AFTER)) { const m = [m0[0], toSentenceEnd(m0[1])]; const t = norm(m[1]); const ws = t.split(' ').filter(Boolean); if (ws.length === 0 || ws.every(w => NOT_PLACE.has(w) || own.includes(w)) || NOT_PLACE_LEAD.has(ws[0])) continue; add(m[1]) }
   return [...out]
 }
 // A domain taken from a NAME-ONLY guess (probeDomains) is not an identity: any same-name business anywhere passes the homepage name check, and its contacts sit on that same domain, so the domain and the
@@ -942,7 +954,7 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
   })
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: (company: string, where: string[]) => Promise<string[]> } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
@@ -1118,7 +1130,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (r.homeText !== undefined) answered = true   // some candidate's homepage was read (and then accepted or refused)
         // a guessed site whose robots rules stop the read: remembered, so the lead's reason says the likely site could not be read
         if (r.reason === 'robots_disallow' && basisOf.get(cand) === 'name_probe') robotsStopped = true   // only a site that ANSWERED with rules forbidding it; an unreachable host is just absent
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        // #1122: a scan with NO geography has nothing to place a company that is not local (a SaaS company hiring an SDR); a site a public
+        // record gives as THIS company's official website (Wikidata P856, the item named exactly like the company, its host carrying the
+        // name) is not asked for a place there. Every other check (homepage names the company, address, robots) still applies.
+        // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
+        // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
+        const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
