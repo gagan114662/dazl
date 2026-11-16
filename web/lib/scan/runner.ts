@@ -44,7 +44,7 @@ import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
-import { freeCompanySitesDetailed } from '../connectors/free-site-finder.ts'
+import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -2171,11 +2171,11 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
   const answers = new Map<string, Promise<string[]>>()
   // 1289-F2: a public-record mark is bound to the company whose OWN lookup returned it (exact name key, "Group" kept), never to the host alone
   const records = new Set<string>()
-  const recordKey = (site: string, company: string) => `${company.toLowerCase().replace(/[^a-z0-9]+/g, '')}\u0000${site}`
+  const recordKey = (site: string, company: string) => `${siteCompanyKey(company)}\u0000${site}`   // 1289-F2 r3: the same key as the answer cache
   const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_free_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
   const find = (company: string, where: string[]): Promise<string[]> => {
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
-    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
     const had = answers.get(key)
     if (had) return had
     if (asked >= FREE_SITE_LOOKUPS_PER_SCAN || signal?.aborted) return Promise.resolve([])
@@ -2218,7 +2218,7 @@ function paidSiteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: 
   return (company, where) => {
     // a name too short to tell one company's host from another's would spend a search whose every result is refused
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
-    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
     const had = answers.get(key)
     if (had) return had
     if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return Promise.resolve([])
