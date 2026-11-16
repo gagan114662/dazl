@@ -345,7 +345,8 @@ test('a crawled address needs the user identity review at approve and at send, n
   assert.equal(await sendMessage(db, 'A', 'legacy1', deps({ sendFn })), 'sent')
   assert.equal(sent.length, 1)
   // An address printed on the cited page is unaffected.
-  const own = addLead(db, 'A')
+  // #855: another address, since info@northside.example was just emailed from this tenant's other lead (cooldown).
+  const own = addLead(db, 'A', { contact: 'sales@northside.example' })
   const id2 = createDraft(db, 'A', own, 'Acme'); approve(db, 'A', id2)
 })
 
