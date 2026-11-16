@@ -127,7 +127,7 @@ test('seed -> the Inbox spans several pages and shows one bounce_review conversa
   assert.equal(fixtureRows(db), 0)
   assert.deepEqual(audits(db).map(e => [e.action, e.decision, JSON.parse(e.summary)]), [
     ['inbox_fixture.seed', 'allowed', { created: true, threads: 121 }], ['inbox_fixture.seed', 'allowed', { created: false, threads: 121 }],
-    ['inbox_fixture.cleanup', 'allowed', { threads: 121, extra_messages: 2, sends: 1, leads: 121, plays: 1, reads: 0 }], ['inbox_fixture.cleanup', 'allowed', { threads: 0, extra_messages: 0, sends: 0, leads: 0, plays: 0, reads: 0 }],
+    ['inbox_fixture.cleanup', 'allowed', { threads: 121, sends: 1, leads: 121, plays: 1, reads: 0 }], ['inbox_fixture.cleanup', 'allowed', { threads: 0, sends: 0, leads: 0, plays: 0, reads: 0 }],
   ])
   assert.equal(fetches, 0)
   env(undefined, undefined)
