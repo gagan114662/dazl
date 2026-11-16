@@ -7,8 +7,8 @@
 //
 // Status: owner-approved. Retention, warranty/liability/indemnity/termination, governing law and venue, and which
 // outreach and privacy laws apply were decided by Hermes under Gagan's delegation on 2026-11-12 (#535, standard B2B
-// SaaS defaults), and the public DRAFT label came off with that decision. Internal note only: this text is not
-// reviewed by counsel. Statements describe what the software does today. Decisions still open stay visible
+// SaaS defaults), and the public DRAFT label came off with that decision.
+// Internal note only: this text is not reviewed by counsel. Statements describe what the software does today. Decisions still open stay visible
 // bracketed NEEDS OWNER / NEEDS COUNSEL markers, never invented terms.
 
 export const POLICY_STATUS = 'approved' as const
