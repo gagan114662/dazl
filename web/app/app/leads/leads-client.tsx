@@ -17,6 +17,7 @@ import { leadPerson, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
 import { peopleSearchable } from '@/lib/people/searchable-holds'
 import { NAME_ONLY_REASON } from '@/lib/people/company-tie'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
+import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
@@ -1236,7 +1237,7 @@ export default function LeadsClient() {
             </div>
             <OpportunityCardView lead={l} buyerRoles={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} />
             <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
-            {l.why && <div className="text-xs text-gray-300 mt-1">Research rationale: {l.why}</div>}
+            <ResearchRationale why={l.why} />
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}
