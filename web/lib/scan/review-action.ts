@@ -17,7 +17,7 @@ import { holdFitsClaim } from './hold-fit.ts'
 const DATE = new Set(['event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date'])
 
 export interface ReviewAction { label: string; hint: string }
-export interface ReviewLead { review_reason?: string | null; window_held?: boolean; gate_held?: boolean; event_date?: string | null; signal?: unknown; signal_kind?: unknown; source_kind?: unknown }
+export interface ReviewLead { review_reason?: string | null; window_held?: boolean; gate_held?: boolean; event_date?: string | null; signal?: unknown; signal_kind?: unknown; source_kind?: unknown; source_url?: unknown }
 
 type Held = 'no_date' | 'older' | 'unknown'
 function heldKind(l: ReviewLead, now: Date): Held | null {

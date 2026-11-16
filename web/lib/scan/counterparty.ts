@@ -86,12 +86,13 @@ function writtenRelationship(company: string, brand: string, title: string, text
 }
 
 const ATS_ORG_SUFFIX = new Set(['hq', 'inc', 'labs', 'io', 'app', 'team', 'careers', 'jobs'])
-// #684: the hold reason must apply to the saved claim. A job posting is the employer's own statement wherever it is posted (a job
-// board or ATS names itself all over the page: "Apply using DentalPost"), so a job-posting claim is never "someone else's customer".
+// #684: the hold reason must apply to the saved claim. On a job BOARD the host brand is the board itself, which names itself all over
+// the page ("Apply using DentalPost", "practices use DentalPost"), so a job-posting claim there is never "someone else's customer". On
+// a public ATS posting the brand is the employer's own org, so another company named there is still a counterparty (#767) - not exempt.
 export function counterpartySignal(c: Candidate & { signal_kind?: unknown; source_kind?: unknown }, page: Page, passage: string): string | null {
-  if (isJobPostingClaim(c)) return null
   const src = sourceBrand(c.source_url)
   if (!src) return null
+  if (!src.ats && isJobPostingClaim(c)) return null
   const { brand } = src
   const company = companyKey(c.company)
   if (!company) return null

@@ -9,6 +9,7 @@
 // search all keep reading the stored code, so such a row stays held and research only - it is just not described with a reason
 // that contradicts its claim. Malformed input never counts as a job posting, so it never changes what is shown.
 import { isHiringTrigger } from './scoreboard.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
 
 const HIRING_KINDS = new Set(['hiring', 'hiring_relevant_role'])
 const MAX_SIGNAL = 2000 // a claim is a short sentence; anything longer is not read as a job posting
@@ -24,8 +25,9 @@ export function isJobPostingClaim(c: { signal?: unknown; signal_kind?: unknown; 
 
 // false only when the stored reason cannot apply to this saved claim; any other input (unknown or malformed reason or claim)
 // is shown as stored.
-export function holdFitsClaim(reason: unknown, claim: { signal?: unknown; signal_kind?: unknown; source_kind?: unknown } | null | undefined): boolean {
-  if (reason === 'counterparty_signal' && isJobPostingClaim(claim)) return false
+// On a public ATS posting the source brand is the employer's own org, so a customer hold there can apply to a hiring claim (#767) and fits.
+export function holdFitsClaim(reason: unknown, claim: { signal?: unknown; signal_kind?: unknown; source_kind?: unknown; source_url?: unknown } | null | undefined): boolean {
+  if (reason === 'counterparty_signal' && isJobPostingClaim(claim) && !(typeof claim?.source_url === 'string' && atsPostingRef(claim.source_url))) return false
   return true
 }
 

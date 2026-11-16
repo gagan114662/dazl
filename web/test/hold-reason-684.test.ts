@@ -21,6 +21,13 @@ test('AC-1: a job-posting claim on a job board page is never held as someone els
   assert.equal(counterpartySignal({ ...vacancy, signal: 'Front desk receptionist, Brooklyn', source_kind: 'hiring_feed' } as never, boardPage as never, ''), null)
 })
 
+test('AC-1b: on a public ATS posting (the employer\'s own board) another company named there is still a counterparty', () => {
+  const id = '6adee270-03bf-4b1b-915b-eba5fb56d1b6'
+  const other = { ...vacancy, company: 'Brightloop', signal: 'hiring a Sales Assist Representative', source_url: `https://jobs.ashbyhq.com/zapier/${id}` }
+  const named = { title: 'Sales Assist Representative @ zapier', text: 'Brightloop uses Zapier for its sales workflows, and we are hiring to support customers like it.', retrievedAt: 0 }
+  assert.equal(counterpartySignal(other as never, named as never, ''), 'source_owner:zapier')
+})
+
 test('AC-2: a real customer story still holds the lead (gate not loosened); malformed kinds never skip it', () => {
   assert.equal(counterpartySignal(weave as never, weavePage as never, ''), 'source_owner:weave')
   for (const bad of [{ signal_kind: 42 }, { signal_kind: { hiring: true } }, { source_kind: ['hiring_feed'] }, { signal_kind: 'HIRING ' }, { signal_kind: null }])
@@ -46,4 +53,8 @@ test('AC-4: a stored customer hold on a job-posting claim stays research, but it
   const b = reviewAction({ ...stored, signal: 'Smile Dental Care switched to Weave' }, NOW)
   assert.equal(b.label, 'Keep as research')
   assert.match(b.hint, /customer/i)
+  // a stored customer hold on an ATS posting (the employer's own board) still fits and keeps the customer wording
+  const ats = { ...stored, source_url: 'https://jobs.ashbyhq.com/zapier/6adee270-03bf-4b1b-915b-eba5fb56d1b6' }
+  assert.equal(holdFitsClaim('counterparty_signal', ats), true)
+  assert.match(reviewAction(ats, NOW).hint, /customer/i)
 })
