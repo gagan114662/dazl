@@ -1,5 +1,5 @@
 'use client'
-import { capLine, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate'
+import { capLine, displayEstimate, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate'
 import TrialRefusalNotice from '../trial-refusal-notice'
 
 const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
@@ -7,7 +7,9 @@ const range = (r: { min: number; max: number }) => r.min === r.max ? usd(r.min) 
 
 // The menu shown BEFORE a scan that can spend money: each provider/source with its unit price, the projected total as a range
 // with its assumptions, and the user's confirmation. A blocked estimate has no Run button, only what to change.
-export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; query?: string }) {
+export default function EstimateConfirm({ est: raw, busy, onConfirm, onCancel, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; query?: string }) {
+  // #1319: customer-facing view (no env names, product model names, no never-run row, trial total within the trial cap)
+  const est = displayEstimate(raw)
   const v = est.verdict
   return (
     <section className="card p-4 sm:p-5 my-4 text-sm" data-testid="estimate-confirm" data-verdict={v.ok ? 'ok' : 'blocked'} aria-label="Price estimate">
@@ -31,6 +33,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
           <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
         </table>
       </div>
+      {est.total_note && <p className="mt-2 text-xs" data-testid="estimate-trial-cap">{est.total_note}</p>}
       {est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
       {est.search_allowance?.low && <p className="mt-2 text-xs font-medium" role="status" data-testid="estimate-search-allowance">{searchAllowanceLine(est.search_allowance)}</p>}
       {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}
