@@ -160,7 +160,7 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
       await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
       const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
       const t = await panel.innerText()
-      assert.ok(t.includes('$3.50 in / $14.00 out per 1M tokens (gpt-4.1)'), `${tag}: gpt-4.1's own unit price is shown`)
+      assert.ok(t.includes('$3.50 in / $14.00 out per 1M tokens') && !t.includes('tokens (gpt-4.1)'), `${tag}: gpt-4.1's own unit price is shown, without the model id (#1319)`)
       assert.ok(!t.includes('claude-sonnet-4-5'), `${tag}: the default model is not shown for an OpenAI key`)
       assert.equal(await panel.getAttribute('data-verdict'), 'ok'); assert.equal(posts.length, 0)
       // No page-scroll assertion here: the real menu has every row, and this harness has no app stylesheet (the table's
