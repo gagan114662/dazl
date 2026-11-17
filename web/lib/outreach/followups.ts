@@ -13,7 +13,27 @@ import { recheckSendAuthority } from './send-authority.ts'
 import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
-import { displayStopReason } from './lifecycle.ts'
+import { conversionBlockedNow, conversionEventFor, displayStopReason, drainVerifiedPendingLifecycle, normalizeLifecycleEmail, POLICY_STOP } from './lifecycle.ts'
+import { transitionToOnboarding } from './onboarding-policy.ts'
+
+// #417 conversion check for one warm thread. A test-fixture send (the staging verification fixture) is exempt, as on the
+// sequence and first-touch paths; everything else re-proves the conversion against lifecycle_events (and verified accounts).
+function conversionBlockedFor(db: Database.Database, tenantId: string, t: { lead_id: string; to_email: string }): boolean {
+  const orig = db.prepare('SELECT test FROM outreach_messages WHERE tenant_id = ? AND lead_id = ?').get(tenantId, t.lead_id) as { test: number } | undefined
+  if (testFixtureSend(db, tenantId, { to_email: t.to_email, test: orig?.test ?? 0 })) return false
+  return conversionBlockedNow(db, t.to_email)
+}
+// Terminal stop with the generic tenant-visible reason the conversion cancel writes (never the kind). The stop is also the
+// transition (lifecycle.ts contract): when this call is what stops the thread (it was opened after the conversion's own
+// cancel ran), the tenant enrolls the address under its active opted-in onboarding policy in the same transaction.
+function stopConverted(db: Database.Database, tenantId: string, t: { thread_id: string; to_email: string }, now: number): void {
+  db.transaction(() => {
+    const r = db.prepare('UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL').run(POLICY_STOP.slice(0, 40), tenantId, t.thread_id) as { changes: number }
+    if (r.changes !== 1) return
+    const email = normalizeLifecycleEmail(t.to_email)
+    transitionToOnboarding(db, tenantId, email, conversionEventFor(db, email)?.kind ?? 'signup', now)
+  })()
+}
 
 // Follow-ups only for people who replied with interest (a ledger row) and only fill silence.
 // At most 2, 3 and 5 days after the last activity in the thread. A newer reply from them stops the
@@ -45,6 +65,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
   const flags = d.flags ?? process.env
   const now = d.now ?? Math.floor(Date.now() / 1000)
   const stop = (w: string): FollowResult => { out.stopped = w; return out }
+  drainVerifiedPendingLifecycle(db, now) // #417: complete verified conversions before this pass (as runSequences and the autopilot pass do)
   if (!autopilotAvailable(flags)) return stop('not_available')
   const st = getState(db, tenantId)
   if (!st.enabled || st.paused || !st.consent_current) return stop('autopilot_off')
@@ -77,11 +98,16 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     // The identity check and the claim are one write transaction (the lock the review action takes). A held thread is stopped for good,
     // like a withdrawn lead confirmation: re-confirming the website does not restart it.
     // An unreadable review state is a retryable fault: skip this round without stopping the thread.
-    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' | 'quarantined' => {
+    // #417: the conversion guard is atomic with the claim, as on the sequence path. The conversion cancel only stops threads
+    // that exist at that moment; a thread opened later (the converted prospect replies to an old cold email) must still never
+    // get a warm sales follow-up.
+    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' | 'quarantined' | 'converted' => {
+      if (conversionBlockedFor(db, tenantId, t)) return 'converted'
       const st = domainReviewStatus(db, tenantId, t.lead_id, t.to_email)
       if (st !== 'ok') return st
       return db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
     }).immediate()
+    if (claim === 'converted') { stopConverted(db, tenantId, t, now); skip('converted'); continue }
     if (claim === 'unreadable') { skip('review_unreadable'); continue }
     // A quarantined lead stops its thread for good, like an unconfirmed website (releasing it does not restart it).
     if (claim === 'quarantined') { db.prepare("UPDATE followup_threads SET stopped = 'lead_quarantined' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('lead_quarantined'); continue }
@@ -103,6 +129,12 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue
+      }
+      // #417: a conversion proven during the token/text awaits stops the thread terminally; the claim row is released.
+      if (conversionBlockedFor(db, tenantId, t)) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent)
+        stopConverted(db, tenantId, t, now)
+        skip('converted'); continue
       }
       // Re-checked after the token await: withdrawal during the await deletes the claim
       // row (nothing stuck in 'sending') and stops the thread, never sends.
