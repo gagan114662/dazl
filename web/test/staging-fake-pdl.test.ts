@@ -1,4 +1,5 @@
 // TEST-ONLY staging fake PDL (Hermes 2026-11-12: live checks without signing up for any service). Refs #382 #1036.
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
