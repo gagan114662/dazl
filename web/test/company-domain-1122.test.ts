@@ -353,3 +353,23 @@ test('#1122 review of #1219 (finding C2): siteHostOk refuses hex, octal and nume
   for (const h of ['0x7f.0.0.1', '0177.0.0.1', '0x7f000001.example', '127.1', '2130706433']) assert.equal(sc.siteHostOk(h), false, h)
   for (const h of ['acme.ca', '3m.com', '1800flowers.com', '0xacme.com']) assert.equal(sc.siteHostOk(h), true, h)
 })
+
+test('#1334-F1 past the top-lead cap, every hold the crawl admits says "did not reach this company"; a hold it never admits says the check does not run', async () => {
+  const ready = Array.from({ length: sc.MAX_SITES_PER_SCAN - 1 }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + (i % 10))}` }))
+  const held = [
+    { id: 'H1', company: 'Old Hold Clinic', reviewReason: 'outside_window_undated' },
+    { id: 'H2', company: 'War Room Review Co', reviewReason: 'source_review_required' },
+    { id: 'H3', company: 'War Room Hiring Co', reviewReason: 'no_sales_hiring_evidence' },
+    { id: 'H4', company: 'Closed Opening Co', reviewReason: 'job_closed' },
+    { id: 'H5', company: 'Unknown Hold Co', reviewReason: 'some_unknown_hold' },
+  ]
+  const r = await run({ company: 'Zed Dental Studio', evidenceUrl: BOARD, evidence: plain('x'), sites: {}, more: [...ready, ...held] })
+  const admitted = sc.crawlEligibleHolds()
+  for (const h of ['outside_window_undated', 'source_review_required', 'no_sales_hiring_evidence']) assert.ok(admitted.includes(h), h)
+  assert.ok(!admitted.includes('job_closed')); assert.ok(!admitted.includes('some_unknown_hold'))
+  assert.deepEqual(why(r.lead('H1')), ['probe_limit_reached'], 'old eligible hold')
+  assert.deepEqual(why(r.lead('H2')), ['probe_limit_reached'], 'newly eligible hold source_review_required')
+  assert.deepEqual(why(r.lead('H3')), ['probe_limit_reached'], 'newly eligible hold no_sales_hiring_evidence')
+  assert.deepEqual(why(r.lead('H4')), ['not_checked'], 'event-over hold stays excluded')
+  assert.deepEqual(why(r.lead('H5')), ['not_checked'], 'unknown hold stays excluded')
+})
