@@ -87,6 +87,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'weworkremotely.com': { name: 'We Work Remotely (public job feed)', role: 'public_source' },
   'www.wikidata.org': { name: 'Wikidata (company official website)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company NAME only
   'nominatim.openstreetmap.org': { name: 'OpenStreetMap Nominatim (business website tag)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company name and the request's place only
+  'html.duckduckgo.com': { name: 'DuckDuckGo HTML search (company website lookup)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts last step: the lead's company name and the request's place only
 }
 
 // Hosts the code names but NEVER calls, each with the reason. test/legal-policy.test.ts fails on any https://host
