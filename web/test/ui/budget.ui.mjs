@@ -110,8 +110,10 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
   await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
   const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
   const t = await panel.innerText()
-  for (const x of ['Candidate extraction', 'TinyFish', '$3.00 in / $15.00 out per 1M tokens', 'free allowance', 'not priced', 'priced rows only', '$0.05 - $0.40', 'Within your limit']) assert.ok(t.includes(x), `${tag}: ${x}`)
-  assert.equal(await page.getByTestId('estimate-row').count(), 3)
+  for (const x of ['Candidate extraction', 'Web search', '$3.00 in / $15.00 out per 1M tokens', 'included', 'priced rows only', '$0.05 - $0.40', 'Within your limit']) assert.ok(t.includes(x), `${tag}: ${x}`)
+  // #1319: customers never see env var names, the model id or the never-run research fallback
+  for (const x of ['DAZL_', 'claude-sonnet-4-5', 'Never run']) assert.ok(!t.includes(x), `${tag}: shows ${x}`)
+  assert.equal(await page.getByTestId('estimate-row').count(), 2, `${tag}: the never-run research fallback row is not shown (#1319)`)
   assert.equal(await page.getByTestId('estimate-total').innerText(), '$0.05 - $0.40')
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${tag}: no horizontal page scroll`)
   assert.equal(await panel.getAttribute('data-verdict'), 'ok')
