@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { campaignsLimit, listCampaigns } from '@/lib/outreach/campaigns'
+import { campaignsLimit, historyCampaigns, listCampaigns } from '@/lib/outreach/campaigns'
 import { getDb } from '@/lib/db/client'
 import { historyJobs } from '@/lib/scan/history-jobs'
 import { campaignStatus } from '@/lib/run-status'
@@ -15,5 +15,9 @@ export async function GET(req?: NextRequest) {
   // Each row's run status is the same recorded outcome the Leads history and the campaign page show (one record per
   // scan from historyJobs, which carries the extraction diagnostic); a row not in that read keeps its own next action.
   const jobs = new Map((await historyJobs(await getDb(), user.tenantId)).map(j => [j.id, j]))
+  // ?view=history (#1136, HIST-BATCH): the Leads history's cards - only the current split of the very scans that history lists (same ids, so
+  // no LIMIT tie can drop one), in a bounded number of queries; never the full campaign pipeline on the Leads page's request path.
+  if (req?.nextUrl?.searchParams.get('view') === 'history')
+    return NextResponse.json({ campaigns: historyCampaigns(getScanDb(), user.tenantId, [...jobs.keys()]).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
   return NextResponse.json({ campaigns: listCampaigns(getScanDb(), user.tenantId, limit).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
 }

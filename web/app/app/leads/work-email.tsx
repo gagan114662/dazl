@@ -1,6 +1,6 @@
 'use client'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type ShownLookup } from '@/lib/people/work-email-eligible'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { guessCopy, mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDING_POLL_MS, type GuessShown, type ShownLookup } from '@/lib/people/work-email-eligible'
 
 // #1036: "Find work email" for the buyer-role people on one lead (lib/people/work-email.ts runs the lookup on the server
 // with the workspace's own Apollo / People Data Labs keys). Only a checked address (verified by the provider, printed on the
@@ -9,37 +9,63 @@ import { mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL_MAX, PENDI
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
 type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
+const guessKey = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase()
+const isGuess = (x: unknown): x is GuessShown => !!x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string'
+const guessMap = (list: unknown): Record<string, GuessShown> => { const n: Record<string, GuessShown> = {}; if (Array.isArray(list)) for (const x of list) if (isGuess(x)) n[guessKey(x.person)] = x; return n }
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 
 // Keyed by lead: another lead's rows are never merged into this one's.
-export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[] }) {
+// lazy (#1036, the review lane): no request when the block mounts. A page can show many review rows; each would otherwise read
+// the same providers and its own lookups on load. The first click reads what it needs (a stored result is replayed by the POST, free).
+// initial (#1182): what the page read once with the lead list (providers + this lead's stored lookups). With it the block renders the stored
+// result at once (an address found earlier, an unfinished lookup's warning, "Check mailbox", the exact cost line) and makes NO request on mount;
+// the per-lead read stays only for a click and for following a lookup another tab has in flight.
+export interface WorkEmailInitial { providers: Providers | null; lookups: unknown; guesses?: unknown }
+export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
   return <WorkEmailFor key={p.leadId} {...p} />
 }
 
-function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailTarget[] }) {
-  const [lookups, setLookups] = useState<Record<string, Lookup>>({})
-  const [providers, setProviders] = useState<Providers | null>(null)
+function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targets: WorkEmailTarget[]; lazy?: boolean; initial?: WorkEmailInitial }) {
+  const [ownLookups, setLookups] = useState<Record<string, Lookup>>({})
+  const [ownProviders, setProviders] = useState<Providers | null>(null)
+  // What the page's list read said (#1182) merged with what this panel learned since (mergeLookups never erases a newer result): derived, not copied into state.
+  const lookups = useMemo(() => initial ? mergeLookups(ownLookups, initial.lookups) : ownLookups, [ownLookups, initial])
+  const providers = ownProviders ?? initial?.providers ?? null
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
+  // guessed addresses (learned format), by person: the GET read survives a reload, the POST answer shows at once
+  // The page's list read carries the stored guesses (initial.guesses), so they show on a fresh load and a reload with no per-lead request.
+  const [guesses, setGuesses] = useState<Record<string, GuessShown>>(() => guessMap(initial?.guesses))
+  // The key is the person's name exactly as stored (case and spacing folded, punctuation kept): a letters-only key made "Ann A. Bell"
+  // and "Anna Bell" one person. `replace`: the GET read is the whole truth, so a guess the server no longer shows is dropped; the POST
+  // answer carries one person's guess and only merges.
+  const takeGuesses = useCallback((list: unknown, replace = false) => { if (!Array.isArray(list)) return; setGuesses(g => ({ ...(replace ? {} : g), ...guessMap(list) })) }, [])
 
   const [reads, setReads] = useState(0)
   const mounted = useRef(false)
   const load = useCallback(() => {
     fetch(`/api/leads/${leadId}/work-email`).then(async r => {
       if (!r.ok || !mounted.current) return
-      const j = await r.json() as { providers?: Providers; lookups?: unknown }
+      const j = await r.json() as { providers?: Providers; lookups?: unknown; guesses?: unknown }
       if (!mounted.current) return
       if (j.providers) setProviders(j.providers)
       setLookups(ls => mergeLookups(ls, j.lookups))
+      takeGuesses(j.guesses, true)
     }).catch(() => { /* the button still works; the cost line just stays generic */ })
-  }, [leadId])
+  }, [leadId, takeGuesses])
 
+  const hasInitial = initial !== undefined
+  // The list was read again (a scan finished, a filter changed): its guesses are the whole truth for this lead, like the per-lead GET.
+  const initialGuesses = initial?.guesses
+  // adjusted while rendering (not in an effect): React's pattern for state that follows a changed prop, with no extra render pass
+  const [seenGuesses, setSeenGuesses] = useState(initialGuesses)
+  if (initialGuesses !== seenGuesses) { setSeenGuesses(initialGuesses); if (Array.isArray(initialGuesses)) setGuesses(guessMap(initialGuesses)) }
   useEffect(() => {
     mounted.current = true
-    load()
+    if (!lazy && !hasInitial) load()
     return () => { mounted.current = false }
-  }, [load])
+  }, [load, lazy, hasInitial])
 
   // A lookup running elsewhere shows 'pending' (no button): re-read until it is finished or retryable, bounded.
   const waiting = Object.values(lookups).some(l => (l.status === 'pending' || l.mailbox_check === 'pending') && !busy[l.target])
@@ -55,10 +81,11 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
     let text = 'Could not run the lookup. Try again.'
     try {
       const r = await fetch(`/api/leads/${leadId}/work-email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: key }) })
-      const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string }
+      const j = await r.json().catch(() => ({})) as { status?: string; lookup?: Lookup; detail?: string; error?: string; guess?: GuessShown }
+      if (r.ok && j.guess) takeGuesses([j.guess])
       if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
       if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
-      else if (r.ok && j.status === 'no_key') text = 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment.'
+      else if (r.ok && j.status === 'no_key') text = 'The company website does not print an address for this person, and no Apollo or People Data Labs key is set to look further. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
     setMsg(m => ({ ...m, [key]: text })); setBusy(b => ({ ...b, [key]: false }))
@@ -83,7 +110,7 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
             {v && v.showAddress && l?.address && (
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border ${v.checked ? 'border-green-600/40 text-green-800 bg-green-50' : 'border-amber-500/40 text-amber-800 bg-amber-50'}`} data-testid="work-email-address" data-checked={v.checked ? 'true' : 'false'}>
-                <span className="font-mono">{l.address}</span>
+                <span className="font-mono break-all">{l.address}</span>
                 <span className="text-[10px] uppercase tracking-wide">{v.checked ? (l.status === 'published' ? 'published' : l.status === 'unverified' ? 'checked' : 'verified') : 'not checked'}</span>
               </span>
             )}
@@ -103,6 +130,23 @@ function WorkEmailFor({ leadId, targets }: { leadId: string; targets: WorkEmailT
             )}
             {v && <span className={v.tone === 'checked' ? 'text-green-800' : v.tone === 'unchecked' ? 'text-amber-800' : 'text-gray-600'} data-testid="work-email-status"><span className="font-medium">{v.headline}.</span> {v.note}</span>}
             {msg[t.key] ? <span className="text-gray-600" role="status">{msg[t.key]}</span> : null}
+            {(() => {
+              // A guess is offered only where nothing was found for the person: a found address is never joined by a guess.
+              const g = guesses[guessKey(t.name)]
+              if (!g || (l && l.address && v?.showAddress)) return null
+              const c = guessCopy(g)
+              return (
+                <span className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="work-email-guess" data-label={g.label}>
+                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border ${c.checked ? 'border-green-600/40 text-green-800 bg-green-50' : 'border-amber-500/40 text-amber-800 bg-amber-50'}`}>
+                    <span className="font-mono break-all">{g.address}</span>
+                    <span className="text-[10px] uppercase tracking-wide">{c.chip}</span>
+                  </span>
+                  {c.checked && <button type="button" className="underline text-[#111]" onClick={() => void copy(g.address)}>{copied === g.address ? 'Copied' : 'Copy'}</button>}
+                  <span className={c.checked ? 'text-green-800' : 'text-amber-800'}><span className="font-medium">{c.headline}.</span> {c.note}</span>
+                  <span className="text-gray-600" data-testid="work-email-guess-source">{c.learned}{g.learned_from.filter(e => e.url && /^https?:\/\//i.test(e.url)).slice(0, 2).map(e => <a key={e.address} className="underline text-[#111] ml-1" href={e.url!} target="_blank" rel="noopener noreferrer nofollow">page</a>)}</span>
+                </span>
+              )
+            })()}
           </div>
         )
       })}

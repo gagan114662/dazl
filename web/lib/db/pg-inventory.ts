@@ -49,6 +49,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
   'lib/scan/countries.ts:BY_NAME': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/countries.ts:ALPHA3': { share: 'constant', note: 'filled once from a literal table' },
+  'lib/scan/tech-fixture.ts:inFlight': { share: 'safe to lose', note: 'test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap' },
   'lib/scan/held-state.ts:inProcess': { share: 'must share', note: 'last-resort hold when no write succeeded; another instance would not see the hold' },
   'lib/scan/fetch-page.ts:boardMemo': { share: 'safe to lose', note: 'public ATS board reads shared for 2 minutes (#533)' },
   'lib/sources/github.ts:cache': { share: 'safe to lose', note: 'response cache' },

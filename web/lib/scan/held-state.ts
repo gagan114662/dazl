@@ -115,3 +115,35 @@ export async function requiredGateHeldForJob(db: Db, tenantId: string, jobId: st
   }
   return held
 }
+
+// requiredGateHeld for every lead of SEVERAL scans of ONE tenant, on the scan store's sync handle - for the Leads history's current split
+// (#1136 / HIST-BATCH): a bounded number of reads whatever the scan or lead count (the markers of every listed scan in one read, their run
+// reports in one), never one read per lead. The caller passes the leads it already read (with their job's query / icp). Same verdict as
+// requiredGateHeld (gateVerdict); a read that fails other than a missing table holds every lead (fail closed, as the per-lead reader).
+export function requiredGateHeldForJobsSync(db: Database.Database, tenantId: string, rows: (GateRow & { id: string; scan_job_id: string })[]): Set<string> {
+  const held = new Set<string>()
+  if (!rows.length) return held
+  const jobIds = [...new Set(rows.map(r => r.scan_job_id))], qs = jobIds.map(() => '?').join(',')
+  let marks: { lead_id: string; kind: string; value: string }[] = []
+  let reports: { job_id: string; report: string }[] = []
+  try {
+    marks = db.prepare(`SELECT e.lead_id, e.kind, e.value FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${qs}) AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind IN ('gate_failed', 'gate_passed')`).all(tenantId, ...jobIds, tenantId) as typeof marks
+  } catch (e) { if (!noTable(e)) { for (const r of rows) held.add(r.id); return held } }
+  try {
+    reports = db.prepare(`SELECT r.job_id, r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = ? WHERE r.job_id IN (${qs}) ORDER BY r.job_id, r.attempt DESC`).all(tenantId, ...jobIds) as typeof reports
+  } catch (e) { if (!noTable(e)) { for (const r of rows) held.add(r.id); return held } }
+  const latest = new Map<string, Set<unknown> | 'unreadable'>()
+  for (const r of reports) if (!latest.has(r.job_id)) latest.set(r.job_id, reportHeldIds(r.report))   // the newest attempt per scan, as reportHolds
+  const failed = new Set<string>(), passes = new Map<string, Set<string>>()
+  for (const m of marks) {
+    if (m.kind === 'gate_failed') failed.add(m.lead_id)
+    else { const p = passes.get(m.lead_id) ?? new Set<string>(); p.add(m.value); passes.set(m.lead_id, p) }
+  }
+  for (const r of rows) {
+    const rep = latest.get(r.scan_job_id)
+    const v = gateVerdict(r, { inProcess: inProcess.has(`${tenantId}:${r.id}`), failedMarker: failed.has(r.id),
+      passed: value => passes.get(r.id)?.has(value) ?? false, reportHeld: rep === 'unreadable' || (!!rep && rep.has(r.id)) })
+    if (v) held.add(r.id)
+  }
+  return held
+}

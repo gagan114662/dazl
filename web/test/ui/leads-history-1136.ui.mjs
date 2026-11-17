@@ -65,7 +65,7 @@ try {
     job(J3, 'a test-only fixture run', null, 0, 1, now - 1800, true); lead(J3, 't1', { review: 'outside_window_undated' }); finish(J3, now - 1800, 0, 1)
     s.close()
 
-    // the Campaigns card for each scan: what the history must say too
+    // the Campaigns card for each scan: what the history must say too (the Leads page reads the bounded ?view=history split; this is the full card)
     const camps = await (await fetch(base + '/api/campaigns?limit=20', { headers: { cookie: `dazl_session=${token}` } })).json()
     const card = Object.fromEntries(camps.campaigns.map(c => [c.id, c]))
     assert.equal(card[J1]?.run?.tag, 'Research only', `NYC card: ${JSON.stringify(card[J1]?.run)}`)
@@ -98,7 +98,16 @@ try {
       await camp.first().waitFor({ timeout: 20000 })
       assert.equal(await camp.first().getByTestId('run-tag').textContent(), card[J1].run.tag)
       assert.equal((await camp.first().getByTestId('run-tag').getAttribute('class')).trim(), historyPill.trim(), `${width}: the pill colour is the Campaigns card's`)
-      out.push(`${width}: NYC and London history cards = their Campaigns cards (Research only, Change the search)`)
+      // and the campaign page itself (the issue's AC: "match the Campaigns card and the campaign page"; HIST-PAGE)
+      for (const [id, name] of [[J1, 'NYC'], [J2, 'London']]) {
+        await page.goto(base + `/app/campaigns/${id}`, { waitUntil: 'networkidle' })
+        await page.getByTestId('run-tag').first().waitFor({ timeout: 20000 })
+        // the page restates its pill once its leads load: wait for that, then compare
+        await page.waitForFunction(label => (document.querySelector('[data-testid="campaign-status"]')?.textContent ?? '').includes(label), card[id].run.label, { timeout: 20000 }).catch(() => {})
+        assert.equal((await page.getByTestId('run-tag').first().textContent()).trim(), card[id].run.tag, `${width} ${name}: the campaign page's pill is the history card's`)
+        assert.ok((await page.getByTestId('campaign-status').first().textContent()).includes(card[id].run.label), `${width} ${name}: the campaign page's line is the history card's label`)
+      }
+      out.push(`${width}: NYC and London history cards = their Campaigns cards and campaign pages (Research only, Change the search)`)
       await ctx.close()
     }
     // the campaigns read is slow: until it answers, no card shows a verdict (never the scan-time "2 need your review")

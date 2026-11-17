@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { progressOf, outcomeInputs } from '../lib/scan/progress.ts'
-import { scanOutcome } from '../lib/scan/scan-outcome.ts'
+import { outcomeOwnCopy, scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
 import { first5Of, isFirst5, verifiedLeads, FIRST5_TARGET, type First5Lead } from '../lib/scan/first5.ts'
@@ -62,9 +62,15 @@ test('THE FAST PATH: a first5 job uses the free news source, makes NO TinyFish s
 test('CONTROL: the same job WITHOUT first5 still searches TinyFish first', async () => {
   const r = await runFixture(fx({ runBudget: undefined })); assert.ok(r.calls.searches.length >= 1)
 })
-test('every news request fails -> stopped_empty, reason failed, search:news named, can continue: a distinct failure, not an empty screen', async () => {
-  const { v } = await view(fx({ extraction: [], deps: { newsHttp: async () => ({ status: 503, body: '' }) } }))
-  assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'failed', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news']); assert.match(v.message, /search:news/)
+// #1157: one failed source does not fail the run when the other searched clean. Here every news request fails and the web search
+// ran and found nothing: the run stopped with nothing found, and the message names the source that could not be searched.
+test('every news request fails while the web search finds nothing -> stopped_empty, search:news named as not searched, can continue: not a failure, not a bare empty screen', async () => {
+  const { v, outcome } = await view(fx({ extraction: [], deps: { newsHttp: async () => ({ status: 503, body: '' }) } }))
+  // the same recorded job on the current-job view (leads-client.tsx reads outcomeOwnCopy of the status payload's outcome): the failed source is named there too
+  assert.match(outcomeOwnCopy(outcome) ?? '', /^Nothing found - search:news could not be searched\. /)
+  assert.deepEqual([v.state, v.reason, v.verified, v.can_continue], ['stopped_empty', 'stopped', 0, true], JSON.stringify(v)); assert.deepEqual(v.failed_sources, ['search:news'])
+  assert.match(v.message, /^Nothing found - search:news could not be searched: /); assert.match(v.message, /the skipped source may have had results/)
+  assert.deepEqual(v.sources.map(s => [s.source, s.status]), [['search:news', 'failed'], ['search:tinyfish', 'empty']], 'the source rows still say which one failed')
 })
 test('a candidate the verifier rejects (quote not on the page) -> stopped_empty with reason rejected + counts, not a failure and not a zero', async () => {
   const { v } = await view(fx({ own: { [NEWS]: { title: 'x', text: `On ${daysAgo(12)}, An unrelated article. ${'Filler text. '.repeat(40)}` } } }))
@@ -115,6 +121,12 @@ test('#1037 (replaces the earlier first5 no-people-search rule): FIRST5 makes th
 })
 test('first5 budget disclosure: no TinyFish lead search or fetch, but the capped people searches are not_covered (#1037), and model calls are not called free', () => {
   const d = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false })
-  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'not_covered'); assert.match(s.note, /no TinyFish lead search or page fetch/); assert.match(s.note, /not free/)
+  const s = d.surfaces.find(x => x.surface === 'search_and_fetch')!; assert.equal(s.status, 'not_covered'); assert.match(s.note, /only when free news cannot serve the play, a TinyFish lead search runs instead, capped at 3 lead searches and 6 page reads/); assert.match(s.note, /not free/)
+  const off = describeRunBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, { firstPlayLead: { searches: 0, fetches: 0 } }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.match(off.note, /no TinyFish lead search or page fetch/, '#1037 item 1: fallback off -> the old wording')
+  const none = describeRunBudget({ first5: true }, { firstPlayLead: { searches: 0, fetches: 0 }, firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(none.status, 'off')
+  const leadOnly = describeRunBudget({ first5: true }, { firstPlayLead: { searches: 2, fetches: 4 }, firstPlayPeopleSearches: 0 }).surfaces.find(x => x.surface === 'search_and_fetch')!
+  assert.equal(leadOnly.status, 'not_covered'); assert.match(leadOnly.note, /capped at 2 lead searches and 4 page reads/); assert.match(leadOnly.note, /No post-scan people search/)
   assert.equal(describeRunBudget({ paid_fallback: false }).surfaces.find(x => x.surface === 'search_and_fetch')!.status, 'not_covered')
 })

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
-import { campaignsLimit, listCampaigns } from '../lib/outreach/campaigns.ts'
+import { campaignsLimit, historyCampaigns, listCampaigns } from '../lib/outreach/campaigns.ts'
 import { campaignStatus, historyStatus, runStatusOf, runTone } from '../lib/run-status.ts'
 import { historyJobs } from '../lib/scan/history-jobs.ts'
 import type { ScanRecord } from '../lib/scan/scan-outcome.ts'
@@ -83,4 +83,75 @@ test('#1136: one pill colour rule', () => {
   const r = (group: string, tag: string) => runTone({ group, tag } as never)
   assert.deepEqual([r('results', 'Leads found'), r('results', 'Leads found (counts not recorded)'), r('results', 'Needs your review'), r('results', 'Research only'), r('results', 'Not verified yet'), r('running', 'Running'), r('technical', 'Stopped'), r('no_match', 'None passed')],
     ['mint', 'mint', 'lav', 'grey', 'grey', 'peach', 'pink', 'grey'])
+})
+
+// ---- Hermes-PC review of 3eb33576 / XHawk ----
+
+// HIST-BATCH (finding 2): what GET /api/campaigns?view=history answers for the Leads page - the same pill and label as the full Campaigns card
+async function history(db: Database.Database) {
+  const jobs = await historyJobs(sqliteDb(db), 'A') as unknown as (ScanRecord & { id: string })[]
+  const byId = new Map(jobs.map(j => [j.id, j]))
+  return new Map(historyCampaigns(db, 'A', jobs.map(j => j.id)).map(c => campaignStatus(c, (byId.get(c.id) as never) ?? null)).map(c => [c.id, c]))
+}
+
+test('#1136 HIST-BATCH: the bounded history read gives every listed scan the same pill and label as its full Campaigns card (NYC, London DEFAULT-DENY)', async () => {
+  const db = store()
+  const { cards } = await both(db), h = await history(db)
+  for (const id of ['jn', 'jl']) {
+    const c = cards.get(id)!, r = h.get(id)!
+    assert.deepEqual([r.run!.tag, r.run!.label, r.run!.group], [c.run!.tag, c.run!.label, c.run!.group], id)
+    assert.deepEqual(r.next, c.next, `${id}: a non-result run's next step is the record's own, on both`)
+  }
+  assert.equal(h.get('jn')!.run!.tag, 'Research only'); assert.equal(h.get('jl')!.run!.tag, 'Research only')
+  assert.equal(h.has('jt'), false, 'a test-only run is not a campaign'); assert.equal(h.has('jc'), false, 'nor is a CSV import')
+})
+
+test('#1136 HIST-BATCH: a run with a review a check can resolve, one with passed leads, and a rejected lead - the history split equals the full one', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  const a = job(db, 'ja', 'Dental practices in Boston hiring front desk staff', JSON.stringify({ window_days: 90 }), 1, 1)
+  lead(db, 'ja', 'a1', { machine: true, date: recent }); lead(db, 'ja', 'a2', { review: 'low_confidence', date: recent }); lead(db, 'ja', 'a3', { review: 'low_confidence', date: recent }); a()
+  db.prepare("UPDATE leads SET quarantined_at = 1 WHERE id = 'a3'").run()
+  const { cards } = await both(db), h = await history(db)
+  const c = cards.get('ja')!, r = h.get('ja')!
+  assert.deepEqual([r.run!.tag, r.run!.label], [c.run!.tag, c.run!.label])
+  const q = (x: typeof c.qualification) => [x.sourceChecked, x.confirmedByYou, x.needsReview, x.research, x.unverified, x.heldResearch, x.heldResearchSourceChecked, x.rejected]
+  assert.deepEqual(q(r.qualification), q(c.qualification))
+})
+
+test('#1136 HIST-BATCH: the history read is a bounded number of queries, whatever the lead count (20 scans x 250 leads)', () => {
+  const count = (leadsPerJob: number) => {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    const ids: string[] = []
+    for (let i = 0; i < 20; i++) {
+      const id = `b${i}`; ids.push(id); const done = job(db, id, `Dental practices in city ${i} hiring front desk staff`, JSON.stringify({ window_days: 90 }), 0, leadsPerJob)
+      const ins = db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date) VALUES (?, ?, ?, 'hiring', 'https://news.example/a', ?, ?, ?, ?)")
+      db.transaction(() => { for (let k = 0; k < leadsPerJob; k++) ins.run(`${id}-${k}`, id, `Co ${id}-${k}`, k % 2 ? 80 : null, k % 2 ? 'quote' : null, k % 3 ? 'low_confidence' : null, recent) })()
+      done()
+    }
+    let n = 0
+    const real = db.prepare.bind(db)
+    ;(db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => { n++; return real(sql) }) as typeof db.prepare
+    const out = historyCampaigns(db, 'A', ids)
+    assert.equal(out.length, 20)
+    return n
+  }
+  const small = count(1), big = count(250)
+  assert.ok(big <= 6, `bounded: ${big} queries for 20 x 250 leads`)
+  assert.equal(big, small, `independent of the lead count: ${small} vs ${big}`)
+})
+
+test('#1136 TIE-SEQ (finding 3): more than 20 same-second scans - every history card of the newest 20 has its Campaigns row (created_at, insert_seq order)', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  for (let i = 0; i < 25; i++) {
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', ?, 'done', 1, 5000)").run(`s${String(i).padStart(2, '0')}`, `same-second search ${i}`)
+  }
+  // insert_seq is the order both engines agree on; here it runs opposite to SQLite's physical (rowid) order, as a Postgres heap may,
+  // so a read that leans on physical order instead of insert_seq picks a different 20
+  db.prepare('UPDATE scan_jobs SET insert_seq = 1000 - rowid').run()
+  const jobs = await historyJobs(sqliteDb(db), 'A') as unknown as { id: string }[]
+  assert.equal(jobs.length, 20)
+  const full = new Set(listCampaigns(db, 'A', 20).map(c => c.id))
+  for (const j of jobs) assert.ok(full.has(j.id), `history card ${j.id} has a Campaigns row (current: true)`)
+  const bounded = new Set(historyCampaigns(db, 'A', jobs.map(j => j.id)).map(c => c.id))
+  for (const j of jobs) assert.ok(bounded.has(j.id), `history card ${j.id} has its current split`)
 })

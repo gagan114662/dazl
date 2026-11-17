@@ -108,7 +108,7 @@ export async function issuePreviewClaim(
   // recorded spend; it stays with the seller (proofReport) and never enters the served snapshot.
   const run = await db.get<{ seller: string | null; offer: string | null; spend_reserved_usd: unknown }>('SELECT seller, offer, spend_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?', [input.runId, input.sellerTenantId])
   if (!run) return null
-  const proofInput = await loadProofInput(db, input.sellerTenantId, input.runId, { inferredOffer: runOffer(run), spendUsd: runSpend(run.spend_reserved_usd) })
+  const proofInput = await loadProofInput(db, input.sellerTenantId, input.runId, { inferredOffer: runOffer(run), spendUsd: runSpend(run.spend_reserved_usd), now })
   if (!proofInput) return null
   const proof: ProofPreview = buildProofPreview(proofInput, now)
   if (proof.status !== 'ready') return { status: 'hold', reason: proof.reason }
@@ -305,7 +305,7 @@ export async function proofReport(db: Db, sellerTenantId: string, now = Date.now
   for (const j of jobs) {
     const spendUsd = runSpend(j.spend_reserved_usd)
     spendOf.set(j.id, spendUsd)
-    const input = await loadProofInput(db, sellerTenantId, j.id, { inferredOffer: runOffer(j), spendUsd })
+    const input = await loadProofInput(db, sellerTenantId, j.id, { inferredOffer: runOffer(j), spendUsd, now })
     if (!input) continue
     const p = buildProofPreview(input, now)
     runs.push({ runId: j.id, finishedAt: j.finished_at === null ? null : Number(j.finished_at), leads: input.leads.length,

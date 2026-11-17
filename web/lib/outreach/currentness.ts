@@ -3,6 +3,7 @@ import { parseWindowDays, windowStatus } from '../scan/window.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { uncheckableCause } from '../lead-state.ts'
 import { timingProofGap } from '../scan/timing-proof.ts'
+import { researchProofGap } from '../research/proof.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
@@ -19,7 +20,14 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  // A machine-verified lead with no human review is held unless its durable, versioned timing proof stands right now
  // (#377, lib/scan/timing-proof.ts): proven event day in the window, confirmed domain, named person and published route,
  // all still bound to the recorded proof. Model confidence alone never lifts this hold.
- try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
+ // A research-verified lead (lib/research/proof.ts, MISSION v2): its event proven on the cited page by a literal quote and a second model, its
+ // day stated there inside the window, a named person proven on their own page - all still bound to the lead as it is now. Fail closed.
+ let timingStands=false
+ try { timingStands=timingProofGap(db, tenant, lead, now)===null } catch { /* an unreadable proof store holds */ }
+ if (timingStands) return false
+ // read second, and it returns after one read for a lead the research proof never marked: the old engine's leads pay almost nothing
+ try { if (researchProofGap(db, tenant, lead, now)===null) return false } catch { /* an unreadable research record never lifts the hold */ }
+ return true
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.

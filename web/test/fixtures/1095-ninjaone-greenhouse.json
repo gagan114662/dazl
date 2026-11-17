@@ -1,0 +1,890 @@
+{
+ "_note": "VERBATIM from the public Greenhouse board API of NinjaOne, read 2026-11-13 (boards-api.greenhouse.io/v1/boards/ninjaone/jobs and /jobs/{id}). list: every posting titled Account Executive; postings: the three Austin ones in full.",
+ "list": {
+  "jobs": [
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474874009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289806009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474874009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2109",
+    "title": "Account Executive, Mid Market Eastern Canada",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:05:28-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474871009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289804009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474871009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2108",
+    "title": "Account Executive, Mid Market Midwest",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:05:36-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474723009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289727009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474723009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2107",
+    "title": "Account Executive, Mid Market Northern California",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:05:47-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4482424009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4294147009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4482424009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2135",
+    "title": "Account Executive, Mid Market Pennsylvania/New Jersey",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T11:37:42-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474703009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289716009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474703009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2105",
+    "title": "Account Executive, Mid Market Southeast",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:04:04-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4472362009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4288405009,
+    "location": {
+     "name": "Austin, Texas, United States"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": null,
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4472362009,
+    "updated_at": "2026-11-09T17:57:26-05:00",
+    "requisition_id": "2093",
+    "title": "Account Executive, MSP",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-04T16:48:57-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4469783009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4286881009,
+    "location": {
+     "name": "Austin, Texas, United States"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4469783009,
+    "updated_at": "2026-11-10T14:39:15-05:00",
+    "requisition_id": "2025",
+    "title": "Account Executive, SMB",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-04T12:58:26-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4470443009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4287270009,
+    "location": {
+     "name": "Singapore"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4470443009,
+    "updated_at": "2026-11-09T23:05:59-05:00",
+    "requisition_id": "2050",
+    "title": "Account Executive, SMB - Singapore",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-04T20:35:00-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474671009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289698009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474671009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2103",
+    "title": "Enterprise Account Executive ",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:08:36-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4480963009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4293383009,
+    "location": {
+     "name": "United Kingdom"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4480963009,
+    "updated_at": "2026-11-09T17:57:30-05:00",
+    "requisition_id": "2133",
+    "title": "Enterprise Account Executive - English ",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:08:42-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4472312009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4288387009,
+    "location": {
+     "name": "Maryland, USA; Virginia, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4472312009,
+    "updated_at": "2026-11-09T17:51:53-05:00",
+    "requisition_id": "2091",
+    "title": "Enterprise Account Executive, Federal",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T12:38:21-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4459105009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4279685009,
+    "location": {
+     "name": "Georgia, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4459105009,
+    "updated_at": "2026-11-09T17:57:40-05:00",
+    "requisition_id": "70",
+    "title": "Enterprise Account Executive- GA & AL",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:09:16-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4474630009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4289674009,
+    "location": {
+     "name": "Illinois, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4474630009,
+    "updated_at": "2026-11-09T17:57:41-05:00",
+    "requisition_id": "2102",
+    "title": "Enterprise Account Executive- IL & IN",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:08:27-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4459057009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4279643009,
+    "location": {
+     "name": "Illinois, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4459057009,
+    "updated_at": "2026-11-09T17:57:40-05:00",
+    "requisition_id": "69",
+    "title": "Enterprise Account Executive- IL & IN",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:02:51-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4459023009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4279626009,
+    "location": {
+     "name": "Michigan, USA; Ohio, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4459023009,
+    "updated_at": "2026-11-09T17:57:40-05:00",
+    "requisition_id": "67",
+    "title": "Enterprise Account Executive- MI & OH",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:09:01-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4462141009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4282249009,
+    "location": {
+     "name": "Germany"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4462141009,
+    "updated_at": "2026-11-09T17:57:45-05:00",
+    "requisition_id": "2110",
+    "title": "Enterprise Account Executive MSP, DACH ",
+    "company_name": "NinjaOne",
+    "first_published": "2026-10-21T07:40:47-04:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4472284009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4288371009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4472284009,
+    "updated_at": "2026-11-09T17:51:52-05:00",
+    "requisition_id": "2090",
+    "title": "Enterprise Account Executive, SLED",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T12:38:50-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4458927009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4279564009,
+    "location": {
+     "name": "Texas, USA"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4458927009,
+    "updated_at": "2026-11-09T17:57:40-05:00",
+    "requisition_id": "63",
+    "title": "Enterprise Account Executive- TX",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T10:08:48-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4470849009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4287498009,
+    "location": {
+     "name": "Austin, Texas, United States"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": null,
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4470849009,
+    "updated_at": "2026-11-13T11:59:08-05:00",
+    "requisition_id": "2068",
+    "title": "SLED Senior Account Executive, Mid Market",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T12:39:19-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4479038009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4292288009,
+    "location": {
+     "name": "Berlin, Germany"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Remote",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4479038009,
+    "updated_at": "2026-11-09T17:57:45-05:00",
+    "requisition_id": "2121",
+    "title": "Team Lead Account Executive - Italy & Spain ",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-05T08:33:44-05:00",
+    "language": "en",
+    "application_deadline": null
+   },
+   {
+    "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4488090009",
+    "data_compliance": [
+     {
+      "type": "gdpr",
+      "requires_consent": false,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": null,
+      "demographic_data_consent_applies": true
+     }
+    ],
+    "internal_job_id": 4297543009,
+    "location": {
+     "name": "Singapore"
+    },
+    "metadata": [
+     {
+      "id": 8659618009,
+      "name": "Workplace Type",
+      "value": "Hybrid",
+      "value_type": "single_select"
+     }
+    ],
+    "id": 4488090009,
+    "updated_at": "2026-11-10T21:52:17-05:00",
+    "requisition_id": "2155",
+    "title": "Team Lead, Account Executive - Singapore",
+    "company_name": "NinjaOne",
+    "first_published": "2026-11-10T21:52:17-05:00",
+    "language": "en",
+    "application_deadline": null
+   }
+  ],
+  "meta": {
+   "total": 21
+  }
+ },
+ "postings": {
+  "4472362009": {
+   "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4472362009",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": true
+    }
+   ],
+   "internal_job_id": 4288405009,
+   "location": {
+    "name": "Austin, Texas, United States"
+   },
+   "metadata": [
+    {
+     "id": 8659618009,
+     "name": "Workplace Type",
+     "value": null,
+     "value_type": "single_select"
+    }
+   ],
+   "id": 4472362009,
+   "updated_at": "2026-11-09T17:57:26-05:00",
+   "requisition_id": "2093",
+   "title": "Account Executive, MSP",
+   "company_name": "NinjaOne",
+   "first_published": "2026-11-04T16:48:57-05:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h3&gt;About us&lt;/h3&gt;\n&lt;p&gt;NinjaOne unifies IT to simplify work for nearly 40,000 customers in 140+ countries&lt;br&gt;&lt;br&gt;The NinjaOne Unified IT Operations Platform delivers endpoint management, autonomous patching, backup, and remote access in a single console to improve efficiency, increase resilience, and reduce spend. By automating IT and managing all endpoints, organizations give employees a great technology experience at work.&lt;br&gt;&lt;br&gt;NinjaOne is obsessed with customer success and has retained a 98% customer satisfaction score for more than 5 years.&lt;/p&gt;&lt;/div&gt;&lt;h3&gt;About the Role&lt;/h3&gt;\n&lt;p&gt;The Account Executive, MSP role at NinjaOne is responsible for achieving sales and profitability objectives on small and mid-market accounts. NinjaOne AEs spend 100% of their time engaging with interested prospects, managing sales cycles to help potential customers evaluate our product, and closing revenue. &lt;strong&gt;No prospecting&lt;/strong&gt;, as we leave that to our world-class SDR and marketing teams.&lt;/p&gt;\n&lt;p&gt;This is a strategic role which will contribute significantly to the success of NinjaOne. You will be responsible for closing new business with 100% of your focus on closing qualified leads.&amp;nbsp;Core responsibilities include territory planning, relationship development, running sales cycles, pricing, presentation delivery, negotiations, and closing.&lt;/p&gt;\n&lt;p&gt;&amp;nbsp;&lt;br&gt;&lt;br&gt;&lt;strong&gt;Location&lt;/strong&gt; - &amp;nbsp;Austin, TX (Downtown Austin)&amp;nbsp;- Hybrid, in office on Monday, Tuesday, and Thursday plus additional days as required&lt;/p&gt;\n&lt;h3&gt;What You\u2019ll be Doing&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;Qualify prospective accounts to build and maintain an up-to-date pipeline of prospects to achieve and exceed annual sales goals.&lt;/li&gt;\n&lt;li&gt;Negotiate opportunity terms, discounts, and implementation with leadership approval for below-threshold discounts.&lt;/li&gt;\n&lt;li&gt;Demo the product to prospects.&lt;/li&gt;\n&lt;li&gt;Manage sales cycles to help potential customers evaluate Ninja\u2019s product and close new revenue.&lt;/li&gt;\n&lt;li&gt;Forecast opportunities in Salesforce to hit or exceed a monthly quota in a defined territory.&lt;/li&gt;\n&lt;li&gt;Other duties as needed&amp;nbsp;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;About You&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;3+ years of experience selling SaaS software solutions to B2B Prospects&lt;/li&gt;\n&lt;li&gt;Experience selling to MSP\u2019s highly preferred.&lt;/li&gt;\n&lt;li&gt;Career history of consistent success in meeting and exceeding sales quotas&lt;/li&gt;\n&lt;li&gt;Polished communication skills that are matched only by your active listening skills.&lt;/li&gt;\n&lt;li&gt;Engaging and technical you can deliver a demo that is meaningful to business users and technical audiences.&lt;/li&gt;\n&lt;li&gt;Polished professional presence and business acumen&lt;/li&gt;\n&lt;li&gt;Exceptional ability to build credibility with clients and close new business.&lt;/li&gt;\n&lt;li&gt;Experience with Salesforce or similar CRM&lt;/li&gt;\n&lt;li&gt;College degree preferred but not required.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;What You\u2019ll Love&amp;nbsp;&lt;/h3&gt;\n&lt;p&gt;We are a collaborative, kind, and curious community.&lt;br&gt;We honor your flexibility needs with full-time work that is hybrid remote.&lt;br&gt;We have you covered with our comprehensive benefits package, which includes medical, dental, and vision insurance.&lt;br&gt;We help you prepare for your financial future with our 401(k) plan.&lt;br&gt;We prioritize your work-life balance with our unlimited PTO.&lt;br&gt;We reward your work with opportunity for growth and advancement.&lt;/p&gt;\n&lt;h3&gt;Additional Information&lt;/h3&gt;\n&lt;p&gt;This position is NOT eligible for Visa sponsorship.&amp;nbsp;&amp;nbsp;&lt;/p&gt;\n&lt;p&gt;&lt;br&gt;*Due to operational policies, NinjaOne is unable to hire for this role within the city limits of Chicago. We will consider all qualified candidates who reside outside of the city proper or are willing to self-relocate.&lt;/p&gt;&lt;div class=&quot;content-conclusion&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;All qualified applicants will receive consideration for employment without regard to race, color, religion, sex, sexual orientation, gender identity, national origin, age, disability, genetic information, marital status, veteran status, or any other status protected by applicable law. We are committed to providing an inclusive and diverse work environment.&lt;/span&gt;&lt;br&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;&lt;strong&gt;Candidate Privacy&lt;/strong&gt;&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;When you apply, NinjaOne collects and uses your personal information to review your application and manage the hiring process. To learn how we use, store, and protect your data, and what your rights are, please read our Candidate Privacy Policy at &lt;a href=&quot;https://www.ninjaone.com/candidate-privacy-policy/&quot; target=&quot;cpp&quot;&gt;https://www.ninjaone.com/candidate-privacy-policy&lt;/a&gt;.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;",
+   "departments": [
+    {
+     "id": 4063164009,
+     "name": "Sales",
+     "child_ids": [
+      4063182009,
+      4063198009,
+      4063177009,
+      4070194009
+     ],
+     "parent_id": 4065183009
+    }
+   ],
+   "offices": [
+    {
+     "id": 4075248009,
+     "name": "Texas",
+     "location": "Texas, USA",
+     "child_ids": [
+      4086675009
+     ],
+     "parent_id": 4075242009
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": "http://app9.greenhouse.io/ai_opt_out_request/job_post/4472362009/ai_opt_out"
+  },
+  "4469783009": {
+   "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4469783009",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": true
+    }
+   ],
+   "internal_job_id": 4286881009,
+   "location": {
+    "name": "Austin, Texas, United States"
+   },
+   "metadata": [
+    {
+     "id": 8659618009,
+     "name": "Workplace Type",
+     "value": "Hybrid",
+     "value_type": "single_select"
+    }
+   ],
+   "id": 4469783009,
+   "updated_at": "2026-11-10T14:39:15-05:00",
+   "requisition_id": "2025",
+   "title": "Account Executive, SMB",
+   "company_name": "NinjaOne",
+   "first_published": "2026-11-04T12:58:26-05:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h3&gt;About us&lt;/h3&gt;\n&lt;p&gt;NinjaOne unifies IT to simplify work for nearly 40,000 customers in 140+ countries&lt;br&gt;&lt;br&gt;The NinjaOne Unified IT Operations Platform delivers endpoint management, autonomous patching, backup, and remote access in a single console to improve efficiency, increase resilience, and reduce spend. By automating IT and managing all endpoints, organizations give employees a great technology experience at work.&lt;br&gt;&lt;br&gt;NinjaOne is obsessed with customer success and has retained a 98% customer satisfaction score for more than 5 years.&lt;/p&gt;&lt;/div&gt;&lt;h3&gt;About the Role&lt;/h3&gt;\n&lt;p&gt;The Account Executive role at NinjaOne is responsible for achieving sales and profitability objectives and focuses on small and mid-market prospect accounts. NinjaOne AEs spend 100% of their time engaging with interested prospects, managing sales cycles to help potential customers evaluate our product, and closing revenue. No prospecting, as we leave that to our world-class SDR and marketing teams.&lt;br&gt;&lt;br&gt;This is a strategic role which will contribute significantly to the success of NinjaOne. You will be responsible for closing new business with 100% of your focus on closing qualified leads. Core responsibilities include territory planning, relationship development, running sales cycles, pricing, presentation delivery, negotiations, and closing.&amp;nbsp;&lt;br&gt;&lt;br&gt;&lt;strong&gt;Location - &lt;span style=&quot;text-decoration: underline;&quot;&gt;Austin, TX (Downtown Austin)&lt;/span&gt; &lt;/strong&gt;- Hybrid, in office on Monday, Tuesday, and Thursday plus additional days as required&lt;/p&gt;\n&lt;h3&gt;What You\u2019ll be Doing&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;Qualify prospective accounts to build and maintain an up-to-date pipeline of prospects to achieve annual sales goals&lt;/li&gt;\n&lt;li&gt;Become a trusted guide on NinjaOne\u2019s products and conduct discovery calls, presentations, and demos with prospects&lt;/li&gt;\n&lt;li&gt;Negotiate opportunity terms, discounts, and implementation with leadership approval for below-threshold discounts&lt;/li&gt;\n&lt;li&gt;Demo the product to prospects&lt;/li&gt;\n&lt;li&gt;Manage sales cycles to help potential customers evaluate Ninja\u2019s product and closing revenue&lt;/li&gt;\n&lt;li&gt;Forecast opportunities in Salesforce to hit or exceed a monthly quota in a defined territory&lt;/li&gt;\n&lt;li&gt;Other duties as needed&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;About You&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;Associate\u2019s or Bachelor\u2019s degree preferred&lt;/li&gt;\n&lt;li&gt;2+ years experience selling SaaS software to B2B prospects&lt;/li&gt;\n&lt;li&gt;Experience selling IT Operations software or similar solutions preferred&lt;/li&gt;\n&lt;li&gt;Career history of consistent success in meeting and exceeding sales quotas&lt;/li&gt;\n&lt;li&gt;Polished communication skills that are matched only by your active listening skills&lt;/li&gt;\n&lt;li&gt;Engaging and technical, you can deliver a demo that is meaningful to business users and technical audiences&lt;/li&gt;\n&lt;li&gt;Excellent professional presence and business acumen&lt;/li&gt;\n&lt;li&gt;Exceptional ability to build credibility with clients and close new business&lt;/li&gt;\n&lt;li&gt;Experience with Salesforce or similar CRM&amp;nbsp;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;What You\u2019ll Love&lt;/h3&gt;\n&lt;p&gt;We are a collaborative, kind, and curious community.&lt;br&gt;We honor your flexibility needs with full-time work that is hybrid remote.&lt;br&gt;We have you covered with our comprehensive benefits package, which includes medical, dental, and vision insurance.&lt;br&gt;We help you prepare for your financial future with our 401(k) plan.&lt;br&gt;We prioritize your work-life balance with our unlimited PTO.&lt;br&gt;We reward your work with opportunity for growth and advancement.&lt;/p&gt;\n&lt;h3&gt;Additional Information&lt;/h3&gt;\n&lt;p&gt;This position &lt;strong&gt;is\u202fNOT\u202feligible&lt;/strong&gt; for Visa sponsorship.&lt;br&gt;&amp;nbsp;&lt;br&gt;&amp;nbsp;&lt;br&gt;#BI-Hybrid&lt;br&gt;#LI-Hybrid&lt;br&gt;#LI-MB1&lt;/p&gt;&lt;div class=&quot;content-conclusion&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;All qualified applicants will receive consideration for employment without regard to race, color, religion, sex, sexual orientation, gender identity, national origin, age, disability, genetic information, marital status, veteran status, or any other status protected by applicable law. We are committed to providing an inclusive and diverse work environment.&lt;/span&gt;&lt;br&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;&lt;strong&gt;Candidate Privacy&lt;/strong&gt;&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;When you apply, NinjaOne collects and uses your personal information to review your application and manage the hiring process. To learn how we use, store, and protect your data, and what your rights are, please read our Candidate Privacy Policy at &lt;a href=&quot;https://www.ninjaone.com/candidate-privacy-policy/&quot; target=&quot;cpp&quot;&gt;https://www.ninjaone.com/candidate-privacy-policy&lt;/a&gt;.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;",
+   "departments": [
+    {
+     "id": 4063164009,
+     "name": "Sales",
+     "child_ids": [
+      4063182009,
+      4063198009,
+      4063177009,
+      4070194009
+     ],
+     "parent_id": 4065183009
+    }
+   ],
+   "offices": [
+    {
+     "id": 4086675009,
+     "name": "Austin, Texas",
+     "location": "Austin, Texas, United States",
+     "child_ids": [],
+     "parent_id": 4075248009
+    },
+    {
+     "id": 4075248009,
+     "name": "Texas",
+     "location": "Texas, USA",
+     "child_ids": [
+      4086675009
+     ],
+     "parent_id": 4075242009
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": "http://app9.greenhouse.io/ai_opt_out_request/job_post/4469783009/ai_opt_out"
+  },
+  "4470849009": {
+   "absolute_url": "https://job-boards.greenhouse.io/ninjaone/jobs/4470849009",
+   "data_compliance": [
+    {
+     "type": "gdpr",
+     "requires_consent": false,
+     "requires_processing_consent": false,
+     "requires_retention_consent": false,
+     "retention_period": null,
+     "demographic_data_consent_applies": true
+    }
+   ],
+   "internal_job_id": 4287498009,
+   "location": {
+    "name": "Austin, Texas, United States"
+   },
+   "metadata": [
+    {
+     "id": 8659618009,
+     "name": "Workplace Type",
+     "value": null,
+     "value_type": "single_select"
+    }
+   ],
+   "id": 4470849009,
+   "updated_at": "2026-11-13T11:59:08-05:00",
+   "requisition_id": "2068",
+   "title": "SLED Senior Account Executive, Mid Market",
+   "company_name": "NinjaOne",
+   "first_published": "2026-11-05T12:39:19-05:00",
+   "language": "en",
+   "application_deadline": null,
+   "content": "&lt;div class=&quot;content-intro&quot;&gt;&lt;h3&gt;About us&lt;/h3&gt;\n&lt;p&gt;NinjaOne unifies IT to simplify work for nearly 40,000 customers in 140+ countries&lt;br&gt;&lt;br&gt;The NinjaOne Unified IT Operations Platform delivers endpoint management, autonomous patching, backup, and remote access in a single console to improve efficiency, increase resilience, and reduce spend. By automating IT and managing all endpoints, organizations give employees a great technology experience at work.&lt;br&gt;&lt;br&gt;NinjaOne is obsessed with customer success and has retained a 98% customer satisfaction score for more than 5 years.&lt;/p&gt;&lt;/div&gt;&lt;h3&gt;About the Role&lt;/h3&gt;\n&lt;div&gt;The &lt;strong&gt;Account Executive, Mid-Market SLED&lt;/strong&gt; role at NinjaOne is responsible for closing new business by selling NinjaOne\u2019s products to targeted Mid-Market accounts across State &amp;amp; Local Government and Higher Education (SLED). NinjaOne AEs spend 100% of their time engaging with interested prospects, managing full sales cycles to help potential customers evaluate our product, and closing revenue.&amp;nbsp;&lt;/div&gt;\n&lt;div&gt;&lt;br&gt;This is a strategic role that will contribute significantly to&amp;nbsp;NinjaOne\u2019s&amp;nbsp;growth in the SLED segment. You will&amp;nbsp;be responsible for&amp;nbsp;closing larger, more strategic deals within the Mid-Market space and helping&amp;nbsp;NinjaOne&amp;nbsp;further expand its footprint across State agencies, municipalities, and public education institutions.&amp;nbsp;&lt;/div&gt;\n&lt;p&gt;&amp;nbsp;&lt;br&gt;&lt;br&gt;&lt;strong&gt;Location&lt;/strong&gt; - Austin, TX - Hybrid (in office on Monday, Tuesday, and Thursday - plus&amp;nbsp;additional&amp;nbsp;days as&amp;nbsp;required)&amp;nbsp;&lt;/p&gt;\n&lt;h3&gt;What You\u2019ll be Doing&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Qualify inbound SLED Mid-Market opportunities to build and&amp;nbsp;maintain&amp;nbsp;an up-to-date pipeline aligned with annual sales goals.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Conduct discovery calls, presentations, and product demos tailored to SLED technical and business stakeholders.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Manage complex Mid-Market sales cycles, ensuring prospects can effectively evaluate&amp;nbsp;NinjaOne\u2019s&amp;nbsp;platform to drive new revenue.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Navigate SLED-specific buying processes, including budget cycles, procurement steps, state contracts, and&amp;nbsp;purchasing&amp;nbsp;constraints.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Negotiate opportunity terms, discounts, and implementation details, securing leadership approval for below-threshold discounts.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Provide&amp;nbsp;accurate&amp;nbsp;forecasting to sales leadership on pipeline health, procurement timelines, and expected close dates.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Align deal strategy with SLED initiatives, funding considerations, IT modernization priorities, and public-sector requirements.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Collaborate cross-functionally with Sales Engineering, Channel partners, and Marketing to ensure a smooth and effective customer journey.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Build and execute a territory, driving growth, regional presence, and long-term pipeline development.&amp;nbsp;&lt;/span&gt;&amp;nbsp;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Ability to travel to partner conventions, customers events and product trade shows on a monthly basis&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Other duties as needed.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;About You&lt;/h3&gt;\n&lt;ul&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Associate\u2019s or Bachelor\u2019s&amp;nbsp;degree preferred, or equivalent experience.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;3\u20135 years of quota-carrying SaaS sales experience selling to B2B prospects; experience selling into Mid-Market&amp;nbsp;strongly&amp;nbsp;preferred.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;1+ years selling into SLED highly preferred (state agencies, municipalities, or higher education).&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Experience with IT Operations software or similar technical solutions is a strong plus.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Polished&amp;nbsp;communicator&amp;nbsp;with the ability to influence technical and non-technical buyers.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Proven&amp;nbsp;track record&amp;nbsp;of consistent quota attainment and success in closing mid-sized to large deals.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Strong presenter who can tailor a meaningful product demo to mixed technical and business audiences.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Highly organized and able to manage multiple active deals simultaneously while&amp;nbsp;maintaining&amp;nbsp;high follow-through.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Strong negotiation ability, self-motivated work ethic, and clear closing skills.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Experience with Salesforce or similar CRM systems preferred.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Team-oriented mindset with the ability to collaborate across departments.&amp;nbsp;&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;li&gt;&lt;span data-contrast=&quot;auto&quot;&gt;Experience developing, managing, or expanding a sales territory across the Central U.S.&lt;/span&gt;&lt;span data-ccp-props=&quot;{}&quot;&gt;&amp;nbsp;&lt;/span&gt;&lt;/li&gt;\n&lt;/ul&gt;\n&lt;h3&gt;What You\u2019ll Love&amp;nbsp;&lt;/h3&gt;\n&lt;p&gt;We are a collaborative, kind, and curious community.&lt;br&gt;We honor your flexibility needs with full-time work that is hybrid remote.&lt;br&gt;We have you covered with our comprehensive benefits package, which includes medical, dental, and vision insurance.&lt;br&gt;We help you prepare for your financial future with our 401(k) plan.&lt;br&gt;We prioritize your work-life balance with our unlimited PTO.&lt;br&gt;We reward your work with opportunity for growth and advancement.&lt;/p&gt;\n&lt;h3&gt;Additional Information&lt;/h3&gt;\n&lt;p&gt;This position is NOT eligible for Visa sponsorship.&amp;nbsp;&lt;br&gt;&lt;br&gt;*Due to operational policies, NinjaOne is unable to hire for this role within the city limits of Chicago. We will consider all qualified candidates who reside outside of the city proper or are willing to self-relocate.&lt;/p&gt;&lt;div class=&quot;content-conclusion&quot;&gt;&lt;p&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;All qualified applicants will receive consideration for employment without regard to race, color, religion, sex, sexual orientation, gender identity, national origin, age, disability, genetic information, marital status, veteran status, or any other status protected by applicable law. We are committed to providing an inclusive and diverse work environment.&lt;/span&gt;&lt;br&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;&lt;strong&gt;Candidate Privacy&lt;/strong&gt;&lt;/span&gt;&lt;br&gt;&lt;span style=&quot;font-size: 10pt;&quot;&gt;When you apply, NinjaOne collects and uses your personal information to review your application and manage the hiring process. To learn how we use, store, and protect your data, and what your rights are, please read our Candidate Privacy Policy at &lt;a href=&quot;https://www.ninjaone.com/candidate-privacy-policy/&quot; target=&quot;cpp&quot;&gt;https://www.ninjaone.com/candidate-privacy-policy&lt;/a&gt;.&lt;/span&gt;&lt;/p&gt;&lt;/div&gt;",
+   "departments": [
+    {
+     "id": 4070194009,
+     "name": "SLED",
+     "child_ids": [],
+     "parent_id": 4063164009
+    }
+   ],
+   "offices": [
+    {
+     "id": 4075248009,
+     "name": "Texas",
+     "location": "Texas, USA",
+     "child_ids": [
+      4086675009
+     ],
+     "parent_id": 4075242009
+    }
+   ],
+   "ai_disclaimer": null,
+   "include_ai_disclaimer": null,
+   "ai_opt_out_request_url": "http://app9.greenhouse.io/ai_opt_out_request/job_post/4470849009/ai_opt_out"
+  }
+ }
+}

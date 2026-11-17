@@ -22,10 +22,12 @@ import { captureError } from './errors.ts'
 import { DbQueue } from '../queue/db.ts'
 import { queueAlerts, type QueueAlert } from '../queue/alerts.ts'
 import { getMasterKey } from '../secrets.ts'
+import type { DeletionCheck, MailCheck } from './launch-checks.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
 export interface Readiness {
   ok: boolean
+  launch: { ok: boolean; required: boolean }
   // applied: the highest PG migration recorded in the store (null on SQLite, or when it could not be read)
   store: { engine: Db['kind'] | 'unknown'; migrations: { shipped: number; applied: number | null }; raw_sqlite_modules: number }
   // The alerts when the queue answered and its statistics were read within their own budget; alerts null with the
@@ -39,6 +41,9 @@ export interface Readiness {
     sqlite: CheckResult
     split: { ok: true; skipped: 'sqlite' } | { ok: boolean; raw_sqlite_modules: number }
     env: { ok: boolean; missing: number } | { ok: true; skipped: 'not_wired' }
+    // #1089: can account mail leave the host, and can an account be deleted (lib/ops/launch-checks.ts)
+    mail: MailCheck | { ok: true; skipped: 'not_wired' }
+    deletion: DeletionCheck | { ok: true; skipped: 'not_wired' }
   }
 }
 
@@ -51,6 +56,11 @@ export interface ReadinessDeps {
   rawSqliteModules?: () => number
   // the process environment to check against REQUIRED_ENV; the route passes process.env, unit callers may leave it out
   env?: () => Record<string, string | undefined>
+  // #1089: the route wires both; unit callers may leave them out (reported as skipped: 'not_wired')
+  mail?: () => MailCheck
+  deletion?: () => DeletionCheck
+  // true: mail and deletion are part of `ok` (DAZL_READY_REQUIRES_LAUNCH=1); otherwise they are reported only
+  launchRequired?: () => boolean
   timeoutMs?: number
   // budget for the optional queue statistics (the alerts), separate from the checks': min(timeoutMs, 500 ms) by default
   statsTimeoutMs?: number
@@ -147,12 +157,30 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
   const env = d.env ? envCheck(d.env()) : { ok: true as const, skipped: 'not_wired' as const }
+  const mail = d.mail ? d.mail() : { ok: true as const, skipped: 'not_wired' as const }
+  const deletion = d.deletion ? d.deletion() : { ok: true as const, skipped: 'not_wired' as const }
+  reportLaunchChecks(mail, deletion)
   return {
-    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok,
+    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && (d.launchRequired?.() ? mail.ok && deletion.ok : true),
+    // #1089: can a stranger use this deployment (account mail leaves the host, an account can be deleted)? Part of `ok`
+    // only where the operator requires it; always stated here.
+    launch: { ok: mail.ok && deletion.ok, required: d.launchRequired?.() === true },
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
     queue: queueBody,
-    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env },
+    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion },
   }
+}
+
+// One error record when the mail or deletion state changes to a SETTLED failure (not on every probe), like the env check.
+// verify_pending is not a failure: the mail check never waits, so the first probe after every start reads pending, and a
+// healthy deployment must not raise an alert each time it starts. Pending leaves the last reported state as it was.
+let lastLaunch = ''
+export const resetLaunchReport = () => { lastLaunch = '' }
+function reportLaunchChecks(mail: { ok: boolean; reason?: string }, deletion: { ok: boolean; reason?: string }): void {
+  if (!mail.ok && mail.reason === 'verify_pending') return
+  const key = [mail.ok ? '' : `mail:${mail.reason}`, deletion.ok ? '' : `deletion:${deletion.reason}`].filter(Boolean).join(',')
+  if (key && key !== lastLaunch) captureError(new Error(`not ready for customers: ${key}`), { source: 'health', where: 'readiness:launch' })
+  lastLaunch = key
 }
 
 // One error record when the set of queue alerts changes (not on every probe), like the env check.

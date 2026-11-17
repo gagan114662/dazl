@@ -1,0 +1,43 @@
+# staging.dazl.ai scan worker (#836, docs/STAGING.md "Second scan worker"). A second process beside the app that takes
+# scans from the shared work queue: same release, same env file, same database, no port. It does nothing unless
+# DAZL_SCAN_SHARED_QUEUE=1 is in the env file (it idles and says so). Not for production.
+# PartOf: stopping or restarting dazl-staging.service stops this too, and restarts it when it was running. Starting the
+# app does not start it: deploy.sh starts it after the app's restart, and it starts at boot when enabled.
+# deploy.sh also stops it by name before a recovery point.
+[Unit]
+Description=dazl staging scan worker (shared work queue)
+After=network.target dazl-staging.service
+PartOf=dazl-staging.service
+
+[Service]
+User=dazl-staging
+WorkingDirectory=/srv/dazl-staging/current/web
+EnvironmentFile=/etc/dazl-staging/env
+EnvironmentFile=-/var/lib/dazl-staging-deploy/release.env
+Environment=NODE_ENV=production
+# One scan at a time (SCAN_WORKER_CONCURRENCY, default 1). The box has 1.8 GB for production's two releases, staging and
+# this worker, and production's deploy refuses to start below 300 MB available (deploy-prod.sh, PROD_MIN_AVAIL_MB); with
+# staging and both production releases up the box showed 695 MB available (2026-11-13 23:05Z), so the worker's cap is
+# 384 MB, which leaves the production floor intact. Measured on a production-shaped copy of the prod database with the
+# stub provider, the unit's own flags (no crawl, no real network): 150 MB resident at idle and 152 MB peak after three
+# scans through the real runner, heap capped at 256 MB (2026-11-13; ~/work/verify/836). A real scan crawls and calls
+# the provider, so its peak is NOT measured yet: read `systemctl show -p MemoryPeak dazl-staging-worker` after the first
+# scans. A worker killed at the cap fails its scan closed and hands nothing back (the lease returns it, like any hard
+# kill); that is the right side to fail on. Raise the cap only from a real-scan MemoryPeak AND the box's free memory.
+# Never beside a deploy that is not committed: while a recovery point is pending (a deploy between its migration and
+# its commit point, or one a reboot interrupted), the database may still be rolled back, and a paid call recorded by
+# the worker would be erased with it. deploy.sh starts the worker after the commit point; this keeps a boot or a hand
+# start from doing it earlier. (The path is deploy.sh's STAGING_RECOVERY_ROOT default: a box that overrides that
+# variable needs a drop-in with the same path here. + runs the check as root.)
+ExecCondition=+/usr/bin/test ! -e /var/lib/dazl-staging-recovery/pending
+ExecStart=/usr/bin/node --experimental-strip-types --no-warnings --max-old-space-size=256 scripts/scan-worker.mts
+Restart=on-failure
+RestartSec=5
+MemoryHigh=320M
+MemoryMax=384M
+# SIGTERM: the worker hands its running scan back to the queue and exits (143 is its normal stop)
+SuccessExitStatus=143
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

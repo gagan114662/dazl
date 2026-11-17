@@ -21,8 +21,10 @@ const HANDED_A_GUARDED_PROVIDER: Record<string, string> = {
   'lib/scan/score.ts': 'scoreLeads(provider, ...) is called by the runner with providers_',
   'lib/scan/buyer-fit.ts': 'applyBuyerFitGate(provider, ...) is called by the runner with providers_',
   'lib/scan/model-usage.ts': 'records usage around the runner\'s guarded provider',
+  'lib/research/scan-job.ts': 'the research engine (LEAD_ENGINE=research) calls only providers the runner hands it through ctx.model: meterProvider + guardProvider over the run, job and owner-pool guards + flagAccounting, as providers_',
   'lib/scan/lead-qualify.ts': 'qualifyLead(provider, ...) is called only by qualify-run.ts with ownerGuarded',
   'lib/evals/trace.ts': 'offline eval tooling: wraps a provider it is handed, never in the app',
+  'lib/llm/owner-guard.ts': 'the owner guard itself (#846/#847): delegates each call of the provider it is handed inside the account spend context (inAccount), adding no call of its own',
   'lib/outreach/launch-policy.ts': 'launchProviders wraps the provider autopilot hands it (the launch spend cap, #405); draft-llm then calls the wrapped provider through ownerGuarded, so every call is inside the owner guard. The guarantee holds only while polishDraft/pickProvider is the sole consumer of launchProviders; a future caller bypassing pickProvider would be unguarded and this test would not catch it',
 }
 // Not call sites: the providers themselves, the guard, and the queue's own complete(token).

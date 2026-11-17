@@ -17,7 +17,7 @@ async function job(db: Db, id: string, tenant: string, o: { attempts?: number; s
   await db.run('INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, attempts, run_budget) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [id, tenant, 'Biz', 'software', 'Toronto', o.status ?? 'running', o.attempts ?? 1, o.runBudget ?? null])
 }
-const ctx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: OK_CAP, clock: () => T0, ...o })
+const ctx = (db: Db, jobId: string, tenantId: string, o: Partial<ScanSpendCtx> = {}): ScanSpendCtx => ({ db, jobId, tenantId, attempt: 1, cap: OK_CAP, accountLimits: null, clock: () => T0, ...o })
 const refusedWith = (reason: string) => (e: unknown) => e instanceof SpendRefused && e.reason === reason
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9
 
@@ -167,8 +167,8 @@ bothEngines('scan spend cap: malformed cap, price, cost and kind refuse before a
   }
   await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('render', () => { throw new TypeError('boom') })), refusedWith('cost_invalid'))
   await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('stripe.charge' as never, () => 0)), refusedWith('kind_unknown'))
-  // one huge reservation alone
-  await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('pdl.people', () => 1e9)), refusedWith('over_cap'))
+  // one reservation over the scan cap alone (5 > the CAD 5 cap; under the account's default USD 10 day, which #1167 now counts it on)
+  await assert.rejects(runWithScanSpend(ctx(db, 'j1', A), () => reserveScanSpend('pdl.people', () => 5)), refusedWith('over_cap'))
   const calls = await scanSpendCalls(db, 'j1', A)
   assert.ok(calls.every(c => c.status === 'refused'))
   assert.deepEqual(calls.map(c => c.reason).sort(), ['cap_config_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'cost_invalid', 'kind_unknown', 'model_unpriced', 'over_cap', 'price_invalid'])
@@ -201,7 +201,7 @@ bothEngines('scan spend cap: the owner retry of a held lookup draws on its own s
   await assert.rejects(runWithJobSpend(db, B, 'j1', () => reserveScanSpend('apollo.org', () => 0.01)), refusedWith('scan_not_found'))
   for (const rb of ['not json', '[]', 'null', '{"max_usd":"5"}']) {
     await job(db, `jr${rb.length}`, A, { status: 'done', runBudget: rb })
-    assert.ok(await runWithJobSpend(db, A, `jr${rb.length}`, () => reserveScanSpend('apollo.org', () => 3)), rb)
+    assert.ok(await runWithJobSpend(db, A, `jr${rb.length}`, () => reserveScanSpend('apollo.org', () => 0.5)), rb)   // above the 0.3 a valid budget would set; small enough for the account's default day cap (#1167 counts it)
   }
   assert.deepEqual((await scanSpendCalls(db, 'j1', A)).map(c => `${c.attempt}:${c.status}`).sort(), ['3:refused', '3:reserved'])
 })

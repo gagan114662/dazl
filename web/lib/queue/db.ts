@@ -20,7 +20,7 @@ import { backoffSeconds, DEFAULT_BACKOFF, type BackoffPolicy } from './backoff.t
 import {
   DEFAULT_LEASE_S, DEFAULT_MAX_ATTEMPTS,
   type Claim, type ClaimOptions, type EnqueueInput, type EnqueueResult, type FailOptions, type FailOutcome, type WorkItem,
-  type QueueKindStats,
+  type QueueKindStats, type ClaimRecord, CLAIM_LOG_MAX,
 } from './types.ts'
 
 const MAX_ERROR = 200
@@ -30,6 +30,7 @@ interface Row {
   attempts: number; max_attempts: number; not_before: number; created_at: number
   claimed_at: number | null; lease_expires_at: number | null
   claim_token: number | null; last_error: string | null
+  claimed_by?: string | null; claim_log?: string | null
 }
 
 const num = (v: number | string | null) => v === null ? null : Number(v)
@@ -38,9 +39,23 @@ function toItem(r: Row): WorkItem {
     id: r.id, tenantId: r.tenant_id, kind: r.kind, status: r.status as WorkItem['status'],
     attempts: Number(r.attempts), maxAttempts: Number(r.max_attempts), notBefore: Number(r.not_before),
     createdAt: Number(r.created_at), claimedAt: num(r.claimed_at), leaseExpiresAt: num(r.lease_expires_at),
-    claimToken: num(r.claim_token), lastError: r.last_error,
+    claimToken: num(r.claim_token), lastError: r.last_error, claimedBy: r.claimed_by ?? null, claimLog: readClaimLog(r.claim_log),
   }
 }
+
+// The item's claim history (work_queue.claim_log, a JSON list). Anything unreadable reads as no history: the log is a
+// record for operators, never an input to a claim decision.
+function readClaimLog(raw: string | null | undefined): ClaimRecord[] {
+  if (!raw) return []
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (!Array.isArray(v)) return []
+    return v.filter((e): e is ClaimRecord => !!e && typeof e === 'object' && Number.isInteger((e as ClaimRecord).attempt) && Number.isInteger((e as ClaimRecord).token) && Number.isInteger((e as ClaimRecord).at)
+      && ((e as ClaimRecord).by === null || typeof (e as ClaimRecord).by === 'string'))
+  } catch { return [] }
+}
+// An owner is an instance id: letters, digits, . _ - only, at most 64 (lib/ops/instance.ts). Anything else is not recorded.
+const ownerOf = (o: string | undefined): string | null => o !== undefined && /^[A-Za-z0-9._-]{1,64}$/.test(o) ? o : null
 
 const nowS = () => Math.floor(Date.now() / 1000)
 
@@ -149,6 +164,7 @@ export class DbQueue {
     const laneArgs = opts?.lane ? kindList : []
     const rr = opts?.order === 'round_robin'
     const { backoff, rng } = this
+    const owner = ownerOf(opts?.owner)
     return this.db.tx(function* (t): TxBody<Claim | null> {
       // Serializes claims across instances on Postgres (row lock to commit); the token is unique and never reused.
       yield* t.run("INSERT INTO work_queue_meta (k, v) VALUES ('token', 0) ON CONFLICT (k) DO NOTHING")
@@ -168,9 +184,12 @@ export class DbQueue {
         [now, ...(opts?.kinds ?? []), ...(opts?.tenants ?? []), ...laneArgs, perTenant])
       if (!row) return null
       yield* t.run('INSERT INTO work_queue_meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', [`t:${row.tenant_id}`, token])
+      // Who takes this attempt (#836): the latest claimer stays on the row after it settles, and the bounded log keeps the
+      // earlier attempts, so a scan that changed hands (a restart, a dead instance) shows both in the store.
+      const log = [...readClaimLog(row.claim_log), { attempt: Number(row.attempts) + 1, token, by: owner, at: now }].slice(-CLAIM_LOG_MAX)
       const claimed = yield* t.get<Row>(
-        "UPDATE work_queue SET status = 'claimed', attempts = attempts + 1, claimed_at = ?, lease_expires_at = ?, claim_token = ? WHERE id = ? AND status = 'pending' RETURNING *",
-        [now, now + lease, token, row.id])
+        "UPDATE work_queue SET status = 'claimed', attempts = attempts + 1, claimed_at = ?, lease_expires_at = ?, claim_token = ?, claimed_by = ?, claim_log = ? WHERE id = ? AND status = 'pending' RETURNING *",
+        [now, now + lease, token, owner, JSON.stringify(log), row.id])
       return claimed ? { item: toItem(claimed), token, leaseExpiresAt: now + lease } : null
     })
   }

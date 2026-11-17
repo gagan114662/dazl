@@ -49,9 +49,10 @@ export function resolveFacts(db: Database.Database, job: JobLike, tried: Map<str
   let crawlAudit: { lookup: string; status: string }[] = []
   try { crawlAudit = db.prepare("SELECT lookup, status FROM connector_audit WHERE scan_job_id = ? AND connector = 'sitecrawl'").all(job.id) as { lookup: string; status: string }[] } catch { crawlAudit = [] }
   const windowDays = parseWindowDays(job.query ?? '') ?? (() => { try { const w = JSON.parse(job.icp ?? 'null')?.window_days; return typeof w === 'number' ? w : null } catch { return null } })()
+  const jobWhere: string[] = (() => { try { const w = JSON.parse(job.icp ?? 'null')?.where; return Array.isArray(w) ? w.filter((x: unknown): x is string => typeof x === 'string') : [] } catch { return [] } })()
   return leads.map(l => {
     const rows = enr.all(l.id, job.user_id) as { connector: string; kind: string; value: string; label: string | null; source_url?: string | null }[]
-    const leadDomains = new Set<string>([l.company, ...probeDomains(l.company)])
+    const leadDomains = new Set<string>([l.company, ...probeDomains(l.company, jobWhere)])   // the crawl's own guesses, the request country's TLD included (#1122)
     if (l.source_url) { try { leadDomains.add(new URL(l.source_url).hostname.toLowerCase()) } catch { /* non-url source */ } }
     for (const r of rows) {
       if (r.kind === 'domain') leadDomains.add(r.value.split('|')[0].toLowerCase())

@@ -8,6 +8,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migrateSpendPools } from '../lib/llm/spend-pool.ts'
 
 const master = randomBytes(32)
 const ENV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://w.example', ADVANCED_WORKER_TOKEN: 't' } as Record<string, string>
@@ -18,7 +19,7 @@ const item = (url: string, title: string, date: string | null) => ({ url, title,
 
 function db() {
   const d = new Database(':memory:')
-  migrateConnectors(d); migrateAdvanced(d); migrateKeys(d); migrateThreadReplies(d)
+  migrateConnectors(d); migrateAdvanced(d); migrateKeys(d); migrateThreadReplies(d); migrateSpendPools(d) // #846/#847: the account caps' store
   return d
 }
 

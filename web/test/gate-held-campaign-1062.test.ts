@@ -169,7 +169,7 @@ test('#1062 route seam: GET /api/leads carries gate_held and Home / Leads count 
 })
 
 test('#1062 Home / onboarding: a lead that is otherwise READY (verified source, verified date, a fit) but gate-held is research, never an opportunity', () => {
-  const ready = (o: Partial<PreviewLead> = {}): PreviewLead => ({ id: 'r', company: 'Co r', signal: 's', source_url: 'https://n.example/a', evidence_excerpt: 'q', event_date: new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10), date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'w', icp_match: null, company_domain: 'r.example', contact: 'a@r.example', quarantined_at: null, confidence: 90, human_confirmed_at: null, ...o } as PreviewLead)
+  const ready = (o: Partial<PreviewLead> = {}): PreviewLead => ({ id: 'r', company: 'Co r', signal: 's', source_url: 'https://n.example/a', evidence_excerpt: 'q', event_date: new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10), date_status: 'unverified', day_verified: true, review_reason: null, fit: 4, intent: 4, why: 'w', icp_match: null, company_domain: 'r.example', contact: 'a@r.example', quarantined_at: null, confidence: 90, human_confirmed_at: null, ...o } as PreviewLead)
   assert.equal(heldReason(ready()), null, 'control: without the gate the lead is ready')
   assert.deepEqual(previewSplit([ready()]).opportunities.map(l => l.id), ['r'], 'control: an opportunity')
   assert.equal(heldReason(ready({ gate_held: true })), 'a required check has not passed')
