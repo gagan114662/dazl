@@ -1,6 +1,7 @@
 // Workspace credit pools for BYOK enrichment (lib/enrich/credit-pool.ts, #363): reserve before every credit-charging
 // Apollo/PDL call, settle to the charge the response proves, refund only a call never made, fail closed when the
 // reservation cannot be saved. Synthetic tenants and companies; stubbed providers only - no network, no credits.
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
