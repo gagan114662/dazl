@@ -46,3 +46,14 @@ export async function readJobCost(db: Db, tenantId: string, jobId: string): Prom
     return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd), read: !!row }
   } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, read: false } }
 }
+
+// #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
+// running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
+// call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.
+export async function readLastActivity(db: Db, tenantId: string, jobId: string): Promise<number | null> {
+  try {
+    const row = await db.get<{ c: number | string | null; s: number | string | null }>('SELECT MAX(c.created_at) AS c, MAX(c.settled_at) AS s FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ?', [tenantId, jobId])
+    const vals = [row?.c, row?.s].map(v => (v == null ? null : Number(v))).filter((v): v is number => v !== null && Number.isFinite(v))
+    return vals.length ? Math.max(...vals) : null
+  } catch { return null }
+}

@@ -4,7 +4,7 @@ on:
     paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
+    # no path filter on main: every merged commit gets the full suite and, if green, main-green (gate 3)
   # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
@@ -15,11 +15,15 @@ jobs:
   # Full suite on SQLite, today's runtime store. PG-only tests skip here.
   test-sqlite:
     runs-on: ubuntu-latest
+    # Gate 2: PRs get a hard 5-minute budget (affected tests only); main runs the full suite (gate 3).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 45 }}
     defaults:
       run:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,18 +32,40 @@ jobs:
       - run: npm ci
       # one tsc pass: ordinary type errors AND unused locals/imports/parameters (narrow documented exemptions, #898).
       # check-unused fails on any non-unused TS error too, so a separate `tsc --noEmit` step would only compile twice.
-      - run: npm run check:unused
+      - name: Lint changed files (PR) / typecheck (main)
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.sha }}" -- 'web/*.ts' 'web/*.tsx' 'web/*.mts' 'web/*.mjs' | sed 's#^web/##' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+            [ -z "$files" ] || npx eslint $files
+          else
+            npm run check:unused
+          fi
       # age for the encrypted off-host backup tests (test/offhost-backup.test.ts); DAZL_REQUIRE_AGE makes a missing one fail
       - run: sudo apt-get update -q && sudo apt-get install -y -q age
-      - run: npm test
+      - name: Affected tests (PR only; gate 2)
+        id: sel
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        run: |
+          sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          echo "tests=$sel" >> "$GITHUB_OUTPUT"
+          echo "affected: $sel"
+      - name: Tests (PR = affected, main = full suite)
         env:
           DAZL_REQUIRE_AGE: "1"
+          SEL: ${{ steps.sel.outputs.tests }}
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then npm test
+          elif [ "$SEL" = NONE ]; then echo "no affected tests"
+          else SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test $SEL
+          fi
 
   # Full suite again with a Postgres 16 service container. Tests that take DAZL_TEST_PG_URL run against it (data layer
   # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
   # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
   test-postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 45 }}
     services:
       postgres:
         image: postgres:16
@@ -57,16 +83,71 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
-      - run: npm test
+      - name: Affected tests (PR only; gate 2)
+        id: sel
+        if: github.event_name == 'pull_request'
+        working-directory: .
+        run: |
+          sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          echo "tests=$sel" >> "$GITHUB_OUTPUT"
+          echo "affected: $sel"
+      - name: Tests (PR = affected, main = full suite)
+        env:
+          SEL: ${{ steps.sel.outputs.tests }}
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then npm test
+          elif [ "$SEL" = NONE ]; then echo "no affected tests"
+          else SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test $SEL
+          fi
       - name: db:migrate against the service container, twice (second run must apply nothing)
         run: |
           DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate
           DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate | grep -q 'applied \[\]'
       - name: live leads-read contract on the regenerated schema
         run: DAZL_PG_ADMIN=$DAZL_TEST_PG_URL node --experimental-strip-types --test test/leads-read-pg-live.test.ts
+
+  # Gate 3: after the full suite passes on main, mark the commit green. Only main-green commits may deploy (prod-deploy.yml).
+  main-green:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test-sqlite, test-postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      statuses: write
+    steps:
+      - name: Mark main-green (commit status + moving tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          gh api "repos/$REPO/statuses/$SHA" -f state=success -f context=main-green -f description="full suite passed post-merge"
+          gh api "repos/$REPO/git/refs/tags/main-green" -X PATCH -f sha="$SHA" -F force=true \
+            || gh api "repos/$REPO/git/refs" -f ref=refs/tags/main-green -f sha="$SHA"
+
+  # Gate 2: say clearly when a PR job hit the 5-minute budget, so an optimization lane gets opened.
+  pr-budget:
+    if: always() && github.event_name == 'pull_request'
+    needs: [test-sqlite, test-postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Budget report
+        env:
+          R1: ${{ needs.test-sqlite.result }}
+          R2: ${{ needs.test-postgres.result }}
+        run: |
+          echo "test-sqlite=$R1 test-postgres=$R2"
+          if [ "$R1" = cancelled ] || [ "$R2" = cancelled ]; then
+            echo "::error::PR CI over the 5-minute budget (job cancelled by timeout). Open an optimization lane."
+            exit 1
+          fi

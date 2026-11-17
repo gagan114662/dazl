@@ -31,7 +31,7 @@ import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
@@ -44,7 +44,8 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -1237,7 +1238,7 @@ export interface RunDeps {
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
   linkedinTransport?: import('../signals/linkedin-people.ts').LinkedInTransport   // a reviewed LinkedIn transport (#192); none by default, so nothing is requested
-  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
+  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
 const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
@@ -1608,7 +1609,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : placeSkipReason(job.query, icpForSources?.where ?? []))   // #1205: the reason names the place and what to change
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
@@ -2151,7 +2152,61 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // be the company's own (sitecrawl.ts companyHostsFromSearch) are returned; crawlJob still runs the homepage name check and the place
 // check on each before anything is recorded. undefined when TinyFish is off: the crawl then guesses domains from the name as before.
 // A search the scan's budget refuses ends the searching for this scan (nothing was sent); it never ends the crawl.
-export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; crawlGet?: unknown; first5?: boolean; paidFallback?: boolean; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
+  const free = freeSiteFinderFor(db, job, deps, signal)
+  const paid = paidSiteFinderFor(db, job, deps, signal)
+  if (!free) return paid
+  if (!paid) return free
+  // free public data first; the paid search only for a company the free sources could not place
+  return Object.assign(async (company: string, where: string[]) => { const f = await free(company, where); return f.length > 0 ? f : paid(company, where) }, { recordSite: free.recordSite })
+}
+
+// #1122: the company's own site from free public data (Wikidata's official website, OpenStreetMap's website tag), for EVERY scan kind:
+// it costs nothing, so a trial, a first play and a scheduled run get it too. One lookup per company per scan, at most
+// FREE_SITE_LOOKUPS_PER_SCAN; every lookup leaves an audit row (site_free_<outcome>). DAZL_FREE_SITE_FINDER=0 turns it off.
+export const FREE_SITE_LOOKUPS_PER_SCAN = 20
+export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean }
+export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
+  if ((deps.env ?? process.env).DAZL_FREE_SITE_FINDER === '0') return undefined
+  // a run whose crawl fetch is injected (tests, fixtures) never reaches the public internet through this finder unless its fetch is injected too
+  if (deps.crawlGet && !deps.freeSiteFetch) return undefined
+  let asked = 0
+  const answers = new Map<string, Promise<string[]>>()
+  // 1289-F2: a public-record mark is bound to the company whose OWN lookup returned it (exact name key, "Group" kept), never to the host alone
+  const records = new Set<string>()
+  const recordKey = (site: string, company: string) => `${siteCompanyKey(company)}\u0000${site}`   // 1289-F2 r3: the same key as the answer cache
+  const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_free_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
+  const find = (company: string, where: string[]): Promise<string[]> => {
+    if (hostNamesFor(company).length === 0) return Promise.resolve([])
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
+    const had = answers.get(key)
+    if (had) return had
+    if (asked >= FREE_SITE_LOOKUPS_PER_SCAN || signal?.aborted) return Promise.resolve([])
+    asked++
+    const answer = (async () => {
+      try {
+        const { hits, outcomes } = await freeCompanySitesDetailed(company, where, { ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
+        // Wikidata answers by NAME alone (a same-named town or brand is possible), so its host must carry the company's name, as a web-search
+        // hit must; an OpenStreetMap record is a business of that name IN the request's place, so any own-site host it gives is a candidate
+        const named = companyHostsFromSearch(company, hits.filter(h => h.source === 'wikidata'), 3, where)
+        const mapped = hits.filter(h => h.source === 'openstreetmap').map(h => ownSiteHost(h.url)).filter((x): x is string => !!x)
+        const hosts = [...new Set([...named, ...mapped])].slice(0, 3)
+        for (const h of named) if (hosts.includes(h)) records.add(recordKey(h, company))   // Wikidata's official website of an item named exactly like the company
+        const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : [])])].join('+') || 'none'
+        // 1289-F3: a source that failed or was cancelled is named in the audit ("osm" keeps the row inside the 60-character status); with no host, the lookup is failed/cancelled, not no_match
+        const incomplete = (Object.entries(outcomes) as [string, string][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
+        const head = hosts.length > 0 ? `ok_${from}` : incomplete.some(([, o]) => o === 'failed') ? 'failed' : incomplete.length > 0 ? 'cancelled' : 'no_match'
+        note(company, `${head}${incomplete.map(([s, o]) => ` ${s === 'openstreetmap' ? 'osm' : s}=${o}`).join('')}`, hosts.length)
+        return hosts
+      } catch { note(company, 'error', 0); return [] }
+    })()
+    answers.set(key, answer)
+    return answer
+  }
+  return Object.assign(find, { recordSite: (site: string, company: string) => records.has(recordKey(site, company)) })
+}
+
+function paidSiteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
   // Policy (run-budget.ts SITE_SEARCHES_PER_SCAN): never a free-trial scan (its reserve is planned for the lead and people searches),
   // never a first play, never a run that switched paid steps off. Those scans keep the name-guessed domains.
   if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || job.funded_by === 'trial' || trialCharges.get(job)) return undefined
@@ -2166,7 +2221,7 @@ export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl
   return (company, where) => {
     // a name too short to tell one company's host from another's would spend a search whose every result is refused
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
-    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
     const had = answers.get(key)
     if (had) return had
     if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return Promise.resolve([])
