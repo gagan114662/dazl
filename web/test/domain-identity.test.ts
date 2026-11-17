@@ -1,6 +1,7 @@
 // A company domain must not be accepted from a NAME-ONLY guess. Live shape: a lead in Sunnyside, NY ("Smile Avenue Dental"); the guessed domain smileavenuedental.com belongs to a same-name practice in
 // Pico Rivera, CA; its homepage names the company, and its contacts sit on that same domain, so the domain and the contacts agree with each other. Only the site's OWN location can tell them apart.
 // Isolated fixtures through the real runJob (invented businesses, stubbed article / site / grader); no network, no key, no credits. No contact detail here is real.
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
