@@ -2161,6 +2161,8 @@ export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl
 // #1122: the company's own site from free public data (Wikidata's official website, OpenStreetMap's website tag), for EVERY scan kind:
 // it costs nothing, so a trial, a first play and a scheduled run get it too. One lookup per company per scan, at most
 // FREE_SITE_LOOKUPS_PER_SCAN; every lookup leaves an audit row (site_free_<outcome>). DAZL_FREE_SITE_FINDER=0 turns it off.
+// #1122/#1037: after the two public records, a free web search (DuckDuckGo HTML) for a company neither placed; DAZL_FREE_WEB_SEARCH=0 turns
+// that step off (an injected test fetch reaches it only with DAZL_FREE_WEB_SEARCH=1).
 export const FREE_SITE_LOOKUPS_PER_SCAN = 20
 export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean }
 export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
@@ -2182,16 +2184,18 @@ export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeS
     asked++
     const answer = (async () => {
       try {
-        const { hits, outcomes } = await freeCompanySitesDetailed(company, where, { ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
+        const { hits, outcomes } = await freeCompanySitesDetailed(company, where, { webSearch: deps.freeSiteFetch ? (deps.env ?? process.env).DAZL_FREE_WEB_SEARCH === '1' : (deps.env ?? process.env).DAZL_FREE_WEB_SEARCH !== '0', ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
         // Wikidata answers by NAME alone (a same-named town or brand is possible), so its host must carry the company's name, as a web-search
         // hit must; an OpenStreetMap record is a business of that name IN the request's place, so any own-site host it gives is a candidate
         const named = companyHostsFromSearch(company, hits.filter(h => h.source === 'wikidata'), 3, where)
         const mapped = hits.filter(h => h.source === 'openstreetmap').map(h => ownSiteHost(h.url)).filter((x): x is string => !!x)
-        const hosts = [...new Set([...named, ...mapped])].slice(0, 3)
+        // #1122/#1037: a free web-search result is held to the same rule as a paid one: its host must carry the company's name
+        const searched = companyHostsFromSearch(company, hits.filter(h => h.source === 'websearch'), 3, where)
+        const hosts = [...new Set([...named, ...mapped, ...searched])].slice(0, 3)
         for (const h of named) if (hosts.includes(h)) records.add(recordKey(h, company))   // Wikidata's official website of an item named exactly like the company
-        const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : [])])].join('+') || 'none'
+        const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : []), ...(searched.some(m => hosts.includes(m) && !named.includes(m) && !mapped.includes(m)) ? ['web'] : [])])].join('+') || 'none'
         // 1289-F3: a source that failed or was cancelled is named in the audit ("osm" keeps the row inside the 60-character status); with no host, the lookup is failed/cancelled, not no_match
-        const incomplete = (Object.entries(outcomes) as [string, string][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
+        const incomplete = (Object.entries(outcomes) as [string, string | undefined][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
         const head = hosts.length > 0 ? `ok_${from}` : incomplete.some(([, o]) => o === 'failed') ? 'failed' : incomplete.length > 0 ? 'cancelled' : 'no_match'
         note(company, `${head}${incomplete.map(([s, o]) => ` ${s === 'openstreetmap' ? 'osm' : s}=${o}`).join('')}`, hosts.length)
         return hosts
