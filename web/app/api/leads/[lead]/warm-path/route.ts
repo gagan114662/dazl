@@ -25,7 +25,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ lead
   const { lead } = await params
   const g = await guard(req, lead, 'read')
   if (g.res) return g.res
-  return NextResponse.json(await warmPathsForLead(await getDb(), g.user!.tenantId, lead))
+  const db = await getDb()
+  // #830: another workspace's lead looks nonexistent (404), like work-email and feedback.
+  if (!(await db.get('SELECT 1 AS x FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [lead, g.user!.tenantId]))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  return NextResponse.json(await warmPathsForLead(db, g.user!.tenantId, lead))
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {

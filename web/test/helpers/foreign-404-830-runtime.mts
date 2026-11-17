@@ -4,7 +4,30 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { createJob } from '../../lib/scan/store.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
+import { migrateOutreach } from '../../lib/outreach/store.ts'
+import { migrateReopen } from '../../lib/outreach/reopen.ts'
+import { migrateReplies } from '../../lib/outreach/replies.ts'
+import { migrateMonitors, createMonitor } from '../../lib/monitors.ts'
+import { migrateSourceReview } from '../../lib/scan/source-review.ts'
+import { migrateSequences } from '../../lib/outreach/sequences.ts'
+import { migrateWatch } from '../../lib/watch.ts'
+import { migrateKeys } from '../../lib/llm/key-store.ts'
+import { migrateAdvanced } from '../../lib/advanced/index.ts'
+import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { migratePlans } from '../../lib/plans.ts'
+import { migrateBilling } from '../../lib/billing/stripe.ts'
+import { migrateAutopilot } from '../../lib/outreach/autopilot.ts'
+import { migrateLedger } from '../../lib/outreach/ledger.ts'
+import { migrateCsv } from '../../lib/scan/csv-import.ts'
+import { migrateCommenterImport } from '../../lib/scan/commenter-import.ts'
+import { migrateMemory } from '../../lib/memory.ts'
+import { migrateThreadReplies } from '../../lib/replies/threads.ts'
+import { migrateTrial } from '../../lib/scan/trial.ts'
+import { migrateCompetitors } from '../../lib/signals/competitor-reddit.ts'
+import { migrateEvents } from '../../lib/events/store.ts'
+import { migrateSeo } from '../../lib/seo/audit.ts'
 import { migrateWarm } from '../../lib/warm/connections.ts'
 import { AUDIT_DDL } from '../../lib/audit.ts'
 import { GET as exportGET } from '../../app/api/leads/export/route.ts'
@@ -16,7 +39,7 @@ const hex = () => randomBytes(12).toString('hex')
 
 function build() {
   const db = new Database(':memory:')
-  for (const m of [migrateScan, migrateWarm]) m(db)
+  for (const m of [migrateScan, migrateSourceReview, migrateWatch, migrateKeys, migratePlans, migrateConnectors, migrateAdvanced, migrateBilling, migrateOutreach, migrateAutopilot, migrateLedger, migrateReplies, migrateThreadReplies, migrateSequences, migrateTrial, migrateCompetitors, migrateEvents, migrateWarm, migrateSeo, migrateMonitors, migrateCsv, migrateCommenterImport, migrateMemory, migrateReopen]) m(db)
   db.exec(AUDIT_DDL)
   setScanDb(db)
   const seed = (t: string, co: string) => {
