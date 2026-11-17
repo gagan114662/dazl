@@ -1093,7 +1093,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
       // #1122/#1037: a job-board posting that links no company site: the employer's ATS posting it links (same company slug) is read once,
       // and any site IT links or names becomes a candidate; then the slug's own domains join the name guesses below.
-      const board = ev && !anchored ? jobBoardSlugs(l.company, ev.finalUrl ?? l.source_url, ev.body) : { slug: '', ats: [] as string[] }
+      const board = !anchored ? jobBoardSlugs(l.company, ev?.finalUrl ?? l.source_url, ev?.body ?? '') : { slug: '', ats: [] as string[] }
       for (const a of board.ats) {
         if (anchored || deps.signal?.aborted) break
         let page: Awaited<ReturnType<typeof evidenceGet>> = null
@@ -1107,6 +1107,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       const fromSlug = board.slug ? slugDomains(board.slug, where) : []
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
+      let lookupPending = false
+      let probeGuesses: string[] = []
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
         // are rejected by the homepage name check inside crawlSite.
@@ -1120,15 +1122,18 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           // #1122 (review at 01140156): the lead's source page is ON the company's own name-built domain and it refused reading. That site is
           // already known and already refused us; a web search could only return it again, so none is made and the reason says what happened.
           const ownBlocked = !!blockedHost && guesses.some(g => !notBlockedHost(g))
-          // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
-          let found: string[] = []
-          if (deps.findSites && !deps.signal?.aborted && !ownBlocked) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
-          sites = [...new Set([...structured, ...found, ...fromSlug, ...guesses])]
+          // Check the posting's candidates and employer slug BEFORE an external lookup can consume the deadline.
+          // Search remains a fallback, followed by the remaining name guesses, under the same identity/place checks.
+          lookupPending = !!deps.findSites && !ownBlocked
+          probeGuesses = guesses.filter(notBlockedHost)
+          if (blockedHost && probeGuesses.length !== guesses.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 })
+          sites = [...new Set([...structured, ...fromSlug])].filter(notBlockedHost)
+          if (!lookupPending) sites = [...new Set([...sites, ...probeGuesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
           const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
           if (ownBlocked) unresolved = ownCode
-          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); return }
+          if (sites.length === 0 && !lookupPending) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); return }
         }
       }
       let redirects = 0, asks = 0, robotsStopped = false, answered = false
@@ -1138,7 +1143,28 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
       const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? (ev.text ?? plainText(ev.body)) : ''].join(' '), l.company)
-      for (const cand of sites) {
+      for (let i = 0; i < sites.length || lookupPending; i++) {
+        if (deps.signal?.aborted) return
+        if (i >= sites.length) {
+          lookupPending = false
+          let found: string[] = []
+          try { found = await deps.findSites!(l.company, where) } catch { /* failed lookup: only local guesses remain */ }
+          if (deps.signal?.aborted) return
+          // A public record can supply new identity provenance for a host already probed. Re-evaluate it
+          // against the cached homepage (no extra network), with recordSite now bound to this company.
+          for (const d of [...new Set(found)]) {
+            if (!notBlockedHost(d)) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost!, status: 'skipped_site_refused_us', results: 0 }); continue }
+            sites.push(d)
+            if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+          }
+          for (const d of probeGuesses) {
+            if (sites.includes(d)) continue
+            sites.push(d)
+            if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+          }
+          if (i >= sites.length) break
+        }
+        const cand = sites[i]
         site = cand
         r = await readSite(cand, l.company)
         // #1122: a name-built or searched domain that only FORWARDS to another site (queenstreetdentalcentre.ca -> qsdc.ca). The crawl's fetch
