@@ -1,5 +1,5 @@
 'use client'
-import { capLine, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate'
+import { capLine, customerView, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate'
 import TrialRefusalNotice from '../trial-refusal-notice'
 
 const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
@@ -9,6 +9,8 @@ const range = (r: { min: number; max: number }) => r.min === r.max ? usd(r.min) 
 // with its assumptions, and the user's confirmation. A blocked estimate has no Run button, only what to change.
 export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; query?: string }) {
   const v = est.verdict
+  // #1319: customer copy only (no env var names, model ids or never-run rows); a trial total is clamped to its per-scan cap
+  const view = customerView(est)
   return (
     <section className="card p-4 sm:p-5 my-4 text-sm" data-testid="estimate-confirm" data-verdict={v.ok ? 'ok' : 'blocked'} aria-label="Price estimate">
       <h2 className="font-semibold text-base">What this run will use</h2>
@@ -19,7 +21,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
         <table className="block sm:table w-full text-left text-xs sm:text-sm" data-testid="estimate-rows">
           <thead className="hidden sm:table-header-group"><tr className="text-[var(--ink-3)]"><th className="pr-3 py-1 font-medium">Provider / source</th><th className="pr-3 font-medium">Unit price</th><th className="pr-3 font-medium">Expected use</th><th className="text-right font-medium">Projected</th></tr></thead>
           <tbody className="block sm:table-row-group">
-            {est.rows.map(r => (
+            {view.rows.map(r => (
               <tr key={r.id} className="block sm:table-row border-t border-[var(--line)] align-top py-2 sm:py-0" data-testid="estimate-row" data-row={r.id}>
                 <td className="block sm:table-cell sm:pr-3 sm:py-2"><span className="font-medium">{r.label}</span><br /><span className="text-[var(--ink-3)]">{r.provider}</span></td>
                 <td className="block sm:table-cell sm:pr-3 sm:py-2 mt-1 sm:mt-0"><span className="sm:hidden text-[var(--ink-3)]">Unit price: </span>{r.unit_usd}</td>
@@ -28,9 +30,10 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
               </tr>
             ))}
           </tbody>
-          <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(est.total)}</td></tr></tfoot>
+          <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Projected total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(view.total)}</td></tr></tfoot>
         </table>
       </div>
+      {view.trial_cap_line && <p className="mt-2 text-xs font-medium" data-testid="estimate-trial-cap">{view.trial_cap_line}</p>}
       {est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
       {est.search_allowance?.low && <p className="mt-2 text-xs font-medium" role="status" data-testid="estimate-search-allowance">{searchAllowanceLine(est.search_allowance)}</p>}
       {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}
@@ -40,9 +43,9 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
         : <p className={`mt-2 ${v.ok ? '' : 'text-red-700 font-medium'}`} role={v.ok ? 'status' : 'alert'} data-testid="estimate-verdict">{v.message}</p>}
       {v.warning && <p className="mt-1 text-xs" data-testid="estimate-warning">{v.warning}</p>}
       {!v.ok && !(v.reason === 'trial_unavailable' && v.trial_refusal) && <ul className="list-disc ml-5 mt-1 text-xs" data-testid="estimate-change">{v.change.map(c => <li key={c}>{c}</li>)}</ul>}
-      <details className="mt-3 text-xs"><summary className="cursor-pointer">Assumptions</summary><ul className="list-disc ml-5 mt-1" data-testid="estimate-assumptions">{est.assumptions.map(a => <li key={a}>{a}</li>)}</ul></details>
+      <details className="mt-3 text-xs"><summary className="cursor-pointer">Assumptions</summary><ul className="list-disc ml-5 mt-1" data-testid="estimate-assumptions">{view.assumptions.map(a => <li key={a}>{a}</li>)}</ul></details>
       <div className="flex flex-wrap gap-2 mt-4">
-        {v.ok && <button type="button" className="btn-primary" onClick={onConfirm} disabled={busy} data-testid="estimate-confirm-run">{busy ? 'Starting...' : `Confirm and run (about ${range(est.total)})`}</button>}
+        {v.ok && <button type="button" className="btn-primary" onClick={onConfirm} disabled={busy} data-testid="estimate-confirm-run">{busy ? 'Starting...' : `Confirm and run (about ${range(view.total)})`}</button>}
         <button type="button" className="btn-ghost" onClick={onCancel} data-testid="estimate-cancel">{v.ok ? 'Cancel' : 'Change the request'}</button>
       </div>
     </section>
