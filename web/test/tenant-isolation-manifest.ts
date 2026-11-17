@@ -71,6 +71,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'internal/tick', method: 'POST', auth: 'public', note: 'shared secret, timing-safe compare' },
   { path: 'internal/tinyfish-today', method: 'GET', auth: 'public', note: 'shared secret (as internal/tick), timing-safe compare; per-tenant unit counts, never a tenant id' },
   { path: 'internal/spend-caps', method: 'GET', auth: 'public', note: 'shared secret (as internal/tick), timing-safe compare; #846/#847 spend caps from the environment, simulated in a throwaway in-memory store: no tenant data read, no write, no model call' },
+  { path: 'internal/usable-check', method: 'GET', auth: 'public', note: 'shared secret (as internal/tick), timing-safe compare; #1176 one run\'s usable-lead count (funnel) and proof-preview status: counts and a status only, never a company, contact or URL; no write, no model call' },
   { path: 'leads/[lead]/confirm', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/confirm', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'leads/[lead]/domain-review', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'operate' },
