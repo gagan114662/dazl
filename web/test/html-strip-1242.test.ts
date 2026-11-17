@@ -29,3 +29,8 @@ test('fetch-page and icp-from-site readers are linear on hostile input and keep 
   fast('htmlToText', () => htmlToText(HOSTILE)); fast('extractSiteFacts', () => extractSiteFacts(HOSTILE))
   assert.equal(htmlToText('<p>Hello <b>world</b></p><script>x()</script><!-- c -->').text, 'Hello world')
 })
+import { ldJsonBlocks } from '../lib/scan/fetch-page.ts'
+test('ldJsonBlocks keeps JSON-LD blocks and is linear on hostile input', () => {
+  assert.deepEqual(ldJsonBlocks('<script>no</script><script type="application/ld+json">{"a":1}</script><SCRIPT id=x type=\'application/ld+json\'>{"b":2}</SCRIPT><scripts type="application/ld+json">z</scripts>'), ['{"a":1}', '{"b":2}'])
+  fast('ldJsonBlocks', () => ldJsonBlocks(HOSTILE))
+})

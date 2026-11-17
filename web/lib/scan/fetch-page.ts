@@ -192,7 +192,15 @@ export function publishedDate(html: string): string | null {
 // The raw schema.org JSON-LD blocks of a page (capped), kept so a dated entity the page itself declares (an Event's startDate, a JobPosting's datePosted) can be read later by scan/structured-date.ts.
 export function ldJsonBlocks(html: string): string[] {
   const out: string[] = []
-  for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
+  // #1242: one indexOf pass (the old /<script\b[^>]*type=...[^>]*>([\s\S]*?)<\/script>/gi backtracked on unclosed "<script " tags)
+  const h = html.slice(0, 600_000), low = h.toLowerCase()
+  for (let i = low.indexOf('<script'); i >= 0 && out.length < 8; i = low.indexOf('<script', i + 7)) {
+    if (/[a-z0-9_]/.test(low[i + 7] ?? '')) continue
+    const gt = low.indexOf('>', i + 7); if (gt < 0) break
+    if (!/\btype\s*=\s*["']application\/ld\+json["']/.test(low.slice(i, gt))) continue
+    const end = low.indexOf('</script>', gt + 1); if (end < 0) break
+    const body = h.slice(gt + 1, end); if (body.length <= 40_000) out.push(body); i = end
+  }
   return out
 }
 export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
