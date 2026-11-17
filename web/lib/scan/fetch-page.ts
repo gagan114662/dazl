@@ -1,140 +1,324 @@
-// LOCAL location x category matrix (#1099 root cause 7): runs the matrix's 8 cases (default ../scorecard/matrix.json) through the
-// REAL scan pipeline on this PC, against real search and fetch, on a throwaway in-memory store, and prints a table of the same
-// columns Hermes's staging matrix prints: candidates, leads, ready, named %, email %, dated %, place+category %, seconds, US$,
-// PASS/FAIL. The DEFINITIONS differ in places (see the footer the table prints), so compare a local row with a local row: run it
-// BEFORE a change and AFTER it, and show both in the PR.
-//
-//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
-//        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir] [--engine old|research]
-//
-// --engine research (MISSION v2): runs every case on the research engine (LEAD_ENGINE=research, lib/research/scan-job.ts) with its own
-// per-scan search budget (RESEARCH_SEARCH_BUDGET, default 160); a case the engine cannot run (a stage not built, no place or category)
-// runs the old engine, and the table says which engine was asked for. --engine old (default) clears LEAD_ENGINE, so an inherited value
-// never switches a before-run.
-//
-// Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
-//   TINYFISH_API_KEY                         search and fetch; without it scans fall back to model web search, which no cap bounds: refused
-//   MATRIX_ANTHROPIC_KEY                     the model key (then SCOREBOARD_ANTHROPIC_KEY, then DAZL_TRIAL_ANTHROPIC_KEY)
-//   TINYFISH_SEARCHES_PER_SCAN, TINYFISH_FETCHES_PER_SCAN, SITECRAWL_ENABLED, NEWS_SEARCH_ENABLED, EMAIL_GUESS_ENABLED and any
-//   other scan knob: the staging values, so a local scan behaves like a staging scan
-// --env-file reads KEY=VALUE lines into the environment BEFORE the pipeline loads (a non-empty value already in the environment wins).
-// --contacts: run WITHOUT a run dollar limit on the job, as Hermes's staging matrix does, so the paid contact pass (the tenant's
-// Apollo/PDL keys: MATRIX_PDL_KEY, MATRIX_APOLLO_KEY, saved for each case when set) runs and named % / email % can include its
-// contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
-// In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
-// checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
-// Cost cap: US$0.50 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
-// ledger before every paid call; the table prints what each case cost. TinyFish calls are priced at US$0 while dazl's own daily
-// counters stay inside TinyFish's free allowance, so the US$ column leaves TinyFish out (the table says so).
-// Exit 0 prints the table; exit 2 = not run (missing keys, bad flags or matrix); exit 1 = a case crashed the runner itself.
-import { randomBytes } from 'node:crypto'
-import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import type { CaseResult, MatrixCase, MatrixThresholds } from './matrix-score.mts'
-import { parseEnvFile } from './matrix-env.mts'   // no pipeline import: the env file is read before the pipeline loads
+import { stripTags, dropBlocks, dropComments } from '../html/strip.ts'
+import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
+import { lookup as dnsLookup } from 'node:dns'
+import https from 'node:https'
+import { isIP } from 'node:net'
+import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
+import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
+import { withAtsReadSlot } from './ats-read-slots.ts' // #1127: at most ATS_RECORD_CONCURRENCY board record reads at a time per scan
 
-const argv = process.argv.slice(2)
-const flag = (n: string) => argv.includes(`--${n}`)
-const opt = (n: string): string | undefined => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
-const root = path.resolve(import.meta.dirname, '..', '..')
-const expand = (p: string) => p.replace(/^~(?=\/|$)/, os.homedir())
-const refuse = (msg: string): never => { console.error(msg); process.exit(2) }
+// published: the page's OWN publication metadata (never modified/updated), YYYY-MM-DD. postedAt (#533): set only when the
+// page is a public ATS board's own API record for exactly this posting URL (lib/sources/ats-posting.ts): the board's
+// first-published day for it, the posting's own structured publish date (#460).
+// board: set only for a posting read through its board's API record (#1126); the identity the verifier matches instead of the title
+export interface Page { text: string; title: string; retrievedAt: number; published?: string | null; structured?: string[]; postedAt?: string | null; board?: BoardIdentity }
 
-const envFile = opt('env-file') ?? process.env.MATRIX_ENV_FILE
-if (envFile) {
-  const p = expand(envFile)
-  if (!existsSync(p)) refuse(`--env-file ${p} does not exist. Not running.`)
-  for (const [k, v] of Object.entries(parseEnvFile(readFileSync(p, 'utf8')))) if (!process.env[k]) process.env[k] = v
+// True only for addresses on the public internet. Everything private, loopback,
+// link-local, cloud-metadata, CGNAT, multicast or reserved is refused.
+export function isPublicIp(ip: string): boolean {
+  const v = isIP(ip)
+  if (v === 4) {
+    const [a, b, c] = ip.split('.').map(Number)
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false
+    if (a === 169 && b === 254) return false
+    if (a === 172 && b >= 16 && b <= 31) return false
+    if (a === 192 && b === 168) return false
+    if (a === 100 && b >= 64 && b <= 127) return false
+    if (a === 192 && b === 0 && c === 0) return false
+    if (a === 198 && (b === 18 || b === 19)) return false
+    return true
+  }
+  if (v === 6) {
+    const x = ip.toLowerCase()
+    const mapped = x.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+    if (mapped) return isPublicIp(mapped[1])
+    if (x === '::' || x === '::1') return false
+    if (/^f[cd]/.test(x) || /^fe[89ab]/.test(x) || x.startsWith('ff')) return false
+    return true
+  }
+  return false
 }
 
-const engine = opt('engine') ?? 'old'
-if (engine !== 'old' && engine !== 'research') refuse(`--engine must be old or research (got ${engine}). Not running.`)
-if (engine === 'research') process.env.LEAD_ENGINE = 'research'; else delete process.env.LEAD_ENGINE
-
-const matrixPath = expand(opt('matrix') ?? process.env.MATRIX_FILE ?? path.join(root, '..', 'scorecard', 'matrix.json'))
-if (!existsSync(matrixPath)) refuse(`matrix file ${matrixPath} not found (set --matrix or MATRIX_FILE). Not running.`)
-const matrix = JSON.parse(readFileSync(matrixPath, 'utf8')) as { thresholds: MatrixThresholds; cases: MatrixCase[] }
-const only = opt('cases')?.split(',').map(s => s.trim()).filter(Boolean)
-const cases = matrix.cases.filter(c => !only || only.includes(c.id))
-if (only) for (const id of only) if (!matrix.cases.some(c => c.id === id)) refuse(`unknown case "${id}"; the matrix has: ${matrix.cases.map(c => c.id).join(', ')}`)
-if (cases.length === 0) refuse('no cases to run. Not running.')
-const HARD_CAP = 0.5   // the lane's cap per case; --cap and the matrix file can only lower it
-const capReq = opt('cap') === undefined ? HARD_CAP : Number(opt('cap'))
-const fileCap = Number(matrix.thresholds?.per_case_confirm_cap_usd ?? HARD_CAP)
-const cap = Math.min(capReq, fileCap, HARD_CAP)
-if (!(cap > 0 && cap <= HARD_CAP)) refuse(`the per-case cap must be a number above 0 and at most US$${HARD_CAP} (--cap ${opt('cap') ?? '-'}, matrix file ${matrix.thresholds?.per_case_confirm_cap_usd ?? '-'}). Not running.`)
-const timeoutS = Number(opt('timeout') ?? 300)
-if (!Number.isFinite(timeoutS) || timeoutS <= 0) refuse('--timeout must be a number of seconds above 0. Not running.')
-const thresholds: MatrixThresholds = { ...matrix.thresholds, per_case_confirm_cap_usd: cap }
-
-const anthropic = (process.env.MATRIX_ANTHROPIC_KEY || process.env.SCOREBOARD_ANTHROPIC_KEY || process.env.DAZL_TRIAL_ANTHROPIC_KEY || '').trim()
-const tinyfish = (process.env.TINYFISH_API_KEY || '').trim()
-const commit = (() => { try { return execSync('git rev-parse --short HEAD', { cwd: root }).toString().trim() } catch { return 'unknown' } })()
-const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
-
-const contacts = flag('contacts')
-const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
-if (flag('dry')) {
-  // no network, no model call, nothing created: the plan and what is missing
-  console.log(`engine: ${engine}${engine === 'research' ? ` (research search budget ${process.env.RESEARCH_SEARCH_BUDGET || 160} per scan)` : ''}`)
-  console.log(`matrix:local --dry @ ${commit}: ${cases.length} case(s) from ${matrixPath}, cap US$${cap.toFixed(2)} each (total at most US$${(cap * cases.length).toFixed(2)}), timeout ${timeoutS}s each`)
-  for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
-  const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
-  console.log(`keys: TINYFISH_API_KEY ${tinyfish ? 'set' : 'MISSING'}; Anthropic key ${anthropic ? 'set' : 'MISSING'} (MATRIX_ANTHROPIC_KEY / SCOREBOARD_ANTHROPIC_KEY / DAZL_TRIAL_ANTHROPIC_KEY)`)
-  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${contactKeys.pdl ? 'set' : 'MISSING'}, Apollo key ${contactKeys.apollo ? 'set' : 'MISSING'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
-  console.log(`staging knobs: ${knobs.map(k => `${k}=${process.env[k] === undefined ? 'unset' : 'set'}`).join(' ')}`)
-  process.exit(anthropic && tinyfish ? 0 : 2)
+// Checked at connect time on the address actually used, so DNS rebinding cannot swap in a private IP.
+export function guardedLookup(hostname: string, options: { all?: boolean }, cb: (...args: unknown[]) => void) {
+  dnsLookup(hostname, { all: true }, (err, addrs) => {
+    if (err) return cb(err)
+    if (addrs.length === 0 || addrs.some(a => !isPublicIp(a.address))) return cb(new Error('blocked_address'))
+    if (options?.all) return cb(null, addrs)
+    cb(null, addrs[0].address, addrs[0].family)
+  })
 }
-if (!anthropic) refuse('No model key: set MATRIX_ANTHROPIC_KEY (or SCOREBOARD_ANTHROPIC_KEY / DAZL_TRIAL_ANTHROPIC_KEY), or pass --env-file. Not running.')
-if (!tinyfish) refuse('TINYFISH_API_KEY is required: without it the scans use the model web search, which no cap can bound. Not running.')
 
-// the pipeline loads only now, so knobs read at import time (timeouts, crawl budgets, scan age) see the env file
-const master = randomBytes(32)
-process.env.DAZL_MASTER_KEY = master.toString('base64')
-const { default: Database } = await import('better-sqlite3')
-const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
-const { saveKey } = await import('../lib/llm/key-store.ts')
-if (contacts) {
-  // the ledger's own per-scan cap, in its own unit (CAD at its floor rate of 1.50 per USD): cap US$ x 1.5
-  process.env.DAZL_SCAN_CAP_CAD = (cap * 1.5).toFixed(4)
-  delete process.env.DAZL_SCAN_CAP_FX_CAD_PER_USD
+const MAX_BYTES = 1_500_000
+// #533: an Ashby board record lists every posting with its text (Ashby has no single-posting endpoint), so a large
+// company's board is bigger than a page; it is read up to this bound. A body cut at the bound does not parse and is a
+// failed read, never a page.
+const ATS_RECORD_MAX_BYTES = 12_000_000
+const MAX_REDIRECTS = 3
+const TIMEOUT_MS = Number(process.env.SCAN_PAGE_TIMEOUT_MS || 10_000)
+// The PAID render request (reserved 'render' on the scan's spend cap) is given up on after this; exported for the
+// stale-running lease floor (lib/scan/store.ts MIN_STALE_RUNNING_S takes the max over the paid call paths).
+export const RENDER_TIMEOUT_MS = 35_000
+
+// timeoutMs/lookup are injectable for tests only. The socket 'timeout' below is INACTIVITY-based, so a
+// slow-drip server that sends a byte every few seconds never trips it: the absolute timer is what bounds
+// the whole request (headers + body) and always settles the promise.
+export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))   // cancelled before it started: no connection is made
+  return new Promise((resolveRaw, rejectRaw) => {
+    let hard: NodeJS.Timeout | undefined
+    const onAbort = () => { req.destroy(new Error('aborted')); reject(new Error('aborted')) }   // a cancelled / timed-out caller destroys the socket: nothing keeps running behind it
+    const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); resolveRaw(v) }
+    const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
+    const req = https.request(
+      url,
+      { method: 'GET', lookup: lookup as never, timeout: timeoutMs, headers: { 'user-agent': 'dazl-evidence-check/1.0', accept: jsonRecordUrl(url.toString()) ? 'application/json' : 'text/html,text/plain;q=0.9', 'accept-encoding': 'identity' } },
+      res => {
+        const status = res.statusCode ?? 0
+        const type = String(res.headers['content-type'] ?? '')
+        if (status >= 300 && status < 400) {
+          res.resume()
+          return resolve({ status, location: String(res.headers.location ?? ''), type, body: '' })
+        }
+        // The only non-HTML documents a page read accepts: the Norway register's own API record for an entity (#763) and a
+        // public ATS board's API record for a posting (#533), each rendered below. No other JSON is read.
+        const registryRecord = jsonRecordUrl(url.toString()) && /^application\/json\b/i.test(type)
+        if (!registryRecord && !/^text\/(html|plain)|application\/xhtml/i.test(type)) {
+          res.destroy()
+          return resolve({ status, type, body: '' })
+        }
+        const chunks: Buffer[] = []
+        let n = 0
+        const cap = isAtsRecordUrl(url.toString()) ? ATS_RECORD_MAX_BYTES : MAX_BYTES
+        res.on('data', (c: Buffer) => {
+          n += c.length
+          if (n > cap) { res.destroy(); resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }) } else chunks.push(c)
+        })
+        res.on('end', () => resolve({ status, type, body: Buffer.concat(chunks).toString('utf8') }))
+        res.on('error', reject)
+        res.on('close', () => reject(new Error('aborted'))) // no-op once already settled
+      },
+    )
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
+    req.on('error', reject)
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    req.end()
+  })
 }
-const { runCase } = await import('./matrix-run.mts')
-const { matrixTable } = await import('./matrix-score.mts')
 
-const db = new Database(':memory:')
-migrateAllSqlite(db)   // every table the app's own scan store has, so no pipeline step fails on a missing table
-const tenantOf = (c: MatrixCase) => `matrix-${c.id}`
-for (const c of cases) saveKey(db, tenantOf(c), 'anthropic', anthropic, master)
-const savedContactKeys: string[] = []
-if (contacts) {
-  const { saveCredential } = await import('../lib/connectors/store.ts')
-  const { ENRICH_APOLLO, ENRICH_PDL } = await import('../lib/enrich/index.ts')
-  for (const [name, key, connector] of [['PDL', contactKeys.pdl, ENRICH_PDL], ['Apollo', contactKeys.apollo, ENRICH_APOLLO]] as const) {
-    if (!key) continue
-    for (const c of cases) saveCredential(db, tenantOf(c), connector, key, master)
-    savedContactKeys.push(name)
+// #533: several postings of one company cite the same Ashby board record (the whole board): one successful read serves
+// them all for a short while, so a scan never downloads the same board once per posting. Only a 2xx answer is kept (a
+// refusal, an error or a thrown read is dropped, so the next posting asks again). Public data, keyed by the exact API
+// URL; bounded to BOARD_MEMO_BYTES of bodies in total and BOARD_MEMO_MS each. A read in flight is counted once it ends,
+// so concurrent reads of different boards can pass the bound briefly (each read is itself capped at ATS_RECORD_MAX_BYTES).
+// The shared read is not tied to any one caller's abort signal: a caller whose signal fires stops waiting at once (its
+// read fails), and the read goes on for the other callers, ending within the request timeout once it has started. A read
+// still queued for a slot (#1127, lib/scan/ats-read-slots.ts) when its LAST caller has given up is never started.
+const BOARD_MEMO_MS = 120_000, BOARD_MEMO_BYTES = 24_000_000
+type BoardEntry = { at: number; read: ReturnType<typeof once>; bytes: number; waiting: number; idle: () => void }
+const boardMemo = new Map<string, BoardEntry>()
+const memoBytes = () => [...boardMemo.values()].reduce((a, m) => a + m.bytes, 0)
+// One caller's wait on the shared read: a caller with no signal waits for it to settle; one with a signal leaves on abort.
+function awaitBoard(entry: BoardEntry, signal?: AbortSignal): ReturnType<typeof once> {
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))
+  entry.waiting++
+  if (!signal) return entry.read
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { if (--entry.waiting === 0) entry.idle(); reject(new Error('aborted')) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    entry.read.then(v => { signal.removeEventListener('abort', onAbort); resolve(v) }, e => { signal.removeEventListener('abort', onAbort); reject(e) })
+  })
+}
+function boardRead(url: URL, signal?: AbortSignal): ReturnType<typeof once> {
+  const k = url.toString(), now = Date.now()
+  for (const [key, m] of boardMemo) if (now - m.at > BOARD_MEMO_MS) boardMemo.delete(key)
+  const hit = boardMemo.get(k)
+  if (hit) return awaitBoard(hit, signal)
+  if (signal?.aborted) return Promise.reject(new Error('aborted'))
+  // shared, so not tied to one caller's abort signal; queued for a slot of this scan (#1127) and left unstarted once no caller
+  // waits any more (idle); the request timeout starts when the read does
+  const queued = new AbortController(), state = { started: false }
+  const read = withAtsReadSlot(() => { state.started = true; return once(url, TIMEOUT_MS, guardedLookup) }, queued.signal)
+  const entry: BoardEntry = { at: now, read, bytes: 0, waiting: 0, idle: () => { if (state.started) return; if (boardMemo.get(k) === entry) boardMemo.delete(k); queued.abort() } }
+  boardMemo.set(k, entry)
+  read.then(r => {
+    if (r.status < 200 || r.status >= 300) { boardMemo.delete(k); return }
+    entry.bytes = r.body.length
+    // oldest first until the bodies kept fit the bound (this one included: a single board over the bound is not kept)
+    for (const key of boardMemo.keys()) { if (memoBytes() <= BOARD_MEMO_BYTES) break; boardMemo.delete(key) }
+  }, () => { if (boardMemo.get(k) === entry) boardMemo.delete(k) })
+  return awaitBoard(entry, signal)
+}
+export const resetBoardMemo = () => boardMemo.clear()
+
+const jsonRecordUrl = (u: string): boolean => !!brregRecordRef(u) || isAtsRecordUrl(u)
+
+const ENT: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+// exported (#767): the careers adapter quotes Greenhouse content from exactly this rendering, so its quote is on the verifier's page
+export function decode(s: string): string {
+  return s
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, e: string) => {
+      if (e[0] === '#') {
+        const cp = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)
+        return Number.isFinite(cp) && cp > 0 && cp < 0x110000 ? String.fromCodePoint(cp) : ' '
+      }
+      return ENT[e.toLowerCase()] ?? ' '
+    })
+}
+
+// The page's own publication date from its markup: schema.org datePublished / datePosted (JSON-LD or microdata), article:published_time,
+// <time datetime> marked published/pubdate. Modified/updated stamps are update times, not event days, and are never read.
+export function publishedDate(html: string): string | null {
+  const head = html.slice(0, 400_000)
+  const cands: string[] = []
+  for (const m of head.matchAll(/"(?:datePublished|datePosted)"\s*:\s*"([^"]{8,40})"/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date|date)["'][^>]*?content\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<meta\b[^>]*?content\s*=\s*["']([^"']{8,40})["'][^>]*?(?:property|name|itemprop)\s*=\s*["'](?:article:published_time|og:published_time|datePublished|datePosted|pubdate|publish[-_]date)["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])[^>]*?datetime\s*=\s*["']([^"']{8,40})["']/gi)) cands.push(m[1])
+  for (const m of head.matchAll(/<time\b[^>]*?datetime\s*=\s*["']([^"']{8,40})["'][^>]*?(?:pubdate|itemprop\s*=\s*["']datePublished["']|class\s*=\s*["'][^"']*publish[^"']*["'])/gi)) cands.push(m[1])
+  // Exactly ONE distinct publication day across all of the page's markup. Two or more (a news list, several articles, an unrelated JSON-LD
+  // entity beside the page's own) mean none of them can be tied to this quote, so none is reported.
+  const days = new Set<string>()
+  for (const c of cands) {
+    const d = /^(\d{4})-(\d{2})-(\d{2})/.exec(c.trim()); if (!d) continue
+    const y = +d[1], mo = +d[2], da = +d[3]
+    const t = new Date(Date.UTC(y, mo - 1, da)); if (y >= 2000 && y <= 2100 && t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === da) days.add(t.toISOString().slice(0, 10))
+  }
+  return days.size === 1 ? [...days][0] : null
+}
+
+// The raw schema.org JSON-LD blocks of a page (capped), kept so a dated entity the page itself declares (an Event's startDate, a JobPosting's datePosted) can be read later by scan/structured-date.ts.
+export function ldJsonBlocks(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
+  return out
+}
+export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
+  const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
+  const text = decode(
+    stripTags(dropComments(dropBlocks(html, ['script', 'style', 'noscript', 'svg']))), // #1242: linear, not backtracking
+  )
+    .replace(/\s+/g, ' ')
+    .trim()
+  return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
+}
+
+export type FetchFail = { fail: 'blocked' | 'js_required' | 'not_found' | 'error' | 'refused' }
+export const isFail = (r: Page | FetchFail | null): r is FetchFail => !!r && 'fail' in r
+
+const CHALLENGE = /just a moment|attention required|access denied|verify you are (a )?human|are you a robot|captcha|cf-chl|enable javascript and cookies/i
+const NEEDS_JS = /enable javascript|requires javascript|javascript is (required|disabled)|you need to enable javascript/i
+const EMPTY_SHELL = /<div[^>]+id=["'](root|__next|app|__nuxt)["'][^>]*>\s*<\/div>/i
+
+// Why a page gave us (almost) nothing: a bot wall, or a JavaScript-only shell.
+export function classifyThin(html: string, text: string): 'blocked' | 'js_required' | null {
+  if (text.length >= 400) return null
+  if (CHALLENGE.test(html)) return 'blocked'
+  if (NEEDS_JS.test(html) || EMPTY_SHELL.test(html) || (/<script/i.test(html) && text.length < 120)) return 'js_required'
+  return null
+}
+
+// Optional rendering service (Browserless-compatible POST {SCAN_RENDER_URL}/content), used only
+// for pages that came back blocked or JavaScript-only. The browser runs OUTSIDE this process.
+// The operator must run it in a network that cannot reach internal addresses: this process
+// can check the URL's DNS before handing it over, but cannot control the browser's own lookups.
+export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const base = process.env.SCAN_RENDER_URL
+  if (!base) return null
+  try {
+    const u = new URL(rawUrl)
+    if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null
+    const host = u.hostname.replace(/^\[|\]$/g, '')
+    const addrs = isIP(host) ? [host] : (await new Promise<string[]>((res, rej) => dnsLookup(host, { all: true }, (e, a) => (e ? rej(e) : res(a.map(x => x.address))))))
+    if (addrs.length === 0 || addrs.some(a => !isPublicIp(a))) return null
+    const token = process.env.SCAN_RENDER_TOKEN
+    // Inside a scan: one render reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal is caught
+    // below and renders nothing.
+    const hold = await reserveScanSpend('render', () => unitCostUsd('render', 1))
+    let res: Response
+    try {
+      res = await fetchImpl(`${base.replace(/\/$/, '')}/content${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: u.toString(), gotoOptions: { waitUntil: 'networkidle2', timeout: 20_000 } }),
+        signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
+      })
+    } catch (e) { hold?.uncertain(); throw e } // timeout / dropped connection after send: may have been billed, the row stays 'reserved' and the attempt stops paying (#363)
+    if (hold) { if (res.ok || [400, 401, 403, 404, 413, 429].includes(res.status)) { await hold.settle(res.ok ? hold.usd : null); if (!res.ok) hold.rejected(res.status) } else hold.uncertain() }
+    if (!res.ok) return null
+    const html = await res.text()
+    return html.length > 0 && html.length <= MAX_BYTES ? html : null
+  } catch {
+    return null
   }
 }
 
-const results: CaseResult[] = []
-let crashed = false
-for (const c of cases) {
-  const r = await runCase(db, c, { tenant: tenantOf(c), cap, timeoutS, thresholds, deps: { master }, contacts })
-  if (r.error?.startsWith('crashed')) crashed = true
-  results.push(r)
-  console.error(`${c.id}: ${r.status}${r.error ? ` (${r.error})` : ''} cand=${r.candidates} leads=${r.leads} ready=${r.ready} usd=${r.usd == null ? '?' : r.usd.toFixed(3)} (${r.seconds}s)`)
+// Fetches a public https page and says why when it cannot. Private addresses are never contacted.
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
+  // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
+  const posting = atsPostingRef(rawUrl)
+  try {
+    let url = new URL(posting ? atsRecordUrl(posting) : rawUrl)
+    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+      if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
+      const host = url.hostname.replace(/^\[|\]$/g, '')
+      if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
+      if (signal?.aborted) return { fail: 'error' }
+      // #1127: every request leg to a board API host takes a slot of this scan (a translated posting, a direct API URL, a redirect onto the API host)
+      const r = posting?.kind === 'ashby' && i === 0 ? await boardRead(url, signal) : isAtsRecordUrl(url.toString()) ? await withAtsReadSlot(() => once(url, TIMEOUT_MS, guardedLookup, signal), signal) : await once(url, TIMEOUT_MS, guardedLookup, signal)
+      if (r.status >= 300 && r.status < 400) {
+        if (!r.location) return { fail: 'error' }
+        url = new URL(r.location, url)
+        if (posting && !isAtsRecordUrl(url.toString())) return { fail: 'error' } // a posting's record is never followed off the board API hosts
+        continue
+      }
+      let thin: 'blocked' | 'js_required' | null = null
+      let html = r.body
+      if (r.status === 401 || r.status === 403 || r.status === 429) thin = 'blocked'
+      else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
+      else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
+      else if (!html) return { fail: 'error' }
+      else if (posting) {
+        // Only the record of exactly this posting, with its first-published day; a board that no longer lists it is a closed posting (not found). Any other answer
+        // (HTML, a redirect to a foreign host) is a failed read, never a page.
+        if (!/^application\/json\b/i.test(r.type) || !isAtsRecordUrl(url.toString())) return { fail: 'error' }
+        let body: unknown = null
+        try { body = JSON.parse(html) } catch { return { fail: 'error' } }
+        const rec = atsRecord(body, posting)
+        if (rec === 'missing') return { fail: 'not_found' }
+        if (!rec) return { fail: 'error' }
+        const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
+        return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] } // posted null: an undated page
+      } else if (/^application\/json\b/i.test(r.type)) {
+        // Only reachable for a registry record URL (once() empties every other non-HTML body). The record must be the entity the URL names and carry its registration date.
+        const ref = brregRecordRef(rawUrl) ? brregRecordRef(url.toString()) : null; let rec: ReturnType<typeof renderBrregRecord> = null // a foreign URL that redirects to a record does not borrow the record's date
+        try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
+        return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
+      } else {
+        const t = htmlToText(html)
+        thin = classifyThin(html, t.text)
+        if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
+      }
+      // a board API that refused the record is a refusal: never sent to the rendering service
+      if (posting) return { fail: thin ?? 'error' }
+      // blocked or JavaScript-only: try the rendering service if one is configured
+      const rendered = await render(url.toString())
+      if (rendered) {
+        const t = htmlToText(rendered)
+        if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000) }
+      }
+      return { fail: thin }
+    }
+    return { fail: 'error' }
+  } catch {
+    return { fail: 'error' }
+  }
 }
 
-const table = matrixTable(results, thresholds, { commit, date, contacts: contacts ? savedContactKeys : null })
-const outDir = path.resolve(expand(opt('out') ?? process.env.MATRIX_OUT ?? path.join(root, '..', 'matrix-local-results')))
-mkdirSync(outDir, { recursive: true })
-const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}${engine === 'research' ? '-research' : ''}-${Date.now().toString(36)}`
-writeFileSync(path.join(outDir, `${stamp}.txt`), table + '\n')
-if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, engine, mode: contacts ? 'contacts' : 'budget', cap_usd: cap, thresholds, results }, null, 2))
-console.log(`engine: ${engine}`)
-console.log(table)
-console.error(`written: ${path.join(outDir, `${stamp}.txt`)}`)
-process.exit(crashed ? 1 : 0)
+// Compatibility wrapper: the page, or null on any failure.
+export async function safeFetchPage(rawUrl: string): Promise<Page | null> {
+  const r = await fetchPageDetailed(rawUrl)
+  return isFail(r) ? null : r
+}
