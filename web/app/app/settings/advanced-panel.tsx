@@ -1,13 +1,15 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
+import LinkedinConnect, { type ConnectState } from './linkedin-connect'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
 
 export default function AdvancedPanel() {
-  const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[] } | null>(null)
+  const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[]; linkedin_connect?: ConnectState | null } | null>(null)
   const [session, setSession] = useState<Record<string, string>>({})
   const [ack, setAck] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState('')
@@ -16,9 +18,17 @@ export default function AdvancedPanel() {
   useEffect(() => { void load() }, [])
   async function post(body: object) {
     const r = await fetch('/api/settings/advanced', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const j = await r.json(); setMsg(r.ok ? '' : j.error || 'Something went wrong'); void load(); return r.ok
+    const j = await r.json(); setMsg(r.ok ? '' : panelError(j.error, 'Something went wrong')); void load(); return r.ok
   }
   if (!st) return null
+  function PasteForm(c: Channel, p: P) {
+    return (
+          <form method="post" className="flex flex-col gap-2" autoComplete="off" onSubmit={async e => { e.preventDefault(); if (await post({ action: 'save', platform: p.platform, session: session[p.platform] ?? '' })) setSession({ ...session, [p.platform]: '' }) }}>
+        <input className="field" type="password" autoComplete="off" placeholder="Paste the session cookie for the throwaway account" value={session[p.platform] ?? ''} onChange={e => setSession({ ...session, [p.platform]: e.target.value })} />
+        <button className="btn-primary w-fit">Connect {c.name}</button>
+      </form>
+    )
+  }
   function Row(c: Channel, p: P) {
     return (
       <>
@@ -31,6 +41,8 @@ export default function AdvancedPanel() {
             <label className="flex gap-2 items-start"><input type="checkbox" checked={!!ack[p.platform]} onChange={e => setAck({ ...ack, [p.platform]: e.target.checked })} /><span>I understand this can violate {c.name}&apos;s terms and get my account banned, and I am using a throwaway account.</span></label>
             <button disabled={!ack[p.platform]} onClick={() => post({ action: 'consent', platform: p.platform, accept: true, version: st!.version })} className="btn-primary w-fit disabled:opacity-40">Accept and continue</button>
           </div>
+        ) : p.platform === 'linkedin' && (p.connected ? !!st!.linkedin_connect?.connected : true) ? (
+          <LinkedinConnect state={st!.linkedin_connect ?? null} enabled={p.enabled} onToggle={() => post({ action: 'toggle', platform: p.platform, enabled: !p.enabled })} onChange={() => void load()} pasteForm={PasteForm(c, p)} />
         ) : p.connected ? (
           <div className="flex items-center justify-between gap-3">
             <span>Session ending in {p.last4}, {p.enabled ? 'on' : 'off'}</span>
@@ -41,10 +53,7 @@ export default function AdvancedPanel() {
             </span>
           </div>
         ) : (
-          <form method="post" className="flex flex-col gap-2" autoComplete="off" onSubmit={async e => { e.preventDefault(); if (await post({ action: 'save', platform: p.platform, session: session[p.platform] ?? '' })) setSession({ ...session, [p.platform]: '' }) }}>
-            <input className="field" type="password" autoComplete="off" placeholder="Paste the session cookie for the throwaway account" value={session[p.platform] ?? ''} onChange={e => setSession({ ...session, [p.platform]: e.target.value })} />
-            <button className="btn-primary w-fit">Connect {c.name}</button>
-          </form>
+          PasteForm(c, p)
         )}
       </>
     )

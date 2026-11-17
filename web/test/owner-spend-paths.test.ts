@@ -30,16 +30,23 @@ async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Pr
   for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   try { return await fn() } finally { for (const [k, v] of Object.entries(before)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
-const NONE = { DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_ANTHROPIC_MODEL: undefined }
+const NONE = { DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: undefined, DAZL_ANTHROPIC_MODEL: undefined }
 const reserved = async (db: Db, owner: string) => (await poolRows(db, owner)).map(r => [r.period.slice(0, 2), Math.round(r.reserved_usd * 1e6) / 1e6, r.reported_usd, r.calls])
 
-bothEngines('SEO brief: no limit set -> unchanged; a limit -> reserved first in the shared pool; past it -> refused with no call', async ({ db }) => {
+bothEngines('#846 #847 SEO brief: no operator entry -> the default day/month caps reserve at the transport; a limit -> reserved first in the shared pool; past it -> refused with no call', async ({ db }) => {
   await writeKey(db, 'T', 'anthropic', KEY, master)
+  await writeKey(db, 'D', 'anthropic', KEY, master)
   calls.length = 0
   await withEnv(NONE, async () => {
-    assert.ok(!('error' in await generateBrief(db, 'T', 'lead generation', { fetchImpl: answering(BRIEF), master })))
+    // #846/#847: no entry for D, no deployment setting: the built-in default caps (never unlimited) reserve and settle.
+    assert.ok(!('error' in await generateBrief(db, 'D', 'lead generation', { fetchImpl: answering(BRIEF), master })))
     assert.equal(calls.length, 1)
-    assert.deepEqual(await reserved(db, 'T'), [], 'no limit: no pool row')
+    assert.deepEqual(await reserved(db, 'D'), [['d:', 0.00018, 0.00018, 1], ['m:', 0.00018, 0.00018, 1]], 'default caps: day and month hold the settled cost')
+  })
+  await withEnv({ ...NONE, DAZL_OWNER_DAY_MAX_USD: '0.001' }, async () => {
+    assert.deepEqual(await generateBrief(db, 'D', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })
+    assert.equal(calls.length, 1, 'past the deployment day cap: refused, no provider call')
+    assert.deepEqual(await reserved(db, 'D'), [['d:', 0.00018, 0.00018, 1], ['m:', 0.00018, 0.00018, 1]], 'a refused reservation writes nothing')
   })
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'T:0.001' }, async () => {
     assert.deepEqual(await generateBrief(db, 'T', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })
@@ -57,31 +64,34 @@ bothEngines('SEO brief: no limit set -> unchanged; a limit -> reserved first in 
     assert.deepEqual(await generateBrief(db, 'T', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })
     assert.equal(calls.length, 2)
   })
-  // A model without a listed price: refused when a dollar limit is set (fails closed), allowed when none is.
+  // A model without a listed price: refused (fails closed) with an operator entry, and (#846/#847) under the default caps too.
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'U:5', DAZL_ANTHROPIC_MODEL: 'claude-unlisted-model' }, async () => {
     await writeKey(db, 'U', 'anthropic', KEY, master)
     assert.deepEqual(await generateBrief(db, 'U', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })
     assert.equal(calls.length, 2)
   })
   await withEnv({ ...NONE, DAZL_ANTHROPIC_MODEL: 'claude-unlisted-model' }, async () => {
-    assert.ok(!('error' in await generateBrief(db, 'U', 'lead generation', { fetchImpl: answering(BRIEF), master })))
-    assert.equal(calls.length, 3)
+    assert.deepEqual(await generateBrief(db, 'U', 'lead generation', { fetchImpl: answering(BRIEF), master }), { error: 'spend_limit' })
+    assert.equal(calls.length, 2, 'no entry: still no call for an unpriced model')
   })
   // Tenant scope: U's limit and T's pool are separate.
   assert.deepEqual(await reserved(db, 'U'), [])
 })
 
-bothEngines('ownerGuarded: unchanged without a limit; with one, every completion reserves and the store failing refuses', async ({ db }) => {
-  assert.equal(ownerGuarded(db, 'T', anthropicProvider, {}), anthropicProvider)
+bothEngines('#846 #847 ownerGuarded: without an operator entry the default caps reserve at the transport; with one, every completion reserves; the store failing refuses either way', async ({ db }) => {
+  const d = ownerGuarded(db, 'D', anthropicProvider, {})
   const g = ownerGuarded(db, 'T', anthropicProvider, { DAZL_RUN_MAX_USD_USERS: 'T:5' })
   assert.notEqual(g, anthropicProvider)
   calls.length = 0
+  assert.equal(await d.complete!(KEY, 'hello', answering('ok'), 50), 'ok')
+  assert.deepEqual((await reserved(db, 'D')).map(r => r[0]), ['d:', 'm:'], 'no entry: reserved on the default day and month caps')
   assert.equal(await g.complete!(KEY, 'hello', answering('ok'), 50), 'ok')
-  assert.equal((await reserved(db, 'T')).length, 1)
+  assert.deepEqual((await reserved(db, 'T')).map(r => r[0]), ['d:', 'm:'], 'the entry\'s day and the default month')
   await db.run('ALTER TABLE tenant_spend_pools RENAME TO tenant_spend_pools_unavailable')
   try {
     await assert.rejects(g.complete!(KEY, 'hello', answering('ok'), 50), /spend_refused:reservation_not_saved/)
-    assert.equal(calls.length, 1, 'the store did not answer: no call')
+    await assert.rejects(d.complete!(KEY, 'hello', answering('ok'), 50), /spend_refused:reservation_not_saved/)
+    assert.equal(calls.length, 2, 'the store did not answer: no call')
   } finally { await db.run('ALTER TABLE tenant_spend_pools_unavailable RENAME TO tenant_spend_pools') }
 })
 
@@ -115,6 +125,6 @@ test('draft polish, follow-up text and reply-intent grading: past the limit no c
     assert.equal((await polishDraft(db, 'A', id, 'Acme', { fetchImpl: answering(POLISHED), master })).rewritten, true)
     assert.equal(await gradeBuyerIntent(db, 'A', { title: 'Need help ramping AEs', quote: 'we are hiring' }, { fetchImpl: answering('yes'), master }), 'yes')
     assert.equal(calls.length, 2)
-    assert.deepEqual((await reserved(sqliteDb(db), 'A')).map(r => [r[0], r[3]]), [['d:', 2]], 'both calls reserved in the same pool')
+    assert.deepEqual((await reserved(sqliteDb(db), 'A')).map(r => [r[0], r[3]]), [['d:', 2], ['m:', 2]], 'both calls reserved in the same pool (and the default month, #847)')
   })
 })

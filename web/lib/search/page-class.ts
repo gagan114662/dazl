@@ -17,10 +17,20 @@ export function isJobPage(rawUrl: string): boolean {
 // The request asks for a signal that a job posting cannot show on its own.
 const EVENT_SIGNAL = /\b(?:fund(?:ing|ed)?|raise[sd]?|raising|seed|pre-?seed|series\s+[a-e]|round|invest(?:ment|ed|or)?|valuation|expan(?:d|ds|ded|sion|ding)|open(?:s|ed|ing)?\s+(?:a\s+|its\s+|new\s+)|new\s+(?:location|office|branch|clinic|store|site)|launch(?:es|ed)?|announce[sd]?|acquir(?:es|ed|ition)|partnership|contract\s+win)\b/i
 const HIRING_ONLY = /\b(?:hiring|hire|recruit(?:ing)?|job|jobs|role|roles|position|positions|vacanc(?:y|ies)|opening|openings)\b/gi
-export function needsEventBeyondHiring(signals: string[] | undefined, query: string): boolean {
-  const text = [...(signals ?? []), query].join(' . ')
-  return EVENT_SIGNAL.test(text.replace(HIRING_ONLY, ' '))
+// #1201 (Refs #1095): the requirement comes from the USER'S OWN WORDS only. Model-written profile signals may add matching power,
+// never a gate: a first-hire request the model re-worded as "Sales team expansion from zero" must not demand a second event.
+// `signals` stays in the signature so callers keep compiling; it is deliberately not read here.
+export function needsEventBeyondHiring(_signals: string[] | undefined, query: string): boolean {
+  return EVENT_SIGNAL.test((query ?? '').replace(HIRING_ONLY, ' '))
 }
+
+// #1201 decision rule 3: the model's profile signals that name an event the user's own words do not. They were used for matching and
+// ranking only; the lead card names them so the user sees they were not imposed as a requirement.
+export function signalsNotRequired(signals: string[] | undefined, query: string): string[] {
+  if (needsEventBeyondHiring(undefined, query)) return []   // the user asked for an event: nothing is matching-only
+  return (signals ?? []).filter(sg => typeof sg === 'string' && EVENT_SIGNAL.test(sg.replace(HIRING_ONLY, ' ')))
+}
+export const notRequiredLine = (sg: string): string => `Your profile signal "${sg.slice(0, 80)}" was used for matching only, not required: your request didn't ask for that event. `
 
 // The text shows an event beyond hiring (funding, an opening, an expansion, a launch ...), ignoring the hiring words themselves.
 // #878: an opening worded noun-first ("New dental clinic now open in Parkdale", "Our 5th location is now open", "Grand

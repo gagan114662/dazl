@@ -122,6 +122,29 @@ test('both providers fail: recorded as error with each reason; a retry claims ag
   assert.equal(r2.status, 'verified', 'error is retryable')
 })
 
+test('#1167 an account at its day spend cap: nothing is sent, the Apollo credit goes back, PDL is not tried, and the detail says why (never "may have used a credit")', async () => {
+  const { accountLimits, reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const { asDb } = await import('../lib/db/client.ts')
+  const prev = process.env.DAZL_OWNER_DAY_MAX_USD
+  process.env.DAZL_OWNER_DAY_MAX_USD = '0.5'
+  try {
+    const s = seed(); const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+    await asDb(s.db).tx(function* (t) { assert.equal(yield* reservePoolWindows(t, 'A', accountLimits('A'), 0.5, Math.floor(Date.now() / 1000)), true) })
+    const r = await run(s, DANA, stub(never, never, calls))
+    assert.equal(calls.apollo + calls.pdl, 0, 'nothing sent')
+    assert.equal(r.status, 'error'); assert.ok('row' in r)
+    assert.match(r.row.detail ?? '', /account spend limit reached: nothing was sent/)
+    assert.doesNotMatch(r.row.detail ?? '', /may have used a credit/)
+    for (const u of await creditUse(s.db, 'A', { now: NOW })) assert.equal(u.reserved, 0, `${u.provider} ${u.window}: no credit held for an unsent lookup`)
+    // a spend refusal that is not the cap (a malformed price) is named as itself
+    process.env.DAZL_OWNER_DAY_MAX_USD = '10'; process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD = 'abc'
+    const f = seed(); const r2 = await run(f, DANA, stub(never, never, calls))
+    assert.equal(calls.apollo + calls.pdl, 0); assert.ok('row' in r2)
+    assert.match(r2.row.detail ?? '', /spend check refused the lookup \(price_invalid\): nothing was sent/)
+    assert.doesNotMatch(r2.row.detail ?? '', /account spend limit/)
+  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev; delete process.env.DAZL_SCAN_PRICE_APOLLO_PEOPLE_USD }
+})
+
 test('PDL 404 is its unbilled no-match: not_found, and the PDL credit is released', async () => {
   const s = seed()
   const r = await run(s, DANA, stub(() => json({ person: null }), () => new Response('{}', { status: 404 })))
@@ -145,7 +168,8 @@ test('PDL only (no Apollo key): PDL is the provider; no keys at all: no_key, not
   const n = seed({ keys: 'none' })
   const r = await run(n, DANA, stub(never, never))
   assert.equal(r.status, 'no_key'); assert.equal(workEmailsFor(n.db, 'A', n.lead, NOW).length, 0)
-  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /No Apollo or People Data Labs key is set/)
+  assert.match(workEmailCostNote(workEmailProviders(n.db, 'A')), /^Free: checks whether the company website prints this person's own address/, '#1036: the free website step runs with no key')
 })
 
 // ---- identity, role and US gates: fail closed, address not kept ----
@@ -412,6 +436,15 @@ test('deleting a commenter batch deletes the work-email lookups of its leads (te
   assert.equal(deleteCommenterBatch(db, 'B', r.batchId), false)
   assert.equal(deleteCommenterBatch(db, 'A', r.batchId), true)
   assert.deepEqual(db.prepare('SELECT tenant_id FROM work_email_lookups').all(), [{ tenant_id: 'B' }], "only the deleted lead's row went")
+  // #1036 review: the addresses the crawl recorded (published tier, now recorded in prod) go with the leads too.
+  const cand = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, 'Jane Doe, CTO', 'jane@acme.example', 'published', NULL, 'published', 'https://acme.example/team')")
+  const r2 = importCommenters(db, 'A', parseImport('https://www.linkedin.com/in/jane-doe').valid, 'ctx')
+  const lead2 = (db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').get(r2.jobId) as { id: string }).id
+  cand.run('A', lead2); cand.run('B', 'other-tenant-lead')
+  db.prepare("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES ('A', ?, 'acme.example', 'first', 2, 'high', 1, 0, '[]')").run(lead2)
+  assert.equal(deleteCommenterBatch(db, 'A', r2.batchId), true)
+  assert.deepEqual(db.prepare('SELECT tenant_id FROM email_candidates').all(), [{ tenant_id: 'B' }], "only the deleted lead's address went")
+  assert.equal((db.prepare('SELECT count(*) AS n FROM email_patterns').get() as { n: number }).n, 0)
 })
 
 bothEngines('first-party erase deletes the work-email lookups of the erased leads', async ({ db }) => {
@@ -424,9 +457,13 @@ bothEngines('first-party erase deletes the work-email lookups of the erased lead
   assert.ok(lead, 'the visit made a first-party lead')
   await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('A', ?, 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)", [lead.id])
   await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('B', 'b-lead', 'Jane Doe|CEO', 'unverified', 'pdl', 'jane@acme.io', 1)")
+  await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Jane Doe, CEO', 'jane@acme.io', 'published', NULL, 'published', 'https://acme.io/team')", [lead.id])
+  await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('B', 'b-lead', 'Jane Doe, CEO', 'jane@acme.io', 'published', NULL, 'published', 'https://acme.io/team')")
   assert.equal(await eraseFirstParty(db, 'A'), 1)
   assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'A'")).length, 0)
   assert.equal((await db.all("SELECT 1 FROM work_email_lookups WHERE tenant_id = 'B'")).length, 1)
+  assert.equal((await db.all("SELECT 1 FROM email_candidates WHERE tenant_id = 'A'")).length, 0, '#1036 review: the recorded address goes with its lead')
+  assert.equal((await db.all("SELECT 1 FROM email_candidates WHERE tenant_id = 'B'")).length, 1)
 })
 
 // ---- storage invariants: the table itself refuses an unchecked "verified" ----

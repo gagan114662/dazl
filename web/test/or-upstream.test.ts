@@ -97,6 +97,8 @@ async function record(request: string, icp: object) {
 
 const SNAP = new URL('./fixtures/or-upstream-snapshot.json', import.meta.url)
 // Recorded once on #643's head with OR_UPSTREAM_SNAPSHOT_WRITE=1 (see the PR); the AND / and-or / Test A traces must stay byte-identical, the OR call count is the ceiling.
+// #381 changed exactly one thing in every recorded extraction prompt (all four cases): the instruction sentence. The snapshot was updated by replacing that
+// sentence only; a fresh recording equals it (checked on the PR).
 if (process.env.OR_UPSTREAM_SNAPSHOT_WRITE === '1') {
   test('write the snapshot (baseline only)', async () => {
     const out: Record<string, unknown> = {}

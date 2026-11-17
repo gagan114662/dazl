@@ -129,12 +129,16 @@ test('shared domain, whole workflow: a scan with two leads on one company site -
 })
 
 test('domain identity and robots: a homepage naming another company or disallowing the crawl stores nothing', async () => {
+  const stored: string[] = []
   for (const n of [5, 6]) {
     const r = await post(ID(n))
     assert.equal(r.status, 200)
     assert.deepEqual(await r.json(), { searched: true, found: 0 })
-    assert.deepEqual(enr(ID(n)), [])
+    stored.push(JSON.stringify(db.prepare("SELECT kind, value, label FROM lead_enrichments WHERE lead_id = ? AND kind NOT IN ('domain_check', 'tech_scan')").all(ID(n))))
   }
+  // No domain and no contact for either. Lead 5 (the page links no site by the company's name; its name-built guess is outside this fixture's
+  // network, so the fence stops the crawl): nothing at all. Lead 6 (its own site forbids reading): only the named reason, never a contact (#1122).
+  assert.deepEqual(stored, ['[]', JSON.stringify([{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:site_not_readable' }])])
   assert.ok(!t.hits.some(h => h.startsWith('blockedco.test/contact')), 'robots-disallowed contact page never requested')
   assert.throws(() => createDraft(db, 'A', ID(5), 'Seller'), /no_email_contact/)
   await t.close()

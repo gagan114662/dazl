@@ -11,6 +11,7 @@
 //                            scrub leaves unchanged and that has no run of 4+ digits
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
 // DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
+import { alertRequest } from './alert-destination.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { appCodeFile, bundleFile } from './emitted.ts'
 
@@ -139,7 +140,7 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
 // event is built field by field below. The full scrubbed record stays in the server's own log (stderr).
 const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'ChunkLoadError'])
 // This app's error classes (test/ops-sentry.test.ts fails when a class extending an Error in lib/ or app/ is missing).
-export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused', 'CopyRefused', 'CopyVerifyError', 'CreditRefused', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError', 'LeadRelockNeeded',
+export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused', 'CopyRefused', 'CopyVerifyError', 'CreditRefused', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError', 'LeadRelockNeeded', 'RealCheckNotRead',
   'LeaseLost', 'LinkLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused', 'VerifierError', 'VerifySlotRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
@@ -223,12 +224,24 @@ function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, sign
   }
 }
 
-// OPS_ALERT_WEBHOOK_URL (https only): POST the allowlisted record (outboundRecord) as JSON.
+// OPS_ALERT_WEBHOOK_URL (https only): POST the allowlisted record (outboundRecord) as JSON plus a `text` summary; a Telegram
+// bot URL gets { chat_id, text } instead (lib/ops/alert-destination.ts).
 export function makeAlertHook(o: AlertOptions): ErrorSink {
   const url = o.url
   if (!url || !/^https:\/\//.test(url)) return () => {}
   const d = o.deployment ?? deployment()
-  return throttled(o, (r, f, signal) => f(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(outboundRecord(r, d)), signal }))
+  if (alertRequest(url, {}, 'x') === null) return () => {}   // a Telegram URL with no chat_id: every send would be rejected
+  return throttled(o, (r, f, signal) => {
+    const rec = outboundRecord(r, d), req = alertRequest(url, rec, alertText(rec))!
+    return f(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, signal })
+  })
+}
+// The record as one readable block (what a Telegram chat or a Slack channel shows): the same allowlisted fields, nothing more.
+export function alertText(rec: ReturnType<typeof outboundRecord>): string {
+  const top = rec.error.frames[0]
+  return [`dazl ${rec.environment} error: ${rec.error.type} in ${rec.source} ${rec.where}${rec.method ? ` (${rec.method})` : ''}`,
+    top ? `at ${top.filename}:${top.lineno}` : null, rec.release ? `release ${rec.release.slice(0, 8)}` : null,
+    `fingerprint ${rec.fingerprint}${rec.request_id ? `, request ${rec.request_id}` : ''}`, rec.ts].filter(Boolean).join('\n')
 }
 
 // SENTRY_DSN (https only): the record as a Sentry event, in an envelope POSTed to the DSN's project. Any service that

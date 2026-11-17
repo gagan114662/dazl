@@ -20,7 +20,7 @@ import { tfFetch, tfSearch, resetTinyfishState } from '../lib/search/tinyfish.ts
 import { apolloOrgEnrich, apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { pdlPeopleSearch } from '../lib/enrich/pdl.ts'
 import { renderViaService } from '../lib/scan/fetch-page.ts'
-import { outsideScanSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
+import { outsideScanSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
 import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
 
@@ -60,10 +60,12 @@ const FREE: Record<string, string> = {
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
+  'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
   'https://r.jina.ai/': 'Jina Reader without a key: free (lib/sources/jina.ts)',
   'https://www.googleapis.com/youtube/v3/search': 'YouTube Data API: quota units, no per-call charge',
+  'https://api.telegram.org/bot<token>/sendMessage': 'operator alert destination when OPS_ALERT_WEBHOOK_URL is a Telegram bot (#1088): free Bot API, not a scan path',
   'https://api.stripe.com/v1/': 'billing, not a scan path',
   'https://api.stripe.com/v1/subscriptions/': 'billing, not a scan path',
   'https://api.hubapi.com/account-info/v3/details': 'CRM push, not a scan path; no per-call charge',
@@ -86,6 +88,7 @@ const FREE: Record<string, string> = {
   'env:SYSTEM_MAIL_SMTP_URL': "dazl's own account mail (SMTP), not a scan path",
   'env:JINA_READER_URL': 'Jina Reader endpoint override: free reader',
   'env:PUBLIC_BASE_URL': "dazl's own public URL, not a provider",
+  'env:NEXT_PUBLIC_DAZL_CONNECT_EXTENSION_URL': 'a link the user opens to install the dazl Connect extension (#1037): dazl requests nothing there',
 }
 
 function files(dir: string): string[] {
@@ -164,7 +167,11 @@ test('inventory: each gated module reserves its kind before its request, and daz
   assert.deepEqual([...new Set(Object.values(PAID).flatMap(p => p.kind))].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
   // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
-  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  // XHawk on #1154: CSV jobs of a named account take the same PooledGuard (its unsettled-accounting marker stops them too)
+  assert.match(runner, /const pooledByRunner = ownerLimits\(job\.user_id\) !== null/)
+  assert.match(runner, /const owner = ownerLimits\(job\.user_id\)\n/)
   assert.equal([...runner.matchAll(/\(deps\.autopilot \?\? runAutopilot\)\(/g)].length, 1)
   assert.match(runner, /outsideScanSpend\(\(\) => \(deps\.autopilot \?\? runAutopilot\)\(/)
   assert.match(SOURCES.find(s => s.rel === 'lib/enrich/index.ts')!.text, /runWithJobSpend\(db, tenantId, lead\.scan_job_id, \(\) => enrichLeadContacts\(/, 'the owner retry draws on its scan')
@@ -172,7 +179,7 @@ test('inventory: each gated module reserves its kind before its request, and daz
 
 test("outsideScanSpend: work started inside a scan but not the scan's spend sees no scan context", async () => {
   const s = scan()
-  const seen = await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => [scanSpendContext()?.jobId, await outsideScanSpend(async () => scanSpendContext()?.jobId ?? null)])
+  const seen = await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, async () => [scanSpendContext()?.jobId, await outsideScanSpend(async () => scanSpendContext()?.jobId ?? null)])
   assert.deepEqual(seen, ['j1', null])
 })
 
@@ -210,7 +217,7 @@ for (const t of TRANSPORTS) {
         seen.push({ url: String(u), reserved: (s.raw.prepare("SELECT count(*) AS n FROM scan_spend_calls WHERE kind = ? AND status = 'reserved'").get(t.kind) as { n: number }).n })
         return t.reply()
       }) as unknown as typeof fetch
-      await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => t.call(f, s.raw))
+      await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => t.call(f, s.raw))
       assert.equal(seen.length, 1, 'one request')
       assert.equal(seen[0].reserved, 1, 'reserved before the request')
       const calls = await scanSpendCalls(s.db, 'j1', A)
@@ -229,7 +236,7 @@ for (const t of TRANSPORTS) {
         : t.call
       let threw: unknown = null
       let out: unknown
-      try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
+      try { out = await runWithScanSpend({ db: s2.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => callAtCap(f2, s2.raw)) } catch (e) { threw = e }
       assert.deepEqual(sent, [], 'no request at the cap')
       if (t.kind === 'render') assert.equal(out, null, 'a refused render renders nothing')
       // TinyFish included: the SCAN'S OWN budget refusal now propagates as SpendRefused (it used to be swallowed into a
@@ -245,7 +252,7 @@ test('pdl: the reservation for the size asked for settles to the profiles return
   const r6 = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6)
   for (const reply of [ok({ data: [{ full_name: 'Pat Lee' }, { full_name: 'Sam Roe' }] }), new Response('{}', { status: 404 }), new Response('{}', { status: 500 }), new Response('not json', { status: 200 }), ok({ data: 'x' })]) {
     const s = scan()
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => pdlPeopleSearch('pdl-test', 'Acme', (async () => reply) as unknown as typeof fetch, 5)).catch(() => null)
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => pdlPeopleSearch('pdl-test', 'Acme', (async () => reply) as unknown as typeof fetch, 5)).catch(() => null)
     by.push(...(await scanSpendCalls(s.db, 'j1', A)).map(c => [r6(c.reserve_usd), c.status, r6(c.actual_usd)]))
   }
   assert.deepEqual(by, [[1.4, 'settled', 0.56], [1.4, 'settled', 0], [1.4, 'reserved', null], [1.4, 'reserved', null], [1.4, 'reserved', null]]) // a 5xx, an unreadable 200 and an answer without a profile list may have been billed: the row stays 'reserved' (#363), it used to be 'kept' (which let a retry re-send)
@@ -268,7 +275,7 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
   ]
   for (const c of cases) for (const [what, reply, want] of outcomes) {
     const s = scan()
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => c.call((async () => reply()) as unknown as typeof fetch)).catch(() => null)
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => c.call((async () => reply()) as unknown as typeof fetch)).catch(() => null)
     const calls = await scanSpendCalls(s.db, 'j1', A)
     // tinyfish builds its own db for the gate; its spend row is on the scan db passed to runWithScanSpend
     assert.deepEqual(calls.map(x => x.status), [want], `${c.name} / ${what}`)
@@ -283,7 +290,7 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
     const s = scan()
     resetTinyfishState() // an earlier leg's TinyFish 429 sets TinyFish's own process-wide rate block; each leg starts clear
     const later: Record<string, number> = {}
-    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, async () => {
+    await runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, async () => {
       await first.call(firstAnswer as unknown as typeof fetch).catch(() => null)
       // A well-formed answer for every vendor (a bare {} is an unreadable PDL answer: maybe billed, which would itself stop the attempt).
       for (const c of cases) await c.call((async () => { later[c.name] = (later[c.name] ?? 0) + 1; return new Response(JSON.stringify({ organization: null, people: [], data: [], results: [] }), { status: 200 }) }) as unknown as typeof fetch).catch(() => null)
@@ -298,17 +305,21 @@ test('every paid vendor path: maybe-billed failures stay reserved, documented re
   }
 })
 
-test('model completions: an unlisted configured model is refused before any request; outside a scan the transport is unchanged', async () => {
+test('model completions: an unlisted configured model is refused before any request; #846 outside a scan and an account the call is refused (no_spend_context) unless the explicit escape hatch is open', async () => {
   const s = scan()
   const sent: string[] = []
   const f = (async (u: string | URL) => { sent.push(String(u)); return ok({ id: 'm', model: 'x', content: [] }) }) as unknown as typeof fetch
   const prev = process.env.DAZL_ANTHROPIC_MODEL
   process.env.DAZL_ANTHROPIC_MODEL = 'claude-unlisted-model'
   try {
-    await assert.rejects(runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}) }, () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
+    await assert.rejects(runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), accountLimits: null }, () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)), (e: unknown) => e instanceof SpendRefused && e.reason === 'model_unpriced')
     assert.deepEqual(sent, [])
     assert.deepEqual((await scanSpendCalls(s.db, 'j1', A)).map(c => [c.status, c.reason]), [['refused', 'model_unpriced']])
-    await anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10) // no scan context: no gate here (other paths keep their own guards)
+    process.env.DAZL_ANTHROPIC_MODEL = 'claude-sonnet-4-5'
+    // #846 review R2: no scan and no account context: refused before any request (fails closed, never uncapped)
+    await assert.rejects(anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10), (e: unknown) => e instanceof SpendRefused && e.reason === 'no_spend_context')
+    assert.equal(sent.length, 0)
+    await runWithoutAccountSpend('test', () => anthropicProvider.completeDetailed!('sk-test', 'hi', f, 10)) // the named escape hatch only
     assert.equal(sent.length, 1)
   } finally { if (prev === undefined) delete process.env.DAZL_ANTHROPIC_MODEL; else process.env.DAZL_ANTHROPIC_MODEL = prev }
 })

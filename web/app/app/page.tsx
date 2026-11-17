@@ -1,3 +1,4 @@
+import HomeResultsPanel from './home-results'
 import Readiness from './readiness'
 import FirstRun from './first-run'
 import Journey from './journey'
@@ -13,6 +14,7 @@ export default function AppHome() {
       <h1 className="text-3xl font-bold tracking-tight">Welcome to dazl</h1>
       <p className="text-[var(--ink-2)] text-sm mt-1 mb-6">Find businesses that need what you sell.<InfoTip>Each lead keeps a public source. You email them from your own Gmail after you approve every word.</InfoTip></p>
       <FirstRun>
+        <HomeResultsPanel />
         <ReadyCard />
         <Journey />
         <details className="drawer card mt-4" data-testid="setup-details">
