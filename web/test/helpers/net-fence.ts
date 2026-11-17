@@ -16,6 +16,8 @@ for (const name of Object.keys(process.env)) {
 // with DAZL_PG_ADMIN set explicitly - outside this harness, still loopback-only
 // and marker-guarded by scripts/pg-migrate/guard.ts.
 for (const name of ['DAZL_PG_ADMIN', 'DATABASE_URL']) delete process.env[name]
+// #1122: the free site finder (Wikidata / OpenStreetMap) stays off in fenced tests; a test that exercises it passes its own env and fetch.
+process.env.DAZL_FREE_SITE_FINDER = '0'
 // 1b) Store fence: code under test that reaches the app's own store (getAuthDb / getDb, e.g. the shared rate limiter in
 //     a route) must never open the default production path. A test that did not choose a DB_PATH gets a throwaway
 //     SQLite file for this process, removed on exit.

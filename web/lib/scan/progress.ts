@@ -25,6 +25,21 @@ export function sourceStatusOf(raw: string, jobRunning: boolean): SourceStatus {
 // The four states the UI shows. A source only gets a row once it starts, so 'queued' means a row that says so; a source with no row yet is simply not listed (never invented).
 export const stateOf = (raw: string, status: SourceStatus): SourceState => (/^(?:queued|pending)$/i.test(raw) ? 'queued' : status === 'running' ? 'running' : status === 'failed' ? 'failed' : 'done')
 
+// #1205: why the job-board source could not use a place, in plain words that name the place and what to change (runner: placeSkipReason).
+// "skipped_no_place:<kind>:<text>"; a bare "skipped_no_place" (no place anywhere) still gets a reason.
+export function skipNote(raw: string): string | null {
+  const m = /^skipped_no_place(?::([a-z]+)(?::(.*))?)?$/i.exec(raw); if (!m) return null
+  const t = (m[2] ?? '').trim()
+  switch (m[1]) {
+    case 'region': return `'${t}' is a region. Job postings need a city, e.g. 'Berlin, Germany'.`
+    case 'country': return `'${t}' is a whole country. Job postings need a city, e.g. 'Toronto, Canada'.`
+    case 'province': return `'${t}' is a province. Job postings need a city, e.g. 'Toronto, ${t}'.`
+    case 'ambiguous': return `'${t}' could be more than one place. Add the state or country, e.g. '${t}, IL' or '${t}, UK'.`
+    case 'city': return `Job postings could not place '${t}'. Add its state or country, e.g. '${t}, Canada'.`
+    case 'several': return `Your search names more than one place (${t}). Job postings search one city at a time.`
+    default: return 'No place in the search or your profile. Add a city, e.g. \'in Austin, TX\'.'
+  }
+}
 // "partial:1_of_3" -> "1 of 3 requests failed"; "partial:malformed" / a bare "partial" -> some of it could not be read.
 // Throttling is named as throttling, never as an unreadable answer: "partial:limited_1_of_3" -> "1 of 3 requests
 // rate-limited by the provider"; a bare "limited" / "limited_partial:2_of_3" row (failed overall) gets the same honesty.
@@ -63,7 +78,7 @@ export function progressOf(rows: SourceRunRow[], jobStatus: string): SourceProgr
     const candidates = num(r.candidate_count), accepted = num(r.verified_count), review = num(r.review_count)
     const rejected = candidates !== null && accepted !== null && review !== null ? Math.max(0, candidates - accepted - review) : null
     const raw = String(r.status ?? ''), status = sourceStatusOf(raw, running)
-    return { source: String(r.collector ?? ''), state: stateOf(raw, status), status, note: partialNote(raw) ?? (status === 'no_candidates' ? `${num(r.evidence_count) ?? 'some'} items read, none extracted as candidates` : null), candidates, accepted, review, rejected }
+    return { source: String(r.collector ?? ''), state: stateOf(raw, status), status, note: partialNote(raw) ?? skipNote(raw) ?? (status === 'no_candidates' ? `${num(r.evidence_count) ?? 'some'} items read, none extracted as candidates` : null), candidates, accepted, review, rejected }
   }).filter(p => p.source)
 }
 
@@ -110,4 +125,17 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
   // The stop block's exact refusal reason (null when not recorded): a legacy budget_stopped row must render neutrally.
   const stop_refusal_reason = rep.stop?.spend_refusal_reason ?? null
   return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, stop_refusal_reason, ...sourceFindings(rows, jobStatus, searchEmptyOk) }
+}
+
+// #1157 line 2: what the running page says about when the scan last made progress. A scan that has been quiet for 90 s
+// says so plainly instead of an open-ended "Still running". It promises no retry or timing: a stuck scan may be retried
+// or ended with a clear result, depending on attempts and the spend state (1157-F2). null = nothing recorded.
+export const QUIET_AFTER_S = 90
+export function lastActivityNote(nowS: number, lastAt: number | null | undefined): { text: string; quiet: boolean } | null {
+  if (lastAt == null || !Number.isFinite(lastAt)) return null
+  const ago = Math.max(0, Math.floor(nowS - lastAt))
+  const when = ago < 60 ? `${ago} s ago` : `${Math.floor(ago / 60)} min ago`
+  return ago >= QUIET_AFTER_S
+    ? { text: `No new activity for ${Math.floor(ago / 60) >= 1 ? `${Math.floor(ago / 60)} min` : `${ago} s`}. If it stays stuck, dazl will retry it or stop it and tell you what happened.`, quiet: true }
+    : { text: `Last activity ${when}`, quiet: false }
 }
