@@ -127,7 +127,7 @@ test('P2/P3 the two layers agree: a weekly play mailed the posting; the monitor 
   // the weekly play mails Flexport: the record holds it with event_date 2026-11-12 and signal_kind 'job_board_presence'
   await watchRun(db, w.watch.id, Q, NOW, [{ kind: 'job_board_presence', legacyStatus: 'verified' }])
   const held = await db.get<{ event_date: string; signal_kind: string }>("SELECT event_date, signal_kind FROM play_alerts WHERE tenant_id = ? AND entity_key = 'd:flexport.com'", [A])
-  assert.deepEqual(held, { event_date: D, signal_kind: 'job_board_presence' }, 'the mail pass claimed the company for this event')
+  assert.deepEqual(held, { event_date: D, signal_kind: 'hiring' }, 'the mail pass claimed the company for this event, under the normalised kind (#1193)')
   // the monitor now returns the SAME posting; its grade moved to another hiring label
   const m = await createMonitor(db, A, { query: Q2 }, NOW)
   assert.ok('id' in m, JSON.stringify(m))
