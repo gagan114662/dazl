@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { stagingBannerOn } from '../lib/staging.ts'
+import { stagingBannerOn } from '../lib/staging-banner.ts'
 
 test('banner follows the build-inlined flag, not the runtime DAZL_ENV', () => {
   assert.equal(stagingBannerOn({ NEXT_PUBLIC_DAZL_STAGING: '1' }), true)
