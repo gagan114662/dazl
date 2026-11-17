@@ -1,5 +1,6 @@
 // #899 decision (Hermes, delegated, 2026-11-12): free-tier mailbox verification (ZeroBounce), capped at the free allowance, never
 // auto-upgraded; without a key, today's behaviour. Stubbed HTTP only: no network, no real key, no credit used.
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'

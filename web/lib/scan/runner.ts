@@ -7,6 +7,7 @@ import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { runResearchScan } from '../research/scan-job.ts'
 import { researchEngineOn } from '../research/engine.ts'
+import { paidVendorOn, paidVendorOffNote, usableVendor } from '../paid-vendors.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
@@ -587,9 +588,11 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
 
 function safeJson(t: string): unknown { try { return JSON.parse(t) } catch { return null } }
 
-export function pickVendor(db: Database.Database, tenantId: string): Vendor | null {
+export function pickVendor(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): Vendor | null {
   const rows = db.prepare('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC').all(tenantId) as { vendor: Vendor }[]
-  return rows[0]?.vendor ?? null
+  // Refs #1099 (lib/paid-vendors.ts): dazl's model calls run on Claude. A saved OpenAI key is used only when the operator named 'openai'
+  // in DAZL_PAID_VENDORS; otherwise the newest Anthropic key is used, and a workspace with only an OpenAI key has no usable key.
+  return usableVendor(rows, env)?.vendor ?? null
 }
 
 
@@ -2266,7 +2269,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
     if (emailGuessEnabled()) {
       const verifier = verifierFromEnv(process.env, deps.fetchImpl)
-      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
+      if (!verifier) trace.note('email_verify', 'skipped', `${paidVendorOn('zerobounce') ? 'no ZEROBOUNCE_API_KEY' : paidVendorOffNote('zerobounce')}: guessed addresses stay unverified`)
       else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
       else try {
         const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAliveStrict(db, job) })
