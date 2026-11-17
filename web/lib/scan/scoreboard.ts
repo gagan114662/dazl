@@ -114,7 +114,10 @@ const HIRING_EN = /(?<!\b(?:paused|halted|stopped|froze|frozen|no longer|not)\s+
 // A title word never ends a sentence (review at ec98b436: "Posted a VP Sales. Announced bankruptcy. Sales role on Lever"):
 // a "." only inside a word ("Sr.Mgr"), in a dotted acronym ("U.S."), or ending a fixed abbreviation ("Sr.", "Mgr.").
 // A state word that makes the posted role a non-hire (a freeze, a filled / closed / expired role) is not a title word.
-const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|of|about|on|in|for|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|notice|quarter|loss|revenue|jump|record|blog|paper|webinar|recording|press|release|photo|update|note|post|article|video|story|farewell|layoff|layoffs|freeze|frozen|filled|closed|expired|cancelled|canceled|paused|withdrawn|suspended|former|ex|on-hold|hold'
+// #533 live FAIL at 4a6c4d7d: words that appear in real job titles ("Senior Revenue Operations Manager", "Post-Sales Operations
+// Manager", "Release Manager", "Head of Sales Operations") are never stop words. The anchored "... role|job on <job board>" ending
+// already keeps a press release, a record quarter or a blog post out; only clause words and non-hire states stay here.
+const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|about|on|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|farewell|layoff|layoffs|freeze|frozen|filled|closed|expired|cancelled|canceled|paused|withdrawn|suspended|former|ex|on-hold|hold'
 const TITLE_WORD = String.raw`(?:(?:sr|jr|mgr|assoc|asst|dir|exec|eng|mktg|intl|govt|dept|snr|vp|svp|evp|avp|rep|dev|st|mgmt|admin|acct|coord|spec|rep)\.|(?:[a-z]\.){2,}|\(?[a-z0-9][\w&/+'()]*(?:\.[a-z0-9][\w&/+'()]*)*)`
 const POSTED_ROLE = new RegExp(String.raw`^\s*posted an? (?:(?!(?:${TITLE_STOP})\b)${TITLE_WORD}(?:\s*[-–]\s*|\s+)){1,10}(?:role|job|position|opening|vacancy) on (?:ashby|lever|greenhouse|workable|smartrecruiters|bamboohr|recruitee|breezy|jobvite|workday)\s*\.?\s*$`, 'i')
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed

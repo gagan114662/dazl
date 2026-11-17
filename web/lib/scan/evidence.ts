@@ -287,6 +287,25 @@ function parseDay(s: string | null): Date | null {
 // themselves must still appear contiguously on the page; nothing else is relaxed, and the saved quote is never rewritten.
 export const visibleQuote = (s: string) => s.replace(/!?\[([^\]\n]{0,300})\]\([^)\s]{0,600}\)/g, '$1').replace(/(\*\*|__)(?=\S)([^*_\n]{1,300}?\S)\1/g, '$2')
 const tightPunct = (s: string) => s.replace(/ +\.(?= |$)/g, '.')   // only a full stop that ends a word: never joins "1 .5" or "acme .com"
+// #533 live FAIL at 4a6c4d7d: a search snippet writes a board posting's header with ". " between the fields
+// ("Post-Sales Operations Manager. Location. New York City. Employment Type. Full ... 4–6 years ...") while the board record
+// reads "Post-Sales Operations Manager Location New York City Employment Type Full time ...". On a board record only, the
+// quote is compared as words (punctuation ignored on both sides) and an inner "..." / "\u2026" is a gap: every segment must be
+// 20+ characters and found in order. Returns the index of the first segment in the page's words, or -1.
+const words = (s: string) => norm(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+export function boardHeaderAt(excerpt: string, pageText: string): number {
+  const segs = visibleQuote(excerpt).split(/\.{3,}|\u2026/).map(words).filter(Boolean)
+  if (!segs.length || segs.some(s => s.length < 20)) return -1
+  const hay = ` ${words(pageText)} `
+  let from = 0, first = -1
+  for (const s of segs) {
+    const i = hay.indexOf(` ${s} `, from)
+    if (i < 0) return -1
+    if (first < 0) first = i
+    from = i + s.length + 1
+  }
+  return first
+}
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
   const text = tightPunct(norm(page.text))
   // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
@@ -294,7 +313,7 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   const loose = norm(visibleQuote(c.excerpt).replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, ''))
   const excerpt = tightPunct(loose)
   if (excerpt.length < 20 || c.excerpt.length > 400) return { ok: false, reason: 'no_excerpt' }
-  const at = text.indexOf(excerpt)
+  const at = text.indexOf(excerpt) >= 0 ? text.indexOf(excerpt) : page.board ? boardHeaderAt(c.excerpt, page.text) : -1
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
 
   // The company must be named in the quoted passage itself or in the page title (for a board record: the board's identity, #1126).
