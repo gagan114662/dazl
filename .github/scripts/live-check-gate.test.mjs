@@ -31,7 +31,7 @@ test('the same text from a non-maintainer does not count', () => {
 test('not planned / duplicate closes and exempt labels are left closed', () => {
   assert.equal(decide(closed({ state_reason: 'not_planned' }), []).reopen, false)
   assert.equal(decide(closed({ state_reason: 'duplicate' }), []).reopen, false)
-  for (const name of ['wontfix', 'duplicate', 'not-planned', 'Not-Planned', 'triage:close', 'Triage:Close'])
+  for (const name of ['wontfix', 'duplicate', 'not-planned', 'Not-Planned'])
     assert.equal(decide(closed({ labels: [{ name: 'p1' }, { name }] }), []).reopen, false, name)
   assert.equal(decide(closed({ labels: [{ name: 'needs-live-check' }] }), []).reopen, true)
 })
@@ -227,4 +227,26 @@ test('"Quest live check (prod <commit>): PASS" counts like the plain form; other
   assert.equal(decide(closed(), [c(`Quest Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`)]).reopen, false)
   assert.equal(decide(closed(), [c(`Hermes Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`)]).reopen, true)
   assert.equal(decide(closed(), [c('Quest Live check (prod 7f4c9061): PASS')]).reopen, true, 'still needs evidence')
+})
+
+// Hermes 2026-11-17 13:16: triage:close counts only when the owner (or Hermes) applied it, read from the labeled event
+const labeled = (login, name = 'triage:close', created_at = '2026-11-16T20:00:00Z') => ({ event: 'labeled', actor: { login }, label: { name }, created_at })
+test('triage:close is exempt only when its latest labeled event is by an allowed labeler', () => {
+  const tc = closed({ labels: [{ name: 'triage:close' }] })
+  assert.equal(decide(tc, [], null, [labeled('gagan114662')]).reopen, false, 'owner applied it')
+  assert.equal(decide(closed({ labels: [{ name: 'Triage:Close' }] }), [], null, [labeled('gagan114662', 'Triage:Close')]).reopen, false, 'any case')
+  assert.equal(decide(tc, [], null, [labeled('someone-else')]).reopen, true, 'another account applied it')
+  assert.equal(decide(tc, [], null, []).reopen, true, 'no labeled event: no proof of who applied it')
+  assert.equal(decide(tc, []).reopen, true, 'events not passed')
+  assert.equal(decide(tc, [], null, [labeled('gagan114662', 'triage:close', '2026-11-16T10:00:00Z'), labeled('someone-else', 'triage:close', '2026-11-16T12:00:00Z')]).reopen, true, 'the latest labeling decides')
+  assert.equal(decide(tc, [], null, [labeled('someone-else'), labeled('gagan114662', 'other')]).reopen, true, 'an allowed actor on another label does not count')
+  assert.equal(decide(tc, [], null, [labeled('hermes-x')], new Set(['hermes-x'])).reopen, false, 'the allow-list is configurable')
+  assert.match(decide(tc, [], null, [labeled('someone-else')]).reason, /triage:close.*someone-else/)
+})
+
+test('end to end: triage:close applied by someone else is reopened; by the owner it stays closed; unreadable events reopen it', async () => {
+  const current = { labels: [{ name: 'triage:close' }] }
+  assert.equal((await runMain({ current, events: [labeled('someone-else')] })).writes.length, 2)
+  assert.deepEqual((await runMain({ current, events: [labeled('gagan114662')] })).writes, [])
+  assert.equal((await runMain({ current, fail: { 'GET /events': 502 } })).writes[0].startsWith('PATCH'), true)
 })
