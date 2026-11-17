@@ -5,7 +5,6 @@
 // Part of the #1273 split: the model key (Claude by default; OpenAI only when named).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { paidVendorOn } from '../lib/paid-vendors.ts'
 import { readFileSync } from 'node:fs'
 import { productTruth } from '../lib/product-truth.ts'
 
