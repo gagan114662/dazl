@@ -78,3 +78,19 @@ test('#1121 F1 HELD: a title suffix after the abbreviation is kept and judged (m
   }
   for (const t of ['Sales Development Representative (SDR) Manager', 'Sales Development Representative (SDR) Internship', 'Sales Development Representative (SDR) Talent Community']) assert.equal(titleIsRole(t, roles), null, t)
 })
+
+// review at f4c751e3 (Hermes F1): the suffix is judged as a whole title, not by its first word; a modifier before the title word still refuses
+test('#1121 F1 HELD: a modified title suffix (Senior Manager, Sr. Director, Sales Manager ...) is refused, specific and generic', () => {
+  for (const [quote, company] of [
+    ['Sales Development Representative (SDR) Senior Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Sr. Director at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Associate Team Lead at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Sales Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) Global Head New York City Full-Time About Clark', 'Clark'],
+  ] as const) {
+    assert.equal(jobAdQuoteRole(quote, company, roles), null, quote)
+    assert.equal(jobAdQuoteRole(quote, company, []), null, `generic: ${quote}`)
+  }
+  assert.ok(jobAdQuoteRole('Sales Development Representative (SDR) New York City Full-Time On-Site About Clark', 'Clark', roles))
+  assert.ok(jobAdQuoteRole('Founding Sales Development Representative (SDR) Chesky United States', 'Chesky', roles))
+})
