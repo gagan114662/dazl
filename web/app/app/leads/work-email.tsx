@@ -8,7 +8,7 @@ import { guessCopy, mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL
 // Rows from the server are MERGED by updated_at (mergeLookups): a slow first read never erases a newer result, and a
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
-type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
+type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean; policyOff?: 'apollo' | 'pdl' | null }
 const guessKey = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase()
 const isGuess = (x: unknown): x is GuessShown => !!x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string'
 const guessMap = (list: unknown): Record<string, GuessShown> => { const n: Record<string, GuessShown> = {}; if (Array.isArray(list)) for (const x of list) if (isGuess(x)) n[guessKey(x.person)] = x; return n }
@@ -85,7 +85,8 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
       if (r.ok && j.guess) takeGuesses([j.guess])
       if (r.status === 409) { setReads(0); load() } // running in another tab: show it as pending and follow it
       if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
-      else if (r.ok && j.status === 'no_key') text = 'The company website does not print an address for this person, and no Apollo or People Data Labs key is set to look further. Add your own key in Settings > Enrichment.'
+      // Refs #1099: when the paid-vendor policy kept a saved key off, the server says so; adding a key would not help
+      else if (r.ok && j.status === 'no_key') text = /not called: dazl uses no paid/.test(String(j.detail ?? '')) ? `The company website does not print an address for this person. ${String(j.detail).split(';')[0]}.` : 'The company website does not print an address for this person, and no Apollo or People Data Labs key is set to look further. Add your own key in Settings > Enrichment.'
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
     setMsg(m => ({ ...m, [key]: text })); setBusy(b => ({ ...b, [key]: false }))
@@ -150,7 +151,7 @@ function WorkEmailFor({ leadId, targets, lazy, initial }: { leadId: string; targ
           </div>
         )
       })}
-      <div className="text-gray-500" data-testid="work-email-cost">{providers ? workEmailCostNote(providers) : 'Uses your own Apollo or People Data Labs key; free when the company website prints it.'} <a className="underline" href="/app/settings#enrichment">Settings &gt; Enrichment</a>. Drafts still use published addresses only.</div>
+      <div className="text-gray-500" data-testid="work-email-cost">{providers ? workEmailCostNote(providers) : 'Uses your own Apollo or People Data Labs key; free when the company website prints it.'} {!providers?.policyOff && <a className="underline" href="/app/settings#enrichment">Settings &gt; Enrichment</a>}. Drafts still use published addresses only.</div>
     </div>
   )
 }
