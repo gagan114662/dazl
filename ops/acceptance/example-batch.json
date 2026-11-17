@@ -1,0 +1,3 @@
+[
+  { "issue": 1116, "check": "ops/acceptance/checks/signup-hydrates.sh" }
+]
