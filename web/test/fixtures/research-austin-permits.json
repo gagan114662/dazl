@@ -1,0 +1,213 @@
+{
+ "_note": "Real rows of the City of Austin issued construction permits dataset (data.austintexas.gov 3syk-w9eu), fetched 2026-11-15 with upper(description) like %ROOF% over 90 days; a sample including the false matches (solar installer, electrician and plumber on remodels with a roof) and roofing contractors. Phone numbers removed; permit_location replaced by a synthetic address (homeowners are third parties), nothing else edited. Names kept: contractor_full_name is the contractor of record on a public city permit (the business contact the source cites), not a private party.",
+ "rows": [
+  {
+   "issue_date": "2026-11-13T00:00:00.000",
+   "contractor_company_name": "Freedom Solar Power",
+   "contractor_full_name": "Chadwyck Preece",
+   "contractor_trade": "Electrical Contractor",
+   "description": "Install new  6.09 kw rooftop solar system for existing residential only.",
+   "permit_number": "2026-145208 EP",
+   "permit_location": "100 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13800156"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-12T00:00:00.000",
+   "contractor_company_name": "Beckett Electrical Services",
+   "contractor_full_name": "Jesse Beckett",
+   "contractor_trade": "Electrical Contractor",
+   "description": "REMODEL OF AN EXTERIOR ROOF DECK ON THE 30TH FLOOR - SCOPE INCLUDES REPLACEMENT OF EXTERIOR DOORS AND WINDOWS AND ROOFING STRUCTURAL REINFORCEMENT AND MODIFICATION OF EXISTING ELECTRICAL AND PLUMBING SYSTEMS.",
+   "permit_number": "2026-136436 EP",
+   "permit_location": "101 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13790335"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-09T00:00:00.000",
+   "contractor_company_name": "We Plumb LLC",
+   "contractor_full_name": "Zachariah Mecom",
+   "contractor_trade": "Plumbing Contractor",
+   "description": "Addition/remodel- Garage conversion interior remodel with addition and full roof replacement.",
+   "permit_number": "2026-089033 PP",
+   "permit_location": "102 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13735754"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-06T00:00:00.000",
+   "contractor_company_name": "Thermal Energy Heating & Cooling",
+   "contractor_full_name": "Stevan Medina",
+   "contractor_trade": "Mechanical Contractor",
+   "description": "Renovate existing 1-story ADU: Replace windows doors siding & roofing.  Update MEP.  Reconfigure floor plan/plumbing locations.  Replace foundation in exact same footprint as existing.",
+   "permit_number": "2026-030707 MP",
+   "permit_location": "103 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13669533"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-06T00:00:00.000",
+   "contractor_company_name": "Kanga Roof LLC",
+   "contractor_full_name": "Stacie Feller",
+   "contractor_trade": "General Contractor",
+   "description": "Express: Re-roof (not going past decking)",
+   "permit_number": "2026-146769 BP",
+   "permit_location": "104 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13801988"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-05T00:00:00.000",
+   "contractor_company_name": "Caden Roofing, Sheetmetal and General Contracting",
+   "contractor_full_name": "Fareed Tulbah",
+   "contractor_trade": "General Contractor",
+   "description": "Express: Reroofing (located in WUI)",
+   "permit_number": "2026-146179 BP",
+   "permit_location": "105 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13801276"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-04T00:00:00.000",
+   "contractor_company_name": "QUICK ROOFING LLC",
+   "contractor_full_name": "Jason Armstrong",
+   "contractor_trade": "General Contractor",
+   "description": "Remove existing roofing system and install GAF Timberline HDZ (weather wood) shingles - no structural repairs decking will remain the same. We will only be replacing the shingles.",
+   "permit_number": "2026-143533 BP",
+   "permit_location": "106 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13798318"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-03T00:00:00.000",
+   "contractor_company_name": "QUICK ROOFING LLC",
+   "contractor_full_name": "Jason Armstrong",
+   "contractor_trade": "General Contractor",
+   "description": "Remove existing roofing system and install GAF Timberline HDZ (weather wood) shingles - no structural repairs decking will remain the same. We will only be replacing the shingles.",
+   "permit_number": "2026-143601 BP",
+   "permit_location": "107 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13798391"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-11-03T00:00:00.000",
+   "contractor_company_name": "Freedom Solar Power",
+   "contractor_full_name": "Chadwyck Preece",
+   "contractor_trade": "Electrical Contractor",
+   "description": "Installing 187.62 PV rooftop solar in West lake Hills Jurisdiction",
+   "permit_number": "2026-088890 EP",
+   "permit_location": "108 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13735575"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-10-25T00:00:00.000",
+   "contractor_company_name": "Kanga Roof LLC",
+   "contractor_full_name": "Stacie Feller",
+   "contractor_trade": "General Contractor",
+   "description": "Express: Re-roof (located in WUI)",
+   "permit_number": "2026-139369 BP",
+   "permit_location": "109 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13793679"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-10-16T00:00:00.000",
+   "contractor_company_name": "Kanga Roof LLC",
+   "contractor_full_name": "Stacie Feller",
+   "contractor_trade": "General Contractor",
+   "description": "Express- Residential Reroof (shingle to shingle)",
+   "permit_number": "2026-136758 BP",
+   "permit_location": "110 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13790692"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-10-08T00:00:00.000",
+   "contractor_company_name": "LOA Construction",
+   "contractor_full_name": "Kyle Henson",
+   "contractor_trade": "General Contractor",
+   "description": "Express - Reroof: tear off and replace existing shingle roof 50 squares with Malarkey Vista Class 4 impact-resistant shingles. Replace damaged roof decking as needed not to exceed 128 sq ft. No structural changes.",
+   "permit_number": "2026-131734 BP",
+   "permit_location": "111 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13784919"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-09-29T00:00:00.000",
+   "contractor_company_name": "Empire Roofing Companies LLC **MAIN**",
+   "contractor_full_name": "Jaleel Natour",
+   "contractor_trade": "General Contractor",
+   "description": "Simple re-roof. Existing Austin Water offices.",
+   "permit_number": "2026-127253 BP",
+   "permit_location": "112 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13779726"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-09-24T00:00:00.000",
+   "contractor_company_name": "Kentex Roofing Systems",
+   "contractor_full_name": null,
+   "contractor_trade": "General Contractor",
+   "description": "TPO Roof Overlay",
+   "permit_number": "2026-126272 BP",
+   "permit_location": "113 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13778595"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-09-17T00:00:00.000",
+   "contractor_company_name": "Precision Reconstruction Group",
+   "contractor_full_name": "Ryan Curtis",
+   "contractor_trade": "General Contractor",
+   "description": "Re-roof",
+   "permit_number": "2026-121366 BP",
+   "permit_location": "114 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13772959"
+   },
+   "contractor_phone": null
+  },
+  {
+   "issue_date": "2026-09-17T00:00:00.000",
+   "contractor_company_name": "Precision Reconstruction Group",
+   "contractor_full_name": "Ryan Curtis",
+   "contractor_trade": "General Contractor",
+   "description": "Re-roof",
+   "permit_number": "2026-121094 BP",
+   "permit_location": "115 EXAMPLE ST",
+   "link": {
+    "url": "https://abc.austintexas.gov/web/permit/public-search-other?t_detail=1&t_selected_folderrsn=13772608"
+   },
+   "contractor_phone": null
+  }
+ ]
+}

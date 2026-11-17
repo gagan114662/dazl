@@ -8,6 +8,7 @@
 //   - exactly one distinct date across all qualifying nodes (several = a list of items: none is this lead's),
 //   - a real calendar day. datePublished / dateModified / dateCreated are publication or update stamps and are never read here (page-timing.ts keeps them as labels only).
 import { companyKey, hasPhrase, norm } from './evidence.ts'
+import { ownPostDate } from './own-post-date.ts'
 import { isCountryOrRegion, countryFromField, countriesIn, regionOf, regionsIn, countryOfRegion } from './countries.ts'
 
 export type DateKind = 'Event' | 'JobPosting'
@@ -251,10 +252,10 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
 
 // Bounded finishing pass for undated candidates: at most `max` of them, one fetch each (the verifier's cached page, so normally none). Mutates the candidate: event_date and a timing_note
 // that says where the date came from. It decides nothing about the window - the caller's window gate judges the new date like any other.
-export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null }>(
-  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[] } | { fail: string } | null>, max = 6, where: string[] = [],
-): Promise<{ company: string; date: string; kind: DateKind; url: string }[]> {
-  const done: { company: string; date: string; kind: DateKind; url: string }[] = []
+export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null }>(
+  leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; text?: string; published?: string | null } | { fail: string } | null>, max = 6, where: string[] = [], request?: string | null,
+): Promise<{ company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[]> {
+  const done: { company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[] = []
   let tried = 0
   for (const l of leads) {
     if (l.event_date || tried >= max) continue
@@ -263,7 +264,16 @@ export async function finishUndatedLeads<T extends { company: string; signal: st
     try { page = await fetchPage(l.source_url) } catch { page = null }
     if (!page || 'fail' in page) continue
     const r = resolveStructuredDate(page.structured, l.company, `${l.signal} ${l.excerpt}`, where)
-    if (!r) continue
+    if (!r) {
+      // #878: a request for companies that POSTED about something is dated by the company's own post (own-post-date.ts: own site, one article, markup and byline agree)
+      const own = typeof page.text === 'string' ? ownPostDate({ request, company: l.company, url: l.source_url, excerpt: l.excerpt, page: { text: page.text, published: page.published, structured: page.structured } }) : null
+      if (own?.date) {
+        l.event_date = own.date; l.event_date_proof = 'page_bound'; l.event_date_proof_note = own.why.slice(0, 200)
+        l.timing_note = `event date ${own.date}: ${own.why}`
+        done.push({ company: l.company, date: own.date, kind: 'OwnPost', url: l.source_url })
+      }
+      continue
+    }
     l.event_date = r.date
     l.timing_note = `event date ${r.date} read from the page's own structured data (schema.org ${r.kind}), not from the quote`
     done.push({ company: l.company, date: r.date, kind: r.kind, url: l.source_url })

@@ -2,7 +2,26 @@ import { isGtmRole } from '../signals/ats-gtm.ts'
 // Requested POSTING titles, never the buyer personas in ICP.who. Deliberately bounded synonyms:
 // sales ops <-> sales operations, revops <-> revenue operations, admin <-> administrator.
 // CRM administrator is NOT business systems administrator, Salesforce developer or AE.
-const normal = (s: string): string => s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)).replace(/[^a-z0-9]+/g, ' ').trim()
+// #1121: the short and long names of the same sales vacancy are one title. "SDR" asked for is a posting titled "Sales Development
+// Representative" (and the reverse); likewise BDR, AE and salesperson / sales representative. Bounded to these four, so no adjacent role
+// matches (an SDR is still not an AE, a sales development representative is not a plain sales representative).
+const SALES_ABBREV: [RegExp, string][] = [
+  [/\bsales\s+development\s+rep(?:resentative)?s?\b|\bsdrs\b/g, 'sdr'],
+  [/\bbusiness\s+development\s+rep(?:resentative)?s?\b|\bbdrs\b/g, 'bdr'],
+  [/\baccount\s+executives?\b|\baes\b/g, 'ae'],
+  [/\bsales\s*persons?\b|\bsales\s+rep(?:resentative)?s?\b/g, 'salesperson'], // not "sales people": broad hiring, not a named title
+]
+const abbrev = (s: string): string => SALES_ABBREV.reduce((t, [re, to]) => t.replace(re, to), s)
+const normal = (s: string): string => abbrev(s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)).replace(/[^a-z0-9]+/g, ' ').trim())
+// The words a title may use for a requested role, for finding WHERE the role sits in a title (sales-hiring-gate.ts titleIsRole):
+// the term as asked plus, for the four sales names above, their other written forms.
+const SURFACES: Record<string, string[]> = {
+  sdr: ['SDR', 'sales development representative', 'sales development rep'],
+  bdr: ['BDR', 'business development representative', 'business development rep'],
+  ae: ['AE', 'account executive'],
+  salesperson: ['salesperson', 'sales person', 'sales representative', 'sales rep'],
+}
+export const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
 export interface RequestedHiringRole { term: string; normalized: string }
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".

@@ -94,6 +94,7 @@ jobs:
         run: |
           mkdir -p preview/lead-cards
           SHOTS=preview/lead-cards node test/ui/lead-cards.ui.mjs
+          SHOTS=preview/lead-cards node test/ui/work-email-review-lane.ui.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

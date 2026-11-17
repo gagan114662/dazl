@@ -33,9 +33,9 @@ async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Pr
   for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   try { return await fn() } finally { for (const [k, v] of Object.entries(before)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
-const NONE = { DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_ANTHROPIC_MODEL: undefined }
+const NONE = { DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: undefined, DAZL_ANTHROPIC_MODEL: undefined }
 
-test('no operator limit: the preview is unchanged and no pool row is written', async () => {
+test('#846 #847 no operator entry: the preview reserves and settles on the default day/month caps; past the deployment cap it is refused before any call', async () => {
   const db = setup()
   fetches.length = 0
   await withEnv(NONE, async () => {
@@ -43,7 +43,12 @@ test('no operator limit: the preview is unchanged and no pool row is written', a
     assert.ok('icp' in out && out.inferred)
     assert.equal(fetches.length, 1)
   })
-  assert.deepEqual(await poolRows(sqliteDb(db), 'A'), [])
+  const rows = (await poolRows(sqliteDb(db), 'A')).map(r => [r.period.slice(0, 2), Math.round(r.reported_usd * 1e6) / 1e6, r.calls])
+  assert.deepEqual(rows, [['d:', 0.00018, 1], ['m:', 0.00018, 1]], 'never unlimited: the default caps hold the settled cost')
+  await withEnv({ ...NONE, DAZL_OWNER_MONTH_MAX_USD: '0.0002' }, async () => {
+    assert.deepEqual(await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) }), { error: 'spend_limit' })
+    assert.equal(fetches.length, 1, 'past the deployment month cap: no provider call')
+  })
 })
 
 test('a workspace spend limit refuses the preview BEFORE any provider call and says so truthfully', async () => {
@@ -72,7 +77,7 @@ test('under the limit the preview reserves then settles day+month in the shared 
   assert.equal(metered.n, 1)
 })
 
-test('an unpriced configured model fails closed with its own name when a limit is set, and still runs when none is', async () => {
+test('an unpriced configured model fails closed with its own name, with an operator entry and (#846/#847) under the default caps', async () => {
   const db = setup()
   fetches.length = 0
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_ANTHROPIC_MODEL: 'claude-unlisted-model' }, async () => {
@@ -80,9 +85,8 @@ test('an unpriced configured model fails closed with its own name when a limit i
     assert.equal(fetches.length, 0)
   })
   await withEnv({ ...NONE, DAZL_ANTHROPIC_MODEL: 'claude-unlisted-model' }, async () => {
-    const out = await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) })
-    assert.ok('icp' in out, 'no limit: the operator chose no cap, so the call runs')
-    assert.equal(fetches.length, 1)
+    assert.deepEqual(await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) }), { error: 'model_unpriced' })
+    assert.equal(fetches.length, 0, 'no entry: never unlimited, so an unpriced model is refused too')
   })
 })
 

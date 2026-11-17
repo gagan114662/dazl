@@ -65,7 +65,9 @@ export class SqliteQueue implements QueueAdapter {
         lease_expires_at INTEGER,
         claim_token INTEGER,
         last_error TEXT,
-        dedupe_key TEXT
+        dedupe_key TEXT,
+        claimed_by TEXT,
+        claim_log TEXT
       );
       CREATE UNIQUE INDEX IF NOT EXISTS work_queue_dedupe
         ON work_queue(tenant_id, kind, dedupe_key)
@@ -74,6 +76,13 @@ export class SqliteQueue implements QueueAdapter {
         ON work_queue(status, not_before, created_at);
       CREATE TABLE IF NOT EXISTS work_queue_meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
       INSERT OR IGNORE INTO work_queue_meta(k, v) VALUES ('token', 0);`)
+    // #836: who took each claim (DbQueue.claim). A store created before these columns gets them here; two processes
+    // opening one file at once may both try, and the loser's "duplicate column" is the only error let through.
+    const have = new Set((db.prepare('PRAGMA table_info(work_queue)').all() as { name: string }[]).map(c => c.name))
+    for (const col of ['claimed_by', 'claim_log']) {
+      if (have.has(col)) continue
+      try { db.exec(`ALTER TABLE work_queue ADD COLUMN ${col} TEXT`) } catch (e) { if (!/duplicate column/i.test((e as Error).message)) throw e }
+    }
   }
 
   private nextToken(): number {

@@ -1,7 +1,9 @@
+import { US_CITY_RANKS } from './us-city-ranks.ts'
+import { STATES } from './us-states.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
-import { countriesIn, resolveSegment } from '../scan/countries.ts'
+import { countriesIn, resolveSegment, regionOf, regionsIn, countryOfRegion } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -11,7 +13,7 @@ import { postingDay } from './ats-posting.ts'
 // It is not proof of a need; the normal verifier still checks every lead against the cited page.
 // Dates: Greenhouse `first_published`, Ashby `publishedAt` and Lever `createdAt` only. `updated_at` is never used as the posting date.
 // Only the documented API hosts (Greenhouse, Ashby, Lever, plus the Hacker News Algolia host for discovery) are ever requested, and only for board tokens that pass a strict pattern.
-const STATES: Record<string, string> = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
+export { STATES }
 const WINDOW_DAYS = 90
 const MAX_DETAIL = 3 // per Greenhouse board
 const MAX_BOARDS = 10
@@ -46,8 +48,12 @@ const NY_ITEM = `(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:
 const parens = (item: string) => `(?:\\s*\\(\\s*${item}(?:${SEP}${item})*\\s*\\))?`
 const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?${parens(UK_ITEM)}(?:${SEP}${UK_ITEM})*${parens(UK_ITEM)}\\s*$`, 'i')
 const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)${parens(NY_ITEM)}(?:${SEP}${NY_ITEM})*${parens(NY_ITEM)}\\s*$`, 'i')
-const CITY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
-  { ask: /\blondon\b/i, name: 'London', ok: l => LONDON_OK.test(l) },
+// #1205: "London, Ontario" / "London, ON" / "London, Kentucky" are NOT the UK's London (they were answered with UK postings). A London
+// qualified by a non-UK province / state / country is left to the other resolvers (London, KY is a US city; London, Ontario a Canadian one).
+const NON_UK_LONDON = /\blondon\s*,?\s*(?:ontario|canada|kentucky|ohio|arkansas|texas)\b/i
+const NON_UK_LONDON_CODE = /\b[Ll]ondon\s*,\s*(?:ON|ONT|KY|OH|AR|TX|CA)\b/
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !NON_UK_LONDON.test(q) && !NON_UK_LONDON_CODE.test(q) }, name: 'London', ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
   { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
 ]
@@ -66,6 +72,13 @@ export function genericPlace(query: string): Place | null {
   for (let i = 0; i < toks.length; i++) {
     let country: string | null = null
     for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) { if (toks.slice(i, i + n).includes(',')) continue; const c = resolveSegment(toks.slice(i, i + n).join(' '), true); if (c) country = c }
+    // #1205: a Canadian province after a comma ("Toronto, Ontario", "London, ON") names the city's country (Canada). Only after a comma, and a code only in capitals,
+    // so the word "on" in "startups on the hunt" is never a province.
+    if (!country && toks[i - 1] === ',') for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) {
+      const seg = toks.slice(i, i + n); if (seg.includes(',')) continue
+      const text = seg.join(' '), r = regionOf(text)
+      if (r?.startsWith('CA-') && (text.length > 2 ? /^\p{Lu}/u.test(text) : /^[A-Z]{2}$/.test(text))) country = 'CA'
+    }
     if (!country) continue
     let j = i - 1; const comma = toks[j] === ','; if (comma) j--
     const words: string[] = []
@@ -79,20 +92,151 @@ export function genericPlace(query: string): Place | null {
     const ok = (...locs: (string | undefined)[]) => locs.some(l => {
       if (!l) return false
       if (!re.test(norm(l))) return false
-      const named = countriesIn(l); return named.length === 0 || named.every(c => c === country)
+      const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
+      // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK)
+      return regionsIn(l).every(r => countryOfRegion(r) === country)
     })
     return { name: city, ok }
   }
   return null
 }
+// #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
+// to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
+// job-board source never ran and the trial's only readable, dated hiring evidence was never read. A US "<City>, <ST>" or
+// "<City>, <State name>" is that CITY: a posting is in it when its location names the city as a whole word and names no other US state.
+// The city never widens to its state (Dallas, TX is not Austin, TX).
+// Review at 54953a0a: a capitalised phrase before ", <State>" is NOT assumed to be a city ("Dentists, Ohio", "Series B Fintechs, California"
+// and "Sales Manager, Texas" name the state). A city is read only in one unambiguous shape: right after "in" / "near" / "around"
+// ("account executives in Austin, TX"; a profile place is read as "in <place>" by the runner). Anything else falls through to the state.
+const CITY = String.raw`((?:[A-Z][\p{L}'-]+|St\.)(?:\s+(?:[A-Z][\p{L}'-]+|St\.)){0,3})\s*,\s*([A-Z]{2}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)`
+const CITY_AFTER = new RegExp(`\\b(?:in|near|around)\\s+${CITY}(?=$|[\\s,.;)])`, 'gu')
+// a second city joined on: its region must be a real state (abbreviation or name), so "TX, Dallas" in "Austin, TX, Dallas, TX" is not read as a city
+const STATE_RE = `(?:${[...Object.keys(STATES), ...Object.values(STATES)].sort((x, y) => y.length - x.length).join('|')})`
+const CITY_MORE = new RegExp(`(?:\\band\\s|\\bor\\s|[&,;/])\\s*((?:[A-Z][\\p{L}'-]+|St\\.)(?:\\s+(?:[A-Z][\\p{L}'-]+|St\\.)){0,3})\\s*,\\s*(${STATE_RE})(?=$|[\\s,.;)])`, 'gu')
+export function usCityPlace(text: string): Place | null {
+  // a request naming two different cities is never narrowed to its first one (the same rule the runner applies to a profile)
+  const found = new Map<string, Place>()
+  for (const m of text.matchAll(CITY_AFTER)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  // "in Austin, TX and Dallas, TX", "in Austin, TX, Dallas, TX": a city joined on with and / or / & / , / ; / slash is a second city of the same request
+  if (found.size) for (const m of text.matchAll(CITY_MORE)) { const p = cityPlaceOf(m[1], m[2]); if (p) found.set(p.name, p) }
+  return found.size === 1 ? [...found.values()][0] : null
+}
+function cityPlaceOf(cityIn: string, region: string): Place | null {
+  const abbr = STATES[region] ? region : Object.keys(STATES).find(k => STATES[k].toLowerCase() === region.toLowerCase())
+  if (!abbr) return null
+  const city = cityIn.trim(), key = norm(city)
+  if (key.length < 3 || STATES[abbr].toLowerCase() === key || /\bremote\b/i.test(city)) return null
+  const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+  // another state is read from the location with the city itself removed ("Kansas City, MO" names no Kansas); a non-US country ("San Jose, Costa Rica")
+  // or a remote posting ("Remote - Austin, TX": not located in the city, the same rule as London/NYC) is never this city
+  const cityRe = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
+  const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
+  // #1205: a Canadian province is another country too ("London, ON" is not London, KY)
+  const otherRegion = (l: string) => regionsIn(l).some(r => countryOfRegion(r) !== 'US')
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l) && !otherRegion(l)) }
+}
+// #1095 (live staging check of the merged #1155, 2026-11-13): a brand-new trial account's dazl-inferred profile stores its place WITHOUT a state
+// (job 64a0f578: where ["Austin"], country "US"), and placeIn("in Austin") names no place, so the board source never ran for exactly the
+// first-session customer. A profile place that is a bare US city name resolves to the MOST POPULOUS US place of that name (US Census Vintage 2022
+// estimates, lib/sources/us-city-ranks.ts) when it is at least 3 times the next one: Austin is Austin, TX (974,447 against 26,208 in MN), while
+// Springfield (MO 170,067 / MA 154,064 / IL 113,273) is ambiguous and names no place. Only for a profile that says it is US (country).
+let CITY_RANKS: Map<string, { city: string; abbr: string; pop: number }[]> | null = null
+const rankKey = (s: string) => s.toLowerCase().replace(/\./g, '').replace(/\bsaint\b/g, 'st').replace(/\s+/g, ' ').trim()
+export function bareUsCity(name: string): { city: string; abbr: string } | null {
+  const raw = name.trim()
+  if (!/^[A-Z][\p{L}.'-]*(?:\s+[A-Z][\p{L}.'-]*){0,3}$/u.test(raw)) return null   // one place name, not a phrase or a list
+  if (!CITY_RANKS) {
+    CITY_RANKS = new Map()
+    for (const row of US_CITY_RANKS) { const [city, abbr, pop] = row.split('|'); const k = rankKey(city); const l = CITY_RANKS.get(k) ?? []; l.push({ city, abbr, pop: Number(pop) }); CITY_RANKS.set(k, l) }
+    for (const l of CITY_RANKS.values()) l.sort((a, b) => b.pop - a.pop)
+  }
+  const l = CITY_RANKS.get(rankKey(raw)); if (!l?.length) return null
+  if (l[1] && l[0].pop < 3 * l[1].pop) return null
+  return { city: l[0].city, abbr: l[0].abbr }
+}
+// The place text a profile's `where` entry names for the board source, or null: what placeIn reads from "in <entry>", else (a US profile only)
+// a bare US city written with its state, so the request the board source reads is one placeIn resolves ("... in Austin, TX").
+// `text` is what is appended to the request (an entry placeIn already reads is appended AS WRITTEN: a Place's name is not always readable back, "Toronto, Canada" names
+// the place "Toronto", which placeIn does not resolve alone: review at ca63ac3a, 8 non-US shapes lost the board source); `name` is the place's identity, the de-dupe key.
+// #1205 review (F1): a bare listed world city ('Vancouver') is read in the PROFILE's country when one is set: a US profile's 'Vancouver' is Vancouver, WA
+// (the US-city fallback below), never Vancouver, Canada; a profile in a third country gets no place (the run names the city as unplaceable).
+const countryCode = (c: string): string | null => /^ca$/i.test(c.trim()) ? 'CA' : resolveSegment(c, true)
+export function profilePlace(where: string, country?: string | null): { text: string; name: string } | null {
+  const isUs = /^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())
+  const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, where.trim()) ? WORLD_CITIES[where.trim()] : null
+  const own = country && country.trim() ? countryCode(country) : null
+  const foreign = !!listed && !!own && countryCode(listed) !== own
+  const direct = foreign ? null : placeIn(`in ${where}`); if (direct) return { text: where.trim(), name: direct.name }
+  if (!isUs) return null
+  const b = bareUsCity(where); if (!b) return null
+  const text = `${b.city}, ${b.abbr}`, p = placeIn(`in ${text}`)
+  return p ? { text, name: p.name } : null
+}
+export const profilePlaceText = (where: string, country?: string | null): string | null => profilePlace(where, country)?.text ?? null
+// A profile listing a city AND its state ("Austin", "Texas") names one place: the state entry is absorbed by the city entry of that state.
+export function absorbStates(places: string[]): string[] {
+  return places.filter(p => { const abbr = Object.keys(STATES).find(a => STATES[a] === p); return !(abbr && places.some(q => q !== p && q.endsWith(`, ${abbr}`))) })
+}
 export function placeIn(query: string): Place | null {
   for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  const us = usCityPlace(query); if (us) return us
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }
   // A named city with its country ("Cambridge, UK") is that CITY, so it is tried before the bare-country place, which would widen it to the whole country.
   const g = genericPlace(query); if (g) return g
+  const w = worldCityPlace(query); if (w) return w
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
+}
+// #1205: a bounded list of large non-US cities that name one place on their own ("in Toronto", a profile place "Mumbai"): each resolves as "<City>, <Country>"
+// would. A data list, no network call. Cities sharing their name with a sizeable US / UK place (Paris, Dublin, Melbourne, Manchester, Birmingham,
+// Cambridge, London) are deliberately absent: they need their country written.
+export const WORLD_CITIES: Record<string, string> = {
+  Toronto: 'Canada', Vancouver: 'Canada', Montreal: 'Canada', 'Montréal': 'Canada', Calgary: 'Canada', Ottawa: 'Canada', Edmonton: 'Canada', Mississauga: 'Canada', Oakville: 'Canada', Winnipeg: 'Canada',
+  Berlin: 'Germany', Munich: 'Germany', Hamburg: 'Germany', Frankfurt: 'Germany', Amsterdam: 'Netherlands', Madrid: 'Spain', Barcelona: 'Spain', Stockholm: 'Sweden', Lisbon: 'Portugal', Copenhagen: 'Denmark', Zurich: 'Switzerland', Warsaw: 'Poland',
+  Mumbai: 'India', Bangalore: 'India', Bengaluru: 'India', Delhi: 'India', 'New Delhi': 'India', Gurugram: 'India', Gurgaon: 'India', Noida: 'India', Pune: 'India', Hyderabad: 'India', Chennai: 'India', Kolkata: 'India', Ahmedabad: 'India',
+  Dubai: 'United Arab Emirates', 'Abu Dhabi': 'United Arab Emirates', Riyadh: 'Saudi Arabia', Doha: 'Qatar', 'Tel Aviv': 'Israel',
+  Lagos: 'Nigeria', Nairobi: 'Kenya', Johannesburg: 'South Africa', 'Cape Town': 'South Africa', Cairo: 'Egypt',
+  Sydney: 'Australia', Brisbane: 'Australia', Auckland: 'New Zealand', Singapore: 'Singapore', Tokyo: 'Japan', Seoul: 'South Korea', Jakarta: 'Indonesia', Manila: 'Philippines',
+  'São Paulo': 'Brazil', 'Sao Paulo': 'Brazil', 'Mexico City': 'Mexico', 'Buenos Aires': 'Argentina', 'Bogotá': 'Colombia', Bogota: 'Colombia', Santiago: 'Chile',
+}
+const WORLD_RE = new RegExp(`\\b(?:in|near|around|across|from)\\s+(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}'-])(?!\\s*,\\s*\\p{L})`, 'gu')
+const WORLD_ANY = new RegExp(`(?<![\\p{L}'-])(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?![\\p{L}'-])`, 'gu')
+// the distinct listed cities a text names anywhere ("Dubai or Lagos" names two)
+export const worldCitiesIn = (text: string): string[] => [...new Set([...text.matchAll(WORLD_ANY)].map(m => WORLD_CITIES[m[1]] + '|' + m[1]))].map(x => x.split('|')[1])
+export function worldCityPlace(query: string): Place | null {
+  if (worldCitiesIn(query).length > 1) return null   // two cities are never narrowed to the first one
+  const found = new Map<string, Place>()
+  for (const m of query.matchAll(WORLD_RE)) { const p = genericPlace(`in ${m[1]}, ${WORLD_CITIES[m[1]]}`); if (p) found.set(p.name, p) }
+  return found.size === 1 ? [...found.values()][0] : null   // two cities are never narrowed to the first one
+}
+
+// #1205: WHY the job-board source could not use a place, as a status suffix the progress row and the run report read ("skipped_no_place:<kind>:<text>"),
+// never only "Not used for this search". <text> is the place as the user wrote it (letters, spaces and , . ' - only; at most 40 characters).
+const REGION_WORDS = /\b(europe|emea|apac|asia(?:[-\s]pacific)?|latam|latin america|africa|middle east|mena|north america|south america|nordics|dach|benelux|scandinavia|bay area|silicon valley|greater toronto area|gta|tri-state area)\b/i
+const AMBIGUOUS = /\b(springfield|portland|cambridge|columbus|richmond|birmingham|manchester|paris|dublin|melbourne|perth|hamilton|london|kingston|victoria)\b(?!\s*,)/i
+const clean = (t: string) => t.replace(/[^\p{L}\p{M} ,.'-]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 40)
+export function placeSkipReason(query: string, where: readonly unknown[] = []): string {
+  const places = where.filter((w): w is string => typeof w === 'string' && !!w.trim())
+  if (places.length > 1 && !placeIn(query)) return `skipped_no_place:several:${clean(places.slice(0, 3).join(', '))}`
+  for (const t of [query, ...places]) {
+    const many = worldCitiesIn(t); if (many.length > 1) return `skipped_no_place:several:${clean(many.slice(0, 3).join(', '))}`
+    const r = REGION_WORDS.exec(t); if (r) return `skipped_no_place:region:${clean(r[1])}`
+    const a = AMBIGUOUS.exec(t); if (a) return `skipped_no_place:ambiguous:${clean(a[1])}`
+    const us = /\b(?:the\s+)?(?:US|USA|U\.S\.(?:A\.)?|United States(?: of America)?)\b/.exec(t); if (us) return `skipped_no_place:country:${clean(us[0].replace(/^the\s+/i, ''))}`
+    // a country or a Canadian province written on its own (capitalised words: "Canada", "United Arab Emirates", "Ontario")
+    const toks = t.match(/[\p{L}\p{M}.'-]+/gu) ?? []
+    for (let i = 0; i < toks.length; i++) for (let n = Math.min(3, toks.length - i); n >= 1; n--) {
+      const w = toks.slice(i, i + n); if (!w.every(x => /^\p{Lu}/u.test(x))) continue
+      const text = w.join(' ')
+      if (text.length > 2 && resolveSegment(text, true)) return `skipped_no_place:country:${clean(text)}`
+      if (text.length > 2 && (regionOf(text) ?? '').startsWith('CA-')) return `skipped_no_place:province:${clean(text)}`
+    }
+    const city = /\b(?:in|near|around|based in)\s+((?:\p{Lu}[\p{L}'-]+)(?:\s+\p{Lu}[\p{L}'-]+){0,2})/u.exec(t); if (city) return `skipped_no_place:city:${clean(city[1])}`
+    if (t !== query && /^\p{Lu}/u.test(t.trim())) return `skipped_no_place:city:${clean(t)}`
+  }
+  return 'skipped_no_place'
 }
 export function locationInState(state: string, ...locs: (string | undefined)[]): boolean {
   const abbr = Object.keys(STATES).find(k => STATES[k] === state)!

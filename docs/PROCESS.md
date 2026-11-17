@@ -29,7 +29,10 @@ The v1 score does not yet prove buyer need, that the contact is the right decisi
 1. Builder takes the top item of `docs/STATUS.md` "Next", works on a branch `b/<topic>`, pushes, asks for review.
 2. Builder does NOT wait: it starts the next item on a new branch while review runs. Review findings come first:
    the builder fixes them on the same branch before starting anything new.
-3. Instinct approves and merges on GitHub. `docs/STATUS.md` is updated in every branch.
+3. Hermes-PC reviews and merges on GitHub. **Branches must not edit `docs/`** — no `docs/STATUS.md`,
+   no `docs/DECISIONS.md`. Builders put their STATUS line and any decision text in a PR comment; Hermes
+   writes `docs/STATUS.md` and `docs/DECISIONS.md` on `main` after the merge. (2026-11-13: every branch
+   appending to STATUS.md re-conflicted every other branch, costing ~90 min of CI per re-merge.)
 
 ## Parallel work (task graph, not a flat queue)
 

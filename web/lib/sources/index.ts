@@ -40,7 +40,7 @@ export function keywordsFor(query: string): string[] {
 
 // Runs the chosen adapters in parallel with an overall time limit. A failed or slow source gives no evidence and never drops the others.
 export interface AdapterRun { collector: string; status: 'ok' | 'empty' | 'error' | 'timeout' | 'partial' | `partial:${string}` | 'skipped_out_of_coverage'; evidence: number | null; notes?: Record<string, number> } // partial: the source answered but some of it could not be read; never the same as a healthy empty
-export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = []): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
+export async function collectEvidenceReport(sel: SourceSelection, query: string, http = safeGet, timeoutMs = 25_000, discovered: string[] = [], page?: AdapterInput['page'], companies: AdapterInput['companies'] = [], queryFor: Partial<Record<string, string>> = {}): Promise<{ items: Evidence[]; runs: AdapterRun[] }> {
   const results = new Map<string, Evidence[]>()
   const runs = new Map<string, AdapterRun>()
   const tallies = new Map<string, NonNullable<AdapterInput['tally']>>()
@@ -49,7 +49,8 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
     const notes: Record<string, number> = {}
     const tally: NonNullable<AdapterInput['tally']> = {}
     tallies.set(id, tally)
-    const input: AdapterInput = { query, keywords: keywordsFor(query), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
+    const q = queryFor[id] ?? query   // #1095: one source may read the request with more context (the job boards: the profile's place); the others keep the request
+    const input: AdapterInput = { query: q, keywords: keywordsFor(q), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
     try {
       const items = await ADAPTERS[id].collect(input)
       const partial = Object.keys(notes).some(k => k !== 'out_of_coverage')
@@ -86,7 +87,7 @@ Request: ${JSON.stringify(query)}
 Ideal customer profile: ${JSON.stringify(flatProfile(icp))}
 Items (index, source, url, title, text, date): ${JSON.stringify(items.map((e, i) => ({ i, source: e.source, url: e.url, title: e.title, text: e.quote, date: e.date })))}
 
-Pick only items that show a company or person matching the profile with a recent buying signal. Use only these items. Do not invent anything.${halves ? halvesBlock(halves) : ''}
+Go through EVERY item, one by one. Return a lead for each item that names a specific company (or person) matching the profile and shows a recent buying signal from the request (or one of its facts, see below); an item that names several matching companies gives one lead per company, at most 3 from any one item. Do not stop after the strongest few: completeness matters as much as precision. Skip items that name no specific company, items about a vendor's own product, and generic directory or salary pages. Use only these items. Do not invent anything.${halves ? halvesBlock(halves) : ''}
 Reply with ONLY a JSON array, no prose. Each item: {"name": person or "", "company": string, "contact": null, "signal": one sentence on why they are a lead, "source_url": the exact url of the item, "excerpt": ONE passage of 20-300 characters copied character-for-character from that item's text (no paraphrase, no "..." inside, no fixing typos) that names the company and shows the signal, "event_date": the item's date as YYYY-MM-DD or null, "score": 0-100 fit}.
 One item can name several companies (a list or a round-up): return each matching company separately, each with its own passage. Return [] if nothing fits.`
 }

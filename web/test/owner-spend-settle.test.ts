@@ -65,7 +65,8 @@ test('polish: two calls under a $0.05 day cap, the first reporting a cache-write
     calls = 0
     await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:0.05' }, async () => {
       assert.equal((await polish(db, answering(POLISHED, served, OVERRUN))).rewritten, true)
-      assert.deepEqual(await rows(sqliteDb(db), 'A'), [['d:', OVERRUN_USD, OVERRUN_USD, 1]], 'settled to the reported cost, past the cap')
+      // #847: a named owner's other window is the deployment's default month cap, never unlimited
+      assert.deepEqual(await rows(sqliteDb(db), 'A'), [['d:', OVERRUN_USD, OVERRUN_USD, 1], ['m:', OVERRUN_USD, OVERRUN_USD, 1]], 'settled to the reported cost, past the cap')
       assert.deepEqual(await polish(db, answering(POLISHED, served, OVERRUN)), { rewritten: false, reason: 'spend_limit' })
       assert.equal(calls, 1, `${served}: one model call, not two`)
     })
@@ -172,7 +173,7 @@ test('qualification: a refusal before the call releases the claim; a settled ove
   })
   await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'u1:0.05' }, async () => {
     assert.equal((await runQualification(db, 'u1', L, a, qdeps(s.p))).status, 'done')
-    assert.deepEqual(await rows(sqliteDb(db), 'u1'), [['d:', OVERRUN_USD, OVERRUN_USD, 1]])
+    assert.deepEqual(await rows(sqliteDb(db), 'u1'), [['d:', OVERRUN_USD, OVERRUN_USD, 1], ['m:', OVERRUN_USD, OVERRUN_USD, 1]])
     // A second lead: refused before its call; its claim is released.
     db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,company_domain) SELECT ?, scan_job_id, 'Birch', signal, source_url, 'birch.example' FROM leads WHERE id = ?").run('b'.repeat(24), L)
     db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'u1', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-11-01', 1)").run(`${'b'.repeat(24)}d`, 'b'.repeat(24), 'birch.example|evidence_own_domain', 'https://birch.example/news')
@@ -220,5 +221,5 @@ bothEngines('pool: a settle retry with the same pending id moves once; a settle 
   const g = ownerGuarded(db, 'U', { research: async () => ({ text: '', citedUrls: [] }), configuredModel: () => MODEL, completeDetailed: async () => { throw new Error('provider_500') } }, { DAZL_RUN_MAX_USD_USERS: 'U:1' })
   await assert.rejects(g.completeDetailed!(KEY, 'hi', undefined, 100), /provider_500/)
   const u = await poolRows(db, 'U')
-  assert.deepEqual([u.length, u[0].period.slice(0, 2), u[0].reserved_usd > 0], [1, 'd:', true])
+  assert.deepEqual(u.map(r => [r.period.slice(0, 2), r.reserved_usd > 0]), [['d:', true], ['m:', true]], 'day, and the default month (#847)')
 })

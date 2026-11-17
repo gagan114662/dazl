@@ -35,7 +35,7 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
   - **Sizes measured:** a first release is about 1.1 GB (`node_modules` 0.7 GB plus build output). Later releases hard-link `node_modules` from the live one when `package-lock.json` is unchanged, so they cost about their build output (0.3–0.4 GB).
   - **What's kept:** the live release plus two complete rollbacks.
   - **Space needed:** about **2.3 GB above the floor**, roughly 4.5 GB free on a 2 GiB floor. After the cleanup there's 5.42 GB free, enough for a first release; below that, the deploy skips and alerts instead of eating into the floor.
-- **Production's database.** The deploy must be told where production's database is: `PROD_ENV_FILE` (production's env file, read for `DB_PATH` only) or `PROD_DB_PATH`, in `dazl-staging-deploy.service`. Without it, the deploy refuses to run. It refuses a staging `DB_PATH` that:
+- **Production's database.** The deploy must be told where production's database is: `PROD_ENV_FILE` (production's env file, read for `DB_PATH` only) or `PROD_DB_PATH`, in `dazl-staging-prebuilt.service`. Without it, the deploy refuses to run. It refuses a staging `DB_PATH` that:
   - is production's file, by canonical path, with symlinks and `..` resolved;
   - is inside production's database directory, or contains it;
   - is the same file under another name (same device and inode).
@@ -85,29 +85,35 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
 4. **Units and the deploy script.** From a checkout of `main`:
    ```sh
    install -d -o root -g root -m 755 /usr/local/lib/dazl-staging
-   install -o root -g root -m 755 ops/staging/deploy.sh ops/staging/recovery_point.py /usr/local/lib/dazl-staging/
+   install -o root -g root -m 755 ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/staging/recovery_point.py /usr/local/lib/dazl-staging/
    install -d -o root -g root -m 700 /var/lib/dazl-staging-recovery /var/lib/dazl-staging-deploy
-   install -m 644 ops/staging/dazl-staging.service ops/staging/dazl-staging-deploy.service ops/staging/dazl-staging-deploy.timer /etc/systemd/system/
-   # set PROD_ENV_FILE in dazl-staging-deploy.service to production's real env file
-   systemctl edit --full dazl-staging-deploy.service
+   install -m 644 ops/staging/dazl-staging.service ops/staging/dazl-staging-prebuilt.service ops/staging/dazl-staging-prebuilt.timer /etc/systemd/system/
+   # set PROD_ENV_FILE in dazl-staging-prebuilt.service to production's real env file
+   systemctl edit --full dazl-staging-prebuilt.service
    systemctl daemon-reload
    ```
-   Upgrading a box set up before #908: run the three `install` lines, reinstall `dazl-staging-deploy.service` (its `ExecStart` is now `/usr/local/lib/dazl-staging/deploy.sh`) keeping your `PROD_ENV_FILE`, `systemctl daemon-reload`, then `rm /srv/dazl-staging/deploy.sh`. Reinstall `dazl-staging.service` too (its `EnvironmentFile` is now `/var/lib/dazl-staging-deploy/release.env`) and then remove the old `/srv/dazl-staging/release.env`, `/srv/dazl-staging/current-sha`, `/srv/dazl-staging/.deploy.lock` and `/srv/dazl-staging/.alert-*`; the first run after the upgrade takes the deployed commit from the live complete release, so nothing is redeployed. `deploy.sh` refuses to stop anything when `recovery_point.py` is missing beside it, or it or its directory is writable by anyone but root.
+   The box never builds (docs/NEVER-AGAIN.md #1): staging deploys only the prebuilt build ("Automatic deploys from
+   prebuilt builds" below). `dazl-staging-deploy.service` and `.timer` (the old on-box build) are **not installed**; run
+   on the box, `deploy.sh` without the prebuilt step refuses before it fetches anything.
+   Upgrading a box set up before #908: run the three `install` lines, install `dazl-staging-prebuilt.service` (it runs the root-owned `/usr/local/lib/dazl-staging/pull-prebuilt.sh`) with your `PROD_ENV_FILE`, remove the old on-box-build units (`systemctl disable --now dazl-staging-deploy.timer; rm -f /etc/systemd/system/dazl-staging-deploy.service /etc/systemd/system/dazl-staging-deploy.timer`), `systemctl daemon-reload`, then `rm /srv/dazl-staging/deploy.sh`. Reinstall `dazl-staging.service` too (its `EnvironmentFile` is now `/var/lib/dazl-staging-deploy/release.env`) and then remove the old `/srv/dazl-staging/release.env`, `/srv/dazl-staging/current-sha`, `/srv/dazl-staging/.deploy.lock` and `/srv/dazl-staging/.alert-*`; the first run after the upgrade takes the deployed commit from the live complete release, so nothing is redeployed. `deploy.sh` refuses to stop anything when `recovery_point.py` is missing beside it, or it or its directory is writable by anyone but root.
 
-   Upgrading a box whose releases are still in `/srv/dazl-staging/releases` (#908 rename race): the deploy refuses to run, stopping nothing, while `current` points there. With the deploy timer stopped (`systemctl stop dazl-staging-deploy.timer`), as root:
+   Upgrading a box whose releases are still in `/srv/dazl-staging/releases` (#908 rename race): the deploy refuses to run, stopping nothing, while `current` points there. With the deploy timer stopped (`systemctl stop dazl-staging-prebuilt.timer`), as root:
    ```sh
    find /srv/dazl-staging/releases -mindepth 1 -maxdepth 1 ! -type d -print   # anything listed is not a release: inspect, then delete it
    install -d -o root -g dazl-staging -m 750 /srv/dazl-staging-releases
    mv /srv/dazl-staging/releases/* /srv/dazl-staging-releases/
    ln -sfn "/srv/dazl-staging-releases/$(basename "$(readlink /srv/dazl-staging/current)")" /srv/dazl-staging/current
    rmdir /srv/dazl-staging/releases
-   systemctl restart dazl-staging.service && systemctl start dazl-staging-deploy.timer
+   systemctl restart dazl-staging.service && systemctl start dazl-staging-prebuilt.timer
    ```
    The release directories keep their owner (the service account); only the directory holding them changes hands. The restart just re-reads `current` through its new path, same release.
-5. **First deploy.** It clones, builds, seeds, starts and health-checks; expect a few minutes:
+5. **First deploy.** It downloads main's prebuilt build, unpacks it, seeds, starts and health-checks; nothing is built on
+   the box. Expect a few minutes (if the journal says "no prebuilt build published for main ... yet", the build on GitHub
+   is still running: start it again in a few minutes):
    ```sh
    systemctl enable dazl-staging.service
-   systemctl start dazl-staging-deploy.service; journalctl -u dazl-staging-deploy -n 50 --no-pager   # ends with "live: <sha>"
+   /usr/local/lib/dazl-staging/pull-prebuilt.sh --dry-run   # read-only: what it would download and deploy
+   systemctl start dazl-staging-prebuilt.service; journalctl -u dazl-staging-prebuilt -n 50 --no-pager   # ends with "live: <sha>"
    curl -s localhost:3200/api/health    # {"ok":true,"commit":"<sha of main>",...,"checks":{"sqlite":{"ok":true,...},...}}
    curl -s localhost:3200/api/ready     # 200 once the Stripe test values are set
    ```
@@ -118,10 +124,10 @@ Nothing in staging uses production data or keys: a fresh master key, test-mode S
    caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
    ```
    Caddy gets the TLS certificate once DNS resolves.
-7. **Track main:**
+7. **Track main** (every 2 minutes, from the prebuilt build):
    ```sh
-   systemctl enable --now dazl-staging-deploy.timer
-   systemctl list-timers dazl-staging-deploy.timer
+   systemctl enable --now dazl-staging-prebuilt.timer
+   systemctl list-timers dazl-staging-prebuilt.timer
    ```
 
 ## Sign in with Google (runbook, Instinct)
@@ -147,6 +153,24 @@ on staging, list its exact address in `DAZL_STAGING_TRIAL_NO_GOOGLE` (comma-sepa
 Google prerequisite is skipped for those addresses; every other trial limit still applies. The setting is read only when
 `DAZL_ENV=staging`. It keys on the signup email, which a password signup does not verify, so list only throwaway test addresses
 (whoever registers a listed address first gets the exemption) and remove them after the check.
+
+## Technology-change fixture (test only, #769)
+
+No real site changes its stack on demand, so an adoption, a removal and an outage between two readable pages could not be watched live. On staging only (`DAZL_ENV=staging`; anywhere else it answers 404 to a signed-in member with the operate role, 401 signed out, 403 to a viewer) a signed-in member with the operate role can serve a fixture company's homepage in a named variant and crawl it once:
+
+    POST /api/leads/tech-fixture   {"page": "plain" | "hubspot" | "consent_wall" | "challenge" | "outage_503" | "home_503"}
+    DELETE /api/leads/tech-fixture
+
+- Each POST runs **one real crawl** (`crawlJob` -> `crawlSite` -> `recordTechObservation` -> `techChanges`) of `dazltechfixture.test` on a lead named "dazl tech fixture (test only)" in the caller's own workspace. Only the HTTP fetch is local (the page is handed to the crawl in-process, so the network fetch layer itself is not exercised); the readability verdict, the detector, the dated `tech_scan` row and the `tech_change` rows are the production code. No model, no search, nothing sent, $0. Needs `SITECRAWL_ENABLED` and `TECH_SCAN_ENABLED` not `0` (else 503 `crawl_disabled` / `tech_scan_disabled`).
+- Pages: `plain` readable, no technology; `hubspot` readable with HubSpot's forms embed; `consent_wall` HTTP 200 cookie wall (recorded `thin_page`); `challenge` HTTP 200 bot challenge (recorded `blocked`); `outage_503` HTTP 503 everywhere, robots.txt included (no observation, crawl status `robots_error`); `home_503` robots.txt answers and only the homepage is 503 (no observation, `site_unreachable`). A crawl that is cut short answers 503 `crawl_incomplete` and counts nothing.
+- The answer lists every dated observation, every change row, what this crawl added (`crawl.new_changes`) and `measured`: crawls, unreadable or failed crawls, changes claimed, and how many of those the served page could not carry (`false_changes`). This is a fixture-only measure against pages whose content is known, not a false-positive rate on real sites. A change counts once, the first time its row is written for the fixture lead.
+- The check: `plain`, `hubspot` -> `HubSpot added`. Then `outage_503`, `home_503`, `consent_wall`, `challenge` -> no new change. Then `plain` -> still none; `plain` again -> `HubSpot removed` (two readable absences). The rows show on the lead's card at `/app/leads?job_id=<job_id>`.
+- Observations are dated to the second: a call in the same second as the last one waits for the next.
+- One fixture history shows one adoption and one removal: a technology that comes back is treated as the same install, so `hubspot` after a confirmed removal claims nothing new. `DELETE` first to run the sequence again. One call at a time per workspace (a second at once, or a `DELETE` during a crawl, answers 409 `crawl_in_flight`).
+- `DELETE` removes the fixture's play, lead and every row its crawls wrote.
+- Until deleted, the fixture play is an ordinary row of the workspace on staging: it shows in the Leads history and counts as one of the day's scans (as the ranking fixture does). It is left out of Home's counts and exports (`source_kind` test).
+
+Code: `web/lib/scan/tech-fixture.ts`; tests `web/test/tech-fixture-769.test.ts`, `web/test/tech-fixture-route-769.test.ts`.
 
 ## Stripe in test mode (runbook, Instinct)
 Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:
@@ -213,7 +237,10 @@ Exit codes: 0 means all passed, 1 means a scenario failed (named), 2 means it re
 
 ## Automatic deploys from prebuilt builds (the box cannot build)
 The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-deploy.timer` (which builds on the box) stays
-**disabled**. Instead:
+**disabled**, and `deploy.sh` itself refuses its default on-box build (docs/NEVER-AGAIN.md #1): run without
+`STAGING_BUILD` (or with an empty one) it stops before fetching anything, and on the box the only `STAGING_BUILD` it accepts
+is `pull-prebuilt.sh`'s own unpack step. Only `ops/staging/e2e-test.sh` on a throwaway machine may build
+(`DAZL_ALLOW_HOST_BUILD=throwaway-machine`, refused wherever a dazl box path exists). Instead:
 - **Build, on GitHub:** `.github/workflows/staging-prebuilt.yml` runs on every push to main, on a free GitHub-hosted arm64
   runner (`ubuntu-24.04-arm`, Node 22: the box's architecture and OS), with staging's public settings and no secrets. It
   attaches three assets to the `staging-prebuilt` prerelease: `staging-next-<sha>.tgz` (`.next` + `.build-commit`),
@@ -242,12 +269,13 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
   `/usr/local/lib/dazl-staging/deploy.sh` and the live commit recorded in `/var/lib/dazl-staging-deploy/current-sha`. A box
   still running `/srv/dazl-staging/deploy.sh` (inside the service account's home, which that account could replace) must be
   upgraded first: `pull-prebuilt.sh` refuses it, and refuses a `deploy.sh` without the separate migrate step.
-- **Install** (as root, from a checkout of `main`, after the #908 upgrade; replaces step 7's timer):
+- **Install on a box set up before the prebuilt path** (as root, from a checkout of `main`, after the #908 upgrade; a new
+  box already has this from steps 4-7):
   ```sh
   install -d -o root -g root -m 755 /usr/local/lib/dazl-staging
   install -o root -g root -m 755 ops/staging/pull-prebuilt.sh /usr/local/lib/dazl-staging/
   install -m 644 ops/staging/dazl-staging-prebuilt.service ops/staging/dazl-staging-prebuilt.timer /etc/systemd/system/
-  # same PROD_ENV_FILE (or PROD_DB_PATH) as dazl-staging-deploy.service
+  # the PROD_ENV_FILE (or PROD_DB_PATH) the old dazl-staging-deploy.service had
   systemctl edit dazl-staging-prebuilt.service
   systemctl daemon-reload
   /usr/local/lib/dazl-staging/pull-prebuilt.sh --dry-run   # read-only: prints what it would download, back up and deploy
@@ -256,24 +284,68 @@ The staging box has 1.8 GB of RAM and cannot run `next build`, so `dazl-staging-
   ```
   `journalctl -u dazl-staging-prebuilt` shows each run; a deploy ends with `live: <sha>`.
 
-## Day to day
-- **Deploys** are automatic (from prebuilt builds, above). `journalctl -u dazl-staging-prebuilt` (and `-u dazl-staging-deploy`) shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
-- **Pause tracking:** `systemctl stop dazl-staging-prebuilt.timer` (or `dazl-staging-deploy.timer` on a box that builds itself).
-- **Reset the data:**
+## Second scan worker and the shared work queue (#836)
+
+Staging can run scans through the shared work queue with two workers: the app and `dazl-staging-worker.service`, a second process on the same release, env file and database (`web/scripts/scan-worker.mts`; no port, no tick work, scans only). Each scan is claimed by one of them; a scan whose worker stops is finished once by the other. Production does not use this: the flag is unset there and no worker unit is installed.
+
+- **Switch on** (as root, once, AFTER a release that contains `web/scripts/scan-worker.mts` is live on staging: `ls /srv/dazl-staging/current/web/scripts/scan-worker.mts`; from a checkout of that commit):
   ```sh
+  install -o root -g root -m 755 ops/staging/deploy.sh /usr/local/lib/dazl-staging/      # stops and starts the worker around a deploy
+  install -m 644 ops/staging/dazl-staging-worker.service /etc/systemd/system/
+  systemctl daemon-reload
+  # in /etc/dazl-staging/env (by hand, or with the host's own env tooling):
+  #   DAZL_SCAN_SHARED_QUEUE=1
+  systemctl restart dazl-staging.service                  # the app reads the flag
+  systemctl enable --now dazl-staging-worker.service      # the worker: now, and at boot
+  systemctl is-active dazl-staging.service dazl-staging-worker.service   # active, active
+  journalctl -u dazl-staging-worker -n 5          # [scan-worker] started instance=worker-... shared_queue=on
+  ```
+  Starting the app does not start the worker (`PartOf` only stops it with the app and restarts it when it was running); `deploy.sh` starts it after the deploy's commit point, and `enable` starts it at boot. The unit refuses to start while a recovery point is pending (`ExecCondition`), so a reboot in the middle of a deploy cannot start it early; the next deploy run starts it once nothing is pending. A worker stopped by hand (`systemctl stop dazl-staging-worker`, to free memory) stays stopped until the next real deploy or a hand start: a deploy run with nothing to deploy starts it only when a deploy itself had stopped it. A box that overrides `STAGING_RECOVERY_ROOT` needs a drop-in giving the unit's `ExecCondition` the same path. `STAGING_STOP` / `STAGING_RESTART` replace only the app's own commands: the worker is still stopped around them.
+- **Redeploys keep it.** `deploy.sh` stops the worker by name before it stops the app for the recovery point (nothing writes during a migration or a restore), keeps it stopped through the health check, starts it only after the deploy's commit point (or, on a rollback, once the previous release is healthy again), and ends with `scan worker: active (...)` in the journal, or an `ALERT scan worker` line when it is enabled but did not start (the deploy stands: the app runs every scan itself). A box without the unit is untouched.
+- **Who ran what** is in the store. Each claim writes `work_queue.claimed_by` (the instance: the app's is `instance` in `/api/health`; the worker's always starts `worker-`, then 8 random hex or `SCAN_WORKER_ID`; anything not starting `worker-` is the app) and appends `{attempt, token, by, at}` to `work_queue.claim_log` (the last 8 claims). Both journals carry one line per claim and per settle:
+  `[shared-queue] claimed scan=<id> attempt=<n> token=<t> instance=<who>` and `[shared-queue] settled scan=<id> ... outcome=done applied=true instance=<who>`.
+  ```sql
+  SELECT id, status, attempts, claim_token, claimed_by, claim_log FROM work_queue WHERE kind = 'scan' ORDER BY created_at DESC LIMIT 5;
+  ```
+- **Restart check, two outcomes.** What a restart does to a running scan depends on one thing: whether a paid request (model or search) was in flight at that moment.
+  - *No paid request in flight:* the stopping process hands the scan and its claim back as it exits (the claim only when the queue is on its own store, as here; on Postgres the claim waits for its lease), and the next kick (the worker looks every 5 s; the app on the next status poll or tick) takes it. The row ends `status = 'done'`, `attempts = 2`, two `claim_log` entries with a higher token on the second, `scan_jobs.attempts = 2`, and the scan's leads are there once.
+  - *A paid request in flight:* the scan is deliberately **not** run again, because the request may have been billed. A graceful stop (`systemctl restart`, a deploy) ends it at once: `failed` / `accounting_uncertain` at `attempts = 1` ("Stopped after an interruption - a paid step may already have been billed" on the scan), its paid call stays recorded as `reserved`, its queue claim is closed (`work_queue.status = 'done'`, as for any item whose scan already ended), and the same account's next scan is claimable immediately. (Only when the queue is on the stopping process's own store, as here. With the queue on Postgres the claim waits for its lease.) A scan whose search had finished and whose post-finish stage was still running at the stop has its claim closed the same way. A scan stopped on its last attempt ends at once as `timeout` the same way; the scan then shows the generic "Failed - try again" text. Only a hard kill leaves the scan `running` until the lease (`SCAN_STALE_RUNNING_S`, 20 minutes by default), when the reaper gives it the same outcome and the next kick closes the queue item (`[shared-queue] nothing to run scan=<id> ... scan_status=failed`). It never runs twice.
+  A real scan spends most of its time inside paid requests, so an unprepared restart usually shows the second outcome (now immediately, not after 20 minutes). To show the first on demand, staging has a **test-only pause**: `DAZL_STAGING_SCAN_HOLD_MS=<1..120000>` (read only with `DAZL_ENV=staging`; production never reads it) holds every claimed scan that long before it runs, with no paid request made. The journal says `[shared-queue] staging hold scan=<id> attempt=1 ms=<n> instance=<who>`. Steps: set `DAZL_STAGING_SCAN_HOLD_MS=45000` and restart staging; start a scan (the app kicks at once, so the app's instance normally takes attempt 1); within 45 s restart staging with `systemctl restart dazl-staging` (or, with no root, `POST /__ops/restart/staging`, which runs the same command): the app and the worker both restart, the scan is handed back at exit, and whichever process is back first takes attempt 2, waits its own pause, runs the scan once and finishes it. `claim_log` names both attempts (the second may be the same process). Stopping only one process needs root: `systemctl restart dazl-staging-worker` for `worker-...`; for the app's instance, `systemctl stop dazl-staging.service` (this also stops the worker, `PartOf`) and then start both again. Whatever was run, confirm 10 s later with `systemctl is-active dazl-staging dazl-staging-worker` that both say `active`, and start whichever does not: the app unit is `Restart=on-failure` with no `SuccessExitStatus`, and whether a TERM sent to it by `systemctl kill` counts as a failure has not been run on real systemd, so do not rely on it to come back. Remove the variable and restart afterwards: it slows every staging scan by that much.
+  - *Hard kill* (`systemctl kill -s KILL dazl-staging-worker`): nothing hands the claim back, so either outcome arrives only after the lease plus the queue's retry backoff: `attempts = 2` and `done` when no paid request was in flight, `accounting_uncertain` when one was.
+- **Memory and concurrency.** The worker runs one scan at a time (`SCAN_WORKER_CONCURRENCY`, 1 to 8) beside the app's own run slots (`SCAN_MAX_CONCURRENT`, default 3), so staging can run 4 scans at once in total; only the per-tenant limit (`SCAN_PER_TENANT_MAX`, default 1) is shared between the two processes. The worker's cap is `MemoryMax=384M` (`MemoryHigh=320M`, heap 256 MB), sized so that it plus production's 300 MB deploy floor fits what the box has (695 MB available with staging and both production releases up, 2026-11-13). Measured on a production-shaped database copy with the stub provider: 150 MB at idle, 152 MB peak after three scans; a real scan (crawl, provider) is not measured yet: read `systemctl show -p MemoryPeak dazl-staging-worker` after the first scans and post it on #836; raise the cap only if that peak and the box's free memory both allow it. A worker killed at the cap hands nothing back: its scan waits for the lease like any hard kill. On the 1.8 GB box this is memory production's deploy also needs (it refuses to start a second release under 300 MB available): `systemctl stop dazl-staging-worker` frees it, and the app keeps running scans alone.
+- **One claim at a time holds inside the lease.** A scan's claim lasts `SCAN_STALE_RUNNING_S` (20 minutes); each paid request renews the scan row's claim time, and every kick copies that newer time onto the scan's queue item, so a live scan keeps its queue claim however long it runs. A live scan that makes no paid request for a whole lease can still be taken as dead and started again by the other process (the same rule as with one process, where the reaper re-queues it); the first attempt then finds it no longer owns the scan and writes nothing.
+- **Switch off.** `systemctl disable --now dazl-staging-worker.service` stops the second worker. Removing `DAZL_SCAN_SHARED_QUEUE` and restarting returns scans to the app's in-process claimer; queue rows sit inert and the worker, if still running, idles.
+
+## Day to day
+- **Deploys** are automatic (from prebuilt builds, above). `journalctl -u dazl-staging-prebuilt` shows each one. A build or health-check failure keeps the previous release serving, and the journal ends with `rolling back`.
+- **Pause tracking:** `systemctl stop dazl-staging-prebuilt.timer`.
+- **Reset the data.** This recreates the database in the release that is already live: the same migrate + seed command
+  a deploy runs (`deploy.sh`'s `STAGING_MIGRATE`), as the service user with staging's env. Nothing is downloaded or built.
+  ```sh
+  systemctl stop dazl-staging-prebuilt.timer        # no new deploy starts
+  systemctl is-active dazl-staging-prebuilt.service # must print "inactive": if a deploy is running, wait for it to end
+                                                    # (a deploy mid-migration could restore the old database over the reset)
   systemctl stop dazl-staging
   rm /var/lib/dazl-staging/app.db*
-  systemctl start dazl-staging-deploy.service
+  ( set -a; . /etc/dazl-staging/env; set +a
+    runuser -u dazl-staging -- bash -c 'cd "$(readlink -f /srv/dazl-staging/current)/web" && npm run -s db:migrate && node --experimental-strip-types --no-warnings scripts/staging-seed.mts' ) \
+    && systemctl start dazl-staging && curl -s localhost:3200/api/health    # {"ok":true,...}; a failed seed starts nothing
+  systemctl start dazl-staging-prebuilt.timer
   ```
-  The seed runs on every deploy and recreates the demo account. To force one now, `rm /var/lib/dazl-staging-deploy/current-sha` first.
-- **Load on the box:** each deploy runs a build at `nice 10` with a 2 GB heap cap, and the service is capped at 1.5 GB. `npm ci` runs only when the lockfile changed. If production feels it, lengthen the timer (`OnUnitActiveSec`) or build elsewhere.
+  Do **not** use the deploy services for a reset. Deleting `/var/lib/dazl-staging-deploy/current-sha` does not redeploy the
+  commit that is already live (`deploy.sh` reads the live release's own name and exits), and
+  `dazl-staging-deploy.service` is the refused on-box build: either would leave staging stopped with no database. The
+  seed also runs on every deploy, so the next push to main recreates the demo account as well.
+- **Load on the box:** a deploy downloads and unpacks the prebuilt build at `nice 10` and builds nothing; the service is
+  capped at 1.5 GB. `node_modules` is downloaded only when the lockfile changed. If production feels a deploy, lengthen
+  the timer (`OnUnitActiveSec` in `dazl-staging-prebuilt.timer`).
 - **Remove staging:**
   ```sh
-  systemctl disable --now dazl-staging-deploy.timer dazl-staging
+  systemctl disable --now dazl-staging-prebuilt.timer dazl-staging
   ```
   Then restore `/etc/caddy/Caddyfile.pre-staging` and reload Caddy, and delete `/srv/dazl-staging`, `/var/lib/dazl-staging`, `/etc/dazl-staging` and the DNS record.
 
 ## Limits
-- It's one box. A staging build competes with production for CPU while it runs; production's own service and port are never touched.
+- It's one box. Staging never builds on it (the build runs on a GitHub runner); a deploy's download and unpack share its CPU and disk with production for a few minutes. Production's own service and port are never touched.
 - Staging has no TinyFish or other operator provider keys. Drafting emails and new scans need an AI key, which the tester adds in Settings, the same as production.
 - Signing up is open on staging, like production. Accounts there hold test data only.

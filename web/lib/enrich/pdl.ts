@@ -86,10 +86,17 @@ export interface PdlMatch { name: string | null; title: string | null; email: st
 export async function pdlPersonEnrich(apiKey: string, q: { first: string; last: string; domain: string }, fetchImpl: typeof fetch = fetch, staging: { env?: Record<string, string | undefined>; hints?: PdlStagingHints } = {}): Promise<{ billed: boolean; match: PdlMatch | null }> {
   if (stagingFakePdl(staging.env)) fetchImpl = stagingPdlFetch({ domain: q.domain, first: q.first, last: q.last, ...staging.hints })
   const params = new URLSearchParams({ first_name: q.first, last_name: q.last, company: q.domain, required: 'work_email', min_likelihood: '6' })
+  // #1167: one match is one profile credit, reserved first like the search above (a refusal, SpendRefused, sends nothing)
+  const hold = await reserveScanSpend('pdl.people', () => unitCostUsd('pdl.people', 1))
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    const r = await fetchImpl(`${BASE}/v5/person/enrich?${params}`, { method: 'GET', headers: { 'X-Api-Key': apiKey }, signal: ctrl.signal })
+    let r: Response
+    try { r = await fetchImpl(`${BASE}/v5/person/enrich?${params}`, { method: 'GET', headers: { 'X-Api-Key': apiKey }, signal: ctrl.signal }) } catch (e) { hold?.uncertain(); throw e }
+    // 404 is the unbilled no-match; a documented rejection is counted (kept); any other failure may have been billed
+    if (r.ok) await hold?.settle(hold.usd)
+    else if (r.status === 404 || [400, 401, 403, 413, 429].includes(r.status)) { await hold?.settle(r.status === 404 ? 0 : null); if (r.status !== 404) hold?.rejected(r.status) }
+    else hold?.uncertain()
     if (r.status === 404) return { billed: false, match: null }
     if (r.status === 429) throw new EnrichError('rate_limited', 'PDL rate limit reached')
     if (r.status === 401 || r.status === 403) throw new EnrichError('auth', 'PDL rejected the key')

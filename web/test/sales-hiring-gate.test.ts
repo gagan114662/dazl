@@ -1,3 +1,4 @@
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import { requiredGateHeld } from '../lib/scan/held-state.ts'
 // "Seed funding AND hiring sales": the funding quote alone no longer carries a lead. A dated sales / GTM posting on a public Greenhouse /
 // Lever / Ashby board bound to the lead's own domain (or the source quote itself naming the hiring) keeps it; otherwise it goes to review as
@@ -5,7 +6,7 @@ import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring } from '../lib/scan/sales-hiring-gate.ts'
+import { applySalesHiringGate, failClosedSalesHiring, salesHiringRequired, quoteNamesSalesHiring, postingKey } from '../lib/scan/sales-hiring-gate.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { domainReviewFor } from '../lib/outreach/domain-review.ts'
@@ -48,6 +49,33 @@ function seed(over: { extra?: number; domain?: string | null; excerpt?: string; 
 }
 const lead = (db: Database.Database) => db.prepare("SELECT review_reason, confidence, why FROM leads WHERE id = 'L1'").get() as { review_reason: string | null; confidence: number | null; why: string }
 const counts = (db: Database.Database) => db.prepare('SELECT verified, needs_review FROM scan_jobs').get() as { verified: number; needs_review: number }
+
+// Lane D (verify / ready rule), matrix chicago-law 15 Nov: the runner's model-inferred profile for a law-firm request carried "Hired lateral partners recently" and,
+// as a DIFFERENT signal, "Press release about practice area growth" ("growth" is a GTM word). Joined into one text they read as "hiring" + "a GTM role", the request
+// "needed the sales-hiring proof", and every verified lead was default-denied (held: "a required check has not passed") - 14 of 22 leads, 0 ready.
+// Real inferences for that query (1 of 4 hit it); the signals are the model's own words.
+test('a hiring signal and an unrelated GTM word in DIFFERENT parts do not make a request need the sales-hiring proof; the same part still does', () => {
+  const Q = 'Law firms in Chicago, Illinois that opened a new office or expanded a practice group in the last 90 days'
+  const icp = (...signals: string[]) => JSON.stringify({ signals: ['Opened new office in last 90 days', 'Expanded practice group in last 90 days', ...signals] })
+  for (const extra of [['Hired lateral partners recently', 'Press release about practice area growth'], ['Hiring multiple attorneys recently', 'Revenue growth announced'], ['Hired lateral partners recently', 'Announced a new partnership'], ['Hired new practice group head', 'Press release about practice area growth']])
+    assert.equal(salesHiringRequired(Q, icp(...extra)), false, extra.join(' | '))
+  // a real sales-hiring request still needs it: hiring and the sales role in one signal, or ANYWHERE in the user's own request (however it is punctuated)
+  const seed = JSON.stringify({ signals: ['raised seed funding'] })
+  assert.equal(salesHiringRequired('Law firms in Chicago that opened a new office.', icp('Hiring a business development manager')), true, 'one signal')
+  for (const r of ['Startups that raised seed funding and are hiring a head of sales.', 'Startups that raised seed funding. They are hiring sales reps.', 'Startups that raised seed funding and are hiring a Sr. Account Executive', 'Startups that raised seed funding and are hiring a Jr. SDR', 'Seed-funded startups that are hiring! Sales roles only.', 'Startups that raised seed and are hiring; sales, BD, AEs', 'Startups that raised seed funding and are hiring. Focus on sales roles.'])
+    assert.equal(salesHiringRequired(r, seed), true, r)
+  // the request paired with ONE signal counts, as before (the user said hiring, the profile names the sales role, or the reverse)
+  for (const [r, sig] of [['Seed-funded startups that are hiring', ['Raised seed round', 'Open SDR roles']], ['Seed-funded startups that are hiring', ['Raised seed round', 'Job postings for account executives']], ['Startups that raised money and are hiring', ['Recently raised funding', 'Sales team expansion']], ['Series A SaaS companies scaling their sales team', ['Raised Series A', 'Actively hiring']]] as [string, string[]][])
+    assert.equal(salesHiringRequired(r, JSON.stringify({ signals: sig })), true, `${r} + ${sig.join(' | ')}`)
+  // what changed: the model's signals joined with EACH OTHER, under a request that says neither (the user did not ask for sales hiring)
+  assert.equal(salesHiringRequired('Seed-funded startups opening new offices', JSON.stringify({ signals: ['Raised seed round', 'Actively hiring', 'Growing sales team'] })), false)
+  assert.equal(salesHiringRequired(Q, JSON.stringify({ signals: ['Opened new office', 'Hired lateral partners recently', 'Business development push'] })), false)
+  // Formerly a KNOWN GAP (an over-hold): the event half came only from the model's signal 'opened a new office'. Since #1201 the event requirement is read from
+  // the user's own words only, and this request names no event, so the proof is no longer required. Flipped as the old comment asked.
+  assert.equal(salesHiringRequired('Law firms in Chicago that hired lateral partners. Growth firms only.', JSON.stringify({ signals: ['opened a new office'] })), false, '#1201: no event in the user\'s words')
+  // the borderline case of the signals-with-signals change: the user said "job postings", only the model's signals say sales
+  assert.equal(salesHiringRequired('Seed-funded startups with job postings', JSON.stringify({ signals: ['Raised seed', 'Hiring', 'Sales roles'] })), false, 'defensible: the user did not ask for sales hiring')
+})
 
 test('when is the sales-hiring proof required: compound sales hiring and specifically requested sales roles, not seed-only or broad hiring', () => {
   assert.equal(salesHiringRequired(REQUEST, ICP), true)
@@ -792,4 +820,185 @@ test('#1148 careers gate: the stored hiring label has no dangling "; " when unqu
   assert.equal(eq.length, 1)
   assert.equal(eq[0].label, `${NOTE}; ${QUOTE}`, 'quoted: main\'s exact "<date note>; <quote>"')
   q.db.close()
+})
+
+// #1095 (live staging trial): a requested role proven by the lead's OWN cited posting on a public job board, with no website domain to find the board.
+// The posting must carry the board's own first-published day (ats_structured) inside the hiring clock, and the board record's own title must be the requested role (the quote does not decide).
+function seedOwnPosting(o: { url?: string; excerpt?: string; date?: string | null; proof?: string | null }) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
+  const icp = JSON.stringify({ signals: ['hiring their first account executive'], where: ['Austin, TX'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', 'Justworks', NULL, 'hiring an Account Executive', ?, ?, 80, 80, '', ?, ?, 'verified')")
+    .run(jobId, o.url ?? 'https://job-boards.greenhouse.io/justworks/jobs/7301001', o.excerpt ?? 'Justworks is hiring an Account Executive to own new business for small companies across Austin and Central Texas', o.date === undefined ? d(9).slice(0, 10) : o.date, o.proof === undefined ? 'ats_structured' : o.proof)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+// the title the verifier read from the board's API record for the lead's posting, by posting (lib/scan/runner.ts hands it to the gate)
+const TITLES = (title: string, url = 'https://job-boards.greenhouse.io/justworks/jobs/7301001') => new Map([[postingKey(url)!, title]])
+test('#1095 PASS: the lead\'s own board-dated Greenhouse posting TITLED the requested role is the role evidence (no website domain needed), whatever its quote says; evidence row written', async () => {
+  // the quote is company boilerplate, as on the real postings read (review at 54953a0a: NinjaOne, AlertMedia)
+  const { db, job } = seedOwnPosting({ excerpt: 'NinjaOne unifies IT to simplify work for nearly 40,000 customers in 140+' })
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: TITLES('Account Executive, MSP') })
+  assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
+  assert.equal(lead(db).review_reason, null)
+  const e = (enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring')
+  assert.equal(e.length, 1); assert.equal(e[0].source_date, d(9).slice(0, 10)); assert.match(e[0].value, /^Open role on its Greenhouse job board: Account Executive, MSP - posted /)
+})
+test('#1095 HELD: the own-posting path needs the board\'s date inside the clock, the board proof kind, a public job-board posting and the requested role as the record\'s TITLE', async () => {
+  for (const [why, o, title] of [
+    ['a differently titled posting whose body mentions the requested role (XHawk: the wrong vacancy)', { excerpt: 'We are hiring Account Executives to grow the team, and this Sales Engineer will support them' }, 'Sales Engineer'],
+    ['another role', {}, 'Senior Software Engineer'],
+    ['a different role that starts with the requested title', {}, 'Account Executive Manager'],
+    ['the role only mentioned in another role\'s title', {}, 'Sales Engineer for Account Executives'],
+    ['a director of the role\'s operations', {}, 'Director of Account Executive Operations'],
+    ['a team lead of the role', {}, 'Team Lead, Account Executive'],
+    ['an enablement role', {}, 'Account Executive Enablement'],
+    ['no title read for this posting (the quote alone never proves the vacancy)', {}, null],
+    ['posted outside the 30-day clock', { date: d(60).slice(0, 10) }, 'Account Executive'],
+    ['no board date (proof kind missing)', { proof: null }, 'Account Executive'],
+    ['a page-bound date, not the board\'s own', { proof: 'page_bound' }, 'Account Executive'],
+    ['not a public job-board posting', { url: 'https://www.linkedin.com/jobs/view/account-executive-in-territory-austin-tx-at-justworks-4485363528' }, 'Account Executive'],
+  ] as const) {
+    const { db, job } = seedOwnPosting(o)
+    await applySalesHiringGate(db, job, serve({}), { now: NOW, ...(title ? { postingTitles: TITLES(title) } : {}) })
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
+    db.close()
+  }
+})
+
+test('#1095 XHawk: a posting already stored as hiring evidence for the lead is not written again by the own-posting path, under ANY of its URLs (one posting, one row)', async () => {
+  for (const stored of ['https://job-boards.greenhouse.io/justworks/jobs/7301001', 'https://boards.greenhouse.io/justworks/jobs/7301001', 'https://boards.greenhouse.io/justworks/jobs/7301001?gh_src=x']) {
+    const { db, job } = seedOwnPosting({})
+    db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('E0', 'L1', 'u1', 'signals:greenhouse-gtm', 'hiring', 'Account Executive - In-Territory - posted x', 'x', 70, ?, ?, 1)").run(stored, d(9).slice(0, 10))
+    await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: TITLES('Account Executive - In-Territory') })
+    assert.equal(lead(db).review_reason, null, stored)
+    assert.equal((enrichmentsForLeads(db, 'u1', ['L1']).L1 ?? []).filter(x => x.kind === 'hiring').length, 1, stored)
+    db.close()
+  }
+})
+
+test('#1095 review: the real NinjaOne / AlertMedia account-executive titles are the role; segment and level words around it do not change that', async () => {
+  const { titleIsRole } = await import('../lib/scan/sales-hiring-gate.ts'); const { requestedHiringRoles } = await import('../lib/scan/hiring-role-match.ts')
+  const roles = requestedHiringRoles('Austin B2B SaaS companies hiring their first account executive in the last 30 days', JSON.stringify({ signals: ['hiring their first account executive'] }))
+  for (const t of ['Account Executive, MSP', 'Account Executive, SMB', 'SLED Senior Account Executive, Mid Market', 'Account Executive', 'Account Executive, Mid-Market', 'Enterprise Account Executive- TX', 'Enterprise Account Executive, Federal']) assert.ok(titleIsRole(t, roles), t)
+  for (const t of ['Team Lead Account Executive - Italy & Spain', 'Technical Recruiter, Account Executive Team', 'Manager, Account Executive', 'Account Executive Support Specialist']) assert.equal(titleIsRole(t, roles), null, t)
+  // review at 910ebe60: decided by the title's shape, so titles no word list anticipated are held too
+  for (const t of ['Chief of Staff to the Account Executive org', 'Sales Development Representative to Account Executive Program', 'Account Executive Talent Community', 'Future Opportunities - Account Executive', 'Account Executive Internship', 'Sales Engineer for Account Executives', 'Director of Account Executive Operations', 'Account Executive Manager', 'Account Executive - Manager, West', 'Account Executive Enablement']) assert.equal(titleIsRole(t, roles), null, t)
+  // review at b86f2172, live titles copied verbatim: a standing pool (bitwarden job 7930504003) and a manager role behind a
+  // bracketed abbreviation (sigmacomputing job 7767734003) are held; the same shapes written out are held too
+  for (const t of ['Account Executive – Sales Talent Pool: Register Your Interest', 'Commercial Account Executive (CAE) Manager - EMEA', 'Account Executive (Talent Community)', 'Account Executive - Future Opportunities', 'Account Executive: General Interest', 'Account Executive, Internship']) assert.equal(titleIsRole(t, roles), null, t)
+  // live titles that ARE the opening: purestorage ("Community" is not a talent community), Datadog ("Mid Market" as two words), an abbreviation alone
+  for (const t of ['Account Executive, Federal (Intelligence Community)', 'Mid Market Account Executive', 'Mid-Market Account Executive', 'Commercial Account Executive (CAE)', 'Account Executive (SMB) - West']) assert.ok(titleIsRole(t, roles), t)
+  for (const t of ['Senior Account Executive', 'Account Executive II', 'Account Executive (Austin)', 'Account Executive - Mid-Market', 'Sr. Account Executive, Enterprise', 'Founding Account Executive', 'Account Executives']) assert.ok(titleIsRole(t, roles), t)
+})
+
+// #1121 (dogfood on prod 03f0e8eb): the lead's own verified quote is its job ad naming the requested vacancy ("As a Sales Development Representative at
+// Mercury ..."). No company domain was found, so no board could be looked up, and no hiring verb is in the quote: all such leads were held. The ad heading
+// is the role evidence when the lead's own date is inside the hiring clock; outside it, or for another company's ad, the lead is still held.
+function seedJobAd(o: { excerpt: string; company?: string; date?: string | null }) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'B2B SaaS founders in the US and Canada hiring their first SDR or salesperson'
+  const icp = JSON.stringify({ signals: ['hiring their first SDR or salesperson'], where: ['United States', 'Canada'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES ('L1', ?, '', ?, NULL, 'hiring an SDR', 'https://jobs.example.com/view/123', ?, 80, 80, '', ?, 'verified')")
+    .run(jobId, o.company ?? 'Mercury', o.excerpt, o.date === undefined ? d(9).slice(0, 10) : o.date)
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+test('#1121 PASS: the lead\'s own dated job-ad quote naming the requested SDR vacancy keeps the lead, and its card says so', async () => {
+  const { db, job } = seedJobAd({ excerpt: "As a Sales Development Representative at Mercury, you'll be the first point of contact for founders" })
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+  assert.deepEqual([r.required, r.passed, r.demoted], [true, 1, 0])
+  assert.equal(lead(db).review_reason, null)
+  assert.match(lead(db).why, /^Hiring for SDR: named in its own job ad, dated /)
+  db.close()
+})
+// review at f4c751e3 (Hermes F1): a modified suffix ("Senior Manager") is a whole title too; the gate holds it and writes no pass marker
+test('#1121 F1 HELD: "(SDR) Senior Manager" job-ad quote is not a requested_role_v1 pass', async () => {
+  for (const excerpt of ['Sales Development Representative (SDR) Senior Manager at Mercury', 'Sales Development Representative (SDR) Sales Manager at Mercury']) {
+    const { db, job } = seedJobAd({ excerpt })
+    const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], excerpt)
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', excerpt)
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0, excerpt)
+    db.close()
+  }
+})
+// review at 541c6f4e (Ziggy F1): a suffix behind the abbreviation is another title, and the job-ad quote never overrides a rejected board title
+test('#1121 F1 HELD: "(SDR) Manager / Internship / Talent Community" job-ad quotes are not requested_role_v1 passes', async () => {
+  for (const excerpt of ['Sales Development Representative (SDR) Manager at Mercury', 'Sales Development Representative (SDR) Internship at Mercury', 'Sales Development Representative (SDR) Talent Community at Mercury']) {
+    const { db, job } = seedJobAd({ excerpt })
+    const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.equal(r.passed, 0, excerpt)
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', excerpt)
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0, excerpt)
+    db.close()
+  }
+})
+test('#1121 F1 HELD: a valid-dated own ATS posting whose structured title is disallowed is not passed by its SDR job-ad quote', async () => {
+  const { db, job } = seedJobAd({ excerpt: "As a Sales Development Representative at Mercury, you'll be the first point of contact for founders" })
+  const url = 'https://job-boards.greenhouse.io/mercury/jobs/4567890'
+  db.prepare("UPDATE leads SET source_url = ?, event_date_proof = 'ats_structured' WHERE id = 'L1'").run(url)
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: new Map([[postingKey(url)!, 'Sales Development Representative (SDR) Manager']]) })
+  assert.equal(r.passed, 0)
+  assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0)
+  db.close()
+})
+test('#1121 HELD: an undated or out-of-clock job ad, another company\'s ad, or a quote with no vacancy title is still no_sales_hiring_evidence', async () => {
+  for (const [why, o] of [
+    ['no date', { excerpt: 'Founding Sales Development Representative (SDR) Mercury United States', date: null }],
+    ['outside the hiring clock', { excerpt: 'Founding Sales Development Representative (SDR) Mercury United States', date: d(400).slice(0, 10) }],
+    ['another company\'s ad', { excerpt: 'As a Sales Development Representative at Othercorp, you will book meetings' }],
+    ['no vacancy title', { excerpt: 'This role focuses on driving sales growth by generating qualified meetings for AEs', company: 'beehiiv' }],
+  ] as const) {
+    const { db, job } = seedJobAd(o)
+    await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', why)
+    db.close()
+  }
+})
+
+// #1201 (Refs #1095), review at 9c9fb53 (Ziggy): the event TYPE and STAGE are read from the user's own words only; the model's profile signals
+// stay matching vocabulary and never set or override a requirement. Each control below conflicts the model's signal with the user's words.
+test('#1201: a model "Series A" signal never overrides the user\'s "Series B": a Series B quote passes, a Series A quote is held', async () => {
+  const query = 'London B2B SaaS startups that raised a Series B in the past 90 days and are hiring sales staff'
+  const icp = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['raised a Series A round', 'hiring sales staff'], exclude: [] })
+  // positive control: the user's stage is proven (on the base the model's "Series A" won and this lead was held no_event_evidence)
+  const p = seed({ query, icp, excerpt: 'Brightloop, a London B2B SaaS startup, raised a 20m GBP Series B round this month' })
+  const rp = await applySalesHiringGate(p.db, p.job, serve(board()), { now: NOW })
+  assert.deepEqual([rp.passed, rp.demoted, lead(p.db).review_reason], [1, 0, null])
+  // negative control: the model's stage is NOT the user's, so a Series A quote never stands in for the Series B the user asked for
+  const n = seed({ query, icp, excerpt: 'Brightloop, a London B2B SaaS startup, raised a 5m GBP Series A round this month' })
+  const rn = await applySalesHiringGate(n.db, n.job, serve(board()), { now: NOW })
+  assert.deepEqual([rn.passed, rn.demoted, lead(n.db).review_reason], [0, 1, 'no_event_evidence'])
+  assert.match(lead(n.db).why, /raised a series b round/)
+})
+
+test('#1201: a seed-funding signal the user never asked for adds no gate, and the card names it as matching-only (rule 3)', async () => {
+  const query = 'London B2B SaaS startups hiring an account executive in the past 90 days'   // a requested role, so the gate runs
+  const icp = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
+  // the quote shows no funding at all: on the base the model's seed signal made funding required and the lead was held no_event_evidence
+  const { db, job } = seed({ query, icp, excerpt: 'Brightloop is a London B2B SaaS startup building workflow software' })
+  const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted, lead(db).review_reason], [1, 0, null])
+  assert.match(lead(db).why, /^Hiring for Account Executive \(requested: account executive\)/i)
+  assert.match(lead(db).why, /Your profile signal "announced seed funding" was used for matching only, not required: your request didn't ask for that event\.$/)
+  assert.ok(!/hiring sales staff" was used/.test(lead(db).why), 'a hiring signal is not an event: it is not listed')
+})
+
+test('#1201 non-vacuity: when the USER asks for seed funding the event is still required, whatever the model\'s signals say', async () => {
+  const query = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
+  for (const signals of [['hiring sales staff'], ['raised a Series B round', 'hiring sales staff'], []]) {
+    const { db, job } = seed({ query, icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals, exclude: [] }), excerpt: 'Brightloop is a London B2B SaaS startup building workflow software' })
+    const r = await applySalesHiringGate(db, job, serve(board()), { now: NOW })
+    assert.deepEqual([JSON.stringify(signals), r.passed, lead(db).review_reason], [JSON.stringify(signals), 0, 'no_event_evidence'])
+    assert.ok(!/used for matching only/.test(lead(db).why), 'nothing is called matching-only when the user asked for the event')
+  }
+  // and a seed quote passes even when the model wrote a Series B signal (the user said seed)
+  const ok2 = seed({ query, icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['raised a Series B round'], exclude: [] }) })
+  assert.equal((await applySalesHiringGate(ok2.db, ok2.job, serve(board()), { now: NOW })).passed, 1)
 })

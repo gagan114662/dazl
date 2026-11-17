@@ -149,6 +149,39 @@ try {
         } finally { await o.ctx.close() }
       })
     }
+    // #1325 F1 (Hermes review, AC-5): the one-return note lives for one return on onboarding as on Leads. It goes away
+    // on history movement (popstate) and on Dismiss, at every place onboarding renders it (ready, ask, site steps), and on
+    // picking a suggested play; Leads keeps the same controls.
+    const gone = async (page, label) => { await page.waitForTimeout(150); assert.equal(await page.getByTestId('google-link-note').count(), 0, label) }
+    const popstate = page => page.evaluate(() => { history.pushState(null, '', location.pathname + '#moved'); window.dispatchEvent(new PopStateEvent('popstate')) })
+    for (const [where, url, pending, ready] of [['/app ready', '/app?google=taken', 'ready', 'ready-step'], ['/app ask', '/app?google=taken', 'ask', null], ['/app site', '/app?google=taken', 'site', 'site-step'], ['/app/leads', '/app/leads?google=taken', 'leads', null]]) {
+      for (const how of ['popstate', 'Dismiss']) {
+        await check(`${where} note cleared by ${how} @${width}`, async () => {
+          const { ctx, page } = await open(width, url, pending)
+          const label = `${where} note cleared by ${how} @${width}`
+          try {
+            await page.getByTestId('google-link-note').waitFor({ timeout: 8000 })
+            if (ready) assert.equal(await page.getByTestId(ready).count(), 1, `${label}: on the ${ready}`)
+            if (how === 'popstate') await popstate(page)
+            else {
+              assert.equal(await page.getByTestId('google-link-note-dismiss').count(), 1, `${label}: one Dismiss button`)
+              await page.getByTestId('google-link-note-dismiss').click()
+            }
+            await gone(page, `${label}: the note is gone`)
+          } finally { await ctx.close() }
+        })
+      }
+    }
+    await check(`/app ready note cleared by a suggested play @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app?google=linked', 'ready')
+      const label = `/app ready suggestion @${width}`
+      try {
+        await page.getByTestId('google-link-note').waitFor({ timeout: 8000 })
+        const play = page.getByTestId('first-play').first(); await play.waitFor({ timeout: 8000 })
+        await play.click()
+        await gone(page, `${label}: picking a suggested play clears the note`)
+      } finally { await ctx.close() }
+    })
     // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared
     // free trial" above "Free scans need a Google account") and offers Link Google back to this page.
     await check(`/app/leads blocked trial estimate @${width}`, async () => {

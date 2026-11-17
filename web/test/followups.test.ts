@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -139,7 +140,7 @@ test('end to end: counts, reasons and review leads are stored; review leads have
   assert.equal(listLeads(db, 'B', id).length, 0)
 })
 
-test('provider.complete request shapes (mocked fetch)', async () => {
+test('provider.complete request shapes (mocked fetch)', () => runWithoutAccountSpend('test', async () => {
   let a: { url: string; body: string } | undefined
   const aF = (async (url: string, init: RequestInit) => { a = { url, body: String(init.body) }; return new Response(JSON.stringify({ content: [{ type: 'text', text: 'supports' }] })) }) as unknown as typeof fetch
   assert.equal(await anthropicProvider.complete!('k', 'q', aF), 'supports')
@@ -148,4 +149,4 @@ test('provider.complete request shapes (mocked fetch)', async () => {
   assert.equal(ab.tools, undefined) // no web tools for the judge
   const oF = (async () => new Response(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'unclear' }] }] }))) as unknown as typeof fetch
   assert.equal(await openaiProvider.complete!('k', 'q', oF), 'unclear')
-})
+}))

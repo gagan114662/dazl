@@ -9,6 +9,7 @@ import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { denied } from '@/lib/workspace-access'
 import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
 import { readTrialStatus } from '@/lib/scan/trial'
+import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 
 // Price estimate for a scan request, before anything paid runs. Read-only: it queues nothing, counts nothing against the
 // quota or the trial, reserves nothing and calls no provider. POST body = the body POST /api/scan would take.
@@ -31,5 +32,7 @@ export async function POST(req: NextRequest) {
   const trialAllowance = hasOwnKey ? null : await trialPrincipal(db, user).then(p => (p ? trialAllowanceLeft(db, p.id) : null)).catch(() => null)
   const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey, trialRefusal: refusal, trialUsed, trialAllowance, model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}), ...(r.message ? { message: r.message } : {}), ...(r.loss ? { loss: r.loss } : {}) }, { status: r.status })
-  return NextResponse.json({ estimate: r.estimate })
+  // #1157: the web search allowance left today, for the warning before confirm. A failed read gives no line, never a block.
+  const searchAllowance = await tenantAllowanceLeft(db, user.tenantId, Math.floor(Date.now() / 1000)).catch(() => null)
+  return NextResponse.json({ estimate: { ...r.estimate, search_allowance: searchAllowance } })
 }

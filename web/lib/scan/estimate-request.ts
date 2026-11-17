@@ -5,10 +5,9 @@ import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { ownerMaxUsd } from './runner.ts'
 import { scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { ownerLimits, ownerSetting, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
+import { ownerLimits, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -56,7 +55,10 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   const anthropicModel = anthropicProvider.configuredModel!()
   // Every model call of a run under a limit goes through a guard that prices it: the run's max_usd, the owner's day/month
   // pool, and ALWAYS for a trial run (runner.ts: the trial's reserve is the job guard's limit).
-  const limited = !ctx.hasOwnKey || nb.budget?.max_usd != null || ownerLimits(ctx.tenantId) !== null
+  // An account the operator named has its own day/month pool guard (and the other window at the deployment default, #847).
+  // Every other account's default caps (#846/#847) are reserved at the transport and are not shown here yet.
+  const named = ownerLimits(ctx.tenantId)
+  const limited = !ctx.hasOwnKey || nb.budget?.max_usd != null || named !== null
   const estimate = estimateRun({
     budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
@@ -69,7 +71,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
-    ownerCapUsd: ownerMaxUsd(ctx.tenantId), ownerMonthCapUsd: ownerSetting('DAZL_OWNER_MONTH_MAX_USD_USERS', ctx.tenantId, process.env),
+    ownerCapUsd: named?.day ?? null, ownerMonthCapUsd: named?.month ?? null,
   })
   // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
   return { ok: true, estimate }

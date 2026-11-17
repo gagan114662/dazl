@@ -3,6 +3,7 @@ import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
 import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
 import { APOLLO_TIMEOUT_MS } from '../enrich/apollo.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL, STALE_SCANS_SQL } from './free-orphans.ts'
 import { PDL_TIMEOUT_MS } from '../enrich/pdl.ts'
 import { SELLER_DECISION_INSERT, sellerDecisionArgs, type SellerDecision } from './intelligence.ts'
 import { migrateSellerDecisions } from './intelligence-schema.ts'
@@ -18,18 +19,22 @@ import { ENRICH_STALE_S } from './enrichment.ts'
 
 // Floor for the stale-running window / queue lease: it must outlive the longest single paid vendor call (a model
 // completion: LLM_TIMEOUT_MS, no retries) or a LIVE attempt holding a reservation could be reaped and re-run while its
-// call is in flight - a double bill. The margin is one extra call length (clock skew, the settle write). claimed_at is
-// refreshed at reserve and at a real settle (spend-cap.ts), so the window only has to cover ONE call, not the scan.
-// The floor is computed from the ACTUAL configured timeout of every paid (reserved) call path: the longest a
-// reserve can stay open is its path's full timeout, so the max over paths (currently the 150s LLM call, vs 35s
-// render, 20s TinyFish, 15s enrich lookups) x2 is the bound + an equal margin. A new paid path with a longer
-// timeout RAISES the floor automatically once its constant is listed here.
+// call is in flight - a double bill. claimed_at is refreshed at reserve and at a real settle (spend-cap.ts), so the window
+// only has to cover ONE call, not the scan. The floor is computed from the ACTUAL configured timeout of every paid
+// (reserved) call path: the longest a reserve can stay open is its path's full timeout (currently the 150s LLM call, vs 35s
+// render, 20s TinyFish, 15s enrich lookups). A new paid path with a longer timeout RAISES the floor automatically once its
+// constant is listed here.
 export const MAX_PAID_CALL_MS = Math.max(LLM_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS)
-export const MIN_STALE_RUNNING_S = Math.ceil(MAX_PAID_CALL_MS / 1000) * 2
+// #1157: the floor is ONE call plus a margin, not two calls. The window is renewed at every reserve and every settle, so it has to
+// outlive a single open call; 45 s covers the settle write and clock skew. The 2x it replaced made the DEFAULT window 20 min: a scan
+// whose process died (a SIGKILL, an out-of-memory kill, a crash) sat 'running' for 20 minutes with no progress, then failed. The
+// default is now this floor, so such a scan ends in about 3 minutes (the next status read or tick reaps it). SCAN_STALE_RUNNING_S
+// still overrides it (never below the floor), so the old 20 minutes is one env var away.
+export const MIN_STALE_RUNNING_S = Math.ceil(MAX_PAID_CALL_MS / 1000) + 45
 export function staleRunningSeconds(env: Record<string, string | undefined> = process.env): number {
-  const raw = Number(env.SCAN_STALE_RUNNING_S || 20 * 60)
+  const raw = Number(env.SCAN_STALE_RUNNING_S || MIN_STALE_RUNNING_S)
   if (!(Number.isFinite(raw) && raw >= MIN_STALE_RUNNING_S)) {
-    console.error(`SCAN_STALE_RUNNING_S=${env.SCAN_STALE_RUNNING_S} is below the floor ${MIN_STALE_RUNNING_S}s (2x the ${MAX_PAID_CALL_MS}ms max paid vendor call timeout) - clamped UP; a shorter window could reap a live paid call and re-run it (double bill)`)
+    console.error(`SCAN_STALE_RUNNING_S=${env.SCAN_STALE_RUNNING_S} is below the floor ${MIN_STALE_RUNNING_S}s (the ${MAX_PAID_CALL_MS}ms max paid vendor call timeout plus a 45 s margin) - clamped UP; a shorter window could reap a live paid call and re-run it (double bill)`)
     return MIN_STALE_RUNNING_S
   }
   return raw
@@ -181,6 +186,8 @@ function addColumns(db: Database.Database): void {
   db.exec(`CREATE INDEX IF NOT EXISTS scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
     CREATE INDEX IF NOT EXISTS scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL`)
+  // #1040 Home's 30-day results: a scan's leads found since a date, a range seek (not every lead the scan ever found)
+  db.exec('CREATE INDEX IF NOT EXISTS leads_job_created ON leads (scan_job_id, created_at)')
   // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
   // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
   // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
@@ -287,7 +294,14 @@ export function parkPendingReservedJobs(db: Database.Database): void {
   ).run()
 }
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
+// #1036: a staging real-company check (lib/scan/real-company-check.ts) is inserted 'running' with no claim and finishes within its
+// 60 s crawl deadline. One still 'running' after STAGING_CHECK_DEAD_S lost its process (a restart mid-crawl): it is failed here, so
+// it stops counting as an active scan and can be removed. Never re-queued (it is not a scan a worker may run).
+export const STAGING_CHECK_DEAD_S = 180
+export const REAP_STAGING_CHECKS_SQL = "UPDATE scan_jobs SET status = 'failed', error = 'staging_check_interrupted', finished_at = ? WHERE status = 'running' AND business_name = 'dazl real-company Find work email check (staging test)' AND industry = 'staging check' AND location = 'staging check' AND claimed_at IS NULL AND created_at < ?"
 export function reapStaleRunningJobs(db: Database.Database): void {
+  // #1157: a free (US$0) call left reserved is not 'maybe billed'. Stale scans via scan_jobs' status index, then each scan's rows by (user_id, scan_job_id).
+  { const n = Math.floor(Date.now() / 1000), cut = n - STALE_RUNNING_S; for (const j of db.prepare(STALE_SCANS_SQL).all(cut) as { id: string; user_id: string }[]) db.prepare(SETTLE_FREE_ORPHANS_STALE_SQL).run(n, j.user_id, j.id, j.id, j.user_id, cut) }
   const cutoff = Math.floor(Date.now() / 1000) - STALE_RUNNING_S
   db.prepare(
     `UPDATE scan_jobs SET status = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') OR attempts >= ? THEN 'failed' ELSE 'pending' END,
@@ -296,6 +310,7 @@ export function reapStaleRunningJobs(db: Database.Database): void {
        claimed_at = NULL
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
+  db.prepare(REAP_STAGING_CHECKS_SQL).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000) - STAGING_CHECK_DEAD_S)
   try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(Math.floor(Date.now() / 1000)) } catch { /* no trial table in this store */ } // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
 }
 export function reapStaleJobs(db: Database.Database): void {
@@ -348,7 +363,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
          l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.id = ? AND j.user_id = ? ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT ?`
+       ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.insert_seq LIMIT ?`
   return allWithHeldFallback(db, withHeld(plain, 'l.confidence, l.review_reason,', `${HELD_CONF}, ${HELD_REVIEW},`), [jobId, userId, Math.min(limit, 500)])
 }
 
@@ -421,6 +436,8 @@ export function listJobs(db: Database.Database, userId: string, limit = 20): Job
 // genuine company whose name happens to contain '(test only)' is never hidden.
 // The export defaults to real rows only; includeFixtures is the explicit opt-in for
 // verification workflows. Nothing is deleted - every row stays in the database.
+// Same-second ties in insertion order (insert_seq), as the Db store (store-db.ts): never the query plan's order, which an index
+// such as leads (scan_job_id, created_at) (#1040) changes.
 export function exportLeads(db: Database.Database, userId: string, jobId?: string, limit = 5000, includeFixtures = false) {
   const plain =
       `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
@@ -430,7 +447,7 @@ export function exportLeads(db: Database.Database, userId: string, jobId?: strin
        FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
        ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
-       ORDER BY l.created_at DESC LIMIT ?`
+       ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`
   return allWithHeldFallback(db, withHeld(plain.replace('l.score, l.confidence, l.event_date, l.date_status, l.review_reason,', 'l.score, l.confidence, l.event_date, l.date_status, l.review_reason,'), 'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`), jobId ? [userId, jobId, limit] : [userId, limit])
 }
 
