@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 
 interface Slot { connector: string; last4: string; enabled: boolean }
 interface AuditRow { connector: string; scan_job_id: string | null; lookup: string; status: string; results: number; created_at: number }
@@ -20,7 +21,7 @@ export default function EnrichmentPanel() {
   async function act(body: Record<string, unknown>) {
     const r = await fetch('/api/settings/enrichment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const j = await r.json().catch(() => ({}))
-    setMsg(r.ok ? (body.disconnect ? 'Removed.' : 'Saved.') : j.error || 'Something went wrong')
+    setMsg(r.ok ? (body.disconnect ? 'Removed.' : 'Saved.') : panelError(j.error, 'Something went wrong'))
     setKeys({})
     void load()
   }
