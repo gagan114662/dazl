@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { trialRefusalNotice, noticeAccount, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, type NoticeAccount } from '@/lib/trial-copy'
-import { googleLinkResultCopy } from '@/lib/google-link'
+import { googleAccountHint, googleLinkResultCopy } from '@/lib/google-link'
 
 // #1095: a refused free-trial scan, in words, with the way forward (never the raw code). Google-required on a password
 // account links Google to THIS account and comes back to this page with the same search ready to run.
@@ -69,6 +69,8 @@ export default function TrialRefusalNotice({ reason, query, step, text }: { reas
     <div className="rounded-lg border border-black/40 bg-[#f4f4f4] px-4 py-3 text-sm text-[#111]" data-testid="trial-refusal-notice">
       {/* text replaces only the lead sentence: the confirm-email / password steps after it still show */}
       <p role="alert">{text ? n.text.replace(TRIAL_REFUSAL_COPY.google_required.text, text) : n.text}</p>
+      {/* #1319: which Google account to pick, before the round trip (the link needs this account's mailbox) */}
+      {n.actions.some(a => a.kind === 'link_google') && account && account !== ACCOUNT_LOAD_FAILED && googleAccountHint(account.email) && <p className="mt-1 text-[#555]" data-testid="google-account-hint">{googleAccountHint(account.email)}</p>}
       {n.actions.length > 0 && <div className="mt-3 flex flex-wrap items-center gap-2">
         {n.actions.map(a => a.kind === 'reauth'
             ? <form key={a.kind} method="post" onSubmit={e => void reauth(e)} className="flex flex-wrap items-center gap-2">
