@@ -84,11 +84,11 @@ async function monitorRun(db: Db, mon: string, at: number, leads: L[]): Promise<
 
 const HIRING_LABELS = ['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence']
 const heldKind = (db: Db) => db.get<{ signal_kind: string | null }>("SELECT signal_kind FROM play_alerts WHERE tenant_id = ? AND entity_key = 'd:flexport.com'", [A])
-async function weekly(db: Db, kind: string | null) {
+async function weekly(db: Db, kind: string | null, extra: L = {}) {
   const w = await createWatch(db, A, Q, ICP, null, NOW - 3 * DAY)
   assert.ok(w.watch, JSON.stringify(w))
   await db.run('UPDATE watches SET created_at = ? WHERE id = ?', [NOW - 3 * DAY, w.watch.id])
-  await watchRun(db, w.watch.id, Q, NOW, [{ kind }])
+  await watchRun(db, w.watch.id, Q, NOW, [{ kind, ...extra }])
   return w.watch.id
 }
 
@@ -116,9 +116,10 @@ test('#1193 weekly play -> monitor: an ungraded sighting on either side is the s
 })
 
 test('#1193 weekly play -> monitor: another event stays another event (not a company-level mute)', async () => {
-  // the play mailed Flexport as an EXPANSION on that day: the monitor's hiring posting of the same day is a different event
+  // the play mailed Flexport as an EXPANSION on that day, from its own page (not the board posting): the monitor's hiring
+  // posting of the same day is a different event. (The same board-dated Greenhouse URL under two grades is ONE event: below.)
   const { db } = await open()
-  await weekly(db, 'expansion')
+  await weekly(db, 'expansion', { proof: 'page_bound', url: 'https://www.flexport.com/blog/new-depot', signal: 'Flexport opened a depot' })
   const m = await createMonitor(db, A, { query: Q2 }, NOW)
   assert.ok('id' in m)
   assert.deepEqual((await monitorRun(db, m.id, NOW + DAY, [{ kind: 'hiring' }])).map(a => a.kind), ['new_signal'])
@@ -157,4 +158,21 @@ test('#1193 a page-proven day is not collapsed: two different labelled kinds on 
   assert.ok('id' in m)
   // a page-proven (not board-dated) lead with another labelled kind on that day is another event, as #883 has it
   assert.deepEqual((await monitorRun(db, m.id, NOW + DAY, [{ kind: 'expansion', proof: 'page_bound', signal: 'Flexport opened a depot' }])).map(x => x.kind), ['new_signal'])
+})
+
+test('#1193 point 2: a weekly play claims a board-dated posting under the normalised kind, not the raw grade', async () => {
+  for (const mailed of [...HIRING_LABELS, 'expansion']) {
+    const { db } = await open()
+    await weekly(db, mailed, { signals: [mailed, 'hiring'] })
+    assert.deepEqual(await heldKind(db), { signal_kind: 'hiring' }, `mailed as ${mailed}`)
+  }
+})
+
+test('#1193 point 2: a board-dated posting graded expansion on BOTH runs is not alerted again by the monitor (no regression vs main)', async () => {
+  // Hermes-PC review of #1166 at 3e1b7e2d: main suppressed this (both sides raw), the branch alerted it (one side normalised)
+  const { db } = await open()
+  await weekly(db, 'expansion', { signals: ['expansion', 'hiring'] })
+  const m = await createMonitor(db, A, { query: Q2 }, NOW)
+  assert.ok('id' in m)
+  assert.deepEqual(await monitorRun(db, m.id, NOW + DAY, [{ kind: 'expansion', signals: ['expansion', 'hiring'] }]), [])
 })
