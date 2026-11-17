@@ -57,7 +57,9 @@ function sourceBrand(sourceUrl: string): { brand: string; ats: boolean } | null 
 const CUSTOMER_PATH = /(?:^|\/)(?:customers?|clients?|customer-stor(?:y|ies)|customer-success|case-stud(?:y|ies)|success-stor(?:y|ies)|testimonials?)(?:\/|$)/i
 const pathOf = (url: string): string => { try { return new URL(url).pathname } catch { return '' } }
 const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const edge = (x: string) => `(?<![\\p{L}\\p{N}])${reEsc(x)}(?![\\p{L}\\p{N}])`
+// #1237: a company or brand is capped at 300 characters before it becomes a pattern; V8 throws "Regular expression too large" near 50,000.
+const EDGE_MAX = 300
+const edge = (x: string) => `(?<![\\p{L}\\p{N}])${reEsc(x.slice(0, EDGE_MAX))}(?![\\p{L}\\p{N}])`
 const WORDS = (max: number) => `(?:[\\p{L}\\p{N}'-]+\\s+){0,${max}}?`
 const USE_VERB = 'use|uses|using|used|chose|chooses|chosen|picked|picks|selected|selects|switched to|switches to|moved to|moves to|migrated to|migrates to|runs on|run on|running on|adopted|adopts|adopting|standardi[sz]ed on|standardi[sz]es on|relies on|rely on|relied on|trusts|trusted|deployed|deploys|implemented|implements|rolled out|rolls out|partnered with|partners with|powered by|built on|builds on|built with|turned to|turns to|went live on'
 // a verb, a few words, then "to / on / onto / with <brand>": "moved its global payments to Stripe", "builds faster on Atlassian", "scaled support with Zendesk"
