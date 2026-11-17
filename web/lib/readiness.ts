@@ -7,7 +7,7 @@ import { coreSources, socialSources, analysisPrerequisite, enrichmentLabels, typ
 
 export interface ReadinessInput {
   profile: { sells?: string; website?: string; business_name?: string; buyer?: { summary?: string; who?: string[] } | null } | null
-  usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number } | null; scans_used?: number; scan_limit?: number } | null
+  usage: { has_key?: boolean; trial?: { funded?: boolean; remaining?: number; blocked?: string | null } | null; scans_used?: number; scan_limit?: number } | null
   outreach: { gmail?: { email?: string; status?: string } | null; sender?: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; daily_cap?: number; sent_24h?: number; account_sent_24h?: number } | null
   // The account's scan jobs; null when they could not be loaded, omitted by callers that only check the other rows.
   jobs?: JobRow[] | null
