@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { decide, dryRun, EXAMPLE_SHA, main, passProblem, PASS_RE, REOPEN_BODY } from './live-check-gate.mjs'
+import { decide, TRIAGE_LABEL_TRUSTED, dryRun, EXAMPLE_SHA, main, passProblem, PASS_RE, REOPEN_BODY } from './live-check-gate.mjs'
 
 const closed = (extra = {}) => ({ number: 1, state: 'closed', state_reason: 'completed', labels: [], ...extra })
 const c = (body, author_association = 'OWNER', created_at = '2026-11-13T12:00:00Z') => ({ id: 1, body, author_association, created_at })
@@ -242,6 +242,10 @@ test('triage:close is exempt only when its latest labeled event is by an allowed
   assert.equal(decide(tc, [], null, [labeled('someone-else'), labeled('gagan114662', 'other')]).reopen, true, 'an allowed actor on another label does not count')
   assert.equal(decide(tc, [], null, [labeled('hermes-x')], new Set(['hermes-x'])).reopen, false, 'the allow-list is configurable')
   assert.match(decide(tc, [], null, [labeled('someone-else')]).reason, /triage:close.*someone-else/)
+  const unlabeled = (login, created_at) => ({ event: 'unlabeled', actor: { login }, label: { name: 'triage:close' }, created_at })
+  assert.equal(decide(tc, [], null, [labeled('gagan114662', 'triage:close', '2026-11-16T10:00:00Z'), unlabeled('someone-else', '2026-11-16T11:00:00Z'), labeled('someone-else', 'triage:close', '2026-11-16T12:00:00Z')]).reopen, true, 'removed then re-added by an untrusted actor')
+  assert.equal(decide(tc, [], null, [labeled(undefined)]).reopen, true, 'unknown actor fails closed')
+  assert.deepEqual([...TRIAGE_LABEL_TRUSTED], ['gagan114662'])
 })
 
 test('end to end: triage:close applied by someone else is reopened; by the owner it stays closed; unreadable events reopen it', async () => {

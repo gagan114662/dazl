@@ -20,14 +20,14 @@ export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
 export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
 // 'triage:close': Gagan approved closing triaged duplicate / obsolete / already-fixed issues in a batch (2026-11-16) without a
 // per-issue live check; each carries a "[Quest triage]" evidence comment. It is exempt ONLY when the issue's latest `labeled`
-// event for it was made by an allowed labeler (Gagan's condition, 2026-11-17: only Hermes or Gagan may apply it). The list
-// comes from the TRIAGE_LABELERS env (comma-separated logins), default the repo owner. No labeled event, events that cannot
+// event for it was made by an allowed labeler (Gagan's condition, 2026-11-17: only Hermes or Gagan may apply it). Hermes
+// posts its reviews as gagan114662 (checked on PR #1349/#1350 reviews), so the list is just that login. Fixed in code, no env. No labeled event, events that cannot
 // be read, or another actor: not exempt (the gate fails toward open).
 export const TRIAGE_LABEL = 'triage:close'
-export const TRIAGE_LABELERS = new Set(String(process.env.TRIAGE_LABELERS || 'gagan114662').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+export const TRIAGE_LABEL_TRUSTED = new Set(['gagan114662'])
 const labelName = l => String(typeof l === 'string' ? l : l?.name ?? '').toLowerCase()
 // null if triage:close was applied by an allowed labeler, else why not
-export function triageProblem(events, allowed = TRIAGE_LABELERS) {
+export function triageProblem(events, allowed = TRIAGE_LABEL_TRUSTED) {
   const last = (Array.isArray(events) ? events : []).filter(e => e?.event === 'labeled' && labelName(e.label) === TRIAGE_LABEL)
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)).pop()
   if (!last) return 'no labeled event shows who applied it'
@@ -79,7 +79,7 @@ export function passProblem(c, after = null) {
 // `reopened` event, or null. A PASS counts only when posted after that: a check of commit A does not cover a regression
 // the issue was reopened for. Returns { reopen, reason }.
 // events: the issue's events (for who applied triage:close); allowed: the triage:close labelers.
-export function decide(issue, comments, lastReopenedAt = null, events = [], allowed = TRIAGE_LABELERS) {
+export function decide(issue, comments, lastReopenedAt = null, events = [], allowed = TRIAGE_LABEL_TRUSTED) {
   if (!issue || issue.pull_request) return { reopen: false, reason: 'not an issue' }
   if (issue.state !== 'closed') return { reopen: false, reason: 'not closed' }
   if (EXEMPT_REASONS.has(issue.state_reason)) return { reopen: false, reason: `closed as ${issue.state_reason}` }
