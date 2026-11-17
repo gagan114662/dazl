@@ -35,7 +35,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: 30
     defaults:
       run:
@@ -180,7 +180,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: 30
     env:
       JOB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -298,7 +298,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: 30
     env:
       JOB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -404,7 +404,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: 15
     defaults:
       run:

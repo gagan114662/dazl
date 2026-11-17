@@ -17,3 +17,5 @@ ARM-native production/staging dependency artifacts remain on the existing ARM ho
 An online listener or routing file is NOT successful migration. Verify each executed job at the exact commit/run/attempt through the GitHub jobs API: intended runner identity and labels, successful original checks, and test totals. Conditional skipped jobs are not executed passes. Require clean reset and successful fresh admission between jobs. No merge/protection bypass, test reduction, paid capacity, GPU benefit or speed improvement is implied. Speed claims require separately collected comparable timing evidence.
 
 The protected migration PR must remain unmerged until the actual routed suites and required checks pass, with reset, browser and service-container behavior verified. The host baseline and detailed receipts remain in private operator evidence storage, not in this repository.
+
+Job-container umask is explicitly0022. Docker exec was observed to default to0000 despite restrictive service settings; verified checkout modes must therefore accompany the host settings.

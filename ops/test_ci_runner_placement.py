@@ -23,7 +23,7 @@ class CiRunnerPlacement(unittest.TestCase):
                     self.assertEqual(job["container"]["image"], "ubuntu:24.04")
                     options = job["container"].get("options", "")
                     for expected in ("--cpus 4", "--memory 6g", "--memory-swap 6g",
-                                     "--pids-limit 2048", "--shm-size 1g"):
+                                     "--pids-limit 2048", "--shm-size 1g", "--umask 0022"):
                         self.assertIn(expected, options)
                     for forbidden in ("--privileged", "--network host", "--network=host",
                                       "--ipc host", "--ipc=host", "docker.sock", "/mnt/c"):

@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     # Gate 2: PRs get a hard 5-minute budget (affected tests only); main runs the full suite (gate 3).
     # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
@@ -80,7 +80,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, dazl-ci]
     container:
       image: ubuntu:24.04
-      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
     services:
       postgres:
