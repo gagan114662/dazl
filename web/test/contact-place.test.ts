@@ -1,5 +1,6 @@
 // A contact must AGREE with the lead on place / address / domain before it is attached: a same-name practice in Pico Rivera, CA is never attached to a New York lead.
 // Isolated fixtures through the real runJob: invented practice, stubbed article / site / grader, no network, no key, no credits.
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'

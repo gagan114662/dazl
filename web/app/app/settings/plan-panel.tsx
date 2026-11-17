@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 import { trialCopy, type TrialBlock } from '@/lib/trial-copy'
 import { usageLine } from '@/lib/plan-usage-copy'
 
@@ -45,7 +46,7 @@ export default function PlanPanel() {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
     const j = await r.json()
     if (r.ok && j.url) window.location.href = j.url
-    else setMsg(j.error || 'Something went wrong')
+    else setMsg(panelError(j.error, 'Something went wrong'))
   }
 
   if (!u) return null
