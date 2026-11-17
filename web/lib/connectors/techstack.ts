@@ -1,3 +1,4 @@
+import { stripTags, dropBlocks } from '../html/strip.ts'
 // Tech-stack detection over the HTML sitecrawl already downloads - no extra fetches.
 // High-precision signatures only: each one names a product the page itself loads or declares.
 // A weak signal (a bare class name, a common word) is worse than a miss, so this list stays short.
@@ -58,7 +59,7 @@ export function observability(status: number, html: string): Observability {
   if (!(status >= 200 && status < 300)) return 'http_error'
   if (!/<html|<body|<head/i.test(html)) return 'not_html'
   if (/cf-chl-|challenge-platform|<title>\s*(?:just a moment|attention required|access denied)|captcha-delivery|px-captcha/i.test(html)) return 'blocked'
-  const text = html.replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const text = stripTags(dropBlocks(html, ['script', 'style', 'noscript'])) /* #1242: linear */.replace(/\s+/g, ' ').trim()
   if (text.length < 200) return 'thin_page'
   return 'ok'
 }

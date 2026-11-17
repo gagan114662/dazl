@@ -1,8 +1,9 @@
+import { stripTags, dropBlocks } from '../html/strip.ts'
 // Source wording is evidence of the inbox's advertised purpose, never consent.
 // Restriction is conservative; absent/ambiguous context stays unknown.
 export interface ContactContext { excerpt: string; source_url: string; restriction?: string | null }
 export function contactContext(text: string, email: string, source_url: string): ContactContext {
- const plain=text.replace(/<(script|style|noscript)[\s\S]*?<\/\1>/gi,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ')
+ const plain=stripTags(dropBlocks(text,['script','style','noscript'])).replace(/\s+/g,' ') // #1242: linear
  const at=plain.toLowerCase().indexOf(email.trim().toLowerCase())
  return {excerpt:at<0?'':plain.slice(Math.max(0,at-100),at+email.length+100).slice(0,240),source_url}
 }

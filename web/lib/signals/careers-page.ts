@@ -8,6 +8,7 @@ import { isGtmRole } from './ats-gtm.ts'
 import { parseRobots, type Get } from '../connectors/sitecrawl.ts'
 import { getDomain } from 'tldts'
 import { decode as decodeEntities, htmlToText } from '../scan/fetch-page.ts'
+import { stripTags, dropBlocks, dropComments } from '../html/strip.ts'
 
 export interface CareersVacancy { url: string; title: string; quote: string; retrievedAt: number; pageText: string; posted?: string | null; postedBoard?: 'greenhouse' | 'lever' | 'ashby' | null } // pageText: the page's visible text (capped), so the caller can check it names the company and its place
 // posted (#533 AC4): when the careers link IS a public Greenhouse / Lever / Ashby posting, the board's OWN first-published date read from that
@@ -25,9 +26,10 @@ const CLOSED = /\b(?:no (?:current |open |active )?(?:openings|vacancies|positio
 // The registrable domain by the Public Suffix List INCLUDING its private section (as lib/evals/contract.ts does), so shared hosts are not one company:
 // alice.github.io and bob.github.io are different sites. A host with no listed suffix is itself.
 export const registrable = (h: string) => { const host = h.toLowerCase().replace(/^www\./, ''); return getDomain(host, { allowPrivateDomains: true }) ?? host }
-const visible = (html: string) => html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+const visible = (html: string) => dropComments(dropBlocks(html, ['script', 'style', 'noscript', 'svg'])) // #1242: linear, not backtracking
 const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-const flat = (html: string) => decode(visible(html).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+const flat = (html: string) => decode(stripTags(visible(html))).replace(/\s+/g, ' ').trim()
+export const flatForTest = flat
 
 // Role-shaped titles in a page: the text of headings, links, list items and table cells that is short, names a role noun and is a sales / GTM role.
 // `accept` widens the candidate set to titles matching the caller's requested role: an explicit user ask (e.g. CRM administrator)
@@ -66,7 +68,7 @@ function specificJobUrl(href: string, base: string, site: string): string | null
 }
 export function openJobsFor(html: string, pageUrl: string, site: string, accept?: (title: string) => boolean): { title: string; jobUrl: string }[] {
   const body = visible(html)
-  const anchors = [...body.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: decode(m[1]), text: decode(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim(), end: (m.index ?? 0) + m[0].length, start: m.index ?? 0 }))
+  const anchors = [...body.matchAll(/<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: decode(m[1]), text: decode(stripTags(m[2])).replace(/\s+/g, ' ').trim(), end: (m.index ?? 0) + m[0].length, start: m.index ?? 0 }))
   const titles = salesRoleTitles(html, accept)
   const hits: { title: string; jobUrl: string }[] = []
   for (const t of titles) {
@@ -139,7 +141,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
     title = String(job.title ?? ''); body = `${title} ${String(job.descriptionPlain ?? job.descriptionHtml ?? '')}`; passages = [plainText(job.descriptionPlain)]; open = true; posted = boardDay(job.publishedAt); postedBoard = 'ashby'
   } else return { ok: false, reason: 'job_unverified' }
   if (!open) return { ok: false, reason: 'job_unverified' }
-  const plain = decode(body.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ')
+  const plain = decode(stripTags(body.replace(/&lt;/g, '<').replace(/&gt;/g, '>'))).replace(/\s+/g, ' ')
   if (CLOSED.test(plain.slice(0, 1500))) return { ok: false, reason: 'job_closed' }
   const slug = norm(site.split('.')[0] ?? ''), tokenN = norm(token)
   const ownBoard = tokenN.length >= 3 && tokenN === slug
@@ -154,7 +156,7 @@ async function verifyAtsJob(url: URL, get: Get, site: string, company: string | 
 const plainText = (v: unknown) => typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : ''
 // Lever's lists[] (responsibilities / requirements bullets), each heading and each content block on its own, rendered exactly as lib/sources/ats-posting.ts does
 // (tags to spaces, no entity decoding)
-const leverLists = (v: unknown): string[] => Array.isArray(v) ? v.flatMap(l => l && typeof l === 'object' ? [plainText((l as Json).text), plainText(typeof (l as Json).content === 'string' ? String((l as Json).content).replace(/<[^>]+>/g, ' ') : '')] : []) : []
+const leverLists = (v: unknown): string[] => Array.isArray(v) ? v.flatMap(l => l && typeof l === 'object' ? [plainText((l as Json).text), plainText(typeof (l as Json).content === 'string' ? stripTags(String((l as Json).content)) : '')] : []) : []
 const htmlText = (v: string) => htmlToText(decodeEntities(v)).text
 async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site: string, company: string | undefined, robots: { allows: (p: string) => boolean }, accept?: (title: string) => boolean): Promise<JobVerdict> {
   let u: URL; try { u = new URL(hit.jobUrl) } catch { return { ok: false, reason: 'job_unverified' } }
@@ -172,7 +174,7 @@ async function verifyJob(hit: { title: string; jobUrl: string }, get: Get, site:
   const indexPath = (() => { try { return new URL(hit.jobUrl).pathname } catch { return '' } })()
   if (f.pathname.replace(/\/$/, '') !== indexPath.replace(/\/$/, '') && !/job|role|position|opening|vacanc/i.test(f.pathname)) return { ok: false, reason: 'job_closed' }
   // the role is read from the page's OWN heading (h1, else <title>), never from the index label
-  const heading = decode((/<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(r.body)?.[1] ?? /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(r.body)?.[1] ?? '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+  const heading = decode(stripTags(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(r.body)?.[1] ?? /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(r.body)?.[1] ?? '')).replace(/\s+/g, ' ').trim()
   if (!heading) return { ok: false, reason: 'job_unverified' }
   if (!roleAgrees(hit.title, heading, accept)) return { ok: false, reason: 'job_role_mismatch' }
   return { ok: true, text, title: heading.slice(0, 120) }
