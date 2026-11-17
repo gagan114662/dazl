@@ -14,8 +14,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   fail-closed:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, dazl-ci]
+    container:
+      image: ubuntu:24.04
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Isolated job prerequisites
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo
       - uses: actions/checkout@v4
       # #901: the discovery guard runs on its own, BEFORE discovery and independent of any discovery pattern, so changing a
       # pattern below can never switch the guard off. It fails if any ops/**/test*.py file is outside the discovery steps.

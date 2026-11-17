@@ -18,12 +18,26 @@ jobs:
   # auto-close an issue that has not been verified live. Fails if the PR body or any PR commit message has one.
   no-closing-keywords:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, dazl-ci]
+    container:
+      image: ubuntu:24.04
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Isolated job prerequisites
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo gh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: PR body and commit messages use Refs, never Closes/Fixes/Resolves
         env:
           BODY: ${{ github.event.pull_request.body }}
@@ -52,11 +66,22 @@ jobs:
   # Which "Refs #N" issues declare at least one test NAMED with #N (static scan: runs no test, installs nothing).
   tag-scope:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, dazl-ci]
+    container:
+      image: ubuntu:24.04
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
     timeout-minutes: 5
     outputs:
       numbers: ${{ steps.scope.outputs.numbers }}
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Isolated job prerequisites
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -89,12 +114,21 @@ jobs:
   tagged-tests:
     needs: tag-scope
     if: needs.tag-scope.outputs.numbers != ''
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, dazl-ci]
+    container:
+      image: ubuntu:24.04
+      options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g
     timeout-minutes: 15
     defaults:
       run:
+        shell: bash
         working-directory: web
     steps:
+      - name: Isolated job prerequisites
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
