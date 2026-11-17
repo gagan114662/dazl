@@ -117,7 +117,7 @@ test('#1095 review: a profile naming SEVERAL places is never narrowed to its fir
   const f = fx(http); f.modelIcp = { ...ICP, where: ['Austin, TX', 'Boston, MA'] }
   const x = await runFixture(f)
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
-  assert.equal(run?.status, 'skipped_no_place')
+  assert.match(run?.status ?? '', /^skipped_no_place:several:/, '#1205: the skip names the places')
   assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
 })
 
@@ -225,7 +225,7 @@ test('#1095 live check: two profile entries naming the same place are one place;
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'Austin and Austin, TX are one place')
   const two = boards(); const f2 = fx(two.http); f2.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Boston'] }
   const x = await runFixture(f2)
-  assert.equal((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status, 'skipped_no_place')
+  assert.match((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status ?? '', /^skipped_no_place:several:/)
   assert.ok(!two.seen.some(u => u.includes('greenhouse')))
 })
 
@@ -241,7 +241,63 @@ test('#1095 review: a profile place "<City>, <Country>" keeps the board source a
     const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: [w], country: c }
     const x = await runFixture(f)
     const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
-    assert.ok(run && run.status !== 'skipped_no_place', `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
+    assert.ok(run && !run.status.startsWith('skipped_no_place'), `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
     assert.ok(seen.some(u => u.includes('greenhouse')), `${w}: boards were read`)
   }
+})
+
+// #1205 review (Ziggy, F1): a bare listed world city in a profile that says it is US is the US city. where ['Vancouver'], country 'US' was Vancouver, WA before
+// the world-city list (US-city ranks: Vancouver|WA|194512); the list must not turn it into Vancouver, Canada. SYNTHETIC locations on the REAL NinjaOne records:
+// one Austin posting relabelled "Vancouver, WA", another "Vancouver, BC, Canada".
+const [WA_ID, BC_ID] = AUSTIN
+function vancouverBoards() {
+  const seen: string[] = []
+  const loc = (j: GhJob): GhJob => j.id === WA_ID ? { ...j, location: { name: 'Vancouver, WA' } } : j.id === BC_ID ? { ...j, location: { name: 'Vancouver, BC, Canada' } } : j
+  const http: SafeGet = async url => {
+    if (new URL(url).hostname === 'hn.algolia.com') return null
+    seen.push(url); const j = (o: unknown) => ({ status: 200, body: JSON.stringify(o) })
+    if (url === 'https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs') return j({ ...REAL.list, jobs: REAL.list.jobs.map(x => live(loc(x))) })
+    const d = url.match(/boards\/ninjaone\/jobs\/(\d+)$/)
+    if (d && REAL.postings[d[1]]) return j(live(loc(REAL.postings[d[1]])))
+    return null
+  }
+  return { http, seen }
+}
+const GENERIC = 'B2B SaaS companies hiring their first account executive in the last 30 days'
+const detailIds = (seen: string[]) => seen.filter(u => /boards\/ninjaone\/jobs\/\d+$/.test(u)).map(u => +u.split('/').pop()!)
+
+test('#1205 review F1: a US profile\'s bare "Vancouver" runs the board source on Vancouver, WA (the WA posting is read, the BC one is not); a CA profile still gets Vancouver, BC', async () => {
+  assert.equal(profilePlaceText('Vancouver', 'US'), 'Vancouver, WA')
+  assert.equal(profilePlaceText('Vancouver', 'CA'), 'Vancouver')
+  assert.equal(profilePlaceText('Toronto', 'Canada'), 'Toronto')
+  assert.equal(profilePlaceText('Vancouver', 'GB'), null, 'a third country is not guessed')
+  const us = vancouverBoards(); const fu = fx(us.http); fu.request = GENERIC; fu.modelIcp = { ...ICP, where: ['Vancouver'], country: 'US' }
+  const xu = await runFixture(fu)
+  const ru = xu.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
+  assert.ok(ru && ['ok', 'partial'].includes(ru.status), `US profile: the board source ran: ${ru?.status}`)
+  assert.ok(detailIds(us.seen).includes(WA_ID), `US profile: the Vancouver, WA posting is read: ${detailIds(us.seen)}`)
+  assert.ok(!detailIds(us.seen).includes(BC_ID), `US profile: the Vancouver, BC posting is not: ${detailIds(us.seen)}`)
+  const ca = vancouverBoards(); const fc = fx(ca.http); fc.request = GENERIC; fc.modelIcp = { ...ICP, where: ['Vancouver'], country: 'CA' }
+  await runFixture(fc)
+  assert.ok(detailIds(ca.seen).includes(BC_ID), `CA profile: the Vancouver, BC posting is read: ${detailIds(ca.seen)}`)
+  assert.ok(!detailIds(ca.seen).includes(WA_ID), `CA profile: the Vancouver, WA posting is not: ${detailIds(ca.seen)}`)
+})
+
+// #1205 review (Ziggy, F2): the named skip explanation must reach the SAVED run report, not only the progress row.
+test('#1205 review F2: "in Europe": runner -> SourceRunLedger.write -> readRunReport / readScanStatus: the saved report names Europe, why the board source was skipped and the city to give', async () => {
+  const { http, seen } = boards()
+  const f = fx(http); f.request = 'B2B SaaS companies in Europe hiring their first account executive in the last 30 days'; f.modelIcp = { ...ICP, where: ['Europe'], country: '' }
+  const x = await runFixture(f)
+  assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
+  const { id: jobId } = x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }
+  const { readRunReport } = await import('../lib/scan/run-report.ts')
+  const { readScanStatus } = await import('../lib/scan/status-read-service.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const saved = (await readRunReport(sqliteDb(x.db), 'A', jobId)) as { source_skips?: { source: string; status: string; reason: string }[] }[] | null
+  const skip = saved?.at(-1)?.source_skips?.find(s => s.source === 'adapter:jobboards')
+  assert.ok(skip, `the saved run report has the board skip: ${JSON.stringify(saved?.at(-1)?.source_skips)}`)
+  assert.equal(skip!.status, 'skipped_no_place:region:Europe')
+  assert.match(skip!.reason, /Europe/); assert.match(skip!.reason, /is a region/); assert.match(skip!.reason, /need a city, e\.g\. 'Berlin, Germany'/)
+  const st = await readScanStatus(sqliteDb(x.db), 'A', jobId) as { run_report: { source_skips?: { source: string; reason: string }[] }[] }
+  assert.match(st.run_report.at(-1)?.source_skips?.find(s => s.source === 'adapter:jobboards')?.reason ?? '', /'Europe' is a region\. Job postings need a city/)
 })
