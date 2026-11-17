@@ -50,3 +50,13 @@ test('no saved profile, a bad profile or no lists: nothing invented', () => {
   assert.equal(savedPlays(null, [monitor({ icp: '{not json' })], UTC, T)[0].audience, null)
   assert.deepEqual(savedPlays(null, null), [])
 })
+
+test('#1123: two plays saved with the same profile get their own titles, from their own searches', () => {
+  const shared = { summary: 'United States founders', where: ['United States'], signals: ['hiring'] }
+  const ps = savedPlays([
+    watch({ id: '1'.repeat(24), query: 'United States founders hiring', icp: shared }),
+    watch({ id: '2'.repeat(24), query: 'Marketing and lead-gen agencies in the US and Canada posting about outbound or lead generation pain', icp: shared }),
+  ], [], UTC, T)
+  assert.notEqual(ps[0].name, ps[1].name)
+  assert.match(ps[1].name, /agencies/i)
+})

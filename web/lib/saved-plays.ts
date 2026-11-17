@@ -99,5 +99,8 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       active: on, note: null,
     })
   }
+  // #1123: two plays saved from the same profile would share its title; each such play is named from its own search
+  const same = (p: SavedPlay) => out.some(o => o !== p && o.name === p.name && o.sentence.trim() !== p.sentence.trim())
+  for (const p of out.filter(same)) p.name = playName(p.sentence, null)
   return out
 }

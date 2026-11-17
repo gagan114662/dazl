@@ -146,3 +146,20 @@ test('resume re-arms a key-paused watch and it runs on the next tick', async () 
   due(db, w.id)
   assert.deepEqual((await runDueWatches(D(db))), { ran: 1, paused: 0, skipped: 0 })
 })
+
+test('#1123: a watch\'s new_leads counts only the leads the Leads list shows, the same count as the play\'s "new" pill', async () => {
+  const db = setup()
+  giveKey(db, 'u')
+  const w = (await createWatch(D(db), 'u', 'q', ICP)).watch!
+  due(db, w.id)
+  await runDueWatches(D(db))
+  const job = (db.prepare("SELECT id FROM scan_jobs WHERE watch_id = ?").get(w.id) as { id: string }).id
+  claim(db, job)
+  addLead(db, job, { company: 'Alpha', company_domain: 'alpha.io' })
+  addLead(db, job, { company: 'Beta', company_domain: 'beta.io' })
+  addLead(db, job, { company: 'Gamma', company_domain: 'gamma.io' })
+  assert.equal(markWatchLeads(db, w.id, job), 3)
+  db.prepare("UPDATE leads SET fit = 1 WHERE company = 'Beta'").run() // a poor fit: hidden from Leads
+  db.prepare("UPDATE leads SET quarantined_at = 1 WHERE company = 'Gamma'").run() // quarantined: hidden from Leads
+  assert.equal((await listWatches(D(db), 'u'))[0].new_leads, 1)
+})
