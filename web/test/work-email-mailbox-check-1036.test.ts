@@ -1,6 +1,7 @@
 // #1036 follow-up (stacked on #899): Find work email's Apollo -> PDL -> free-tier verifier waterfall. An address a provider found
 // but did not verify gets the ZeroBounce free-tier check under the shared caps; only an explicit "valid" makes it checked.
 // Stubbed HTTP only (invented company and person); no network, no credits.
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'

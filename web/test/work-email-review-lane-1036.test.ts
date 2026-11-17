@@ -1,6 +1,7 @@
 // #1036 live check (Hermes 2026-11-13 18:43Z): on staging the real lead "Benesch" (a law firm, settled site, "Chief Marketing
 // Officer" read from its own site) sat under "Needs your review" because the scan found no event date, and there the Leads page
 // showed no Find work email until "Keep as research" was clicked. Shape below: that lead's stored rows (person renamed).
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
