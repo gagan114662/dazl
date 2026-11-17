@@ -12,12 +12,14 @@
 // inside a quote (">"), inline code or a code block are someone citing the rule, not a check.
 // The whole line: nothing may follow PASS ("PASS - actually FAIL" is not a PASS), and at most 3 leading spaces (4 or a tab
 // is a markdown code block).
-export const PASS_RE = /^ {0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?Live check \(prod ([0-9a-f]{8,40})\): PASS(?:\*\*|__)?[ \t]*$/m
+export const PASS_RE = /^ {0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?(?:Quest )?Live check \(prod ([0-9a-f]{8,40})\): PASS(?:\*\*|__)?[ \t]*$/m
 // The commit the reopen comment and docs/NEVER-AGAIN.md show as the example: copying the example is not a check.
 export const EXAMPLE_SHA = '1a2b3c4d'
 export const MIN_EVIDENCE = 80   // characters of the comment besides the PASS line: what was checked on dazl.ai and what it showed
 export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
-export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
+// 'triage:close': Gagan approved closing triaged duplicate / obsolete / already-fixed issues in a batch (2026-11-16) without a
+// per-issue live check; each carries a "[Quest triage]" evidence comment.
+export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned', 'triage:close'])
 export const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
 // The comment's own text: everything GitHub shows as a quote, as code, or not at all is removed first.
