@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 import LinkedinConnect, { type ConnectState } from './linkedin-connect'
@@ -17,7 +18,7 @@ export default function AdvancedPanel() {
   useEffect(() => { void load() }, [])
   async function post(body: object) {
     const r = await fetch('/api/settings/advanced', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const j = await r.json(); setMsg(r.ok ? '' : j.error || 'Something went wrong'); void load(); return r.ok
+    const j = await r.json(); setMsg(r.ok ? '' : panelError(j.error, 'Something went wrong')); void load(); return r.ok
   }
   if (!st) return null
   function PasteForm(c: Channel, p: P) {
