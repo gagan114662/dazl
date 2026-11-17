@@ -403,7 +403,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool && !poolUnknown && !trialRefused) void start(sentence, true) }}>
                       <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
                       <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
-                        onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
+                        onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
@@ -506,7 +506,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
         <div className="ask">
-          <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null) }} />
+          <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
         </div>
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
