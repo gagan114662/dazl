@@ -16,7 +16,7 @@ const NOMINATIM_GAP_MS = 1_100
 
 export type SourceOutcome = 'ok' | 'empty' | 'failed' | 'cancelled'
 export type SourceAnswer = { hits: FreeSiteHit[]; outcome: SourceOutcome }
-export type FreeSiteHit = { url: string; source: 'wikidata' | 'openstreetmap'; ref: string }
+export type FreeSiteHit = { url: string; source: 'wikidata' | 'openstreetmap' | 'websearch'; ref: string }
 export type FreeSiteDeps = { fetchImpl?: typeof fetch; signal?: AbortSignal; sleep?: (ms: number) => Promise<void>; now?: () => number }
 
 // 1289-F2 (round 3): accents fold to their base letter (NFKD, combining marks removed); any other letter or digit, in any script, is KEPT,
@@ -155,15 +155,61 @@ export async function osmAnswer(company: string, where: string[], deps: FreeSite
   return { hits: out, outcome: out.length > 0 ? 'ok' : malformed ? 'failed' : 'empty' }
 }
 
+// #1122/#1037: a FREE web search (DuckDuckGo's no-JavaScript HTML results page), only for a company the two public records could not place
+// (a small agency is rarely in Wikidata or on the map: "War Room", Toronto, 2026-11-16). No key, no charge. Its results are only CANDIDATES:
+// the caller keeps a host only when its own name carries the company's (companyHostsFromSearch), and the crawl still reads the homepage
+// and checks the place. One request per company; the same timeout, abort signal and identifying User-Agent as the other sources.
+export function parseDuckDuckGoHtml(html: string): string[] {
+  const out: string[] = []
+  for (const m of html.matchAll(/<a\b[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["']|<a\b[^>]*href=["']([^"']+)["'][^>]*class=["'][^"']*result__a/gi)) {
+    let href = (m[1] ?? m[2] ?? '').replace(/&amp;/g, '&')
+    if (href.startsWith('//')) href = `https:${href}`
+    try {
+      const u = new URL(href, 'https://html.duckduckgo.com/')
+      const target = u.hostname.endsWith('duckduckgo.com') ? u.searchParams.get('uddg') : u.href
+      if (target && /^https?:\/\//i.test(target) && !out.includes(target)) out.push(target)
+    } catch { /* not a link */ }
+    if (out.length >= 10) break
+  }
+  return out
+}
+export async function webSearchAnswer(company: string, where: string[], deps: FreeSiteDeps = {}): Promise<SourceAnswer> {
+  const name = company.trim().slice(0, 120)
+  if (core(name).length < 3) return { hits: [], outcome: 'empty' }
+  if (deps.signal?.aborted) return { hits: [], outcome: 'cancelled' }
+  const q = `${name} ${(where[0] ?? '').trim().slice(0, 80)}`.replace(/\s+/g, ' ').trim()
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  const onAbort = () => ctrl.abort()
+  deps.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const res = await (deps.fetchImpl ?? fetch)(url, { headers: { 'user-agent': FREE_SITE_UA, accept: 'text/html' }, signal: ctrl.signal })
+    if (!res.ok) return { hits: [], outcome: 'failed' }
+    const text = await res.text()
+    if (text.length > MAX_BODY) return { hits: [], outcome: 'failed' }
+    const hits = parseDuckDuckGoHtml(text).map(u => ({ url: u, source: 'websearch' as const, ref: url }))
+    return { hits, outcome: hits.length > 0 ? 'ok' : 'empty' }
+  } catch {
+    return { hits: [], outcome: deps.signal?.aborted ? 'cancelled' : 'failed' }
+  } finally {
+    clearTimeout(timer)
+    deps.signal?.removeEventListener('abort', onAbort)
+  }
+}
+
 // Both sources, Wikidata first; each answer keeps the page it came from (ref) so the caller can audit where a site came from.
 export async function freeCompanySites(company: string, where: string[], deps: FreeSiteDeps = {}): Promise<FreeSiteHit[]> {
   return (await freeCompanySitesDetailed(company, where, deps)).hits
 }
 // The same, with each source's outcome (1289-F3), so a failed or cancelled lookup is audited as such, not as "no match".
-export async function freeCompanySitesDetailed(company: string, where: string[], deps: FreeSiteDeps = {}): Promise<{ hits: FreeSiteHit[]; outcomes: { wikidata: SourceOutcome; openstreetmap: SourceOutcome } }> {
+// #1122/#1037: the free web search runs last, only when asked for (deps.webSearch, the runner's finder) and neither public record gave a site.
+export async function freeCompanySitesDetailed(company: string, where: string[], deps: FreeSiteDeps & { webSearch?: boolean } = {}): Promise<{ hits: FreeSiteHit[]; outcomes: { wikidata: SourceOutcome; openstreetmap: SourceOutcome; websearch?: SourceOutcome } }> {
   const wd = await wikidataAnswer(company, deps)
   const osm: SourceAnswer = deps.signal?.aborted ? { hits: [], outcome: 'cancelled' } : await osmAnswer(company, where, deps)
-  return { hits: [...wd.hits, ...osm.hits], outcomes: { wikidata: wd.outcome, openstreetmap: osm.outcome } }
+  if (deps.webSearch !== true || wd.hits.length + osm.hits.length > 0) return { hits: [...wd.hits, ...osm.hits], outcomes: { wikidata: wd.outcome, openstreetmap: osm.outcome } }
+  const ws: SourceAnswer = deps.signal?.aborted ? { hits: [], outcome: 'cancelled' } : await webSearchAnswer(company, where, deps)
+  return { hits: [...wd.hits, ...osm.hits, ...ws.hits], outcomes: { wikidata: wd.outcome, openstreetmap: osm.outcome, websearch: ws.outcome } }
 }
 
 // test-only: forget the Nominatim pacing clock
