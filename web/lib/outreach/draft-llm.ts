@@ -15,18 +15,19 @@ import { memoryForLead, readTenantOffer } from './play-memory.ts'
 import { launchPolicyView, type LaunchPolicy } from './launch-policy.ts'
 import { productTruth, type ProductTruth } from '../product-truth.ts'
 import { truthClaimIssues } from './capability-claims.ts'
+import { callCostUsd } from '../llm/spend-guard.ts'
 
 export interface LlmDeps { fetchImpl?: typeof fetch; master?: Buffer; providers?: Record<string, Provider> }
 
 export interface PolishUsage { model: string | null; input_tokens?: number; output_tokens?: number }
 export type PolishResult =
   | { rewritten: true; vendor: Vendor; usage?: PolishUsage }
-  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'spend_limit' | 'error'; usage?: PolishUsage }
+  | { rewritten: false; reason: 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'unusable' | 'blocked_claim' | 'spend_limit' | 'play_budget' | 'error'; usage?: PolishUsage }
 
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
-type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded' | 'spend_limit'
+type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded' | 'spend_limit' | 'play_budget'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
@@ -69,6 +70,34 @@ function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): {
   const provider = raw && ownerGuarded(db, tenantId, raw)
   return provider?.complete || provider?.completeDetailed ? { provider, key, vendor } : null
 }
+
+// One shared per-play budget (Refs #722, part of #363). A play's run_budget.max_usd already bounds its scan's model calls,
+// saved as scan_jobs.spend_reserved_usd. The draft polish and the follow-up text for that play's leads charge against
+// the SAME total: before the call, its worst case (prompt bytes plus a margin in, max_tokens out, at the model's listed
+// price: spend-guard.ts callCostUsd) is added to the play's row in one conditional UPDATE, and refused when it would pass
+// max_usd. The reservation is kept (not settled down to the vendor's reported cost), so the play total is an upper bound.
+// A play with a max_usd and a model without a listed price fails closed. A play still running is refused too: the scan
+// writes its own total on that row while it runs. A lead with no play, or a play without max_usd (or a CSV import),
+// is unchanged: only the owner's day/month pool applies, as before. Qualification is not covered by this slice.
+export function chargePlayBudget(db: Database.Database, tenantId: string, leadId: string | null | undefined, model: string | undefined, promptBytes: number, maxOut: number): boolean {
+  if (!leadId) return true
+  let row: { id: string; run_budget: string | null; csv_domain: string | null } | undefined
+  try {
+    row = db.prepare('SELECT j.id, j.run_budget, j.csv_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as typeof row
+  } catch { return false } // unreadable play: refuse the paid call rather than spend unbounded
+  if (!row || row.csv_domain || !row.run_budget) return true
+  let max: unknown
+  try { max = (JSON.parse(row.run_budget) as { max_usd?: unknown } | null)?.max_usd } catch { return false }
+  if (max === undefined || max === null) return true
+  if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0) return false
+  let usd: number
+  try { usd = callCostUsd(model, promptBytes, maxOut) } catch { return false } // unpriced model: fail closed
+  try {
+    const r = db.prepare("UPDATE scan_jobs SET spend_reserved_usd = COALESCE(spend_reserved_usd, 0) + ? WHERE id = ? AND user_id = ? AND status <> 'running' AND COALESCE(spend_reserved_usd, 0) + ? <= ?").run(usd, row.id, tenantId, usd, max)
+    return r.changes === 1
+  } catch { return false }
+}
+const promptBytesOf = (s: string): number => Buffer.byteLength(s, 'utf8')
 
 interface LeadCtx { company: string; name: string; signal: string; source_url: string; evidence_excerpt?: string | null }
 
@@ -137,6 +166,8 @@ export async function polishDraftWithWords(db: Database.Database, tenantId: stri
   if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse); return { rewritten: false, reason: r.refuse } }
   if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
   memory = { ...(memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }), positioning: r.offer }
+  const prompt = draftPrompt(businessName, msg, memoryPromptBlock(memory) + (truth ? truthPromptBlock(truth) : ''))
+  if (!chargePlayBudget(db, tenantId, msg.lead_id, p.provider.configuredModel?.(), promptBytesOf(prompt), 600)) { recordRefusal(db, tenantId, messageId, p.vendor, 'play_budget'); return { rewritten: false, reason: 'play_budget' } } // no paid call
   const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)
@@ -145,7 +176,6 @@ export async function polishDraftWithWords(db: Database.Database, tenantId: stri
   try {
     let text: string
     let usage: PolishUsage | undefined
-    const prompt = draftPrompt(businessName, msg, memoryPromptBlock(memory) + (truth ? truthPromptBlock(truth) : ''))
     let d: DetailedCompletion | undefined
     if (p.provider.completeDetailed) {
       d = await p.provider.completeDetailed(p.key, prompt, deps.fetchImpl, 600)
@@ -195,7 +225,9 @@ export async function llmFollowupText(db: Database.Database, tenantId: string, s
   const p = pickProvider(db, tenantId, deps)
   if (!p) return null
   try {
-    const text = (await p.provider.complete!(p.key, followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId))), deps.fetchImpl, 400)).trim().slice(0, 3000)
+    const prompt = followupPrompt(step, businessName, lead, bookingUrl, memoryPromptBlock(lead.lead_id ? memoryForLead(db, tenantId, lead.lead_id) : getMemory(db, tenantId)))
+    if (!chargePlayBudget(db, tenantId, lead.lead_id, p.provider.configuredModel?.(), promptBytesOf(prompt), 400)) return null // the play's budget: the template, no paid call
+    const text = (await p.provider.complete!(p.key, prompt, deps.fetchImpl, 400)).trim().slice(0, 3000)
     if (text.length < 20 || /^\s*Subject:/im.test(text)) return null
     if (bookingUrl && !text.includes(bookingUrl)) return null // a dropped booking link is a broken draft
     return text
