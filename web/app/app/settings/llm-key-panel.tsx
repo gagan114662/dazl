@@ -9,10 +9,11 @@ export default function LlmKeyPanel() {
   const [vendor, setVendor] = useState<Vendor>('anthropic')
   const [apiKey, setApiKey] = useState('')
   const [msg, setMsg] = useState('')
+  const [openaiAllowed, setOpenaiAllowed] = useState(false)
 
   async function load() {
     const r = await fetch('/api/settings/llm-key')
-    if (r.ok) setKeys((await r.json()).keys)
+    if (r.ok) { const j = await r.json(); setKeys(j.keys); setOpenaiAllowed(j.openai_allowed === true) }
   }
   useEffect(() => { void load() }, [])
 
@@ -34,17 +35,17 @@ export default function LlmKeyPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">AI provider key</h2>
-      <p className="text-[#555] text-sm mb-4">Scans use your own Anthropic or OpenAI key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
+      <p className="text-[#555] text-sm mb-4">Scans use your own {openaiAllowed ? 'Anthropic or OpenAI' : 'Anthropic'} key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
       {keys.map(k => (
         <div key={k.vendor} className="flex items-center justify-between text-sm mb-3">
-          <span>{k.vendor === 'anthropic' ? 'Anthropic' : 'OpenAI'} key ending in {k.last4}</span>
+          <span>{k.vendor === 'anthropic' ? 'Anthropic' : 'OpenAI'} key ending in {k.last4}{k.vendor === 'openai' && !openaiAllowed ? ' (not used: dazl runs on Claude)' : ''}</span>
           <button onClick={() => remove(k.vendor)} className="text-[#111] underline underline-offset-2">Remove</button>
         </div>
       ))}
       <form method="post" onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
         <select className={field} aria-label="Key provider" value={vendor} onChange={e => setVendor(e.target.value as Vendor)}>
           <option value="anthropic">Anthropic</option>
-          <option value="openai">OpenAI</option>
+          {openaiAllowed && <option value="openai">OpenAI</option>}
         </select>
         <input className={field} type="password" autoComplete="off" placeholder="Paste your API key" value={apiKey} onChange={e => setApiKey(e.target.value)} />
         <button className="btn-primary w-fit">Save key</button>

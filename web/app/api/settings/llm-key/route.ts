@@ -8,6 +8,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
+import { paidVendorOn } from '@/lib/paid-vendors'
 
 // Status only: vendor, last 4 characters and when it was validated. The key itself is never returned. rejection: a later
 // scan that stopped on this account's key with no acceptance of that same key since (lib/llm/key-evidence.ts); read-only.
@@ -15,7 +16,8 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
-  return NextResponse.json({ keys: await readKeyStatus(db, user.tenantId), rejection: await openKeyRejection(db, user.tenantId) })
+  // openai_allowed: whether a saved OpenAI key is used at all (Refs #1099, lib/paid-vendors.ts); the panel offers OpenAI only then
+  return NextResponse.json({ keys: await readKeyStatus(db, user.tenantId), rejection: await openKeyRejection(db, user.tenantId), openai_allowed: paidVendorOn('openai') })
 }
 
 export async function PUT(req: NextRequest) {
@@ -32,6 +34,9 @@ export async function PUT(req: NextRequest) {
   const vendor = body?.vendor
   const apiKey = typeof body?.api_key === 'string' ? body.api_key.trim() : ''
   if (!isVendor(vendor) || !looksLikeKey(vendor, apiKey)) return NextResponse.json({ error: 'That does not look like a valid key for this provider' }, { status: 400 })
+  // Refs #1099 (lib/paid-vendors.ts): dazl runs on Claude; an OpenAI key is accepted only when the operator named 'openai' in DAZL_PAID_VENDORS
+  // (it would never be used otherwise). Refused before the key is sent anywhere.
+  if (vendor === 'openai' && !paidVendorOn('openai')) return NextResponse.json({ error: 'dazl runs on Claude: add an Anthropic key (it starts with sk-ant-). OpenAI keys are not used.' }, { status: 400 })
   if (!process.env.DAZL_MASTER_KEY) {
     console.error('DAZL_MASTER_KEY is not configured')
     return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })

@@ -38,7 +38,7 @@ const FREE = { free: true, site: 'ledgerline.example', source: 'https://ledgerli
   { kind: 'title', text: 'Ledgerline - books that close themselves', source: 'https://ledgerline.example/' },
   { kind: 'description', text: 'Monthly bookkeeping for busy founders, reconciled automatically.', source: 'https://ledgerline.example/' },
 ] }
-const OWN = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
+const OWN = 'Add your own Anthropic key to read it, or describe your business yourself.'
 const CASES = [
   ['not-configured', 'not_configured', `The free trial isn't available here right now. ${OWN}`],
   ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`],
@@ -112,7 +112,7 @@ try {
     {
       const { ctx, page } = await open(width, height, { status: 200, body: FREE })
       await page.getByTestId('free-site-read').waitFor({ timeout: 15000 })
-      assert.match(await page.getByTestId('free-site-read').locator('..').innerText(), /The full automatic read runs on your own Anthropic or OpenAI key\./, 'flag off: the generic key line')
+      assert.match(await page.getByTestId('free-site-read').locator('..').innerText(), /The full automatic read runs on your own Anthropic key\./, 'flag off: the generic key line')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `flag-off-${tag}.png`), fullPage: true })
       await ctx.close()
     }
@@ -134,13 +134,13 @@ try {
       await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
       const plan = await page.getByTestId('ready-plan').innerText()
       assert.match(plan, /Add your AI key to start/, 'keyless, trial spent: the heading says so')
-      assert.match(plan, /Searches run on your own Anthropic or OpenAI key\./, 'keyless, trial spent: the key form is up front, before any commitment')
+      assert.match(plan, /Searches run on your own Anthropic key\./, 'keyless, trial spent: the key form is up front, before any commitment')
       assert.equal(await page.getByTestId('ready-cta').count(), 0, 'keyless, trial spent: no bare Find-my-first-leads button')
       assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggestion chips render')
       assert.ok(await page.getByTestId('first-play').first().isDisabled(), 'keyless, trial spent: suggestion chips cannot start a search either')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyless-${tag}.png`), fullPage: true })
       // The key form is reachable on a phone (below the fold) and saving a key unblocks every start path without a reload.
-      await page.getByText('Searches run on your own Anthropic or OpenAI key.').first().scrollIntoViewIfNeeded()
+      await page.getByText('Searches run on your own Anthropic key.').first().scrollIntoViewIfNeeded()
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyform-${tag}.png`) })
       await page.getByLabel('Your AI key').fill('sk-ant-fixture-key-123')
       await page.getByRole('button', { name: 'Save key' }).click()

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { siteKeyReason } from '../lib/scan/site-read-copy.ts'
 import { TRIAL_SITE_READS_PER_ACCOUNT } from '../lib/scan/trial-site-read.ts'
 
-const OWN = 'Add your own Anthropic or OpenAI key to read it, or describe your business yourself.'
+const OWN = 'Add your own Anthropic key to read it, or describe your business yourself.'
 test('site read reason copy: each refusal says the real reason, the account count only after admitted reads, and always offers the key and the manual profile', () => {
   assert.equal(TRIAL_SITE_READS_PER_ACCOUNT, 3)
   assert.equal(siteKeyReason('site_reads_used'), `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`)
@@ -33,7 +33,7 @@ test('site read reason copy: each refusal says the real reason, the account coun
   assert.equal(siteKeyReason('read_failed'), "dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.")
   assert.doesNotMatch(siteKeyReason('read_failed'), /nothing was used|used up\./)
   // No trial reason at all (an account with its own key, or an unknown reason): the key is the way, nothing free promised.
-  for (const r of [null, 'something_new']) { assert.equal(siteKeyReason(r), 'Reading your site runs on your own Anthropic or OpenAI key.'); assert.doesNotMatch(siteKeyReason(r), /free/) }
+  for (const r of [null, 'something_new']) { assert.equal(siteKeyReason(r), 'Reading your site runs on your own Anthropic key.'); assert.doesNotMatch(siteKeyReason(r), /free/) }
   // Nothing the first run shows reads as a free-start promise (the UI check refuses these phrases on the whole step).
   for (const r of ['site_reads_used', 'domain_used', 'not_configured', 'site_reads_busy']) assert.doesNotMatch(siteKeyReason(r), /free search|free scans? to start|3 free/i)
 })
