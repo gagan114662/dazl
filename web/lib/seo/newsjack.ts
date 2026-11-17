@@ -5,6 +5,7 @@ import { fetchKey, readKeyStatus } from '../llm/key-store.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import { fetchPublicHtml, defaultLookup, type Lookup } from '../net/public-fetch.ts'
 import type { Vendor } from '../llm/vendors.ts'
+import { usableVendor } from '../paid-vendors.ts'
 
 // Newsjacking drafts: paste a news URL, get a draft commentary on the tenant's OWN AI key.
 // Nothing is ever published by dazl. A draft must be approved in the UI, then the user copies it
@@ -64,7 +65,7 @@ export type Newsjack = { id: string; url: string; title: string | null; draft: s
 export async function createNewsjack(db: Db, tenantId: string, rawUrl: string, deps: { fetchImpl?: typeof fetch; lookup?: Lookup; master?: Buffer; now?: number } = {}): Promise<Newsjack | { error: 'no_key' | 'invalid' | 'fetch' | 'upstream' | 'spend_limit' }> {
   const url = rawUrl.trim()
   if (!/^https:\/\/[^\s]{4,480}$/.test(url)) return { error: 'invalid' }
-  const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
+  const vendor = (usableVendor(await readKeyStatus(db, tenantId))?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
   const key = await fetchKey(db, tenantId, vendor, deps.master)
   if (!key) return { error: 'no_key' }

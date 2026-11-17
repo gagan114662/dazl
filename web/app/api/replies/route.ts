@@ -7,6 +7,7 @@ import { hasConsent } from '@/lib/advanced/index'
 import { keyStatus } from '@/lib/llm/key-store'
 import { dismissThread, listQueries, listThreads, migrateThreadReplies, refreshReplies, setQueries } from '@/lib/replies/threads'
 import { denied } from '@/lib/workspace-access'
+import { usableVendor } from '@/lib/paid-vendors'
 
 export async function GET() {
   const user = await requireUser()
@@ -19,7 +20,7 @@ export async function GET() {
     threads: listThreads(db, user.tenantId),
     platforms: { reddit: platformAllowed('reddit', flags), x: platformAllowed('x', flags) },
     consent: hasConsent(db, user.tenantId, 'advanced'),
-    has_key: keyStatus(db, user.tenantId).length > 0,
+    has_key: !!usableVendor(keyStatus(db, user.tenantId)), // Refs #1099: a key dazl may call (an OpenAI key only when named)
   })
 }
 

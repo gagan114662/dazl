@@ -10,6 +10,7 @@ import { readSellerProfile } from '../auth-db.ts'
 import { getDb } from '../db/client.ts'
 import { providers, ProviderError } from '../llm/provider.ts'
 import type { Vendor } from '../llm/vendors.ts'
+import { usableVendor } from '../paid-vendors.ts'
 
 // Reviewed thread replies: surface fresh Reddit/X threads where a buyer asks a question the
 // tenant's product answers, draft a reply on the tenant's OWN AI key, and hand back text.
@@ -137,7 +138,7 @@ export async function gradeBuyerIntent(
   candidate: { title: string; quote: string },
   deps: { fetchImpl?: typeof fetch; master?: Buffer; sells?: string; website?: string } = {},
 ): Promise<BuyerIntent | 'no' | null> {
-  const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
+  const vendor = (usableVendor(keyStatus(db, tenantId))?.vendor ?? null) as Vendor | null
   if (!vendor) return null
   // readKey, not getKey: an unreadable stored key must leave rows ungraded, never 500 the refresh.
   const key = readKey(db, tenantId, vendor, deps.master).key
@@ -293,7 +294,7 @@ export type DraftResult = { draft: string; status: 'draft' } | { error: 'no_key'
 export async function draftReply(db: Database.Database, tenantId: string, threadId: string, profile: { sells: string; website: string }, deps: { fetchImpl?: typeof fetch; master?: Buffer; now?: number } = {}): Promise<DraftResult> {
   const t = getThread(db, tenantId, threadId)
   if (!t) return { error: 'not_found' }
-  const vendor = (keyStatus(db, tenantId)[0]?.vendor ?? null) as Vendor | null
+  const vendor = (usableVendor(keyStatus(db, tenantId))?.vendor ?? null) as Vendor | null
   if (!vendor) return { error: 'no_key' }
   const read = readKey(db, tenantId, vendor, deps.master)
   if (read.unreadable) return { error: 'key_unreadable' }

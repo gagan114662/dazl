@@ -29,6 +29,7 @@ import { TRIAL_SCANS_PER_ACCOUNT } from './scan/trial.ts'
 import { trialSiteReadsPerDay } from './scan/trial-site-read.ts'
 import { ACCOUNT_SEND_CAP } from './outreach/send-budget.ts'
 import { PLATFORM_SUPPORT } from './advanced/config.ts'
+import { paidVendorOn } from './paid-vendors.ts'
 
 export const PRODUCT_TRUTH_SCHEMA = 1
 
@@ -138,7 +139,9 @@ function capabilities(env: Env, support: PlatformSupport): Capability[] {
   for (const [id, name, aliases] of UNAVAILABLE_CRMS) out.push({ id: `crm:${id}`, kind: 'crm', name, state: 'unavailable', requires: [], aliases, basis: 'not in CRM_PROVIDERS' })
   for (const v of VENDORS) {
     const [name, aliases] = MODEL_NAMES[v] ?? [v, [v]]
-    out.push({ id: `model:${v}`, kind: 'model', name, state: 'available', requires: ['own_key'], aliases, basis: 'lib/llm/vendors.ts VENDORS' })
+    // Refs #1099: an OpenAI key is used only when the operator named it (lib/paid-vendors.ts), so it is not claimed as available otherwise
+    const on = v !== 'openai' || paidVendorOn('openai', env as Record<string, string | undefined>)
+    out.push({ id: `model:${v}`, kind: 'model', name, state: on ? 'available' : 'unavailable', requires: on ? ['own_key'] : [], aliases, basis: on ? 'lib/llm/vendors.ts VENDORS' : 'DAZL_PAID_VENDORS does not name it (lib/paid-vendors.ts)' })
   }
   out.push({ id: 'model:other', kind: 'model', name: 'Other model providers', state: 'unavailable', requires: [], aliases: ['gemini', 'mistral', 'grok', 'llama'], basis: 'not in VENDORS' })
   out.push({ id: 'enrichment:apollo', kind: 'enrichment', name: 'Apollo enrichment on your own key', state: 'limited', requires: ['own_key'], aliases: ['apollo(?:\\.io)?'], basis: 'lib/enrich/apollo.ts, tenant key only' })
