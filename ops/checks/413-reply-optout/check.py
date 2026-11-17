@@ -87,12 +87,13 @@ def run(db_path, tenant, syncerr_tenant, probe_id, control_id, held_id, since, o
     ac("AC-3 no further email to the opted-out recipient", probe_ok and later == 0 and refused >= 1,
        f"other sends={later}, refused second sends this run={refused}")
 
-    # AC-4: the EXACT held message stays unsent, and reply_sync for its tenant failed during this run.
+    # AC-4: the EXACT held message stays unsent, and reply_sync for its tenant recorded a genuine "failure"
+    # (not "hold", which classifySync uses for reading_not_enabled) during this run.
     held_ok = (held is not None and held["tenant"] == syncerr_tenant and held["status"] == "approved"
                and held["sent_at"] is None and (held["created_at"] or 0) >= since)
     prog = db.execute("SELECT last_outcome, last_attempt_at FROM scheduler_progress WHERE tenant_id=? AND kind='reply_sync'",
                       (syncerr_tenant,)).fetchone()
-    prog_ok = prog is not None and prog[0] != "success" and (prog[1] or 0) >= since
+    prog_ok = prog is not None and prog[0] == "failure" and (prog[1] or 0) >= since
     ac("AC-4 partial sync error marks freshness unknown and the held send stays unsent", held_ok and prog_ok,
        f"held {held_id}={held and {k: held[k] for k in ('tenant', 'status', 'sent_at')}}, "
        f"reply_sync={prog} since={since}")
@@ -122,7 +123,7 @@ CREATE TABLE scheduler_progress(tenant_id,kind,last_attempt_at,last_success_at,l
 
 
 def fixture(case):
-    """case: good | broken | f1_held_sent | f2_no_column | f2_no_control | f2_stale"""
+    """case: good | broken | f1_held_sent | f2_no_column | f2_no_control | f2_stale | f3_hold"""
     p = tempfile.mktemp(suffix=".db")
     d = sqlite3.connect(p)
     schema = SCHEMA
@@ -145,7 +146,8 @@ def fixture(case):
         d.execute("INSERT INTO inbound_messages VALUES('g','t','th1',NULL,'a+fake-optout@x.test','Please unsubscribe me.','opt_out',?,'m1')", (t0 + 20,))
         d.execute("INSERT INTO suppressions VALUES('t','a+fake-optout@x.test','unsubscribe',?)", (t0 + 21,))
         om("m2", "t", "a+fake-optout@x.test", "skipped", None, t0 + 30, None)
-        d.execute("INSERT INTO scheduler_progress VALUES('q','reply_sync',?,NULL,'failure')", (t0 + 40,))
+        d.execute("INSERT INTO scheduler_progress VALUES('q','reply_sync',?,NULL,?)",
+                  (t0 + 40, "hold" if case == "f3_hold" else "failure"))
         if case == "f1_held_sent":
             # F1: the bound held message m3 actually went out; an UNRELATED approved row sits on the same tenant.
             om("m3", "q", "b+fake-syncerror@x.test", "sent", t0 + 45, t0, None)
@@ -158,7 +160,8 @@ def fixture(case):
 
 def self_test():
     cases = [("good", True), ("broken", False), ("f1_held_sent", False),
-             ("f2_no_column", False), ("f2_no_control", False), ("f2_stale", False)]
+             ("f2_no_column", False), ("f2_no_control", False), ("f2_stale", False),
+             ("f3_hold", False)]
     ok = True
     for case, want in cases:
         print(f"---- {case} (must {'PASS' if want else 'FAIL'}) ----")
