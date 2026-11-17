@@ -18,7 +18,7 @@ export { salesHiringRequired, salesGateOr }
 import { norm } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
-import { needsEventBeyondHiring, showsEventSignal, showsEventBeyondHiring, mentionsFunding, nounFirstOpenSpan, PREMISES_ADJ, STREET, closedBanner, CLAUSE_CLOSED, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
+import { needsEventBeyondHiring, showsEventSignal, mentionsFunding, nounFirstOpenSpan, PREMISES_ADJ, STREET, closedBanner, CLAUSE_CLOSED, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
 import { parseWindowDays } from './window.ts'
 import { WHY_MAX } from './score.ts'
 // #1095 (review at 54953a0a): the vacancy is what the board's own record TITLES it ("Account Executive, MSP"), never what a sentence of the
