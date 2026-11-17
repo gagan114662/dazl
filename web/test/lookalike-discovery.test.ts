@@ -47,7 +47,7 @@ test('features that do not beat chance on the held-out set claim nothing: no mod
 
 test('the profile is a normal reviewable scan profile; its block survives storage whole and never reaches a model prompt', () => {
   const p = discover(ALL).proposal!
-  assert.match(p.query, /dental clinics/); assert.ok(!/manufacturing|legal/i.test(p.query))
+  assert.match(p.query, /Dental clinics/); assert.ok(!/manufacturing|legal/i.test(p.query))
   assert.deepEqual(p.icp.signals, [], 'a lookalike profile invents no intent signal')
   const icp = normalizeIcp(p.icp)!
   assert.deepEqual(icp.lookalike, p.icp.lookalike)
@@ -215,4 +215,26 @@ test('#606: through dropKnown, the run reasons name the supplied kind for each s
   const r = dropKnown(probe(), rows)
   assert.deepEqual(r.kept.map(x => x.company), ['Harbor Orthodontics'])
   assert.deepEqual(r.dropped.map(x => x.reason), ['lookalike_supplied_customer', 'lookalike_supplied_competitor', 'lookalike_supplied_customer'])
+})
+
+// #756 live-check findings (Hermes-PC, 2026-11-12): sizes came back slug-mangled ("51 200") in reasons, the summary and
+// icp.sizes, and a size held by only a minority of customers became the profile's only hard size.
+const dent = (i: number, size: string): Example => ({ kind: 'customer', name: `Maple ${i} Dental`, domain: `maple${i}.example`, industry: 'Dental clinic', size, location: 'Toronto, ON', description: 'orthodontics implants dental clinic' })
+const other = (i: number, size: string): Example => ({ kind: 'negative', name: `Other ${i} Clinic`, domain: `otherclinic${i}.example`, industry: ['Physiotherapy', 'Chiropractic', 'Optometry', 'Veterinary'][i % 4], size, location: 'Toronto, ON', description: 'clinic appointments' })
+test('#756: features keep the supplied wording ("51-200"), match on the key, and a minority size never becomes a hard profile size', () => {
+  const minority = [...Array.from({ length: 12 }, (_, i) => dent(i, '11-50')), ...Array.from({ length: 4 }, (_, i) => dent(20 + i, '51-200')), ...Array.from({ length: 12 }, (_, i) => other(i, '11-50'))]
+  const r = discover(minority)
+  assert.equal(r.state, 'ready', r.why)
+  const size = r.features.find(f => f.dimension === 'size')
+  assert.ok(size, 'the 51-200 size is still a discriminating reason')
+  assert.equal(size!.value, '51-200'); assert.match(size!.reason, /^size "51-200": 4 of 16 customers/)
+  assert.ok(r.features.every(f => !/\d \d/.test(f.value + f.reason)), JSON.stringify(r.features))
+  assert.deepEqual(r.proposal!.icp.sizes, [], 'a size only 4 of 16 customers have is a reason, not a hard filter')
+  assert.ok(!/51 200/.test(r.proposal!.icp.summary + r.proposal!.query), r.proposal!.icp.summary)
+  assert.equal(r.proposal!.icp.lookalike.f.find(f => f.d === 's')!.t, '51 200', 'the stored block keeps the matching key')
+  const majority = [...Array.from({ length: 12 }, (_, i) => dent(i, '51-200')), ...Array.from({ length: 4 }, (_, i) => dent(20 + i, '11-50')), ...Array.from({ length: 12 }, (_, i) => other(i, '11-50'))]
+  const m = discover(majority)
+  assert.equal(m.state, 'ready', m.why)
+  assert.deepEqual(m.proposal!.icp.sizes, ['51-200']); assert.match(m.proposal!.icp.summary, /51-200 employees/)
+  assert.deepEqual(m.proposal!.icp.industries, ['Dental clinic'])
 })
