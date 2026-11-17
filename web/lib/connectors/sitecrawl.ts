@@ -956,6 +956,12 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
   })
 }
 
+// #1122/#1037 (#1334-F1): the held-lead reasons a whole-job crawl admits: the holds the people search reads, plus outside_window_undated,
+// minus the holds where the event itself is over. Shared by the crawl's lead pick and its unreached-lead note.
+export function crawlEligibleHolds(): string[] {
+  return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
+}
+
 export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
@@ -974,7 +980,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // #1122/#1037: every held lead whose company is still the named one gets a company website (and so a buyer search): the holds the
     // people search reads (searchable-holds.ts), plus outside_window_undated, except the classes where the hold is the event itself being
     // over (a closed job, a stale or out-of-window date, no event at all). Identity/contact discovery only: the hold is never cleared.
-    const CRAWL_HOLDS = [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r)).map(r => `'${r.replace(/'/g, "''")}'`).join(',')
+    // #1334-F1: ONE list decides both which held leads the crawl picks and, for leads past the top-lead cap, whether the note says
+    // "did not reach this company" (eligible) or "the check does not run for this hold" (excluded), so the two can never drift apart.
+    const CRAWL_HOLD_LIST = crawlEligibleHolds()
+    const CRAWL_HOLDS = CRAWL_HOLD_LIST.map(r => `'${r.replace(/'/g, "''")}'`).join(',')
     const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN (${CRAWL_HOLDS})) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
     const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
@@ -1267,7 +1276,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       try {
         const picked = new Set(leads.map(l => l.id))
         const rest = db.prepare("SELECT id, source_url, review_reason, confidence FROM leads WHERE scan_job_id = ? AND company <> '' AND company_domain IS NULL AND quarantined_at IS NULL LIMIT 200").all(jobId) as { id: string; source_url: string; review_reason: string | null; confidence: number | null }[]
-        const eligible = (x: { review_reason: string | null; confidence: number | null }) => (x.review_reason === null && x.confidence !== null) || ['outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript'].includes(x.review_reason ?? '')
+        const eligible = (x: { review_reason: string | null; confidence: number | null }) => (x.review_reason === null && x.confidence !== null) || (x.review_reason !== null && CRAWL_HOLD_LIST.includes(x.review_reason))
         for (const x of rest) {
           if (picked.has(x.id) || db.prepare('SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').get(x.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)) continue
           // a lead the crawl would check but did not reach (it reads the scan's top leads only) is told that, not that it is "held"
