@@ -895,6 +895,17 @@ test('#1121 PASS: the lead\'s own dated job-ad quote naming the requested SDR va
   assert.match(lead(db).why, /^Hiring for SDR: named in its own job ad, dated /)
   db.close()
 })
+// review at f4c751e3 (Hermes F1): a modified suffix ("Senior Manager") is a whole title too; the gate holds it and writes no pass marker
+test('#1121 F1 HELD: "(SDR) Senior Manager" job-ad quote is not a requested_role_v1 pass', async () => {
+  for (const excerpt of ['Sales Development Representative (SDR) Senior Manager at Mercury', 'Sales Development Representative (SDR) Sales Manager at Mercury']) {
+    const { db, job } = seedJobAd({ excerpt })
+    const r = await applySalesHiringGate(db, job, serve({}), { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], excerpt)
+    assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence', excerpt)
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM lead_enrichments WHERE kind = 'gate_passed' AND value = 'requested_role_v1'").get() as { n: number }).n, 0, excerpt)
+    db.close()
+  }
+})
 // review at 541c6f4e (Ziggy F1): a suffix behind the abbreviation is another title, and the job-ad quote never overrides a rejected board title
 test('#1121 F1 HELD: "(SDR) Manager / Internship / Talent Community" job-ad quotes are not requested_role_v1 passes', async () => {
   for (const excerpt of ['Sales Development Representative (SDR) Manager at Mercury', 'Sales Development Representative (SDR) Internship at Mercury', 'Sales Development Representative (SDR) Talent Community at Mercury']) {
