@@ -320,7 +320,7 @@ export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumpti
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; /** #1158: scan_jobs.spend_cap_refusals and the run's own limit */ capRefusals?: number | null; capUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
 export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
   // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
@@ -358,6 +358,9 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
   if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
+  // #1158: a step this run's own limit refused is said out loud - the run may otherwise read as an ordinary finished scan.
+  const refused = a.capRefusals ?? 0
+  if (refused > 0) summary += ` ${refused} paid step${refused === 1 ? ' was' : 's were'} refused by this run's spending limit${a.capUsd != null ? ` of $${Number(a.capUsd.toFixed(4))}` : ''}; raising the limit would let ${refused === 1 ? 'it' : 'them'} run.`
   return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
 }
 

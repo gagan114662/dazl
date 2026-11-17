@@ -221,6 +221,7 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [capRefusals, setCapRefusals] = useState(0)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
   const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
@@ -559,7 +560,7 @@ export default function LeadsClient() {
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setCapRefusals(0); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -586,7 +587,7 @@ export default function LeadsClient() {
       statusFails.current = 0
       const s = await r.json()
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
-      setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
+      setQuality(s.quality ?? null); setCapRefusals(Number(s.cap_refusals) || 0); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (restoredSearch.current) restoredSearch.current = false; else setQuery(s.query) } // only the first job load after a restore keeps the restored search
@@ -1170,7 +1171,7 @@ export default function LeadsClient() {
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0) ?? ''}</p>
+            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0, capRefusals) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {

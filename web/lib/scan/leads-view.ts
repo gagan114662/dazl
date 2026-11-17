@@ -5,7 +5,7 @@
 // the scan found nothing.
 // repeatCount (#1238): ready leads that are collapsed behind "Show ... leads seen in your earlier scans". They passed verification, so
 // "No leads passed verification" would contradict the scan's own "N source-checked" count on the same screen.
-export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0): string | null {
+export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0, capRefusals = 0): string | null {
   if (visibleCount > 0) return null
   if (status === 'pending') return 'This scan is queued and has not started yet. Leads appear here after it runs.'
   if (status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
@@ -13,6 +13,8 @@ export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCo
   if (status === 'failed') return 'This scan ended without leads. See the message above.'
   if (status !== 'done') return 'No leads yet. Run a scan.'
   if (repeatCount > 0) return `${repeatCount} lead${repeatCount === 1 ? '' : 's'} passed verification but ${repeatCount === 1 ? 'was' : 'were'} also found in your earlier scans - open "Show ${repeatCount} lead${repeatCount === 1 ? '' : 's'} seen in your earlier scans" below.`
+  // #1158: a paid step the run's own spending limit refused (often fit grading) leaves leads ungraded at fit 0 - they are not known to be low fit.
+  if (hiddenCount > 0 && capRefusals > 0) return `This run's spending limit refused a paid step, so the ${hiddenCount} hidden lead${hiddenCount === 1 ? ' may not have been graded' : 's may not have been graded'} - not known to be low fit. Raising the limit would let that step run.`
   if (hiddenCount > 0) return `The scan found nothing above your fit bar - ${hiddenCount} lower-fit lead${hiddenCount === 1 ? ' is' : 's are'} hidden below.`
   // An all-review scan shows its cards below - 'no leads' would contradict them.
   if ((needsReviewCount ?? 0) > 0) return `No leads passed verification. ${needsReviewCount} need${needsReviewCount === 1 ? 's' : ''} your review below.`
