@@ -12,6 +12,7 @@ import { huntWithRegistry, tinyfishSearch } from './hunt.ts'
 import { safeGet } from '../sources/http.ts'
 import { researchReady, researchEngineOn, runResearch, type ResearchRun, type ResearchStages } from './engine.ts'
 import type { ResearchCase, VerifiedLead } from './types.ts'
+import { researchContactsAfterSave } from './contacts.ts'
 
 export const SONNET = 'claude-sonnet-4-5'
 export const HAIKU = 'claude-haiku-4-5'
@@ -97,7 +98,8 @@ export function toScanRow(l: VerifiedLead, now: Date = new Date()): ScanLeadRow 
 
 // after the runner saved the rows: D writes its proof rows (the lead card's proof, the ready rule) and G its people, per saved lead
 export type AfterSave = (db: import('better-sqlite3').Database, jobId: string, run: ResearchRun) => void | Promise<void>
-const afterSaves: AfterSave[] = []
+// Refs #1099: the addresses company research found on the company's own pages, and one unverified guess per named person (contacts.ts)
+const afterSaves: AfterSave[] = [researchContactsAfterSave]
 export const extendResearchAfterSave = (x: AfterSave) => { afterSaves.push(x) }
 export interface ResearchScanResult { run: ResearchRun; leads: ScanLeadRow[]; review: (ScanLeadRow & { review_reason: string })[]; candidates: number; afterSave?: (db: import('better-sqlite3').Database, jobId: string) => Promise<void> }
 export async function runResearchScan(ctx: ResearchScanContext, env: Record<string, string | undefined> = process.env): Promise<ResearchScanResult | null> {
