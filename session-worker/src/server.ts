@@ -4,10 +4,17 @@
 import http from 'node:http'
 import { CAPABILITY, FETCHERS, isPlatform } from './fetchers.ts'
 import { FetchFailure } from './util.ts'
-import { fetchEngagers, fetchPosts, isEngagerKind } from './linkedin-engagers.ts'
+import { fetchEngagers, fetchMe, fetchPosts, isEngagerKind } from './linkedin-engagers.ts'
 
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN ?? ''
 const PORT = Number(process.env.PORT || 3210)
+// The worker carries tenants' session cookies: it listens on the loopback interface unless the operator names another address
+// (WORKER_HOST; not HOST, which shells and CI often export for other things). It used to listen on every interface, so a box without a firewall rule exposed it (#1037, F-go step 1).
+const HOST = (process.env.WORKER_HOST ?? '').trim() || '127.0.0.1'
+// Without a token every request would be refused with 401 while the process looked healthy: refuse to start instead, so the
+// service manager reports the misconfiguration.
+if (!TOKEN.trim()) { console.error('dazl session worker: ADVANCED_WORKER_TOKEN is not set; not starting'); process.exit(2) }
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) { console.error(`dazl session worker: PORT ${process.env.PORT} is not a port; not starting`); process.exit(2) }
 const MAX_BODY = 20_000
 
 const server = http.createServer((req, res) => {
@@ -18,7 +25,7 @@ const server = http.createServer((req, res) => {
     res.end(b)
   }
   if (req.method === 'GET' && req.url === '/health') return reply(200, { ok: true })
-  if (req.method !== 'POST' || (req.url !== '/fetch' && req.url !== '/linkedin/engagers' && req.url !== '/linkedin/posts')) return reply(404, { error: 'not found' })
+  if (req.method !== 'POST' || (req.url !== '/fetch' && req.url !== '/linkedin/engagers' && req.url !== '/linkedin/posts' && req.url !== '/linkedin/me')) return reply(404, { error: 'not found' })
   const route = req.url
   if (!TOKEN || req.headers.authorization !== `Bearer ${TOKEN}`) return reply(401, { error: 'unauthorized' })
   let body = ''
@@ -48,6 +55,15 @@ const server = http.createServer((req, res) => {
       } catch (err) { return reply(502, { error: 'fetch_failed', outcome: err instanceof FetchFailure ? err.kind : 'upstream_error' }) }
     }
     // #192: the session post search, with the same login-wall / checkpoint / 999 / 429 classification as the engager reads.
+    // Connect LinkedIn: one GET that names the session's account ("Connected as <name>"). One request = one upstream GET.
+    if (route === '/linkedin/me') {
+      const m = raw as { session?: unknown }
+      if (typeof m.session !== 'string' || !m.session) return reply(400, { error: 'session is required' })
+      try {
+        const me = await Promise.race([fetchMe(m.session.slice(0, 8000)), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 20_000))])
+        return reply(200, { ...me, upstream_requests: 1 })
+      } catch (err) { return reply(502, { error: 'fetch_failed', outcome: err instanceof FetchFailure ? err.kind : 'upstream_error' }) }
+    }
     if (route === '/linkedin/posts') {
       const p = raw as { query?: unknown; session?: unknown }
       if (typeof p.query !== 'string' || typeof p.session !== 'string' || !p.query.trim() || !p.session) return reply(400, { error: 'query and session are required' })
@@ -89,4 +105,4 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-server.listen(PORT, () => console.log(`dazl session worker on :${PORT}`))
+server.listen(PORT, HOST, () => console.log(`dazl session worker on ${HOST}:${PORT}`))

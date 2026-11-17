@@ -10,6 +10,7 @@
 //   - the tombstone ledger copy at that destination (#359; offhost-copy.sh step 4), when DAZL_TOMBSTONE_LEDGER is set
 //     (with OFFHOST_REQUIRED=1, unset is a problem): no dazl-ledger-* copy, a copy that is missing or does not match its
 //     manifest, or a newest ledger copy older than the newest backup copy (a restore could undo deletions made since);
+//   - pull mode (OFFHOST_PULL_MARKER): the operator machine's last pull is older than OFFHOST_PULL_MAX_AGE_S (10800);
 //   - the drill report: --drill-report FILE, else DRILL_REPORT from the environment, else <BACKUP_DIR>/drill-report.json
 //     (an empty value is an unexpanded variable: the default, as with --max-age-s). That default is the file every
 //     run-backup.sh run writes with restore-drill --report (pass or fail), so the shipped producer and this monitor
@@ -49,7 +50,7 @@
 import { alertDestinationProblem, alertRequest } from '../../lib/ops/alert-destination.ts'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -99,6 +100,24 @@ try {
     const n = local[0], age = ageS(n.side.createdAt)
     facts.newest_backup = n.f; facts.newest_backup_age_s = age; facts.backups = local.length
     if (age === null || age > maxAge) problems.push(`newest backup is ${age}s old (limit ${maxAge}s)`)
+    // Space (#1080): every backup is a full copy on the database's own disk, and a full disk stops the database. Alert while
+    // there is still room: less than BACKUP_MIN_FREE_MB (default 1024) free on the backup directory's filesystem, or - when
+    // retention is off (BACKUP_RETENTION is not 1), so every hourly copy stays - fewer than BACKUP_MIN_DAYS_LEFT (14) days
+    // until that filesystem is full at 24 copies a day of the newest backup's size. Off is never silent.
+    try {
+      const fsStat = statfsSync(dir), freeMb = Math.floor(Number(fsStat.bavail) * Number(fsStat.bsize) / 1048576)
+      const mb = (name: string, d: number) => { const raw = process.env[name]?.trim(); return raw && /^\d+$/.test(raw) ? Number(raw) : d }
+      const minFree = mb('BACKUP_MIN_FREE_MB', 1024), minDays = mb('BACKUP_MIN_DAYS_LEFT', 14)
+      facts.backup_dir_free_mb = freeMb
+      if (freeMb < minFree) problems.push(`backup directory filesystem has ${freeMb} MB free (limit ${minFree} MB)`)
+      const retention = process.env.BACKUP_RETENTION === '1'; facts.retention = retention ? 'on' : 'off'
+      if (!retention) {
+        const perDayMb = statSync(path.join(dir, n.f)).size * 24 / 1048576
+        const days = perDayMb > 0 ? Math.floor(freeMb / perDayMb) : null
+        facts.days_until_full = days
+        if (days !== null && days < minDays) problems.push(`retention is off (BACKUP_RETENTION is not 1) and the backup directory filesystem is full in about ${days} days (limit ${minDays} days)`)
+      }
+    } catch (e) { problems.push(`backup directory free space could not be read (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
     try { if (await sha256(path.join(dir, n.f)) !== n.side.sha256) problems.push(`newest backup ${n.f} no longer matches its sidecar sha256`) }
     catch (e) { problems.push(`newest backup ${n.f} unreadable (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
   }
@@ -265,6 +284,21 @@ if (!offSpec) {
   } catch (e) { problems.push(`off-host destination ${dest.label} unreadable for the config bundle: ${reason(e)}`) }
 }
 
+// Pull mode (#1080, ops/backup/INSTALL.md 0b): the copies leave the box only when the operator machine pulls them, and a
+// machine that is off says nothing. After each good pull it touches OFFHOST_PULL_MARKER on the box (through a key whose only
+// command is that touch); older than OFFHOST_PULL_MAX_AGE_S (default 10800: three missed hourly pulls) or missing is a problem.
+if (process.env.OFFHOST_PULL_MARKER?.trim()) {
+  const marker = process.env.OFFHOST_PULL_MARKER.trim()
+  const rawMax = process.env.OFFHOST_PULL_MAX_AGE_S?.trim()
+  const max = rawMax && /^\d+$/.test(rawMax) ? Number(rawMax) : 10_800
+  if (rawMax && !/^\d+$/.test(rawMax)) problems.push(`OFFHOST_PULL_MAX_AGE_S must be a whole number of seconds (got ${JSON.stringify(rawMax.slice(0, 20))}); 10800 used`)
+  try {
+    const age = Math.max(0, Math.round((Date.now() - statSync(marker).mtimeMs) / 1000))
+    facts.offhost_pull_age_s = age
+    if (age > max) problems.push(`the operator machine has not pulled the off-host copies for ${age}s (limit ${max}s)`)
+  } catch (e) { problems.push(`no off-host pull recorded yet (${(e as NodeJS.ErrnoException).code ?? 'error'})`) }
+}
+
 const drillFlag = arg('--drill-report')
 const drill = (drillFlag && drillFlag.trim() ? drillFlag : undefined) ?? (process.env.DRILL_REPORT?.trim() || undefined) ?? path.join(dir, 'drill-report.json')
 {
@@ -300,7 +334,7 @@ const drill = (drillFlag && drillFlag.trim() ? drillFlag : undefined) ?? (proces
 }
 
 const state = arg('--state-dir') ?? path.join(dir, '.backup-check')
-const kind = (p: string) => p.replace(/\d+s old/, 'Ns old') // numbers change every run; the kind of problem is what is throttled
+const kind = (p: string) => p.replace(/\d+s old/, 'Ns old').replace(/\d+ MB free/, 'N MB free').replace(/about \d+ days/, 'about N days') // numbers change every run; the kind of problem is what is throttled
 problems.sort((a, b) => kind(a).localeCompare(kind(b)) || a.localeCompare(b)) // one set, one stamp, whatever the discovery order or the ages
 const body = { level: problems.length ? 'error' : 'info', type: 'backup_check', ok: problems.length === 0, host: os.hostname(), at: new Date(now).toISOString(), problems, ...facts }
 console.log(JSON.stringify(body))

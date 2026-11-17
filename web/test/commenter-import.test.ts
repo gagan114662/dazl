@@ -133,3 +133,66 @@ test('enrichCommenters: a stale reserved org row (crashed pass) skips the paid o
   assert.equal(calls.org, 0, 'the possibly-paid org call is never repeated')
   assert.equal(calls.people, 1, 'the 0-credit people search still runs under its own gate')
 })
+
+test('#1167 enrichCommenters at the account day spend cap: nothing is sent, the credits go back, no error claim is left, and a later run (under the cap) does the lookups', async () => {
+  const { accountLimits, migrateSpendPools, reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const { creditUse } = await import('../lib/enrich/credit-pool.ts')
+  const { asDb } = await import('../lib/db/client.ts')
+  const prev = process.env.DAZL_OWNER_DAY_MAX_USD
+  process.env.DAZL_OWNER_DAY_MAX_USD = '0.5'
+  try {
+    const { db, master } = seedBatch()
+    migrateSpendPools(db)
+    const at = Math.floor(Date.now() / 1000)
+    await asDb(db).tx(function* (t) { assert.equal(yield* reservePoolWindows(t, 'A', accountLimits('A'), 0.5, at), true) })
+    const calls = { org: 0, people: 0 }
+    await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+    assert.equal(calls.org + calls.people, 0, 'nothing sent')
+    for (const u of await creditUse(db, 'A')) assert.equal(u.reserved, 0, `${u.provider} ${u.window}: no credit held for an unsent lookup`)
+    const rows = db.prepare("SELECT lookup, status FROM connector_audit WHERE tenant_id = 'A'").all() as { lookup: string; status: string }[]
+    assert.ok(rows.every(r => r.status === 'spend_cap'), JSON.stringify(rows))
+    assert.equal((db.prepare("SELECT count(*) AS n FROM connector_claims WHERE tenant_id = 'A'").get() as { n: number }).n, 0, 'no claim left to block a retry')
+    // the window resets (a new day): the same batch runs its lookups
+    db.prepare("DELETE FROM tenant_spend_pools WHERE tenant_id = 'A' AND (period LIKE 'd:%' OR period LIKE 'm:%')").run()
+    await enrichCommenters(db, 'A', 'b1', { fetchImpl: apolloStub(calls), master })
+    assert.equal(calls.org, 1); assert.equal(calls.people, 1)
+  } finally { if (prev === undefined) delete process.env.DAZL_OWNER_DAY_MAX_USD; else process.env.DAZL_OWNER_DAY_MAX_USD = prev }
+})
+
+test('#1167 enrichCommenters, PDL leg: at the account cap the 5-credit PDL hold goes back and the enrich:pdl claim is released; a price fault is named as itself, not as the cap', async () => {
+  const { accountLimits, migrateSpendPools, reservePoolWindows } = await import('../lib/llm/spend-pool.ts')
+  const { creditUse } = await import('../lib/enrich/credit-pool.ts')
+  const { asDb } = await import('../lib/db/client.ts')
+  const keep = { day: process.env.DAZL_OWNER_DAY_MAX_USD, price: process.env.DAZL_SCAN_PRICE_PDL_PROFILE_USD }
+  process.env.DAZL_OWNER_DAY_MAX_USD = '0.5'
+  try {
+    const setupPdl = () => {
+      const db = setup(); migrateSpendPools(db)
+      const master = randomBytes(32)
+      const jobId = createJob(db, 'A', { business_name: 'B', industry: 'I', location: 'L' })
+      db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
+      db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url) VALUES ('l1', ?, '', 'Acme', 'acme.com', 'opened', 'https://x.example/1')").run(jobId)
+      db.prepare("INSERT INTO commenter_batches (id, user_id, context, total, note, created_at, job_id) VALUES ('b1', 'A', 't', 1, NULL, 1, ?)").run(jobId)
+      saveCredential(db, 'A', 'enrich:pdl', 'test-pdl-key-5678', master)
+      return { db, master }
+    }
+    let sent = 0
+    const f = (async () => { sent++; return new Response(JSON.stringify({ status: 200, data: [] }), { status: 200 }) }) as typeof fetch
+    const capped = setupPdl()
+    await asDb(capped.db).tx(function* (t) { assert.equal(yield* reservePoolWindows(t, 'A', accountLimits('A'), 0.5, Math.floor(Date.now() / 1000)), true) })
+    await enrichCommenters(capped.db, 'A', 'b1', { fetchImpl: f, master: capped.master })
+    assert.equal(sent, 0)
+    for (const u of await creditUse(capped.db, 'A')) assert.equal(u.reserved, 0, `${u.provider} ${u.window}`)
+    assert.deepEqual(capped.db.prepare("SELECT connector, status FROM connector_audit WHERE tenant_id = 'A'").all(), [{ connector: 'enrich:pdl', status: 'spend_cap' }])
+    assert.equal((capped.db.prepare("SELECT count(*) AS n FROM connector_claims WHERE tenant_id = 'A'").get() as { n: number }).n, 0)
+    // a malformed price is a fault, recorded as such (never as the account cap); nothing sent, credits back, claim released
+    process.env.DAZL_SCAN_PRICE_PDL_PROFILE_USD = 'abc'
+    const fault = setupPdl()
+    await enrichCommenters(fault.db, 'A', 'b1', { fetchImpl: f, master: fault.master })
+    assert.equal(sent, 0)
+    assert.deepEqual(fault.db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'A'").all(), [{ status: 'spend_refused:price_invalid' }])
+    for (const u of await creditUse(fault.db, 'A')) assert.equal(u.reserved, 0)
+  } finally {
+    for (const [k, v] of [['DAZL_OWNER_DAY_MAX_USD', keep.day], ['DAZL_SCAN_PRICE_PDL_PROFILE_USD', keep.price]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v
+  }
+})
