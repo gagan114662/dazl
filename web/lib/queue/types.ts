@@ -123,7 +123,10 @@ export interface ClaimOptions {
 // The lanes background work runs in (#355). Cheap, time-sensitive work keeps its own slots so expensive research can
 // never starve it. Kinds not listed here run in no lane (global caps).
 export const LANES = {
-  replies: { kinds: ['reply-check', 'suppression', 'followup', 'sequence'], maxInFlight: 4 },
+  // testOnly (#713): nothing in lib/ or app/ enqueues these kinds yet, so no live work uses this lane. The guarantee
+  // customers get is the tick design: reply sync and opt-outs run per tenant inside app/api/internal/tick, while scans
+  // run in the separate scan runner. Remove the marker in the same change that adds a producer (test/lanes-713.test.ts).
+  replies: { kinds: ['reply-check', 'suppression', 'followup', 'sequence'], maxInFlight: 4, testOnly: true },
   research: { kinds: ['scan', 'enrich', 'monitor', 'watch', 'index-check'], maxInFlight: 3 },
 } as const
 
