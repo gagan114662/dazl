@@ -215,6 +215,12 @@ jobs:
           mkdir -p preview/home-results
           SHOTS=preview/home-results node test/ui/home-results-1040.ui.mjs | tee /tmp/hr.out
           ! grep -q '^NOT RUN' /tmp/hr.out
+      - name: Leads history cards match their Campaigns cards (#1136)
+        run: |
+          set -o pipefail
+          mkdir -p preview/leads-history
+          SHOTS=preview/leads-history node test/ui/leads-history-1136.ui.mjs | tee /tmp/lh.out
+          ! grep -q '^NOT RUN' /tmp/lh.out
       - uses: actions/upload-artifact@v4
         if: success() || failure()
         with:
