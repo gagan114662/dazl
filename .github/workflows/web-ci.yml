@@ -1,6 +1,7 @@
 name: web-ci
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
@@ -16,7 +17,8 @@ jobs:
   test-sqlite:
     runs-on: ubuntu-latest
     # Gate 2: PRs get a hard 5-minute budget (affected tests only); main runs the full suite (gate 3).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 45 }}
+    # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
     defaults:
       run:
         working-directory: web
@@ -46,8 +48,10 @@ jobs:
         id: sel
         if: github.event_name == 'pull_request'
         working-directory: .
+        env:
+          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}
         run: |
-          sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}"); fi
           echo "tests=$sel" >> "$GITHUB_OUTPUT"
           echo "affected: $sel"
       - name: Tests (PR = affected, main = full suite)
@@ -65,7 +69,7 @@ jobs:
   # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
   test-postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'pull_request' && 5 || 45 }}
+    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
     services:
       postgres:
         image: postgres:16
@@ -95,8 +99,10 @@ jobs:
         id: sel
         if: github.event_name == 'pull_request'
         working-directory: .
+        env:
+          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}
         run: |
-          sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}"); fi
           echo "tests=$sel" >> "$GITHUB_OUTPUT"
           echo "affected: $sel"
       - name: Tests (PR = affected, main = full suite)
