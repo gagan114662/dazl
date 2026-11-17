@@ -9,8 +9,7 @@
 // Chromium headless shell Playwright already installed on the box (~/.cache/ms-playwright/chromium_headless_shell-*), or a system Chromium.
 //
 // usage: node check-hydration.mjs <base-url>      exit 0 = every page hydrated; 1 = a check failed (the reason printed); 2 = bad usage or no
-//        browser. Settings: HYDRATION_CHECK_BROWSER=<path> (which browser), HYDRATION_CHECK_DEADLINE_S (whole check, default 90),
-//        HYDRATION_CHECK_START_S (browser start wait, default 20).
+//        browser. Settings: HYDRATION_CHECK_BROWSER=<path> (which browser), HYDRATION_CHECK_DEADLINE_S (whole check, default 90).
 // PROOF ONLY: HYDRATION_CHECK_BLOCK=<substring> fails every request whose URL contains it (e.g. /_next/static/chunks/), to show the check
 // fails when the bundle does not load. Never set in a deploy.
 import { spawn } from 'node:child_process'
@@ -45,9 +44,6 @@ function browserPath() {
   return null
 }
 
-// how long to wait for the browser to start (default 20 s; shared CI runners can need longer on a cold start)
-const START_S = Number(process.env.HYDRATION_CHECK_START_S) > 0 ? Number(process.env.HYDRATION_CHECK_START_S) : 20
-
 function launch(bin, profile) {
   // the flags Playwright launches this headless shell with (without them, navigation can stall before the first response)
   const args = ['--headless', '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage', '--disable-field-trial-config',
@@ -62,7 +58,7 @@ function launch(bin, profile) {
   const proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true })
   const ws = new Promise((resolve, reject) => {
     let err = ''
-    const t = setTimeout(() => reject(new Error(`the browser did not start within ${START_S} s`)), START_S * 1000)
+    const t = setTimeout(() => reject(new Error('the browser did not start within 20 s')), 20_000)
     proc.stderr.on('data', d => { err += d; const m = /DevTools listening on (ws:\/\/\S+)/.exec(err); if (m) { clearTimeout(t); resolve(m[1]) } })
     proc.on('exit', c => { clearTimeout(t); reject(new Error(`the browser exited (${c}) before it was ready: ${err.slice(-200)}`)) })
   })
