@@ -72,12 +72,12 @@ const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href:
 // Google is offered anyway, since the server decides the link and answers every case (signed_out, reauth_required,
 // mismatch) with its own copy on the way back (#1095).
 export const ACCOUNT_LOAD_FAILED = 'failed' as const
-export type NoticeAccount = { verified: boolean; google: boolean; fresh: boolean }
+export type NoticeAccount = { verified: boolean; google: boolean; fresh: boolean; email?: string }
 // The account from GET /api/auth/email and GET /api/auth/reauth bodies (null: that request failed). The email read is what
 // matters: when it failed the result is ACCOUNT_LOAD_FAILED, never "still loading". An unreadable reauth reads as fresh
 // (the server answers reauth_required on the way back if it is not).
-export function noticeAccount(email: { verified?: unknown; google?: unknown } | null, reauth: { fresh?: unknown } | null): NoticeAccount | typeof ACCOUNT_LOAD_FAILED {
-  return email ? { verified: !!email.verified, google: !!email.google, fresh: reauth ? !!reauth.fresh : true } : ACCOUNT_LOAD_FAILED
+export function noticeAccount(email: { verified?: unknown; google?: unknown; email?: unknown } | null, reauth: { fresh?: unknown } | null): NoticeAccount | typeof ACCOUNT_LOAD_FAILED {
+  return email ? { verified: !!email.verified, google: !!email.google, fresh: reauth ? !!reauth.fresh : true, ...(typeof email.email === 'string' ? { email: email.email } : {}) } : ACCOUNT_LOAD_FAILED
 }
 export function trialRefusalNotice(reason: unknown, here: string, account: { verified: boolean; google: boolean; fresh?: boolean } | typeof ACCOUNT_LOAD_FAILED | null): TrialNotice {
   const c = typeof reason === 'string' && reason in TRIAL_REFUSAL_COPY ? TRIAL_REFUSAL_COPY[reason as TrialRefusal] : null
