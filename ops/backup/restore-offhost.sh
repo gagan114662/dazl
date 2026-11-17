@@ -30,7 +30,9 @@ done
 [ -z "$CMP" ] || [ -f "$CMP" ] || die "--compare $CMP is not a file" 2
 for c in age sqlite3 python3 sha256sum; do command -v "$c" >/dev/null || die "$c is not installed" 2; done
 case "$DEST" in rclone:*) command -v rclone >/dev/null || die "rclone is not installed" 2; R=${DEST#rclone:}; R=${R%/} ;; *) [ -d "$DEST" ] || die "--offhost $DEST is not a directory" 2 ;; esac
-ms() { date +%s%3N; }
+# step times from the MONOTONIC clock: the wall clock can be stepped back mid-run (NTP), which made a timed step
+# negative and restore_ms < 0 (the #1080 restore test failed on CI runners at random)
+ms() { python3 -c 'import time; print(time.monotonic_ns() // 1000000)'; }
 t0=$(ms)
 mkdir -m 700 -- "$OUT"
 # a failed restore leaves no plaintext behind (the fetched ciphertext and manifests stay for inspection)

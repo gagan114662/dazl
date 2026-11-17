@@ -236,8 +236,8 @@ test('#1122 council (reasons true in every path): a JavaScript-only own site is 
   const js = await run({ company: 'HD Roofing & Repairs', where: ['Austin, Texas'], evidenceUrl: 'https://hdroofingandrepairs.com/careers', evidence: 'never read', reviewReason: 'needs_javascript', findSites: async () => [], sites: {} })
   assert.deepEqual(why(js), ['own_site_needs_javascript']); assert.deepEqual(js.searched, [])
   assert.equal(domainUnresolvedText(js.unresolved[0].label), 'the company\'s own website can only be read with JavaScript, which this check does not run')
-  // nine checkable leads: the crawl reads the scan's top eight; the ninth is told that, never that it is held
-  const many = Array.from({ length: 8 }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + i)}` }))
+  // checkable leads past the cap: the crawl reads the scan's top MAX_SITES_PER_SCAN (20 since #1037); the one after is told that, never that it is held
+  const many = Array.from({ length: sc.MAX_SITES_PER_SCAN }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + (i % 10))}` }))
   const capped = await run({ company: 'Zed Dental Studio', evidenceUrl: BOARD, evidence: plain('x'), sites: {}, more: many })
   const codes = ['L1', ...many.map(m => m.id)].map(id => why(capped.lead(id))[0])
   assert.equal(codes.filter(c => c === 'probe_limit_reached').length, 1, JSON.stringify(codes)); assert.ok(!codes.includes('not_checked'))
@@ -352,4 +352,24 @@ test('#1122 review of #1219 (finding B): a structured-data site keeps its own sl
 test('#1122 review of #1219 (finding C2): siteHostOk refuses hex, octal and numeric label forms of an address whatever the caller normalised', () => {
   for (const h of ['0x7f.0.0.1', '0177.0.0.1', '0x7f000001.example', '127.1', '2130706433']) assert.equal(sc.siteHostOk(h), false, h)
   for (const h of ['acme.ca', '3m.com', '1800flowers.com', '0xacme.com']) assert.equal(sc.siteHostOk(h), true, h)
+})
+
+test('#1334-F1 past the top-lead cap, every hold the crawl admits says "did not reach this company"; a hold it never admits says the check does not run', async () => {
+  const ready = Array.from({ length: sc.MAX_SITES_PER_SCAN - 1 }, (_, i) => ({ id: `M${i}`, company: `Filler Clinic ${String.fromCharCode(65 + i)}${String.fromCharCode(75 + (i % 10))}` }))
+  const held = [
+    { id: 'H1', company: 'Old Hold Clinic', reviewReason: 'outside_window_undated' },
+    { id: 'H2', company: 'War Room Review Co', reviewReason: 'source_review_required' },
+    { id: 'H3', company: 'War Room Hiring Co', reviewReason: 'no_sales_hiring_evidence' },
+    { id: 'H4', company: 'Closed Opening Co', reviewReason: 'job_closed' },
+    { id: 'H5', company: 'Unknown Hold Co', reviewReason: 'some_unknown_hold' },
+  ]
+  const r = await run({ company: 'Zed Dental Studio', evidenceUrl: BOARD, evidence: plain('x'), sites: {}, more: [...ready, ...held] })
+  const admitted = sc.crawlEligibleHolds()
+  for (const h of ['outside_window_undated', 'source_review_required', 'no_sales_hiring_evidence']) assert.ok(admitted.includes(h), h)
+  assert.ok(!admitted.includes('job_closed')); assert.ok(!admitted.includes('some_unknown_hold'))
+  assert.deepEqual(why(r.lead('H1')), ['probe_limit_reached'], 'old eligible hold')
+  assert.deepEqual(why(r.lead('H2')), ['probe_limit_reached'], 'newly eligible hold source_review_required')
+  assert.deepEqual(why(r.lead('H3')), ['probe_limit_reached'], 'newly eligible hold no_sales_hiring_evidence')
+  assert.deepEqual(why(r.lead('H4')), ['not_checked'], 'event-over hold stays excluded')
+  assert.deepEqual(why(r.lead('H5')), ['not_checked'], 'unknown hold stays excluded')
 })

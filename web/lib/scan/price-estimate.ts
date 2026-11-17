@@ -45,6 +45,8 @@ export interface RunEstimate {
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
   trial_allowance?: { left_usd: number; total_usd: number } | null
+  // #1319: a free-trial scan's own per-scan ceiling (trialReserveUsd, e.g. $0.30 from #680). Display only, NOT part of `ack` (the ack already covers it as cap.trial).
+  trial_scan_cap_usd?: number | null
   // #1157: this account's web search allowance left today (lib/search/tinyfish.ts tenantAllowanceLeft). Display only, like
   // trial_allowance: not part of `ack`, never a block (the run's own gate refuses at the cap); `low` shows a warning before confirm.
   search_allowance?: { left: number; daily: number; low: boolean } | null
@@ -283,7 +285,37 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
   const a = i.payer === 'trial' && !trialWhy ? i.trialAllowance : null
   const trial_allowance = a && Number.isFinite(a.left_usd) && Number.isFinite(a.total_usd) && a.total_usd > 0 && a.left_usd >= 0 && a.left_usd <= a.total_usd ? { left_usd: a.left_usd, total_usd: a.total_usd } : null
-  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}) }
+  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}), ...(trialCeil !== null ? { trial_scan_cap_usd: trialCeil } : {}) }
+}
+
+// #1319: what a CUSTOMER sees in the "What this run will use" box. The estimate itself (rows, unit_usd with the model id,
+// the never-run research fallback, env var hints) stays as-is for the ack, the saved job estimate, logs and admin; this
+// view only rewrites the copy: no env var names, no model ids, no internal never-run rows, and a trial's total clamped to
+// the trial's per-scan cap (the run stops there), with the line saying so.
+export interface CustomerRow { id: string; label: string; provider: string; unit_usd: string; note: string; usd: Range | null; capped: boolean }
+export interface CustomerView { rows: CustomerRow[]; total: Range; trial_cap_line: string | null; assumptions: string[] }
+const ENV_NAME = /\bDAZL_[A-Z0-9_]+\b/
+export function customerCopy(text: string): string {
+  // The model id the row names: "... per 1M tokens (claude-sonnet-4-5)" and "o3-mystery: no listed price"
+  return text.replace(/(per 1M tokens) \(.*\)$/, '$1').replace(/^.*: no listed price$/, 'no listed price')
+}
+export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { trial_scan_cap_usd?: number | null }): CustomerView {
+  const rows: CustomerRow[] = est.rows.filter(r => r.id !== 'fallback_research').map(r => {
+    const included = ENV_NAME.test(r.unit_usd) || /^free allowance/.test(r.unit_usd)
+    return {
+      id: r.id, label: r.label, usd: r.usd, capped: r.capped,
+      provider: r.kind === 'model' ? 'AI research' : r.kind === 'search' || r.kind === 'fetch' ? 'Web search' : r.provider,
+      unit_usd: included ? 'included' : r.kind === 'model' ? customerCopy(r.unit_usd) : r.unit_usd.replace(ENV_NAME, 'operator setting'),
+      note: r.note.replace(ENV_NAME, 'operator setting'),
+    }
+  })
+  const cap = est.payer === 'trial' && typeof est.trial_scan_cap_usd === 'number' && Number.isFinite(est.trial_scan_cap_usd) && est.trial_scan_cap_usd > 0 ? est.trial_scan_cap_usd : null
+  const total = cap === null ? est.total : { min: Math.min(est.total.min, cap), max: Math.min(est.total.max, cap) }
+  const assumptions = est.assumptions
+    .filter(a => !/research fallback/i.test(a))
+    .map(a => a.startsWith('Model: ') && a.includes('. Tokens per call') ? `AI research: t${a.slice(a.indexOf('. Tokens per call') + 3)}` : a)
+    .filter(a => !ENV_NAME.test(a))
+  return { rows, total, trial_cap_line: cap === null ? null : `Free trial scans stop at ${money(cap)}.`, assumptions }
 }
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported

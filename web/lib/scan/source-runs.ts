@@ -3,6 +3,7 @@ import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
 import { buildRunReport, writeRunReport, type ReportParts } from './run-report.ts'
+import { skipNote } from './progress.ts'
 import { writeModelCalls, type ModelCall } from './model-usage.ts'
 
 // Discovery-stage provenance, not URL-domain classification. Counters are per
@@ -127,7 +128,9 @@ export class SourceRunLedger {
     }
     for (const [collector, s] of this.diag) writeSourceStats(db, jobId, attempt, collector, s) // on unless DAZL_SOURCE_STATS=0; never throws
     this.flushModelCalls(db, jobId, attempt) // never throws; failed and retried attempts included
-    this.parts = { ...this.parts, model: this.modelSummary() }
+    // #1205 review (F2): the saved report carries each skipped source's named reason, not only the progress row
+    const source_skips = [...this.runs].flatMap(([source, run]) => { const reason = skipNote(run.status); return reason ? [{ source, status: run.status, reason }] : [] })
+    this.parts = { ...this.parts, model: this.modelSummary(), source_skips }
     writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
     const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
