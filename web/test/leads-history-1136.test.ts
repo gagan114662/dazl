@@ -91,7 +91,7 @@ test('#1136: one pill colour rule', () => {
 async function history(db: Database.Database) {
   const jobs = await historyJobs(sqliteDb(db), 'A') as unknown as (ScanRecord & { id: string })[]
   const byId = new Map(jobs.map(j => [j.id, j]))
-  return new Map(historyCampaigns(db, 'A', jobs.map(j => j.id)).map(c => campaignStatus(c, (byId.get(c.id) as never) ?? null)).map(c => [c.id, c]))
+  return new Map((await historyCampaigns(db, sqliteDb(db), 'A', jobs.map(j => j.id))).map(c => campaignStatus(c, (byId.get(c.id) as never) ?? null)).map(c => [c.id, c]))
 }
 
 test('#1136 HIST-BATCH: the bounded history read gives every listed scan the same pill and label as its full Campaigns card (NYC, London DEFAULT-DENY)', async () => {
@@ -118,8 +118,8 @@ test('#1136 HIST-BATCH: a run with a review a check can resolve, one with passed
   assert.deepEqual(q(r.qualification), q(c.qualification))
 })
 
-test('#1136 HIST-BATCH: the history read is a bounded number of queries, whatever the lead count (20 scans x 250 leads)', () => {
-  const count = (leadsPerJob: number) => {
+test('#1136 HIST-BATCH: the history read is a bounded number of queries, whatever the lead count (20 scans x 250 leads)', async () => {
+  const count = async (leadsPerJob: number) => {
     const db = new Database(':memory:'); migrateAllSqlite(db)
     const ids: string[] = []
     for (let i = 0; i < 20; i++) {
@@ -131,12 +131,12 @@ test('#1136 HIST-BATCH: the history read is a bounded number of queries, whateve
     let n = 0
     const real = db.prepare.bind(db)
     ;(db as unknown as { prepare: typeof db.prepare }).prepare = ((sql: string) => { n++; return real(sql) }) as typeof db.prepare
-    const out = historyCampaigns(db, 'A', ids)
+    const out = await historyCampaigns(db, sqliteDb(db), 'A', ids)
     assert.equal(out.length, 20)
     return n
   }
-  const small = count(1), big = count(250)
-  assert.ok(big <= 6, `bounded: ${big} queries for 20 x 250 leads`)
+  const small = await count(1), big = await count(250)
+  assert.ok(big <= 63, `bounded: ${big} queries for 20 x 250 leads`)
   assert.equal(big, small, `independent of the lead count: ${small} vs ${big}`)
 })
 
@@ -152,6 +152,6 @@ test('#1136 TIE-SEQ (finding 3): more than 20 same-second scans - every history 
   assert.equal(jobs.length, 20)
   const full = new Set(listCampaigns(db, 'A', 20).map(c => c.id))
   for (const j of jobs) assert.ok(full.has(j.id), `history card ${j.id} has a Campaigns row (current: true)`)
-  const bounded = new Set(historyCampaigns(db, 'A', jobs.map(j => j.id)).map(c => c.id))
+  const bounded = new Set((await historyCampaigns(db, sqliteDb(db), 'A', jobs.map(j => j.id))).map(c => c.id))
   for (const j of jobs) assert.ok(bounded.has(j.id), `history card ${j.id} has its current split`)
 })

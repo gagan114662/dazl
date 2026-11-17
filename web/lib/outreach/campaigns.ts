@@ -2,7 +2,8 @@ import type Database from 'better-sqlite3'
 import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
 import { currentnessHeld, leadWindowHeld, windowHeld } from './currentness.ts'
-import { requiredGateHeld, requiredGateHeldForJobsSync } from '../scan/held-state.ts'
+import { requiredGateHeld, requiredGateHeldForJob } from '../scan/held-state.ts'
+import type { Db } from '../db/client.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
@@ -152,15 +153,15 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
 
 // The Leads history's current split (#1136, HIST-BATCH; Hermes-PC finding 2 / XHawk High): for the scans the history lists, only what the
 // card's pill, label and next step need - discovery.leads and the qualification split listQual / currentRun read - in a bounded number
-// of queries whatever the scan or lead count (the jobs, their leads, the gate markers, the run reports, which scans have emails: 5), never the full per-lead /
+// of queries whatever the scan or lead count (the jobs, their leads, which scans have emails, and 3 gate reads per scan: at most 63 for the 20 scans the history lists), never the full per-lead /
 // per-message campaign pipeline above. Same verdicts as listCampaigns (pinned by test/leads-history-1136.test.ts):
-//  - needsReview / research: reviewIsActionable over window_held (windowHeld, pure) and gate_held (requiredGateHeldForJobsSync);
+//  - needsReview / research: reviewIsActionable over window_held (windowHeld, pure) and gate_held (requiredGateHeldForJob, the campaign page's batch reader);
 //  - heldResearch: a source-checked / confirmed lead held by its window, an uncheckable cause or a failed required check. Each of those
 //    already makes currentnessHeld true, so this needs no per-lead timing-proof read; `held` (any timing hold) is not read by the card
 //    and is not computed here (0).
 // next: the Campaigns card's own nextAction where it needs no outreach read (see below); otherwise "Open its campaign". A scan id that is not this tenant's own non-test search is left out (its card keeps its record).
 export type HistoryCampaign = Pick<Campaign, 'id' | 'query' | 'status' | 'error' | 'created_at' | 'qualification' | 'next'> & { discovery: { leads: number } }
-export function historyCampaigns(db: Database.Database, tenantId: string, jobIds: string[], now: Date = new Date()): HistoryCampaign[] {
+export async function historyCampaigns(db: Database.Database, adb: Db, tenantId: string, jobIds: string[], now: Date = new Date()): Promise<HistoryCampaign[]> {
   const ids = [...new Set(jobIds)].slice(0, 20)
   if (!ids.length) return []
   const qs = ids.map(() => '?').join(',')
@@ -168,11 +169,13 @@ export function historyCampaigns(db: Database.Database, tenantId: string, jobIds
     WHERE user_id = ? AND id IN (${qs}) AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
     ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number }[]
   if (!jobs.length) return []
-  type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; company: string | null; event_date: string | null; query: string | null; icp: string | null }
+  type Row = { id: string; scan_job_id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null }
   const jq = jobs.map(() => '?').join(',')
-  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.company, l.event_date, j.query, j.icp
+  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`).all(tenantId, ...jobs.map(j => j.id)) as Row[]
-  const gate = requiredGateHeldForJobsSync(db, tenantId, rows)
+  // the required-check verdict per listed scan (requiredGateHeldForJob: the campaign page's own reader, 3 reads per scan whatever its lead count)
+  const gate = new Set<string>()
+  for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(adb, tenantId, id)) gate.add(l)
   // which listed scans have any email at all (one grouped read; test sends included, so "none" is certain)
   const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
   const byJob = new Map<string, Row[]>()
