@@ -1,5 +1,6 @@
 import { readinessRows, type ReadinessInput, type Row } from './readiness.ts'
 import { coreSources, socialSources } from './scan/source-availability.ts'
+import { linkGoogleHref } from './google-link.ts'
 
 // Home's setup checklist toward the first useful result: business profile -> search can run -> first search ->
 // qualified lead -> contact -> draft -> sender setup. Read from the same tenant responses and rows as the full setup
@@ -8,7 +9,7 @@ import { coreSources, socialSources } from './scan/source-availability.ts'
 // that is still to do has one button straight to its fix. Sources are named only when a scan here can use them.
 
 export type ReadyId = 'profile' | 'search' | 'play' | 'qualified' | 'contact' | 'draft' | 'sender'
-export interface ReadyItem { id: ReadyId; label: string; state: Row['state']; detail: string; fix: { href: string; label: string } | null; next?: boolean }
+export interface ReadyItem { id: ReadyId; label: string; state: Row['state']; detail: string; fix: { href: string; label: string; primary?: boolean } | null; alt?: { href: string; label: string } | null; next?: boolean }
 
 const KEY_FIX = '/app/settings#model-key', GMAIL_FIX = '/app/settings#gmail'
 // The reads' caps (lib/readiness.ts): a list this long may be missing older history.
@@ -37,9 +38,12 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const usable = core ? [...core, ...socialSources(i.advanced ?? null)].filter(r => r.usable && r.purpose !== 'enrichment').map(r => r.label) : []
   // The account's scan allowance is checked first: adding a key does not get past a used-up allowance.
   const used = i.usage?.scans_used, limit = i.usage?.scan_limit
+  const googleTrial = !i.usage?.has_key && i.usage?.trial?.blocked === 'google_required'
   const quotaUsed = typeof used === 'number' && typeof limit === 'number' && used >= limit
   const search: ReadyItem = quotaUsed ? { id: 'search', label: 'Search can run', state: 'todo', detail: `this month's scan allowance is used up (${used} of ${limit})`, fix: { href: '/app/settings#plan', label: 'See your plan' } }
     : key.state === 'unknown' || src.state === 'unknown' ? unknown('search', 'Search can run', key.state === 'unknown' ? key.detail : src.detail)
+    // #1319: free trial scans wait only on Google sign-in: linking Google is the main way forward, the key the other one.
+    : key.state === 'todo' && googleTrial ? { id: 'search', label: 'Search can run', state: 'todo', detail: 'free trial searches need Google sign-in on this account (no card), or add your own AI key', fix: { href: linkGoogleHref('/app/leads'), label: 'Link Google (free trial)', primary: true }, alt: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
     : key.state === 'todo' || src.state === 'todo' ? { id: 'search', label: 'Search can run', state: 'todo', detail: key.state === 'todo' ? key.detail : src.detail, fix: key.state === 'todo' ? { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } : src.fix?.kind === 'link' ? {href:src.fix.href,label:src.fix.label} : null }
     : { id: 'search', label: 'Search can run', state: 'done', detail: `${key.detail}. Sources: ${usable.join(', ')}`, fix: null }
 
