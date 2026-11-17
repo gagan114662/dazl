@@ -140,7 +140,7 @@ function findAtoms(q: string): Atom[] {
   // 2. Funding. A bare "seed" is a stage only in a funding context ("seed oil producers" is not).
   const fundingContext = FUNDING_CUE.test(q) || /\bseries\s+[a-e]\b|\bpre-?seed\b/i.test(q)
   const fundingRes = [new RegExp(`\\b${RAISE}\\b(?:\\s+[^\\s,.;]+){0,5}?\\s+(?:${STAGE}(?:[-\\s]+(?:funding|round|financing))?|funding|round|financing|investment)\\b`, 'gi'),
-    new RegExp(`\\b${STAGE}(?:[-\\s]+(?:funded|funding|round|rounds|stage|backed))?\\b`, 'gi'), /\b(?:recently\s+)?(?:vc-?|venture-?)?(?:funded|backed)\b|\bfund(?:ing|raising)\b|\braised\s+money\b/gi]
+    new RegExp(`\\b${STAGE}(?:[-\\s]+(?:funded|funding|round|rounds|stage|backed))?\\b`, 'gi'), /\b(?:recently\s+)?(?:vc-?|venture-?)?(?:funded|backed)\b(?!\s+(?:out|off|away|down)\b)|\bfund(?:ing|raising)\b|\braised\s+money\b/gi]
   for (const re of fundingRes) for (const m of q.matchAll(re)) {
     if (!fundingContext) break
     const st = new RegExp(STAGE, 'i').exec(m[0])
@@ -174,6 +174,12 @@ const EXCL_CUE = /\b(?:excluding|exclude|excludes|except(?:\s+for)?|other\s+than
 const COMPETITOR = /\b(?:competitors?|rivals?|competing\s+(?:companies|vendors|products|firms))\b/i
 const CATEGORY_WORDS = /\b(?:franchis\w*|agenc(?:y|ies)|consultanc(?:y|ies)|consultants?|resellers?|marketplaces?|directories|directory|recruiters?|staffing|non-?profits?|charit(?:y|ies)|government|public\s+sector|enterprises?|chains?|startups?|universit(?:y|ies)|schools?|hospitals?)\b/i
 
+// #1163: wordings that stop, reject or shrink a funding / hiring / hire condition. Without them, "stopped hiring SDRs", "lost funding",
+// "hiring SDRs on hold" or "hiring freeze" compiled to a POSITIVE condition: a scan for the opposite of what was written.
+// Before the condition, a cue may sit up to three words away ("rejecting venture capital funding"), never across a connective.
+const STOPPED_BEFORE = /\b(?:reject\w*|refus\w*|declin\w*|stopp?(?:ed|ing|s)?|paus\w*|halt\w*|froze|freez\w*|frozen|cancel\w*|scrap\w*|abandon\w*|avoid\w*|against|lost|losing|lose|ran\s+out\s+of|running\s+out\s+of|run\s+out\s+of|yet\s+to|instead\s+of|rather\s+than|backed\s+out\s+of|pulled\s+out\s+of|pull(?:ed|ing)?\s+back\s+on|cut(?:ting|s)?\s+back\s+on|no\s+plans?\s+to|fewer|barely|hardly|isn'?t|aren'?t|wasn'?t|weren'?t|won'?t|don'?t|doesn'?t|can'?t|cannot)\b(?:\s+(?!(?:and|or|but|while|who|that|which|then)\b)[\w'-]+){0,3}\s*$|\bpre-$/i
+// Inside or after the condition, in the same clause.
+const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|postpon\w*|delay\w*|shelv\w*|scrap\w*|abandon\w*|discontinu\w*|terminat\w*|cancel\w*|unlikely|off\s+the\s+table|(?:is|was|are)\s+over|slow(?:down|ing|ed)|moratori\w*|bans?|banned|caps?|capped|cutbacks?|cuts?|restrict\w*|freez\w*|frozen|down\s+\d+|slump\w*|hiatus|stoppage|shutdown|crunch|crisis|stall(?:s|ed)?|rumou?r\w*|denial|denied|withdraw\w*|in\s+doubt|doubtful|uncertain|under\s+review|in\s+limbo|at\s+risk|mistake|unaffordable|futile|backfir\w*|fizzl\w*|going\s+badly|gone|maybe|fell\s+through|fall(?:s|ing)?\s+through|dried\s+up|dry(?:ing)?\s+up|collaps\w*|pulled|fewer|(?:and|then|but)\s+(?:fired|let\s+\w+\s+go|laid\s+\w+\s+off))\b/i
 export function compileTargeting(query: string | null | undefined, icp?: string | null): QueryPlan {
   const q = (query ?? '').replace(/\s+/g, ' ').trim()
   const ambiguities: Ambiguity[] = []
@@ -245,6 +251,25 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   // Negation, then the connective between each pair of neighbouring conditions.
   const negated = atoms.map((a, i) => !!a.neg || NEG_BEFORE.test(q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)))
+  // #1163: a stopped, rejected or shrinking wording around a funding / hiring / hire condition negates it (the narrow reading), and the plan says so.
+  atoms.forEach((a, i) => {
+    if (a.kind !== 'funding' && a.kind !== 'hiring' && a.kind !== 'hire_made') return
+    const before = q.slice(i === 0 ? Math.max(0, a.start - 60) : Math.max(atoms[i - 1].end, a.start - 60), a.start)
+    const inside = q.slice(a.start, a.end)
+    const rest = q.slice(a.end, i + 1 < atoms.length ? atoms[i + 1].start : q.length).split(/[.;!?,]/)[0]
+    const undo = /^\s*(?:and|then|but)\s+(?:fired|let\s+\w+\s+go|laid\s+\w+\s+off)/i.exec(rest)
+    const after = undo ? undo[0] : rest.split(/(?:and|or|but|while|who|that|which)/i)[0]
+    const tail = inside.slice(a.kind === 'funding' ? 0 : inside.search(/\s|$/))
+    const pre = STOPPED_BEFORE.exec(before), both = STOPPED_AFTER.exec(tail + after), mid = both && both.index < tail.length ? both : null, post = mid ? null : both
+    // "never stopped hiring SDRs" is a double negative: still hiring. A negation right before the stop word cancels it.
+    const pre2 = pre && /\b(?:never|not|n't|hasn'?t|haven'?t|didn'?t)\s*$/i.test(before.slice(0, pre.index)) ? null : pre
+    const hit = pre2 ?? mid ?? post
+    if (!hit) return
+    if (mid && conds[i].role) { const r = conds[i].role!, at = r.toLowerCase().indexOf(mid[0].toLowerCase()); if (at >= 0) conds[i].role = r.slice(0, at).replace(/\s+(?:is|was|are|role|roles|position|put)\s*$/i, '').trim() }
+    if (post && conds[i].role && /\b(?:role|roles|position)\s*$/i.test(conds[i].role!)) conds[i].role = conds[i].role!.replace(/\s+(?:role|roles|position)\s*$/i, '').trim()
+    ambiguities.push({ text: hit[0].trim(), readings: [`${conds[i].text} (a positive condition)`, `NOT ${conds[i].text} (it stopped, was rejected or shrank)`], chosen: `NOT ${conds[i].text}: the request says it stopped, was rejected or shrank` })
+    negated[i] = true
+  })
   const gaps = atoms.slice(1).map((a, i) => q.slice(atoms[i].end, a.start))
   const conn: ('and' | 'or')[] = gaps.map((g, i) => {
     const t = g.replace(WINDOW_RE, ' ')
