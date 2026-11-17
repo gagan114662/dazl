@@ -1,3 +1,4 @@
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import { requiredGateHeld } from '../lib/scan/held-state.ts'
 // "Seed funding AND hiring sales": the funding quote alone no longer carries a lead. A dated sales / GTM posting on a public Greenhouse /
 // Lever / Ashby board bound to the lead's own domain (or the source quote itself naming the hiring) keeps it; otherwise it goes to review as
