@@ -68,13 +68,15 @@ export function parseCohort(raw: unknown): CohortParse {
 
 // ---- features and model ------------------------------------------------------------------------------------------
 export type Dimension = 'industry' | 'size' | 'location' | 'keyword'
-export interface Feature { dimension: Dimension; value: string }
+// value is the matching key (slug); label is the wording the tenant supplied ("51-200", not "51 200"), shown in reasons,
+// the summary and the profile's fields (#756).
+export interface Feature { dimension: Dimension; value: string; label?: string }
 const fkey = (f: Feature) => `${f.dimension}:${f.value}`
 export function featuresOf(e: Pick<Example, 'industry' | 'size' | 'location' | 'description'>): Feature[] {
   const out = new Map<string, Feature>(), add = (f: Feature) => { if (f.value) out.set(fkey(f), f) }
-  if (e.industry) add({ dimension: 'industry', value: slug(e.industry) })
-  if (e.size) add({ dimension: 'size', value: slug(e.size) })
-  if (e.location) add({ dimension: 'location', value: slug(e.location) })
+  if (e.industry) add({ dimension: 'industry', value: slug(e.industry), label: e.industry.trim() })
+  if (e.size) add({ dimension: 'size', value: slug(e.size), label: e.size.trim() })
+  if (e.location) add({ dimension: 'location', value: slug(e.location), label: e.location.trim() })
   for (const w of slug(e.description ?? '').split(' ')) if (w.length >= 4 && !STOP.has(w) && !/^\d+$/.test(w)) add({ dimension: 'keyword', value: w })
   return [...out.values()]
 }
@@ -84,9 +86,12 @@ export interface Model { discriminators: Discriminator[]; positives: number; neg
 // A feature discriminates when enough customers have it AND it is clearly rarer among the negatives (add-one smoothed
 // rate ratio). A feature every account shares, or one only the negatives have, is never a discriminator.
 export function deriveModel(pos: Example[], neg: Example[]): Model {
-  const count = (xs: Example[]) => { const m = new Map<string, { f: Feature; n: number }>(); for (const x of xs) for (const f of featuresOf(x)) { const c = m.get(fkey(f)) ?? { f, n: 0 }; c.n++; m.set(fkey(f), c) } return m }
+  const count = (xs: Example[]) => { const m = new Map<string, { f: Feature; n: number; labels: Map<string, number> }>(); for (const x of xs) for (const f of featuresOf(x)) { const c = m.get(fkey(f)) ?? { f, n: 0, labels: new Map() }; c.n++; if (f.label) c.labels.set(f.label, (c.labels.get(f.label) ?? 0) + 1); m.set(fkey(f), c) } return m }
+  // The label shown is the customers' most common wording for the key (ties: alphabetical), so the output is deterministic.
+  const labelOf = (l: Map<string, number>) => [...l].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0]?.[0]
   const P = count(pos), N = count(neg), out: Discriminator[] = []
-  for (const [k, { f, n }] of P) {
+  for (const [k, { f: f0, n, labels }] of P) {
+    const label = labelOf(labels), f: Feature = label ? { dimension: f0.dimension, value: f0.value, label } : { dimension: f0.dimension, value: f0.value }
     if (n < MIN_SUPPORT) continue
     const posRate = n / pos.length, negRate = ((N.get(k)?.n ?? 0) + 1) / (neg.length + 2), lift = posRate / negRate
     if (lift >= MIN_LIFT) out.push({ feature: f, support: n, posRate, negRate, lift })
@@ -104,7 +109,7 @@ export function scoreFeatures(m: Pick<Model, 'discriminators'>, has: (f: Feature
   return { fit: all ? got / all : 0, matched }
 }
 export const scoreExample = (m: Model, e: Pick<Example, 'industry' | 'size' | 'location' | 'description'>) => { const have = new Set(featuresOf(e).map(fkey)); return scoreFeatures(m, f => have.has(fkey(f))) }
-export const reason = (d: Pick<Discriminator, 'feature' | 'support' | 'lift'>, positives: number) => `${d.feature.dimension} "${d.feature.value}": ${d.support} of ${positives} customers, ${d.lift.toFixed(1)}x vs non-customers`
+export const reason = (d: Pick<Discriminator, 'feature' | 'support' | 'lift'>, positives: number) => `${d.feature.dimension} "${d.feature.label ?? d.feature.value}": ${d.support} of ${positives} customers, ${d.lift.toFixed(1)}x vs non-customers`
 
 // ---- held-out validation -----------------------------------------------------------------------------------------
 const h32 = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return h >>> 0 }
@@ -232,7 +237,9 @@ export interface Proposal { query: string; icp: { summary: string; who: string[]
 export function proposeProfile(d: Discovery, all: Example[]): Proposal | null {
   const block = toBlock(d, all)
   if (!block || !d.model) return null
-  const by = (dim: Dimension) => d.model!.discriminators.filter(x => x.feature.dimension === dim).map(x => x.feature.value)
+  // Sizes and places become hard profile fields only when most customers share them; a minority one (2 of 8 customers at
+  // 51-200) stays a reason and a ranking signal, never the profile's only size (#756).
+  const by = (dim: Dimension) => d.model!.discriminators.filter(x => x.feature.dimension === dim && (dim === 'industry' || dim === 'keyword' || x.posRate > 0.5)).map(x => x.feature.label ?? x.feature.value)
   const industries = by('industry').slice(0, 3), sizes = by('size').slice(0, 2), where = by('location').slice(0, 3), kws = by('keyword').slice(0, 4)
   const what = industries.length ? industries.join(' or ') : 'companies'
   const query = `${what}${where.length ? ` in ${where.join(' or ')}` : ''}${kws.length ? ` - ${kws.join(', ')}` : ''}, like our customers`.slice(0, 600)
@@ -246,7 +253,7 @@ export function discover(all: Example[]) {
   const d = validate(all)
   return {
     state: d.state, why: d.why,
-    features: d.model ? d.model.discriminators.map(x => ({ dimension: x.feature.dimension, value: x.feature.value, support: x.support, lift: round(x.lift, 1), reason: reason(x, d.model!.positives) })) : [],
+    features: d.model ? d.model.discriminators.map(x => ({ dimension: x.feature.dimension, value: x.feature.label ?? x.feature.value, key: x.feature.value, support: x.support, lift: round(x.lift, 1), reason: reason(x, d.model!.positives) })) : [],
     held_out: d.heldOut ? { precision: round(d.heldOut.precision), chance: round(d.heldOut.baseRate), lift: round(d.heldOut.lift), picked: d.heldOut.picked, accounts: d.heldOut.n } : null,
     counts: { customers: all.filter(isPositive).length, negatives: all.filter(e => e.kind === 'negative').length, competitors: all.filter(e => e.kind === 'competitor').length },
     proposal: proposeProfile(d, all),
