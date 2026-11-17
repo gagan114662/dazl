@@ -22,6 +22,17 @@ test('consolidated cities keep their well-known short name', () => {
   assert.ok(!US_CITY_RANKS.some(r => /^[^|]*County[^|]*\|/.test(r) && /^(Bibb|Clarke|Richmond|Jefferson) County\|/.test(r)), 'a county is never a city alias')
 })
 
+// #1236: only the FIRST part of a consolidated name is its city alias; a county-name part ("Davidson", "Silver Bow") is never one.
+test('a consolidated city county-name part is not a city alias (#1236)', () => {
+  assert.equal(US_CITY_RANKS.find(r => r.startsWith('Davidson|TN|')), undefined)
+  assert.equal(US_CITY_RANKS.find(r => r.startsWith('Silver Bow|MT|')), undefined)
+  assert.notDeepEqual(bareUsCity('Davidson'), { city: 'Davidson', abbr: 'TN' })
+  assert.deepEqual(bareUsCity('Davidson'), { city: 'Davidson', abbr: 'NC' })   // the real incorporated place now wins
+  assert.equal(bareUsCity('Silver Bow'), null)
+  for (const [c, st] of [['Nashville', 'TN'], ['Louisville', 'KY'], ['Lexington', 'KY'], ['Macon', 'GA'], ['Athens', 'GA'], ['Augusta', 'GA'], ['Butte', 'MT'], ['Hartsville', 'TN'], ['Boise', 'ID']])
+    assert.ok(US_CITY_RANKS.some(r => r.startsWith(`${c}|${st}|`)), `${c}, ${st} still resolves`)
+})
+
 test('the generator imports no module the documented redirect truncates', () => {
   const g = readFileSync(new URL('../scripts/gen-us-city-ranks.mts', import.meta.url), 'utf8')
   assert.ok(!/from '\.\.\/lib\/sources\/(jobboards|us-city-ranks)\.ts'/.test(g))
