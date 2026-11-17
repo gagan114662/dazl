@@ -1,6 +1,7 @@
 // One bounded completion step before a scan returns: kept-but-incomplete leads get the free sources' answer (source date from the page's own structured data, the company domain through the identity check, a
 // contact on that domain), the lead's score is recomputed from the evidence it actually has, and a per-lead record says what was filled and what is still missing. Stubbed pages / sites / grader through the real
 // runJob, five incomplete leads; invented practices; no network, no key, no credits; no gate is loosened.
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
