@@ -95,19 +95,29 @@ test('#1036 wrong-person guard: visible text pairing ("Maya Thornton - maya@..."
 test('#1036 address contexts on a 760 KB directory page with 1,500 addresses stay cheap (positions from the one scan, nothing built past 200 kept)', async () => {
   const { addressContexts } = await import('../lib/connectors/sitecrawl.ts')
   const { personalAddresses } = await import('../lib/people/email-pattern.ts')
-  const cards = Array.from({ length: 1500 }, (_, i) => `<div class="card"><span>Person${i} Name${i}</span><a href="mailto:p${i}.name${i}@firm.com">p${i}.name${i}@firm.com</a>${'<p>bio text here</p>'.repeat(20)}</div>`).join('')
-  const big = `<html><body>${cards}</body></html>`
+  // a FRESH page string per measurement: the engine flattens and caches a string on first use, so a second pass over the same one hides
+  // exactly the cost this test is about (seen: a per-address lower-casing costs 1,800 ms on a fresh page and next to nothing on a reused one)
+  const page = () => `<html><body>${Array.from({ length: 1500 }, (_, i) => `<div class="card"><span>Person${i} Name${i}</span><a href="mailto:p${i}.name${i}@firm.com">p${i}.name${i}@firm.com</a>${'<p>bio text here</p>'.repeat(20)}</div>`).join('')}</body></html>`
   const src = (await import('node:fs')).readFileSync(new URL('../lib/connectors/sitecrawl.ts', import.meta.url), 'utf8')
-  const loop = src.slice(src.indexOf('const onPage = (html: string, url: string, status: number) => {'), src.indexOf('const r = await crawlSite(cand, get'))
+  const loop = src.slice(src.indexOf('const onPage = (html: string, url: string, status: number) => {'), src.indexOf('const r = await crawlSite(cand, '))
   assert.doesNotMatch(loop, /toLowerCase\(\)|indexOf\(/, 'the crawl loop never lower-cases or searches the page per address')
   assert.match(loop, /seen\.size >= 200\) continue/)
   // Relative to the existing address scan on the same machine at the same moment (robust under a loaded test run): the old
   // per-address lower-casing cost about 60x that scan, and one indexOf per address about 35x; the contexts for all 1,500 must stay within 12x (the crawl builds at most 200).
-  const b0 = performance.now(); const found = personalAddresses(big, 'firm.com'); const base = Math.max(performance.now() - b0, 5)
-  const t0 = performance.now(); let n = 0
-  for (const a of found) n += addressContexts(big, a.at).length
-  const ms = performance.now() - t0
-  assert.ok(n >= 1500); assert.ok(ms < base * 12, `contexts for 1,500 addresses took ${Math.round(ms)} ms vs ${Math.round(base)} ms for the address scan`)
+  // Up to three measurements, each on its own fresh page: one slow pass (a GC pause, a busy CI runner: 92 ms vs 7 ms was seen once on a
+  // correct build) does not fail the test, and a real per-address rescan is slow on every fresh page, so it fails all three.
+  const tries: string[] = []
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const big = page()
+    const b0 = performance.now(); const found = personalAddresses(big, 'firm.com'); const base = Math.max(performance.now() - b0, 5)
+    const t0 = performance.now(); let n = 0
+    for (const a of found) n += addressContexts(big, a.at).length
+    const ms = performance.now() - t0
+    assert.ok(n >= 1500)
+    if (ms < base * 12) return
+    tries.push(`${Math.round(ms)} ms vs ${Math.round(base)} ms`)
+  }
+  assert.fail(`contexts for 1,500 addresses vs the address scan, three fresh pages: ${tries.join('; ')}`)
 })
 
 // Independent review of the guard (second pass): layouts where nearby text used to decide. The same three functions the crawl uses.

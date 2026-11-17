@@ -27,7 +27,7 @@ export interface ReportParts {
   observed?: { search: boolean; extraction: boolean; verification: boolean }
   // The free news search's request truth (lib/search/news.ts): per-class failure counts, the non-200 statuses seen and the
   // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
-  news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number> } | null
+  news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number>; retried?: number; gave_up?: boolean } | null   // #1157: one retry after a backoff; gave_up = the retry failed too, so the remaining queries were not sent
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
   // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
   // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
@@ -35,6 +35,8 @@ export interface ReportParts {
   // authoritative terminal overrides (accounting_failed / accounting_uncertain / provider rejection) replace the
   // staged classification, code is the FINAL job error and the staged one is kept as superseded_stop_code.
   stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null; superseded_stop_code?: string | null } | null
+  // #1205 (review F2): a source that was not used, why, and what to change, in the same plain words as its progress row ("'Europe' is a region. ...").
+  source_skips?: { source: string; status: string; reason: string }[]
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -84,6 +86,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
     news: p.news ?? null, stop: p.stop ?? null,
+    source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
     capacity: p.capacity ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }

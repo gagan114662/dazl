@@ -52,7 +52,7 @@ async function crawlFixture(env: Record<string, string>, address = '120 Main St,
   return db
 }
 
-test('flag on: pattern and unverified candidates go to their own tables; lead_enrichments (shown and used by outreach) gets no guess', async () => {
+test('flag on: pattern and unverified candidates go to their own tables; lead_enrichments (shown and used by outreach) gets no guess, only the published addresses', async () => {
   const db = await crawlFixture({ EMAIL_GUESS_ENABLED: '1' })
   assert.deepEqual(db.prepare('SELECT site, format, support FROM email_patterns').all(), [{ site: 'acmelogistics.com', format: 'first.last', support: 2 }])
   const cands = db.prepare('SELECT address, status FROM email_candidates ORDER BY address').all() as { address: string; status: string }[]
@@ -61,10 +61,13 @@ test('flag on: pattern and unverified candidates go to their own tables; lead_en
   const prov = db.prepare('SELECT DISTINCT verification, country_basis FROM email_candidates').all()
   assert.deepEqual(prov, [{ verification: 'none', country_basis: 'homepage address: Austin, TX 78701' }])
   const enr = db.prepare("SELECT value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan')").all() as { value: string }[]
-  assert.ok(enr.every(e => !e.value.includes('cara.diaz') && !e.value.includes('dana.lee@') && !e.value.includes('ben.ortiz@')), JSON.stringify(enr))
+  // the GUESS (Cara Diaz printed nothing) never reaches lead_enrichments; the two addresses the people PRINTED are shown during the
+  // scan as published contacts naming the person (#1036, Hermes 23:37: labelled addresses on scanned leads), never as guesses
+  assert.ok(enr.every(e => !e.value.includes('cara.diaz')), JSON.stringify(enr))
+  assert.deepEqual(enr.filter(e => /ben\.ortiz@|dana\.lee@/.test(e.value)).map(e => e.value).sort(), ['ben.ortiz@acmelogistics.com', 'dana.lee@acmelogistics.com'])
 })
 
-test('flag off (default, prod): no pattern and no guesses, but addresses the people PRINTED on the site are recorded as published (#1036 decision 2026-11-12); crawl output unchanged', async () => {
+test('flag off (default, prod): no pattern and no guesses, but addresses the people PRINTED on the site are recorded as published (#1036 decision 2026-11-12) and shown on the lead as published contacts', async () => {
   const db = await crawlFixture({})
   const n = (sql: string) => { try { return (db.prepare(sql).get() as { n: number }).n } catch { return 0 } }
   assert.equal(n('SELECT count(*) n FROM email_patterns'), 0, 'no pattern without the flag')
@@ -72,7 +75,9 @@ test('flag off (default, prod): no pattern and no guesses, but addresses the peo
   assert.deepEqual(db.prepare("SELECT person, address, source_url FROM email_candidates WHERE tier = 'published' ORDER BY address").all(),
     [{ person: 'Ben Ortiz, CFO', address: 'ben.ortiz@acmelogistics.com', source_url: 'https://acmelogistics.com/team' }, { person: 'Dana Lee, CEO', address: 'dana.lee@acmelogistics.com', source_url: 'https://acmelogistics.com/team' }])
   const enr = db.prepare("SELECT kind, value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan') ORDER BY kind, value").all()
-  assert.deepEqual(enr, [{ kind: 'email', value: 'hello@acmelogistics.com' }, { kind: 'person', value: 'Ben Ortiz, CFO' }, { kind: 'person', value: 'Cara Diaz, COO' }, { kind: 'person', value: 'Dana Lee, CEO' }])
+  // #1036 (Hermes 23:37): the printed personal addresses are on the lead after the scan too, as published contacts (the guess flag is
+  // irrelevant to them); the crawl's other output is unchanged
+  assert.deepEqual(enr, [{ kind: 'email', value: 'ben.ortiz@acmelogistics.com' }, { kind: 'email', value: 'dana.lee@acmelogistics.com' }, { kind: 'email', value: 'hello@acmelogistics.com' }, { kind: 'person', value: 'Ben Ortiz, CFO' }, { kind: 'person', value: 'Cara Diaz, COO' }, { kind: 'person', value: 'Dana Lee, CEO' }])
 })
 
 // ---- part 2: US only (docs/DECISIONS.md 2026-10-26). Unknown country = not US. ----
@@ -191,7 +196,10 @@ test('boundary: only the email finder module reads or writes the candidate table
   }
   walk('lib'); walk('app')
   // #1036: the lead-deletion paths (and the staging real-company check's cleanup) also DELETE these rows with their leads (delete-only; they never read or write a candidate).
-  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-pattern.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
+  // #1036: the finder's own two modules beside email-pattern.ts: email-formats.ts (learns a tenant's address format from its confirmed
+  // addresses and builds the one labelled guess) and verify-usage.ts (counts the mailbox checks the caps count). Neither is a contact
+  // consumer: nothing under lib/outreach or app/ reads the table (legal-policy.test.ts), and a guess is never a draft recipient.
+  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-formats.ts', 'lib/people/email-pattern.ts', 'lib/people/verify-usage.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
   for (const f of ['lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts']) for (const m of readFileSync(join(root, f), 'utf8').matchAll(/[^\n]*(?:email_candidates|email_patterns)[^\n]*/g)) assert.match(m[0], /DELETE FROM|'email_candidates', 'email_patterns'|no such table|\/\//, `${f}: delete-only: ${m[0].trim()}`)
 })
 

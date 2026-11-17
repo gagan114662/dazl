@@ -32,21 +32,30 @@ const P = 'a'.repeat(24)
 const BUYER = { summary: 'Independent dental practices with 2-10 chairs', who: ['Practice owner'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Ohio'], signals: ['Opened a new location'], exclude: ['Dental schools', 'chains'] }
 const PLAY_ICP = { ...BUYER, window_days: 90 }
 const job = o => ({ id: P, status: 'done', error: null, query: 'Dental practice owners in Ohio - opened a new location', business_name: '', csv_domain: null, created_at: now - 3600, finished_at: now - 3000, candidates: 4, verified: 2, needs_review: 1, dropped: 1, lead_count: 4, test_only: false, funded_by: null, ...o })
-const lead = (id, company, o = {}) => ({ id, name: '', company, contact: `hello@${id[0]}.example`, signal: `${company} opened a second office`, source_url: `https://news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', published_at: null, confidence: 90, review_reason: null, company_domain: `${id[0]}.example`, human_confirmed_at: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office.`, signals: null, icp_match: null, enrichments: [], events: [], ...o })
+// The rows GET /api/leads returns: since #1176 a day is verified by its proof (event_date_proof -> day_verified, set by the route), not by the
+// retired date_status 'verified' (no scan writes it); an undated lead below overrides both.
+const lead = (id, company, o = {}) => ({ id, name: '', company, contact: `hello@${id[0]}.example`, signal: `${company} opened a second office`, source_url: `https://news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'unverified', event_date_proof: 'page_bound', day_verified: true, published_at: null, confidence: 90, review_reason: null, company_domain: `${id[0]}.example`, human_confirmed_at: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office.`, signals: null, icp_match: null, enrichments: [], events: [], ...o })
 const GOOD = lead('1'.repeat(24), 'Bright Dental')
 const NO_CONTACT = lead('2'.repeat(24), 'Maple Family Dentistry', { contact: null })
 const WRONG_CO = lead('3'.repeat(24), 'Gramercy Dental Practice', { review_reason: 'identity_mismatch' })
-const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated' })
+const UNDATED = lead('4'.repeat(24), 'Lakeside Smiles', { event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false })
 const OUT_OF_WINDOW = lead('5'.repeat(24), 'Old Town Dental', { window_held: true })
 // Synthetic shapes of the two reported failures (no real company, run or URL): customer-mention + undated; blocked + undated.
 // The scan's own recovery record (lib/scan/blocked-fallback.ts recordRecovery writes exactly these strings): what the bounded automatic pass already tried (#352).
 const rec = (reason, value) => ({ connector: 'scan:recovery', kind: 'recovery', value, label: `recovery:${reason}`, confidence: null, source_url: 'https://news.example/r', source_date: '2026-10-29' })
 const ran = (reason, what) => [rec(reason, `Recovery pass ran before this was held (${reason}): searched other press for ${what} for the same company; none verified.`)]
-const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('counterparty_signal', 'a source about the company itself') })
-const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('undated', 'a dated source') })
-const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated', enrichments: [rec('counterparty_signal', 'Recovery pass did not run (the run disabled the paid fallback).')] })
-const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated', enrichments: ran('blocked_by_site', 'a readable source') })
+const R_CUSTOMER = lead('6'.repeat(24), 'Harbor Dental Studio', { review_reason: 'counterparty_signal', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('counterparty_signal', 'a source about the company itself') })
+const R_UNDATED = lead('7'.repeat(24), 'Elm Street Orthodontics', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('undated', 'a dated source') })
+const L_CUSTOMER = lead('8'.repeat(24), 'Canal Dental Group', { review_reason: 'counterparty_signal', event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: [rec('counterparty_signal', 'Recovery pass did not run (the run disabled the paid fallback).')] })
+const L_BLOCKED = lead('9'.repeat(24), 'Mews Smile Clinic', { review_reason: 'blocked_by_site', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false, enrichments: ran('blocked_by_site', 'a readable source') })
 const QUOTE = lead('a'.repeat(24), 'Pine Dental', { review_reason: 'quote_unconfirmed' })
+// #1176 (prod live check of 66449147, play b10654425e8246c915e355b9): the four research leads of that play as the route returns them. Zayed Law and Ogletree
+// Deakins have a proven day (page_bound) and are held only by the timing gate; the two controls have no day. Companies and days are the real rows; ids, URLs,
+// signals and quotes are this harness's own.
+const T_ZAYED = lead('b'.repeat(24), 'Zayed Law', { event_date: '2026-10-06', date_status: 'unverified', event_date_proof: 'page_bound', day_verified: true, review_reason: null, contact: null, confidence: 60, window_held: false, currentness_held: true, gate_held: false })
+const T_OGLETREE = lead('c'.repeat(24), 'Ogletree Deakins', { event_date: '2026-10-26', date_status: 'unverified', event_date_proof: 'page_bound', day_verified: true, review_reason: null, contact: null, confidence: 60, window_held: false, currentness_held: true, gate_held: false })
+const T_NORTON = lead('d'.repeat(24), 'Norton Rose Fulbright', { review_reason: 'quote_unconfirmed', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false })
+const T_ARMSTRONG = lead('e'.repeat(24), 'Armstrong Teasdale', { review_reason: 'outside_window_undated', window_held: true, event_date: null, date_status: 'undated', event_date_proof: null, day_verified: false })
 const PROFILE = { business_name: 'Brightsmile', sells: 'Appointment booking software', website: 'https://brightsmile.example', buyer: BUYER }
 
 // Each state: what the stubbed account returns, and what Home must show.
@@ -59,6 +68,7 @@ const STATES = {
   'all-held': { profile: PROFILE, jobs: [job()], leads: [QUOTE, WRONG_CO, UNDATED, OUT_OF_WINDOW] },
   'research-only-nyc': { profile: PROFILE, jobs: [job({ candidates: 2, verified: 0, needs_review: 2 })], leads: [R_CUSTOMER, R_UNDATED] },
   'research-only-london': { profile: PROFILE, jobs: [job({ candidates: 2, verified: 0, needs_review: 2 })], leads: [L_CUSTOMER, L_BLOCKED] },
+  'research-proven-1176': { profile: PROFILE, jobs: [job({ candidates: 4, verified: 0, needs_review: 2 })], leads: [T_ZAYED, T_OGLETREE, T_NORTON, T_ARMSTRONG] },
   'useful': { profile: PROFILE, jobs: [job()], leads: [GOOD, NO_CONTACT, WRONG_CO, UNDATED, OUT_OF_WINDOW], messages: [{ lead_id: GOOD.id, status: 'draft' }, { lead_id: NO_CONTACT.id, status: 'approved' }] },
   'useful-campaign-error': { profile: PROFILE, jobs: [job()], leads: [GOOD], campaignFails: true },
 }
@@ -99,7 +109,7 @@ const shot = async (page, name) => { if (process.env.SHOTS) await page.screensho
 const stageOf = page => page.getByTestId('journey').getAttribute('data-stage')
 try {
   for (const [name, s0] of Object.entries(STATES)) {
-    for (const [w, h, tag] of [[1400, 1000, 'desktop'], [390, 844, 'mobile']]) {
+    for (const [w, h, tag] of [[name === 'research-proven-1176' ? 1280 : 1400, 1000, 'desktop'], [390, 844, 'mobile']]) {
       const s = structuredClone(s0)
       const { ctx, page, writes } = await open(s, w, h)
       await page.locator('main h1').first().waitFor() // a new account's full-screen onboarding adds its own h1
@@ -154,6 +164,21 @@ try {
           ])
           assert.doesNotMatch(text, /check (?:the|their|its) sources? yourself|confirm (?:it|them|the lead)/i)
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${name} ${tag}: no horizontal overflow`)
+        }
+        if (name === 'research-proven-1176') {
+          // The chip's InfoTip, opened as a user opens it (hover), says what the per-lead lines say: never the old fixed "No verified, dated event, ...".
+          assert.equal(stage, 'research_only')
+          const chip = page.getByTestId('journey-research'); await chip.scrollIntoViewIfNeeded()
+          assert.match(await chip.textContent(), /^4 research only/)
+          const tip = chip.getByTestId('infotip').first(); await tip.locator('button').first().hover()
+          const tipText = tip.getByTestId('infotip-text'); await tipText.waitFor({ state: 'visible' })
+          assert.equal((await tipText.textContent()).trim(), '2: Event day verified on the cited source; the rest of the lead is not confirmed yet. 2: No usable event date. Reading them is fine; checking them does not make them ready, and they are never counted as opportunities.', `${tag}: the tip`)
+          const rows = (await page.getByTestId('research-row').allTextContents()).map(t => t.trim())
+          assert.deepEqual(rows.map(r => r.split(':')[0]).sort(), ['Norton Rose Fulbright', 'Ogletree Deakins', 'Zayed Law'], 'the first 3 lines, as on prod (Home shows at most 3)')
+          assert.equal(rows.filter(r => /event day verified on the cited source/.test(r)).length, 2, 'the lines below say the same')
+          const box = await tipText.boundingBox(); assert.ok(box && box.x >= 0 && box.x + box.width <= w + 1, `${tag}: the open tip fits the viewport`)
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${tag}: no horizontal overflow`)
+          await shot(page, `research-proven-1176-${w}`)
         }
         if (name === 'useful') {
           assert.equal(stage, 'useful')

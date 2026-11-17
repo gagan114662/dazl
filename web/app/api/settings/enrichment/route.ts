@@ -8,6 +8,7 @@ import { enrichmentWriteLimit } from '@/lib/settings/enrichment-guard'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
 import { creditUse, setCreditLimit } from '@/lib/enrich/credit-pool'
+import { mailboxCheckUsage } from '@/lib/people/verify-usage'
 
 const CONNECTORS = ['enrich:apollo', 'enrich:pdl']
 
@@ -17,7 +18,7 @@ export async function GET() {
   const db = await getDb()
   const status = (await connectorStatus(db, user.tenantId)).filter(s => CONNECTORS.includes(s.connector))
   const auditRows = (await readRecentAudit(db, user.tenantId, 50) as { connector: string }[]).filter(r => CONNECTORS.includes(r.connector)).slice(0, 20)
-  return NextResponse.json({ connectors: status, audit: auditRows, fallback: await readEnrichFallbackEnabled(db, user.tenantId), credits: await creditUse(db, user.tenantId).catch(() => null) })
+  return NextResponse.json({ connectors: status, audit: auditRows, fallback: await readEnrichFallbackEnabled(db, user.tenantId), credits: await creditUse(db, user.tenantId).catch(() => null), mailbox_checks: await mailboxCheckUsage(db, user.tenantId).catch(() => null) })
 }
 
 export async function POST(req: NextRequest) {
