@@ -28,7 +28,7 @@ class CiRunnerPlacement(unittest.TestCase):
                     for forbidden in ("--privileged", "--network host", "--network=host",
                                       "--ipc host", "--ipc=host", "docker.sock", "/mnt/c"):
                         self.assertNotIn(forbidden, options)
-                    self.assertEqual(job["defaults"]["run"]["shell"], "/usr/local/bin/ci-bash {0}")
+                    self.assertEqual(job["defaults"]["run"]["shell"], "ci-bash {0}")
                     first = job["steps"][0]
                     self.assertEqual(first["name"], "Isolated job prerequisites")
                     self.assertEqual(first["working-directory"], "/")

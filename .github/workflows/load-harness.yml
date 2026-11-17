@@ -22,7 +22,7 @@ jobs:
       NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: /usr/local/bin/ci-bash {0}
+        shell: ci-bash {0}
     steps:
       - name: Isolated job prerequisites
         shell: bash

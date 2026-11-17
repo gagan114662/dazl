@@ -41,7 +41,7 @@ jobs:
       NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: /usr/local/bin/ci-bash {0}
+        shell: ci-bash {0}
         working-directory: web
     steps:
       - name: Isolated job prerequisites
@@ -194,7 +194,7 @@ jobs:
       JOB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     defaults:
       run:
-        shell: /usr/local/bin/ci-bash {0}
+        shell: ci-bash {0}
         working-directory: web
     steps:
       - name: Isolated job prerequisites
@@ -319,7 +319,7 @@ jobs:
       STAGING_PUBLIC_BASE: https://staging.dazl.ai
     defaults:
       run:
-        shell: /usr/local/bin/ci-bash {0}
+        shell: ci-bash {0}
         working-directory: web
     steps:
       - name: Isolated job prerequisites
@@ -429,7 +429,7 @@ jobs:
       NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: /usr/local/bin/ci-bash {0}
+        shell: ci-bash {0}
     steps:
       - name: Isolated job prerequisites
         shell: bash
