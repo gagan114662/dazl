@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 
 export default function CrmPanel() {
   const [cfg, setCfg] = useState<{ configured: boolean; provider: string | null } | null>(null)
@@ -11,7 +12,7 @@ export default function CrmPanel() {
   async function act(body: Record<string, unknown>) {
     const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const j = await r.json().catch(() => ({}))
-    setMsg(r.ok ? (body.action === 'disconnect' ? 'Disconnected.' : 'Saved.') : j.error || 'Something went wrong')
+    setMsg(r.ok ? (body.action === 'disconnect' ? 'Disconnected.' : 'Saved.') : panelError(j.error, 'Something went wrong'))
     setSecret('')
     void load()
   }
