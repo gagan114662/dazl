@@ -8,7 +8,7 @@
 // ceiling. The ONLY hard dollar ceiling is the run budget's max_usd (a reservation limit on model requests), so the verdict
 // uses that and nothing else: the estimate and the cap agree because the capped rows are priced exactly as the guard prices them.
 import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS, completionCost, priceOf } from '../llm/spend-guard.ts'
-import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX } from './run-budget.ts'
+import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, adaptiveDiscoveryOn, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, SITE_SEARCHES_PER_SCAN } from './run-budget.ts'
 import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
@@ -45,6 +45,11 @@ export interface RunEstimate {
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
   trial_allowance?: { left_usd: number; total_usd: number } | null
+  // #1319: a free-trial scan's own per-scan ceiling (trialReserveUsd, e.g. $0.30 from #680). Display only, NOT part of `ack` (the ack already covers it as cap.trial).
+  trial_scan_cap_usd?: number | null
+  // #1157: this account's web search allowance left today (lib/search/tinyfish.ts tenantAllowanceLeft). Display only, like
+  // trial_allowance: not part of `ack`, never a block (the run's own gate refuses at the cap); `low` shows a warning before confirm.
+  search_allowance?: { left: number; daily: number; low: boolean } | null
 }
 export interface EstimateInput {
   budget: RunBudget | null
@@ -159,9 +164,13 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const trialPeoplePrice = i.payer === 'trial' && typeof i.trialTinyfishSearchUsd === 'number' && Number.isFinite(i.trialTinyfishSearchUsd) && i.trialTinyfishSearchUsd >= 0 ? i.trialTinyfishSearchUsd : null
     const searches = DEFAULT_TINYFISH.searchesPerScan + (adaptive ? ADAPTIVE_SEARCHES : 0), fetches = DEFAULT_TINYFISH.fetchesPerScan + (adaptive ? ADAPTIVE_FETCHES : 0)
     const extra = adaptive ? `; plus at most ${ADAPTIVE_SEARCHES} searches and ${ADAPTIVE_FETCHES} pages in one more round, only when the first round verifies no lead` : ''
-    const searchMax = (tfSearch ?? 0) * searches + (trialPeoplePrice ?? tfSearch ?? 0) * people
+    // #1036 4b: the company-website searches after the scan (runner.ts siteFinderFor). A MAXIMUM: this branch is never a first play,
+    // and a trial or a run with paid steps off gets none; a scheduled play run and a deployment without TinyFish also make none,
+    // which the estimate cannot see, so there it overstates (never understates).
+    const site = i.payer !== 'trial' && b?.paid_fallback !== false && env.SITECRAWL_ENABLED !== '0' ? SITE_SEARCHES_PER_SCAN : 0
+    const searchMax = (tfSearch ?? 0) * (searches + site) + (trialPeoplePrice ?? tfSearch ?? 0) * people
     const price = (u: number | null, n: number): Range | null => (u === null ? { min: 0, max: 0 } : { min: 0, max: u * n })
-    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
+    rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
     rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
@@ -276,7 +285,37 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
   const a = i.payer === 'trial' && !trialWhy ? i.trialAllowance : null
   const trial_allowance = a && Number.isFinite(a.left_usd) && Number.isFinite(a.total_usd) && a.total_usd > 0 && a.left_usd >= 0 && a.left_usd <= a.total_usd ? { left_usd: a.left_usd, total_usd: a.total_usd } : null
-  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}) }
+  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}), ...(trialCeil !== null ? { trial_scan_cap_usd: trialCeil } : {}) }
+}
+
+// #1319: what a CUSTOMER sees in the "What this run will use" box. The estimate itself (rows, unit_usd with the model id,
+// the never-run research fallback, env var hints) stays as-is for the ack, the saved job estimate, logs and admin; this
+// view only rewrites the copy: no env var names, no model ids, no internal never-run rows, and a trial's total clamped to
+// the trial's per-scan cap (the run stops there), with the line saying so.
+export interface CustomerRow { id: string; label: string; provider: string; unit_usd: string; note: string; usd: Range | null; capped: boolean }
+export interface CustomerView { rows: CustomerRow[]; total: Range; trial_cap_line: string | null; assumptions: string[] }
+const ENV_NAME = /\bDAZL_[A-Z0-9_]+\b/
+export function customerCopy(text: string): string {
+  // The model id the row names: "... per 1M tokens (claude-sonnet-4-5)" and "o3-mystery: no listed price"
+  return text.replace(/(per 1M tokens) \(.*\)$/, '$1').replace(/^.*: no listed price$/, 'no listed price')
+}
+export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { trial_scan_cap_usd?: number | null }): CustomerView {
+  const rows: CustomerRow[] = est.rows.filter(r => r.id !== 'fallback_research').map(r => {
+    const included = ENV_NAME.test(r.unit_usd) || /^free allowance/.test(r.unit_usd)
+    return {
+      id: r.id, label: r.label, usd: r.usd, capped: r.capped,
+      provider: r.kind === 'model' ? 'AI research' : r.kind === 'search' || r.kind === 'fetch' ? 'Web search' : r.provider,
+      unit_usd: included ? 'included' : r.kind === 'model' ? customerCopy(r.unit_usd) : r.unit_usd.replace(ENV_NAME, 'operator setting'),
+      note: r.note.replace(ENV_NAME, 'operator setting'),
+    }
+  })
+  const cap = est.payer === 'trial' && typeof est.trial_scan_cap_usd === 'number' && Number.isFinite(est.trial_scan_cap_usd) && est.trial_scan_cap_usd > 0 ? est.trial_scan_cap_usd : null
+  const total = cap === null ? est.total : { min: Math.min(est.total.min, cap), max: Math.min(est.total.max, cap) }
+  const assumptions = est.assumptions
+    .filter(a => !/research fallback/i.test(a))
+    .map(a => a.startsWith('Model: ') && a.includes('. Tokens per call') ? `AI research: t${a.slice(a.indexOf('. Tokens per call') + 3)}` : a)
+    .filter(a => !ENV_NAME.test(a))
+  return { rows, total, trial_cap_line: cap === null ? null : `Free trial scans stop at ${money(cap)}.`, assumptions }
 }
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
@@ -340,3 +379,8 @@ export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): 
   if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
   return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
 }
+
+// #1157: shown BEFORE confirm when this account has little web search left today, so a run the allowance would stop is not started blind
+export const searchAllowanceLine = (a: { left: number; daily: number }) => a.left === 0
+  ? `Your web search allowance for today is used up (${a.daily} a day). This run would search only the free news source and is likely to find nothing. It resets at 00:00 UTC.`
+  : `Only ${a.left} of your ${a.daily} web searches and page reads are left today, about one run. This run may stop early when they run out; the allowance resets at 00:00 UTC.`

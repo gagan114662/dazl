@@ -21,7 +21,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
-import { nameTime, openDest, type OffhostDest } from './offhost.mts'
+import { nameTime, openDest, retainedCopies, type OffhostDest } from './offhost.mts'
 
 const arg = (f: string) => {
   const i = process.argv.indexOf(f); if (i < 0) return undefined
@@ -121,13 +121,7 @@ if (dest) {
     copies.set(base, t)
   }
   const sorted = [...copies].filter(([, t]) => t >= 0).sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))
-  const keep = new Set(sorted.slice(0, retain.hourly).map(([b]) => b))
-  const day = (t: number) => new Date(t).toISOString().slice(0, 10)
-  const week = (t: number) => { const d = new Date(t); const wd = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - wd); return d.toISOString().slice(0, 10) } // Monday of the ISO week
-  for (const [bucket, n] of [[day, retain.daily], [week, retain.weekly]] as const) {
-    const seen = new Set<string>()
-    for (const [b, t] of sorted) { const k = bucket(t); if (seen.has(k)) continue; seen.add(k); if (seen.size > n) break; keep.add(b) }
-  }
+  const keep = retainedCopies(sorted, retain)
   for (const [b] of sorted) {
     if (keep.has(b)) continue
     // ciphertext first: an interrupted run leaves at worst a manifest without its copy, which the next run removes

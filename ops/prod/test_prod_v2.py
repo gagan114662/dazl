@@ -1,6 +1,6 @@
-"""The production deploy scripts that RUN ON THE BOX (ops/prod/deploy-prod.sh v2, run-release.sh, pull-release.sh), #1140.
+"""The production deploy scripts that RUN ON THE BOX (ops/prod/deploy-prod.sh v2, run-release.sh, pull-release.sh, check-pages.py), #1140 / #1116.
 
-These three files are copies of what is installed in /usr/local/lib/dazl-prod/ on the box, taken byte for byte, so that the
+These files are copies of what is installed in /usr/local/lib/dazl-prod/ on the box, taken byte for byte, so that the
 installed code is a reviewed file in this repository and a future install is a reviewed diff. This file checks:
 - the repo copies are the pinned box copies (change one on purpose: review it, then update the pin here);
 - none of them builds or installs anything (NEVER-AGAIN #1);
@@ -28,7 +28,14 @@ from test_prod_prebuilt import STUBS as V1_STUBS  # noqa: E402  (curl, git and s
 
 # sha256 of the files installed on the box, copied 2026-11-13 (~/work/verify/guard/box-*.sh)
 PINNED = {
-    'deploy-prod.sh': 'be319e308ab53797d9e8ebdf3e94ff9e9e129c2a9f34a10a2f404a00b3482713',
+    # #1116 acceptance 2: deploy-prod.sh calls check-pages.py in its local (7) and public (9) smoke. NOT YET INSTALLED: these two pins are
+    # this PR's files; the box keeps be319e30 until Hermes reviews the diff and installs both (check-installed.sh says so until then).
+    # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
+    # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
+    # this PR's files; Hermes installs them (check-installed.sh says so until then).
+    'deploy-prod.sh': 'a562aa3ad8613a01227c58927a4ab08fd1cafb37415710938ec0e95ca0a6a467',
+    'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
+    'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
 }
@@ -50,7 +57,49 @@ class RepoCopiesAreTheBoxCopies(unittest.TestCase):
     def test_the_scripts_are_executable_and_parse(self):
         for name in PINNED:
             self.assertTrue(os.access(HERE / name, os.X_OK), name)
-            self.assertEqual(subprocess.run(['bash', '-n', str(HERE / name)], capture_output=True, text=True).returncode, 0, name)
+            parse = [sys.executable, '-m', 'py_compile'] if name.endswith('.py') else ['node', '--check'] if name.endswith('.mjs') else ['bash', '-n']   # check-pages.py is Python, check-hydration.mjs JavaScript
+            self.assertEqual(subprocess.run([*parse, str(HERE / name)], capture_output=True, text=True).returncode, 0, name)
+
+    def test_the_new_release_is_checked_for_hydration_before_and_after_the_switch(self):
+        # #1116 (headless hydration check): statically, as above. The local smoke stops the spare and refuses to switch, and the public smoke after
+        # the switch rolls back, when check-hydration.mjs fails; it runs as the app user, fatal by default, never with the proof-only block.
+        src = (HERE / 'deploy-prod.sh').read_text()
+        self.assertIn('HYD=$HERE/check-hydration.mjs', src)
+        self.assertIn('for f in "$SELF" "$PULL" "$RUNNER" "$PAGES" "$HYD"; do', src)
+        fn = src[src.index('hydration_check() {'):]
+        fn = fn[:fn.index('\n}\n')]
+        self.assertIn('as_app timeout -k 5 120 env -u HYDRATION_CHECK_BLOCK', fn)
+        self.assertIn('8>&-', fn)
+        self.assertIn('[ "${PROD_HYDRATION_CHECK:-fatal}" = warn ]', fn)
+        local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
+        self.assertIn('hydration_check "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
+        self.assertIn('NOT switching', local[local.index('hydration_check "http://127.0.0.1:$NEW"'):])
+        self.assertIn('hydration_check "$PUBLIC_URL" 2 || fail_back', src)
+        # a rollback is never refused for it
+        for line in [l for l in src.splitlines() if 'hydration_check "' in l]:
+            self.assertNotIn('PREV_SHA', line); self.assertNotIn('OLD_SHA', line)
+
+    def test_a_bad_hydration_setting_is_refused(self):
+        r = subprocess.run(['bash', str(HERE / 'deploy-prod.sh'), 'a' * 40], env={'PATH': os.environ['PATH'], 'PROD_HYDRATION_CHECK': 'off'}, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 1); self.assertIn('PROD_HYDRATION_CHECK must be fatal or warn', r.stdout + r.stderr)
+
+    def test_both_smoke_steps_run_the_sign_up_pages_check(self):
+        # #1116 acceptance 2. The happy path cannot run in this sandbox (see the module docstring), so this pins the wiring statically: the local smoke
+        # on the spare port refuses to switch, and the public smoke (whose failure triggers the auto-rollback) fails, when check-pages.py fails.
+        src = (HERE / 'deploy-prod.sh').read_text()
+        local = src[src.index('# --- 7. local smoke on the spare'):src.index('# --- 8+9.')]
+        self.assertIn('python3 -I "$PAGES" "http://127.0.0.1:$NEW" || { stop_port "$NEW"', local)
+        self.assertIn('NOT switching', local[local.index('python3 -I "$PAGES"'):])
+        public = src[src.index('public_smoke() {'):src.index('[ ! -L "$OPS" ]')]
+        self.assertIn('[ $ok = 1 ] && [ "$pages" = pages ] && { python3 -I "$PAGES" "$PUBLIC_URL" || { ok=0;', public)
+        self.assertIn('PAGES=$HERE/check-pages.py', src)
+        # the NEW release's two public smokes ask for it ...
+        self.assertEqual(src.count('public_smoke "$SHA" "$NEW_INST" pages || fail_back'), 2)
+        # ... and no rollback does: a rollback target may predate #1218 (no form action), and an emergency rollback must never be refused for that
+        for line in [l for l in src.splitlines() if 'public_smoke "' in l]:
+            if 'PREV_SHA' in line or 'OLD_SHA' in line:
+                self.assertNotIn(' pages', line, line)
+        self.assertEqual(len([l for l in src.splitlines() if 'public_smoke "' in l and ('PREV_SHA' in l or 'OLD_SHA' in l)]), 2, 'the manual and the automatic rollback')
 
     def test_no_script_builds_or_installs_anything(self):
         bad = []
@@ -153,7 +202,9 @@ class V2Refusals(unittest.TestCase):
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
         (T / 'Caddyfile').write_text('dazl.ai, www.dazl.ai {\n\treverse_proxy localhost:3104\n}\n')
         self.live = T / 'rel' / f'dazl-{A[:8]}-prod' / 'web'; self.live.mkdir(parents=True)
-        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live)   # the live release: a real process running from its web/
+        # the live release: a real process running from its web/, with a fixed env (the deploy copies /proc/<pid>/environ into the release env,
+        # so nothing from the test runner's own env may reach it)
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live, env={'PATH': os.environ['PATH']})
         (T / 'listen' / '3104').write_text(str(self.proc.pid)); (T / 'health' / '3104').write_text(A)
         (T / 'run.env').write_text('DAZL_MAIL=on\n')
 
@@ -197,6 +248,17 @@ class V2Refusals(unittest.TestCase):
         self.assertEqual(r.returncode, 1); self.assertIn('run-release.sh is not root-owned', r.stdout + r.stderr)
         self.assert_nothing_changed()
 
+    def test_a_missing_or_untrusted_pages_check_is_refused(self):
+        # #1116: the deploy never runs without its sign-up pages check, and never runs one anybody but root could have written
+        (self.t / 'lib' / 'check-pages.py').chmod(0o775)
+        r = self.run_deploy(A)
+        self.assertEqual(r.returncode, 1); self.assertIn('check-pages.py is not root-owned', r.stdout + r.stderr)
+        self.assert_nothing_changed()
+        (self.t / 'lib' / 'check-pages.py').unlink()
+        r = self.run_deploy(A)
+        self.assertEqual(r.returncode, 1); self.assertIn('check-pages.py is not root-owned', r.stdout + r.stderr)
+        self.assert_nothing_changed()
+
     def test_a_missing_run_release_script_is_refused(self):
         (self.t / 'lib' / 'run-release.sh').unlink()
         r = self.run_deploy(A)
@@ -232,6 +294,45 @@ class V2Refusals(unittest.TestCase):
         r = self.run_deploy('b' * 40)
         self.assertEqual(r.returncode, 1); self.assertIn('is missing or not a regular file; nothing done', r.stdout + r.stderr)
         self.assert_nothing_changed()
+
+    def _db(self, env_lines):
+        import sqlite3
+        db = self.t / 'data' / 'prod.db'; c = sqlite3.connect(db); c.execute('CREATE TABLE IF NOT EXISTS x (a)'); c.commit(); c.close()
+        (self.t / 'run.env').write_text(f'DB_PATH={db}\n' + ''.join(f'{l}\n' for l in env_lines))
+
+    def test_a_release_env_without_mail_settings_is_refused_before_anything_is_deployed(self):
+        # #1089: without SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM every verification, reset and play email stays in the host's outbox
+        for lines in ([], ['SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'], ['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465'],
+                      ['SYSTEM_MAIL_SMTP_URL=', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'],
+                      ['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM="   "']):
+            self._db(lines)
+            r = self.run_deploy('b' * 40)
+            self.assertEqual(r.returncode, 1, lines)
+            self.assertIn('has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty)', r.stdout + r.stderr, lines)
+            self.assertFalse((self.t / 'dl').exists(), 'nothing was downloaded')
+            self.assertNotRegex(self.log('systemctl.log'), r'\b(start|stop|enable|disable|reload)\b')
+            self.assertIn('reverse_proxy localhost:3104', (self.t / 'Caddyfile').read_text())
+
+    def _live_env(self, extra):
+        # restart the fake live release with these variables in its process env (prod's mail settings come from there AND the run env)
+        self.proc.kill(); self.proc.wait()
+        self.proc = subprocess.Popen(['sleep', '600'], cwd=self.live, env={'PATH': os.environ['PATH'], **extra})
+        (self.t / 'listen' / '3104').write_text(str(self.proc.pid))
+
+    def test_mail_settings_from_the_live_process_count_and_the_run_env_overrides_them(self):
+        self._live_env({'SYSTEM_MAIL_SMTP_URL': 'smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM': 'dazl <leads@notify.example>'})
+        self._db([])
+        r = self.run_deploy('b' * 40)
+        self.assertNotIn('SYSTEM_MAIL', r.stdout + r.stderr); self.assertIn('prebuilt fetch/verify failed', r.stdout + r.stderr)
+        self._db(['SYSTEM_MAIL_SMTP_URL='])   # the run env's empty value wins over the live one: refused
+        r = self.run_deploy('b' * 40)
+        self.assertEqual(r.returncode, 1); self.assertIn('has no SYSTEM_MAIL_SMTP_URL and SYSTEM_MAIL_FROM (both non-empty)', r.stdout + r.stderr)
+
+    def test_a_release_env_with_both_mail_settings_goes_past_the_mail_check(self):
+        self._db(['SYSTEM_MAIL_SMTP_URL=smtps://u:p@smtp.example:465', 'SYSTEM_MAIL_FROM="dazl <leads@notify.example>"'])
+        r = self.run_deploy('b' * 40)
+        self.assertNotIn('SYSTEM_MAIL', r.stdout + r.stderr)
+        self.assertIn('prebuilt fetch/verify failed', r.stdout + r.stderr, 'it reached the next step (no artifact exists in the sandbox)')
 
     def test_a_database_with_a_second_hard_link_is_refused(self):
         import sqlite3

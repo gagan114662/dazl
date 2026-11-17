@@ -60,10 +60,12 @@ const FREE: Record<string, string> = {
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
+  'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
   'https://r.jina.ai/': 'Jina Reader without a key: free (lib/sources/jina.ts)',
   'https://www.googleapis.com/youtube/v3/search': 'YouTube Data API: quota units, no per-call charge',
+  'https://api.telegram.org/bot<token>/sendMessage': 'operator alert destination when OPS_ALERT_WEBHOOK_URL is a Telegram bot (#1088): free Bot API, not a scan path',
   'https://api.stripe.com/v1/': 'billing, not a scan path',
   'https://api.stripe.com/v1/subscriptions/': 'billing, not a scan path',
   'https://api.hubapi.com/account-info/v3/details': 'CRM push, not a scan path; no per-call charge',
@@ -86,6 +88,7 @@ const FREE: Record<string, string> = {
   'env:SYSTEM_MAIL_SMTP_URL': "dazl's own account mail (SMTP), not a scan path",
   'env:JINA_READER_URL': 'Jina Reader endpoint override: free reader',
   'env:PUBLIC_BASE_URL': "dazl's own public URL, not a provider",
+  'env:NEXT_PUBLIC_DAZL_CONNECT_EXTENSION_URL': 'a link the user opens to install the dazl Connect extension (#1037): dazl requests nothing there',
 }
 
 function files(dir: string): string[] {
