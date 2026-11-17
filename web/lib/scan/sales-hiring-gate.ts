@@ -79,11 +79,24 @@ export function jobAdQuoteRole(excerpt: string | null | undefined, company: stri
   const named = norm(at ? t.slice(at.index + at[0].length) : t)
   if (!new RegExp(`(?:^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: |$)`).test(named)) return null
   const rs = roles.length ? roles : GENERIC_GTM_ROLES
+  // review at 06969a58 (Hermes F1): the whole-title path is held to the same suffix refusal as the truncated path ("(SDR) - Senior Manager")
   const whole = titleIsRole(full, rs)
-  if (whole) return whole
+  if (whole) return suffixAfterRole(full, whole) ? null : whole
   const ab = /^(.*?\([A-Z]{2,6}\))(.*)$/.exec(full)
   if (!ab || STANDING_POOL.test(ab[2]) || TITLE_SUFFIX.test(ab[2])) return null
   return titleIsRole(ab[1], rs)
+}
+// the words after the role's earliest surface form (and its bracketed abbreviation) read as another title ("- Senior Manager", "/ Sales Manager")
+function suffixAfterRole(title: string, role: RequestedHiringRole): boolean {
+  let hit: RegExpExecArray | null = null
+  for (const f of roleSurfaceForms(role)) {
+    const t = f.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
+    const h = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
+    if (h && (!hit || h.index < hit.index)) hit = h
+  }
+  if (!hit) return true
+  const after = title.slice(hit.index + hit[0].length).replace(/^\s*\([A-Z]{2,6}\)/, '')
+  return STANDING_POOL.test(after) || TITLE_SUFFIX.test(after)
 }
 // one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
 export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }
