@@ -31,7 +31,7 @@ test('the same text from a non-maintainer does not count', () => {
 test('not planned / duplicate closes and exempt labels are left closed', () => {
   assert.equal(decide(closed({ state_reason: 'not_planned' }), []).reopen, false)
   assert.equal(decide(closed({ state_reason: 'duplicate' }), []).reopen, false)
-  for (const name of ['wontfix', 'duplicate', 'not-planned', 'Not-Planned'])
+  for (const name of ['wontfix', 'duplicate', 'not-planned', 'Not-Planned', 'triage:close', 'Triage:Close'])
     assert.equal(decide(closed({ labels: [{ name: 'p1' }, { name }] }), []).reopen, false, name)
   assert.equal(decide(closed({ labels: [{ name: 'needs-live-check' }] }), []).reopen, true)
 })
@@ -219,4 +219,12 @@ test('the dry run reports and changes nothing', async () => {
   try { await dryRun(['7', '8'], l => lines.push(l)) } finally { globalThis.fetch = realFetch; delete process.env.GITHUB_API_URL }
   assert.ok(calls.every(m => m === 'GET'))
   assert.match(lines[0], /^#7 \[closed\/completed\]: WOULD REOPEN/); assert.match(lines[1], /^#8 \[closed\/completed\]: stays closed/)
+})
+
+test('"Quest live check (prod <commit>): PASS" counts like the plain form; other prefixes do not', () => {
+  assert.ok(PASS_RE.test('Quest live check (prod 7f4c9061): PASS') === false, 'lowercase "live" after Quest is not the format')
+  assert.ok(PASS_RE.test('Quest Live check (prod 7f4c9061): PASS'))
+  assert.equal(decide(closed(), [c(`Quest Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`)]).reopen, false)
+  assert.equal(decide(closed(), [c(`Hermes Live check (prod 7f4c9061): PASS\n\n${EVIDENCE}`)]).reopen, true)
+  assert.equal(decide(closed(), [c('Quest Live check (prod 7f4c9061): PASS')]).reopen, true, 'still needs evidence')
 })
