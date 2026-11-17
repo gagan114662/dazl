@@ -1,3 +1,4 @@
+import { PAID_VENDOR_OFF } from '../paid-vendors.ts'
 // One plain sentence per recorded provider failure, for the scan view. Pure text: this module is
 // imported by the browser bundle, so it must never pull the data layer or any server-only import.
 // 'auth' names the key as the thing to fix; nothing here guesses WHY a provider rate-limited or errored.
@@ -16,11 +17,14 @@ export const SPEND_REFUSAL_PREFIX = 'spend refused: '
 // #1037: the contact pass found no Apollo or People Data Labs key for the workspace, so it made no lookup. Recorded once per scan on the
 // shared 'enrich' connector (lib/enrich/index.ts). Not a failure: nothing was tried.
 export const NO_KEY_STATUS = 'no_key' as const
+// Refs #1099 (lib/paid-vendors.ts): Apollo / People Data Labs not called because dazl uses no paid third-party service by default. Recorded
+// once per scan on the shared 'enrich' connector. Not a failure: nothing was tried.
+export const PAID_VENDOR_OFF_STATUS = PAID_VENDOR_OFF   // one string, defined once (lib/paid-vendors.ts)
 export type EnrichSkipStatus = (typeof ENRICH_SKIP_STATUSES)[number]
 
 export interface ProviderIssue {
   connector: string
-  status: ProviderFailureStatus | EnrichSkipStatus | typeof NO_KEY_STATUS
+  status: ProviderFailureStatus | EnrichSkipStatus | typeof NO_KEY_STATUS | typeof PAID_VENDOR_OFF_STATUS
   lookups_affected: number
   latest_at: number
   // credit_cap only, read from the credit pool when the issue is listed: which window, credits used against the limit.
@@ -43,6 +47,7 @@ export function providerIssueText(issue: ProviderIssue): string {
     case 'key_rejected': return `${who} was skipped for the remaining leads in this scan after the saved key was rejected.`
     case 'spend_refused': return `${who}: the remaining lookups in this scan were not sent: ${spendRefusalText(issue.refusal)} The refused lookups were not charged; lookups made before the refusal keep their own charges.`
     case 'uncertain': return `${who}: an earlier lookup for a lead in this scan may have been billed but its result was not recorded, so it is held and was not repeated.`
+    case 'paid_vendor_off': return 'No paid contact lookup ran in this scan: dazl uses no paid third-party service (Apollo, People Data Labs) by default. Named contacts come from the company\'s own pages.'
     case 'no_key': return 'No contacts were looked up in this scan: no enabled Apollo or People Data Labs key is saved for this workspace, so the paid contact step did not run. Named contacts come only from free sources (the company\'s own website). Add a key in Settings > Enrichment.'
     case 'fallback_off': return `People Data Labs was not tried for leads Apollo could not enrich: a key is saved, but the Apollo-to-PDL fallback is off (Settings > Enrichment).`
     case 'credit_cap': {
