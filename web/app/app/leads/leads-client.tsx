@@ -47,7 +47,7 @@ import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
-import { runStatus } from '@/lib/run-status'
+import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
@@ -173,6 +173,11 @@ export default function LeadsClient() {
     if (pending) restoredSearch.current = true
     // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
     queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query); if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' }) })
+    // #1319: the note belongs to this one return from Google. Moving back/forward in history drops it, so it never
+    // sticks on a Leads page whose address no longer carries ?google=.
+    const drop = () => setLinkNote(null)
+    window.addEventListener('popstate', drop)
+    return () => window.removeEventListener('popstate', drop)
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -664,10 +669,17 @@ export default function LeadsClient() {
     await loadWatches()
   }
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
+  // #1136: each past scan's current status (the Campaigns card's: leads as they stand now), by scan id; 'failed' = the read
+  // failed, so the cards say their counts are as recorded when the scan finished
+  const [currentRuns, setCurrentRuns] = useState<Map<string, CampaignRun> | 'failed' | null>(null)
   // History: a returning user picks a past scan explicitly - nothing autoselects, so an
   // older job or a test fixture can never silently become the default view.
   useEffect(() => {
     if (jobId) return
+    // a read that hangs is a failed read (the cards then say they are as recorded), never a page stuck on "checking"
+    void fetch('/api/campaigns?view=history', { signal: AbortSignal.timeout(20000) }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(j => { if (!Array.isArray(j?.campaigns)) throw new Error('shape'); setCurrentRuns(new Map((j.campaigns as CampaignRun[]).map(c => [c.id, c]))) })
+      .catch(() => setCurrentRuns('failed'))
     void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) {
       const jobs: JobSummary[] = j.jobs ?? []
       setPastJobs(jobs)
@@ -751,7 +763,7 @@ export default function LeadsClient() {
       </div>
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
-      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
@@ -760,7 +772,7 @@ export default function LeadsClient() {
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null) }}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null); setLinkNote(null) }}
             placeholder="Find people who..." />
           <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>
@@ -768,7 +780,7 @@ export default function LeadsClient() {
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null) }} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
@@ -1088,15 +1100,21 @@ export default function LeadsClient() {
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          {/* always mounted, so the failure is announced when it is filled in */}
+          <div role="status" className="text-sm">{currentRuns === 'failed' && <p className="mb-3" data-testid="history-recorded">Showing each scan as it was when it finished: its current counts could not be loaded. Refresh to retry.</p>}</div>
           <div className="grid gap-3 md:grid-cols-2">
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
-            // The run's state in the same words as Campaigns and the campaign page (lib/run-status.ts).
-            const run = runStatus(o, j.lead_count), pill = run.tag
-            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : run.group === 'running' ? 'peach' : run.group === 'technical' ? 'pink' : 'grey'
+            // The run's state in the same words as its Campaigns card, counted from the leads as they stand now (#1136,
+            // lib/run-status.ts historyStatus); a scan Campaigns does not list keeps what it recorded
+            const h = historyStatus(j, currentRuns instanceof Map ? currentRuns.get(j.id) : undefined)
+            // until the current counts arrive, no verdict at all: never the scan-time "N need your review" for a moment
+            const pending = currentRuns === null && o.kind !== 'running' && o.kind !== 'enriching'
+            const run = h.run, pill = pending ? 'Checking...' : run.tag
+            const tone: Tone = pending ? 'grey' : runTone(run)
             return (
-              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
+              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind} data-current={pending ? 'pending' : h.current ? 'yes' : 'recorded'}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <a href={`/app/leads?job_id=${j.id}`} className="block min-w-0">
                     <span className="text-xs text-[var(--ink-3)]">Play</span>
@@ -1110,11 +1128,11 @@ export default function LeadsClient() {
                 <dl className="mb-3">
                   <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
                   <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
-                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</dd></div>
+                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]" data-testid="past-scan-result">{pending ? 'Counting its leads as they are now...' : <>{run.label}{run.detail && <InfoTip><span data-testid="outcome-detail">{run.detail}</span></InfoTip>}{!h.current && <span className="block text-xs text-[var(--ink-3)]" data-testid="as-recorded">As recorded when the scan finished{currentRuns instanceof Map ? ' (Campaigns does not list this scan)' : ''}.</span>}</>}</dd></div>
                 </dl>
                 <div className="mt-auto flex flex-wrap gap-2">
                   <a className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.id}`}>Open</a>
-                  {o.next && <a className="btn-ghost btn-sm" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
+                  {!pending && h.next && (h.next.href ? <a className="btn-ghost btn-sm" href={h.next.href} data-testid="next-step">{h.next.text}</a> : <span className="text-xs text-[var(--ink-2)] self-center" data-testid="next-step">{h.next.text}</span>)}
                 </div>
               </div>
             )

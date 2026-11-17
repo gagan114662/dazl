@@ -54,6 +54,7 @@ def run(pages, extra_env=None):
     srv = serve(pages)
     try:
         env = {k: v for k, v in os.environ.items() if k != 'HYDRATION_CHECK_BLOCK'}
+        env.setdefault('HYDRATION_CHECK_START_S', '60')   # shared CI runners can take >20 s to cold-start the browser (#1346 F1)
         env.update(extra_env or {})
         r = subprocess.run(['node', str(SCRIPT), f'http://127.0.0.1:{srv.server_address[1]}'], capture_output=True, text=True, timeout=150, env=env)
     finally:
@@ -66,7 +67,22 @@ def run(pages, extra_env=None):
 ALL = ('/sign-up', '/sign-in', '/app')
 
 
+def setUpModule():
+    # #1346 F1: the first Chromium start on a cold shared CI runner can exceed the script's 20 s start wait (the box copy is pinned, so the
+    # wait is not changed here). Start the browser once, unjudged, so its files are in the page cache; every test below still asserts in full.
+    try:
+        run({p: HYDRATED for p in ALL})
+    except unittest.SkipTest:
+        pass
+
+
 class CheckHydration(unittest.TestCase):
+    def test_browser_start_wait_is_configurable_and_named(self):
+        # #1346 F1: the start wait comes from HYDRATION_CHECK_START_S and the failure names it (a 1 ms wait cannot be met)
+        r = run({p: HYDRATED for p in ALL}, {'HYDRATION_CHECK_START_S': '0.001'})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn('the browser did not start within 0.001 s', r.stdout)
+
     def test_hydrated_forms_pass(self):
         r = run({p: HYDRATED for p in ALL})
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

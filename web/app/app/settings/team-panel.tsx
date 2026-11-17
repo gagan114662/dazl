@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 
 type Role = 'owner' | 'admin' | 'operator' | 'viewer'
 interface Workspace { tenant_id: string; name: string; kind: string; role: Role }
@@ -39,7 +40,7 @@ export default function TeamPanel() {
     setMsg('')
     const r = await fetch(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const j = await r.json().catch(() => ({}))
-    if (!r.ok) setMsg(ERRORS[j.error] ?? j.error ?? 'Something went wrong')
+    if (!r.ok) setMsg(panelError(j.error, 'Something went wrong', ERRORS))
     return r.ok ? j : null
   }
   async function switchTo(tenant_id: string) { if (await send('/api/workspace/switch', 'POST', { tenant_id })) window.location.reload() }
