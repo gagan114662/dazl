@@ -26,8 +26,9 @@ function setup(runBudget: string | null, reserved: number | null) {
   saveMemory(raw, 'A', { positioning: OFFER })
   saveKey(raw, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   saveSettings(raw, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
-  raw.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status,query,seller,offer,run_budget,spend_reserved_usd) VALUES('play','A','Request','test','London','done','London startups',?,?,?,?)").run(OFFER, OFFER, runBudget, reserved)
+  raw.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status,query,seller,offer,run_budget,spend_reserved_usd) VALUES('play','A','Request','test','London','running','London startups',?,?,?,?)").run(OFFER, OFFER, runBudget, reserved)
   raw.prepare("INSERT INTO leads(id,scan_job_id,name,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from,event_date) VALUES('lead-play','play','Pat','Buyer','sales@buyer.invalid','Buyer is hiring an SDR','https://buyer.invalid/careers','Buyer is hiring an SDR',70,1800000000,'test_review',?)").run(new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10))
+  raw.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'play'").run()
   return raw
 }
 function fake(model: string | undefined) {
