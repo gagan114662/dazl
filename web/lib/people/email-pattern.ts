@@ -14,6 +14,7 @@ import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
 import { isStaging } from '../staging.ts'
+import { paidVendorOn } from '../paid-vendors.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -234,6 +235,9 @@ export interface MailboxVerifier { name: string; verify(address: string, signal?
 export function verifierFromEnv(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): MailboxVerifier | null {
   // TEST-ONLY: staging's fake verifier (lib/people/zerobounce.ts zeroBounceStagingFetch), never outside DAZL_ENV=staging.
   if (isStaging(env) && env.DAZL_STAGING_FAKE_ZEROBOUNCE === '1') return zeroBounceVerifier('staging-fake', zeroBounceStagingFetch, ZEROBOUNCE_STAGING_FAKE)
+  // Refs #1099 (lib/paid-vendors.ts): the real ZeroBounce is a paid third-party service, so its key is used only when the operator named
+  // it in DAZL_PAID_VENDORS; otherwise a guessed address stays 'guessed' (unverified), as with no key.
+  if (!paidVendorOn('zerobounce', env)) return null
   const key = (env.ZEROBOUNCE_API_KEY ?? '').trim()
   return key ? zeroBounceVerifier(key, fetchImpl) : null
 }
