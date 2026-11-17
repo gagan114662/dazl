@@ -1,31 +1,27 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { watchReauth, type ReauthMethod } from './reauth-prompt'
 
 // Changing keys, connectors, billing or members needs a sign-in within the last hour on this device. When any request
 // on this page answers 403 reauth_required, this asks the person to confirm it is them (password, or Google again).
 export default function ReauthGate() {
-  const [method, setMethod] = useState<'password' | 'google' | null>(null)
+  const [method, setMethod] = useState<ReauthMethod | null>(null)
+  const [asks, setAsks] = useState(0)
   const [password, setPassword] = useState('')
   const [msg, setMsg] = useState('')
   const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const original = window.fetch
-    const ask = () => void original('/api/auth/reauth').then(x => x.ok ? x.json() : null).catch(() => null)
-      .then(info => { setMethod(info?.method === 'google' ? 'google' : 'password'); setMsg('') })
+    const w = watchReauth(original, (m, seq) => { setMethod(m); setAsks(seq); setMsg('') })
     // sent back here by a navigation that needed a recent sign-in (Gmail connect)
-    if (new URLSearchParams(window.location.search).get('reauth') === '1') ask()
-    window.fetch = async (...args: Parameters<typeof fetch>) => {
-      const r = await original(...args)
-      if (r.status === 403) {
-        void r.clone().json().then(j => { if (j?.error === 'reauth_required') ask() }).catch(() => {})
-      }
-      return r
-    }
+    if (new URLSearchParams(window.location.search).get('reauth') === '1') void w.ask()
+    window.fetch = w.fetch
     return () => { window.fetch = original }
   }, [])
 
-  // #719: the dialog sits in the page flow at the top (never pinned over the form that asked) and is scrolled into view.
-  useEffect(() => { if (method) box.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, [method])
+  // #719: the dialog sits in the page flow at the top (never pinned over the form that asked) and is scrolled into
+  // view on EVERY reauth_required answer, including a repeat with the same method (F1).
+  useEffect(() => { if (method) box.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, [method, asks])
 
   async function confirm() {
     const r = await fetch('/api/auth/reauth', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) })
